@@ -139,7 +139,7 @@ class ZigbeePacket:
     motion_detected: bool = False
     on_with_timed_off: Optional[Dict] = None
 
-    # NEW: Structured DP analysis for Tuya cluster (0xEF00)
+    # Structured DP analysis for Tuya cluster (0xEF00)
     tuya_dps: Optional[List[Dict]] = None
 
     def to_dict(self) -> Dict:
@@ -176,7 +176,7 @@ class ZigbeeDebugger:
 
         logger.info("ZigbeeDebugger initialized")
 
-    # --- NEW METHOD FOR STREAMING ---
+    # --- METHOD FOR STREAMING ---
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new packets."""
         self._callbacks.append(callback)
@@ -193,7 +193,6 @@ class ZigbeeDebugger:
         logger.info("Debugging DISABLED")
         return {"enabled": False}
 
-    # RENAMED from capture_raw_message to capture_packet to match core.py
     def capture_packet(
             self,
             sender_ieee: str,
@@ -269,7 +268,7 @@ class ZigbeeDebugger:
         # Log important events
         self._log_packet(packet)
 
-        # --- NEW: NOTIFY CALLBACKS (STREAMING) ---
+        # ---  NOTIFY CALLBACKS (STREAMING) ---
         packet_dict = packet.to_dict()
         for cb in self._callbacks:
             try:
@@ -479,7 +478,7 @@ class ZigbeeDebugger:
             motion = "MOTION" if packet.decoded.get("alarm1_motion") else "clear"
             msg += f" | {motion} (status=0x{packet.decoded['zone_status']:04X})"
 
-        # --- NEW: Include Tuya DP summary in log ---
+        # --- Include Tuya DP summary in log ---
         if packet.tuya_dps:
             dp_summary = ", ".join([
                 f"DP{dp['dp_id']}:{dp['dp_def_name']}={dp['parsed_value']}{dp['dp_def_unit']}"
@@ -488,7 +487,7 @@ class ZigbeeDebugger:
             msg += f" | Tuya DPs: {dp_summary}"
             is_important = True # Tuya reports are always noteworthy
 
-        # *** MODIFIED: Add RAW DATA to log as requested ***
+        # *** Add RAW DATA to log as requested ***
         msg += f" | Raw: {packet.raw_data}"
 
         if is_important:
@@ -496,7 +495,7 @@ class ZigbeeDebugger:
         else:
             logger.debug(msg)
 
-    # --- NEW METHOD: Record structured Tuya DP report ---
+    # --- Record structured Tuya DP report ---
     def record_tuya_report(self, ieee: str, raw_payload_hex: str, dps: List[Dict]):
         """
         Record a structured Tuya Data Point report.
