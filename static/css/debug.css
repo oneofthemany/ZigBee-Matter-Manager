@@ -1,0 +1,99 @@
+/* Debug-specific styles */
+#debugStatusBadge {
+    font-size: 0.75rem;
+    animation: pulse 2s infinite;
+}
+
+#debugStatusBadge.bg-success {
+    animation: pulse-success 2s infinite;
+}
+
+@keyframes pulse-success {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.debug-packet-critical {
+    border-left: 4px solid #dc3545 !important;
+    background-color: rgba(220, 53, 69, 0.1);
+}
+
+.debug-packet-high {
+    border-left: 4px solid #ffc107 !important;
+    background-color: rgba(255, 193, 7, 0.1);
+}
+
+.debug-packet-medium {
+    border-left: 4px solid #0dcaf0 !important;
+}
+
+/* Log entry highlighting */
+#logs .log-critical {
+    background-color: rgba(220, 53, 69, 0.2);
+    border-left: 3px solid #dc3545;
+    padding-left: 5px;
+}
+
+#logs .log-warning {
+    background-color: rgba(255, 193, 7, 0.2);
+    border-left: 3px solid #ffc107;
+    padding-left: 5px;
+}
+
+#logs .log-motion {
+    background-color: rgba(220, 53, 69, 0.3);
+    border-left: 3px solid #dc3545;
+    padding-left: 5px;
+    font-weight: bold;
+}
+
+/* Scrollbar styling for dark logs */
+#logs::-webkit-scrollbar {
+    width: 8px;
+}
+
+#logs::-webkit-scrollbar-track {
+    background: #333;
+}
+
+#logs::-webkit-scrollbar-thumb {
+    background: #666;
+    border-radius: 4px;
+}
+
+#logs::-webkit-scrollbar-thumb:hover {
+    background: #888;
+}
+
+
+
+body {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 20px;
+}
+.packet-analysis {
+    background: #252526;
+    border-radius: 5px;
+}
+.tuya-details {
+    background: #2d2d30;
+}
+.dp-item {
+    background: #1e1e1e;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 3px;
+}
+.table-warning {
+    background-color: rgba(255, 193, 7, 0.1) !important;
+}
+.table-info {
+    background-color: rgba(13, 202, 240, 0.1) !important;
+}
+pre {
+    background: #000;
+    color: #9cdcfe;
+    padding: 10px;
+    border-radius: 3px;
+}
