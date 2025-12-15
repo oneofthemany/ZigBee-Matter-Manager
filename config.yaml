@@ -1,0 +1,80 @@
+database:
+  url: sqlite:///zigbee.db
+  path: zigbee.db
+
+mqtt:
+  base_topic: zigbee_ha
+  broker_host: 192.168.1.1
+  broker_port: 1883
+  username: mqtt
+  password: mqtt_P45Sw02d!$
+  qos: 1
+
+logging:
+  level: INFO
+  file: zigbee.log
+
+web:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+  secret_key: S$iTs4s3c2T$!
+
+zigbee:
+  port: /dev/ttyACM0
+  baudrate: 460800
+  flow_control: hardware
+
+  # Zigbee Network Settings
+  channel: 25
+  pan_id: A12B
+  extended_pan_id: [12, 139, etc]
+  # Network Key (32-character hex string or array of 16 bytes)
+  network_key: [162, 53, 36, 49, etc]
+  # Adapter Configuration
+  coordinator_type: ember
+  topology_scan_interval: 120
+
+  # -----------------------------------------------------------
+  # STABILITY CONFIGURATION (Validated)
+  # -----------------------------------------------------------
+  packet_buffer_count: 254         # Safe default
+  neighbour_table_size: 26         # Standard max neighbors
+  source_route_table_size: 32      # MUST BE >= 20 to pass validation
+  address_table_size: 16           # Standard size
+  multicast_table_size: 16         # Group messaging support
+  max_hops: 30                     # Network depth
+  indirect_tx_timeout: 7680        # Timeout for sleeping devices (7.6s)
+  aps_unicast_message_count: 10    # Conservative message limit
+
+
+  # Enhanced EZSP Configuration (Standard Profile)
+  # This is optimized for networks up to ~30 devices
+  #ezsp_config:
+  #  CONFIG_PACKET_BUFFER_COUNT: 254
+  #  CONFIG_NEIGHBOR_TABLE_SIZE: 26
+  #  CONFIG_ADDRESS_TABLE_SIZE: 16
+  #  CONFIG_MULTICAST_TABLE_SIZE: 16
+  #  CONFIG_BINDING_TABLE_SIZE: 32
+  #  CONFIG_APS_UNICAST_MESSAGE_COUNT: 20
+  #  CONFIG_SOURCE_ROUTE_TABLE_SIZE: 200
+  #  CONFIG_ROUTE_TABLE_SIZE: 16
+  #  CONFIG_MAX_HOPS: 30
+  #  CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
+
+   #For large networks (40+ devices), use these instead:
+  ezsp_config:
+    CONFIG_PACKET_BUFFER_COUNT: 254
+    CONFIG_NEIGHBOR_TABLE_SIZE: 26
+    CONFIG_ADDRESS_TABLE_SIZE: 32
+    CONFIG_MULTICAST_TABLE_SIZE: 16
+    CONFIG_BINDING_TABLE_SIZE: 32
+    CONFIG_APS_UNICAST_MESSAGE_COUNT: 32
+    CONFIG_SOURCE_ROUTE_TABLE_SIZE: 255
+    CONFIG_ROUTE_TABLE_SIZE: 32
+    CONFIG_MAX_HOPS: 30
+    CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
+    CONFIG_FRAGMENT_WINDOW_SIZE: 8
+    CONFIG_FRAGMENT_DELAY_MS: 50
+    CONFIG_BROADCAST_TABLE_SIZE: 15
+    CONFIG_RETRY_QUEUE_SIZE: 16
