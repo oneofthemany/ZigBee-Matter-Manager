@@ -319,6 +319,8 @@ class GroupManager:
         # Publish to Home Assistant
         await self._publish_group_discovery(group_id, group_info)
 
+        await self.publish_group_initial_state(group_id)
+
         logger.info(f"Created group {group_id} '{name}' with {len(devices)} devices")
 
         return {"success": True, "group": group_info}
@@ -488,10 +490,143 @@ class GroupManager:
 
         return {"success": True, "group": group}
 
+
+    async def _publish_group_state(self, group_id: int, state: Dict[str, Any]):
+        """
+        Args:
+            group_id: The group ID
+            state: Command that was executed (contains state, brightness, etc.)
+        """
+        if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
+            logger.warning(f"Cannot publish group {group_id} state - MQTT not available")
+            return
+
+        group = self.groups.get(group_id)
+        if not group:
+            logger.warning(f"Cannot publish state - group {group_id} not found")
+            return
+
+        # Generate safe name for MQTT topic (same as discovery)
+        safe_name = group['name'].replace(' ', '_').lower()
+        topic = f"group/{safe_name}"
+
+        # Build comprehensive state payload
+        # Start with base state
+        payload = {
+            "available": True  # Group is available if any member is available
+        }
+
+        # Add state (ON/OFF)
+        if 'state' in state:
+            payload["state"] = state["state"]
+        elif 'brightness' in state:
+            # If brightness command without explicit state, assume ON
+            payload["state"] = "ON"
+
+        # Add brightness if present (0-254 scale)
+        if "brightness" in state:
+            payload["brightness"] = int(state["brightness"])
+
+        # Add color_temp if present (mireds)
+        if "color_temp" in state:
+            payload["color_temp"] = int(state["color_temp"])
+
+        # Add color if present (XY or HS)
+        if "color" in state:
+            payload["color"] = state["color"]
+
+        # Publish to MQTT
+        import json
+        try:
+            await self.service.mqtt.publish(
+                topic,
+                json.dumps(payload),
+                qos=1,
+                retain=True  # Retain so HA gets state on restart
+            )
+            logger.info(f"📤 Published group {group_id} '{group['name']}' state: {payload}")
+        except Exception as e:
+            logger.error(f"Failed to publish group state: {e}")
+
+
+    async def _read_group_state(self, group_id: int) -> Dict[str, Any]:
+        """
+        Read actual state from group member devices.
+        """
+        if group_id not in self.groups:
+            return {}
+
+        group = self.groups[group_id]
+
+        # Try to read from first available device
+        for ieee in group['members']:
+            device = self.service.devices.get(ieee)
+            if not device:
+                continue
+
+            zdev = getattr(device, 'zigpy_dev', None)
+            if not zdev:
+                continue
+
+            state = {}
+
+            try:
+                # Find OnOff cluster
+                for endpoint_id, endpoint in zdev.endpoints.items():
+                    if endpoint_id == 0:
+                        continue
+
+                    # Read ON/OFF state
+                    if 0x0006 in endpoint.in_clusters:
+                        on_off_cluster = endpoint.in_clusters[0x0006]
+                        result = await on_off_cluster.read_attributes([0x0000])  # OnOff attribute
+                        if 0 in result[0]:
+                            state['state'] = "ON" if result[0][0] else "OFF"
+
+                    # Read brightness
+                    if 0x0008 in endpoint.in_clusters:
+                        level_cluster = endpoint.in_clusters[0x0008]
+                        result = await level_cluster.read_attributes([0x0000])  # CurrentLevel
+                        if 0 in result[0]:
+                            state['brightness'] = result[0][0]
+
+                    # Read color temp
+                    if 0x0300 in endpoint.in_clusters:
+                        color_cluster = endpoint.in_clusters[0x0300]
+                        result = await color_cluster.read_attributes([0x0007])  # ColorTemperatureMireds
+                        if 0 in result[0]:
+                            state['color_temp'] = result[0][0]
+
+                    # If we got some state, return it
+                    if state:
+                        logger.debug(f"Read state from {ieee}: {state}")
+                        return state
+
+            except Exception as e:
+                logger.debug(f"Failed to read state from {ieee}: {e}")
+                continue
+
+        # If we couldn't read from any device, return default
+        return {"state": "OFF", "available": True}
+
+
+    async def publish_group_initial_state(self, group_id: int):
+        """
+        Publish initial group state after creation.
+        Reads actual state from devices and publishes to MQTT.
+        """
+        state = await self._read_group_state(group_id)
+        if state:
+            await self._publish_group_state(group_id, state)
+
+
     async def control_group(self, group_id: int, command: Dict) -> Dict:
         """
         Control all devices in a group using Direct Cluster Commands.
         Prioritizes direct ZCL calls over MQTT wrappers for reliability.
+
+        IMPORTANT: This method now publishes group state to MQTT after execution,
+        which is required for Home Assistant to update the UI.
         """
         if group_id not in self.groups:
             return {"error": "Group not found"}
@@ -513,7 +648,6 @@ class GroupManager:
                 # Get Zigpy Device
                 zdev = getattr(device, 'zigpy_dev', None)
                 if not zdev:
-                    # Fallback if device is already a zigpy object
                     zdev = device if hasattr(device, 'endpoints') else None
 
                 if not zdev:
@@ -521,15 +655,10 @@ class GroupManager:
                     results.append(result)
                     continue
 
-                # --- FIND CLUSTERS ---
-                # We need to find the correct endpoint for the requested capability
-                ep = None
-                cluster = None
-
                 # Helper to find endpoint with specific cluster
                 def get_cluster(cluster_id):
                     for endpoint_id, endpoint in zdev.endpoints.items():
-                        if endpoint_id == 0: continue # Skip ZDO
+                        if endpoint_id == 0: continue
                         if cluster_id in endpoint.in_clusters:
                             return endpoint.in_clusters[cluster_id]
                     return None
@@ -569,7 +698,7 @@ class GroupManager:
                         result["success"] = True
 
                 # 4. COVERS (Blinds)
-                if 'cover_state' in command: # OPEN, CLOSE, STOP
+                if 'cover_state' in command:
                     cover_ctrl = get_cluster(0x0102)
                     if cover_ctrl:
                         action = command['cover_state'].upper()
@@ -581,14 +710,10 @@ class GroupManager:
                             await cover_ctrl.stop()
                         result["success"] = True
 
-                if 'position' in command: # 0-100
+                if 'position' in command:
                     cover_ctrl = get_cluster(0x0102)
                     if cover_ctrl:
                         pos = int(command['position'])
-                        # Invert logic often needed for Zigbee (0=Open vs 100=Open varies)
-                        # Standard ZCL: 0 = Open, 100 = Closed usually? Or Lift Percentage.
-                        # Usually 100 - pos if dealing with lift percentage where 100 is closed.
-                        # Let's assume 0-100 maps directly to lift percentage for now.
                         await cover_ctrl.go_to_lift_percentage(pos)
                         result["success"] = True
 
@@ -599,7 +724,6 @@ class GroupManager:
                 results.append(result)
                 logger.error(f"Error controlling {ieee}: {e}")
 
-        return {"success": True, "results": results}
 
     async def _publish_group_discovery(self, group_id: int, group: Dict):
         """
