@@ -384,10 +384,13 @@ class MQTTService:
 
             return False
 
-    async def publish_discovery(self, device_info: Dict[str, Any], configs: list):
+    async def publish_discovery(self, device_info: dict, configs: list):
         """
-        Publish Home Assistant discovery configurations.
-        This is the key method for HA integration.
+        Publish Home Assistant MQTT Discovery configurations.
+
+        Args:
+            device_info: Device metadata (ieee, friendly_name, model, etc.)
+            configs: List of discovery configs from handlers
         """
         if not self._connected or not self.client:
             logger.warning("Cannot publish discovery, not connected")
@@ -405,7 +408,7 @@ class MQTTService:
             # Discovery topic
             topic = f"homeassistant/{component}/{node_id}/{object_id}/config"
 
-            # Build payload
+            # Build payload from handler's config
             payload = entity['config'].copy()
 
             # Device info block (shared across all entities)
@@ -424,27 +427,33 @@ class MQTTService:
             state_topic = f"{self.base_topic}/{safe_name}"
             payload['state_topic'] = state_topic
 
-            # ------------------------------------------------------------------
-            # FIX: Replace placeholders in sub-topics for multi-endpoint entities
-            # ------------------------------------------------------------------
-            PLACEHOLDER = "STATE_TOPIC_PLACEHOLDER"
+            # Command topic - where HA sends commands
+            command_topic = f"{self.base_topic}/{safe_name}/set"
 
-            # Replace placeholder for brightness state topic
-            if payload.get('brightness_state_topic') == PLACEHOLDER:
-                payload['brightness_state_topic'] = state_topic
+            def replace_placeholders(obj, replacements):
+                """Recursively replace placeholder strings in nested dict/list."""
+                if isinstance(obj, dict):
+                    return {k: replace_placeholders(v, replacements) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [replace_placeholders(item, replacements) for item in obj]
+                elif isinstance(obj, str):
+                    return replacements.get(obj, obj)
+                return obj
 
-            # Replace placeholder for color temp state topic
-            if payload.get('color_temp_state_topic') == PLACEHOLDER:
-                payload['color_temp_state_topic'] = state_topic
-            # ------------------------------------------------------------------
+            # Define all placeholder mappings
+            placeholder_map = {
+                "STATE_TOPIC_PLACEHOLDER": state_topic,
+                "CMD_TOPIC_PLACEHOLDER": command_topic
+            }
+
+            # Replace all placeholders in the entire payload
+            payload = replace_placeholders(payload, placeholder_map)
 
             # ==================================================================
             # DUAL AVAILABILITY CONFIGURATION (ZHA Pattern)
             # ==================================================================
             # 1. Bridge/Gateway LWT - tells if the gateway is online
             # 2. Device availability - tells if the device itself is reachable
-            #
-            # Home Assistant will show device as available only if BOTH are true
             # ==================================================================
             payload['availability'] = [
                 {
@@ -464,43 +473,58 @@ class MQTTService:
             # Set availability mode to require ALL topics to be available
             payload['availability_mode'] = 'all'
 
-            # === CRITICAL: Set up command topics for controllable entities ===
-            command_topic = f"{self.base_topic}/{safe_name}/set"
+            # ==================================================================
+            # COMPONENT-SPECIFIC DEFAULTS
+            # ==================================================================
 
-            if component == "switch" or component == "light":
-                payload['command_topic'] = command_topic
+            if component in ("switch", "light"):
+                # Ensure command_topic is set
+                if 'command_topic' not in payload or not payload['command_topic']:
+                    payload['command_topic'] = command_topic
 
-                # Use JSON payloads ONLY if the handler hasn't provided custom ones
+                # Add default payloads if not provided by handler
                 if 'payload_on' not in payload:
-                    payload['payload_on'] = json.dumps({"command": "on", "state": "ON"})
+                    payload['payload_on'] = "ON"
                 if 'payload_off' not in payload:
-                    payload['payload_off'] = json.dumps({"command": "off", "state": "OFF"})
+                    payload['payload_off'] = "OFF"
 
+                # LIGHTS: Ensure brightness and color temp command configuration
                 if component == "light":
-                    # Brightness command template if supported
-                    if 'brightness' in payload.get('value_template', ''):
-                        payload['brightness_command_topic'] = command_topic
-                        payload['brightness_command_template'] = '{"command": "brightness", "value": {{ value }}}'
-                    # Color temp if supported
-                    if 'color_temp' in payload.get('value_template', ''):
-                        payload['color_temp_command_topic'] = command_topic
-                        payload['color_temp_command_template'] = '{"command": "color_temp", "value": {{ value }}}'
+                    # Brightness commands
+                    if 'brightness_value_template' in payload:
+                        if 'brightness_command_topic' not in payload:
+                            payload['brightness_command_topic'] = command_topic
+                        if 'brightness_command_template' not in payload:
+                            payload['brightness_command_template'] = '{"command": "brightness", "value": {{ value }}}'
+
+                    # Color temperature commands
+                    if 'color_temp_value_template' in payload:
+                        if 'color_temp_command_topic' not in payload:
+                            payload['color_temp_command_topic'] = command_topic
+                        if 'color_temp_command_template' not in payload:
+                            payload['color_temp_command_template'] = '{"command": "color_temp", "value": {{ value }}}'
 
             elif component == "cover":
                 payload['command_topic'] = command_topic
-                payload['payload_open'] = json.dumps({"command": "open"})
-                payload['payload_close'] = json.dumps({"command": "close"})
-                payload['payload_stop'] = json.dumps({"command": "stop"})
+                if 'payload_open' not in payload:
+                    payload['payload_open'] = json.dumps({"command": "open"})
+                if 'payload_close' not in payload:
+                    payload['payload_close'] = json.dumps({"command": "close"})
+                if 'payload_stop' not in payload:
+                    payload['payload_stop'] = json.dumps({"command": "stop"})
                 payload['set_position_topic'] = command_topic
-                payload['set_position_template'] = '{"command": "position", "value": {{ position }}}'
+                if 'set_position_template' not in payload:
+                    payload['set_position_template'] = '{"command": "position", "value": {{ position }}}'
 
             elif component == "climate":
                 # Temperature command
                 payload['temperature_command_topic'] = command_topic
-                payload['temperature_command_template'] = '{"command": "temperature", "value": {{ value }}}'
+                if 'temperature_command_template' not in payload:
+                    payload['temperature_command_template'] = '{"command": "temperature", "value": {{ value }}}'
                 # Mode command
                 payload['mode_command_topic'] = command_topic
-                payload['mode_command_template'] = '{"command": "system_mode", "value": "{{ value }}"}'
+                if 'mode_command_template' not in payload:
+                    payload['mode_command_template'] = '{"command": "system_mode", "value": "{{ value }}"}'
 
             elif component == "number":
                 payload['command_topic'] = command_topic
@@ -508,19 +532,18 @@ class MQTTService:
                 if 'command_template' not in payload:
                     payload['command_template'] = f'{{"command": "{object_id}", "value": {{{{ value }}}}}}'
 
-            # Clean placeholder
-            if payload.get('command_topic') == "CMD_TOPIC_PLACEHOLDER":
-                payload['command_topic'] = command_topic
-
-            # Publish discovery config (Retained!)
+            # ==================================================================
+            # PUBLISH DISCOVERY CONFIG
+            # ==================================================================
             try:
                 await self.client.publish(topic, json.dumps(payload), retain=True, qos=1)
-                logger.debug(f"Discovery: {topic}")
+                logger.debug(f"Discovery published: {topic}")
             except Exception as e:
                 logger.error(f"Failed to publish discovery for {object_id}: {e}")
 
         logger.info(f"[{ieee}] Published HA discovery for {len(configs)} entities")
         await self._log("INFO", f"Sent HA Discovery for {len(configs)} entities", ieee=ieee)
+
 
     async def remove_discovery(self, ieee: str, configs: list):
         """Remove HA discovery configs when device is removed."""
