@@ -3,7 +3,7 @@ Tuya-specific cluster handlers for Zigbee devices.
 Handles: Tuya radar/mmWave sensors, air quality sensors, and other Tuya proprietary devices.
 """
 import logging
-from typing import Any, Dict, Optional, Callable, List
+from typing import Any, Dict, Optional, Callable, List, Set
 from dataclasses import dataclass
 import asyncio
 import time
@@ -684,15 +684,48 @@ class TuyaClusterHandler(ClusterHandler):
 
     # --- HA DISCOVERY ---
     def get_discovery_configs(self) -> List[Dict]:
-        """Generate HA discovery configs."""
+        """
+        Generate Home Assistant discovery configs with device type filtering.
+        Following ZHA's pattern of filtering quirk attributes based on device context.
+        """
+
+        # STEP 1: Detect device type
+        device_type = TuyaDeviceTypeDetector.detect_device_type(self.device)
+        logger.info(f"[{self.device.ieee}] Tuya device type detected: {device_type}")
+
+        # STEP 2: Skip Tuya discovery for devices with dedicated handlers
+        # This prevents duplicate/conflicting entities
+
+        if device_type == 'cover':
+            # WindowCoveringHandler will publish proper cover discovery
+            logger.info(f"[{self.device.ieee}] Device is a cover - WindowCoveringHandler will publish discovery")
+            return []
+
+        if device_type == 'light':
+            # Check if device has dedicated light cluster handlers
+            if any(h.cluster_id in [0x0006, 0x0008, 0x0300] for h in self.device.handlers.values()):
+                logger.info(f"[{self.device.ieee}] Device has dedicated light clusters - skipping Tuya discovery")
+                return []
+
+        if device_type == 'thermostat':
+            # Check if device has ThermostatHandler
+            if any(h.cluster_id == 0x0201 for h in self.device.handlers.values()):
+                logger.info(f"[{self.device.ieee}] Device has thermostat cluster - skipping Tuya discovery")
+                return []
+
+        # STEP 3: Generate configs only for relevant Data Points
         configs = []
+        filtered_count = 0
+
         for dp_id, dp_def in self._dp_map.items():
             name = dp_def.name
 
-            # Filter out unknown/raw DPs if they sneak in
-            if not name or name.startswith("dp_"): continue
+            # Apply filtering based on device type
+            if not TuyaDPFilter.should_publish_dp(dp_id, name, device_type):
+                filtered_count += 1
+                continue
 
-            # 1. Binary Sensors
+            # 1. Binary Sensors (presence, occupancy)
             if name in ["presence", "occupancy"] or (name == "state" and dp_def.type == self.DP_TYPE_BOOL):
                 configs.append({
                     "component": "binary_sensor",
@@ -704,62 +737,66 @@ class TuyaClusterHandler(ClusterHandler):
                     }
                 })
 
-            # 2. Sensors
-            elif name in ["illuminance", "distance", "radar_state", "temperature", "humidity",
-                          "co2", "voc", "pm25", "formaldehyde", "battery", "flow"]:
-                cfg = {
-                    "name": name.replace("_", " ").title(),
-                    "value_template": f"{{{{ value_json.{name} }}}}"
-                }
-                if dp_def.unit: cfg["unit_of_measurement"] = dp_def.unit
-
-                if "illuminance" in name:
-                    cfg["device_class"] = "illuminance"
-                    cfg["state_class"] = "measurement"  # Add state_class for statistics
-                elif "temperature" in name: cfg["device_class"] = "temperature"
-                elif "humidity" in name: cfg["device_class"] = "humidity"
-                elif "battery" in name: cfg["device_class"] = "battery"
-                elif "co2" in name: cfg["device_class"] = "carbon_dioxide"
-
-                configs.append({
+            # 2. Sensors (numeric values)
+            elif dp_def.type in [self.DP_TYPE_VALUE, self.DP_TYPE_RAW] and name not in ["state", "mode", "distance"]:
+                config = {
                     "component": "sensor",
                     "object_id": name,
-                    "config": cfg
-                })
+                    "config": {
+                        "name": name.replace("_", " ").title(),
+                        "value_template": f"{{{{ value_json.{name} }}}}"
+                    }
+                }
 
+                # Add unit and device class
+                if dp_def.unit:
+                    config["config"]["unit_of_measurement"] = dp_def.unit
 
-            # 3. Numbers (Configuration)
+                # Device class mapping
+                if "temperature" in name:
+                    config["config"]["device_class"] = "temperature"
+                elif "humidity" in name:
+                    config["config"]["device_class"] = "humidity"
+                elif "illuminance" in name or "lux" in name:
+                    config["config"]["device_class"] = "illuminance"
+                elif "battery" in name:
+                    config["config"]["device_class"] = "battery"
+                elif "co2" in name:
+                    config["config"]["device_class"] = "carbon_dioxide"
+
+                configs.append(config)
+
+            # 3. Number entities (writable configuration parameters)
             elif name in ["radar_sensitivity", "presence_sensitivity", "keep_time",
-                          "detection_distance_min", "detection_distance_max", "fading_time",
-                          "countdown_1", "countdown_2", "countdown"]:
+                          "detection_distance_min", "detection_distance_max",
+                          "fading_time", "motion_sensitivity"]:
 
-                # Defaults
-                min_v, max_v, step = 0, 10, 1
+                # Determine appropriate range
+                min_val, max_val, step = 0, 10, 1
 
-                # Custom ranges
-                if "sensitivity" in name: min_v, max_v = 1, 10
-                if "keep_time" in name: min_v, max_v = 0, 3600
-                if "fading_time" in name: min_v, max_v = 0, 3600
                 if "distance" in name:
-                    min_v, max_v, step = 0, 10, 0.01
-                    # Special handling for ZY-M100 if we are using that map
-                    if self._dp_map == TUYA_RADAR_ZY_M100_DPS:
-                        max_v = 9.0
-                        step = 0.75
+                    min_val, max_val, step = 0, 10, 0.1
+                elif "time" in name:
+                    min_val, max_val = 0, 3600
 
                 configs.append({
                     "component": "number",
                     "object_id": name,
                     "config": {
                         "name": name.replace("_", " ").title(),
-                        "min": min_v, "max": max_v, "step": step,
+                        "min": min_val,
+                        "max": max_val,
+                        "step": step,
                         "mode": "box",
                         "value_template": f"{{{{ value_json.{name} }}}}",
-                        "command_topic": "CMD_TOPIC_PLACEHOLDER", # Core fills this
-                        "command_template": f'{{"tuya_{name}": {{{{ value }}}} }}'
+                        "command_template": f'{{{{ {{"tuya_{name}": value}} | tojson }}}}'
                     }
                 })
 
+        if filtered_count > 0:
+            logger.info(f"[{self.device.ieee}] Filtered out {filtered_count} non-relevant DPs for {device_type} device")
+
+        logger.info(f"[{self.device.ieee}] Generated {len(configs)} Tuya discovery configs (filtered for {device_type})")
         return configs
 
     # --- UI & CONFIGURATION EXPOSURE ---
@@ -809,6 +846,188 @@ class TuyaClusterHandler(ClusterHandler):
                 })
 
         return options
+
+# ============================================================================
+# Device Detection
+# ============================================================================
+
+# --- Device Type Detection Patterns ---
+COVER_MODELS = ['curtain', 'blind', 'shade', 'roller', 'shutter', 'awning', 'window_covering']
+SENSOR_MODELS = ['radar', 'mmwave', '24g', 'presence', 'motion', 'occupancy', 'zy-m100', 'human']
+LIGHT_MODELS = ['light', 'bulb', 'lamp', 'strip', 'spot', 'led']
+SWITCH_MODELS = ['switch', 'plug', 'socket', 'relay', 'outlet']
+THERMOSTAT_MODELS = ['trv', 'thermostat', 'valve', 'radiator']
+
+
+class TuyaDeviceTypeDetector:
+    """
+    Detects actual device type for Tuya devices.
+    Based on ZHA's multi-signal detection approach.
+    """
+
+    @staticmethod
+    def detect_device_type(device) -> str:
+        """
+        Detect primary device type using multiple signals.
+
+        Priority:
+        1. Standard Zigbee clusters (most reliable)
+        2. Model string patterns
+        3. Manufacturer string patterns
+        4. Cluster analysis
+
+        Returns:
+            One of: 'cover', 'sensor', 'light', 'switch', 'thermostat', 'unknown'
+        """
+        manufacturer = str(getattr(device.zigpy_dev, 'manufacturer', '')).lower()
+        model = str(getattr(device.zigpy_dev, 'model', '')).lower()
+
+        # Get all cluster IDs from all endpoints
+        cluster_ids = set()
+        for ep in device.zigpy_dev.endpoints.values():
+            if hasattr(ep, 'in_clusters'):
+                cluster_ids.update(ep.in_clusters.keys())
+
+        # SIGNAL 1: Standard Zigbee clusters (most reliable)
+        if 0x0102 in cluster_ids:
+            logger.debug(f"[{device.ieee}] Detected as COVER (has WindowCovering cluster 0x0102)")
+            return 'cover'
+
+        if 0x0201 in cluster_ids:
+            # Has thermostat cluster, but verify with model to avoid false positives
+            if any(term in model for term in THERMOSTAT_MODELS):
+                logger.debug(f"[{device.ieee}] Detected as THERMOSTAT (has cluster 0x0201 + model match)")
+                return 'thermostat'
+
+        if 0x0300 in cluster_ids:
+            logger.debug(f"[{device.ieee}] Detected as LIGHT (has Color Control cluster 0x0300)")
+            return 'light'
+
+        # SIGNAL 2: Model string patterns
+        for pattern in COVER_MODELS:
+            if pattern in model:
+                logger.debug(f"[{device.ieee}] Detected as COVER (model contains '{pattern}')")
+                return 'cover'
+
+        for pattern in SENSOR_MODELS:
+            if pattern in model or pattern in manufacturer:
+                # Sensors don't have OnOff + Level control (that would be lights)
+                if not (0x0006 in cluster_ids and 0x0008 in cluster_ids):
+                    logger.debug(f"[{device.ieee}] Detected as SENSOR (model/mfr contains '{pattern}')")
+                    return 'sensor'
+
+        for pattern in LIGHT_MODELS:
+            if pattern in model:
+                logger.debug(f"[{device.ieee}] Detected as LIGHT (model contains '{pattern}')")
+                return 'light'
+
+        for pattern in SWITCH_MODELS:
+            if pattern in model:
+                logger.debug(f"[{device.ieee}] Detected as SWITCH (model contains '{pattern}')")
+                return 'switch'
+
+        for pattern in THERMOSTAT_MODELS:
+            if pattern in model:
+                logger.debug(f"[{device.ieee}] Detected as THERMOSTAT (model contains '{pattern}')")
+                return 'thermostat'
+
+        # SIGNAL 3: Cluster analysis - devices with ONLY Basic + Tuya are sensors
+        # (using Tuya tunneling for complex sensor data)
+        functional_clusters = cluster_ids - {0x0000, 0xEF00, 0x0001, 0x0003}
+        if not functional_clusters:
+            logger.debug(f"[{device.ieee}] Detected as SENSOR (only Basic+Tuya clusters - tunneled sensor)")
+            return 'sensor'
+
+        logger.warning(f"[{device.ieee}] Could not determine device type, defaulting to 'unknown'")
+        logger.debug(f"[{device.ieee}] Clusters: {[f'0x{cid:04X}' for cid in cluster_ids]}")
+        return 'unknown'
+
+
+class TuyaDPFilter:
+    """
+    Filters Tuya Data Points based on device type.
+    Following ZHA's quirk filtering patterns.
+    """
+
+    # Data Point IDs relevant to each device type
+    COVER_DPS = {
+        1, 2, 3, 4, 5, 6, 7, 8,      # Position, control, calibration
+        10, 11, 12, 13,               # Control mode, direction, speed
+        101, 102, 103,                # Additional cover-specific
+    }
+
+    SENSOR_DPS = {
+        1, 2, 3, 4, 9, 10,           # State, sensitivity, distance, fading
+        101, 102, 103, 104, 105,     # Presence, illuminance, keep_time
+    }
+
+    LIGHT_DPS = {
+        1, 2, 3, 4, 5,               # State, brightness, color temp, color
+        20, 21, 22, 23, 24,          # Scene, mode
+    }
+
+    SWITCH_DPS = {
+        1, 2, 3, 4,                  # Channel states
+        9, 10, 11, 12,               # Countdown timers
+        101, 102, 103,               # Power monitoring
+    }
+
+    THERMOSTAT_DPS = {
+        1, 2, 3, 4, 16, 24, 27, 28, 40, 43,  # Temperature control
+        101, 102, 103, 104, 105,             # Schedule, modes
+    }
+
+    @classmethod
+    def get_allowed_dps(cls, device_type: str) -> Set[int]:
+        """
+        Get set of allowed Data Point IDs for a device type.
+
+        Returns:
+            Set of allowed DP IDs, or None to allow all
+        """
+        type_map = {
+            'cover': cls.COVER_DPS,
+            'sensor': cls.SENSOR_DPS,
+            'light': cls.LIGHT_DPS,
+            'switch': cls.SWITCH_DPS,
+            'thermostat': cls.THERMOSTAT_DPS,
+        }
+
+        return type_map.get(device_type, None)  # None = unknown, allow all
+
+    @classmethod
+    def should_publish_dp(cls, dp_id: int, dp_name: str, device_type: str) -> bool:
+        """
+        Determine if a Data Point should be published for this device type.
+
+        Args:
+            dp_id: Data Point ID
+            dp_name: Data Point name
+            device_type: Device type from TuyaDeviceTypeDetector
+
+        Returns:
+            True if DP should be published, False otherwise
+        """
+        # Never publish unknown/raw DPs
+        if not dp_name or dp_name.startswith('dp_'):
+            return False
+
+        # Get allowed DPs for this device type
+        allowed_dps = cls.get_allowed_dps(device_type)
+
+        # If no filtering (unknown device type), allow all
+        if allowed_dps is None:
+            return True
+
+        # Check if DP is in allowed set
+        is_allowed = dp_id in allowed_dps
+
+        if not is_allowed:
+            logger.debug(f"Filtering out DP{dp_id} ({dp_name}) - not relevant for {device_type} device")
+
+        return is_allowed
+
+
 
 
 # ============================================================
