@@ -384,20 +384,16 @@ class MQTTService:
 
             return False
 
-    async def publish_discovery(self, device_info: dict, configs: list):
+    async def publish_discovery(self, device_info: Dict[str, Any], configs: list):
         """
-        Publish Home Assistant MQTT Discovery configurations.
-
-        Args:
-            device_info: Device metadata (ieee, friendly_name, model, etc.)
-            configs: List of discovery configs from handlers
+        Publish Home Assistant discovery configurations.
+        Uses safe templates and ensures attribute presence.
         """
         if not self._connected or not self.client:
             logger.warning("Cannot publish discovery, not connected")
             return
 
         ieee = str(device_info['ieee'])
-        # HA uses node_id without colons
         node_id = ieee.replace(":", "")
         safe_name = device_info.get('safe_name', ieee)
 
@@ -408,7 +404,7 @@ class MQTTService:
             # Discovery topic
             topic = f"homeassistant/{component}/{node_id}/{object_id}/config"
 
-            # Build payload from handler's config
+            # Build payload
             payload = entity['config'].copy()
 
             # Device info block (shared across all entities)
@@ -427,34 +423,18 @@ class MQTTService:
             state_topic = f"{self.base_topic}/{safe_name}"
             payload['state_topic'] = state_topic
 
-            # Command topic - where HA sends commands
-            command_topic = f"{self.base_topic}/{safe_name}/set"
+            # Replace placeholder for brightness state topic
+            if payload.get('brightness_state_topic') == "STATE_TOPIC_PLACEHOLDER":
+                payload['brightness_state_topic'] = state_topic
 
-            def replace_placeholders(obj, replacements):
-                """Recursively replace placeholder strings in nested dict/list."""
-                if isinstance(obj, dict):
-                    return {k: replace_placeholders(v, replacements) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [replace_placeholders(item, replacements) for item in obj]
-                elif isinstance(obj, str):
-                    return replacements.get(obj, obj)
-                return obj
+            # Replace placeholder for color temp state topic
+            if payload.get('color_temp_state_topic') == "STATE_TOPIC_PLACEHOLDER":
+                payload['color_temp_state_topic'] = state_topic
 
-            # Define all placeholder mappings
-            placeholder_map = {
-                "STATE_TOPIC_PLACEHOLDER": state_topic,
-                "CMD_TOPIC_PLACEHOLDER": command_topic
-            }
-
-            # Replace all placeholders in the entire payload
-            payload = replace_placeholders(payload, placeholder_map)
-
-            # ==================================================================
-            # DUAL AVAILABILITY CONFIGURATION (ZHA Pattern)
-            # ==================================================================
-            # 1. Bridge/Gateway LWT - tells if the gateway is online
-            # 2. Device availability - tells if the device itself is reachable
-            # ==================================================================
+            # ===================================================================
+            # 1. SAFE AVAILABILITY CONFIGURATION
+            # ===================================================================
+            # Don't crash if 'available' key is missing from value_json
             payload['availability'] = [
                 {
                     # Bridge availability (gateway LWT)
@@ -463,87 +443,188 @@ class MQTTService:
                     "payload_not_available": "offline"
                 },
                 {
-                    # Device availability (based on last_seen)
+                    # Device availability - USE .get() WITH DEFAULT
                     "topic": state_topic,
-                    "value_template": "{{ 'online' if value_json.available else 'offline' }}",
+                    "value_template": "{{ 'online' if value_json.get('available', false) else 'offline' }}",
                     "payload_available": "online",
                     "payload_not_available": "offline"
                 }
             ]
-            # Set availability mode to require ALL topics to be available
             payload['availability_mode'] = 'all'
 
-            # ==================================================================
-            # COMPONENT-SPECIFIC DEFAULTS
-            # ==================================================================
+            # ===================================================================
+            # 2: SAFE VALUE TEMPLATES
+            # ===================================================================
+            # Rewrite any value_template that uses direct attribute access to use .get()
+            if 'value_template' in payload:
+                template = payload['value_template']
 
-            if component in ("switch", "light"):
-                # Ensure command_topic is set
-                if 'command_topic' not in payload or not payload['command_topic']:
-                    payload['command_topic'] = command_topic
+                # Replace patterns like {{ value_json.brightness_1 }} with safe versions
+                # This regex finds attribute access and wraps it in .get() with defaults
+                import re
 
-                # Add default payloads if not provided by handler
+                # Pattern: value_json.attribute_name
+                # Replace with: value_json.get('attribute_name', DEFAULT)
+                def make_safe_template(match):
+                    attr = match.group(1)
+
+                    # Determine appropriate default based on attribute name
+                    if any(x in attr for x in ['brightness', 'level']):
+                        default = "0"
+                    elif any(x in attr for x in ['voltage', 'power', 'current', 'energy']):
+                        default = "0"
+                    elif any(x in attr for x in ['temperature', 'humidity', 'pressure']):
+                        default = "0"
+                    elif any(x in attr for x in ['state', 'system_mode']):
+                        default = "'OFF'"
+                    elif any(x in attr for x in ['is_open', 'is_closed', 'contact', 'motion', 'occupancy', 'presence']):
+                        default = "false"
+                    elif 'color_temp' in attr:
+                        default = "250"
+                    else:
+                        default = "none"
+
+                    return f"value_json.get('{attr}', {default})"
+
+                # Apply the transformation
+                safe_template = re.sub(r'value_json\.([a-z_0-9]+)', make_safe_template, template)
+                payload['value_template'] = safe_template
+                logger.debug(f"Converted template: {template} -> {safe_template}")
+
+            # Same fix for brightness_value_template
+            if 'brightness_value_template' in payload:
+                template = payload['brightness_value_template']
+                import re
+                safe_template = re.sub(r'value_json\.([a-z_0-9]+)', lambda m: f"value_json.get('{m.group(1)}', 0)", template)
+                payload['brightness_value_template'] = safe_template
+
+            # Same fix for color_temp_value_template
+            if 'color_temp_value_template' in payload:
+                template = payload['color_temp_value_template']
+                import re
+                safe_template = re.sub(r'value_json\.([a-z_0-9]+)', lambda m: f"value_json.get('{m.group(1)}', 250)", template)
+                payload['color_temp_value_template'] = safe_template
+
+            # ===================================================================
+            # 3: SET UP COMMAND TOPICS
+            # ===================================================================
+            command_topic = f"{self.base_topic}/{safe_name}/set"
+
+            if component == "switch" or component == "light":
+                payload['command_topic'] = command_topic
+
                 if 'payload_on' not in payload:
-                    payload['payload_on'] = "ON"
+                    payload['payload_on'] = json.dumps({"command": "on", "state": "ON"})
                 if 'payload_off' not in payload:
-                    payload['payload_off'] = "OFF"
+                    payload['payload_off'] = json.dumps({"command": "off", "state": "OFF"})
 
-                # LIGHTS: Ensure brightness and color temp command configuration
                 if component == "light":
-                    # Brightness commands
-                    if 'brightness_value_template' in payload:
-                        if 'brightness_command_topic' not in payload:
-                            payload['brightness_command_topic'] = command_topic
-                        if 'brightness_command_template' not in payload:
-                            payload['brightness_command_template'] = '{"command": "brightness", "value": {{ value }}}'
-
-                    # Color temperature commands
-                    if 'color_temp_value_template' in payload:
-                        if 'color_temp_command_topic' not in payload:
-                            payload['color_temp_command_topic'] = command_topic
-                        if 'color_temp_command_template' not in payload:
-                            payload['color_temp_command_template'] = '{"command": "color_temp", "value": {{ value }}}'
+                    # Brightness command template if supported
+                    if 'brightness' in payload:
+                        payload['brightness_command_topic'] = command_topic
+                        payload['brightness_command_template'] = '{"command": "brightness", "value": {{ value }}}'
+                    # Color temp if supported
+                    if 'color_mode' in payload:
+                        payload['color_temp_command_topic'] = command_topic
+                        payload['color_temp_command_template'] = '{"command": "color_temp", "value": {{ value }}}'
 
             elif component == "cover":
                 payload['command_topic'] = command_topic
-                if 'payload_open' not in payload:
-                    payload['payload_open'] = json.dumps({"command": "open"})
-                if 'payload_close' not in payload:
-                    payload['payload_close'] = json.dumps({"command": "close"})
-                if 'payload_stop' not in payload:
-                    payload['payload_stop'] = json.dumps({"command": "stop"})
-                payload['set_position_topic'] = command_topic
-                if 'set_position_template' not in payload:
-                    payload['set_position_template'] = '{"command": "position", "value": {{ position }}}'
+                payload['payload_open'] = json.dumps({"command": "open"})
+                payload['payload_close'] = json.dumps({"command": "close"})
+                payload['payload_stop'] = json.dumps({"command": "stop"})
 
             elif component == "climate":
-                # Temperature command
                 payload['temperature_command_topic'] = command_topic
-                if 'temperature_command_template' not in payload:
-                    payload['temperature_command_template'] = '{"command": "temperature", "value": {{ value }}}'
-                # Mode command
                 payload['mode_command_topic'] = command_topic
-                if 'mode_command_template' not in payload:
-                    payload['mode_command_template'] = '{"command": "system_mode", "value": "{{ value }}"}'
 
             elif component == "number":
                 payload['command_topic'] = command_topic
-                # Use the existing command_template if present, otherwise create one
-                if 'command_template' not in payload:
-                    payload['command_template'] = f'{{"command": "{object_id}", "value": {{{{ value }}}}}}'
 
-            # ==================================================================
-            # PUBLISH DISCOVERY CONFIG
-            # ==================================================================
+            # Clean placeholder
+            if payload.get('command_topic') == "CMD_TOPIC_PLACEHOLDER":
+                payload['command_topic'] = command_topic
+
+            # Publish discovery config
             try:
                 await self.client.publish(topic, json.dumps(payload), retain=True, qos=1)
-                logger.debug(f"Discovery published: {topic}")
+                logger.debug(f"Discovery: {topic}")
             except Exception as e:
                 logger.error(f"Failed to publish discovery for {object_id}: {e}")
 
         logger.info(f"[{ieee}] Published HA discovery for {len(configs)} entities")
-        await self._log("INFO", f"Sent HA Discovery for {len(configs)} entities", ieee=ieee)
 
+
+
+    def publish_state_update_with_required_attributes(device, mqtt_service):
+        """
+        When publishing state updates, ensure ALL attributes referenced in
+        discovery configs are present, even if null/default.
+
+        This is CRITICAL - it's not enough to just fix templates, you must
+        also ensure the state payload always contains the expected keys.
+        """
+        state_payload = device.state.copy()
+
+        # ALWAYS include 'available' key (used in availability template)
+        if 'available' not in state_payload:
+            state_payload['available'] = device.is_available()
+
+        # Get device capabilities to know what attributes should exist
+        caps = device.capabilities
+
+        # For lights, always include state
+        if caps.is_light or caps.is_switch:
+            for ep_id in device.endpoints.keys():
+                if ep_id == 0:
+                    continue
+                state_key = f"state_{ep_id}"
+                if state_key not in state_payload:
+                    state_payload[state_key] = "OFF"
+
+                # If light supports brightness, always include it
+                if caps.supports_brightness:
+                    bright_key = f"brightness_{ep_id}"
+                    if bright_key not in state_payload:
+                        state_payload[bright_key] = 0
+
+                # If light supports color temp, always include it
+                if caps.supports_color_temp:
+                    temp_key = f"color_temp_mireds"
+                    if temp_key not in state_payload:
+                        state_payload[temp_key] = 250
+
+        # For sensors, always include sensor values
+        if caps.is_temperature_sensor and 'temperature' not in state_payload:
+            state_payload['temperature'] = None
+
+        if caps.is_humidity_sensor and 'humidity' not in state_payload:
+            state_payload['humidity'] = None
+
+        if caps.is_contact_sensor:
+            for ep_id in device.endpoints.keys():
+                if ep_id == 0:
+                    continue
+                contact_key = f"is_open_{ep_id}"
+                if contact_key not in state_payload:
+                    state_payload[contact_key] = False
+
+        # For power monitoring devices
+        if caps.supports_power_monitoring:
+            for ep_id in device.endpoints.keys():
+                if ep_id == 0:
+                    continue
+                for attr in ['power', 'voltage', 'current']:
+                    key = f"{attr}_{ep_id}"
+                    if key not in state_payload:
+                        state_payload[key] = 0
+
+        # Now publish with all required attributes
+        mqtt_service.publish(
+            device.safe_name,
+            json.dumps(state_payload),
+            qos=0
+        )
 
     async def remove_discovery(self, ieee: str, configs: list):
         """Remove HA discovery configs when device is removed."""
