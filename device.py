@@ -128,9 +128,15 @@ class ZHADevice:
                 keys_to_remove.append(key)
 
         if keys_to_remove:
+            logger.info(f"[{self.ieee}] 🧹 SANITIZING STATE: Removing unsupported keys: {keys_to_remove}")
             for key in keys_to_remove:
                 del self.state[key]
-            # logger.debug(f"[{self.ieee}] Purged invalid state keys: {keys_to_remove}")
+
+            # Sync back to cache immediately if we purged something
+            if hasattr(self.service, 'state_cache'):
+                self.service.state_cache[self.ieee] = self.state.copy()
+                self.service._cache_dirty = True
+                logger.info(f"[{self.ieee}] 💾 Cache dirty flagged after sanitization")
 
     def _schedule_basic_info_query(self):
         """Schedule a background task to query basic info."""
@@ -240,20 +246,22 @@ class ZHADevice:
             if self.zigpy_dev.manufacturer and ('manufacturer' not in self.state or self.state['manufacturer'] == 'Unknown'):
                 self.state['manufacturer'] = str(self.zigpy_dev.manufacturer)
                 self.manufacturer = self.zigpy_dev.manufacturer
+                logger.info(f"[{self.ieee}] 💉 Injected missing Manufacturer: {self.manufacturer}")
 
             if self.zigpy_dev.model and ('model' not in self.state or self.state['model'] == 'Unknown'):
                 self.state['model'] = str(self.zigpy_dev.model)
                 self.model = self.zigpy_dev.model
+                logger.info(f"[{self.ieee}] 💉 Injected missing Model: {self.model}")
 
             # 3. PURGE: Aggressively remove fields that don't belong
             self.sanitize_state()
 
             # 4. SYNC BACK: CRITICAL STEP
             # Update the Service's cache with our now-clean state.
-            # This ensures the file on disk gets overwritten with clean data on the next save.
             if hasattr(self.service, 'state_cache'):
                 self.service.state_cache[self.ieee] = self.state.copy()
                 self.service._cache_dirty = True
+                # logger.debug(f"[{self.ieee}] Cache synced after restore")
 
             # Restore last_seen
             if 'last_seen' in cached_state:
