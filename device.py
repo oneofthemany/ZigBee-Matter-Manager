@@ -339,8 +339,6 @@ class ZHADevice:
                 changed[k] = v
 
         # --- INTELLIGENT STATE MERGING (FIX for "Unknown" states in HA) ---
-        # If 'state' or 'on' is updated, we merge related attributes (brightness, color)
-        # so HA gets a complete picture and doesn't mark them unknown.
         if ('state' in data or 'on' in data) and self.capabilities.has_capability('light'):
             if 'brightness' in self.state and 'brightness' not in data:
                 changed['brightness'] = self.state['brightness']
@@ -406,10 +404,14 @@ class ZHADevice:
             return False
 
         # 3. Check for Green Power Proxy (0x0021) - Indicates Mains
-        # Green Power Proxies must be always-on devices.
-        for ep in self.zigpy_dev.endpoints.values():
-            if 0x0021 in ep.in_clusters or 0x0021 in ep.out_clusters:
-                return False
+        # Skip ZDO (EP0) to avoid 'No such in_clusters ZDO command' error
+        try:
+            for ep_id, ep in self.zigpy_dev.endpoints.items():
+                if ep_id == 0: continue # SKIP ZDO
+                if 0x0021 in ep.in_clusters or 0x0021 in ep.out_clusters:
+                    return False
+        except Exception:
+            pass # Safety catch for iteration issues
 
         # 4. Fallback for End Devices (Assume Battery unless proven otherwise)
         if "lumi.switch" in str(self.model).lower() and "neutral" in str(self.model).lower():
