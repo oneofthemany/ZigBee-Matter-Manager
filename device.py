@@ -180,6 +180,18 @@ class ZHADevice:
             return {"error": "Capabilities not initialized", "capabilities": [], "clusters": []}
         return self.capabilities.get_info()
 
+    def get_details(self) -> Dict[str, Any]:
+        """
+        Get device details.
+        Required by handlers (like Tuya) for logging or logic branching.
+        """
+        return {
+            "ieee": self.ieee,
+            "manufacturer": str(self.manufacturer) if self.manufacturer else "Unknown",
+            "model": str(self.model) if self.model else "Unknown",
+            "quirk": self.quirk_name
+        }
+
     def _identify_handlers(self):
         """Scan device endpoints and attach appropriate cluster handlers."""
         self.handlers.clear()
@@ -258,6 +270,7 @@ class ZHADevice:
 
             # 4. SYNC BACK: CRITICAL STEP
             # Update the Service's cache with our now-clean state.
+            # This ensures the file on disk gets overwritten with clean data on the next save.
             if hasattr(self.service, 'state_cache'):
                 self.service.state_cache[self.ieee] = self.state.copy()
                 self.service._cache_dirty = True
