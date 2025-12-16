@@ -7,13 +7,13 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional, List
 
-
 # Import the registry from handlers package
-from handlers.base import HANDLER_REGISTRY
 from error_handler import with_retries, CommandWrapper
 from device_capabilities import DeviceCapabilities
+from zigpy.zcl.clusters.general import Basic
 
 # Import handlers to trigger registration decorators
+from handlers.base import HANDLER_REGISTRY
 from handlers.security import *
 from handlers.basic import *
 from handlers.switches import *
@@ -61,7 +61,7 @@ class ZHADevice:
         # User preferences for specific endpoints (loaded from settings)
         self._preferred_endpoints: Dict[str, int] = {}
 
-        # ADD THIS: Command wrapper for resilient operations
+        # Command wrapper for resilient operations
         self._cmd_wrapper = None  # Will be initialized after device is ready
 
         # Check if quirk is applied
@@ -71,8 +71,23 @@ class ZHADevice:
         # Identify and attach handlers
         self._identify_handlers()
 
-        from device_capabilities import DeviceCapabilities
+        # Initialize Capabilities Logic (The new robust implementation)
         self.capabilities = DeviceCapabilities(self)
+
+        # Initialize basic info from Zigpy device, default to None if missing
+        self.manufacturer = zigpy_dev.manufacturer
+        self.model = zigpy_dev.model
+
+        # --- FIX 2: Ensure Manufacturer/Model are in self.state for the cache ---
+        if self.manufacturer:
+            self.state["manufacturer"] = self.manufacturer
+        else:
+            self.state["manufacturer"] = "Unknown"
+
+        if self.model:
+            self.state["model"] = self.model
+        else:
+            self.state["model"] = "Unknown"
 
         # Initialize command wrapper
         try:
@@ -86,17 +101,51 @@ class ZHADevice:
             if 'preferred_endpoints' in settings:
                 self._preferred_endpoints = settings['preferred_endpoints']
 
+        # Robustly fetch Manufacturer/Model if missing on startup
+        if self.manufacturer is None or self.model is None:
+            self._schedule_basic_info_query()
+
         logger.info(f"[{self.ieee}] Device wrapper created - "
                     f"Model: {zigpy_dev.model}, Manufacturer: {zigpy_dev.manufacturer}, "
                     f"Quirk: {self.quirk_name}")
 
+    def _schedule_basic_info_query(self):
+        """Schedule a background task to query basic info."""
+        asyncio.create_task(self._query_basic_info())
+
+    async def _query_basic_info(self):
+        """Attempts to query the Basic cluster for manufacturer/model."""
+        try:
+            for ep_id, ep in self.zigpy_dev.endpoints.items():
+                if ep_id == 0: continue
+                if Basic.cluster_id in ep.in_clusters:
+                    # Attr 0x0004=Manuf, 0x0005=Model
+                    results = await ep.basic.read_attributes([0x0004, 0x0005])
+
+                    updates = {}
+                    if 0x0004 in results[0]:
+                        self.manufacturer = results[0][0x0004]
+                        self.zigpy_dev.manufacturer = self.manufacturer
+                        updates["manufacturer"] = self.manufacturer
+
+                    if 0x0005 in results[0]:
+                        self.model = results[0][0x0005]
+                        self.zigpy_dev.model = self.model
+                        updates["model"] = self.model
+
+                    if updates:
+                        logger.info(f"[{self.ieee}] Resolved Info: {self.manufacturer} / {self.model}")
+                        # Re-detect capabilities in case quirks apply now
+                        self.capabilities._detect_capabilities()
+                        # Update state so cache gets the new info
+                        self.update_state(updates)
+                    break
+        except Exception as e:
+            logger.warning(f"[{self.ieee}] Failed basic info query: {e}")
 
     def get_capabilities_info(self) -> Dict[str, Any]:
         """
         Get device capabilities information for debugging/UI display.
-
-        Returns:
-            Dictionary containing capabilities, clusters, and allowed fields
         """
         if not hasattr(self, 'capabilities'):
             return {
@@ -179,8 +228,8 @@ class ZHADevice:
                             self.handlers[cid] = handler
 
                         direction = "Input/Server" if is_server else "Output/Client"
-                        logger.info(f"[{self.ieee}] Attached {handler_cls.__name__} "
-                                    f"for endpoint {ep_id}, {direction} cluster 0x{cid:04x}")
+                        logger.debug(f"[{self.ieee}] Attached {handler_cls.__name__} "
+                                     f"for endpoint {ep_id}, {direction} cluster 0x{cid:04x}")
                     except Exception as e:
                         logger.error(f"[{self.ieee}] Failed to attach handler for "
                                      f"endpoint {ep_id}, cluster 0x{cid:04x}: {e}")
@@ -192,6 +241,10 @@ class ZHADevice:
             # Process output clusters (Client side - device sends commands to us)
             for cluster in ep.out_clusters.values():
                 attach_handler(cluster, is_server=False)
+
+        # Re-detect capabilities after handlers (and potentially info) are processed
+        if hasattr(self, 'capabilities'):
+            self.capabilities._detect_capabilities()
 
     def restore_state(self, cached_state: Dict[str, Any]):
         """
@@ -210,7 +263,35 @@ class ZHADevice:
                 self._available = self.is_available()
 
                 logger.debug(f"[{self.ieee}] Restored last_seen={self.last_seen}, "
-                           f"available={self._available}")
+                             f"available={self._available}")
+
+    def get_state_cache_entry(self) -> Dict[str, Any]:
+        """
+        Generates the clean dictionary for device_states_cache.json.
+        Uses capability filtering and robust manufacturer defaults.
+        """
+        # 1. Base Info
+        entry = {
+            "last_seen": int(self.last_seen), # already float seconds or ms
+            "available": self.available,
+            "ieee": self.ieee,
+            "nwk": str(self.zigpy_dev.nwk),
+            "lqi": self.state.get("lqi", 0)
+        }
+
+        # 2. Robust Manufacturer/Model
+        manuf = self.manufacturer or self.zigpy_dev.manufacturer
+        model = self.model or self.zigpy_dev.model
+
+        entry["manufacturer"] = manuf if manuf else "Unknown"
+        entry["model"] = model if model else "Unknown"
+
+        # 3. Clean State Data
+        # We re-filter here just to be safe against any legacy state pollution
+        clean_state = self.capabilities.filter_state_update(self.state)
+        entry.update(clean_state)
+
+        return entry
 
     def check_availability_change(self) -> bool:
         """
@@ -248,12 +329,17 @@ class ZHADevice:
         Update device state and notify the service.
         Includes smart duplicate detection logic and capability filtering.
         """
-        # === CAPABILITY FILTERING ===
+        # === FIX 1: CAPABILITY FILTERING ===
+        # This prevents invalid attributes (like occupancy on a bulb) from polluting the state
         if hasattr(self, 'capabilities'):
             original_count = len(data)
             data = self.capabilities.filter_state_update(data)
             if len(data) < original_count:
-                logger.debug(f"[{self.ieee}] Capability filter removed {original_count - len(data)} fields")
+                # logger.debug(f"[{self.ieee}] Capability filter removed {original_count - len(data)} fields")
+                pass
+
+        if not data:
+            return
 
         changed = {}
         duplicates_detected = []
@@ -274,8 +360,7 @@ class ZHADevice:
                     if k in self._preferred_endpoints:
                         preferred_ep = self._preferred_endpoints[k]
                         if endpoint_id != preferred_ep:
-                            logger.debug(
-                                f"[{self.ieee}] Ignoring {k}={v} from EP{endpoint_id} (Preferred: EP{preferred_ep})")
+                            # logger.debug(f"[{self.ieee}] Ignoring {k}={v} from EP{endpoint_id} (Preferred: EP{preferred_ep})")
                             continue  # SKIP this update
 
                     # 2. Heuristic: Outlier Detection (The "Smart" part)
@@ -597,41 +682,6 @@ class ZHADevice:
 
         return commands
 
-
-    def check_availability_change(self) -> bool:
-        """
-        Check if availability state has changed (e.g., Online -> Offline).
-        Called periodically by the Availability Watchdog in Core.
-        """
-        # 1. Calculate current status based on time
-        is_now_available = self.is_available()
-
-        # 2. Check if it differs from our cached status
-        if is_now_available != self._available:
-            self._available = is_now_available
-
-            status_str = "Online" if is_now_available else "Offline"
-            logger.info(f"[{self.ieee}] Availability changed to {status_str}")
-
-            # 3. Force an update notification to Core/MQTT
-            # We pass an empty state update, but handle_device_update will
-            # re-read .is_available() and publish the new status.
-            self.service.handle_device_update(self, {})
-
-            return True
-
-        return False
-
-    def update_last_seen(self):
-        """Update the last_seen timestamp to now."""
-        self.last_seen = int(time.time() * 1000)
-        self.state['last_seen'] = self.last_seen
-        # Mark as available immediately when we hear from it
-        if not self._available:
-            self._available = True
-            self.service.handle_device_update(self, {})
-
-    # ADD THIS DECORATOR:
     @with_retries(max_retries=3, backoff_base=1.5, timeout=10.0)
     async def send_command(self, command: str, value: Any = None, endpoint_id: Optional[int] = None) -> Any:
         """
@@ -679,7 +729,7 @@ class ZHADevice:
                 await handler.set_heating_setpoint(float(value))
                 return True
 
-        # --- YSTEM MODE HANDLING ---
+        # --- SYSTEM MODE HANDLING ---
         elif command == 'system_mode' and value is not None:
             handler = get_handler(0x0201)
             if handler:
