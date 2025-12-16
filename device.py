@@ -78,7 +78,7 @@ class ZHADevice:
         self.manufacturer = zigpy_dev.manufacturer
         self.model = zigpy_dev.model
 
-        # --- FIX 2: Ensure Manufacturer/Model are in self.state for the cache ---
+        # --- Ensure Manufacturer/Model are in self.state for the cache ---
         if self.manufacturer:
             self.state["manufacturer"] = self.manufacturer
         else:
