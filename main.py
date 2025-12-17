@@ -26,6 +26,8 @@ from mqtt import MQTTService
 from handlers.zigbee_debug import get_debugger
 from json_helpers import prepare_for_json, safe_json_dumps
 from groups import GroupManager
+from mqtt_explorer import MQTTExplorer
+
 
 # ============================================================================
 # LOGGING CONFIGURATION (NON-BLOCKING)
@@ -266,6 +268,19 @@ async def lifespan(app: FastAPI):
         logger.info("MQTT connected")
     except Exception as e:
         logger.warning(f"MQTT connection failed: {e}")
+
+
+    # Initialize MQTT Explorer
+    mqtt_service.mqtt_explorer = MQTTExplorer(mqtt_service, max_messages=1000)
+    logger.info("MQTT Explorer initialized")
+
+    # Register WebSocket callback
+    async def mqtt_explorer_callback(message_record):
+        await manager.broadcast({
+            "type": "mqtt_message",
+            "payload": message_record
+        })
+    mqtt_service.mqtt_explorer.add_callback(mqtt_explorer_callback)
 
     # Start Zigbee service (existing code)
     network_key = get_conf('zigbee', 'network_key', None)
@@ -739,6 +754,152 @@ async def get_performance_metrics():
     except Exception as e:
         return {"error": str(e)}
 
+
+# ============================================================================
+# MQTT EXPLORER API ENDPOINTS
+# ============================================================================
+
+@app.post("/api/mqtt_explorer/start")
+async def start_mqtt_explorer():
+    """Start MQTT Explorer monitoring."""
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            success = await mqtt_service.mqtt_explorer.start_monitoring()
+            return {"success": success, "message": "Monitoring started" if success else "Already monitoring or MQTT not connected"}
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to start MQTT Explorer: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/mqtt_explorer/stop")
+async def stop_mqtt_explorer():
+    """Stop MQTT Explorer monitoring."""
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            await mqtt_service.mqtt_explorer.stop_monitoring()
+            return {"success": True, "message": "Monitoring stopped"}
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to stop MQTT Explorer: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/mqtt_explorer/messages")
+async def get_mqtt_explorer_messages(
+        topic: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 100
+):
+    """
+    Get MQTT messages with optional filtering.
+
+    Query parameters:
+        topic: Filter by topic pattern (supports MQTT wildcards)
+        search: Search in topic or payload
+        limit: Maximum messages to return (default 100)
+    """
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            messages = mqtt_service.mqtt_explorer.get_messages(
+                topic_filter=topic,
+                search=search,
+                limit=limit
+            )
+            return {"messages": messages}
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to get MQTT Explorer messages: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/mqtt_explorer/topics")
+async def get_mqtt_explorer_topics():
+    """Get all unique topics seen by MQTT Explorer."""
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            topics = mqtt_service.mqtt_explorer.get_topics()
+            return {"topics": topics}
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to get MQTT Explorer topics: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/mqtt_explorer/stats")
+async def get_mqtt_explorer_stats():
+    """Get MQTT Explorer statistics."""
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            stats = mqtt_service.mqtt_explorer.get_stats()
+            return stats
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to get MQTT Explorer stats: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/mqtt_explorer/clear")
+async def clear_mqtt_explorer():
+    """Clear all MQTT Explorer messages."""
+    try:
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            mqtt_service.mqtt_explorer.clear_messages()
+            return {"success": True, "message": "Messages cleared"}
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to clear MQTT Explorer: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/mqtt_explorer/publish")
+async def mqtt_explorer_publish(request: dict):
+    """
+    Publish a test message through MQTT.
+
+    Body:
+        topic: MQTT topic
+        payload: Message payload
+        qos: Quality of Service (0, 1, or 2)
+        retain: Whether to retain message (default false)
+    """
+    try:
+        topic = request.get("topic")
+        payload = request.get("payload", "")
+        qos = request.get("qos", 0)
+        retain = request.get("retain", False)
+
+        if not topic:
+            return {"error": "Topic required"}
+
+        if hasattr(mqtt_service, 'mqtt_explorer'):
+            success = await mqtt_service.mqtt_explorer.publish_test_message(
+                topic=topic,
+                payload=payload,
+                qos=qos,
+                retain=retain
+            )
+            return {
+                "success": success,
+                "message": "Message published" if success else "Publish failed"
+            }
+        return {"error": "MQTT Explorer not available"}
+    except Exception as e:
+        logger.error(f"Failed to publish via MQTT Explorer: {e}")
+        return {"error": str(e)}
+
+
+# ============================================================================
+# MQTT EXPLORER WEBSOCKET NOTIFICATIONS
+# Add this handler to the websocket endpoint to broadcast MQTT messages
+# ============================================================================
+
+async def mqtt_explorer_callback(message_record):
+    """Callback for broadcasting MQTT Explorer messages to WebSocket clients."""
+    await manager.broadcast({
+        "type": "mqtt_message",
+        "payload": message_record
+    })
 
 # ============================================================================
 # GROUPS API ENDPOINTS

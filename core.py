@@ -841,10 +841,44 @@ class ZigbeeService:
                 "manufacturer": str(zdev.zigpy_dev.manufacturer)
             }
 
+            # Publish discovery configs
             await self.mqtt.publish_discovery(device_info, configs)
-            logger.info(f"[{ieee}] Announced to Home Assistant (Topic: {safe_name})")
+            logger.info(f"[{ieee}] Published HA discovery")
+
+            # ==================================================================
+            # PUBLISH INITIAL STATE (CRITICAL FOR AVAILABILITY)
+            # ==================================================================
+            try:
+                from json_helpers import sanitise_device_state
+
+                # Build initial state from device's current state
+                initial_state = zdev.state.copy()
+                initial_state['available'] = zdev.is_available()
+                initial_state['lqi'] = getattr(zdev.zigpy_dev, 'lqi', 0) or 0
+
+                # Sanitize for JSON serialization
+                safe_state = sanitise_device_state(initial_state)
+
+                # Publish to device state topic with retain=True
+                import json
+                await self.mqtt.publish(
+                    safe_name,  # Topic: zigbee_ha/Lamp - Living
+                    json.dumps(safe_state),
+                    ieee=ieee,
+                    qos=1,
+                    retain=True
+                )
+                logger.info(f"[{ieee}] Published initial state: available={initial_state['available']}, keys={list(safe_state.keys())}")
+
+            except Exception as e:
+                logger.error(f"[{ieee}] Failed to publish initial state: {e}")
+                import traceback
+                traceback.print_exc()
+
         except Exception as e:
             logger.error(f"[{ieee}] Failed to announce: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def announce_all_devices(self):
         """

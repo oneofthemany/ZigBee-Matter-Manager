@@ -102,6 +102,15 @@ export function initWS() {
                     const statusData = msg.data || msg.payload;
                     updateHAStatus(statusData ? statusData.status : 'unknown');
                     break;
+
+                case "mqtt_message":
+                    if (msg.payload) {
+                        handleMQTTMessage(msg.payload);
+                    }
+                    break;
+
+                default:
+                    console.debug('Unknown WS message type:', msg.type);
             }
         } catch (e) {
             console.error("WS Error:", e);

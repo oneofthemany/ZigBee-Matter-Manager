@@ -10,6 +10,8 @@ import { updateLastSeenTimes } from './utils.js';
 import { initWS } from './websocket.js';
 import { fetchAllDevices } from './devices.js';
 import { initGroups } from './groups.js';
+import { initMQTTExplorer, handleMQTTMessage } from './mqtt-explorer.js';
+
 
 import {
     openDeviceModal,
@@ -118,6 +120,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize Groups
     initGroups();
+
+    // Initialize Explorer
+    initMQTTExplorer();
 
     // Initial fetch
     fetchAllDevices();
