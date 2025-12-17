@@ -384,13 +384,14 @@ class MQTTService:
 
             return False
 
-    async def publish_discovery(self, device_info: dict, configs: list):
+    async def publish_discovery(self, device_info: dict, configs: list, initial_state: dict = None):
         """
         Publish Home Assistant MQTT Discovery configurations.
 
         Args:
             device_info: Device metadata (ieee, friendly_name, model, etc.)
             configs: List of discovery configs from handlers
+            initial_state: Optional initial device state to publish after discovery
         """
         if not self._connected or not self.client:
             logger.warning("Cannot publish discovery, not connected")
@@ -543,6 +544,29 @@ class MQTTService:
 
         logger.info(f"[{ieee}] Published HA discovery for {len(configs)} entities")
         await self._log("INFO", f"Sent HA Discovery for {len(configs)} entities", ieee=ieee)
+
+        # ==================================================================
+        # PUBLISH INITIAL DEVICE STATE (CRITICAL FOR AVAILABILITY)
+        # ==================================================================
+        if initial_state is not None:
+            try:
+                # Ensure 'available' key is present (required for availability template)
+                if 'available' not in initial_state:
+                    logger.warning(f"[{ieee}] Initial state missing 'available' key, defaulting to True")
+                    initial_state['available'] = True
+
+                # Publish to device state topic with retain flag
+                state_payload = json.dumps(initial_state)
+                await self.client.publish(
+                    f"{self.base_topic}/{safe_name}",
+                    state_payload,
+                    retain=True,  # CRITICAL - must retain for HA to read on startup
+                    qos=1         # Use QoS 1 for reliability
+                )
+                logger.info(f"[{ieee}] Published initial state to MQTT (available={initial_state.get('available')})")
+
+            except Exception as e:
+                logger.error(f"[{ieee}] Failed to publish initial state: {e}")
 
 
     async def remove_discovery(self, ieee: str, configs: list):
