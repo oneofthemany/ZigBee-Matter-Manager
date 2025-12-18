@@ -52,6 +52,26 @@ class OnOffHandler(ClusterHandler):
             current = self.device.state.get(key, self.device.state.get("on", False))
             self._update_state(not current)
 
+
+    def _is_light_endpoint(self) -> bool:
+        ep = self.endpoint
+
+        has_level = 0x0008 in ep.in_clusters
+        has_color = 0x0300 in ep.in_clusters
+        has_lightlink = 0x1000 in ep.in_clusters
+        has_opple = 0xFCC0 in ep.in_clusters
+        has_electrical = 0x0B04 in ep.in_clusters
+
+        has_lighting_cluster = (
+                has_level
+                or has_color
+                or has_lightlink
+                or has_opple
+        )
+
+        # ⚠️ Electrical Measurement present → treat as socket, not light
+        return has_lighting_cluster and not has_electrical
+
     def _handle_on_with_timed_off(self, args):
         """
         Handle on_with_timed_off command from motion sensors (Philips Hue).
@@ -188,7 +208,7 @@ class OnOffHandler(ClusterHandler):
                     payload = json.dumps(self.device.state)
 
                     # Publish to the main device state topic (not subtopic)
-                    self.device.service.mqtt.publish_fast(f"{safe_name}", payload, qos=0, retain=False)
+                    self.device.service.mqtt.publish_fast(f"{safe_name}", payload, qos=1, retain=False)
                     logger.debug(f"[{self.device.ieee}] Contact sensor fast-published state: {'OPEN' if is_open else 'CLOSED'}")
 
                 logger.info(f"[{self.device.ieee}] Contact sensor: {'OPEN' if is_open else 'CLOSED'}")
@@ -257,16 +277,23 @@ class OnOffHandler(ClusterHandler):
     def _update_state(self, is_on: bool):
         """Helper to update state with endpoint awareness."""
         ep_id = self.endpoint.endpoint_id
+
         updates = {
             f"state_{ep_id}": "ON" if is_on else "OFF",
             f"on_{ep_id}": is_on
         }
+
         # Update global state only if EP1 or global missing
         if ep_id == 1 or "on" not in self.device.state:
             updates["state"] = "ON" if is_on else "OFF"
             updates["on"] = is_on
 
+        # Mark this update as requiring retained MQTT publish IF this is a light
+        if self._is_light_endpoint():
+            updates["_retain"] = True
+
         self.device.update_state(updates, endpoint_id=ep_id)
+
 
 
     def parse_value(self, attrid: int, value: Any) -> Any:
@@ -449,7 +476,6 @@ class LevelControlHandler(ClusterHandler):
     def get_pollable_attributes(self) -> Dict[int, str]:
         return {self.ATTR_CURRENT_LEVEL: "brightness"}
 
-    # --- OPTIMISTIC UPDATES ---
     async def set_level(self, level: int, transition_time: int = 10):
         await self.cluster.move_to_level(level, transition_time)
         self._update_level(level) # Optimistic

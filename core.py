@@ -162,7 +162,6 @@ class ZigbeeService:
         self.app = None
         self.mqtt = mqtt_client
         self.callback = event_callback
-        self._update_debounce_tasks = {}
 
         # Connect MQTT callbacks
         if self.mqtt:
@@ -831,7 +830,7 @@ class ZigbeeService:
             zdev = self.devices[ieee]
             configs = zdev.get_device_discovery_configs()
 
-            # Use consistent safe name generation
+            # Use consistent safe name generation (Allows spaces now)
             safe_name = self.get_safe_name(ieee)
 
             device_info = {
@@ -860,29 +859,16 @@ class ZigbeeService:
                 # Sanitize for JSON serialization
                 safe_state = sanitise_device_state(initial_state)
 
-                # ==================================================================
-                # Remove numeric 'state' that conflicts with string state_N
-                # ==================================================================
-                if 'state' in safe_state and isinstance(safe_state['state'], (int, bool, float)):
-                    logger.warning(f"[{ieee}] Removing numeric 'state' value: {safe_state['state']}")
-                    del safe_state['state']
-
-                # If multi-endpoint device, ensure global state matches first endpoint
-                if 'state_1' in safe_state and 'state' not in safe_state:
-                    safe_state['state'] = safe_state['state_1']
-                elif 'state_11' in safe_state and 'state' not in safe_state:
-                    safe_state['state'] = safe_state['state_11']
-
                 # Publish to device state topic with retain=True
                 import json
                 await self.mqtt.publish(
-                    safe_name,
+                    safe_name,  # Topic: zigbee_ha/Lamp - Living
                     json.dumps(safe_state),
                     ieee=ieee,
                     qos=1,
                     retain=True
                 )
-                logger.info(f"[{ieee}] Published initial state: available={initial_state['available']}, state={safe_state.get('state')}")
+                logger.info(f"[{ieee}] Published initial state: available={initial_state['available']}, keys={list(safe_state.keys())}")
 
             except Exception as e:
                 logger.error(f"[{ieee}] Failed to publish initial state: {e}")
@@ -1562,67 +1548,21 @@ class ZigbeeService:
     # =========================================================================
     # DEVICE UPDATE HANDLING
     # =========================================================================
-    def handle_device_update(self, zha_device, changed_data, full_state=None, qos: Optional[int] = None, endpoint_id: Optional[int] = None):
+    def handle_device_update(self, zha_device, changed_data, full_state=None, qos: Optional[int] = None, endpoint_id: Optional[int] = None, force_retain: bool = False):
         """Called by ZHADevice when state changes."""
         ieee = zha_device.ieee
 
-        # Cancel any pending debounced update for this device
-        if ieee in self._update_debounce_tasks:
-            self._update_debounce_tasks[ieee].cancel()
+        # Use full_state if provided, otherwise use changed_data
+        payload_data = full_state if full_state else changed_data
+        payload = payload_data.copy()
 
-        # Schedule debounced update
-        self._update_debounce_tasks[ieee] = asyncio.create_task(
-            self._debounced_device_update(zha_device, changed_data, full_state, qos, endpoint_id)
-        )
+        # Compute availability
+        payload['available'] = zha_device.is_available()
+        payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
 
-    async def _debounced_device_update(self, zha_device, changed_data, full_state, qos, endpoint_id):
-        """Actual update logic with debounce."""
-        try:
-            await asyncio.sleep(0.05)  # 50ms debounce
-        except asyncio.CancelledError:
-            return
-
-        ieee = zha_device.ieee
-
-        logger.info(f"[{ieee}] DEBOUNCED UPDATE: qos={qos}, endpoint={endpoint_id}")
-
-        if full_state is None:
-            payload_data = zha_device.state.copy()
-        else:
-            payload_data = full_state.copy()
-
-        payload_data['available'] = zha_device.is_available()
-        payload_data['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
-
+        # SANITISE payload
         from json_helpers import sanitise_device_state
-        safe_payload = sanitise_device_state(payload_data)
-
-        # Remove internal keys (_raw, attr_XXXX_XXXX, startup_behavior_XX_raw)
-        keys_to_remove = [k for k in list(safe_payload.keys())
-                          if k.endswith('_raw') or k.startswith('attr_')]
-
-        # Remove motion sensor attributes from non-sensor devices
-        device_caps = zha_device.capabilities
-        if not device_caps.has_capability('motion_sensor'):
-            keys_to_remove.extend(['occupancy', 'motion', 'presence'])
-
-        for key in keys_to_remove:
-            safe_payload.pop(key, None)
-
-        # Fix multi-endpoint state
-        endpoint_state_keys = [k for k in safe_payload.keys() if k.startswith('state_') and k[6:].isdigit()]
-
-        if endpoint_state_keys and endpoint_id is not None:
-            endpoint_state_key = f"state_{endpoint_id}"
-            if endpoint_state_key in safe_payload:
-                safe_payload['state'] = safe_payload[endpoint_state_key]
-                safe_payload['on'] = safe_payload.get(f"on_{endpoint_id}", False)
-
-        if 'state' in safe_payload and isinstance(safe_payload['state'], (int, float)):
-            del safe_payload['state']
-            if endpoint_state_keys:
-                first_ep_key = sorted(endpoint_state_keys)[0]
-                safe_payload['state'] = safe_payload[first_ep_key]
+        safe_payload = sanitise_device_state(payload)
 
         # UPDATE CACHE
         if ieee not in self.state_cache:
@@ -1637,20 +1577,26 @@ class ZigbeeService:
         if self.mqtt:
             import json
             safe_name = self.get_safe_name(ieee)
-            mqtt_qos = qos if qos is not None else 1
-            logger.info(f"[{ieee}] Publishing with QoS={mqtt_qos}, retain=True")
+
+            # CRITICAL: Lights MUST use retain=True and QoS 1
+            if force_retain or zha_device.capabilities.has_capability('light'):
+                mqtt_qos = 1  # Force QoS 1 for lights
+                mqtt_retain = True  # Force retain for lights
+            else:
+                mqtt_qos = qos if qos is not None else 0
+                mqtt_retain = True  # Default retain for everything
 
             asyncio.create_task(
                 self.mqtt.publish(
                     safe_name,
                     json.dumps(safe_payload),
                     ieee=ieee,
-                    qos=mqtt_qos,  # Should be 1
-                    retain=True
+                    qos=mqtt_qos,
+                    retain=mqtt_retain
                 )
             )
 
-        # Log changed attributes
+        # Logging (unchanged)
         friendly_name = self.friendly_names.get(ieee, "Unknown")
         for k, v in changed_data.items():
             if k != 'last_seen':

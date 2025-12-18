@@ -26,7 +26,7 @@ class MQTTService:
             username: Optional[str] = None,
             password: Optional[str] = None,
             base_topic: str = "zigbee",
-            qos: int = 1,
+            qos: int = 0,
             log_callback: Optional[Callable] = None,
             command_callback: Optional[Callable] = None,
             group_command_callback: Optional[Callable] = None,
@@ -108,7 +108,7 @@ class MQTTService:
                 port=self.port,
                 username=self.username,
                 password=self.password,
-                clean_session=False,
+                clean_session=True,
                 keepalive=60
             )
 
@@ -351,24 +351,18 @@ class MQTTService:
         logger.info("MQTT service stopped")
         await self._log("INFO", "MQTT Disconnected")
 
-
     async def publish(self, subtopic: str, payload: str, ieee: Optional[str] = None, qos: Optional[int] = None, retain: bool = True):
-        """
-        Publish message to MQTT topic.
-        Topic format: {base_topic}/{subtopic}
-        """
+        """Publish message to MQTT topic."""
         if not self._connected or not self.client:
-            logger.debug(f"Cannot publish, not connected. Topic: {subtopic}")
             return False
 
-        # Determine QoS
         if qos is None:
             qos = self.default_qos
 
-        # Force QoS 1 for retained messages (QoS 0 + retain is unreliable)
+        # CRITICAL FIX: QoS 0 + retain = unreliable
+        # Force QoS 1 for all retained messages
         if retain and qos == 0:
             qos = 1
-            logger.info(f"Upgraded QoS 0→1 for retained message: {subtopic}")
 
         # Construct full topic
         if subtopic.startswith(self.base_topic):
@@ -378,16 +372,9 @@ class MQTTService:
 
         try:
             await self.client.publish(full_topic, payload, retain=retain, qos=qos)
-            logger.info(f"PUB [{full_topic}] (QoS {qos}, Retain={retain}): {payload[:100]}...")
             return True
-
         except Exception as e:
             logger.error(f"Publish failed: {e}")
-            await self._log("ERROR", f"Publish failed: {e}", ieee=ieee)
-
-            if not self._connected:
-                self._schedule_reconnect()
-
             return False
 
     async def publish_discovery(self, device_info: dict, configs: list, initial_state: dict = None):
