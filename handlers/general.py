@@ -305,99 +305,100 @@ class OnOffHandler(ClusterHandler):
     def get_discovery_configs(self) -> List[Dict]:
         """
         Generate Home Assistant MQTT discovery config.
-
         CRITICAL: If a multi-endpoint device, always treats as switch/light.
         """
         ep = self.endpoint.endpoint_id
 
-        # 1. Check if it is a Contact Sensor (Only if multi-endpoint check failed)
+        # 1. Check if it is a Contact Sensor
         is_contact_sensor = self._is_contact_sensor()
-
-        # Check if the device is purely a contact sensor (i.e., only 0x0500)
         has_only_sensor_clusters = len(self.endpoint.in_clusters) <= 4 and 0x0500 in self.endpoint.in_clusters
 
         if is_contact_sensor or has_only_sensor_clusters:
             logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: CONTACT_SENSOR (binary_sensor)")
-
-            # Use binary_sensor for contact sensors.
             return [{
                 "component": "binary_sensor",
                 "object_id": f"contact_{ep}",
                 "config": {
                     "name": f"Contact Sensor {ep}",
                     "device_class": "door",
-                    # Note: We must use the key the handler updates: is_open or contact
                     "value_template": f"{{{{ value_json.is_open_{ep} }}}}",
                     "payload_on": True,
                     "payload_off": False
                 }
             }]
 
-        # 2. Check for lighting-specific clusters (if not a sensor)
+        # 2. Check for lighting-specific clusters
         has_lightlink = 0x1000 in self.endpoint.in_clusters or 0x1000 in self.endpoint.out_clusters
         has_opple = 0xFCC0 in self.endpoint.in_clusters or 0xFCC0 in self.endpoint.out_clusters
         has_color = 0x0300 in self.endpoint.in_clusters or 0x0300 in self.endpoint.out_clusters
         has_level = 0x0008 in self.endpoint.in_clusters
+        has_electrical = 0x0B04 in self.endpoint.in_clusters
 
-        # Device is a LIGHT if it has ANY lighting-specific cluster
-        is_light = has_lightlink or has_opple or has_color or has_level
+        # Quirk: Aurora sockets use level control for LED dimming, not lighting
+        if has_electrical and has_level and not (has_color or has_lightlink):
+            is_light = False
+            logger.info(f"[{self.device.ieee}] EP{ep} Socket quirk: Level=LED, not light")
+        else:
+            is_light = has_lightlink or has_opple or has_color or has_level
+            logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: {'LIGHT' if is_light else 'SWITCH'} "
+                        f"(lightlink={has_lightlink}, opple={has_opple}, color={has_color}, level={has_level})")
 
         component = "light" if is_light else "switch"
+        configs = []
 
-        # Log for debugging
-        logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: {component.upper()} "
-            f"(lightlink={has_lightlink}, opple={has_opple}, color={has_color}, level={has_level})")
-
-        # Build base config
+        # Build appropriate config
         config = {
             "name": f"{'Light' if is_light else 'Switch'} {ep}",
             "payload_on": "ON",
             "payload_off": "OFF",
-            # Use endpoint-specific state key
             "value_template": f"{{{{ value_json.state_{ep} }}}}",
             "command_topic": "CMD_TOPIC_PLACEHOLDER",
             "command_template": f'{{"command": "{{{{ value }}}}", "endpoint": {ep}}}'
         }
 
-        # If it's a light, add brightness support (if it has LevelControl)
-        if is_light:
-            has_level = 0x0008 in self.endpoint.in_clusters
-            if has_level:
-                config["brightness_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
-                config["brightness_value_template"] = f"{{{{ value_json.brightness_{ep} }}}}"
-                config["brightness_scale"] = 100
-                config["brightness_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
-                config[
-                    "brightness_command_template"] = f'{{"command": "brightness", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+        # Add light-specific features
+        if is_light and has_level:
+            config["brightness_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
+            config["brightness_value_template"] = f"{{{{ value_json.brightness_{ep} }}}}"
+            config["brightness_scale"] = 100
+            config["brightness_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
+            config["brightness_command_template"] = f'{{"command": "brightness", "value": {{{{ value }}}}, "endpoint": {ep}}}'
 
-            # If it has color, add color support
-            if has_color:
-                config["color_mode"] = True
-                config["supported_color_modes"] = ["color_temp", "xy"]
+        if is_light and has_color:
+            config["color_mode"] = True
+            config["supported_color_modes"] = ["color_temp", "xy"]
+            config["color_mode_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
+            config["color_mode_value_template"] = f"{{{{ value_json.color_mode }}}}"
+            config["max_mireds"] = 500
+            config["min_mireds"] = 153
+            config["color_temp_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
+            config["color_temp_value_template"] = f"{{{{ value_json.color_temp_mireds }}}}"
+            config["color_temp_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
+            config["color_temp_command_template"] = f'{{"command": "color_temp", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+            config["xy_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
+            config["xy_value_template"] = f"{{{{ [value_json.color_x, value_json.color_y] }}}}"
+            config["xy_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
+            config["xy_command_template"] = f'{{"command": "color_xy", "value": {{{{ value }}}}, "endpoint": {ep}}}'
 
-                # CRITICAL FIX: Add color mode state reporting
-                config["color_mode_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
-                config["color_mode_value_template"] = f"{{{{ value_json.color_mode }}}}"
+        configs.append({"component": component, "object_id": f"{component}_{ep}", "config": config})
 
-                # Color temperature support
-                config["max_mireds"] = 500
-                config["min_mireds"] = 153
-                config["color_temp_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
-                config["color_temp_value_template"] = f"{{{{ value_json.color_temp_mireds }}}}"
-                config["color_temp_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
-                config["color_temp_command_template"] = f'{{"command": "color_temp", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+        # Add LED brightness control for sockets (only if NOT a light)
+        if not is_light and has_level and has_electrical:
+            configs.append({
+                "component": "number",
+                "object_id": f"led_brightness_{ep}",
+                "config": {
+                    "name": f"LED Brightness {ep}",
+                    "entity_category": "diagnostic",
+                    "min": 0,
+                    "max": 100,
+                    "value_template": f"{{{{ value_json.brightness_{ep} }}}}",
+                    "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                    "command_template": f'{{"command": "brightness", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+                }
+            })
 
-                # XY color support (for full RGB control)
-                config["xy_state_topic"] = "STATE_TOPIC_PLACEHOLDER"
-                config["xy_value_template"] = f"{{{{ [value_json.color_x, value_json.color_y] }}}}"
-                config["xy_command_topic"] = "CMD_TOPIC_PLACEHOLDER"
-                config["xy_command_template"] = f'{{"command": "color_xy", "value": {{{{ value }}}}, "endpoint": {ep}}}'
-
-        return [{
-            "component": component,
-            "object_id": f"{component}_{ep}",
-            "config": config
-        }]
+        return configs
 
     # --- OPTIMISTIC UPDATES ADDED HERE ---
     async def turn_on(self):
