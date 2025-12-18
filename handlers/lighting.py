@@ -14,53 +14,6 @@ logger = logging.getLogger("handlers.lighting")
 
 
 # ============================================================
-# LEVEL CONTROL CLUSTER (0x0008)
-# Moved here from general.py because it's lighting related
-# ============================================================
-# NOTE: Registration DISABLED - using general.py version to avoid conflicts
-# This handler provides lighting-specific level control features
-# @register_handler(0x0008)
-class LevelControlHandler_Lighting(ClusterHandler):
-    CLUSTER_ID = 0x0008
-    REPORT_CONFIG = [("current_level", 1, 300, 5)]
-    ATTR_CURRENT_LEVEL = 0x0000
-
-    def attribute_updated(self, attrid: int, value: Any, timestamp=None):
-        if attrid == self.ATTR_CURRENT_LEVEL:
-            if value is not None and value != 0xFF:
-                self._update_level(value)
-
-    def _update_level(self, level):
-        pct = round((level / 254) * 100)
-        ep_id = self.endpoint.endpoint_id
-        updates = {
-            f"brightness_{ep_id}": pct,
-            f"level_{ep_id}": level
-        }
-        if ep_id == 1:
-            updates["brightness"] = pct
-            updates["level"] = level
-        self.device.update_state(updates)
-
-    def get_pollable_attributes(self) -> Dict[int, str]:
-        return {self.ATTR_CURRENT_LEVEL: "brightness"}
-
-    # --- OPTIMISTIC UPDATES ADDED HERE ---
-    async def set_level(self, level: int, transition_time: int = 10):
-        await self.cluster.move_to_level(level, transition_time)
-        self._update_level(level) # Optimistic
-
-    async def set_brightness_pct(self, percent: int, transition_time: int = 10):
-        level = round((percent / 100) * 254)
-        await self.set_level(level, transition_time)
-
-
-    def get_discovery_configs(self) -> List[Dict]:
-        # Suppress separate Number entity for brightness,
-        # because OnOffHandler now handles it as part of the Light entity.
-        return []
-
-# ============================================================
 # BALLAST CLUSTER (0x0301)
 # Used by some lighting fixtures for ballast control
 # ============================================================
