@@ -26,7 +26,7 @@ class MQTTService:
             username: Optional[str] = None,
             password: Optional[str] = None,
             base_topic: str = "zigbee",
-            qos: int = 0,
+            qos: int = 1,
             log_callback: Optional[Callable] = None,
             command_callback: Optional[Callable] = None,
             group_command_callback: Optional[Callable] = None,
@@ -108,7 +108,7 @@ class MQTTService:
                 port=self.port,
                 username=self.username,
                 password=self.password,
-                clean_session=True,
+                clean_session=False,
                 keepalive=60
             )
 
@@ -351,6 +351,7 @@ class MQTTService:
         logger.info("MQTT service stopped")
         await self._log("INFO", "MQTT Disconnected")
 
+
     async def publish(self, subtopic: str, payload: str, ieee: Optional[str] = None, qos: Optional[int] = None, retain: bool = True):
         """
         Publish message to MQTT topic.
@@ -360,8 +361,14 @@ class MQTTService:
             logger.debug(f"Cannot publish, not connected. Topic: {subtopic}")
             return False
 
+        # Determine QoS
         if qos is None:
             qos = self.default_qos
+
+        # Force QoS 1 for retained messages (QoS 0 + retain is unreliable)
+        if retain and qos == 0:
+            qos = 1
+            logger.info(f"Upgraded QoS 0→1 for retained message: {subtopic}")
 
         # Construct full topic
         if subtopic.startswith(self.base_topic):
@@ -371,14 +378,13 @@ class MQTTService:
 
         try:
             await self.client.publish(full_topic, payload, retain=retain, qos=qos)
-            logger.debug(f"PUB [{full_topic}] (QoS {qos}): {payload[:100]}...")
+            logger.info(f"PUB [{full_topic}] (QoS {qos}, Retain={retain}): {payload[:100]}...")
             return True
 
         except Exception as e:
             logger.error(f"Publish failed: {e}")
             await self._log("ERROR", f"Publish failed: {e}", ieee=ieee)
 
-            # Check if we need to reconnect
             if not self._connected:
                 self._schedule_reconnect()
 
