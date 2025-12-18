@@ -841,44 +841,10 @@ class ZigbeeService:
                 "manufacturer": str(zdev.zigpy_dev.manufacturer)
             }
 
-            # Publish discovery configs
             await self.mqtt.publish_discovery(device_info, configs)
-            logger.info(f"[{ieee}] Published HA discovery")
-
-            # ==================================================================
-            # PUBLISH INITIAL STATE (CRITICAL FOR AVAILABILITY)
-            # ==================================================================
-            try:
-                from json_helpers import sanitise_device_state
-
-                # Build initial state from device's current state
-                initial_state = zdev.state.copy()
-                initial_state['available'] = zdev.is_available()
-                initial_state['lqi'] = getattr(zdev.zigpy_dev, 'lqi', 0) or 0
-
-                # Sanitize for JSON serialization
-                safe_state = sanitise_device_state(initial_state)
-
-                # Publish to device state topic with retain=True
-                import json
-                await self.mqtt.publish(
-                    safe_name,  # Topic: zigbee_ha/Lamp - Living
-                    json.dumps(safe_state),
-                    ieee=ieee,
-                    qos=1,
-                    retain=True
-                )
-                logger.info(f"[{ieee}] Published initial state: available={initial_state['available']}, keys={list(safe_state.keys())}")
-
-            except Exception as e:
-                logger.error(f"[{ieee}] Failed to publish initial state: {e}")
-                import traceback
-                traceback.print_exc()
-
+            logger.info(f"[{ieee}] Announced to Home Assistant (Topic: {safe_name})")
         except Exception as e:
             logger.error(f"[{ieee}] Failed to announce: {e}")
-            import traceback
-            traceback.print_exc()
 
     async def announce_all_devices(self):
         """
@@ -1548,19 +1514,93 @@ class ZigbeeService:
     # =========================================================================
     # DEVICE UPDATE HANDLING
     # =========================================================================
-    def handle_device_update(self, zha_device, changed_data, full_state=None, qos: Optional[int] = None, endpoint_id: Optional[int] = None, force_retain: bool = False):
-        """Called by ZHADevice when state changes."""
+
+    def handle_device_update(self, zha_device, changed_data, full_state=None, qos: Optional[int] = None, endpoint_id: Optional[int] = None):
+        """
+        Called by ZHADevice when state changes.
+        ENHANCED: Ensures ALL discovery attributes are always present.
+
+        Args:
+            zha_device: The device instance
+            changed_data: Dictionary of only the attributes that changed (for logging)
+            full_state: Complete device state (for cache/MQTT). If None, changed_data is used.
+            qos: MQTT QoS level
+            endpoint_id: Source endpoint ID of the update (optional)
+        """
         ieee = zha_device.ieee
 
-        # Use full_state if provided, otherwise use changed_data
+        # Use full_state if provided, otherwise assume changed_data is everything we know
         payload_data = full_state if full_state else changed_data
         payload = payload_data.copy()
 
-        # Compute availability
+        # ========================================================================
+        # 1: Ensure 'available' key is ALWAYS present
+        # ========================================================================
+        # The availability template in MQTT discovery expects this key to always exist
         payload['available'] = zha_device.is_available()
         payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
 
-        # SANITISE payload
+        # ========================================================================
+        # 2: Ensure ALL attributes from discovery configs are present
+        # ========================================================================
+        # This prevents HA from showing "unknown" when attributes are missing
+        caps = zha_device.capabilities if hasattr(zha_device, 'capabilities') else None
+
+        if caps:
+            # For each endpoint, ensure discovery attributes exist
+            for ep_id in zha_device.zigpy_dev.endpoints.keys():
+                if ep_id == 0:
+                    continue
+
+                # === LIGHTS AND SWITCHES ===
+                if caps.is_light or caps.is_switch:
+                    state_key = f"state_{ep_id}"
+                    if state_key not in payload:
+                        # Use existing state if available, otherwise default
+                        payload[state_key] = zha_device.state.get(state_key, "OFF")
+
+                    # Brightness support
+                    if caps.supports_brightness:
+                        brightness_key = f"brightness_{ep_id}"
+                        if brightness_key not in payload:
+                            payload[brightness_key] = zha_device.state.get(brightness_key, 0)
+
+                # === CONTACT SENSORS ===
+                if caps.is_contact_sensor:
+                    contact_key = f"is_open_{ep_id}"
+                    if contact_key not in payload:
+                        payload[contact_key] = zha_device.state.get(contact_key, False)
+
+                # === POWER MONITORING ===
+                if caps.supports_power_monitoring:
+                    for attr in ['power', 'voltage', 'current']:
+                        key = f"{attr}_{ep_id}"
+                        if key not in payload:
+                            payload[key] = zha_device.state.get(key, 0)
+
+            # === COLOR TEMPERATURE ===
+            if caps.is_light and caps.supports_color_temp:
+                if 'color_temp_mireds' not in payload:
+                    payload['color_temp_mireds'] = zha_device.state.get('color_temp_mireds', 250)
+
+            # === SENSORS ===
+            if caps.is_temperature_sensor and 'temperature' not in payload:
+                payload['temperature'] = zha_device.state.get('temperature', None)
+
+            if caps.is_humidity_sensor and 'humidity' not in payload:
+                payload['humidity'] = zha_device.state.get('humidity', None)
+
+            if caps.is_illuminance_sensor and 'illuminance' not in payload:
+                payload['illuminance'] = zha_device.state.get('illuminance', None)
+
+            # === MOTION/OCCUPANCY ===
+            if caps.is_motion_sensor:
+                if 'occupancy' not in payload:
+                    payload['occupancy'] = zha_device.state.get('occupancy', False)
+                if 'motion' not in payload:
+                    payload['motion'] = zha_device.state.get('motion', False)
+
+        # SANITISE payload for JSON before storing/sending
         from json_helpers import sanitise_device_state
         safe_payload = sanitise_device_state(payload)
 
@@ -1570,38 +1610,25 @@ class ZigbeeService:
         self.state_cache[ieee].update(safe_payload)
         self._cache_dirty = True
 
-        # Emit to WebSocket
+        # Emit to WebSocket clients
         self._emit_sync("device_updated", {"ieee": ieee, "data": safe_payload})
 
-        # PUBLISH TO MQTT
+        # Publish to MQTT
         if self.mqtt:
-            import json
             safe_name = self.get_safe_name(ieee)
+            import asyncio
+            import json
+            asyncio.create_task(self.mqtt.publish(safe_name, json.dumps(safe_payload), qos=qos))
 
-            # CRITICAL: Lights MUST use retain=True and QoS 1
-            if force_retain or zha_device.capabilities.has_capability('light'):
-                mqtt_qos = 1  # Force QoS 1 for lights
-                mqtt_retain = True  # Force retain for lights
-            else:
-                mqtt_qos = qos if qos is not None else 0
-                mqtt_retain = True  # Default retain for everything
-
-            asyncio.create_task(
-                self.mqtt.publish(
-                    safe_name,
-                    json.dumps(safe_payload),
-                    ieee=ieee,
-                    qos=mqtt_qos,
-                    retain=mqtt_retain
-                )
-            )
-
-        # Logging (unchanged)
+        # --- ENHANCED LOGGING WITH ENDPOINT ID ---
         friendly_name = self.friendly_names.get(ieee, "Unknown")
+
+        # Log ONLY changed attributes to reduce noise
         for k, v in changed_data.items():
             if k != 'last_seen':
                 ep_str = f"[EP{endpoint_id}]" if endpoint_id is not None else ""
                 msg = f"[{ieee}] ({friendly_name}) {ep_str} {k}={v}"
+
                 log_payload = {
                     "level": "INFO",
                     "message": msg,

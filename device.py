@@ -300,7 +300,10 @@ class ZHADevice:
             self.service.handle_device_update(self, {})
 
     def update_state(self, data: Dict[str, Any], qos: Optional[int] = None, endpoint_id: Optional[int] = None):
-        """Update device state and notify the service."""
+        """
+        Update device state and notify the service.
+        Includes smart duplicate detection logic and capability filtering.
+        """
         # === FILTERING ===
         if hasattr(self, 'capabilities'):
             data = self.capabilities.filter_state_update(data)
@@ -387,18 +390,7 @@ class ZHADevice:
 
         if changed:
             changed['last_seen'] = self.last_seen
-
-            # CRITICAL: Force retain=True for lights
-            # Lights in HA REQUIRE retained state or they show as unknown
-            force_retain = self.capabilities.has_capability('light')
-
-            self.service.handle_device_update(
-                self,
-                changed,
-                qos=qos,
-                endpoint_id=endpoint_id,
-                force_retain=force_retain
-            )
+            self.service.handle_device_update(self, changed, qos=qos, endpoint_id=endpoint_id)
 
             if duplicates_detected:
                 self.service._emit_sync("duplicate_attribute_warning", {
@@ -684,13 +676,14 @@ class ZHADevice:
         configs.append({
             "component": "sensor",
             "object_id": "linkquality",
-            "unique_id": f"{self.ieee}_linkquality", # Ensure unique ID per entity
+            "unique_id": f"{self.ieee}_linkquality",
             "device": device_info,
             "config": {
                 "name": "Link Quality",
-                "device_class": "signal_strength",
                 "unit_of_measurement": "lqi",
-                "value_template": "{{ value_json.lqi }}"
+                "value_template": "{{ value_json.lqi }}",
+                "state_class": "measurement",  # Optional: allows graphing in HA
+                "icon": "mdi:signal"           # Optional: nice icon
             }
         })
         return configs
