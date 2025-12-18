@@ -332,12 +332,11 @@ class OnOffHandler(ClusterHandler):
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id
 
-        # Check if this is a contact sensor (keep existing logic)
+        # Check if this is a contact sensor
         is_contact_sensor = self._is_contact_sensor()
         has_only_sensor_clusters = len(self.endpoint.in_clusters) <= 4 and 0x0500 in self.endpoint.in_clusters
 
         if is_contact_sensor or has_only_sensor_clusters:
-            # Binary sensors stay template-based
             return [{
                 "component": "binary_sensor",
                 "object_id": f"contact_{ep}",
@@ -353,29 +352,29 @@ class OnOffHandler(ClusterHandler):
         # Determine capabilities
         has_lightlink = 0x1000 in self.endpoint.in_clusters or 0x1000 in self.endpoint.out_clusters
         has_opple = 0xFCC0 in self.endpoint.in_clusters or 0xFCC0 in self.endpoint.out_clusters
-        has_color = 0x0300 in self.endpoint.in_clusters
+        has_color = 0x0300 in self.endpoint.in_clusters or 0x0300 in self.endpoint.out_clusters
         has_level = 0x0008 in self.endpoint.in_clusters
         has_electrical = 0x0B04 in self.endpoint.in_clusters
 
+        # Quirk: Aurora sockets use level control for LED dimming, not lighting
         if has_electrical and has_level and not (has_color or has_lightlink):
             is_light = False
+            logger.info(f"[{self.device.ieee}] EP{ep} Socket quirk: Level=LED, not light")
         else:
             is_light = has_lightlink or has_opple or has_color or has_level
+            logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: {'LIGHT' if is_light else 'SWITCH'} "
+                        f"(lightlink={has_lightlink}, opple={has_opple}, color={has_color}, level={has_level})")
 
         component = "light" if is_light else "switch"
         configs = []
 
-        # === JSON SCHEMA CONFIG) ===
-        config = {
-            "name": None,  # Use device name only
-            "schema": "json",
-            # state_topic and command_topic are injected by mqtt.py
-        }
-
+        # === LIGHTS: JSON SCHEMA ===
         if is_light:
-            # Determine supported_color_modes
+            config = {
+                "name": None,
+                "schema": "json",
+            }
             color_modes = []
-
             if has_color:
                 color_modes.extend(["color_temp", "xy"])
                 config["min_mireds"] = 153
@@ -387,16 +386,43 @@ class OnOffHandler(ClusterHandler):
 
             config["supported_color_modes"] = color_modes
             config["brightness_scale"] = 254 if has_level else 100
-
-            # Effects
             config["effect"] = True
             config["effect_list"] = ["blink", "breathe", "okay", "channel_change", "finish_effect", "stop_effect"]
 
-        configs.append({
-            "component": component,
-            "object_id": f"{component}_{ep}" if ep > 1 else component,
-            "config": config
-        })
+            configs.append({
+                "component": component,
+                "object_id": f"{component}_{ep}" if ep > 1 else component,
+                "config": config
+            })
+
+        # === SWITCHES: TEMPLATE SCHEMA ===
+        else:
+            config = {
+                "name": f"Switch {ep}",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "value_template": f"{{{{ value_json.state_{ep} }}}}",
+                "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                "command_template": f'{{"command": "{{{{ value }}}}", "endpoint": {ep}}}'
+            }
+
+            configs.append({"component": component, "object_id": f"{component}_{ep}", "config": config})
+
+            # Add LED brightness control for sockets (only if NOT a light)
+            if not is_light and has_level and has_electrical:
+                configs.append({
+                    "component": "number",
+                    "object_id": f"led_brightness_{ep}",
+                    "config": {
+                        "name": f"LED Brightness {ep}",
+                        "entity_category": "diagnostic",
+                        "min": 0,
+                        "max": 100,
+                        "value_template": f"{{{{ value_json.brightness_{ep} }}}}",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": f'{{"command": "brightness", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+                    }
+                })
 
         return configs
 
