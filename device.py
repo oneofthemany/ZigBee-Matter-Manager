@@ -669,6 +669,11 @@ class ZHADevice:
         logger.info(f"[{self.ieee}] CMD: {command}={value} EP={endpoint_id}")
         command = command.lower()
 
+        # Normalise value types (frontend sends strings)
+        if value is not None and isinstance(value, str):
+            if value.replace('.', '').replace('-', '').isdigit():
+                value = float(value) if '.' in value else int(value)
+
         def get_handler(cid):
             if endpoint_id:
                 if (endpoint_id, cid) in self.handlers:
@@ -840,7 +845,7 @@ class ZHADevice:
                             config["device"] = device_info
 
                         # === APPLY JSON SCHEMA DEFAULTS ===
-                        self._apply_json_schema_defaults(config)
+                        self._apply_json_schema_lights(config)
 
                     configs.extend(c)
 
@@ -860,19 +865,18 @@ class ZHADevice:
         })
         return configs
 
-    def _apply_json_schema_defaults(self, payload: Dict):
+
+    def _apply_json_schema_lights(self, payload: Dict):
         """
-        Helper to enforce JSON schema on Light/Switch configs.
+        Helper to enforce JSON schema on Light configs only.
         """
         component = payload.get('component')
 
-        if component in ("light", "switch"):
-            # Force JSON schema
+        if component == "light":
             if 'schema' not in payload:
                 payload['schema'] = 'json'
 
             if payload.get('schema') == 'json':
-                # Remove legacy template fields that conflict with JSON schema
                 keys_to_remove = [
                     'payload_on', 'payload_off', 'value_template',
                     'brightness_state_topic', 'brightness_command_topic',
@@ -883,15 +887,12 @@ class ZHADevice:
                 for key in keys_to_remove:
                     payload.pop(key, None)
 
-            # Ensure command topic is set if missing
             if 'command_topic' not in payload and 'state_topic' in payload:
                 payload['command_topic'] = payload['state_topic'] + "/set"
 
-        # Covers need specific JSON payloads if not using schema: json
         elif component == "cover":
             if 'payload_open' not in payload: payload['payload_open'] = json.dumps({"command": "open"})
             if 'payload_close' not in payload: payload['payload_close'] = json.dumps({"command": "close"})
             if 'payload_stop' not in payload: payload['payload_stop'] = json.dumps({"command": "stop"})
             if 'set_position_template' not in payload:
-                # Matches the core.py extraction
                 payload['set_position_template'] = '{"position": {{ position }}}'
