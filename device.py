@@ -427,6 +427,11 @@ class ZHADevice:
         is_cover = caps.has_capability('cover') if hasattr(caps, 'has_capability') else False
         is_switch = caps.has_capability('switch') if hasattr(caps, 'has_capability') else False
 
+        # Determine if it's a sensor (binary or analog)
+        # Note: 'sensor' isn't always a defined capability in some versions, so we check specific types
+        is_motion = caps.has_capability('motion_sensor') if hasattr(caps, 'has_capability') else False
+        is_contact = caps.has_capability('contact_sensor') if hasattr(caps, 'has_capability') else False
+
         # LIGHTS / SWITCHES
         if is_light or is_switch:
             # State (ON/OFF)
@@ -485,6 +490,77 @@ class ZHADevice:
                 payload['state'] = 'open'
             else:
                 payload['state'] = 'open'  # Partially open = open
+
+        # SENSORS (Motion, Contact, Temperature, etc.)
+        # This block catches devices that are NOT lights/switches/covers, or adds sensor data to them
+
+        # 1. Copy common sensor attributes
+        # We check both changed_data (priority) and self.state (fallback)
+
+        # Unconditionally allowed sensors (Environmental, Battery, Electrical)
+        safe_attributes = [
+            'temperature', 'humidity', 'pressure', 'battery', 'voltage', 'illuminance',
+            'water_leak', 'gas', 'smoke', 'co', 'sos', 'vibration',
+            'device_temperature', 'power', 'energy', 'current',
+            'voltage', 'power_factor'
+        ]
+
+        # Conditionally allowed sensors (avoid leakage of motion into contact sensors)
+        if is_motion:
+            safe_attributes.extend(['occupancy', 'presence', 'motion'])
+
+        if is_contact:
+            safe_attributes.extend(['contact'])
+
+        for attr in safe_attributes:
+            val = changed_data.get(attr)
+            if val is None:
+                val = self.state.get(attr)
+
+            if val is not None:
+                payload[attr] = val
+
+        # 2. Handle Binary Sensor State (Contact / Motion)
+        # If we haven't set 'state' yet, and we have a contact/motion value, set it.
+        # HA Binary Sensor defaults: payload_on="ON", payload_off="OFF"
+        if 'state' not in payload:
+            if is_contact:
+                # Look for 'contact' (boolean) or 'state' (OPEN/CLOSED)
+                contact_val = changed_data.get('contact')
+                if contact_val is None: contact_val = self.state.get('contact')
+
+                state_val = changed_data.get('state')
+                if state_val is None: state_val = self.state.get('state')
+
+                # Logic:
+                # If contact is True -> Closed -> OFF (usually)
+                # If contact is False -> Open -> ON (usually)
+                # But HA defaults: "ON" means "Problem/Open/Detected", "OFF" means "Normal/Closed/Clear"
+                # For door class: ON = Open, OFF = Closed
+
+                if contact_val is not None:
+                    # Zigbee standard: contact=True usually means Closed/False (Magnet detected)
+                    # Assuming typical: True=Closed, False=Open
+                    payload['contact'] = contact_val
+                    payload['state'] = 'OFF' if contact_val else 'ON'
+                elif state_val is not None:
+                    # If generic state is OPEN/CLOSED
+                    if str(state_val).upper() == 'OPEN':
+                        payload['state'] = 'OFF'
+                    elif str(state_val).upper() == 'CLOSED':
+                        payload['state'] = 'ON'
+                    else:
+                        payload['state'] = state_val # Pass through
+
+            elif is_motion:
+                # Look for occupancy/motion/presence
+                occ_val = changed_data.get('occupancy') or changed_data.get('motion') or changed_data.get('presence')
+                if occ_val is None:
+                    occ_val = self.state.get('occupancy') or self.state.get('motion') or self.state.get('presence')
+
+                if occ_val is not None:
+                    payload['occupancy'] = bool(occ_val)
+                    payload['state'] = 'ON' if occ_val else 'OFF'
 
         # Publish if we constructed a meaningful payload
         if payload:
