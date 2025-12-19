@@ -106,7 +106,7 @@ class DeviceCapabilities:
         'manufacturer_id', 'power_source_raw', 'device_type',
         'linkquality', 'update_available', 'update_state', 'action',
         'ieee', 'nwk', 'friendly_name', 'device_type',
-        'multistate_value', 'on_with_timed_off'
+        'multistate_value', 'on_with_timed_off', 'device_temperature'
     }
 
     # === CLUSTER IDs - COMPLETE LIST ===
@@ -260,12 +260,20 @@ class DeviceCapabilities:
 
         if self.IAS_ZONE in self._cluster_ids:
             self._capabilities.add('ias_zone')
-            self._capabilities.add('motion_sensor') # Default assumption
-            self._capabilities.add('contact_sensor') # Default assumption
+            # Check model to disambiguate motion vs contact if generic IAS Zone
+            if 'lumi.sensor_magnet' in model:
+                self._capabilities.add('contact_sensor')
+            else:
+                self._capabilities.add('motion_sensor') # Default assumption
+                self._capabilities.add('contact_sensor') # Default assumption
 
         if self.TEMPERATURE_MEASUREMENT in self._cluster_ids:
             self._capabilities.add('temperature_sensor')
             self._capabilities.add('environmental_sensor')
+
+        # Aqara Device Temperature (0x0002) - often used for internal temp
+        if self.DEVICE_TEMPERATURE in self._cluster_ids:
+            self._capabilities.add('temperature_sensor')
 
         if self.RELATIVE_HUMIDITY in self._cluster_ids:
             self._capabilities.add('humidity_sensor')
@@ -288,6 +296,17 @@ class DeviceCapabilities:
 
 
         # --- PHASE 3: Context-Aware Quirks ---
+
+        # XIAOMI / LUMI Specific
+        if "lumi.sensor_magnet" in model:
+            self._capabilities.add('contact_sensor')
+            self._capabilities.add('battery')
+            # Ensure it is NOT treated as a switch just because it has OnOff cluster
+            self._capabilities.discard('switch')
+            self._capabilities.discard('light')
+            # Ensure it is NOT treated as motion
+            self._capabilities.discard('motion_sensor')
+            self._capabilities.discard('occupancy_sensing')
 
         # PHILIPS HUE / SIGNIFY
         # Quirk: SML models use OnOff (0x0006) for Motion, but they are sensors, not switches.
