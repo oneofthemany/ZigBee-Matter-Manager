@@ -69,7 +69,7 @@ class ClusterHandler:
             traceback.print_exc()
 
     # ============================================================
-    # UI & CONFIGURATION EXPOSURE (NEW)
+    # UI & CONFIGURATION EXPOSURE
     # ============================================================
 
     def get_configuration_options(self) -> List[Dict]:
@@ -79,7 +79,7 @@ class ClusterHandler:
         return []
 
     # ============================================================
-    # HOME ASSISTANT DISCOVERY (NEW)
+    # HOME ASSISTANT DISCOVERY
     # ============================================================
     def get_discovery_configs(self) -> List[Dict]:
         """
@@ -88,7 +88,7 @@ class ClusterHandler:
         return []
 
     # ============================================================
-    # ZIGPY LISTENER INTERFACE - Enhanced with debugging
+    # ZIGPY LISTENER INTERFACE
     # ============================================================
 
     def attribute_updated(self, attrid: int, value: Any, timestamp: Optional[float] = None):
@@ -97,7 +97,6 @@ class ClusterHandler:
         """
         cluster_name = CLUSTER_NAMES.get(self.cluster_id, f"0x{self.cluster_id:04X}")
 
-        # Log that we received the callback
         logger.debug( # Changed to DEBUG level to reduce log spam
             f"📡 [{self.device.ieee}] {cluster_name} attribute_updated callback! "
             f"attr=0x{attrid:04X}, value={value}, type={type(value).__name__}"
@@ -157,7 +156,7 @@ class ClusterHandler:
         cluster_name = CLUSTER_NAMES.get(self.cluster_id, f"0x{self.cluster_id:04X}")
 
         # Log that we received the callback
-        # CRITICAL FIX: Changed to DEBUG level to prevent INFO log spamming
+        # CRITICAL: Changed to DEBUG level to prevent INFO log spamming
         logger.debug(
             f"📡 [{self.device.ieee}] {cluster_name} cluster_command callback! "
             f"tsn={tsn}, cmd=0x{command_id:02X}, args={args}"
