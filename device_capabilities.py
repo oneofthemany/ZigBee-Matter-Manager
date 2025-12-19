@@ -94,7 +94,8 @@ class DeviceCapabilities:
     TUYA_RADAR_FIELDS = {
         'radar_state', 'radar_sensitivity', 'presence_sensitivity', 'keep_time',
         'distance', 'detection_distance_min', 'detection_distance_max',
-        'fading_time', 'self_test', 'target_distance', 'illuminance_threshold'
+        'fading_time', 'self_test', 'target_distance', 'illuminance',
+        "presence"
     }
 
     # Fields that are ALWAYS allowed regardless of capability
