@@ -1584,7 +1584,7 @@ class ZigbeeService:
 
         ieee = zha_device.ieee
 
-        logger.info(f"[{ieee}] DEBOUNCED UPDATE: qos={qos}, endpoint={endpoint_id}")
+        #logger.info(f"[{ieee}] DEBOUNCED UPDATE: qos={qos}, endpoint={endpoint_id}")
 
         if full_state is None:
             payload_data = zha_device.state.copy()
