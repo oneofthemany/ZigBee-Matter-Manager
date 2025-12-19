@@ -1645,7 +1645,7 @@ class ZigbeeService:
                     safe_name,
                     json.dumps(safe_payload),
                     ieee=ieee,
-                    qos=mqtt_qos,  # Should be 1
+                    qos=mqtt_qos,
                     retain=True
                 )
             )
