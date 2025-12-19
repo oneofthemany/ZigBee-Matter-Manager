@@ -28,10 +28,16 @@ from .aqara import *
 from .lighting import *
 from .lightlink import *
 from .general import *
+from .sonoff_quirk import *
 
 # Re-export commonly used handlers for convenience
 from .security import (
     IASZoneHandler,
+)
+
+
+from .sonoff_quirk import (
+    SonoffManufacturerHandler,
 )
 
 from .sensors import (
@@ -149,6 +155,9 @@ __all__ = [
 
     # lightlink
     "LightLinkHandler",
+
+    # sonoff
+    "SonoffManufacturerHandler",
 ]
 
 
