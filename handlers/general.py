@@ -444,27 +444,71 @@ class OnOffHandler(ClusterHandler):
     # --- OPTIMISTIC UPDATES ADDED HERE ---
     async def turn_on(self):
         try:
-            logger.debug(f"[{self.device.ieee}] Calling cluster.on() on EP{self.endpoint.endpoint_id}")
-            result = await self.cluster.on()
-            logger.debug(f"[{self.device.ieee}] cluster.on() result: {result}")
-            self._update_state(True)
-            logger.info(f"[{self.device.ieee}] Sent ON command (Optimistic)")
+            # Force use of INPUT cluster, not output
+            in_cluster = self.endpoint.in_clusters.get(0x0006)
+            if not in_cluster:
+                logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
+                return
+
+            result = await in_cluster.on()
+            logger.info(f"[{self.device.ieee}] ON result: {result}")
+
+            if result and isinstance(result, list):
+                if result[0].status == 0:
+                    self._update_state(True)
+                else:
+                    logger.error(f"[{self.device.ieee}] ON FAILED: {result[0].status}")
+            else:
+                logger.error(f"[{self.device.ieee}] ON unexpected response: {result}")
         except Exception as e:
-            logger.error(f"[{self.device.ieee}] cluster.on() FAILED: {type(e).__name__}: {e}")
-            raise
+            logger.error(f"[{self.device.ieee}] ON exception: {e}", exc_info=True)
+
 
     async def turn_off(self):
-        await self.cluster.off()
-        self._update_state(False) # Optimistic update
-        logger.info(f"[{self.device.ieee}] Sent OFF command (Optimistic)")
+        try:
+            # Force use of INPUT cluster
+            in_cluster = self.endpoint.in_clusters.get(0x0006)
+            if not in_cluster:
+                logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
+                return
+
+            result = await in_cluster.off()
+            logger.info(f"[{self.device.ieee}] OFF result: {result}")
+
+            if result and isinstance(result, list):
+                if result[0].status == 0:
+                    self._update_state(False)
+                else:
+                    logger.error(f"[{self.device.ieee}] OFF FAILED: {result[0].status}")
+            else:
+                logger.error(f"[{self.device.ieee}] OFF unexpected response: {result}")
+        except Exception as e:
+            logger.error(f"[{self.device.ieee}] OFF exception: {e}", exc_info=True)
 
     async def toggle(self):
-        await self.cluster.toggle()
-        # Optimistic toggle is harder, we assume flip based on current knowledge
-        key = f"on_{self.endpoint.endpoint_id}"
-        current = self.device.state.get(key, self.device.state.get("on", False))
-        self._update_state(not current)
-        logger.info(f"[{self.device.ieee}] Sent TOGGLE command (Optimistic)")
+        try:
+            # Force use of INPUT cluster
+            in_cluster = self.endpoint.in_clusters.get(0x0006)
+            if not in_cluster:
+                logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
+                return
+
+            result = await in_cluster.toggle()
+            logger.info(f"[{self.device.ieee}] TOGGLE result: {result}")
+
+            if result and isinstance(result, list):
+                if result[0].status == 0:
+                    # Calculate the new state based on the current known state
+                    key = f"on_{self.endpoint.endpoint_id}"
+                    # Fallback to general "on" state if endpoint specific state isn't found
+                    current = self.device.state.get(key, self.device.state.get("on", False))
+                    self._update_state(not current)
+                else:
+                    logger.error(f"[{self.device.ieee}] TOGGLE FAILED: {result[0].status}")
+            else:
+                logger.error(f"[{self.device.ieee}] TOGGLE unexpected response: {result}")
+        except Exception as e:
+            logger.error(f"[{self.device.ieee}] TOGGLE exception: {e}", exc_info=True)
 
 
 # ============================================================
