@@ -300,7 +300,7 @@ class OccupancySensingHandler(ClusterHandler):
 
         return options
 
-    async def apply_settings(self, settings: Dict[str, Any]):
+    async def apply_configuration(self, settings: Dict[str, Any]):
         """
         Apply configuration changes from the frontend.
 

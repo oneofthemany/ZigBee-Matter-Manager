@@ -328,6 +328,21 @@ class OnOffHandler(ClusterHandler):
             "attribute_id": self.ATTR_STARTUP_ON_OFF
         }]
 
+
+    async def apply_configuration(self, updates: Dict[str, Any]):
+        """Apply OnOff cluster configuration (startup behavior)."""
+        ep_id = self.endpoint.endpoint_id
+        key = f"startup_behavior_{ep_id}"
+
+        if key in updates:
+            try:
+                value = int(updates[key])
+                await self.cluster.write_attributes({self.ATTR_STARTUP_ON_OFF: value})
+                logger.info(f"[{self.device.ieee}] Set EP{ep_id} startup behavior: {value}")
+            except Exception as e:
+                logger.warning(f"[{self.device.ieee}] Failed to set startup behavior EP{ep_id}: {e}")
+
+
     # --- HA Discovery ---
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id

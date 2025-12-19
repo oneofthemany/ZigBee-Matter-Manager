@@ -535,6 +535,33 @@ class AqaraManufacturerCluster(ClusterHandler):
             logger.warning(f"[{self.device.ieee}] Aqara read 0x{attr_id:04x} failed: {e}")
         return None
 
+
+    async def apply_configuration(self, updates: Dict[str, Any]):
+        """Apply Aqara manufacturer-specific configuration updates."""
+        config_map = {
+            'power_outage_memory': self.ATTR_POWER_OUTAGE_MEM,
+            'window_detection': self.ATTR_WINDOW_DETECTION,
+            'child_lock': self.ATTR_CHILD_LOCK,
+            'valve_detection': self.ATTR_VALVE_DETECTION,
+            'motor_calibration': self.ATTR_MOTOR_CALIBRATION,
+            'detection_interval': self.ATTR_DETECTION_INTERVAL,
+            'motion_sensitivity': self.ATTR_MOTION_SENSITIVITY,
+            'trigger_indicator': self.ATTR_TRIGGER_INDICATOR,
+            'operation_mode': self.ATTR_OPERATION_MODE,
+            'switch_mode': self.ATTR_SWITCH_MODE,
+            'switch_type': self.ATTR_SWITCH_TYPE,
+            'indicator_light': self.ATTR_INDICATOR_LIGHT,
+        }
+
+        for key, attr_id in config_map.items():
+            if key in updates:
+                try:
+                    success = await self.write_attribute(attr_id, int(updates[key]))
+                    if not success:
+                        logger.debug(f"[{self.device.ieee}] Device doesn't support {key}")
+                except Exception as e:
+                    logger.debug(f"[{self.device.ieee}] Skipping unsupported {key}: {e}")
+
     def get_pollable_attributes(self) -> Dict[int, str]:
         """
         Return pollable attributes based on device type.
