@@ -424,11 +424,12 @@ class ZHADevice:
 
         # Use safe capability check
         is_light = caps.has_capability('light') if hasattr(caps, 'has_capability') else False
+        is_cover = caps.has_capability('cover') if hasattr(caps, 'has_capability') else False
         is_switch = caps.has_capability('switch') if hasattr(caps, 'has_capability') else False
 
+        # LIGHTS / SWITCHES
         if is_light or is_switch:
             # State (ON/OFF)
-            # Use self.state as primary source to ensure we always have data, override with changed
             state_val = (changed_data.get(f'state_{endpoint_id}') or
                          changed_data.get('state') or
                          self.state.get(f'state_{endpoint_id}') or
@@ -467,11 +468,23 @@ class ZHADevice:
                 ct = changed_data.get('color_temp_mireds') or changed_data.get('color_temp')
                 if ct is None:
                     ct = self.state.get('color_temp_mireds') or self.state.get('color_temp')
-                if ct: payload['color_temp'] = int(ct)
+                if ct:
+                    payload['color_temp'] = int(ct)
 
-        # Include Link Quality and Last Seen
-        payload['linkquality'] = getattr(self.zigpy_dev, 'lqi', 0) or 0
-        payload['last_seen'] = self.last_seen
+        # COVERS
+        elif is_cover:
+            position = (changed_data.get('position') or
+                        changed_data.get('current_position') or
+                        self.state.get('position', 0))
+            payload['position'] = int(position) if position is not None else 0
+
+            # Derive state from position
+            if payload['position'] == 0:
+                payload['state'] = 'closed'
+            elif payload['position'] == 100:
+                payload['state'] = 'open'
+            else:
+                payload['state'] = 'open'  # Partially open = open
 
         # Publish if we constructed a meaningful payload
         if payload:
@@ -832,7 +845,7 @@ class ZHADevice:
                             config["device"] = device_info
 
                         # === APPLY JSON SCHEMA DEFAULTS ===
-                        self._apply_json_schema_lights(config)
+                        self._apply_json_schema(config)
 
                     configs.extend(c)
 
@@ -853,17 +866,18 @@ class ZHADevice:
         return configs
 
 
-    def _apply_json_schema_lights(self, payload: Dict):
+    def _apply_json_schema(self, payload: Dict):
         """
-        Helper to enforce JSON schema on Light configs only.
+        Helper to enforce JSON schema on Light/Cover configs.
         """
         component = payload.get('component')
+        config = payload.get('config', payload)  # Get nested config or use payload directly
 
         if component == "light":
-            if 'schema' not in payload:
-                payload['schema'] = 'json'
+            if 'schema' not in config:
+                config['schema'] = 'json'
 
-            if payload.get('schema') == 'json':
+            if config.get('schema') == 'json':
                 keys_to_remove = [
                     'payload_on', 'payload_off', 'value_template',
                     'brightness_state_topic', 'brightness_command_topic',
@@ -872,14 +886,26 @@ class ZHADevice:
                     'color_temp_value_template', 'color_temp_command_template'
                 ]
                 for key in keys_to_remove:
-                    payload.pop(key, None)
+                    config.pop(key, None)
 
-            if 'command_topic' not in payload and 'state_topic' in payload:
-                payload['command_topic'] = payload['state_topic'] + "/set"
+            if 'command_topic' not in config and 'state_topic' in config:
+                config['command_topic'] = config['state_topic'] + "/set"
 
         elif component == "cover":
-            if 'payload_open' not in payload: payload['payload_open'] = json.dumps({"command": "open"})
-            if 'payload_close' not in payload: payload['payload_close'] = json.dumps({"command": "close"})
-            if 'payload_stop' not in payload: payload['payload_stop'] = json.dumps({"command": "stop"})
-            if 'set_position_template' not in payload:
-                payload['set_position_template'] = '{"position": {{ position }}}'
+            # Command payloads
+            if 'payload_open' not in config:
+                config['payload_open'] = '{"command": "open"}'
+            if 'payload_close' not in config:
+                config['payload_close'] = '{"command": "close"}'
+            if 'payload_stop' not in config:
+                config['payload_stop'] = '{"command": "stop"}'
+
+            # Position commands
+            if 'set_position_template' not in config:
+                config['set_position_template'] = '{"command": "position", "value": {{ position }}}'
+
+            # State reading - CRITICAL for HA to show state
+            if 'value_template' not in config:
+                config['value_template'] = "{{ 'open' if value_json.is_open else 'closed' }}"
+            if 'position_template' not in config:
+                config['position_template'] = "{{ value_json.cover_position | default(value_json.position | default(0)) }}"
