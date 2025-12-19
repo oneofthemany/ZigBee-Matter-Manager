@@ -75,12 +75,6 @@ class OnOffHandler(ClusterHandler):
     def _handle_on_with_timed_off(self, args):
         """
         Handle on_with_timed_off command from motion sensors (Philips Hue).
-
-        Payload format: [on_off_control, on_time (deciseconds), off_wait_time]
-        - on_time: How long to stay on (in 1/10 second units)
-
-        IMPORTANT: Philips sensors send their configured PIR timeout in this command.
-        This schedules auto-clear after the timeout since Philips never sends clear.
         """
         try:
             # Extract on_time from command arguments
@@ -90,7 +84,6 @@ class OnOffHandler(ClusterHandler):
             on_time_seconds = on_time_from_cmd / 10 if on_time_from_cmd else 0
 
             # PREFER user-configured timeout over command timeout
-            # This allows users to override sensor's hardware timeout
             configured_timeout = self.device.state.get('motion_timeout')
             if configured_timeout is not None and configured_timeout > 0:
                 timeout = configured_timeout
@@ -106,12 +99,12 @@ class OnOffHandler(ClusterHandler):
                 "occupancy": True,
                 "motion": True,
                 "presence": True,
-                "motion_on_time": on_time_seconds,  # Original from sensor
+                "motion_on_time": on_time_seconds,
                 "state": "ON",
                 "on": True
             })
 
-            # Fast-path MQTT publish for immediate update
+            # Fast-path MQTT publish
             if self.device.service.mqtt and hasattr(self.device.service.mqtt, 'publish_fast'):
                 import json
                 safe_name = self.device.service.get_safe_name(self.device.ieee)
@@ -122,7 +115,7 @@ class OnOffHandler(ClusterHandler):
                 })
                 self.device.service.mqtt.publish_fast(f"{safe_name}/state", payload, qos=0)
 
-            # Schedule auto-clear after timeout
+            # Schedule auto-clear
             if timeout > 0:
                 import asyncio
                 # Cancel any existing clear task for this handler
@@ -223,14 +216,7 @@ class OnOffHandler(ClusterHandler):
             }, endpoint_id=self.endpoint.endpoint_id) # Ensure EP ID is passed up
 
     def _is_contact_sensor(self) -> bool:
-        """
-        Detect if this OnOff cluster is from a contact sensor.
-
-        CRITICAL FIX: Overriding previous heuristic for multi-endpoint devices.
-        If a device has more than one functional endpoint (EPs > 1), we assume
-        it's a multi-gang switch/socket and MUST NOT treat any EP as a contact sensor,
-        unless it only has the IAS Zone cluster (0x0500).
-        """
+        """Detect if this OnOff cluster is from a contact sensor."""
         ep = self.endpoint
 
         # Count non-ZDO endpoints
@@ -423,7 +409,7 @@ class OnOffHandler(ClusterHandler):
 
             configs.append({"component": component, "object_id": f"{component}_{ep}", "config": config})
 
-            # Add LED brightness control for sockets (only if NOT a light)
+            # Add LED brightness control for sockets
             if not is_light and has_level and has_electrical:
                 configs.append({
                     "component": "number",
