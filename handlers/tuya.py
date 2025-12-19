@@ -458,7 +458,7 @@ class TuyaClusterHandler(ClusterHandler):
         logger.info(f"[{self.device.ieee}] Tuya device configured (no standard binding)")
         return True
 
-    async def apply_settings(self, settings: Dict[str, Any]):
+    async def apply_configuration(self, settings: Dict[str, Any]):
         """
         Apply settings from frontend (called via device.configure).
         Maps frontend keys (move_sensitivity) to DP names (radar_sensitivity).

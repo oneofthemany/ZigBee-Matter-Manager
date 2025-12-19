@@ -561,34 +561,20 @@ class ZHADevice:
         # Fast Path: Targeted Updates
         if config and config.get('updates'):
             updates = config['updates']
-            # Tuya
-            tuya = self.handlers.get(0xEF00)
-            if tuya: await tuya.apply_settings(updates)
 
-            # Startup Behavior
-            for key, val in updates.items():
-                if key.startswith("startup_behavior_"):
+            # Let each handler process its own config keys
+            for handler in self.handlers.values():
+                if hasattr(handler, 'apply_configuration'):
                     try:
-                        ep = int(key.split("_")[-1])
-                        h = self.handlers.get((ep, 0x0006))
-                        if h: await h.cluster.write_attributes({0x4003: int(val)})
-                    except: pass
+                        await handler.apply_configuration(updates)
+                    except Exception as e:
+                        logger.warning(f"[{self.ieee}] Config failed for handler {handler.__class__.__name__}: {e}")
 
-            # PIR Settings
-            occ = self.handlers.get(0x0406)
-            if occ:
-                if 'motion_timeout' in updates:
-                    try: await occ.cluster.write_attributes({0x0010: int(updates['motion_timeout'])})
-                    except: pass
-                if 'sensitivity' in updates:
-                    try: await occ.cluster.write_attributes({0x0030: int(updates['sensitivity'])})
-                    except: pass
+            # QoS Setting
+            if 'qos' in config:
+                self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
+
             return
-
-        # Full Config
-        if config and 'tuya_settings' in config:
-            tuya = self.handlers.get(0xEF00)
-            if tuya: await tuya.apply_settings(config['tuya_settings'])
 
         configured = set()
         for h in self.handlers.values():
