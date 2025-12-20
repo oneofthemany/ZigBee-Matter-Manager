@@ -39,7 +39,7 @@ class MQTTService:
         self.default_qos = qos
         self.log = log_callback
         self.command_callback = command_callback
-        self.group_command_callback: Optional[Callable] = None
+        self.group_command_callback = group_command_callback
 
         # Callback for when HA comes online (birth message)
         self.ha_status_callback: Optional[Callable] = None
@@ -61,9 +61,6 @@ class MQTTService:
 
         # Topic subscriptions
         self._subscribed_topics: set = set()
-
-        # Bridge/Gateway LWT (Last Will and Testament) topic
-        self.bridge_status_topic = f"{self.base_topic}/bridge/state"
 
         # Bridge/Gateway LWT (Last Will and Testament) topic
         self.bridge_status_topic = f"{self.base_topic}/bridge/state"
@@ -93,8 +90,6 @@ class MQTTService:
             )
             await self._publish_queue.start()
             logger.info("MQTT fast-path queue started")
-
-
 
     async def _connect(self):
         """Establish connection to MQTT broker."""
@@ -626,27 +621,11 @@ class MQTTService:
     def publish_fast(self, subtopic: str, payload: str, qos: int = 0, retain: bool = True) -> bool:
         """
         Fast non-blocking publish for time-sensitive data.
-
-        Uses the publish queue for immediate return (< 1ms).
-        Suitable for motion sensors, radar, and other real-time events.
-
-        Args:
-            subtopic: Topic relative to base_topic
-            payload: Message payload (usually JSON)
-            qos: Quality of Service (default 0 for sensors)
-            retain: Whether to retain message
-
-        Returns:
-            True if queued, False if queue unavailable
         """
         if not self._publish_queue:
-            # Fallback to synchronous publish
-            import asyncio
-            try:
-                asyncio.create_task(self.publish(subtopic, payload, ieee=None, qos=qos, retain=retain))
-                return True
-            except Exception:
-                return False
+            # Fallback to synchronous/scheduled publish
+            self.publish(subtopic, payload, qos=qos, retain=retain)
+            return True
 
         # Construct full topic
         if subtopic.startswith(self.base_topic):
