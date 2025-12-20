@@ -302,12 +302,10 @@ class ZHADevice:
             self.service.handle_device_update(self, {})
 
     def update_state(self, data: Dict[str, Any], qos: Optional[int] = None, endpoint_id: Optional[int] = None):
-        """
-        Update device state and notify the service.
-        Includes smart duplicate detection logic, capability filtering, and JSON Schema publishing.
-        """
-        # === FILTERING ===
-        if hasattr(self, 'capabilities'):
+        """Update device state and notify the service."""
+
+        # === CAPABILITY-BASED FILTERING ===
+        if hasattr(self, 'capabilities') and hasattr(self.capabilities, 'filter_state_update'):
             data = self.capabilities.filter_state_update(data)
 
         if not data:
@@ -316,77 +314,74 @@ class ZHADevice:
         changed = {}
         duplicates_detected = []
 
+        # Always report these fields even if value unchanged
+        ALWAYS_REPORT = {'occupancy', 'presence', 'motion', 'contact', 'alarm',
+                         'temperature', 'tamper', 'battery_low', 'vibration',
+                         'on_with_timed_off', 'action'}
+
         for k, v in data.items():
-            # --- DUPLICATE DETECTION START ---
+            # --- DUPLICATE DETECTION ---
             if endpoint_id is not None:
-                if k not in self._attribute_sources: self._attribute_sources[k] = {}
+                if k not in self._attribute_sources:
+                    self._attribute_sources[k] = {}
                 self._attribute_sources[k][endpoint_id] = time.time()
 
                 if len(self._attribute_sources[k]) > 1:
                     if k in self._preferred_endpoints:
-                        if endpoint_id != self._preferred_endpoints[k]: continue
+                        if endpoint_id != self._preferred_endpoints[k]:
+                            continue
 
                     # Outlier detection (ignore 0 if we have better data)
-                    if (isinstance(v, (int, float)) and v == 0):
+                    if isinstance(v, (int, float)) and v == 0:
                         has_better = any(eid != endpoint_id for eid in self._attribute_sources[k])
                         if has_better:
-                            duplicates_detected.append({"attribute": k, "value": v, "endpoint": endpoint_id, "reason": "outlier_zero"})
+                            duplicates_detected.append({
+                                "attribute": k, "value": v,
+                                "endpoint": endpoint_id, "reason": "outlier_zero"
+                            })
                             continue
-                            # --- DUPLICATE DETECTION END ---
 
-            always_report = ['occupancy', 'presence', 'motion', 'contact', 'alarm', 'temperature',
-                             'tamper', 'battery_low', 'vibration', 'on_with_timed_off', 'action']
-
-            if k in always_report or self.state.get(k) != v:
+            # Report if always-report field OR value changed
+            if k in ALWAYS_REPORT or self.state.get(k) != v:
                 changed[k] = v
 
-        # --- INTELLIGENT STATE MERGING ---
-        # Safe check for capability
-        has_light = self.capabilities.has_capability('light') if hasattr(self.capabilities, 'has_capability') else False
+        # --- INTELLIGENT STATE MERGING FOR LIGHTS ---
+        has_light = (hasattr(self, 'capabilities') and
+                     hasattr(self.capabilities, 'has_capability') and
+                     self.capabilities.has_capability('light'))
 
         if has_light:
-            # List of light-related attributes that should trigger state inclusion
-            light_attrs = ['state', 'on', 'brightness', 'level', 'color_temp', 'color_temperature',
-                           'color_temperature_mireds', 'color_temp_kelvin', 'hue', 'saturation', 'x', 'y']
+            light_attrs = {'state', 'on', 'brightness', 'level', 'color_temp',
+                           'color_temperature', 'color_temperature_mireds',
+                           'color_temp_kelvin', 'hue', 'saturation', 'x', 'y'}
 
-            # Check if ANY light attribute is being updated
-            has_light_update = any(k in light_attrs or any(k.startswith(f"{attr}_") for attr in light_attrs)
-                                   for k in data.keys())
+            has_light_update = any(
+                k in light_attrs or
+                any(k.startswith(f"{attr}_") for attr in light_attrs)
+                for k in data.keys()
+            )
 
             if has_light_update:
-                # CRITICAL: Always include state when publishing light updates
-                if 'state' not in changed and 'state' in self.state:
-                    changed['state'] = self.state['state']
-                if 'on' not in changed and 'on' in self.state:
-                    changed['on'] = self.state['on']
+                # Include current state for consistency
+                for attr in ['state', 'on', 'brightness', 'level', 'color_temp']:
+                    if attr not in changed and attr in self.state:
+                        changed[attr] = self.state[attr]
 
-                # Also include other light attributes to maintain consistency
-                if 'brightness' in self.state and 'brightness' not in data:
-                    changed['brightness'] = self.state['brightness']
-                if 'level' in self.state and 'level' not in data:
-                    changed['level'] = self.state['level']
-                if 'color_temp' in self.state and 'color_temp' not in data:
-                    changed['color_temp'] = self.state['color_temp']
+                # Endpoint-specific fields
+                if endpoint_id is not None:
+                    for attr in ['state', 'on']:
+                        key = f"{attr}_{endpoint_id}"
+                        if key in self.state and key not in changed:
+                            changed[key] = self.state[key]
 
-        # Handle multi-endpoint devices - add endpoint-specific state fields
-        if endpoint_id is not None and has_light:
-            state_key = f"state_{endpoint_id}"
-            on_key = f"on_{endpoint_id}"
-
-            # Ensure endpoint-specific state is present
-            if state_key in self.state and state_key not in changed:
-                changed[state_key] = self.state[state_key]
-            if on_key in self.state and on_key not in changed:
-                changed[on_key] = self.state[on_key]
-
+        # Update internal state
         self.state.update(data)
 
-        # Ensure Manufacturer/Model are present in every update to keep cache sync complete
+        # Ensure metadata
         if 'manufacturer' not in self.state and self.manufacturer:
             self.state['manufacturer'] = str(self.manufacturer)
         if 'model' not in self.state and self.model:
             self.state['model'] = str(self.model)
-
         if 'last_seen' not in data:
             self.last_seen = int(time.time() * 1000)
             self.state['last_seen'] = self.last_seen
@@ -396,11 +391,11 @@ class ZHADevice:
         if changed:
             changed['last_seen'] = self.last_seen
 
-            # 1. Update Internal Service/Cache
+            # Update service cache
             self.service.handle_device_update(self, changed, qos=qos, endpoint_id=endpoint_id)
 
-            # 2. Publish JSON Schema Payload for LIGHTS ONLY
-            if hasattr(self, 'capabilities') and self.capabilities.has_capability('light'):
+            # Publish for lights only
+            if has_light:
                 self._publish_json_state(changed, endpoint_id)
 
             if duplicates_detected:
@@ -414,156 +409,84 @@ class ZHADevice:
         if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
             return
 
-        # ALWAYS start with available=true
+        caps = self.capabilities
+
+        # Build base payload
         payload = {
             'available': True,
             'linkquality': getattr(self.zigpy_dev, 'lqi', 0) or 0,
             'last_seen': self.last_seen,
         }
-        caps = self.capabilities
 
-        # Use safe capability check
-        is_light = caps.has_capability('light') if hasattr(caps, 'has_capability') else False
-        is_cover = caps.has_capability('cover') if hasattr(caps, 'has_capability') else False
-        is_switch = caps.has_capability('switch') if hasattr(caps, 'has_capability') else False
+        # Determine device type
+        is_light = caps.has_capability('light')
+        is_cover = caps.has_capability('cover')
 
-        # Determine if it's a sensor (binary or analog)
-        # Note: 'sensor' isn't always a defined capability in some versions, so we check specific types
-        is_motion = caps.has_capability('motion_sensor') if hasattr(caps, 'has_capability') else False
-        is_contact = caps.has_capability('contact_sensor') if hasattr(caps, 'has_capability') else False
-
-        # LIGHTS / SWITCHES
-        if is_light or is_switch:
-            # State (ON/OFF)
+        # === LIGHTS ===
+        if is_light:
+            # State
             state_val = (changed_data.get(f'state_{endpoint_id}') or
                          changed_data.get('state') or
                          self.state.get(f'state_{endpoint_id}') or
                          self.state.get('state'))
 
-            on_val = changed_data.get(f'on_{endpoint_id}') or changed_data.get('on')
+            if state_val is not None:
+                payload['state'] = state_val.upper() if isinstance(state_val, str) else ('ON' if state_val else 'OFF')
 
-            if on_val is not None:
-                payload['state'] = 'ON' if on_val else 'OFF'
-            elif state_val is not None:
-                if isinstance(state_val, str):
-                    payload['state'] = state_val.upper()
-                else:
-                    payload['state'] = 'ON' if state_val else 'OFF'
-
-            # Brightness (Convert % to 0-254)
-            if hasattr(caps, 'has_capability') and caps.has_capability('level_control'):
+            # Brightness
+            if caps.has_capability('level_control'):
                 bri = (changed_data.get(f'brightness_{endpoint_id}') or
                        changed_data.get('brightness') or
-                       changed_data.get('level'))
-
-                # Fallback to state if not in changed
-                if bri is None:
-                    bri = self.state.get(f'brightness_{endpoint_id}') or self.state.get('level') or self.state.get('brightness')
+                       self.state.get(f'brightness_{endpoint_id}') or
+                       self.state.get('brightness'))
 
                 if bri is not None and isinstance(bri, (int, float)):
-                    # Heuristic: If <= 100, assume %, scale to 254.
-                    # Assuming handler normalizes to 0-100 or 0-254.
-                    # Safety check: if > 100 it's definitely 254 scale.
                     if bri <= 100 and bri > 1:
                         bri = int(bri * 2.54)
                     payload['brightness'] = min(254, max(0, int(bri)))
 
-            # Color Temp
-            if hasattr(caps, 'has_capability') and caps.has_capability('color_control'):
-                ct = changed_data.get('color_temp_mireds') or changed_data.get('color_temp')
-                if ct is None:
-                    ct = self.state.get('color_temp_mireds') or self.state.get('color_temp')
+            # Color temp
+            if caps.has_capability('color_control'):
+                ct = (changed_data.get('color_temp_mireds') or
+                      changed_data.get('color_temp') or
+                      self.state.get('color_temp_mireds') or
+                      self.state.get('color_temp'))
                 if ct:
                     payload['color_temp'] = int(ct)
 
-        # COVERS
+        # === COVERS ===
         elif is_cover:
             position = (changed_data.get('position') or
                         changed_data.get('current_position') or
                         self.state.get('position', 0))
             payload['position'] = int(position) if position is not None else 0
 
-            # Derive state from position
             if payload['position'] == 0:
                 payload['state'] = 'closed'
             elif payload['position'] == 100:
                 payload['state'] = 'open'
             else:
-                payload['state'] = 'open'  # Partially open = open
+                payload['state'] = 'open'
 
-        # SENSORS (Motion, Contact, Temperature, etc.)
-        # This block catches devices that are NOT lights/switches/covers, or adds sensor data to them
+        # === ALLOWED FIELDS ===
+        # Use allows_field() to filter - this prevents motion/contact cross-contamination
+        for key in list(changed_data.keys()) + list(self.state.keys()):
+            if key in payload:
+                continue  # Already added
 
-        # 1. Copy common sensor attributes
-        # We check both changed_data (priority) and self.state (fallback)
+            if not caps.allows_field(key):
+                continue  # Capability check failed
 
-        # Unconditionally allowed sensors (Environmental, Battery, Electrical)
-        safe_attributes = [
-            'temperature', 'humidity', 'pressure', 'battery', 'voltage', 'illuminance',
-            'water_leak', 'gas', 'smoke', 'co', 'sos', 'vibration',
-            'device_temperature', 'power', 'energy', 'current',
-            'voltage', 'power_factor'
-        ]
+            # Get value from changed_data first, fallback to self.state
+            value = changed_data.get(key)
+            if value is None:
+                value = self.state.get(key)
 
-        # Conditionally allowed sensors (avoid leakage of motion into contact sensors)
-        if is_motion:
-            safe_attributes.extend(['occupancy', 'presence', 'motion'])
+            if value is not None:
+                payload[key] = value
 
-        if is_contact:
-            safe_attributes.extend(['contact'])
-
-        for attr in safe_attributes:
-            val = changed_data.get(attr)
-            if val is None:
-                val = self.state.get(attr)
-
-            if val is not None:
-                payload[attr] = val
-
-        # 2. Handle Binary Sensor State (Contact / Motion)
-        # If we haven't set 'state' yet, and we have a contact/motion value, set it.
-        # HA Binary Sensor defaults: payload_on="ON", payload_off="OFF"
-        if 'state' not in payload:
-            if is_contact:
-                # Look for 'contact' (boolean) or 'state' (OPEN/CLOSED)
-                contact_val = changed_data.get('contact')
-                if contact_val is None: contact_val = self.state.get('contact')
-
-                state_val = changed_data.get('state')
-                if state_val is None: state_val = self.state.get('state')
-
-                # Logic:
-                # If contact is True -> Closed -> OFF (usually)
-                # If contact is False -> Open -> ON (usually)
-                # But HA defaults: "ON" means "Problem/Open/Detected", "OFF" means "Normal/Closed/Clear"
-                # For door class: ON = Open, OFF = Closed
-
-                if contact_val is not None:
-                    # Zigbee standard: contact=True usually means Closed/False (Magnet detected)
-                    # Assuming typical: True=Closed, False=Open
-                    payload['contact'] = contact_val
-                    payload['state'] = 'OFF' if contact_val else 'ON'
-                elif state_val is not None:
-                    # If generic state is OPEN/CLOSED
-                    if str(state_val).upper() == 'OPEN':
-                        payload['state'] = 'OFF'
-                    elif str(state_val).upper() == 'CLOSED':
-                        payload['state'] = 'ON'
-                    else:
-                        payload['state'] = state_val # Pass through
-
-            elif is_motion:
-                # Look for occupancy/motion/presence
-                occ_val = changed_data.get('occupancy') or changed_data.get('motion') or changed_data.get('presence')
-                if occ_val is None:
-                    occ_val = self.state.get('occupancy') or self.state.get('motion') or self.state.get('presence')
-
-                if occ_val is not None:
-                    payload['occupancy'] = bool(occ_val)
-                    payload['state'] = 'ON' if occ_val else 'OFF'
-
-        # Publish if we constructed a meaningful payload
-        if payload:
+        # Publish
+        if payload and len(payload) > 3:  # More than just metadata
             safe_name = self.service.friendly_names.get(self.ieee, self.ieee)
             topic = f"{self.service.mqtt.base_topic}/{safe_name}"
             asyncio.create_task(self.service.mqtt.publish(topic, json.dumps(payload)))
