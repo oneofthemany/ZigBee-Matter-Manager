@@ -953,6 +953,7 @@ class ZigbeeService:
         announced = 0
         failed = 0
 
+        # 1. Announce Devices
         for ieee in list(self.devices.keys()):
             try:
                 await self.announce_device(ieee)
@@ -962,7 +963,13 @@ class ZigbeeService:
                 logger.error(f"[{ieee}] Failed to announce: {e}")
                 failed += 1
 
-        logger.info(f"✅ Device announcement complete: {announced} successful, {failed} failed")
+        # 2. Announce Groups
+        if hasattr(self, 'group_manager'):
+            logger.info("📢 Announcing Groups...")
+            # This calls the method we added to groups.py
+            await self.group_manager.announce_groups()
+
+        logger.info(f"✅ Device & Group announcement complete: {announced} devices successful")
         await self._emit("log", {
             "level": "INFO",
             "message": f"Announced {announced} devices to Home Assistant",

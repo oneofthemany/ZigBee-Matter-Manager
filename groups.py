@@ -90,10 +90,6 @@ class GroupManager:
                     self.next_group_id = data.get('next_id', 1)
                     logger.info(f"Loaded {len(self.groups)} groups from storage")
 
-                    # Republish Discovery to Home Assistant on load
-                    for group_id, group_info in self.groups.items():
-                        self._publish_group_discovery(group_id, group_info)
-
         except Exception as e:
             logger.error(f"Failed to load groups: {e}")
             self.groups = {}
@@ -715,6 +711,17 @@ class GroupManager:
 
         await self._publish_group_state(group_id, command)
         return {"success": True, "results": results}
+
+
+    async def announce_groups(self):
+        """
+        Publish discovery for all groups.
+        Called by Core after MQTT is connected.
+        """
+        logger.info(f"📢 Announcing {len(self.groups)} groups to Home Assistant...")
+        for group_id, group_info in self.groups.items():
+            await self._publish_group_discovery(group_id, group_info)
+
 
     async def _publish_group_discovery(self, group_id: int, group: Dict):
         """
