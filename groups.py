@@ -15,11 +15,13 @@ from typing import Dict, List, Set, Optional, Any
 from pathlib import Path
 import zigpy.types as t
 import asyncio
+import os
 
 logger = logging.getLogger(__name__)
+os.makedirs("groups", exist_ok=True)
 
 # Groups storage file
-GROUPS_FILE = Path("/opt/zigbee_manager/groups.json")
+GROUPS_FILE = Path("./groups/groups.json")
 
 
 class DeviceCapability:
@@ -87,6 +89,11 @@ class GroupManager:
                     self.groups = {int(k): v for k, v in data.get('groups', {}).items()}
                     self.next_group_id = data.get('next_id', 1)
                     logger.info(f"Loaded {len(self.groups)} groups from storage")
+
+                    # Republish Discovery to Home Assistant on load
+                    for group_id, group_info in self.groups.items():
+                        self._publish_group_discovery(group_id, group_info)
+
         except Exception as e:
             logger.error(f"Failed to load groups: {e}")
             self.groups = {}
@@ -152,8 +159,8 @@ class GroupManager:
 
         # If it has brightness or color, it's definitely a light
         if DeviceCapability.BRIGHTNESS in caps or \
-           DeviceCapability.COLOR_XY in caps or \
-           DeviceCapability.COLOR_TEMP in caps:
+                DeviceCapability.COLOR_XY in caps or \
+                DeviceCapability.COLOR_TEMP in caps:
             return "light"
 
         # Covers
@@ -260,6 +267,13 @@ class GroupManager:
         Returns:
             Dict with group info or error
         """
+        name = name.strip()
+
+        # --- Check for duplicate name ---
+        for group in self.groups.values():
+            if group['name'].lower() == name.lower():
+                return {"error": f"Group name '{name}' already exists"}
+
         # Validate we have at least 2 devices
         if len(device_iees) < 2:
             return {"error": "Groups require at least 2 devices"}
@@ -508,7 +522,7 @@ class GroupManager:
 
         base_topic = self.service.mqtt.base_topic
         safe_name = group['name'].replace(' ', '_').lower()
-        topic = f"{base_topic}/group/{safe_name}"  # Match discovery state_topic
+        topic = f"{base_topic}/group/{safe_name}"
 
         payload = {"available": True}
 
@@ -709,7 +723,7 @@ class GroupManager:
         if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
             return
 
-        base_topic = self.service.mqtt.base_topic  # Use actual base topic
+        base_topic = self.service.mqtt.base_topic
         node_id = f"group_{group_id}"
         group_name = group['name']
         safe_name = group_name.replace(' ', '_').lower()

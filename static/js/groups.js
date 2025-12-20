@@ -36,6 +36,12 @@ export async function initGroups() {
         populateBaseDeviceDropdown();
     }
 
+    // Attach Create Button Listener
+    const createBtn = document.getElementById('createGroupBtn');
+    if (createBtn) {
+        createBtn.onclick = createGroup;
+    }
+
     console.log("Groups management initialised");
 }
 
@@ -413,6 +419,8 @@ function renderGroupsList(groups) {
     container.innerHTML = '';
 
     groups.forEach(group => {
+        const safeName = group.name.replace(/'/g, "\\'");
+
         const card = document.createElement('div');
         card.className = 'group-card card mb-2';
         card.innerHTML = `
@@ -432,6 +440,9 @@ function renderGroupsList(groups) {
                     <div class="col-md-3 text-end">
                         <button class="btn btn-sm btn-primary" onclick="openGroupControl(${group.id})">
                             <i class="fas fa-sliders-h"></i> Control
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteGroup(${group.id}, '${safeName}')" title="Delete Group">
+                            <i class="fas fa-trash"></i>
                         </button>
                     </div>
                 </div>
@@ -454,6 +465,34 @@ function renderGroupMembers(devices) {
         </span>
     `).join('');
 }
+
+/**
+ * Quick Delete Group (No Modal)
+ */
+window.deleteGroup = async function(groupId, groupName) {
+    if (!confirm(`Are you sure you want to delete group "${groupName}"?\n\nThis will remove it from Home Assistant and Zigbee devices.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/groups/${groupId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            await loadGroups();
+            // Show toast or alert? Alert for now as per snippet pattern
+            // alert(`Group "${groupName}" deleted`);
+        } else {
+            const data = await response.json();
+            alert(data.error || "Failed to delete group");
+        }
+    } catch (error) {
+        console.error("Failed to delete group:", error);
+        alert('Error deleting group');
+    }
+}
+
 
 /**
  * Open group control modal
@@ -693,7 +732,7 @@ window.removeDeviceFromGroup = async function(groupId, ieee) {
 }
 
 /**
- * Delete current group
+ * Delete current group (From Modal)
  */
 window.deleteCurrentGroup = async function() {
     if (!groupsState.currentGroup) return;
