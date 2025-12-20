@@ -348,8 +348,21 @@ class OnOffHandler(ClusterHandler):
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id
 
+        # Detect capabilities first (moved up so we can use them in logic)
+        has_lightlink = 0x1000 in self.endpoint.in_clusters or 0x1000 in self.endpoint.out_clusters
+        has_opple = 0xFCC0 in self.endpoint.in_clusters or 0xFCC0 in self.endpoint.out_clusters
+        has_color = 0x0300 in self.endpoint.in_clusters or 0x0300 in self.endpoint.out_clusters
+        has_level = 0x0008 in self.endpoint.in_clusters
+        has_electrical = 0x0B04 in self.endpoint.in_clusters
+        has_multi_state = 0x0012 in self.endpoint.in_clusters
+        has_sonoff = 0xFC11 in self.endpoint.in_clusters
+
         # Check if this is a contact sensor
         is_contact_sensor = self._is_contact_sensor()
+
+        if has_sonoff:
+            is_contact_sensor = False
+
         has_only_sensor_clusters = len(self.endpoint.in_clusters) <= 4 and 0x0500 in self.endpoint.in_clusters
 
         if is_contact_sensor or has_only_sensor_clusters:
@@ -365,18 +378,11 @@ class OnOffHandler(ClusterHandler):
                 }
             }]
 
-        # Determine capabilities
-        has_lightlink = 0x1000 in self.endpoint.in_clusters or 0x1000 in self.endpoint.out_clusters
-        has_opple = 0xFCC0 in self.endpoint.in_clusters or 0xFCC0 in self.endpoint.out_clusters
-        has_color = 0x0300 in self.endpoint.in_clusters or 0x0300 in self.endpoint.out_clusters
-        has_level = 0x0008 in self.endpoint.in_clusters
-        has_electrical = 0x0B04 in self.endpoint.in_clusters
-        has_multi_state = 0x0012 in self.endpoint.in_clusters
-
-        # Quirk: Aurora sockets use level control for LED dimming, not lighting
-        if (has_electrical and has_level or has_multi_state) and not (has_color or has_lightlink):
+        # Quirk: Force Switch for Electrical, Multistate, OR Sonoff
+        # If any of these are present, it is definitely a SWITCH/SOCKET, not a light
+        if (has_electrical and has_level or has_multi_state or has_sonoff) and not (has_color or has_lightlink):
             is_light = False
-            logger.info(f"[{self.device.ieee}] EP{ep} Socket quirk: Level=LED, not light")
+            logger.info(f"[{self.device.ieee}] EP{ep} Force SWITCH: Electrical/Multistate/Sonoff present")
         else:
             is_light = has_lightlink or has_opple or has_color or has_level
             logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: {'LIGHT' if is_light else 'SWITCH'} "
@@ -438,6 +444,22 @@ class OnOffHandler(ClusterHandler):
                         "value_template": f"{{{{ value_json.brightness_{ep} }}}}",
                         "command_topic": "CMD_TOPIC_PLACEHOLDER",
                         "command_template": f'{{"command": "brightness", "value": {{{{ value }}}}, "endpoint": {ep}}}'
+                    }
+                })
+
+            # Add Sonoff Specific Configuration Entities if supported
+            if has_sonoff:
+                # Example: Work Mode (0=Switch, 1=Turbo/Router) or Detach Relay
+                configs.append({
+                    "component": "select",
+                    "object_id": f"start_up_on_off_{ep}",
+                    "config": {
+                        "name": f"Start Up Behavior {ep}",
+                        "entity_category": "config",
+                        "options": ["OFF", "ON", "TOGGLE", "PREVIOUS"],
+                        "value_template": f"{{{{ value_json.startup_behavior_{ep} }}}}",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": f'{{"command": "startup", "value": "{{{{ value }}}}", "endpoint": {ep}}}'
                     }
                 })
 
