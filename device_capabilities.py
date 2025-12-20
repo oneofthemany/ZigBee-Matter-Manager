@@ -265,7 +265,7 @@ class DeviceCapabilities:
                 self._capabilities.add('contact_sensor')
             else:
                 self._capabilities.add('motion_sensor') # Default assumption
-                self._capabilities.add('contact_sensor') # Default assumption
+                #self._capabilities.add('contact_sensor') # Default assumption
 
         if self.TEMPERATURE_MEASUREMENT in self._cluster_ids:
             self._capabilities.add('temperature_sensor')
