@@ -9,7 +9,10 @@ import { CONFIG_DEFINITIONS } from './config.js';
 export function renderOverviewTab(device) {
     const s = device.state || {};
     const qos = device.settings?.qos || 0;
+    const pollingInterval = device.polling_interval !== undefined ? device.polling_interval : 0;
 
+    // Determine power source for UI hints
+    const isBattery = device.power_source === 'Battery' || device.type === 'EndDevice';
     // 1. Determine & Sanitize Configuration Schema
     let rawSchema = [];
     
@@ -85,7 +88,10 @@ export function renderOverviewTab(device) {
         const hasOnOff = hasCluster(0x0006) && device.model?.includes('SML');  // Philips motion sensors
         const hasTuya = hasCluster(0xEF00); // Tuya Cluster (0xEF00) for radar sensors
 
-        return hasOccupancyCluster || hasIASZone || hasOnOff || hasTuya;
+        // --- Explicitly allow Tuya _TZE manufacturers ---
+        const isTuyaSensor = (device.manufacturer || '').startsWith('_TZE') || (device.manufacturer || '').startsWith('_TZ3');
+
+        return hasOccupancyCluster || hasIASZone || hasOnOff || hasTuya || isTuyaSensor;
     };
 
     const hasContactSensing = () => {
@@ -261,14 +267,33 @@ export function renderOverviewTab(device) {
                             <i class="fas fa-sliders-h"></i> Configuration
                         </div>
                         <div class="card-body">
-                            <div class="mb-2">
-                                <label class="form-label x-small mb-0 fw-bold">MQTT QoS</label>
-                                <select class="form-select form-select-sm" name="qos">
-                                    <option value="0" ${qos==0?'selected':''}>0 (Normal)</option>
-                                    <option value="1" ${qos==1?'selected':''}>1 (At Least Once)</option>
-                                    <option value="2" ${qos==2?'selected':''}>2 (Best)</option>
-                                </select>
+                            <div class="row g-2 mb-3 border-bottom pb-3">
+                                <div class="col-md-4">
+                                    <label class="form-label x-small mb-0 fw-bold">MQTT QoS</label>
+                                    <select class="form-select form-select-sm" name="qos">
+                                        <option value="0" ${qos==0?'selected':''}>0 (Normal)</option>
+                                        <option value="1" ${qos==1?'selected':''}>1 (At Least Once)</option>
+                                        <option value="2" ${qos==2?'selected':''}>2 (Optimise)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label x-small mb-0 fw-bold">Polling (Hub Pull)</label>
+                                    <input type="number" class="form-control form-control-sm" name="polling_interval"
+                                           value="${pollingInterval}" min="0" step="10">
+                                    <div class="form-text x-small mt-0 text-truncate">
+                                        Seconds. 0 = Disabled.
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label x-small mb-0 fw-bold">Reporting (Dev Push)</label>
+                                    <input type="number" class="form-control form-control-sm" name="reporting_interval"
+                                           placeholder="Default" min="0" step="10">
+                                    <div class="form-text x-small mt-0 text-truncate">
+                                        Max Interval (s).
+                                    </div>
+                                </div>
                             </div>
+
                             ${dynamicFormHtml}
                             <div class="mt-3 pt-2 border-top text-end">
                                 <button type="submit" id="saveConfigBtn" class="btn btn-sm btn-primary w-100">
@@ -294,30 +319,49 @@ export async function saveConfig(e) {
     const formData = new FormData(e.target);
     const updates = {};
     let qos = 0;
+    let pollingInterval = null;
 
     for (let [key, value] of formData.entries()) {
         if (value === "") continue;
+
         if (key === 'qos') { qos = parseInt(value); continue; }
+        if (key === 'polling_interval') { pollingInterval = parseInt(value); continue; }
+
+        // Pass reporting_interval as a general update to be handled by sensors
+        if (key === 'reporting_interval') {
+            updates['reporting_max'] = parseInt(value);
+            continue;
+        }
 
         if (key.startsWith('tuya_')) {
             updates[key.replace('tuya_', '')] = parseFloat(value);
         } else {
-            // Handle numeric values vs strings
             updates[key] = !isNaN(value) && value.trim() !== '' ? parseFloat(value) : value;
         }
     }
 
     try {
+        const payload = {
+            ieee: state.currentDeviceIeee,
+            qos: qos,
+            updates: updates
+        };
+
+        if (pollingInterval !== null && !isNaN(pollingInterval)) {
+            payload.polling_interval = pollingInterval;
+        }
+
         const res = await fetch('/api/device/configure', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ieee: state.currentDeviceIeee, qos: qos, updates: updates })
+            body: JSON.stringify(payload)
         });
+
         const data = await res.json();
         if (data.success) {
             btn.innerHTML = '<i class="fas fa-check"></i> Done';
             btn.classList.replace('btn-primary', 'btn-success');
-            if (window.doAction) setTimeout(() => window.doAction('poll', state.currentDeviceIeee), 500);
+            if (window.loadDevices) window.loadDevices();
             setTimeout(() => {
                 btn.innerHTML = originalText;
                 btn.classList.replace('btn-success', 'btn-primary');
@@ -332,6 +376,4 @@ export async function saveConfig(e) {
         btn.innerHTML = originalText;
     }
 }
-
-// Attach to window for HTML event handlers
 window.saveConfig = saveConfig;
