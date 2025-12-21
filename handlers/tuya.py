@@ -201,7 +201,6 @@ class TuyaClusterHandler(ClusterHandler):
         # ---------------------------------------------------------
         # PRIORITY 1: EXPLICIT MANUFACTURER ID CHECK (FIX for TS0601 Cover)
         # ---------------------------------------------------------
-        # Fixes incorrect Radar identification for covers like _TZE200_zah67ekd
         if '_tze200_zah67ekd' in manufacturer:
             logger.info(f"[{self.device.ieee}] Identified _TZE200_zah67ekd - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
@@ -315,9 +314,6 @@ class TuyaClusterHandler(ClusterHandler):
 
         while offset < len(data) - 4:
             try:
-                # Store starting position for this DP
-                dp_start = offset
-
                 dp_id = data[offset]
                 dp_type = data[offset + 1]
                 dp_len = (data[offset + 2] << 8) | data[offset + 3]
@@ -359,7 +355,7 @@ class TuyaClusterHandler(ClusterHandler):
             )
         # --- END ENHANCED DEBUGGING EMISSION ---
 
-        # Now actually process the DPs for state update (this calls the _process_dp again but uses the logic below)
+        # Process DPs for State
         self._update_state_from_dps(data)
 
 
@@ -390,7 +386,7 @@ class TuyaClusterHandler(ClusterHandler):
         return raw_value, parsed_value
 
     def _update_state_from_dps(self, data: bytes):
-        """Re-parses the payload to update state (original core logic)."""
+        """Re-parses the payload to update state."""
         offset = 0
 
         # Try to skip sequence number if present (common pattern)
@@ -468,12 +464,9 @@ class TuyaClusterHandler(ClusterHandler):
                         payload = json.dumps(state_update)
                         self.device.service.mqtt.publish_fast(f"{safe_name}/state", payload, qos=0)
 
-                        # FIX: Also emit WebSocket event so Frontend UI updates immediately
+                        # Send the ACTUAL DATA (state_update), not get_details()
                         if hasattr(self.device, 'emit_event'):
-                            # Send minimal update to UI to keep it responsive
-                            self.device.emit_event("device_updated", self.device.get_details())
-
-                        logger.debug(f"[{self.device.ieee}] FAST-PATH: Published {dp_def.name}={value}")
+                            self.device.emit_event("device_updated", state_update)
 
                     else:
                         # Normal update for non-critical DPs (temperature, humidity, etc.)
@@ -485,8 +478,6 @@ class TuyaClusterHandler(ClusterHandler):
                     logger.debug(f"[{self.device.ieee}] Unknown DP{dp_id} (type {dp_type}): {value}")
                     self.device.update_state({f"dp_{dp_id}": value})
 
-                # --- END Original _process_dp logic ---
-
                 offset += 4 + dp_len
 
             except Exception as e:
@@ -495,23 +486,16 @@ class TuyaClusterHandler(ClusterHandler):
 
 
     def handle_raw_data(self, message: bytes):
-        """Handle raw Tuya message data (called from device.py)."""
-        # message is the full ZCL frame. We need to strip the ZCL header.
-        # ZCL Header: FrameControl(1) + [MfrCode(2)] + TSN(1) + Command(1)
-
+        """Handle raw Tuya message data."""
         if len(message) < 3: return
 
         fc = message[0]
         # Check for Manufacturer Specific bit (0x04)
         is_mfr = (fc & 0x04) != 0
-
-        header_len = 3 # FC + TSN + CMD
-        if is_mfr:
-            header_len += 2
-
+        header_len = 3
+        if is_mfr: header_len += 2
         if len(message) > header_len:
-            payload = message[header_len:]
-            self._parse_tuya_payload(payload)
+            self._parse_tuya_payload(message[header_len:])
 
     async def configure(self):
         """Configure Tuya device - usually no standard binding needed."""
@@ -519,10 +503,7 @@ class TuyaClusterHandler(ClusterHandler):
         return True
 
     async def apply_configuration(self, settings: Dict[str, Any]):
-        """
-        Apply settings from frontend (called via device.configure).
-        Maps frontend keys (move_sensitivity) to DP names (radar_sensitivity).
-        """
+        """Apply settings from frontend."""
         key_map = {
             "radar_sensitivity": "radar_sensitivity",
             "presence_sensitivity": "presence_sensitivity",
@@ -588,15 +569,7 @@ class TuyaClusterHandler(ClusterHandler):
             self.device.update_state(applied_settings)
 
     async def poll(self) -> Dict[str, Any]:
-        """
-        Poll the device for current status (Tuya specific).
-
-        Uses TUYA_QUERY_DATA (0x03) command which triggers the device
-        to send back its current datapoint values.
-
-        NOTE: Not all Tuya devices support polling. Some radar sensors only
-        report data when state changes (event-driven).
-        """
+        """Poll the device for current status."""
         logger.info(f"[{self.device.ieee}] Polling Tuya device (sending query)")
 
         self._seq = (self._seq + 1) % 0x10000
@@ -641,17 +614,7 @@ class TuyaClusterHandler(ClusterHandler):
             return {}
 
     async def send_dp(self, dp_id: int, dp_type: int, value: Any):
-        """
-        Send a DP command to the device using raw ZCL frame construction.
-
-        This uses the zigpy device's request() method to send raw ZCL frames,
-        bypassing all cluster command schema validation.
-
-        Based on analysis of ZHA's TuyaNewManufCluster which requires:
-        - Manufacturer ID: 0xFFFF (NO_MANUFACTURER_ID)
-        - Command ID: 0x00 (TUYA_SET_DATA)
-        - Manufacturer-specific frame control
-        """
+        """Send a DP command."""
         self._seq = (self._seq + 1) % 0x10000
 
         # Encode value based on type
