@@ -187,6 +187,11 @@ class ThermostatHandler(ClusterHandler):
         # Always parse the value first using the centralized logic
         parsed_value = self.parse_value(attrid, value)
 
+        # Ignore 0 degrees as it's likely invalid for a thermostat/receiver
+        if attrid in [self.ATTR_LOCAL_TEMP, self.ATTR_INTERNAL_TEMP] and parsed_value == 0:
+            logger.debug(f"[{self.device.ieee}] Ignoring invalid 0 temperature reading.")
+            return
+
         updates = {}
 
         if attrid == self.ATTR_LOCAL_TEMP:
@@ -211,6 +216,13 @@ class ThermostatHandler(ClusterHandler):
             updates["running_state"] = value
             updates["hvac_action"] = action
 
+        elif attrid == self.ATTR_INTERNAL_TEMP:
+            # --- Map internal_temperature to local_temperature ---
+            # SLR1c reports this. Map it to local_temperature for HA consistency.
+            updates["internal_temperature"] = parsed_value
+            updates["local_temperature"] = parsed_value
+            updates["temperature"] = parsed_value
+
         elif attrid == self.ATTR_PI_HEATING_DEMAND:
             updates["heating_demand"] = value
 
@@ -227,9 +239,9 @@ class ThermostatHandler(ClusterHandler):
 
         if updates:
             self.device.update_state(updates)
-
-            # Update derived HVAC action
-            self._update_hvac_action()
+            # Update derived HVAC action (if not already handled in running_state)
+            if "hvac_action" not in updates:
+                self._update_hvac_action()
 
     def _update_hvac_action(self):
         """Derive hvac_action (heating, idle, off) from system_mode and running_state."""
@@ -311,7 +323,7 @@ class ThermostatHandler(ClusterHandler):
         }
         # Only poll local temp if it's NOT a receiver (or poll as internal)
         if self.is_receiver:
-            attrs[self.ATTR_LOCAL_TEMP] = "internal_temperature"
+            attrs[self.ATTR_INTERNAL_TEMP] = "internal_temperature"
         else:
             attrs[self.ATTR_LOCAL_TEMP] = "local_temperature"
         return attrs
@@ -330,7 +342,11 @@ class ThermostatHandler(ClusterHandler):
         await self.cluster.write_attributes({"occupied_heating_setpoint": value})
 
         # Optimistic update
-        self.device.update_state({"heating_setpoint": temperature, "occupied_heating_setpoint": temperature})
+        self.device.update_state({
+            "heating_setpoint": temperature,
+            "occupied_heating_setpoint": temperature,
+            "temperature_setpoint": temperature
+        })
 
     async def set_system_mode(self, mode: str):
         """Set system mode (off, auto, heat)."""
