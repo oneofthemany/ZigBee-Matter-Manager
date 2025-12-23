@@ -145,7 +145,6 @@ export function renderControlTab(device) {
                             </div>
                             <small class="text-muted">Uploads a default schedule: 20°C at 6AM, 18°C at 9AM, 21°C at 5PM, 16°C at 10PM.</small>
                         </div>
-                        // ...
                     </div>
                 </div>
             </div>
@@ -156,10 +155,21 @@ export function renderControlTab(device) {
     if (device.capabilities && Array.isArray(device.capabilities)) {
         device.capabilities.forEach(ep => {
             const epId = ep.id;
+
+            // Skip sensors/buttons
+            if (ep.component_type === "sensor") {
+                return;
+            }
+
             const clusters = (ep.inputs || []).concat(ep.outputs || []);
             const hasOnOff = clusters.some(c => c.id === 0x0006);
             const hasLevel = clusters.some(c => c.id === 0x0008);
             const hasColor = clusters.some(c => c.id === 0x0300);
+            const hasElectrical = clusters.some(c => c.id === 0x0B04);
+            const hasMultiState = clusters.some(c => [0x0012, 0x0013, 0x0014].includes(c.id));
+
+            const componentType = ep.component_type || 'switch';
+            const isLight = componentType === 'light';
 
             if (hasOnOff || hasLevel || hasColor) {
                 controlsFound = true;
@@ -168,11 +178,15 @@ export function renderControlTab(device) {
                 let colorTemp = s[`color_temp_${epId}`] || (epId === 1 ? s.color_temp : 370);
                 let kelvin = colorTemp ? Math.round(1000000 / colorTemp) : 2700;
 
+                // Use componentType to determine header/icon
+                const icon = isLight ? '<i class="fas fa-lightbulb text-warning"></i>' : '<i class="fas fa-plug text-info"></i>';
+                const label = isLight ? 'Light' : 'Switch';
+
                 html += `
                 <div class="col-12 col-md-6 mb-3">
                     <div class="card h-100">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <strong><i class="fas fa-lightbulb text-warning"></i> Light (EP${epId})</strong>
+                            <strong>${icon} ${label} (EP${epId})</strong>
                             ${isOn ? '<span class="badge bg-success">ON</span>' : '<span class="badge bg-secondary">OFF</span>'}
                         </div>
                         <div class="card-body">`;
@@ -208,7 +222,95 @@ export function renderControlTab(device) {
                         </div>`;
                 }
 
+                // Show multistate/electrical for switches at end of card body
+                if (!isLight && (hasMultiState || hasElectrical)) {
+                    html += `<div class="mt-3 pt-3 border-top">`;
+
+                    if (hasElectrical) {
+                        const power = s[`power_${epId}`] || s.power || 0;
+                        const voltage = s[`voltage_${epId}`] || s.voltage || 0;
+                        const current = s[`current_${epId}`] || s.current || 0;
+                        html += `
+                        <div class="small text-muted mb-2"><i class="fas fa-bolt"></i> Power Monitoring</div>
+                        <div class="d-flex justify-content-between">
+                            <span>Power: <strong>${power} W</strong></span>
+                            <span>Voltage: <strong>${voltage} V</strong></span>
+                            <span>Current: <strong>${current} A</strong></span>
+                        </div>`;
+                    }
+
+                    if (hasMultiState) {
+                        // Show multistate/action values if present
+                        const multiStateKeys = Object.keys(s).filter(k =>
+                            (k.startsWith('multistate_') || k.includes('action') || k.includes('operation')) &&
+                            (k.includes(`_${epId}`) || (epId === 1 && !k.match(/_\d+$/)))
+                        );
+                        if (multiStateKeys.length > 0) {
+                            html += `<div class="small text-muted mb-2 mt-2"><i class="fas fa-info-circle"></i> Actions/State</div>`;
+                            multiStateKeys.forEach(k => {
+                                const displayKey = k.replace(`_${epId}`, '').replace(/_/g, ' ');
+                                html += `<span class="badge bg-info text-dark me-1 mb-1">${displayKey}: ${s[k]}</span>`;
+                            });
+                        }
+                    }
+
+                    html += `</div>`;
+                }
+
                 html += `</div></div></div>`;
+            }
+        });
+    }
+
+    // --- Show Button/Remote Actions ---
+    if (device.capabilities && Array.isArray(device.capabilities)) {
+        const sensorEndpoints = device.capabilities.filter(ep => ep.component_type === "sensor");
+
+        sensorEndpoints.forEach(ep => {
+            const epId = ep.id;
+            const hasMultiState = (ep.inputs || []).concat(ep.outputs || []).some(c =>
+                [0x0012, 0x0013, 0x0014].includes(c.id)
+            );
+
+            // Skip passive sensors (IAS, Occupancy without multistate)
+            const hasIAS = (ep.inputs || []).some(c => c.id === 0x0500);
+            const hasOccupancy = (ep.inputs || []).some(c => c.id === 0x0406);
+            if ((hasIAS || hasOccupancy) && !hasMultiState) {
+                return;
+            }
+
+            // Show button/remote action info
+            if (hasMultiState) {
+                const actionKeys = Object.keys(s).filter(k =>
+                    (k.startsWith('multistate_') || k.includes('action') || k.includes('click') || k.includes('button')) &&
+                    (k.includes(`_${epId}`) || (epId === 1 && !k.match(/_\d+$/)))
+                );
+
+                if (actionKeys.length > 0) {
+                    controlsFound = true;
+                    html += `
+                    <div class="col-12 col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header bg-light">
+                                <strong><i class="fas fa-hand-pointer text-primary"></i> Button/Remote (EP${epId})</strong>
+                            </div>
+                            <div class="card-body">
+                                <div class="small text-muted mb-2"><i class="fas fa-info-circle"></i> Last Actions</div>`;
+
+                    actionKeys.forEach(k => {
+                        const displayKey = k.replace(`_${epId}`, '').replace(/_/g, ' ');
+                        const val = s[k];
+                        html += `<div class="mb-2">
+                            <span class="badge bg-primary me-2">${displayKey}</span>
+                            <span class="badge bg-light text-dark">${val}</span>
+                        </div>`;
+                    });
+
+                    html += `
+                            </div>
+                        </div>
+                    </div>`;
+                }
             }
         });
     }
@@ -230,7 +332,7 @@ export function renderControlTab(device) {
     return html;
 }
 
-
+// ... (Rest of your helper functions: uploadSimpleSchedule, adjustThermostat, etc. remain unchanged) ...
 window.uploadSimpleSchedule = async function(ieee) {
     if (!confirm("This will overwrite the device's internal schedule for ALL days. Continue?")) return;
 
@@ -250,9 +352,6 @@ window.uploadSimpleSchedule = async function(ieee) {
     };
 
     try {
-        // We use the generic command sender, passing the object as value
-        // You might need to adjust actions.js to handle object values if it doesn't already.
-        // Assuming your backend expects raw JSON in the body:
         await fetch(`/api/device/${ieee}/command`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -265,7 +364,6 @@ window.uploadSimpleSchedule = async function(ieee) {
     }
 };
 
-// Global Helpers for Control Tab
 window.adjustThermostat = function(ieee, delta) {
     const input = document.getElementById(`thermostat-setpoint-${ieee}`);
     if (input) {

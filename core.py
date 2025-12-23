@@ -1758,11 +1758,50 @@ class ZigbeeService:
                 if ep_id == 0:
                     continue  # Skip ZDO
 
+                # Determine component type for this endpoint
+                component_type = None
+
+                # Key cluster checks
+                has_onoff_input = 0x0006 in ep.in_clusters
+                has_onoff_output = 0x0006 in ep.out_clusters
+                has_level = 0x0008 in ep.in_clusters
+                has_color = 0x0300 in ep.in_clusters
+                has_lightlink = 0x1000 in ep.in_clusters
+                has_electrical = 0x0B04 in ep.in_clusters
+                has_multi_state = (0x0012 in ep.in_clusters or 0x0012 in ep.out_clusters or
+                                   0x0013 in ep.in_clusters or 0x0013 in ep.out_clusters or
+                                   0x0014 in ep.in_clusters or 0x0014 in ep.out_clusters)
+                has_power_config = 0x0001 in ep.in_clusters  # Battery powered
+                has_ias_zone = 0x0500 in ep.in_clusters
+                has_occupancy = 0x0406 in ep.in_clusters
+
+                # Sensors/Buttons: Battery + OnOff in outputs OR MultistateInput OR IAS/Occupancy
+                if has_ias_zone or has_occupancy:
+                    component_type = "sensor"
+                elif has_power_config and has_onoff_output and not has_onoff_input:
+                    component_type = "sensor"  # Door/window sensor
+                elif has_multi_state and not (has_level or has_color or has_electrical):
+                    component_type = "sensor"  # Button/remote
+                elif has_onoff_input:
+                    # Real OnOff actuator - determine if light or switch
+                    # Force switch if electrical + level OR multistate present
+                    if (has_electrical and has_level or has_multi_state) and not (has_color or has_lightlink):
+                        component_type = "switch"
+                    elif has_lightlink or has_color or has_level:
+                        component_type = "light"
+                    else:
+                        component_type = "switch"
+                elif 0x0102 in ep.in_clusters:
+                    component_type = "cover"
+                elif 0x0201 in ep.in_clusters:
+                    component_type = "thermostat"
+
                 caps.append({
                     "id": ep_id,
                     "profile": f"0x{ep.profile_id:04x}" if ep.profile_id else "0x0000",
                     "inputs": [{"id": c.cluster_id, "name": c.name} for c in ep.in_clusters.values()],
-                    "outputs": [{"id": c.cluster_id, "name": c.name} for c in ep.out_clusters.values()]
+                    "outputs": [{"id": c.cluster_id, "name": c.name} for c in ep.out_clusters.values()],
+                    "component_type": component_type
                 })
 
             res.append({
