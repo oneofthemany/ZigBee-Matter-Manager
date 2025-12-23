@@ -486,34 +486,28 @@ class AqaraManufacturerCluster(ClusterHandler):
         return {}
 
     async def write_attribute(self, attr_id: int, value: Any) -> bool:
-        """
-        Write an attribute with manufacturer code.
-
-        Args:
-            attr_id: Attribute ID to write
-            value: Value to write
-
-        Returns:
-            True if successful
-        """
+        """Write attribute with manufacturer code."""
         try:
-            logger.info(f"[{self.device.ieee}] Writing Aqara attr 0x{attr_id:04x} = {value}")
-
-            # CRITICAL: Must use manufacturer code for Aqara writes
+            logger.info(f"[{self.device.ieee}] Writing Aqara attr 0x{attr_id:04X} = {value}")
             result = await self.cluster.write_attributes(
                 {attr_id: value},
                 manufacturer=self.MANUFACTURER_CODE
             )
 
-            # result is list of write_attribute_record
-            if result and result[0].status == 0:  # SUCCESS
-                logger.info(f"[{self.device.ieee}] Aqara write success: 0x{attr_id:04x}")
-                # Read back to confirm
-                await self.read_attribute(attr_id)
-                return True
-            else:
-                logger.error(f"[{self.device.ieee}] Aqara write failed: {result}")
-                return False
+            # Result is a list of WriteAttributesStatusRecord
+            if result and isinstance(result, (list, tuple)):
+                if len(result) > 0:
+                    status_record = result[0]
+                    if hasattr(status_record, 'status'):
+                        success = (status_record.status == 0)
+                    else:
+                        # Sometimes it's just [0] for success
+                        success = (status_record == 0)
+                    logger.info(f"[{self.device.ieee}] Aqara write result: {success} (status={status_record})")
+                    return success
+
+            logger.warning(f"[{self.device.ieee}] Unexpected write result: {result}")
+            return False
 
         except Exception as e:
             logger.error(f"[{self.device.ieee}] Aqara write exception: {e}")
@@ -624,16 +618,19 @@ class AqaraManufacturerCluster(ClusterHandler):
 
 
     def process_command(self, command: str, value: Any):
-        loop = self.device.loop
+        import asyncio
 
         if command == "motor_calibration":
-            loop.create_task(self.start_motor_calibration())
+            asyncio.create_task(self.start_motor_calibration())
 
         elif command == "window_detection":
-            loop.create_task(self.set_window_detection(bool(value)))
+            asyncio.create_task(self.set_window_detection(bool(value)))
 
         elif command == "valve_detection":
-            loop.create_task(self.set_valve_detection(bool(value)))
+            asyncio.create_task(self.set_valve_detection(bool(value)))
+
+        elif command == "child_lock":
+            asyncio.create_task(self.write_attribute(self.ATTR_CHILD_LOCK, 1 if value else 0))
 
 
     def get_configuration_options(self) -> List[Dict]:
@@ -813,37 +810,88 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         return options
 
-    def get_discovery_configs(self) -> list:
-        """
-        Generate Home Assistant MQTT discovery configs.
-        Creates sensors for status attributes and configuration entities.
-        """
+    def get_discovery_configs(self) -> List[Dict]:
+        """Generate Home Assistant discovery configs for Aqara features."""
         configs = []
 
-        # Window open status sensor (for TRVs)
-        if hasattr(self.device, 'hvac'):
-            configs.append({
-                "component": "binary_sensor",
-                "object_id": "window_open",
-                "config": {
-                    "name": "Window Open",
-                    "device_class": "window",
-                    "value_template": "{{ value_json.window_open }}",
-                    "payload_on": True,
-                    "payload_off": False
-                }
-            })
+        # Only expose TRV features if device has HVAC capability
+        if hasattr(self.device, 'hvac') or any(h.CLUSTER_ID == 0x0201 for h in self.device.handlers.values()):
 
-            configs.append({
-                "component": "binary_sensor",
-                "object_id": "valve_alarm",
-                "config": {
-                    "name": "Valve Alarm",
-                    "device_class": "problem",
-                    "value_template": "{{ value_json.valve_alarm }}",
-                    "payload_on": True,
-                    "payload_off": False
+            # === READ-ONLY STATUS SENSORS ===
+            configs.extend([
+                {
+                    "component": "binary_sensor",
+                    "object_id": "window_open",
+                    "config": {
+                        "name": "Window Open",
+                        "device_class": "window",
+                        "value_template": "{{ value_json.window_open | default(false) }}",
+                        "payload_on": True,
+                        "payload_off": False
+                    }
+                },
+                {
+                    "component": "binary_sensor",
+                    "object_id": "valve_alarm",
+                    "config": {
+                        "name": "Valve Alarm",
+                        "device_class": "problem",
+                        "value_template": "{{ value_json.valve_alarm | default(false) }}",
+                        "payload_on": True,
+                        "payload_off": False
+                    }
                 }
-            })
+            ])
+
+            # === CONFIGURATION CONTROLS (Switches) ===
+            configs.extend([
+                {
+                    "component": "switch",
+                    "object_id": "window_detection",
+                    "config": {
+                        "name": "Window Detection",
+                        "icon": "mdi:window-open-variant",
+                        "entity_category": "config",
+                        "value_template": "{{ value_json.window_detection | default(false) }}",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": '{"command": "window_detection", "value": {{ 1 if value == "ON" else 0 }}}'
+                    }
+                },
+                {
+                    "component": "switch",
+                    "object_id": "valve_detection",
+                    "config": {
+                        "name": "Valve Detection",
+                        "icon": "mdi:pipe-valve",
+                        "entity_category": "config",
+                        "value_template": "{{ value_json.valve_detection | default(false) }}",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": '{"command": "valve_detection", "value": {{ 1 if value == "ON" else 0 }}}'
+                    }
+                },
+                {
+                    "component": "switch",
+                    "object_id": "child_lock",
+                    "config": {
+                        "name": "Child Lock",
+                        "icon": "mdi:lock",
+                        "entity_category": "config",
+                        "value_template": "{{ value_json.child_lock | default(false) }}",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": '{"command": "child_lock", "value": {{ 1 if value == "ON" else 0 }}}'
+                    }
+                },
+                {
+                    "component": "button",
+                    "object_id": "motor_calibration",
+                    "config": {
+                        "name": "Calibrate Valve",
+                        "icon": "mdi:wrench",
+                        "entity_category": "config",
+                        "command_topic": "CMD_TOPIC_PLACEHOLDER",
+                        "command_template": '{"command": "motor_calibration", "value": 1}'
+                    }
+                }
+            ])
 
         return configs
