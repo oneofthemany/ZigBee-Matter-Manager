@@ -245,18 +245,16 @@ class ThermostatHandler(ClusterHandler):
 
 
     async def set_target_temperature(self, temperature: float):
-        """
-        Set TRV target temperature (°C).
-        Zigbee requires centidegrees.
-        """
+        """Set TRV target temperature (°C). Zigbee requires centidegrees."""
         temperature = max(self._min_heat, min(self._max_heat, float(temperature)))
         value = int(temperature * 100)
 
+        logger.info(f"[{self.device.ieee}] Writing occupied_heating_setpoint: {temperature}°C ({value} centidegrees)")
+
         await self.cluster.write_attributes({
-            self.ATTR_OCCUPIED_HEATING_SETPOINT: value
+            "occupied_heating_setpoint": value  # Use string name, not ID
         })
 
-        # Optimistic update
         self.device.update_state({
             "temperature": temperature,
             "heating_setpoint": temperature,
@@ -265,22 +263,17 @@ class ThermostatHandler(ClusterHandler):
 
 
     async def set_hvac_mode(self, mode: str):
-        """
-        Set HVAC system mode.
-        Supported: off, heat, auto
-        """
-        mode_map = {
-            "off": 0x00,
-            "auto": 0x01,
-            "heat": 0x04,
-        }
+        """Set HVAC system mode."""
+        mode_map = {"off": 0x00, "auto": 0x01, "heat": 0x04}
 
         if mode not in mode_map:
             logger.warning(f"[{self.device.ieee}] Unsupported HVAC mode: {mode}")
             return
 
+        logger.info(f"[{self.device.ieee}] Writing system_mode: {mode} ({mode_map[mode]})")
+
         await self.cluster.write_attributes({
-            self.ATTR_SYSTEM_MODE: mode_map[mode]
+            "system_mode": mode_map[mode]  # Use string name, not ID
         })
 
         self.device.update_state({"system_mode": mode})
@@ -312,13 +305,14 @@ class ThermostatHandler(ClusterHandler):
 
 
     def process_command(self, command: str, value: Any):
+        import asyncio
         if command in ("temperature", "set_temperature"):
-            self.device.loop.create_task(
+            asyncio.create_task(
                 self.set_target_temperature(float(value))
             )
 
         elif command in ("system_mode", "set_mode"):
-            self.device.loop.create_task(
+            asyncio.create_task(
                 self.set_hvac_mode(str(value).lower())
             )
 

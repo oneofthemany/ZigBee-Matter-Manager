@@ -828,14 +828,37 @@ class ZHADevice:
                     optimistic_state['color_temp_mireds'] = mireds
                     success = True
 
-        # GENERAL COMMANDS (Fallthrough)
-        if not success and command == 'temperature' and value is not None:
+        # AQARA MANUFACTURER CLUSTER COMMANDS (0xFCC0)
+        if not success and command in ['window_detection', 'valve_detection', 'motor_calibration', 'child_lock']:
+            h = get_handler(0xFCC0)
+            if h and hasattr(h, 'process_command'):
+                h.process_command(command, value)
+                success = True
+                # Optimistic updates
+                if command == 'motor_calibration':
+                    optimistic_state['motor_calibration'] = 'calibrating' if value else 'idle'
+                else:
+                    optimistic_state[command] = bool(value)
+
+        # HVAC COMMANDS - route to handler if process_command exists
+        if not success and command in ['temperature', 'system_mode']:
             h = get_handler(0x0201)
             if h:
-                await h.set_heating_setpoint(float(value))
-                optimistic_state['temperature_setpoint'] = float(value)
-                success = True
+                if hasattr(h, 'process_command'):
+                    h.process_command(command, value)
+                    success = True
+                    # Optimistic updates
+                    if command == 'temperature':
+                        optimistic_state['temperature_setpoint'] = float(value)
+                    elif command == 'system_mode':
+                        optimistic_state['system_mode'] = str(value).lower()
+                elif command == 'temperature':
+                    # Fallback for compatibility with Hive receivers
+                    await h.set_heating_setpoint(float(value))
+                    optimistic_state['temperature_setpoint'] = float(value)
+                    success = True
 
+        # GENERAL COMMANDS (Fallthrough)
         elif not success and command == 'identify':
             h = get_handler(0x0003)
             if h:
