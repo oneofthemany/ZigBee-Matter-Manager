@@ -5,6 +5,8 @@ Handles: Buttons, Cubes, Vibration sensors (MultistateInput)
 import logging
 import struct
 from typing import Any, Dict, List
+import asyncio
+import zigpy.types as t
 
 from .base import ClusterHandler, register_handler
 
@@ -259,6 +261,31 @@ class AqaraManufacturerCluster(ClusterHandler):
     ATTR_TEMP_DISPLAY_UNIT = 0xFF01     # uint8 - 0=Celsius, 1=Fahrenheit
     ATTR_MEASUREMENT_INTERVAL = 0x00EF  # uint16 - Measurement interval seconds
 
+    # ===== Type Enforcement Map =====
+    ATTR_TYPES = {
+        # --- Boolean Attributes ---
+        0x0201: t.Bool,      # Power Outage Memory
+        0x027A: t.Bool,      # Window Open Status
+        0x0275: t.Bool,      # Valve Alarm
+
+        # --- Integer Attributes ---
+        0x0273: t.uint8_t,   # Window Detection
+        0x0274: t.uint8_t,   # Valve Detection
+        0x0277: t.uint8_t,   # Child Lock
+        0x0270: t.uint8_t,   # Motor Calibration
+        0x0200: t.uint8_t,   # Operation Mode
+        0x0004: t.uint8_t,   # Switch Mode
+        0x000A: t.uint8_t,   # Switch Type
+        0x00F0: t.uint8_t,   # Indicator Light
+        0x0271: t.uint8_t,   # System Mode
+        0x0272: t.uint8_t,   # Preset
+        0x027B: t.uint8_t,   # Calibrated Status
+        0x027E: t.uint8_t,   # Sensor Type
+        0x0102: t.uint8_t,   # Detection Interval
+        0x010C: t.uint8_t,   # Motion Sensitivity
+        0x0152: t.uint8_t,   # Trigger Indicator
+    }
+
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
         """
         Handle attribute updates from the Aqara manufacturer cluster.
@@ -488,28 +515,71 @@ class AqaraManufacturerCluster(ClusterHandler):
         return {}
 
     async def write_attribute(self, attr_id: int, value: Any) -> bool:
-        """Write attribute with manufacturer code and proper typing."""
+        """
+        Write attribute to the correct cluster (0xFCC0) with Retries and Type Safety.
+        """
         from zigpy import types as t
+        import asyncio
 
+        # 1. Determine Type & Cast Value
+        target_type = self.ATTR_TYPES.get(attr_id, t.uint8_t)
         try:
-            logger.info(f"[{self.device.ieee}] Writing Aqara attr 0x{attr_id:04X} = {value}")
-
-            result = await self.cluster.write_attributes(
-                {attr_id: t.uint8_t(value)},
-                manufacturer=self.MANUFACTURER_CODE
-            )
-
-            if result and isinstance(result, (list, tuple)) and len(result) > 0:
-                status = result[0].status if hasattr(result[0], 'status') else result[0]
-                success = (status == 0)
-                logger.info(f"[{self.device.ieee}] ✓ Aqara write: {'SUCCESS' if success else f'FAILED ({status})'}")
-                return success
-
+            val_converted = target_type(value)
+        except ValueError:
+            logger.error(f"[{self.device.ieee}] Type Error: Could not cast {value} to {target_type.__name__}")
             return False
 
-        except Exception as e:
-            logger.error(f"[{self.device.ieee}] Aqara write exception: {e}")
-            return False
+        # 2. Determine Target Cluster (Aqara Opple 0xFCC0 for custom attrs)
+        target_cluster = self.cluster
+        if attr_id >= 0x0200:
+            OPPLE_CLUSTER_ID = 0xFCC0
+            if hasattr(self.cluster, 'endpoint') and OPPLE_CLUSTER_ID in self.cluster.endpoint.in_clusters:
+                target_cluster = self.cluster.endpoint.in_clusters[OPPLE_CLUSTER_ID]
+
+        # 3. Perform the Write with Retry Logic (Fixes Calibration Sleep Issue)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"[{self.device.ieee}] Writing 0x{attr_id:04X}={val_converted} to Cluster 0x{target_cluster.cluster_id:04X} (Attempt {attempt}/{max_retries})")
+
+                # Manufacturer code 0x115F (Lumi) is required
+                result = await target_cluster.write_attributes(
+                    {attr_id: val_converted},
+                    manufacturer=self.MANUFACTURER_CODE
+                )
+
+                # 4. Handle Result safely (Fixes 'unsupported format string' crash)
+                if result and isinstance(result, (list, tuple)):
+                    # Zigpy returns a list of result records
+                    for record in result:
+                        # Status can be an IntEnum or an Exception/Error object
+                        status = getattr(record, 'status', record)
+
+                        # Check for Success (Status.SUCCESS == 0)
+                        if status == 0 or status == 'Status.SUCCESS':
+                            logger.info(f"[{self.device.ieee}] ✓ Write Success")
+                            return True
+                        else:
+                            # Log safely using string conversion instead of hex formatting
+                            logger.warning(f"[{self.device.ieee}] Write Failed with Status: {status}")
+                            return False
+
+                # If we got here, result format was unexpected, but likely a success if no exception raised
+                logger.info(f"[{self.device.ieee}] ✓ Write sent (No status record returned)")
+                return True
+
+            except (asyncio.TimeoutError, Exception) as e:
+                # Catch Timeouts (common for Calibration) and other errors
+                error_msg = str(e) or repr(e) # Ensure we don't log empty strings
+
+                if attempt < max_retries:
+                    logger.warning(f"[{self.device.ieee}] Write Attempt {attempt} failed: {error_msg}. Retrying in 1s...")
+                    await asyncio.sleep(1.0) # Wait a bit before retry
+                else:
+                    logger.error(f"[{self.device.ieee}] ❌ Write Final Failure: {error_msg}")
+                    return False
+
+        return False
 
 
     async def read_attribute(self, attr_id: int) -> Any:
@@ -617,18 +687,28 @@ class AqaraManufacturerCluster(ClusterHandler):
 
 
     def process_command(self, command: str, value: Any):
-        """Process commands for Aqara-specific features."""
-        import asyncio
-        from zigpy import types as t
+        """Process commands - write_attribute handles typing."""
 
-        if command == "motor_calibration":
-            asyncio.create_task(self.write_attribute(self.ATTR_MOTOR_CALIBRATION, t.uint8_t(1)))
+        def to_bool_int(val):
+            if isinstance(val, str):
+                v_lower = val.lower()
+                if v_lower in ["lock", "on", "true", "yes", "1", "calibrate"]: return 1
+                if v_lower in ["unlock", "off", "false", "no", "0"]: return 0
+            return 1 if val else 0
+
+        val_int = to_bool_int(value)
+
+        if command in ("motor_calibration", "calibrate"):
+            asyncio.create_task(self.write_attribute(self.ATTR_MOTOR_CALIBRATION, 1))  # ← Just pass int
+
         elif command == "window_detection":
-            asyncio.create_task(self.write_attribute(self.ATTR_WINDOW_DETECTION, t.uint8_t(1 if value else 0)))
+            asyncio.create_task(self.write_attribute(self.ATTR_WINDOW_DETECTION, val_int))
+
         elif command == "valve_detection":
-            asyncio.create_task(self.write_attribute(self.ATTR_VALVE_DETECTION, t.uint8_t(1 if value else 0)))
+            asyncio.create_task(self.write_attribute(self.ATTR_VALVE_DETECTION, val_int))
+
         elif command == "child_lock":
-            asyncio.create_task(self.write_attribute(self.ATTR_CHILD_LOCK, t.uint8_t(1 if value else 0)))
+            asyncio.create_task(self.write_attribute(self.ATTR_CHILD_LOCK, val_int))
 
 
     def get_configuration_options(self) -> List[Dict]:
