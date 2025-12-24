@@ -422,6 +422,7 @@ class ThermostatHandler(ClusterHandler):
         if attrid == self.ATTR_RUNNING_STATE: return "running_state"
         return super().get_attr_name(attrid)
 
+
     def get_pollable_attributes(self) -> Dict[int, str]:
         attrs = {
             self.ATTR_OCCUPIED_HEATING_SETPOINT: "heating_setpoint",
