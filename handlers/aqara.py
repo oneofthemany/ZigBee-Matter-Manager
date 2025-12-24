@@ -560,11 +560,9 @@ class AqaraManufacturerCluster(ClusterHandler):
                             logger.info(f"[{self.device.ieee}] ✓ Write Success")
                             return True
                         else:
-                            # Log safely using string conversion instead of hex formatting
                             logger.warning(f"[{self.device.ieee}] Write Failed with Status: {status}")
                             return False
 
-                # If we got here, result format was unexpected, but likely a success if no exception raised
                 logger.info(f"[{self.device.ieee}] ✓ Write sent (No status record returned)")
                 return True
 
