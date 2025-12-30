@@ -1626,97 +1626,89 @@ class ZigbeeService:
     async def _debounced_device_update(self, zha_device, changed_data, full_state, qos, endpoint_id):
         """Actual update logic with debounce."""
         try:
-            await asyncio.sleep(0.05)  # 50ms debounce
+            await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             return
 
         ieee = zha_device.ieee
 
-        #logger.info(f"[{ieee}] DEBOUNCED UPDATE: qos={qos}, endpoint={endpoint_id}")
-
+        # Build MQTT payload from changed data only
         if full_state is None:
-            payload_data = zha_device.state.copy()
+            mqtt_payload = changed_data.copy()
+            mqtt_payload['available'] = zha_device.is_available()
+            mqtt_payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
         else:
-            payload_data = full_state.copy()
-
-        payload_data['available'] = zha_device.is_available()
-        payload_data['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
+            mqtt_payload = full_state.copy()
+            mqtt_payload['available'] = zha_device.is_available()
+            mqtt_payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
 
         from json_helpers import sanitise_device_state
-        safe_payload = sanitise_device_state(payload_data)
+        safe_mqtt_payload = sanitise_device_state(mqtt_payload)
 
-        # ==========================================================
-        # NORMALISE CONTACT SENSORS (Zigbee -> HA semantics)
-        # Zigbee: True = CLOSED, False = OPEN
-        # HA door: True = OPEN, False = CLOSED
-        # ==========================================================
+        # Normalise contact sensors for MQTT
         device_caps = zha_device.capabilities
-
         if device_caps.has_capability('contact_sensor'):
-            # Endpoint-aware keys
-            for key in list(safe_payload.keys()):
+            for key in list(safe_mqtt_payload.keys()):
                 if key == 'contact' or key.startswith('contact_'):
-                    raw = safe_payload.get(key)
+                    raw = safe_mqtt_payload.get(key)
                     if isinstance(raw, bool):
                         ha_val = not raw
-                        safe_payload[key] = ha_val
-
-                        # Keep is_open / is_closed consistent
+                        safe_mqtt_payload[key] = ha_val
                         ep = key.split('_', 1)[1] if '_' in key else None
                         open_key = f"is_open_{ep}" if ep else "is_open"
                         closed_key = f"is_closed_{ep}" if ep else "is_closed"
+                        safe_mqtt_payload[open_key] = ha_val
+                        safe_mqtt_payload[closed_key] = not ha_val
 
-                        safe_payload[open_key] = ha_val
-                        safe_payload[closed_key] = not ha_val
-
-
-        # Remove internal keys (_raw, attr_XXXX_XXXX, startup_behavior_XX_raw)
-        keys_to_remove = [k for k in list(safe_payload.keys())
+        # Remove internal keys
+        keys_to_remove = [k for k in list(safe_mqtt_payload.keys())
                           if k.endswith('_raw') or k.startswith('attr_')]
 
-        # Remove motion sensor attributes from non-sensor devices
-        device_caps = zha_device.capabilities
         if not device_caps.has_capability('motion_sensor'):
             keys_to_remove.extend(['occupancy', 'motion', 'presence'])
 
         for key in keys_to_remove:
-            safe_payload.pop(key, None)
+            safe_mqtt_payload.pop(key, None)
 
         # Fix multi-endpoint state
-        endpoint_state_keys = [k for k in safe_payload.keys() if k.startswith('state_') and k[6:].isdigit()]
-
+        endpoint_state_keys = [k for k in safe_mqtt_payload.keys() if k.startswith('state_') and k[6:].isdigit()]
         if endpoint_state_keys and endpoint_id is not None:
             endpoint_state_key = f"state_{endpoint_id}"
-            if endpoint_state_key in safe_payload:
-                safe_payload['state'] = safe_payload[endpoint_state_key]
-                safe_payload['on'] = safe_payload.get(f"on_{endpoint_id}", False)
+            if endpoint_state_key in safe_mqtt_payload:
+                safe_mqtt_payload['state'] = safe_mqtt_payload[endpoint_state_key]
+                safe_mqtt_payload['on'] = safe_mqtt_payload.get(f"on_{endpoint_id}", False)
 
-        if 'state' in safe_payload and isinstance(safe_payload['state'], (int, float)):
-            del safe_payload['state']
+        if 'state' in safe_mqtt_payload and isinstance(safe_mqtt_payload['state'], (int, float)):
+            del safe_mqtt_payload['state']
             if endpoint_state_keys:
                 first_ep_key = sorted(endpoint_state_keys)[0]
-                safe_payload['state'] = safe_payload[first_ep_key]
+                safe_mqtt_payload['state'] = safe_mqtt_payload[first_ep_key]
 
-        # UPDATE CACHE
+        # UPDATE CACHE (with full device state)
         if ieee not in self.state_cache:
             self.state_cache[ieee] = {}
-        self.state_cache[ieee].update(safe_payload)
+
+        # Merge changed data into cache
+        cache_update = changed_data.copy()
+        cache_update['available'] = zha_device.is_available()
+        cache_update['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
+
+        self.state_cache[ieee].update(sanitise_device_state(cache_update))
         self._cache_dirty = True
 
-        # Emit to WebSocket
-        self._emit_sync("device_updated", {"ieee": ieee, "data": safe_payload})
+        # Emit to WebSocket (only changed data)
+        self._emit_sync("device_updated", {"ieee": ieee, "data": safe_mqtt_payload})
 
-        # PUBLISH TO MQTT
+        # PUBLISH TO MQTT (only changed attributes)
         if self.mqtt:
             import json
             safe_name = self.get_safe_name(ieee)
-            mqtt_qos = qos #if qos is not None else 1
-            #logger.info(f"[{ieee}] Publishing with QoS={mqtt_qos}, retain=True")
+            mqtt_qos = qos
 
             asyncio.create_task(
                 self.mqtt.publish(
                     safe_name,
-                    json.dumps(safe_payload),
+                    json.dumps(safe_mqtt_payload),
                     ieee=ieee,
                     qos=mqtt_qos,
                     retain=True
