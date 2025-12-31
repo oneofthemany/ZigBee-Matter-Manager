@@ -253,28 +253,16 @@ class GroupManager:
         return common
 
     async def create_group(self, name: str, device_iees: List[str]) -> Dict:
-        """
-        Create a new Zigbee group
-
-        Args:
-            name: Human-readable group name
-            device_iees: List of IEEE addresses to add
-
-        Returns:
-            Dict with group info or error
-        """
+        """Create a new Zigbee group"""
         name = name.strip()
 
-        # --- Check for duplicate name ---
         for group in self.groups.values():
             if group['name'].lower() == name.lower():
                 return {"error": f"Group name '{name}' already exists"}
 
-        # Validate we have at least 2 devices
         if len(device_iees) < 2:
             return {"error": "Groups require at least 2 devices"}
 
-        # Get device objects
         devices = []
         for ieee in device_iees:
             device = self.service.devices.get(ieee)
@@ -282,58 +270,73 @@ class GroupManager:
                 return {"error": f"Device {ieee} not found"}
             devices.append(device)
 
-        # Check all devices are compatible
         base_device = devices[0]
-        base_type = self.get_device_type(base_device)
-
-        # Check compatibility
         for device in devices[1:]:
             compatible, reason = self.are_devices_compatible(base_device, device)
             if not compatible:
                 return {"error": f"Device {device.ieee} incompatible: {reason}"}
 
-        # Determine capabilities
         capabilities = self.get_common_capabilities(devices)
         if not capabilities:
-            # Fallback: If no common capabilities detected but types match, assume On/Off
+            base_type = self.get_device_type(base_device)
             if base_type in ['light', 'switch']:
                 capabilities = {DeviceCapability.ON_OFF}
             else:
                 return {"error": "Devices have no common capabilities"}
 
-        # Allocate group ID
+        # Determine group type based on capabilities (not just first device)
+        group_type = self._determine_group_type(capabilities, devices)
+
         group_id = self.next_group_id
         self.next_group_id += 1
 
-        # Create group info
         group_info = {
             "id": group_id,
             "name": name,
-            "type": base_type,
+            "type": group_type,
             "capabilities": list(capabilities),
             "members": device_iees,
             "created_at": None
         }
 
-        # Add devices to Zigbee group
         try:
             await self._add_devices_to_zigbee_group(group_id, devices)
         except Exception as e:
             logger.error(f"Failed to create Zigbee group: {e}")
             return {"error": f"Failed to create Zigbee group: {str(e)}"}
 
-        # Store group
         self.groups[group_id] = group_info
         self.save_groups()
-
-        # Publish to Home Assistant
         await self._publish_group_discovery(group_id, group_info)
 
-        await self.publish_group_initial_state(group_id)
-
-        logger.info(f"Created group {group_id} '{name}' with {len(devices)} devices")
-
         return {"success": True, "group": group_info}
+
+    def _determine_group_type(self, capabilities: Set[str], devices: List) -> str:
+        """Determine group type based on common capabilities"""
+
+        # If any device has color/brightness, it's a light group
+        if (DeviceCapability.BRIGHTNESS in capabilities or
+                DeviceCapability.COLOR_XY in capabilities or
+                DeviceCapability.COLOR_TEMP in capabilities):
+            return "light"
+
+        # Check if majority are lights
+        device_types = [self.get_device_type(d) for d in devices]
+        light_count = device_types.count("light")
+
+        if light_count > len(devices) / 2:
+            return "light"
+
+        # Position capability = cover
+        if DeviceCapability.POSITION in capabilities:
+            return "cover"
+
+        # Lock capability = lock
+        if DeviceCapability.LOCK in capabilities:
+            return "lock"
+
+        # Default to switch for on/off only
+        return "switch"
 
     async def _add_devices_to_zigbee_group(self, group_id: int, devices: List):
         """
