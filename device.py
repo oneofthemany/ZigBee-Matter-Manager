@@ -303,14 +303,22 @@ class ZHADevice:
             self.capabilities._detect_capabilities()
             self.sanitize_state()
 
-    def restore_state(self, cached_state: Dict[str, Any]):
+    def restore_state(self, cached_state):
         """
-        Restore state from cache on startup.
+        Restore device state from cache.
         Purges invalid data and syncs cleanup back to the Service cache.
         """
         if cached_state:
             # 1. Load the raw cached state
             self.state.update(cached_state)
+
+            # ===== Clear motion timers on startup =====
+            if any(k in cached_state for k in ['occupancy', 'motion', 'presence']):
+                # Never restore motion state - sensors will send new events
+                self.state['occupancy'] = False
+                self.state['motion'] = False
+                self.state['presence'] = False
+                logger.debug(f"[{self.ieee}] Cleared motion state on restoration")
 
             # 2. Inject Manufacturer/Model from Zigpy DB if missing in cache
             if self.zigpy_dev.manufacturer and ('manufacturer' not in self.state or self.state['manufacturer'] == 'Unknown'):
@@ -325,6 +333,7 @@ class ZHADevice:
 
             # 3. PURGE: Aggressively remove fields that don't belong
             self.sanitize_state()
+
 
             # 4. SYNC BACK: CRITICAL STEP
             # Update the Service's cache with our now-clean state.
@@ -1029,3 +1038,10 @@ class ZHADevice:
                 config['value_template'] = "{{ 'open' if value_json.is_open else 'closed' }}"
             if 'position_template' not in config:
                 config['position_template'] = "{{ value_json.cover_position | default(value_json.position | default(0)) }}"
+
+
+    def cleanup(self):
+        """Cancel timers and cleanup on device removal."""
+        if hasattr(self, '_motion_clear_task') and self._motion_clear_task:
+            self._motion_clear_task.cancel()
+            logger.debug(f"[{self.ieee}] Cancelled motion timer")

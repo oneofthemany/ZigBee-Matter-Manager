@@ -712,6 +712,7 @@ class ZigbeeService:
         logger.info(f"Device left: {ieee}")
 
         if ieee in self.devices:
+            self.devices[ieee].cleanup()
             del self.devices[ieee]
 
         self.polling_scheduler.disable_for_device(ieee)
@@ -729,6 +730,7 @@ class ZigbeeService:
         logger.info(f"Device removed: {ieee}")
 
         if ieee in self.devices:
+            self.devices[ieee].cleanup()
             del self.devices[ieee]
 
         # Remove from cache
