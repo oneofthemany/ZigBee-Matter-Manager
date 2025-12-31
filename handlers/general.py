@@ -73,28 +73,35 @@ class OnOffHandler(ClusterHandler):
         return has_lighting_cluster and not has_electrical
 
     def _handle_on_with_timed_off(self, args):
-        """
-        Handle on_with_timed_off command from motion sensors (Philips Hue).
-        """
+        """Handle on_with_timed_off command from motion sensors (Philips Hue)."""
         try:
-            # Extract on_time from command arguments
+            import time
+            now = time.time()
+            last_trigger = getattr(self.device, '_last_motion_trigger', 0)
+
+            if now - last_trigger < 1.0:
+                logger.debug(f"[{self.device.ieee}] Ignoring duplicate motion trigger "
+                             f"({now - last_trigger:.3f}s since last)")
+                return
+
+            self.device._last_motion_trigger = now
+
+            # Extract timeout
             on_time_from_cmd = 3000  # Default 300 seconds
             if args and len(args) >= 2 and hasattr(args[1], 'value'):
                 on_time_from_cmd = args[1].value
             on_time_seconds = on_time_from_cmd / 10 if on_time_from_cmd else 0
 
-            # PREFER user-configured timeout over command timeout
+            # PREFER user-configured timeout
             configured_timeout = self.device.state.get('motion_timeout')
             if configured_timeout is not None and configured_timeout > 0:
                 timeout = configured_timeout
-                logger.debug(f"[{self.device.ieee}] Using configured timeout: {timeout}s "
-                             f"(sensor sent: {on_time_seconds}s)")
+                logger.debug(f"[{self.device.ieee}] Using configured timeout: {timeout}s")
             else:
                 timeout = on_time_seconds
-                # Store the sensor's timeout for future use
                 self.device.update_state({"motion_timeout": timeout})
 
-            # Update state to show motion detected
+            # Update state
             self.device.update_state({
                 "occupancy": True,
                 "motion": True,
@@ -108,26 +115,24 @@ class OnOffHandler(ClusterHandler):
             if self.device.service.mqtt and hasattr(self.device.service.mqtt, 'publish_fast'):
                 import json
                 safe_name = self.device.service.get_safe_name(self.device.ieee)
-                payload = json.dumps({
-                    'occupancy': True,
-                    'motion': True,
-                    'presence': True
-                })
+                payload = json.dumps({'occupancy': True, 'motion': True, 'presence': True})
                 self.device.service.mqtt.publish_fast(f"{safe_name}/state", payload, qos=0)
 
             # Schedule auto-clear
             if timeout > 0:
                 import asyncio
-                # Cancel any existing clear task for this handler
-                if hasattr(self, '_clear_task') and self._clear_task:
-                    self._clear_task.cancel()
-                # Schedule new clear
-                self._clear_task = asyncio.create_task(self._clear_motion_after(timeout))
-                logger.info(f"[{self.device.ieee}] Motion detected via on_with_timed_off: "
-                            f"will auto-clear in {timeout}s")
+                if hasattr(self.device, '_motion_clear_task') and self.device._motion_clear_task:
+                    self.device._motion_clear_task.cancel()
+                    logger.debug(f"[{self.device.ieee}] Cancelled previous motion timer")
+
+                self.device._motion_clear_task = asyncio.create_task(
+                    self._clear_motion_after(timeout)
+                )
+                logger.info(f"[{self.device.ieee}] Motion detected, will auto-clear in {timeout}s")
 
         except Exception as e:
             logger.error(f"[{self.device.ieee}] Error in on_with_timed_off: {e}")
+
 
     async def _clear_motion_after(self, seconds: float):
         """Clear motion after timeout expires."""
@@ -144,15 +149,11 @@ class OnOffHandler(ClusterHandler):
                 "on": False
             })
 
-            # Fast-path MQTT publish for clear
+            # Fast-path MQTT publish
             if self.device.service.mqtt and hasattr(self.device.service.mqtt, 'publish_fast'):
                 import json
                 safe_name = self.device.service.get_safe_name(self.device.ieee)
-                payload = json.dumps({
-                    'occupancy': False,
-                    'motion': False,
-                    'presence': False
-                })
+                payload = json.dumps({'occupancy': False, 'motion': False, 'presence': False})
                 self.device.service.mqtt.publish_fast(f"{safe_name}/state", payload, qos=0)
 
             logger.info(f"[{self.device.ieee}] Motion auto-cleared after {seconds}s")
