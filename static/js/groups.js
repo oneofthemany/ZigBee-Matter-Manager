@@ -218,12 +218,37 @@ function renderCompatibleDevices(devices) {
         return;
     }
 
-    container.innerHTML = '';
+    // Smart sort: devices with similar names to base device come first
+    const baseDevice = groupsState.selectedBaseDevice;
+    if (baseDevice && baseDevice.friendly_name) {
+        const baseName = baseDevice.friendly_name.toLowerCase();
+        const baseWords = baseName.split(/[\s_-]+/).filter(w => w.length > 2);
 
+        devices.sort((a, b) => {
+            const aName = (a.name || a.ieee).toLowerCase();
+            const bName = (b.name || b.ieee).toLowerCase();
+
+            // Calculate similarity scores
+            let aScore = 0;
+            let bScore = 0;
+
+            baseWords.forEach(word => {
+                if (aName.includes(word)) aScore++;
+                if (bName.includes(word)) bScore++;
+            });
+
+            // Sort by score descending, then alphabetically
+            if (bScore !== aScore) {
+                return bScore - aScore;
+            }
+            return aName.localeCompare(bName);
+        });
+    }
+
+    container.innerHTML = '';
     console.log(`Rendering ${devices.length} compatible devices`);
 
     devices.forEach(device => {
-        // Replace colons in IEEE for valid HTML ID
         const safeId = device.ieee.replace(/:/g, '_');
 
         const item = document.createElement('div');
