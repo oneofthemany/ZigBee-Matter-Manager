@@ -3,7 +3,7 @@ database:
   path: zigbee.db
 
 mqtt:
-  base_topic: zigbee_manager
+  base_topic: zigbee_ha
   broker_host: 192.168.1.1
   broker_port: 1883
   username: mqtt
@@ -21,9 +21,11 @@ web:
   secret_key: ssshItsASecret
 
 zigbee:
-  port: /dev/ttyACM0
-  baudrate: 460800
-  flow_control: hardware
+  port: /dev/ttyACM0 # Serial port for Zigbee radio
+
+  # Radio type: auto (default), ezsp, znp, deconz
+  # Set to 'auto' to detect automatically, or specify explicitly
+  radio_type: auto
 
   # Zigbee Network Settings
   channel: 25
@@ -63,18 +65,55 @@ zigbee:
   #  CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
 
    #For large networks (40+ devices), use these instead:
-  ezsp_config:
-    CONFIG_PACKET_BUFFER_COUNT: 254
-    CONFIG_NEIGHBOR_TABLE_SIZE: 26
-    CONFIG_ADDRESS_TABLE_SIZE: 32
-    CONFIG_MULTICAST_TABLE_SIZE: 16
-    CONFIG_BINDING_TABLE_SIZE: 32
-    CONFIG_APS_UNICAST_MESSAGE_COUNT: 32
-    CONFIG_SOURCE_ROUTE_TABLE_SIZE: 255
-    CONFIG_ROUTE_TABLE_SIZE: 32
-    CONFIG_MAX_HOPS: 30
-    CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
-    CONFIG_FRAGMENT_WINDOW_SIZE: 8
-    CONFIG_FRAGMENT_DELAY_MS: 50
-    CONFIG_BROADCAST_TABLE_SIZE: 15
-    CONFIG_RETRY_QUEUE_SIZE: 16
+  #For large networks (40+ devices), use these instead:
+  ezsp:
+    baudrate: 460800
+    flow_control: hardware
+    config:
+      CONFIG_PACKET_BUFFER_COUNT: 254
+      CONFIG_NEIGHBOR_TABLE_SIZE: 26
+      CONFIG_ADDRESS_TABLE_SIZE: 32
+      CONFIG_MULTICAST_TABLE_SIZE: 16
+      CONFIG_BINDING_TABLE_SIZE: 32
+      CONFIG_APS_UNICAST_MESSAGE_COUNT: 32
+      CONFIG_SOURCE_ROUTE_TABLE_SIZE: 255
+      CONFIG_ROUTE_TABLE_SIZE: 32
+      CONFIG_MAX_HOPS: 30
+      CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
+      CONFIG_FRAGMENT_WINDOW_SIZE: 8
+      CONFIG_FRAGMENT_DELAY_MS: 50
+      CONFIG_BROADCAST_TABLE_SIZE: 15
+      CONFIG_RETRY_QUEUE_SIZE: 16
+
+  # ================================================================
+  # ZNP-SPECIFIC CONFIGURATION (Texas Instruments CC2652/CC1352)
+  # Only used if radio_type is 'znp' or auto-detected as ZNP
+  # ================================================================
+  znp:
+    baudrate: 115200
+    # ZNP typically doesn't need flow control
+    #flow_control:
+
+    # ZNP-specific settings
+    config:
+      led_mode: off
+      CONFIG_PACKET_BUFFER_COUNT: 254
+      CONFIG_NEIGHBOR_TABLE_SIZE: 26
+      CONFIG_ADDRESS_TABLE_SIZE: 32
+      CONFIG_MULTICAST_TABLE_SIZE: 16
+      CONFIG_BINDING_TABLE_SIZE: 32
+      CONFIG_APS_UNICAST_MESSAGE_COUNT: 32
+      CONFIG_SOURCE_ROUTE_TABLE_SIZE: 255
+      CONFIG_ROUTE_TABLE_SIZE: 32
+      CONFIG_MAX_HOPS: 30
+      CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
+      CONFIG_FRAGMENT_WINDOW_SIZE: 8
+      CONFIG_FRAGMENT_DELAY_MS: 50
+      CONFIG_BROADCAST_TABLE_SIZE: 15
+      CONFIG_RETRY_QUEUE_SIZE: 16
+
+  # ================================================================
+  # DECONZ-SPECIFIC (ConBee/RaspBee) - Future support
+  # ================================================================
+  # deconz:
+  #   baudrate: 38400
