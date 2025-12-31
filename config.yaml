@@ -3,11 +3,11 @@ database:
   path: zigbee.db
 
 mqtt:
-  base_topic: zigbee_ha
+  base_topic: zigbee_manager
   broker_host: 192.168.1.1
   broker_port: 1883
   username: mqtt
-  password: password
+  password: mqtt_password
   qos: 1
 
 logging:
@@ -20,8 +20,9 @@ web:
   debug: false
   secret_key: ssshItsASecret
 
+
 zigbee:
-  port: /dev/ttyACM0 # Serial port for Zigbee radio
+  port: /dev/ttyUSB0 # Serial port for Zigbee radio - usually ACMO for ezsp and USB0 for ZSP etc.
 
   # Radio type: auto (default), ezsp, znp, deconz
   # Set to 'auto' to detect automatically, or specify explicitly
@@ -29,10 +30,10 @@ zigbee:
 
   # Zigbee Network Settings
   channel: 25
-  pan_id: A12B
-  extended_pan_id: [12, 139, etc]
+  pan_id: A1B2
+  extended_pan_id: [12, 139, 142, etc.]
   # Network Key (32-character hex string or array of 16 bytes)
-  network_key: [162, 53, 36, 49, etc]
+  network_key: [162, 53, 36, 49, etc.]
   # Adapter Configuration
   coordinator_type: ember
   topology_scan_interval: 120
@@ -50,21 +51,20 @@ zigbee:
   aps_unicast_message_count: 10    # Conservative message limit
 
 
-  # Enhanced EZSP Configuration (Standard Profile)
-  # This is optimized for networks up to ~30 devices
-  #ezsp_config:
-  #  CONFIG_PACKET_BUFFER_COUNT: 254
-  #  CONFIG_NEIGHBOR_TABLE_SIZE: 26
-  #  CONFIG_ADDRESS_TABLE_SIZE: 16
-  #  CONFIG_MULTICAST_TABLE_SIZE: 16
-  #  CONFIG_BINDING_TABLE_SIZE: 32
-  #  CONFIG_APS_UNICAST_MESSAGE_COUNT: 20
-  #  CONFIG_SOURCE_ROUTE_TABLE_SIZE: 200
-  #  CONFIG_ROUTE_TABLE_SIZE: 16
-  #  CONFIG_MAX_HOPS: 30
+    # Enhanced EZSP Configuration (Standard Profile)
+    # This is optimized for networks up to ~30 devices
+    #ezsp_config:
+    #  CONFIG_PACKET_BUFFER_COUNT: 254
+    #  CONFIG_NEIGHBOR_TABLE_SIZE: 26
+    #  CONFIG_ADDRESS_TABLE_SIZE: 16
+    #  CONFIG_MULTICAST_TABLE_SIZE: 16
+    #  CONFIG_BINDING_TABLE_SIZE: 32
+    #  CONFIG_APS_UNICAST_MESSAGE_COUNT: 20
+    #  CONFIG_SOURCE_ROUTE_TABLE_SIZE: 200
+    #  CONFIG_ROUTE_TABLE_SIZE: 16
+    #  CONFIG_MAX_HOPS: 30
   #  CONFIG_INDIRECT_TRANSMISSION_TIMEOUT: 7680
 
-   #For large networks (40+ devices), use these instead:
   #For large networks (40+ devices), use these instead:
   ezsp:
     baudrate: 460800
@@ -92,7 +92,6 @@ zigbee:
   znp:
     baudrate: 115200
     # ZNP typically doesn't need flow control
-    #flow_control:
 
     # ZNP-specific settings
     config:
