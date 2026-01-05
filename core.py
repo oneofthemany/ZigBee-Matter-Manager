@@ -10,14 +10,17 @@ import os
 import re
 import traceback
 from typing import Dict, Any, Optional
-from bellows.zigbee.application import ControllerApplication
+import bellows.uart
+import bellows.config
+#from bellows.zigbee.application import ControllerApplication
 from bellows.ash import NcpFailure
 import zigpy.types
 import zigpy.config
 import zigpy.device
 import bellows.ezsp
 import zigpy_znp.api
-from zigpy_znp.zigbee.application import ControllerApplication
+import zigpy_znp.config
+#from zigpy_znp.zigbee.application import ControllerApplication
 
 
 # Import ZDO types for binding
@@ -28,7 +31,7 @@ from zigpy.zcl.clusters.security import IasZone
 from device import ZHADevice
 from handlers.zigbee_debug import get_debugger
 from handlers.fast_path import FastPathProcessor
-from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
+#from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
 
 
 # import services
@@ -269,8 +272,6 @@ class ZigbeeService:
         # Try ZNP first
         logger.info(f"Probing {self.port} for ZNP radio...")
         try:
-            import zigpy_znp.api
-            import zigpy_znp.config
 
             znp = zigpy_znp.api.ZNP(zigpy_znp.config.CONFIG_SCHEMA({"device": {"path": self.port}}))
             try:
@@ -278,45 +279,48 @@ class ZigbeeService:
                 detected_type = "ZNP"
                 logger.info("✅ ZNP radio detected")
             finally:
-                znp.close()
-                # Wait for transport to fully close
-                if hasattr(znp, '_uart') and znp._uart:
-                    transport = getattr(znp._uart, '_transport', None)
-                    if transport:
-                        transport.close()
-                await asyncio.sleep(0.1)  # Let event loop process
+                try:
+                    znp.close()
+                    if hasattr(znp, '_uart') and znp._uart:
+                        transport = getattr(znp._uart, '_transport', None)
+                        if transport:
+                            transport.close()
+                except:
+                    pass  # Ignore cleanup errors
+                await asyncio.sleep(1.0)  # Wait for background tasks to finish
                 del znp
         except Exception as e:
             logger.info(f"Not ZNP: {e}")
 
-        # If ZNP detected, wait for port release then return
         if detected_type == "ZNP":
-            await asyncio.sleep(3.0)  # Wait for OS to release port
+            await asyncio.sleep(3.0)
             return "ZNP"
 
         # Try EZSP
         logger.info(f"Probing {self.port} for EZSP radio...")
         try:
-            import bellows.ezsp
-            import bellows.config
 
-            ezsp = bellows.ezsp.EZSP(bellows.config.CONFIG_SCHEMA({"device": {"path": self.port}}))
+            protocol = await asyncio.wait_for(
+                bellows.uart.connect({
+                    "path": self.port,
+                    "baudrate": 115200,
+                    "flow_control": "hardware"
+                }, None),
+                timeout=5.0
+            )
+            detected_type = "EZSP"
+            logger.info("✅ EZSP radio detected")
             try:
-                await asyncio.wait_for(ezsp.connect(), timeout=3.0)
-                detected_type = "EZSP"
-                logger.info("✅ EZSP radio detected")
-            finally:
-                ezsp.close()
-                if hasattr(ezsp, '_uart') and ezsp._uart:
-                    transport = getattr(ezsp._uart, '_transport', None)
-                    if transport:
-                        transport.close()
-                await asyncio.sleep(0.1)
-                del ezsp
+                protocol.close()
+            except:
+                pass  # Ignore cleanup errors
+            await asyncio.sleep(1.0)  # Wait for background tasks to finish
+            del protocol
         except Exception as e:
             logger.info(f"Not EZSP: {e}")
 
         if detected_type == "EZSP":
+            logger.info("Note: Background task errors during probe are expected and harmless")
             await asyncio.sleep(3.0)
             return "EZSP"
 
