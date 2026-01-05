@@ -119,7 +119,39 @@ class PollingScheduler:
                 if ieee in self.service.devices:
                     device = self.service.devices[ieee]
 
-                    # Only poll if device is available
+                    power_source = device.state.get('power_source', '').lower()
+                    is_battery = 'battery' in power_source
+
+                    # Skip passive battery sensors
+                    is_sensor = any([
+                        0x0406 in [h.CLUSTER_ID for h in device.handlers.values()],
+                        0x0500 in [h.CLUSTER_ID for h in device.handlers.values()],
+                        device.get_role() == "EndDevice" and not any([
+                            0x0006 in ep.in_clusters for ep in device.zigpy_dev.endpoints.values()
+                        ])
+                    ])
+
+                    if is_battery and is_sensor:
+                        logger.debug(f"[{ieee}] Skipping poll - battery sensor")
+                        continue
+
+                    # Skip covers during movement
+                    is_cover = 0x0102 in [h.CLUSTER_ID for h in device.handlers.values()]
+                    if is_cover:
+                        cover_state = device.state.get('state', '').lower()
+                        if cover_state in ['opening', 'closing']:
+                            logger.debug(f"[{ieee}] Skipping poll - cover moving")
+                            continue
+
+                    # ===== Skip TRVs during active heating =====
+                    is_trv = 0x0201 in [h.CLUSTER_ID for h in device.handlers.values()]
+                    if is_trv and is_battery:
+                        # Skip if actively heating (valve moving/adjusting)
+                        pi_heating_demand = device.state.get('pi_heating_demand', 0)
+                        if pi_heating_demand > 0:
+                            logger.debug(f"[{ieee}] Skipping poll - TRV actively heating")
+                            continue
+
                     if device.is_available():
                         logger.debug(f"[{ieee}] Auto-polling device")
                         try:
@@ -959,27 +991,49 @@ class ZigbeeService:
 
         try:
             zdev = self.devices[ieee]
-            await zdev.configure()
-            logger.info(f"[{ieee}] Device configured successfully")
-
-            # -------------------------------------------------------------------
-            # --- PHILIPS HUE MOTION SENSOR SPECIFIC CONFIGURATION (NEW BLOCK) ---
-            # -------------------------------------------------------------------
             manufacturer = str(zdev.zigpy_dev.manufacturer or "").lower()
             model = str(zdev.zigpy_dev.model or "").lower()
 
+            # === ADD: Philips Hue Motion Sensor Configuration ===
             if ("philips" in manufacturer or "signify" in manufacturer) and "sml" in model:
-                logger.info(f"[{ieee}] Applying Philips Hue Motion Sensor (SML) fixes on EP2...")
+                logger.info(f"[{ieee}] Configuring Philips Hue Motion Sensor...")
 
-                # Philips telemetry is on EP2 (Illuminance, Temp, Occupancy)
-                # Configure Reporting for Illuminance Measurement
-                await configure_illuminance_reporting(zdev, endpoint_id=2)
+                try:
+                    ep2 = zdev.zigpy_dev.endpoints[2]
 
-                # Configure Reporting for Temperature Measurement (often overlooked)
-                await configure_temperature_reporting(zdev, endpoint_id=2)
+                    # 1. BIND coordinator for motion events
+                    if 0x0006 in ep2.out_clusters:
+                        await ep2.out_clusters[0x0006].bind()
+                        logger.info(f"[{ieee}] Bound OnOff cluster for motion")
 
-                # NOTE: Occupancy (0x0406) usually reports correctly by default,
-                # but adding explicit reporting here is also possible if needed.
+                    # 2. Configure illuminance reporting (change of 100 = ~1 lux)
+                    if 0x0400 in ep2.in_clusters:
+                        await ep2.in_clusters[0x0400].bind()
+                        await ep2.in_clusters[0x0400].configure_reporting(
+                            0x0000,  # measured_value
+                            30,      # min 30s
+                            300,     # max 5min
+                            100      # change of 100 raw units (~1 lux)
+                        )
+                        logger.info(f"[{ieee}] Configured illuminance reporting")
+
+                    # 3. Configure temperature reporting (change of 10 = 0.1°C)
+                    if 0x0402 in ep2.in_clusters:
+                        await ep2.in_clusters[0x0402].bind()
+                        await ep2.in_clusters[0x0402].configure_reporting(
+                            0x0000,  # measured_value
+                            60,      # min 60s
+                            3600,    # max 1hr
+                            10       # change of 10 (0.1°C)
+                        )
+                        logger.info(f"[{ieee}] Configured temperature reporting")
+
+                except Exception as e:
+                    logger.warning(f"[{ieee}] Philips config failed: {e}")
+
+            # Standard configuration
+            await zdev.configure()
+            logger.info(f"[{ieee}] Device configured successfully")
 
             # Immediate Poll on join/configure
             logger.info(f"[{ieee}] Performing initial state poll...")
