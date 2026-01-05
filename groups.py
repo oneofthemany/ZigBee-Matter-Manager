@@ -2,16 +2,17 @@
 Zigbee Groups Management Module
 Based on ZHA and Zigbee2MQTT patterns for native Zigbee groups
 
-This module provides:
-- Smart device grouping (only compatible devices)
-- Common capability detection (brightness, color, etc.)
-- Native Zigbee group creation
-- Home Assistant MQTT discovery for groups
+Enhanced with Input/Output cluster awareness:
+- input_clusters (Server) = Device RECEIVES commands = Actuators (controllable)
+- output_clusters (Client) = Device SENDS commands = Sensors/Remotes (not controllable)
+
+For groups, only devices with clusters as INPUT clusters are truly controllable.
 """
 
 import logging
 import json
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Set, Optional, Any, Tuple
+from dataclasses import dataclass
 from pathlib import Path
 import zigpy.types as t
 import asyncio
@@ -35,9 +36,45 @@ class DeviceCapability:
     LOCK = "lock"
 
 
+# Cluster IDs for group-controllable functionality
+class ClusterId:
+    BASIC = 0x0000
+    POWER_CONFIG = 0x0001
+    IDENTIFY = 0x0003
+    GROUPS = 0x0004
+    SCENES = 0x0005
+    ON_OFF = 0x0006
+    LEVEL_CONTROL = 0x0008
+    DOOR_LOCK = 0x0101
+    WINDOW_COVERING = 0x0102
+    COLOR_CONTROL = 0x0300
+    OCCUPANCY = 0x0406
+    IAS_ZONE = 0x0500
+
+
+@dataclass
+class ClusterPresence:
+    """Tracks where a cluster exists on a device"""
+    cluster_id: int
+    in_input: bool = False    # Server - device receives commands (controllable)
+    in_output: bool = False   # Client - device sends commands (sensor/remote)
+    endpoint_id: int = 0
+
+    @property
+    def is_controllable(self) -> bool:
+        """Only INPUT clusters can receive group commands"""
+        return self.in_input
+
+    @property
+    def is_sensor_only(self) -> bool:
+        """OUTPUT only = sensor/remote, not controllable"""
+        return self.in_output and not self.in_input
+
+
 class GroupManager:
     """
     Manages Zigbee groups with smart device compatibility
+    Enhanced with input/output cluster awareness
     """
 
     def __init__(self, zigbee_service):
@@ -56,16 +93,7 @@ class GroupManager:
         self.load_groups()
 
     def _get_friendly_name(self, device_or_ieee) -> str:
-        """
-        Get friendly name for a device or IEEE address
-
-        Args:
-            device_or_ieee: Either a device object or IEEE string
-
-        Returns:
-            Friendly name or IEEE if not found
-        """
-        # If it's a string (IEEE), use it directly
+        """Get friendly name for a device or IEEE address"""
         if isinstance(device_or_ieee, str):
             ieee = device_or_ieee
         # If it's a device object, get its IEEE
@@ -121,11 +149,7 @@ class GroupManager:
         return None
 
     async def handle_mqtt_group_command(self, group_name: str, data: Dict[str, Any]):
-        """
-        Wrapper to handle incoming MQTT group commands.
-        Resolves group name (from topic) to ID and calls the control method.
-        """
-        # The MQTT topic contains the safe name (e.g., "living_room_lights")
+        """Handle incoming MQTT group commands"""
         group_id = self._get_group_id_by_name(group_name)
 
         if group_id is None:
@@ -137,12 +161,86 @@ class GroupManager:
         # The core logic is already in control_group
         return await self.control_group(group_id, data)
 
+    # =========================================================================
+    # Cluster Analysis with Input/Output Awareness
+    # =========================================================================
+
+    def _analyze_device_clusters(self, device) -> Dict[int, ClusterPresence]:
+        """
+        Analyze all clusters on a device, tracking input vs output presence.
+
+        Returns dict of cluster_id -> ClusterPresence
+        """
+        clusters: Dict[int, ClusterPresence] = {}
+
+        # Get zigpy device
+        zdev = getattr(device, 'zigpy_dev', None)
+        if not zdev:
+            return clusters
+
+        for ep_id, endpoint in zdev.endpoints.items():
+            if ep_id == 0:  # Skip ZDO endpoint
+                continue
+
+            # Check INPUT clusters (Server - controllable)
+            if hasattr(endpoint, 'in_clusters'):
+                for cluster_id in endpoint.in_clusters:
+                    if cluster_id not in clusters:
+                        clusters[cluster_id] = ClusterPresence(cluster_id=cluster_id)
+                    clusters[cluster_id].in_input = True
+                    clusters[cluster_id].endpoint_id = ep_id
+
+            # Check OUTPUT clusters (Client - sensor/remote)
+            if hasattr(endpoint, 'out_clusters'):
+                for cluster_id in endpoint.out_clusters:
+                    if cluster_id not in clusters:
+                        clusters[cluster_id] = ClusterPresence(cluster_id=cluster_id)
+                    clusters[cluster_id].in_output = True
+                    if clusters[cluster_id].endpoint_id == 0:
+                        clusters[cluster_id].endpoint_id = ep_id
+
+        return clusters
+
+    def _is_actuator(self, device) -> bool:
+        """
+        Determine if device is an actuator (can receive control commands).
+
+        An actuator has relevant control clusters as INPUT clusters.
+        A sensor/remote has them only as OUTPUT clusters.
+        """
+        clusters = self._analyze_device_clusters(device)
+
+        # Control clusters that matter for groups
+        control_cluster_ids = {
+            ClusterId.ON_OFF,
+            ClusterId.LEVEL_CONTROL,
+            ClusterId.COLOR_CONTROL,
+            ClusterId.WINDOW_COVERING,
+            ClusterId.DOOR_LOCK,
+        }
+
+        for cluster_id in control_cluster_ids:
+            if cluster_id in clusters and clusters[cluster_id].is_controllable:
+                return True
+
+        return False
+
+    def _get_controllable_clusters(self, device) -> Set[int]:
+        """Get only the clusters that are INPUT (controllable via groups)"""
+        clusters = self._analyze_device_clusters(device)
+        return {cid for cid, presence in clusters.items() if presence.is_controllable}
+
+    def _get_sensor_only_clusters(self, device) -> Set[int]:
+        """Get clusters that are OUTPUT only (sensor/reporting)"""
+        clusters = self._analyze_device_clusters(device)
+        return {cid for cid, presence in clusters.items() if presence.is_sensor_only}
+
     def get_device_type(self, device) -> Optional[str]:
         """
-        Determine device type from discovery configs or capabilities
-        Returns: 'light', 'switch', 'cover', or 'lock'
+        Determine device type from discovery configs or capabilities.
+        Enhanced: Only considers INPUT clusters for type determination.
         """
-        # 1. Try discovery configs first (if available)
+        # 1. Try discovery configs first
         if hasattr(device, 'get_discovery_configs'):
             configs = device.get_discovery_configs()
             for config in configs:
@@ -150,10 +248,13 @@ class GroupManager:
                 if component in ['light', 'switch', 'cover', 'lock']:
                     return component
 
-        # 2. Fallback: Smart detection based on capabilities
+        # 2. Smart detection based on CONTROLLABLE capabilities only
         caps = self.get_device_capabilities(device)
 
-        # If it has brightness or color, it's definitely a light
+        # Must be an actuator to be a controllable device type
+        if not self._is_actuator(device):
+            return None  # Sensors/remotes don't get a controllable type
+
         if DeviceCapability.BRIGHTNESS in caps or \
                 DeviceCapability.COLOR_XY in caps or \
                 DeviceCapability.COLOR_TEMP in caps:
@@ -178,29 +279,23 @@ class GroupManager:
         return None
 
     def get_device_capabilities(self, device) -> Set[str]:
-        """Detect what capabilities a device has"""
+        """
+        Detect controllable capabilities (INPUT clusters only).
+        """
         capabilities = set()
+        controllable = self._get_controllable_clusters(device)
 
-        # Helper to check clusters in handlers OR raw endpoints
-        def has_cluster(cluster_id):
-            # Check handlers
-            if hasattr(device, 'handlers'):
-                if any(h.cluster_id == cluster_id for h in device.handlers.values()):
-                    return True
-            # Check raw endpoints
-            if hasattr(device, 'zigpy_dev'):
-                for ep in device.zigpy_dev.endpoints.values():
-                    if hasattr(ep, 'in_clusters') and cluster_id in ep.in_clusters:
-                        return True
-            return False
-
-        if has_cluster(0x0006): capabilities.add(DeviceCapability.ON_OFF)
-        if has_cluster(0x0008): capabilities.add(DeviceCapability.BRIGHTNESS)
-        if has_cluster(0x0300):
+        if ClusterId.ON_OFF in controllable:
+            capabilities.add(DeviceCapability.ON_OFF)
+        if ClusterId.LEVEL_CONTROL in controllable:
+            capabilities.add(DeviceCapability.BRIGHTNESS)
+        if ClusterId.COLOR_CONTROL in controllable:
             capabilities.add(DeviceCapability.COLOR_TEMP)
             capabilities.add(DeviceCapability.COLOR_XY)
-        if has_cluster(0x0102): capabilities.add(DeviceCapability.POSITION)
-        if has_cluster(0x0101): capabilities.add(DeviceCapability.LOCK)
+        if ClusterId.WINDOW_COVERING in controllable:
+            capabilities.add(DeviceCapability.POSITION)
+        if ClusterId.DOOR_LOCK in controllable:
+            capabilities.add(DeviceCapability.LOCK)
 
         return capabilities
 
@@ -210,7 +305,17 @@ class GroupManager:
             return device.get_role()
         return getattr(device, 'type', 'Unknown')
 
-    def are_devices_compatible(self, device1, device2) -> tuple[bool, str]:
+    def are_devices_compatible(self, device1, device2) -> Tuple[bool, str]:
+        """
+        Check if two devices are compatible for grouping.
+        Enhanced: Rejects devices that aren't actuators.
+        """
+        # First check: both must be actuators
+        if not self._is_actuator(device1):
+            return False, "First device is not controllable (sensor/remote only)"
+        if not self._is_actuator(device2):
+            return False, "Second device is not controllable (sensor/remote only)"
+
         type1 = self.get_device_type(device1)
         type2 = self.get_device_type(device2)
 
@@ -240,9 +345,7 @@ class GroupManager:
         return True, "Compatible"
 
     def get_common_capabilities(self, devices: List) -> Set[str]:
-        """
-        Find capabilities common to all devices in list
-        """
+        """Find capabilities common to all devices"""
         if not devices:
             return set()
 
@@ -251,6 +354,148 @@ class GroupManager:
             common &= self.get_device_capabilities(device)
 
         return common
+
+    # =========================================================================
+    # Smart Device Selection with Relevance Scoring
+    # =========================================================================
+
+    def get_device_group_info(self, device) -> Dict[str, Any]:
+        """
+        Get detailed grouping info for a device including actuator status.
+        """
+        ieee = str(device.ieee) if hasattr(device, 'ieee') else str(device)
+        clusters = self._analyze_device_clusters(device)
+
+        # Find sensor-only clusters (potential confusion sources)
+        sensor_only = []
+        for cid, presence in clusters.items():
+            if presence.is_sensor_only and cid in [ClusterId.ON_OFF, ClusterId.LEVEL_CONTROL]:
+                sensor_only.append(cid)
+
+        is_actuator = self._is_actuator(device)
+        device_type = self.get_device_type(device)
+        capabilities = list(self.get_device_capabilities(device))
+
+        # Calculate relevance score (0-100)
+        relevance = 0
+        if is_actuator:
+            relevance = 70 + min(30, len(capabilities) * 10)
+        elif sensor_only:
+            relevance = 10  # Very low - shouldn't be in control groups
+
+        notes = []
+        if not is_actuator:
+            notes.append("Not controllable - sensor or remote only")
+        if sensor_only:
+            cluster_names = {ClusterId.ON_OFF: "On/Off", ClusterId.LEVEL_CONTROL: "Level"}
+            for cid in sensor_only:
+                name = cluster_names.get(cid, hex(cid))
+                notes.append(f"{name} is OUTPUT only (reports, cannot receive commands)")
+
+        # Check for Groups cluster support
+        if ClusterId.GROUPS not in clusters or not clusters[ClusterId.GROUPS].in_input:
+            notes.append("May not support native Zigbee groups (no Groups input cluster)")
+
+        return {
+            "ieee": ieee,
+            "name": self._get_friendly_name(ieee),
+            "type": device_type,
+            "is_actuator": is_actuator,
+            "capabilities": capabilities,
+            "relevance_score": relevance,
+            "notes": notes,
+            "model": getattr(device, 'model', 'Unknown') if hasattr(device, 'model') else 'Unknown'
+        }
+
+    def get_compatible_devices_for(self, ieee: str) -> List[Dict]:
+        """
+        Get devices compatible with given device for grouping.
+        Enhanced: Includes relevance scoring and excludes non-actuators.
+        """
+        device = self.service.devices.get(ieee)
+        if not device:
+            return []
+
+        # Source device must be an actuator
+        if not self._is_actuator(device):
+            logger.info(f"Device {ieee} is not an actuator, cannot form groups")
+            return []
+
+        compatible = []
+        my_role = self._get_device_role(device)
+
+        for other_ieee, other_device in self.service.devices.items():
+            if other_ieee == ieee:
+                continue
+
+            other_role = self._get_device_role(other_device)
+            if other_role == "Coordinator":
+                continue
+
+            # Key check: other device must be an actuator
+            if not self._is_actuator(other_device):
+                continue
+
+            is_compatible, reason = self.are_devices_compatible(device, other_device)
+            if is_compatible:
+                info = self.get_device_group_info(other_device)
+                compatible.append(info)
+
+        # Sort by relevance score descending
+        compatible.sort(key=lambda x: x['relevance_score'], reverse=True)
+        return compatible
+
+    def get_all_groupable_devices(self, group_type: Optional[str] = None) -> Dict[str, List[Dict]]:
+        """
+        Get all devices that can be added to groups, categorized.
+
+        Args:
+            group_type: Optional filter ('light', 'switch', 'cover', 'lock')
+
+        Returns:
+            {
+                "recommended": [...],  # Actuators matching type
+                "other_actuators": [...],  # Actuators of other types
+                "not_recommended": [...]  # Non-actuators (for reference)
+            }
+        """
+        recommended = []
+        other_actuators = []
+        not_recommended = []
+
+        for ieee, device in self.service.devices.items():
+            role = self._get_device_role(device)
+            if role == "Coordinator":
+                continue
+
+            info = self.get_device_group_info(device)
+
+            if not info['is_actuator']:
+                not_recommended.append(info)
+            elif group_type and info['type'] == group_type:
+                recommended.append(info)
+            elif group_type and info['type'] in ['light', 'switch'] and group_type in ['light', 'switch']:
+                # Allow light/switch mixing
+                recommended.append(info)
+            elif group_type:
+                other_actuators.append(info)
+            else:
+                recommended.append(info)
+
+        # Sort each list by relevance
+        recommended.sort(key=lambda x: x['relevance_score'], reverse=True)
+        other_actuators.sort(key=lambda x: x['relevance_score'], reverse=True)
+        not_recommended.sort(key=lambda x: x['relevance_score'], reverse=True)
+
+        return {
+            "recommended": recommended,
+            "other_actuators": other_actuators,
+            "not_recommended": not_recommended
+        }
+
+    # =========================================================================
+    # Group Creation and Management (unchanged logic, uses enhanced detection)
+    # =========================================================================
 
     async def create_group(self, name: str, device_iees: List[str]) -> Dict:
         """Create a new Zigbee group"""
@@ -268,6 +513,11 @@ class GroupManager:
             device = self.service.devices.get(ieee)
             if not device:
                 return {"error": f"Device {ieee} not found"}
+
+            # Check if device is an actuator
+            if not self._is_actuator(device):
+                return {"error": f"Device {self._get_friendly_name(ieee)} cannot be controlled (sensor/remote only)"}
+
             devices.append(device)
 
         base_device = devices[0]
@@ -313,8 +563,6 @@ class GroupManager:
 
     def _determine_group_type(self, capabilities: Set[str], devices: List) -> str:
         """Determine group type based on common capabilities"""
-
-        # If any device has color/brightness, it's a light group
         if (DeviceCapability.BRIGHTNESS in capabilities or
                 DeviceCapability.COLOR_XY in capabilities or
                 DeviceCapability.COLOR_TEMP in capabilities):
@@ -442,7 +690,10 @@ class GroupManager:
         if ieee in group['members']:
             return {"error": "Device already in group"}
 
-        # Check compatibility with existing members
+        #Check if device is an actuator
+        if not self._is_actuator(device):
+            return {"error": f"Device cannot be controlled (sensor/remote only)"}
+
         if group['members']:
             existing_device = self.service.devices.get(group['members'][0])
             compatible, reason = self.are_devices_compatible(existing_device, device)
@@ -551,9 +802,7 @@ class GroupManager:
             logger.error(f"Failed to publish group state: {e}")
 
     async def _read_group_state(self, group_id: int) -> Dict[str, Any]:
-        """
-        Read actual state from group member devices.
-        """
+        """Read actual state from group member devices"""
         if group_id not in self.groups:
             return {}
 
@@ -612,19 +861,14 @@ class GroupManager:
 
 
     async def publish_group_initial_state(self, group_id: int):
-        """
-        Publish initial group state after creation.
-        Reads actual state from devices and publishes to MQTT.
-        """
+        """Publish initial group state after creation"""
         state = await self._read_group_state(group_id)
         if state:
             await self._publish_group_state(group_id, state)
 
 
     async def control_group(self, group_id: int, command: Dict) -> Dict:
-        """
-        Control all devices in a group using Direct Cluster Commands.
-        """
+        """Control all devices in a group using Direct Cluster Commands"""
         if group_id not in self.groups:
             return {"error": "Group not found"}
 
@@ -726,19 +970,14 @@ class GroupManager:
 
 
     async def announce_groups(self):
-        """
-        Publish discovery for all groups.
-        Called by Core after MQTT is connected.
-        """
+        """Publish discovery for all groups"""
         logger.info(f"📢 Announcing {len(self.groups)} groups to Home Assistant...")
         for group_id, group_info in self.groups.items():
             await self._publish_group_discovery(group_id, group_info)
 
 
     async def _publish_group_discovery(self, group_id: int, group: Dict):
-        """
-        Publish group to Home Assistant via MQTT discovery
-        """
+        """Publish group to Home Assistant via MQTT discovery"""
         if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
             return
 
@@ -827,36 +1066,3 @@ class GroupManager:
                     })
             result.append(enriched)
         return result
-
-    def get_compatible_devices_for(self, ieee: str) -> List[Dict]:
-        """
-        Get list of devices compatible with the given device for grouping
-        """
-        device = self.service.devices.get(ieee)
-        if not device:
-            return []
-
-        compatible = []
-
-        # Use safe role access
-        my_role = self._get_device_role(device)
-
-        for other_ieee, other_device in self.service.devices.items():
-            if other_ieee == ieee:
-                continue
-
-            # Use safe role access
-            other_role = self._get_device_role(other_device)
-            if other_role == "Coordinator":
-                continue
-
-            is_compatible, reason = self.are_devices_compatible(device, other_device)
-            if is_compatible:
-                compatible.append({
-                    "ieee": other_ieee,
-                    "name": self._get_friendly_name(other_ieee),
-                    "type": self.get_device_type(other_device),
-                    "capabilities": list(self.get_device_capabilities(other_device))
-                })
-
-        return compatible
