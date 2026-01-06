@@ -42,7 +42,9 @@ import {
     permitJoinVia,
     checkPairingStatus,
     bindDevices,
-    startTouchlinkScan
+    startTouchlinkScan,
+    openBannedModal,
+    handleUnbanClick
 } from './actions.js';
 import {
     initMesh,
@@ -100,7 +102,10 @@ window.toggleMeshLabels = toggleMeshLabels;
 
 window.state = state;
 
+// Device Stuff
 window.bindDevices = bindDevices;
+window.openBannedModal = openBannedModal;
+window.handleUnbanClick = handleUnbanClick;
 
 
 // ============================================================================
