@@ -145,6 +145,9 @@
                             <button class="btn btn-danger btn-sm ms-2" onclick="restartSystem()">
                                 <i class="fas fa-power-off"></i> Restart Service
                             </button>
+                            <button class="btn btn-warning btn-sm ms-2" onclick="openBannedModal()">
+                                <i class="fas fa-ban"></i> Banned Devices
+                            </button>
                         </div>
                     </div>
                     <div class="card-body p-0">
@@ -609,6 +612,26 @@
                     <div id="motionEventsContent" style="max-height: 60vh; overflow-y: auto;">
                         <div class="text-center p-4"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Banned Devices Modal -->
+    <div class="modal fade" id="bannedDevicesModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-ban text-danger"></i> Banned Devices</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="bannedListContainer" class="list-group">
+                        <div class="text-center text-muted">Loading...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>

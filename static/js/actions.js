@@ -69,66 +69,65 @@ export function adjustSetpoint(ieee, delta) {
     }
 }
 
+
 /**
  * Perform device maintenance action
  */
 export async function doAction(action, ieee) {
-    if (action === 'remove' && !confirm("Are you sure?")) return;
+    let shouldBan = false;
+
+    // Special handling for 'remove' to ask about banning
+    if (action === 'remove') {
+        if (!confirm("Are you sure you want to remove this device?")) return;
+
+        // Secondary prompt: Ask if the user wants to ban
+        shouldBan = confirm("Do you also want to BAN this device to prevent it from rejoining?\n\nClick OK to Remove & Ban.\nClick Cancel to just Remove.");
+    } else {
+        // For other actions (like restart/interview), keep the generic confirm if needed
+    }
 
     try {
         const res = await fetch(`/api/device/${action}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ieee: ieee, force: false })
+            // Pass the ban flag (defaults to false if not set above)
+            body: JSON.stringify({
+                ieee: ieee,
+                force: false,
+                ban: shouldBan
+            })
         });
         const data = await res.json();
 
         if (data.success) {
+            let logMsg = `${action.toUpperCase()} sent.`;
+            if (action === 'remove' && shouldBan) {
+                logMsg = "Device removed and BANNED.";
+            } else if (action === 'remove') {
+                logMsg = "Device removed.";
+            }
+
             addLogEntry({
                 timestamp: getTimestamp(),
                 level: 'INFO',
-                message: `${action.toUpperCase()} sent.`
+                message: logMsg
             });
+
+            // Optional: Refresh the list or UI if needed
+            if (action === 'remove') {
+                alert(logMsg);
+                // If you have a refresh function exposed:
+                // if (window.refreshDevices) window.refreshDevices();
+            }
         } else {
             alert(`Error: ${data.error}`);
         }
     } catch (e) {
         console.error(e);
+        alert("Action failed: " + e.message);
     }
 }
 
-
-/**
- * Remove device with ban option
- */
-export async function removeDevice(ieee, ban = false) {
-    const msg = ban
-        ? "Remove AND ban this device (prevents rejoining)?"
-        : "Remove this device?";
-
-    if (!confirm(msg)) return;
-
-    try {
-        const res = await fetch('/api/device/remove', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ieee, force: false, ban })
-        });
-        const data = await res.json();
-
-        if (data.success) {
-            addLogEntry({
-                timestamp: getTimestamp(),
-                level: 'INFO',
-                message: ban ? `Device removed and banned` : `Device removed`
-            });
-        } else {
-            alert(`Error: ${data.error}`);
-        }
-    } catch (e) {
-        console.error(e);
-    }
-}
 
 /**
  * Ban a device by IEEE
@@ -400,5 +399,63 @@ export async function bindDevices(sourceIeee, targetIeee, clusterId) {
             btn.disabled = false;
             btn.innerHTML = originalText;
         }
+    }
+}
+
+
+/**
+ * Open the Banned Devices Modal and load data
+ */
+export async function openBannedModal() {
+    // 1. Open the modal using Bootstrap API
+    const modalEl = document.getElementById('bannedDevicesModal');
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+
+    // 2. Load the list
+    await refreshBannedList();
+}
+
+/**
+ * Fetch and Render the banned list
+ */
+export async function refreshBannedList() {
+    const container = document.getElementById('bannedListContainer');
+    container.innerHTML = '<div class="text-center text-muted p-3"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+
+    const data = await getBannedDevices();
+
+    if (!data.banned || data.banned.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted p-3">No banned devices found.</div>';
+        return;
+    }
+
+    // Render the list items
+    container.innerHTML = data.banned.map(ieee => `
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+                <i class="fas fa-ban text-danger me-2"></i>
+                <span class="font-monospace">${ieee}</span>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="handleUnbanClick('${ieee}')">
+                <i class="fas fa-unlock"></i> Unban
+            </button>
+        </div>
+    `).join('');
+}
+
+/**
+ * Handle Unban Button Click
+ */
+export async function handleUnbanClick(ieee) {
+    if (!confirm(`Are you sure you want to unban ${ieee}?`)) return;
+
+    const res = await unbanDevice(ieee);
+
+    if (res.success) {
+        // Refresh the list to show it's gone
+        await refreshBannedList();
+    } else {
+        alert("Failed to unban: " + (res.error || "Unknown error"));
     }
 }
