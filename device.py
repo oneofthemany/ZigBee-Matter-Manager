@@ -674,36 +674,73 @@ class ZigManDevice:
 
         return True
 
+
     async def configure(self, config: Optional[Dict] = None):
-        """Configure cluster handlers (bindings/reporting) and apply settings."""
+        """Configure cluster handlers with smart endpoint filtering."""
         logger.info(f"[{self.ieee}] Configuring device...")
 
         # Fast Path: Targeted Updates
         if config and config.get('updates'):
             updates = config['updates']
-
-            # Let each handler process its own config keys
             for handler in self.handlers.values():
                 if hasattr(handler, 'apply_configuration'):
                     try:
                         await handler.apply_configuration(updates)
                     except Exception as e:
-                        logger.warning(f"[{self.ieee}] Config failed for handler {handler.__class__.__name__}: {e}")
-
-            # QoS Setting
+                        logger.warning(f"[{self.ieee}] Config failed for {handler.__class__.__name__}: {e}")
             if 'qos' in config:
                 self.service.device_settings.setdefault(self.ieee, {})['qos'] = config['qos']
-
             return
 
+        # Slow Path: Smart Configuration using capabilities
+        stats = {
+            'configured': 0,
+            'skipped_not_configurable': 0,
+            'skipped_controller': 0,
+            'failed': 0,
+        }
+
         configured = set()
+
         for h in self.handlers.values():
-            if h in configured: continue
+            if h in configured:
+                continue
+
+            ep_id = h.endpoint.endpoint_id
+            cluster_id = h.cluster_id
+
+            # Check endpoint configurability
+            if not self.capabilities.is_endpoint_configurable(ep_id):
+                role = self.capabilities.get_endpoint_role(ep_id)
+                if role == 'controller':
+                    stats['skipped_controller'] += 1
+                    logger.debug(f"[{self.ieee}] Skip EP{ep_id}:0x{cluster_id:04x} (controller endpoint)")
+                else:
+                    stats['skipped_not_configurable'] += 1
+                    logger.debug(f"[{self.ieee}] Skip EP{ep_id}:0x{cluster_id:04x} (no configurable clusters)")
+                continue
+
+            # Check cluster configurability
+            if not self.capabilities.is_cluster_configurable(cluster_id, ep_id):
+                stats['skipped_not_configurable'] += 1
+                logger.debug(f"[{self.ieee}] Skip EP{ep_id}:0x{cluster_id:04x} (cluster not configurable)")
+                continue
+
+            # Configure
             try:
                 await h.configure()
                 configured.add(h)
+                stats['configured'] += 1
             except Exception as e:
-                logger.warning(f"[{self.ieee}] Config failed for 0x{h.cluster_id:04x}: {e}")
+                stats['failed'] += 1
+                logger.warning(f"[{self.ieee}] Config failed EP{ep_id}:0x{cluster_id:04x}: {e}")
+
+        # Summary
+        total_skipped = stats['skipped_not_configurable'] + stats['skipped_controller']
+        logger.info(
+            f"[{self.ieee}] Config: {stats['configured']} configured, "
+            f"{total_skipped} skipped, {stats['failed']} failed"
+        )
 
     async def interview(self):
         """Re-interview the device."""

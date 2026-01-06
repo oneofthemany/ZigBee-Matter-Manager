@@ -186,6 +186,91 @@ class DeviceCapabilities:
     XIAOMI_AQARA = 0xFCC0
     PHILIPS_MANUFACTURER = 0xFC00
 
+
+    # ========================================================================
+    # COMPREHENSIVE CLUSTER CONFIGURATION MATRIX
+    # ========================================================================
+
+    # Clusters that NEVER support configuration (system/infrastructure)
+    NEVER_CONFIGURABLE = {
+        0x0000,  # Basic (read-only device info)
+        0x0003,  # Identify (UI feedback only)
+        0x0004,  # Groups (binding target, not source)
+        0x0005,  # Scenes (binding target, not source)
+        0x0007,  # OnOff Configuration (config storage, not reporting)
+        0x0009,  # Alarms (event-driven)
+        0x000A,  # Time (usually OUTPUT only)
+        0x0013,  # Multistate Output (command-driven)
+        0x0019,  # OTA (firmware updates)
+        0x0020,  # Poll Control (deprecated)
+        0x0021,  # Green Power (proxy/commissioning only)
+        0x0100,  # Shade Configuration (settings, not state)
+        0x0101,  # Door Lock (command-driven)
+        0x0204,  # Thermostat UI Config (settings, not state)
+        0x0301,  # Ballast Configuration (settings, not state)
+        0x0401,  # Illuminance Level Sensing (thresholds, not measurement)
+        0x0501,  # IAS ACE (command interface)
+        0x0502,  # IAS WD (warning device commands)
+        0x0B05,  # Diagnostics (read-only stats)
+        0x1000,  # Touchlink/LightLink (commissioning)
+        # Manufacturer-specific that are typically not configurable
+        0xFC00,  # Philips (usually commands/config)
+        0xFC11,  # Sonoff (settings storage)
+    }
+
+    # Clusters configurable ONLY if in INPUT clusters
+    CONFIGURABLE_INPUT_ONLY = {
+        # Power & Energy
+        0x0001: "Power Configuration",        # Battery voltage/percentage
+        0x0702: "Metering",                   # Energy consumption
+        0x0B04: "Electrical Measurement",     # Voltage/current/power
+
+        # Environmental Sensors
+        0x0002: "Device Temperature",         # Internal temp
+        0x0400: "Illuminance Measurement",    # Light level
+        0x0402: "Temperature Measurement",    # Ambient temp
+        0x0403: "Pressure Measurement",       # Barometric pressure
+        0x0404: "Flow Measurement",           # Air/water flow
+        0x0405: "Relative Humidity",          # Humidity %
+        0x0406: "Occupancy Sensing",          # Motion/presence
+        0x0407: "Leaf Wetness",               # Agriculture
+        0x0408: "Soil Moisture",              # Agriculture
+        0x040D: "CO2 Measurement",            # Air quality
+        0x042A: "PM25 Measurement",           # Air quality
+
+        # Actuator State (configurable for feedback)
+        0x0006: "OnOff",                      # Switch state (bind only usually)
+        0x0008: "Level Control",              # Dimmer position
+        0x0102: "Window Covering",            # Blind position
+        0x0201: "Thermostat",                 # HVAC state
+        0x0202: "Fan Control",                # Fan speed/mode
+        0x0203: "Dehumidification Control",   # Dehumidifier
+        0x0300: "Color Control",              # Light color/temp
+
+        # Security
+        0x0500: "IAS Zone",                   # Alarm state
+
+        # Inputs (sensor-like)
+        0x000C: "Analog Input",               # Generic analog value
+        0x000F: "Binary Input",               # Generic binary state
+        0x0012: "Multistate Input",           # Multi-value sensor (buttons)
+    }
+
+    # Manufacturer-specific clusters (configurable if in INPUT)
+    MANUFACTURER_SPECIFIC_CONFIGURABLE = {
+        0xEF00: "Tuya Manufacturer",          # Tuya DP tunneling
+        0xFCC0: "Aqara Manufacturer",         # Aqara extensions
+    }
+
+    # Clusters that use OUTPUT for binding (not for state reporting)
+    BINDING_OUTPUT_CLUSTERS = {
+        0x0006,  # OnOff - Buttons/sensors bind to lights
+        0x0008,  # Level Control - Dimmers bind to lights
+        0x0300,  # Color Control - Color remotes bind to lights
+        0x0004,  # Groups - Group commands
+        0x0005,  # Scenes - Scene recall
+    }
+
     def __init__(self, zha_device):
         """
         Initialize capabilities for a ZHA device wrapper.
@@ -195,39 +280,77 @@ class DeviceCapabilities:
         self.zigpy_dev = zha_device.zigpy_dev
         self._capabilities: Set[str] = set()
         self._cluster_ids: Set[int] = set()
+        self._configurable_endpoints: Dict[int, Dict[str, Any]] = {}  # {ep_id: {...}}
         self._detect_capabilities()
 
     def _detect_capabilities(self):
-        """
-        Smart Capability Detection.
-        Phase 1: Fact Gathering (Endpoints & Clusters)
-        Phase 2: Standard Capability mapping
-        Phase 3: Context-Aware Quirk Application
-        """
+        """Smart Capability Detection with comprehensive cluster analysis."""
         self._capabilities.clear()
         self._cluster_ids.clear()
+        self._configurable_endpoints.clear()
 
-        # --- PHASE 1: Data Gathering ---
         manufacturer = str(self.zigpy_dev.manufacturer or "").lower()
         model = str(self.zigpy_dev.model or "").lower()
 
-        # Flatten all clusters from all endpoints for "Big Picture" analysis
+        # --- PHASE 1: Comprehensive Endpoint Analysis ---
         for ep_id, ep in self.zigpy_dev.endpoints.items():
-            if ep_id == 0: continue # Skip ZDO
+            if ep_id == 0:
+                continue
 
-            # Collect both In and Out clusters
-            for c in ep.in_clusters.values(): self._cluster_ids.add(c.cluster_id)
-            for c in ep.out_clusters.values(): self._cluster_ids.add(c.cluster_id)
+            ep_info = {
+                'configurable_clusters': set(),
+                'input_clusters': set(),
+                'output_clusters': set(),
+                'role': 'unknown',
+            }
 
+            # INPUT clusters
+            for cluster in ep.in_clusters.values():
+                cid = cluster.cluster_id
+                self._cluster_ids.add(cid)
+                ep_info['input_clusters'].add(cid)
+
+                if cid not in self.NEVER_CONFIGURABLE:
+                    if cid in self.CONFIGURABLE_INPUT_ONLY or cid in self.MANUFACTURER_SPECIFIC_CONFIGURABLE:
+                        ep_info['configurable_clusters'].add(cid)
+
+            # OUTPUT clusters
+            for cluster in ep.out_clusters.values():
+                cid = cluster.cluster_id
+                self._cluster_ids.add(cid)
+                ep_info['output_clusters'].add(cid)
+
+            # Determine role
+            has_actuator_inputs = bool(ep_info['input_clusters'] & {0x0006, 0x0008, 0x0102, 0x0201, 0x0300})
+            has_sensor_inputs = bool(ep_info['input_clusters'] & {0x0400, 0x0402, 0x0405, 0x0406, 0x0500})
+            has_control_outputs = bool(ep_info['output_clusters'] & self.BINDING_OUTPUT_CLUSTERS)
+
+            if has_actuator_inputs and not has_control_outputs:
+                ep_info['role'] = 'actuator'
+            elif has_sensor_inputs and not has_actuator_inputs:
+                ep_info['role'] = 'sensor'
+            elif has_control_outputs and not has_actuator_inputs:
+                ep_info['role'] = 'controller'
+            elif has_actuator_inputs and has_sensor_inputs:
+                ep_info['role'] = 'mixed'
+            else:
+                ep_info['role'] = 'passive'
+
+            self._configurable_endpoints[ep_id] = ep_info
+
+            LOGGER.debug(
+                f"[{self.device.ieee}] EP{ep_id} role={ep_info['role']}, "
+                f"configurable={len(ep_info['configurable_clusters'])}"
+            )
 
         # --- PHASE 2: Standard Capability Detection ---
 
-        # 1. Closures (Blinds/Covers) - Strong Signal
+        # Closures
         if self.WINDOW_COVERING in self._cluster_ids:
             self._capabilities.add('window_covering')
             self._capabilities.add('cover')
 
-        # 2. HVAC - Strong Signal
+        # HVAC
         if self.THERMOSTAT in self._cluster_ids:
             self._capabilities.add('thermostat')
             self._capabilities.add('hvac')
@@ -235,43 +358,36 @@ class DeviceCapabilities:
             self._capabilities.add('fan_control')
             self._capabilities.add('hvac')
 
-        # 3. Lighting (Standard)
+        # Lighting
         if self.COLOR_CONTROL in self._cluster_ids:
             self._capabilities.add('color_control')
             self._capabilities.add('light')
         if self.LEVEL_CONTROL in self._cluster_ids:
             self._capabilities.add('level_control')
-            # Level control usually implies light unless it's a cover (handled above)
             if 'cover' not in self._capabilities:
                 self._capabilities.add('light')
 
         if self.ON_OFF in self._cluster_ids:
             self._capabilities.add('on_off')
-            # Determine if it's a switch or light if not explicit
-            # If we already have light (from color/level), we are good.
-            # If not, and it's not a cover, it's likely a switch or basic light.
             if not ('light' in self._capabilities or 'cover' in self._capabilities):
                 self._capabilities.add('switch')
 
-        # 4. Standard Sensors
+        # Sensors
         if self.OCCUPANCY_SENSING in self._cluster_ids:
             self._capabilities.add('occupancy_sensing')
             self._capabilities.add('motion_sensor')
 
         if self.IAS_ZONE in self._cluster_ids:
             self._capabilities.add('ias_zone')
-            # Check model to disambiguate motion vs contact if generic IAS Zone
             if 'lumi.sensor_magnet' in model:
                 self._capabilities.add('contact_sensor')
             else:
-                self._capabilities.add('motion_sensor') # Default assumption
-                #self._capabilities.add('contact_sensor') # Default assumption
+                self._capabilities.add('motion_sensor')
 
         if self.TEMPERATURE_MEASUREMENT in self._cluster_ids:
             self._capabilities.add('temperature_sensor')
             self._capabilities.add('environmental_sensor')
 
-        # Aqara Device Temperature (0x0002) - often used for internal temp
         if self.DEVICE_TEMPERATURE in self._cluster_ids:
             self._capabilities.add('temperature_sensor')
 
@@ -287,13 +403,12 @@ class DeviceCapabilities:
             self._capabilities.add('illuminance_sensor')
             self._capabilities.add('environmental_sensor')
 
-        # 5. Power
+        # Power
         if self.POWER_CONFIGURATION in self._cluster_ids:
             self._capabilities.add('battery')
         if self.METERING in self._cluster_ids or self.ELECTRICAL_MEASUREMENT in self._cluster_ids:
             self._capabilities.add('metering')
             self._capabilities.add('power_monitoring')
-
 
         # --- PHASE 3: Context-Aware Quirks ---
 
@@ -301,30 +416,26 @@ class DeviceCapabilities:
         if "lumi.sensor_magnet" in model:
             self._capabilities.add('contact_sensor')
             self._capabilities.add('battery')
-            # Ensure it is NOT treated as a switch just because it has OnOff cluster
             self._capabilities.discard('switch')
             self._capabilities.discard('light')
-            # Ensure it is NOT treated as motion
             self._capabilities.discard('motion_sensor')
             self._capabilities.discard('occupancy_sensing')
 
         # PHILIPS HUE / SIGNIFY
-        # Quirk: SML models use OnOff (0x0006) for Motion, but they are sensors, not switches.
         if "philips" in manufacturer or "signify" in manufacturer:
             if "sml" in model and self.ON_OFF in self._cluster_ids:
                 self._capabilities.add('motion_sensor')
-                # Remove switch capability if it was added in Phase 2
                 self._capabilities.discard('switch')
+                # Apply EP1 controller quirk
+                if 1 in self._configurable_endpoints:
+                    self._configurable_endpoints[1]['configurable_clusters'].clear()
+                    self._configurable_endpoints[1]['role'] = 'controller'
+                    LOGGER.info(f"[{self.device.ieee}] Philips SML quirk: EP1=controller (skip config)")
 
         # TUYA / SMART LIFE
         if self.TUYA_MANUFACTURER in self._cluster_ids:
             self._capabilities.add('tuya')
 
-            # Quirk: Tuya devices use TS0601 / _TZE... for EVERYTHING.
-            # We must NOT blindly assume TS0601 is a Radar/Presence sensor.
-            # We only assume it is a wrapper sensor if it lacks standard functional clusters.
-
-            # Check what we found in Phase 2
             is_functional_device = (
                     'window_covering' in self._capabilities or
                     'thermostat' in self._capabilities or
@@ -334,15 +445,68 @@ class DeviceCapabilities:
 
             if '_tze' in manufacturer or 'ts0601' in model:
                 if is_functional_device:
-                    # Case: _TZE200... with WindowCovering (0x0102).
-                    # Logic: It IS a blind. It is NOT a presence sensor.
                     LOGGER.debug(f"Tuya device {model} identified as functional device, skipping presence quirk.")
                 else:
-                    # Case: _TZE200... with ONLY Basic + Tuya(0xEF00).
-                    # Logic: It is likely a complex sensor (mmWave, Presence) that uses 0xEF00 tunneling.
                     self._capabilities.add('presence_sensor')
                     self._capabilities.add('radar_sensor')
                     self._capabilities.add('occupancy_sensing')
+
+        # --- PHASE 4: Multi-Endpoint Detection ---
+        total_endpoints = len([e for e in self.zigpy_dev.endpoints if e > 0])
+        if total_endpoints > 1:
+            self._capabilities.add('multi_endpoint')
+
+            actuator_endpoints = [
+                ep_id for ep_id, info in self._configurable_endpoints.items()
+                if info['role'] in ('actuator', 'mixed')
+            ]
+            if len(actuator_endpoints) > 1:
+                self._capabilities.add('multi_switch')
+                LOGGER.info(f"[{self.device.ieee}] Multi-switch device detected: EPs {actuator_endpoints}")
+
+
+    def is_endpoint_configurable(self, endpoint_id: int) -> bool:
+        """Check if an endpoint has any configurable clusters."""
+        if endpoint_id not in self._configurable_endpoints:
+            return False
+        return bool(self._configurable_endpoints[endpoint_id]['configurable_clusters'])
+
+    def is_cluster_configurable(self, cluster_id: int, endpoint_id: int) -> bool:
+        """Check if a specific cluster on an endpoint is configurable."""
+        if endpoint_id not in self._configurable_endpoints:
+            return False
+        return cluster_id in self._configurable_endpoints[endpoint_id]['configurable_clusters']
+
+    def get_endpoint_role(self, endpoint_id: int) -> str:
+        """Get the role of an endpoint."""
+        return self._configurable_endpoints.get(endpoint_id, {}).get('role', 'unknown')
+
+    def get_configurable_clusters(self, endpoint_id: Optional[int] = None) -> Set[int]:
+        """Get configurable cluster IDs for an endpoint or all endpoints."""
+        if endpoint_id is not None:
+            return self._configurable_endpoints.get(endpoint_id, {}).get('configurable_clusters', set())
+
+        # All configurable clusters across all endpoints
+        all_clusters = set()
+        for ep_info in self._configurable_endpoints.values():
+            all_clusters.update(ep_info['configurable_clusters'])
+        return all_clusters
+
+    def get_configuration_info(self) -> Dict[str, Any]:
+        """Get detailed configuration capability info for API/debugging."""
+        return {
+            "endpoints": {
+                ep_id: {
+                    "role": info['role'],
+                    "configurable": [f"0x{c:04x}" for c in info['configurable_clusters']],
+                    "input_count": len(info['input_clusters']),
+                    "output_count": len(info['output_clusters']),
+                }
+                for ep_id, info in self._configurable_endpoints.items()
+            },
+            "total_configurable_clusters": len(self.get_configurable_clusters()),
+            "is_multi_endpoint": self.has_capability('multi_endpoint'),
+        }
 
     def has_capability(self, capability: str) -> bool:
         return capability in self._capabilities
