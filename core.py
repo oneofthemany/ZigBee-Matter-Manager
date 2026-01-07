@@ -260,6 +260,8 @@ class ZigbeeService:
             self.mqtt.status_change_callback = self.handle_bridge_status_change
             self.mqtt.group_command_callback = self.group_manager.handle_mqtt_group_command
 
+        self._accepting_commands = False  # Block commands until ready
+
         os.makedirs("logs", exist_ok=True)
 
 
@@ -676,6 +678,11 @@ class ZigbeeService:
         Handle incoming MQTT command from Home Assistant.
         Supports JSON Schema with optimistic state updates.
         """
+        # Ignore commands during startup grace period
+        if not getattr(self, '_accepting_commands', True):
+            logger.warning(f"Ignoring command during startup: {device_identifier} {data}")
+            return
+
         ieee = self._resolve_device_identifier(device_identifier)
         if not ieee or ieee not in self.devices:
             logger.warning(f"MQTT command for unknown device: {device_identifier}")
@@ -1058,10 +1065,10 @@ class ZigbeeService:
 
         # RESTORE STATE FROM CACHE (including last_seen for availability)
         if ieee in self.state_cache:
+            logger.info(f"[{ieee}] Restoring cached state: {self.state_cache[ieee]}")
             self.devices[ieee].restore_state(self.state_cache[ieee])
-            logger.debug(f"[{ieee}] Restored {len(self.state_cache[ieee])} state attributes from cache")
-
-        logger.debug(f"Restored device: {ieee}")
+        else:
+            logger.warning(f"[{ieee}] NO cached state found!")
 
 
     async def _async_device_initialized(self, ieee: str):
@@ -1164,6 +1171,7 @@ class ZigbeeService:
 
                 # Sanitize for JSON serialization
                 safe_state = sanitise_device_state(initial_state)
+                logger.info(f"[{ieee}] Initial state to publish: {safe_state}")
 
                 # ==================================================================
                 # Remove numeric 'state' that conflicts with string state_N
@@ -1234,6 +1242,13 @@ class ZigbeeService:
             await self.group_manager.announce_groups()
 
         logger.info(f"✅ Device & Group announcement complete: {announced} devices successful")
+
+        # Grace period for HA to sync state before accepting commands
+        logger.info("⏳ Startup grace period (5s) - ignoring commands...")
+        await asyncio.sleep(5)
+        self._accepting_commands = True
+        logger.info("✅ Now accepting MQTT commands")
+
         await self._emit("log", {
             "level": "INFO",
             "message": f"Announced {announced} devices to Home Assistant",

@@ -272,6 +272,7 @@ class MQTTService:
 
     async def _route_command(self, topic: str, payload: str):
         """Route incoming command to the appropriate device handler."""
+        logger.info(f"📥 ROUTING: topic={topic}, payload={payload}")  # ADD THIS
         parts = topic.split('/')
 
         try:
