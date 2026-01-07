@@ -4,11 +4,25 @@ Handles: On/Off, Level Control, Color, Scenes, Groups, Basic
 """
 import logging
 from typing import Any, Dict, List, Optional
+from zigpy.zcl.foundation import Status
 import time
 
 from .base import ClusterHandler, register_handler
 
 logger = logging.getLogger("handlers.general")
+
+def _check_success(result) -> bool:
+    """Check if ZCL command result indicates success."""
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, (list, tuple)):
+        if len(result) >= 2:
+            return result[1] is Status.SUCCESS or result[1] == 0
+        elif len(result) == 1 and hasattr(result[0], 'status'):
+            return result[0].status is Status.SUCCESS
+    elif hasattr(result, 'status'):
+        return result.status is Status.SUCCESS
+    return False
 
 # ============================================================
 # ON/OFF CLUSTER (0x0006)
@@ -485,7 +499,6 @@ class OnOffHandler(ClusterHandler):
     # --- OPTIMISTIC UPDATES ADDED HERE ---
     async def turn_on(self):
         try:
-            # Force use of INPUT cluster, not output
             in_cluster = self.endpoint.in_clusters.get(0x0006)
             if not in_cluster:
                 logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
@@ -494,21 +507,10 @@ class OnOffHandler(ClusterHandler):
             result = await in_cluster.on()
             logger.info(f"[{self.device.ieee}] ON result: {result}")
 
-            success = False
-            # Check if result is a list/tuple
-            if result and isinstance(result, (list, tuple)):
-                if hasattr(result[0], 'status') and result[0].status == 0:
-                    success = True
-                elif result[0] == 0:
-                    success = True
-            # Check if result is a direct Default_Response object
-            elif hasattr(result, 'status') and result.status == 0:
-                success = True
-
-            if success:
+            if _check_success(result):
                 self._update_state(True)
             else:
-                logger.error(f"[{self.device.ieee}] ON FAILED/Unexpected: {result}")
+                logger.error(f"[{self.device.ieee}] ON FAILED: {result}")
 
         except Exception as e:
             logger.error(f"[{self.device.ieee}] ON exception: {e}", exc_info=True)
@@ -522,7 +524,6 @@ class OnOffHandler(ClusterHandler):
                 logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
                 return
 
-            # If transition requested and LevelControl available, use it
             if transition_time is not None and 0x0008 in self.endpoint.in_clusters:
                 level_cluster = self.endpoint.in_clusters[0x0008]
                 result = await level_cluster.move_to_level_with_on_off(0, transition_time)
@@ -531,22 +532,17 @@ class OnOffHandler(ClusterHandler):
                 result = await in_cluster.off()
                 logger.info(f"[{self.device.ieee}] OFF (instant)")
 
-            # Standard success check...
-            if result and isinstance(result, (list, tuple)):
-                success = hasattr(result[0], 'status') and result[0].status == 0 or result[0] == 0
-            elif hasattr(result, 'status'):
-                success = result.status == 0
-            else:
-                success = True
-
-            if success:
+            if _check_success(result):
                 self._update_state(False)
+            else:
+                logger.error(f"[{self.device.ieee}] OFF FAILED: {result}")
+
         except Exception as e:
             logger.error(f"[{self.device.ieee}] OFF exception: {e}", exc_info=True)
 
+
     async def toggle(self):
         try:
-            # Force use of INPUT cluster
             in_cluster = self.endpoint.in_clusters.get(0x0006)
             if not in_cluster:
                 logger.error(f"[{self.device.ieee}] No OnOff INPUT cluster!")
@@ -555,25 +551,12 @@ class OnOffHandler(ClusterHandler):
             result = await in_cluster.toggle()
             logger.info(f"[{self.device.ieee}] TOGGLE result: {result}")
 
-            success = False
-            # Check if result is a list/tuple
-            if result and isinstance(result, (list, tuple)):
-                if hasattr(result[0], 'status') and result[0].status == 0:
-                    success = True
-                elif result[0] == 0:
-                    success = True
-            # Check if result is a direct Default_Response object
-            elif hasattr(result, 'status') and result.status == 0:
-                success = True
-
-            if success:
-                # Calculate the new state based on the current known state
+            if _check_success(result):
                 key = f"on_{self.endpoint.endpoint_id}"
-                # Fallback to general "on" state if endpoint specific state isn't found
                 current = self.device.state.get(key, self.device.state.get("on", False))
                 self._update_state(not current)
             else:
-                logger.error(f"[{self.device.ieee}] TOGGLE FAILED/Unexpected: {result}")
+                logger.error(f"[{self.device.ieee}] TOGGLE FAILED: {result}")
 
         except Exception as e:
             logger.error(f"[{self.device.ieee}] TOGGLE exception: {e}", exc_info=True)
@@ -609,8 +592,14 @@ class LevelControlHandler(ClusterHandler):
         return {self.ATTR_CURRENT_LEVEL: "brightness"}
 
     async def set_level(self, level: int, transition_time: int = 10):
-        await self.cluster.move_to_level(level, transition_time)
-        self._update_level(level) # Optimistic
+        try:
+            result = await self.cluster.move_to_level(level, transition_time)
+            if _check_success(result):
+                self._update_level(level)
+            else:
+                logger.error(f"[{self.device.ieee}] SET_LEVEL FAILED: {result}")
+        except Exception as e:
+            logger.error(f"[{self.device.ieee}] SET_LEVEL exception: {e}", exc_info=True)
 
     async def set_brightness_pct(self, percent: int, transition_time: int = 10):
         level = round((percent / 100) * 254)
