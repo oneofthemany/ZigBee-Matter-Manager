@@ -127,6 +127,15 @@ class PollingScheduler:
                     power_source = device.state.get('power_source', '').lower()
                     is_battery = 'battery' in power_source
 
+                    # ===== DIAGNOSTIC LOOP =====
+                    manufacturer = str(device.zigpy_dev.manufacturer or "").lower()
+                    model = str(device.zigpy_dev.model or "").lower()
+                    is_philips_motion = ("philips" in manufacturer or "signify" in manufacturer) and "sml" in model
+
+                    if is_philips_motion:
+                        logger.warning(f"[{ieee}] Philips motion sensor in poll loop! "
+                                       f"power_source='{power_source}', is_battery={is_battery}")
+
                     # Skip passive battery sensors
                     is_sensor = any([
                         0x0406 in [h.CLUSTER_ID for h in device.handlers.values()],
@@ -148,10 +157,9 @@ class PollingScheduler:
                             logger.debug(f"[{ieee}] Skipping poll - cover moving")
                             continue
 
-                    # ===== Skip TRVs during active heating =====
+                    # Skip TRVs during active heating
                     is_trv = 0x0201 in [h.CLUSTER_ID for h in device.handlers.values()]
                     if is_trv and is_battery:
-                        # Skip if actively heating (valve moving/adjusting)
                         pi_heating_demand = device.state.get('pi_heating_demand', 0)
                         if pi_heating_demand > 0:
                             logger.debug(f"[{ieee}] Skipping poll - TRV actively heating")
@@ -1141,6 +1149,37 @@ class ZigbeeService:
 
         try:
             zdev = self.devices[ieee]
+
+            # Poll actual state BEFORE publishing discovery
+            # Only poll if: router/mains-powered AND was previously available
+            try:
+                node_desc = zdev.zigpy_dev.node_desc
+                is_router = node_desc is not None and node_desc.logical_type in (0, 1)
+                is_mains = zdev.state.get('power_source', '').lower().startswith('mains')
+                was_available = zdev.state.get('available', False)
+
+                # Check last_seen - skip if offline for more than 1 hour
+                last_seen = zdev.state.get('last_seen', 0)
+                if isinstance(last_seen, int) and last_seen > 1000000000000:  # milliseconds
+                    last_seen = last_seen / 1000
+                stale = (time.time() - last_seen) > 3600 if last_seen else True
+
+                if (is_router or is_mains) and was_available and not stale:
+                    await zdev.poll()
+                    logger.debug(f"[{ieee}] Polled router state before announcement")
+                else:
+                    reason = []
+                    if not (is_router or is_mains):
+                        reason.append("end device")
+                    if not was_available:
+                        reason.append("was offline")
+                    if stale:
+                        reason.append("stale")
+                    logger.debug(f"[{ieee}] Skipping poll - {', '.join(reason)}")
+
+            except Exception as e:
+                logger.warning(f"[{ieee}] Pre-announcement poll failed: {e}")
+
             configs = zdev.get_device_discovery_configs()
 
             # Use consistent safe name generation
@@ -1244,8 +1283,8 @@ class ZigbeeService:
         logger.info(f"✅ Device & Group announcement complete: {announced} devices successful")
 
         # Grace period for HA to sync state before accepting commands
-        logger.info("⏳ Startup grace period (5s) - ignoring commands...")
-        await asyncio.sleep(5)
+        logger.info("⏳ Startup grace period (20s) - ignoring commands...")
+        await asyncio.sleep(20)
         self._accepting_commands = True
         logger.info("✅ Now accepting MQTT commands")
 
