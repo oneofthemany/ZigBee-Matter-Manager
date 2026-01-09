@@ -844,16 +844,20 @@ class ZigbeeService:
                 "ieee": ieee,
                 "category": "security"
             })
-            # Kick the device off the network
             asyncio.create_task(self._kick_banned_device(device))
-            return  # Don't process this device further
+            return
 
-        logger.info(f"Device joined: {ieee}")
+        # Check for duplicates BEFORE logging
+        if ieee in self.devices:
+            logger.error(f"[{ieee}] Device ALREADY EXISTS! Duplicate join event - ignoring")
+            return
+
+        logger.info(f"Device joined: {ieee}")  # Only log once after checks pass
 
         # Create device wrapper
         self.devices[ieee] = ZigManDevice(self, device)
 
-        # Mark as immediately seen (device just joined!)
+        # Mark as immediately seen
         self.devices[ieee].last_seen = int(time.time() * 1000)
 
         # Record join history
@@ -962,6 +966,10 @@ class ZigbeeService:
     def device_left(self, device: zigpy.device.Device):
         """Called when a device leaves the network."""
         ieee = str(device.ieee)
+
+        import traceback
+        logger.warning(f"[{ieee}] Device left called, stack:\n{''.join(traceback.format_stack()[-5:])}")
+
         logger.info(f"Device left: {ieee}")
 
         if ieee in self.devices:
