@@ -2033,6 +2033,14 @@ class ZigbeeService:
             mqtt_payload = changed_data.copy()
             mqtt_payload['available'] = zha_device.is_available()
             mqtt_payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
+
+            # FOR MULTI-ENDPOINT: Include ALL endpoint states from cache
+            if ieee in self.state_cache:
+                cached = self.state_cache[ieee]
+                # Add all state_N and on_N fields from cache
+                for key in cached:
+                    if (key.startswith('state_') or key.startswith('on_')) and key not in mqtt_payload:
+                        mqtt_payload[key] = cached[key]
         else:
             mqtt_payload = full_state.copy()
             mqtt_payload['available'] = zha_device.is_available()
