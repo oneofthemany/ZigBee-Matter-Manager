@@ -457,6 +457,11 @@ class ZigManDevice:
         if changed:
             changed['last_seen'] = self.last_seen
 
+            # Update state cache and schedule save
+            self.service.state_cache[self.ieee] = self.state.copy()
+            self.service._cache_dirty = True
+            self.service._schedule_save()
+
             # Update service cache
             self.service.handle_device_update(self, changed, qos=qos, endpoint_id=endpoint_id)
 
