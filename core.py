@@ -226,12 +226,12 @@ class ZigbeeService:
         self.event_callback = event_callback or self._default_event_callback
 
         self.devices: Dict[str, ZigManDevice] = {}
-        self.friendly_names = self._load_json("names.json")
-        self.device_settings = self._load_json("device_settings.json")
-        self.polling_config = self._load_json("polling_config.json")
+        self.friendly_names = self._load_json("./data/names.json")
+        self.device_settings = self._load_json("./data/device_settings.json")
+        self.polling_config = self._load_json("./data/polling_config.json")
 
         # --- STATE CACHE ---
-        self.state_cache = self._load_json("device_state_cache.json")
+        self.state_cache = self._load_json("./data/device_state_cache.json")
         self._cache_dirty = False
         self._save_task = None  # Track debounce task
         self._debounce_seconds = 2.0
@@ -422,7 +422,7 @@ class ZigbeeService:
 
     def _save_state_cache(self):
         """Save current device states to cache file."""
-        self._save_json("device_state_cache.json", self.state_cache)
+        self._save_json("./data/device_state_cache.json", self.state_cache)
 
     async def _debounced_save(self):
         """Save state cache after debounce period."""
@@ -1297,7 +1297,7 @@ class ZigbeeService:
 
         # Save to config
         self.polling_config[ieee] = interval
-        self._save_json("polling_config.json", self.polling_config)
+        self._save_json("./data/polling_config.json", self.polling_config)
 
         return {"success": True, "ieee": ieee, "interval": interval}
 
@@ -1520,16 +1520,16 @@ class ZigbeeService:
             # 5. Cleanup Persistent JSON Files
             if ieee in self.friendly_names:
                 del self.friendly_names[ieee]
-                self._save_json("names.json", self.friendly_names)
+                self._save_json("./data/names.json", self.friendly_names)
 
             if ieee in self.device_settings:
                 del self.device_settings[ieee]
-                self._save_json("device_settings.json", self.device_settings)
+                self._save_json("./data/device_settings.json", self.device_settings)
 
             # 6. Poll device
             if ieee in self.polling_config:
                 del self.polling_config[ieee]
-                self._save_json("polling_config.json", self.polling_config)
+                self._save_json("./data/polling_config.json", self.polling_config)
 
             # 7. Remove from state cache
             if ieee in self.state_cache:
@@ -1563,7 +1563,7 @@ class ZigbeeService:
     async def rename_device(self, ieee, name):
         """Rename a device."""
         self.friendly_names[ieee] = name
-        self._save_json("names.json", self.friendly_names)
+        self._save_json("./data/names.json", self.friendly_names)
         self._rebuild_name_maps()
 
         # Re-announce to HA with new name
@@ -1583,7 +1583,7 @@ class ZigbeeService:
                 # Save settings to file for persistence if they are legacy style
                 if config and 'tuya_settings' in config:
                     self.device_settings[ieee] = config
-                    self._save_json("device_settings.json", self.device_settings)
+                    self._save_json("./data/device_settings.json", self.device_settings)
 
                 return {"success": True}
 
