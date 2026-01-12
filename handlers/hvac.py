@@ -1,7 +1,7 @@
 """
 HVAC cluster handlers for Zigbee devices.
 Handles: Thermostats, TRVs (Thermostatic Radiator Valves), HVAC systems
-Compatible with: Hive Smart Heating, generic TRVs, AC units
+Compatible with: Hive Smart Heating (SLR1c, SLR1b), Aqara TRVs, generic thermostats
 """
 import logging
 from typing import Any, Dict, Optional, List
@@ -41,11 +41,20 @@ class ThermostatSystemMode(IntEnum):
 class ThermostatHandler(ClusterHandler):
     """
     Handles Thermostat cluster (0x0201).
-    Adopted from ZHA implementation for robust Hive support.
+
+    MQTT State Keys (Home Assistant compatible):
+    - current_temperature: Current room temperature (for HA climate)
+    - temperature: Alias for current_temperature
+    - local_temperature: Raw local temp from device
+    - occupied_heating_setpoint: Target setpoint in °C
+    - target_temp: Alias for occupied_heating_setpoint (for scheduler)
+    - system_mode: "off", "heat", "auto", etc.
+    - hvac_action: "heating", "idle", "off"
+    - heating_demand: PI demand percentage (0-100)
     """
     CLUSTER_ID = 0x0201
 
-    # ZHA-aligned reporting configuration
+    # Reporting configuration
     REPORT_CONFIG = [
         # Local Temperature: Min 30s, Max 300s, Change 0.5°C (50)
         ("local_temperature", 60, 300, 50),
@@ -195,16 +204,17 @@ class ThermostatHandler(ClusterHandler):
         updates = {}
 
         if attrid == self.ATTR_LOCAL_TEMP:
-            # If it's a receiver, this might be internal temp, not room temp.
             if self.is_receiver:
                 updates["internal_temperature"] = parsed_value
             else:
                 updates["local_temperature"] = parsed_value
+                updates["current_temperature"] = parsed_value  # HA climate key
                 updates["temperature"] = parsed_value
 
         elif attrid == self.ATTR_OCCUPIED_HEATING_SETPOINT:
             updates["occupied_heating_setpoint"] = parsed_value
             updates["heating_setpoint"] = parsed_value
+            updates["target_temp"] = parsed_value
 
         elif attrid == self.ATTR_SYSTEM_MODE:
             updates["system_mode"] = parsed_value
@@ -217,10 +227,9 @@ class ThermostatHandler(ClusterHandler):
             updates["hvac_action"] = action
 
         elif attrid == self.ATTR_INTERNAL_TEMP:
-            # --- Map internal_temperature to local_temperature ---
-            # SLR1c reports this. Map it to local_temperature for HA consistency.
             updates["internal_temperature"] = parsed_value
             updates["local_temperature"] = parsed_value
+            updates["current_temperature"] = parsed_value  # HA climate key
             updates["temperature"] = parsed_value
 
         elif attrid == self.ATTR_PI_HEATING_DEMAND:
@@ -256,9 +265,9 @@ class ThermostatHandler(ClusterHandler):
         })
 
         self.device.update_state({
-            "temperature": temperature,
             "heating_setpoint": temperature,
             "occupied_heating_setpoint": temperature,
+            "target_temp": temperature,  # Scheduler compatibility
         })
 
 
@@ -454,7 +463,7 @@ class ThermostatHandler(ClusterHandler):
         self.device.update_state({
             "heating_setpoint": temperature,
             "occupied_heating_setpoint": temperature,
-            "temperature_setpoint": temperature
+            "target_temp": temperature,  # Scheduler compatibility
         })
 
     async def set_system_mode(self, mode: str):
