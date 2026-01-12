@@ -123,7 +123,7 @@ function updateHAStatus(status) {
     const badge = document.getElementById('ha-status-badge');
     if (!badge) return;
 
-    // Normalize status string
+    // Normalise status string
     const s = (status || 'unknown').toLowerCase();
 
     if (s === 'online') {

@@ -27,9 +27,8 @@ from handlers.zigbee_debug import get_debugger
 from modules.json_helpers import prepare_for_json, safe_json_dumps
 from modules.groups import GroupManager
 from modules.mqtt_explorer import MQTTExplorer
-from modules.zones import ZoneManager, ZoneConfig
 from modules.zones_api import register_zone_routes
-from handlers.zones_handler import setup_rssi_listener
+from modules.zones import ZoneConfig
 
 
 # ============================================================================
@@ -307,7 +306,18 @@ async def lifespan(app: FastAPI):
     # wire handler to the MQTT Service
     mqtt_service.group_command_callback = zigbee_service.group_manager.handle_mqtt_group_command
     logger.info("Wired GroupManager callback to MQTT Service")
-    # ----------------------------------------------------------------------
+
+
+    # Initialize Zone Manager
+    await zigbee_service.init_zones()
+
+    # Register Zone API Routes
+    register_zone_routes(
+        app,
+        zigbee_service.zone_manager,
+        zigbee_service.devices
+    )
+    logger.info("Zone API routes registered")
 
     yield  # Application runs here
 

@@ -40,6 +40,8 @@ from modules.device_ban import get_ban_manager
 # import services
 from modules.json_helpers import prepare_for_json, sanitise_device_state
 from modules.packet_stats import packet_stats
+from modules.zones import ZoneManager
+from handlers.zones_handler import setup_rssi_listener
 
 # Try Loading Quirks
 logger = logging.getLogger("core")
@@ -263,6 +265,9 @@ class ZigbeeService:
         # Create Group Manager
         from modules.groups import GroupManager
         self.group_manager = GroupManager(self)
+
+        # Zone Manager
+        self.zone_manager = None
 
         # Connect MQTT callbacks
         if self.mqtt:
@@ -617,9 +622,58 @@ class ZigbeeService:
 
         raise RuntimeError("Failed to start Zigbee Radio after 12 attempts. Check hardware.")
 
+    async def init_zones(self, mqtt_handler=None):
+        """Initialise zone manager after Zigbee network is started."""
+        from pathlib import Path
+        import yaml
+
+        # Initialise the manager
+        self.zone_manager = ZoneManager(
+            app_controller=self.app,
+            mqtt_handler=mqtt_handler or self.mqtt,
+        )
+
+        # Hook RSSI listener to Zigpy application
+        if hasattr(self, 'app'):
+            setup_rssi_listener(self.app, self.zone_manager)
+            logger.info("RSSI listener attached to Zigbee stack")
+
+        # Load saved zones
+        zones_path = Path("./data/zones.yaml")
+        if zones_path.exists():
+            try:
+                with open(zones_path) as f:
+                    zones_config = yaml.safe_load(f) or {}
+                self.zone_manager.load_config(zones_config.get('zones', []))
+                logger.info(f"Loaded {len(self.zone_manager.zones)} zones from config")
+            except Exception as e:
+                logger.error(f"Failed to load zones config: {e}")
+
+        # Start background tasks
+        await self.zone_manager.start()
+
+        # Publish Discovery
+        for zone in self.zone_manager.zones.values():
+            await self.zone_manager.publish_discovery(zone)
+
+        logger.info("Zone manager initialised")
+
     async def stop(self):
         """Shutdown the Zigbee network."""
         self.polling_scheduler.stop()
+
+
+        if self.zone_manager:
+            await self.zone_manager.stop()
+            try:
+                import yaml
+                # Save to data directory
+                configs = self.zone_manager.save_config()
+                with open("./data/zones.yaml", "w") as f:
+                    yaml.dump({'zones': configs}, f)
+                logger.info("Saved zone configurations")
+            except Exception as e:
+                logger.error(f"Failed to save zones config: {e}")
 
         if self._save_task: self._save_task.cancel()
         if self._watchdog_task: self._watchdog_task.cancel()

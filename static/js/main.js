@@ -12,6 +12,12 @@ import { fetchAllDevices } from './devices.js';
 import { initGroups } from './groups.js';
 import { initMQTTExplorer, handleMQTTMessage } from './mqtt-explorer.js';
 
+import {
+    initZones,
+    recalibrateZone,
+    deleteZone,
+    viewZoneDetails
+} from './zones.js';
 
 import {
     openDeviceModal,
@@ -108,26 +114,34 @@ window.openBannedModal = openBannedModal;
 window.handleUnbanClick = handleUnbanClick;
 
 
+// Zones Management
+window.recalibrateZone = recalibrateZone;
+window.deleteZone = deleteZone;
+window.viewZoneDetails = viewZoneDetails;
+
 // ============================================================================
 // APPLICATION INITIALIZATION
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Initialize WebSocket connection
+    // Initialise WebSocket connection
     initWS();
 
     // Start update interval for "last seen" times
     setInterval(updateLastSeenTimes, 1000);
 
-    // Initialize Mesh Tab listener
+    // Initialise Mesh Tab listener
     initMesh();
 
 
-    // Initialize Groups
+    // Initialise Groups
     initGroups();
 
-    // Initialize Explorer
+    // Initialise Explorer
     initMQTTExplorer();
+
+    // Initialise Zones
+    initZones();
 
     // Initial fetch
     fetchAllDevices();
@@ -135,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check if pairing is currently active (Persistence)
     if(typeof checkPairingStatus === 'function') checkPairingStatus();
 
-    // Initialize Settings Tab listener
+    // Initialise Settings Tab listener
     const settingsTab = document.querySelector('button[data-bs-target="#settings"]');
     if(settingsTab) {
         settingsTab.addEventListener('click', loadConfigYaml);
