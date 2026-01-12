@@ -370,7 +370,7 @@ class ZoneManager:
         Collect link quality data using logic mirroring core.py's connection table builder.
         """
         # Log every call initially (remove after debugging)
-        logger.info(f"_collect_neighbor_data called, app_controller={self.app_controller is not None}")
+        #logger.info(f"_collect_neighbor_data called, app_controller={self.app_controller is not None}")
 
         if not self.app_controller:
             logger.warning("Zone sampling: app_controller is None!")
