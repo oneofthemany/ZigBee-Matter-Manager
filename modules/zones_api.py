@@ -61,7 +61,7 @@ def register_zone_routes(app, zone_manager, device_registry=None):
         device_registry: Optional device registry for IEEE lookups
     """
     from fastapi import HTTPException
-    from zones import ZoneConfig
+    from .zones import ZoneConfig
 
     @app.get("/api/zones", tags=["zones"])
     async def list_zones() -> List[Dict[str, Any]]:
@@ -226,23 +226,36 @@ def register_zone_routes(app, zone_manager, device_registry=None):
     async def suggest_zone_devices(room_name: str) -> Dict[str, Any]:
         """
         Suggest devices for a zone based on room name matching.
-
-        Looks for devices with matching names/locations.
         """
         if not device_registry:
-            raise HTTPException(status_code=501, detail="Device registry not available")
+            # Return empty if registry not ready yet
+            return {"room": room_name, "suggested_devices": [], "count": 0}
 
         suggested = []
         room_lower = room_name.lower()
 
         for ieee, device in device_registry.items():
-            name = getattr(device, 'name', '') or ''
+            # Handle ZigManDevice wrapper vs Raw Zigpy Device
+            # If it's a wrapper, we might need to access .zigpy_dev for specific attributes
+            zigpy_dev = getattr(device, 'zigpy_dev', device)
+
+            # Friendly name is usually stored in the wrapper or managed externally
+            # If your ZigManDevice has a .name or .friendly_name attribute, use it
+            name = getattr(device, 'friendly_name', getattr(device, 'name', str(ieee))) or str(ieee)
+
             if room_lower in name.lower():
+                # Safely get model
+                model = getattr(zigpy_dev, 'model', 'Unknown')
+
+                # Safely get router status
+                node_desc = getattr(zigpy_dev, 'node_desc', None)
+                is_router = getattr(node_desc, 'is_router', False) if node_desc else False
+
                 suggested.append({
                     'ieee': ieee,
                     'name': name,
-                    'model': getattr(device, 'model', 'Unknown'),
-                    'is_router': getattr(device.node_desc, 'is_router', False) if hasattr(device, 'node_desc') else False,
+                    'model': model,
+                    'is_router': is_router,
                 })
 
         return {
@@ -250,5 +263,3 @@ def register_zone_routes(app, zone_manager, device_registry=None):
             'suggested_devices': suggested,
             'count': len(suggested),
         }
-
-    logger.info("Zone API routes registered")

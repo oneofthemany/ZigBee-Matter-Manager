@@ -63,3 +63,69 @@ export function getTimestamp() {
     const pad = (n, width = 2) => n.toString().padStart(width, '0');
     return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
 }
+
+
+/**
+ * Show a toast notification
+ * @param {string} message - The message to display
+ * @param {string} type - 'success', 'danger', 'info', 'warning' (default: info)
+ */
+export function showToast(message, type = 'info') {
+    // Create toast container if it doesn't exist
+    let toastContainer = document.getElementById('toast-container');
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.id = 'toast-container';
+        toastContainer.className = 'toast-container position-fixed bottom-0 end-0 p-3';
+        toastContainer.style.zIndex = '1055';
+        document.body.appendChild(toastContainer);
+    }
+
+    // Map types to Bootstrap colors if needed (e.g. 'error' -> 'danger')
+    const typeMap = {
+        'error': 'danger',
+        'success': 'success',
+        'warning': 'warning',
+        'info': 'info'
+    };
+    const bsType = typeMap[type] || type;
+
+    // Create unique ID
+    const toastId = 'toast-' + Date.now();
+
+    // Create toast HTML
+    const toastHtml = `
+        <div id="${toastId}" class="toast align-items-center text-white bg-${bsType} border-0" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body">
+                    ${message}
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        </div>
+    `;
+
+    // Append to container
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = toastHtml;
+    const toastEl = wrapper.firstElementChild;
+    toastContainer.appendChild(toastEl);
+
+    // Initialize and show using Bootstrap API
+    // (Assuming bootstrap is loaded globally via <script> tag)
+    if (window.bootstrap) {
+        const toast = new window.bootstrap.Toast(toastEl, { delay: 3000 });
+        toast.show();
+
+        // Remove from DOM after hidden
+        toastEl.addEventListener('hidden.bs.toast', () => {
+            toastEl.remove();
+        });
+    } else {
+        // Fallback if Bootstrap JS isn't loaded
+        toastEl.style.display = 'block';
+        setTimeout(() => {
+            toastEl.remove();
+        }, 3000);
+    }
+}

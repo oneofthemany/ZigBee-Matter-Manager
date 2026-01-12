@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Any, Callable
 from collections import deque
 from enum import Enum, auto
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +393,24 @@ class ZoneManager:
         if not self.app_controller:
             return
 
+
+        # --- Borrow from Cached Topology ---
+        if hasattr(self.app_controller, 'topology') and self.app_controller.topology.neighbors:
+            for src_ieee, neighbors in self.app_controller.topology.neighbors.items():
+                source_str = str(src_ieee)
+                for neighbor in neighbors:
+                    target_str = str(neighbor.ieee)
+
+                    # Convert LQI to RSSI if RSSI is missing
+                    lqi = neighbor.lqi or 0
+                    rssi = self._lqi_to_rssi(lqi)
+
+                    self.record_link_quality(
+                        source_ieee=source_str,
+                        target_ieee=target_str,
+                        rssi=rssi,
+                        lqi=lqi
+                    )
         try:
             # Get neighbor table from coordinator
             neighbors = await self._get_neighbors(self.app_controller.ieee)
@@ -531,7 +550,7 @@ class ZoneManager:
         try:
             await self.mqtt_handler.publish(
                 f"homeassistant/binary_sensor/{unique_id}/config",
-                discovery_payload,
+                json.dumps(discovery_payload),  # <--- Wrap in json.dumps()
                 retain=True
             )
             logger.info(f"Published HA discovery for zone '{zone.name}'")
