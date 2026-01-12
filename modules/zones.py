@@ -370,7 +370,7 @@ class ZoneManager:
         Collect link quality data using logic mirroring core.py's connection table builder.
         """
         # Log every call initially (remove after debugging)
-        #logger.info(f"_collect_neighbor_data called, app_controller={self.app_controller is not None}")
+        logger.info(f"_collect_neighbor_data called, app_controller={self.app_controller is not None}")
 
         if not self.app_controller:
             logger.warning("Zone sampling: app_controller is None!")
@@ -379,12 +379,12 @@ class ZoneManager:
         # Check topology exists
         has_topology = hasattr(self.app_controller, 'topology')
         has_neighbors = has_topology and hasattr(self.app_controller.topology, 'neighbors')
-        #logger.info(f"has_topology={has_topology}, has_neighbors={has_neighbors}")
+        logger.info(f"has_topology={has_topology}, has_neighbors={has_neighbors}")
 
         if has_neighbors:
             neighbor_count = len(self.app_controller.topology.neighbors)
-            #logger.info(f"Topology has {neighbor_count} source nodes")
-            #logger.info(f"Zone device mappings: {list(self._device_to_zones.keys())}")
+            logger.info(f"Topology has {neighbor_count} source nodes")
+            logger.info(f"Zone device mappings: {list(self._device_to_zones.keys())}")
 
         # Reset diagnostic flag once we have app_controller
         if self._topology_logged:
@@ -398,24 +398,24 @@ class ZoneManager:
             topology_neighbors = self.app_controller.topology.neighbors
 
             if self._force_collect:
-                #logger.info(f"Topology has {len(topology_neighbors)} source nodes")
-                #logger.info(f"Zone devices: {list(self._device_to_zones.keys())}")
+                logger.info(f"Topology has {len(topology_neighbors)} source nodes")
+                logger.info(f"Zone devices: {list(self._device_to_zones.keys())}")
 
-                for src_ieee, neighbors in topology_neighbors.items():
-                    src_str = normalize_ieee(src_ieee)
+            for src_ieee, neighbors in topology_neighbors.items():
+                src_str = normalize_ieee(src_ieee)
 
-                    for neighbor in neighbors:
-                        dst_str = normalize_ieee(neighbor.ieee)
-                        lqi = getattr(neighbor, 'lqi', 0) or 0
-                        rssi = self._lqi_to_rssi(lqi)
+                for neighbor in neighbors:
+                    dst_str = normalize_ieee(neighbor.ieee)
+                    lqi = getattr(neighbor, 'lqi', 0) or 0
+                    rssi = self._lqi_to_rssi(lqi)
 
-                        # Check if either device is in a zone BEFORE recording
-                        if src_str in self._device_to_zones or dst_str in self._device_to_zones:
-                            links_found += 1
-                            self.record_link_quality(src_str, dst_str, rssi, lqi)
+                    # Check if either device is in a zone BEFORE recording
+                    if src_str in self._device_to_zones or dst_str in self._device_to_zones:
+                        links_found += 1
+                        self.record_link_quality(src_str, dst_str, rssi, lqi)
 
-                            if self._force_collect:
-                                logger.info(f"  Link: {src_str[:17]} <-> {dst_str[:17]} LQI={lqi}")
+                        if self._force_collect:
+                            logger.info(f"  Link: {src_str[:17]} <-> {dst_str[:17]} LQI={lqi}")
         else:
             if self._force_collect:
                 logger.warning("Topology.neighbors not available!")
