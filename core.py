@@ -33,13 +33,13 @@ from zigpy.zcl.clusters.security import IasZone
 from device import ZigManDevice
 from handlers.zigbee_debug import get_debugger
 from handlers.fast_path import FastPathProcessor
-from device_ban import get_ban_manager
+from modules.device_ban import get_ban_manager
 #from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
 
 
 # import services
-from json_helpers import prepare_for_json, sanitise_device_state
-from packet_stats import packet_stats
+from modules.json_helpers import prepare_for_json, sanitise_device_state
+from modules.packet_stats import packet_stats
 
 # Try Loading Quirks
 logger = logging.getLogger("core")
@@ -261,7 +261,7 @@ class ZigbeeService:
         logger.info("Fast-path processor initialised")
 
         # Create Group Manager
-        from groups import GroupManager
+        from modules.groups import GroupManager
         self.group_manager = GroupManager(self)
 
         # Connect MQTT callbacks
@@ -508,7 +508,7 @@ class ZigbeeService:
         # ========================================================================
         if radio_type == "EZSP":
             # Load enhanced EZSP configuration
-            from config_enhanced import get_production_config
+            from modules.config_enhanced import get_production_config
             device_count = len(self.devices) if hasattr(self, 'devices') and self.devices else 0
             enhanced_config = get_production_config(self._config, device_count)
             logger.info(f"Loaded enhanced EZSP config (device count: {device_count})")
@@ -566,7 +566,7 @@ class ZigbeeService:
                 # STEP 6: Wrap with resilience system (EZSP only for now)
                 # ================================================================
                 if radio_type == "EZSP":
-                    from resilience import wrap_with_resilience
+                    from modules.resilience import wrap_with_resilience
                     self.resilience = wrap_with_resilience(
                         self.app,
                         event_callback=self.event_callback
@@ -1192,7 +1192,7 @@ class ZigbeeService:
             # PUBLISH INITIAL STATE FROM CACHE
             # ==================================================================
             try:
-                from json_helpers import sanitise_device_state
+                from modules.json_helpers import sanitise_device_state
 
                 # Build initial state from cached/current state
                 initial_state = zdev.state.copy()
@@ -1845,7 +1845,7 @@ class ZigbeeService:
 
     def get_simple_mesh(self):
         """Get network topology for mesh visualization with packet statistics."""
-        from packet_stats import packet_stats
+        from modules.packet_stats import packet_stats
 
         nodes = []
         connections = []
@@ -2028,7 +2028,7 @@ class ZigbeeService:
             mqtt_payload['available'] = zha_device.is_available()
             mqtt_payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
 
-        from json_helpers import sanitise_device_state
+        from modules.json_helpers import sanitise_device_state
         safe_mqtt_payload = sanitise_device_state(mqtt_payload)
 
         # Normalise contact sensors for MQTT
@@ -2117,7 +2117,7 @@ class ZigbeeService:
                     "value": v,
                     "endpoint_id": endpoint_id
                 }
-                from json_helpers import prepare_for_json
+                from modules.json_helpers import prepare_for_json
                 safe_log_payload = prepare_for_json(log_payload)
                 self._emit_sync("log", safe_log_payload)
 
@@ -2201,5 +2201,5 @@ class ZigbeeService:
                 "polling_interval": self.polling_scheduler.get_interval(ieee)
             })
 
-        # Sanitize the entire result to be JSON-safe
+        # Sanitise the entire result to be JSON-safe
         return prepare_for_json(res)

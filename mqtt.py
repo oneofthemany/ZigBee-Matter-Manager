@@ -8,7 +8,7 @@ import logging
 from typing import Optional, Callable, Dict, Any
 from contextlib import suppress
 
-from mqtt_queue import MQTTPublishQueue
+from modules.mqtt_queue import MQTTPublishQueue
 
 logger = logging.getLogger("mqtt")
 
