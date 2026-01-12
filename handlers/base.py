@@ -20,7 +20,7 @@ except ImportError:
     CLUSTER_NAMES = {}
 
 
-from packet_stats import packet_stats
+from modules.packet_stats import packet_stats
 
 logger = logging.getLogger("handlers.base")
 

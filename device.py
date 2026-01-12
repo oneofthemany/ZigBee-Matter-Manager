@@ -7,14 +7,16 @@ import logging
 import asyncio
 import json
 from typing import Dict, Any, Optional, List
+from zigpy.zcl.clusters.general import Basic
 
 # Import the registry from handlers package
 from handlers.base import HANDLER_REGISTRY, ClusterHandler
-from error_handler import with_retries, CommandWrapper
-from device_capabilities import DeviceCapabilities
-from zigpy.zcl.clusters.general import Basic
-from json_helpers import sanitise_device_state
-from packet_stats import packet_stats
+
+# import from modules
+from modules.error_handler import with_retries, CommandWrapper
+from modules.device_capabilities import DeviceCapabilities
+from modules.json_helpers import sanitise_device_state
+from modules.packet_stats import packet_stats
 
 # Import handlers to trigger registration decorators
 from handlers.security import *

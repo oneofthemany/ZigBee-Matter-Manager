@@ -24,9 +24,12 @@ from fastapi.responses import FileResponse
 from core import ZigbeeService
 from mqtt import MQTTService
 from handlers.zigbee_debug import get_debugger
-from json_helpers import prepare_for_json, safe_json_dumps
-from groups import GroupManager
-from mqtt_explorer import MQTTExplorer
+from modules.json_helpers import prepare_for_json, safe_json_dumps
+from modules.groups import GroupManager
+from modules.mqtt_explorer import MQTTExplorer
+from modules.zones import ZoneManager, ZoneConfig
+from modules.zones_api import register_zone_routes
+from handlers.zones_handler import setup_rssi_listener
 
 
 # ============================================================================
@@ -81,9 +84,9 @@ configuration
 from config.yaml.
 
 """
-    if not os.path.exists("config.yaml"):
+    if not os.path.exists("./config/config.yaml"):
         return {}
-    with open("config.yaml", 'r') as f:
+    with open("./config/config.yaml", 'r') as f:
         return yaml.safe_load(f) or {}
 
 
@@ -343,15 +346,15 @@ async def read_index():
 
 
 # ============================================================================
-# ROUTES - CONFIGURATION MANAGEMENT (NEW)
+# ROUTES - CONFIGURATION MANAGEMENT
 # ============================================================================
 
 @app.get("/api/config")
 async def get_config_file():
     """Get the raw config.yaml content."""
     try:
-        if os.path.exists("config.yaml"):
-            with open("config.yaml", 'r') as f:
+        if os.path.exists("./config/config.yaml"):
+            with open("./config/config.yaml", 'r') as f:
                 content = f.read()
             return {"success": True, "content": content}
         return {"success": False, "error": "config.yaml not found"}
@@ -369,11 +372,12 @@ async def update_config_file(request: ConfigUpdateRequest):
             return {"success": False, "error": f"Invalid YAML: {e}"}
 
         # Write to file
-        with open("config.yaml", 'w') as f:
-            f.write(request.content)
+        if os.path.exists("./config/config.yaml"):
+            with open("./config/config.yaml", 'w') as f:
+                f.write(request.content)
 
-        logger.info("Configuration file updated via API")
-        return {"success": True}
+            logger.info("Configuration file updated via API")
+            return {"success": True}
     except Exception as e:
         logger.error(f"Failed to update config: {e}")
         return {"success": False, "error": str(e)}
@@ -579,7 +583,7 @@ async def get_join_stats():
 @app.get("/api/network/packet-stats")
 async def get_packet_stats():
     """Get per-device packet statistics."""
-    from packet_stats import packet_stats
+    from modules.packet_stats import packet_stats
     return {
         "success": True,
         "stats": packet_stats.get_all_stats(),
@@ -590,7 +594,7 @@ async def get_packet_stats():
 @app.get("/api/network/packet-stats/{ieee}")
 async def get_device_packet_stats(ieee: str):
     """Get packet statistics for a specific device."""
-    from packet_stats import packet_stats
+    from modules.packet_stats import packet_stats
     stats = packet_stats.get_device_stats(ieee)
     if stats:
         return {"success": True, "stats": stats}
@@ -600,7 +604,7 @@ async def get_device_packet_stats(ieee: str):
 @app.post("/api/network/packet-stats/reset")
 async def reset_packet_stats():
     """Reset all packet statistics."""
-    from packet_stats import packet_stats
+    from modules.packet_stats import packet_stats
     packet_stats.reset()
     return {"success": True, "message": "Statistics reset"}
 
@@ -765,7 +769,7 @@ async def get_resilience_status():
 @app.get("/api/error_stats")
 async def get_error_stats():
     """Get error handling statistics."""
-    from error_handler import get_error_stats
+    from modules.error_handler import get_error_stats
     return get_error_stats()
 
 
