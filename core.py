@@ -12,7 +12,6 @@ import traceback
 from typing import Dict, Any, Optional
 import bellows.uart
 import bellows.config
-#from bellows.zigbee.application import ControllerApplication
 from bellows.ash import NcpFailure
 import zigpy.types
 import zigpy.config
@@ -20,7 +19,10 @@ import zigpy.device
 import bellows.ezsp
 import zigpy_znp.api
 import zigpy_znp.config
-#from zigpy_znp.zigbee.application import ControllerApplication
+from pathlib import Path
+import asyncio
+import json
+import time
 
 
 # Import ZDO types for binding
@@ -231,7 +233,8 @@ class ZigbeeService:
         # --- STATE CACHE ---
         self.state_cache = self._load_json("device_state_cache.json")
         self._cache_dirty = False
-        # -------------------
+        self._save_task = None  # Track debounce task
+        self._debounce_seconds = 2.0
 
         self.join_history = []
         self._config = config
@@ -421,21 +424,24 @@ class ZigbeeService:
         """Save current device states to cache file."""
         self._save_json("device_state_cache.json", self.state_cache)
 
-    async def _periodic_save(self):
-        """Periodically save cache to disk to prevent I/O blocking."""
-        while True:
-            try:
-                await asyncio.sleep(30) # Save interval (30s)
-                if self._cache_dirty:
-                    # Run in executor to avoid blocking the loop
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, self._save_state_cache)
-                    self._cache_dirty = False
-                    logger.debug("State cache saved to disk")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in periodic save: {e}")
+    async def _debounced_save(self):
+        """Save state cache after debounce period."""
+        try:
+            await asyncio.sleep(self._debounce_seconds)
+            if self._cache_dirty:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._save_state_cache)
+                self._cache_dirty = False
+                logger.debug("State cache saved to disk")
+        except asyncio.CancelledError:
+            pass
+
+    def _schedule_save(self):
+        """Schedule a debounced save, canceling any pending save."""
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
+
+        self._save_task = asyncio.create_task(self._debounced_save())
 
     async def _loop_watchdog(self):
         """Monitor event loop lag."""
@@ -581,7 +587,6 @@ class ZigbeeService:
                 self.polling_scheduler.start()
 
                 # Start background tasks
-                self._save_task = asyncio.create_task(self._periodic_save())
                 self._watchdog_task = asyncio.create_task(self.polling_scheduler._availability_watchdog_loop())
 
                 # Load saved polling intervals
@@ -1158,35 +1163,13 @@ class ZigbeeService:
         try:
             zdev = self.devices[ieee]
 
-            # Poll actual state BEFORE publishing discovery
-            # Only poll if: router/mains-powered AND was previously available
-            try:
-                node_desc = zdev.zigpy_dev.node_desc
-                is_router = node_desc is not None and node_desc.logical_type in (0, 1)
-                is_mains = zdev.state.get('power_source', '').lower().startswith('mains')
-                was_available = zdev.state.get('available', False)
-
-                # Check last_seen - skip if offline for more than 1 hour
-                last_seen = zdev.state.get('last_seen', 0)
-                if isinstance(last_seen, int) and last_seen > 1000000000000:  # milliseconds
-                    last_seen = last_seen / 1000
-                stale = (time.time() - last_seen) > 3600 if last_seen else True
-
-                if (is_router or is_mains) and was_available and not stale:
-                    await zdev.poll()
-                    logger.debug(f"[{ieee}] Polled router state before announcement")
-                else:
-                    reason = []
-                    if not (is_router or is_mains):
-                        reason.append("end device")
-                    if not was_available:
-                        reason.append("was offline")
-                    if stale:
-                        reason.append("stale")
-                    logger.debug(f"[{ieee}] Skipping poll - {', '.join(reason)}")
-
-            except Exception as e:
-                logger.warning(f"[{ieee}] Pre-announcement poll failed: {e}")
+            # ==================================================================
+            # RESTORE CACHED STATE
+            # ==================================================================
+            if ieee in self.state_cache:
+                # Restore last known state from cache
+                zdev.state.update(self.state_cache[ieee])
+                logger.debug(f"[{ieee}] Restored cached state")
 
             configs = zdev.get_device_discovery_configs()
 
@@ -1206,23 +1189,22 @@ class ZigbeeService:
             logger.info(f"[{ieee}] Published HA discovery")
 
             # ==================================================================
-            # PUBLISH INITIAL STATE (CRITICAL FOR AVAILABILITY)
+            # PUBLISH INITIAL STATE FROM CACHE
             # ==================================================================
             try:
                 from json_helpers import sanitise_device_state
 
-                # Build initial state from device's current state
+                # Build initial state from cached/current state
                 initial_state = zdev.state.copy()
-                initial_state['available'] = zdev.is_available()
-                initial_state['lqi'] = getattr(zdev.zigpy_dev, 'lqi', 0) or 0
+
+                # Mark as unavailable until device actually responds
+                initial_state['available'] = False
+                initial_state['lqi'] = 0
 
                 # Sanitize for JSON serialization
                 safe_state = sanitise_device_state(initial_state)
-                logger.info(f"[{ieee}] Initial state to publish: {safe_state}")
 
-                # ==================================================================
                 # Remove numeric 'state' that conflicts with string state_N
-                # ==================================================================
                 if 'state' in safe_state and isinstance(safe_state['state'], (int, bool, float)):
                     logger.warning(f"[{ieee}] Removing numeric 'state' value: {safe_state['state']}")
                     del safe_state['state']
@@ -1242,7 +1224,7 @@ class ZigbeeService:
                     qos=1,
                     retain=True
                 )
-                logger.info(f"[{ieee}] Published initial state: available={initial_state['available']}, state={safe_state.get('state')}")
+                logger.info(f"[{ieee}] Published cached state: available=False, state={safe_state.get('state')}")
 
             except Exception as e:
                 logger.error(f"[{ieee}] Failed to publish initial state: {e}")
@@ -2033,6 +2015,14 @@ class ZigbeeService:
             mqtt_payload = changed_data.copy()
             mqtt_payload['available'] = zha_device.is_available()
             mqtt_payload['lqi'] = getattr(zha_device.zigpy_dev, 'lqi', 0) or 0
+
+            # FOR MULTI-ENDPOINT: Include ALL endpoint states from cache
+            if ieee in self.state_cache:
+                cached = self.state_cache[ieee]
+                # Add all state_N and on_N fields from cache
+                for key in cached:
+                    if (key.startswith('state_') or key.startswith('on_')) and key not in mqtt_payload:
+                        mqtt_payload[key] = cached[key]
         else:
             mqtt_payload = full_state.copy()
             mqtt_payload['available'] = zha_device.is_available()

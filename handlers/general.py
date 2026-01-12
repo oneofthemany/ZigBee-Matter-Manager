@@ -52,17 +52,8 @@ class OnOffHandler(ClusterHandler):
     CMD_TOGGLE = 0x02
     CMD_ON_WITH_TIMED_OFF = 0x42
 
-    # In handlers/general.py OnOff handler
-    def cluster_command(self, tsn, command_id, args):
-        # Diagnostic for motion command
-        if command_id == 0x42:  # on_with_timed_off
-            existing = hasattr(self.device, '_motion_clear_task')
-            active = existing and self.device._motion_clear_task and not self.device._motion_clear_task.done()
-            logger.warning(f"[{self.device.ieee}] Motion command 0x42, "
-                           f"existing_timer={existing}, timer_active={active}")
-
+    def cluster_command(self, tsn: int, command_id: int, args):
         logger.info(f"[{self.device.ieee}] On/Off cmd: 0x{command_id:02X}")
-
         if command_id == self.CMD_ON_WITH_TIMED_OFF:
             self._handle_on_with_timed_off(args)
         elif command_id == self.CMD_ON:
@@ -71,8 +62,11 @@ class OnOffHandler(ClusterHandler):
             self._update_state(False)
         elif command_id == self.CMD_TOGGLE:
             key = f"on_{self.endpoint.endpoint_id}"
+            # Use endpoint state if avail, else global state
             current = self.device.state.get(key, self.device.state.get("on", False))
             self._update_state(not current)
+
+
 
     def _is_light_endpoint(self) -> bool:
         """Check if this endpoint is a light (not a controller)."""
