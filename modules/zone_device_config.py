@@ -11,42 +11,88 @@ DIAGNOSTICS_CLUSTER = 0x0B05
 LAST_MESSAGE_LQI_ATTR = 0x011C
 LAST_MESSAGE_RSSI_ATTR = 0x011D
 
+# Critical Clusters for LQI generation
+# We force these to report every 5 seconds
+TARGET_CLUSTERS = {
+    #0x0006: 0x0000,  # OnOff -> OnOff Status
+    #0x0008: 0x0000,  # LevelControl -> Current Level
+    #0x0300: 0x0003,  # ColorControl -> Current X (or 0x0007 Color Temp)
+    #0x0B04: 0x050B,  # ElectricalMeasurement -> Active Power
+
+    # Telemetry & Diagnostic Clusters (Preferred for LQI generation)
+    0x0B04: 0x050B,  # ElectricalMeasurement -> Active Power
+    0x0B05: 0x011C,  # Diagnostics -> Last Message LQI
+}
 
 async def configure_zone_device_reporting(zigbee_service, device_ieees: list):
     """
     Configure zone devices to report LQI changes.
-    Call when zone is created or on startup.
-
-    Args:
-        zigbee_service: The ZigbeeService instance
-        device_ieees: List of IEEE addresses in the zone
     """
     configured_count = 0
 
     for ieee in device_ieees:
         if ieee not in zigbee_service.devices:
-            logger.warning(f"[Zone] Device {ieee} not found")
             continue
 
         device = zigbee_service.devices[ieee]
         zigpy_dev = device.zigpy_dev
 
-        # Skip battery devices - they sleep
-        if device._is_battery_powered():
+        # Skip battery devices (they sleep and can't be forced)
+        if device.power_source == "Battery" or device.node_desc.is_end_device:
             logger.debug(f"[{ieee}] Skipping battery device")
             continue
 
-        success = await _configure_diagnostics_reporting(ieee, zigpy_dev)
+        # Try configuring fallback reporting on common clusters
+        success = await _configure_aggressive_reporting(ieee, zigpy_dev)
         if success:
             configured_count += 1
-        else:
-            # Fallback: configure frequent reporting on any available cluster
-            await _configure_fallback_reporting(ieee, zigpy_dev)
-            configured_count += 1
 
-    logger.info(f"[Zone] Configured {configured_count}/{len(device_ieees)} devices for LQI reporting")
-    return configured_count
+    logger.info(f"[Zone] Configured {configured_count} devices for fast LQI reporting")
 
+
+async def _configure_aggressive_reporting(ieee, zigpy_dev):
+    """
+    Iterate through device endpoints and force aggressive reporting on supported clusters.
+    """
+    success = False
+
+    for ep_id, endpoint in zigpy_dev.endpoints.items():
+        if ep_id == 0: continue # Skip ZDO
+
+        # Loop through our target clusters (Light, Power, etc.)
+        for cluster_id, attr_id in TARGET_CLUSTERS.items():
+            if cluster_id in endpoint.out_clusters:
+                # Some devices use Output clusters (rare for state, but possible)
+                cluster = endpoint.out_clusters[cluster_id]
+            elif cluster_id in endpoint.in_clusters:
+                # Most devices use Input clusters for state (OnOff, Level)
+                cluster = endpoint.in_clusters[cluster_id]
+            else:
+                continue
+
+            try:
+                # 1. Bind (Ensure we get the reports)
+                await cluster.bind()
+
+                # 2. Configure Reporting (The Magic Fix)
+                # Min=1: Don't spam if changing instantly
+                # Max=5: FORCE a report every 5 seconds (The Heartbeat)
+                # Change=1: Report even tiny changes
+                await cluster.configure_reporting(
+                    attr_id,
+                    min_interval=1,
+                    max_interval=5,
+                    reportable_change=1
+                )
+
+                logger.info(f"[{ieee}] ⚡ FAST LQI configured on Cluster 0x{cluster_id:04X} (EP{ep_id})")
+                success = True
+
+            except Exception as e:
+                logger.debug(f"[{ieee}] Failed to config cluster 0x{cluster_id:04X}: {e}")
+                continue
+
+    return success
 
 async def _configure_diagnostics_reporting(ieee: str, zigpy_dev) -> bool:
     """Configure Diagnostics cluster (0x0B05) for LQI reporting."""

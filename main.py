@@ -29,6 +29,7 @@ from modules.groups import GroupManager
 from modules.mqtt_explorer import MQTTExplorer
 from modules.zones_api import register_zone_routes
 from modules.zones import ZoneConfig
+from modules.zone_device_config import configure_zone_device_reporting
 
 
 # ============================================================================
@@ -462,9 +463,19 @@ async def remove_device(request: DeviceRequest):
 
 @app.post("/api/device/reconfigure")
 async def reconfigure_device_endpoint(request: DeviceRequest):
-    """Force full device reconfiguration (default bindings/reporting)."""
-    # Calling configure_device without 'config' triggers the default setup
-    return await zigbee_service.configure_device(request.ieee)
+    """Force reconfiguration with Aggressive LQI Reporting."""
+    logger.info(f"[{request.ieee}] Starting manual reconfiguration...")
+
+    # 1. Run Standard Config (Bindings, basic setup)
+    # This sets the default 300s reporting you saw in logs
+    await zigbee_service.configure_device(request.ieee)
+
+    # 2. OVERRIDE with Aggressive Zone Config (5s reporting)
+    # This sends a second set of commands to overwrite the defaults
+    logger.info(f"[{request.ieee}] Applying aggressive zone reporting...")
+    await configure_zone_device_reporting(zigbee_service, [request.ieee])
+
+    return {"success": True}
 
 @app.post("/api/device/rename")
 async def rename_device(request: RenameRequest):
