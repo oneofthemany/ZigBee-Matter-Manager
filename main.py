@@ -460,6 +460,11 @@ async def remove_device(request: DeviceRequest):
 
     return result
 
+@app.post("/api/device/reconfigure")
+async def reconfigure_device_endpoint(request: DeviceRequest):
+    """Force full device reconfiguration (default bindings/reporting)."""
+    # Calling configure_device without 'config' triggers the default setup
+    return await zigbee_service.configure_device(request.ieee)
 
 @app.post("/api/device/rename")
 async def rename_device(request: RenameRequest):

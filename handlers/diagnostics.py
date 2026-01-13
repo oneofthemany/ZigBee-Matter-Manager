@@ -57,9 +57,9 @@ class DiagnosticsHandler(ClusterHandler):
             await self.cluster.bind()
             await self.cluster.configure_reporting(
                 self.LAST_MESSAGE_LQI,
-                min_interval=10,
-                max_interval=60,
-                reportable_change=5
+                min_interval=2,
+                max_interval=5,
+                reportable_change=1
             )
             logger.info(f"[{self.device.ieee}] Configured Diagnostics LQI reporting")
         except Exception as e:
