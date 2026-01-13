@@ -120,7 +120,7 @@ class LinkStats:
         self.last_lqi = lqi
         self._update_smoothed_rssi()
 
-    def _update_smoothed_rssi(self, window: int = 5) -> None:
+    def _update_smoothed_rssi(self, window: int = 2) -> None:
         """Calculate moving average of recent RSSI samples."""
         if len(self.samples) < window:
             self._smoothed_rssi = self.last_rssi if self.last_rssi is not None else None
@@ -131,7 +131,7 @@ class LinkStats:
 
     def compute_baseline(self) -> bool:
         """Compute baseline statistics from calibration samples."""
-        if len(self.samples) < 30:  # ✅ Changed from 10 to 30
+        if len(self.samples) < 30:
             return False
 
         # Use MIDDLE 80% of samples to reduce outlier impact
@@ -143,9 +143,9 @@ class LinkStats:
         self.baseline_mean = mean(rssi_values)
         self.baseline_std = stdev(rssi_values) if len(rssi_values) > 1 else 1.0
 
-        # Ensure reasonable std dev (2-10 dBm for stable links)
-        if self.baseline_std < 2.0:
-            self.baseline_std = 2.0
+        # Ensure reasonable std dev
+        if self.baseline_std < 1.0:
+            self.baseline_std = 1.0
 
         logger.info(
             f"Baseline computed: μ={self.baseline_mean:.1f}, σ={self.baseline_std:.1f} "
@@ -332,15 +332,21 @@ class Zone:
         return False
 
     def _emit_calibration_update(self):
-        """Emit calibration progress via callback."""
+        """Emit calibration progress with live link stats."""
         if not self._calibration_callback:
             return
 
         elapsed = time.time() - self.calibration_start if self.calibration_start else 0
         progress = min(100, int((elapsed / self.config.calibration_time) * 100))
+
+        # Only emit if progress changed by 5% or more
+        if abs(progress - self._last_progress) < 5 and progress < 100:
+            return
+
+        self._last_progress = progress
         ready_links = len([l for l in self.links.values() if l.baseline_mean is not None])
 
-        # Include LIVE link stats for frontend display
+        # BUILD LIVE LINK STATS FOR FRONTEND
         link_stats = {}
         for key, link in self.links.items():
             if len(link.samples) > 0:  # Only include active links
@@ -354,7 +360,7 @@ class Zone:
                     'deviation': link.get_deviation(),
                 }
 
-        self._calibration_callback({
+        payload = {
             'zone_name': self.name,
             'state': self.state.name.lower(),
             'progress': progress,
@@ -362,8 +368,15 @@ class Zone:
             'total': self.config.calibration_time,
             'link_count': len([l for l in self.links.values() if len(l.samples) > 0]),
             'ready_links': ready_links,
-            'links': link_stats
-        })
+            'links': link_stats  # ✅ THIS WAS MISSING
+        }
+
+        logger.info(
+            f"[{self.name}] Calibration progress: {progress}% "
+            f"({ready_links}/{len(link_stats)} links ready)"
+        )
+
+        self._calibration_callback(payload)
 
     def evaluate(self) -> ZoneState:
         """Evaluate zone state based on link quality deviations."""
@@ -624,7 +637,7 @@ class ZoneManager:
         """Background task to collect neighbor data."""
         while True:
             try:
-                await asyncio.sleep(5)  # Collect every 5 seconds
+                await asyncio.sleep(2)
                 await self._collect_neighbor_data()
             except asyncio.CancelledError:
                 break
@@ -636,7 +649,7 @@ class ZoneManager:
         """Background task to evaluate zone states."""
         while True:
             try:
-                await asyncio.sleep(2)  # Evaluate every 2 seconds
+                await asyncio.sleep(2)
                 for zone in self.zones.values():
                     zone.evaluate()
             except asyncio.CancelledError:
