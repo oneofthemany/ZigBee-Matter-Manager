@@ -42,38 +42,38 @@ export function initZones() {
 
     // --- LIVE UPDATES: Listen for WebSocket events ---
     window.addEventListener('zone-update', (event) => {
-        const payload = event.detail;
-        if (!payload || !payload.zone) return;
+        console.log("🎯 Zone event received:", event.detail);
 
-        const zoneName = payload.zone.name;
-        // Merge updates into local cache
-        const currentZone = zonesData.get(zoneName);
-        if (currentZone) {
-            // Update fields
-            if (payload.zone.state) currentZone.state = payload.zone.state;
-            if (payload.zone.occupied !== undefined) currentZone.occupied = payload.zone.occupied;
+        // Handle different event types
+        if (event.detail.type === 'zone_calibration') {
+            // Live calibration progress with link stats
+            handleZoneCalibration(event.detail.payload);
+        } else if (event.detail.type === 'zone_state') {
+            // State change (occupied/vacant)
+            const payload = event.detail.payload;
+            if (payload && payload.zone) {
+                const zoneName = payload.zone.name;
+                const currentZone = zonesData.get(zoneName);
+                if (currentZone) {
+                    currentZone.state = payload.zone.state;
+                    currentZone.occupied = payload.zone.occupied;
+                    updateZoneCardUI(currentZone);
 
-            // Merge links if provided (deep merge logic simplified here)
-            if (payload.zone.links) {
-                if (!currentZone.links) currentZone.links = {};
-                // If the payload sends partial link updates, merge them.
-                // Assuming payload.zone.links contains the updated link stats.
-                Object.assign(currentZone.links, payload.zone.links);
+                    // Update modal if open for this zone
+                    const modalEl = document.getElementById('zoneDetailsModal');
+                    const modalTitle = document.getElementById('zone-details-title');
+                    if (modalEl.classList.contains('show') && modalTitle.innerText === zoneName) {
+                        renderZoneModalContent(currentZone, document.querySelector('#zoneDetailsModal .modal-body'), false);
+                    }
+                }
             }
-
-            // 1. Update Grid Card (if visible)
-            updateZoneCardUI(currentZone);
-
-            // 2. Update Modal (if open for this zone)
-            const modalEl = document.getElementById('zoneDetailsModal');
-            const modalTitle = document.getElementById('zone-details-title');
-
-            if (modalEl.classList.contains('show') && modalTitle.innerText === zoneName) {
-                // Re-render the active tab content
-                renderZoneModalContent(currentZone, document.querySelector('#zoneDetailsModal .modal-body'), false);
-            }
+        } else if (event.detail.type === 'zone_update') {
+            // General update - refresh zone list
+            fetchZones();
         }
     });
+
+    console.log("✅ Zone listeners registered");
 }
 
 // Helper to update specific card UI element without full re-render
@@ -528,23 +528,23 @@ async function handleCreateZoneSubmit() {
 }
 
 /**
- * Handle zone calibration progress updates
+ * Handle zone calibration progress updates from WebSocket
  */
 function handleZoneCalibration(data) {
-    console.log("Zone calibration update:", data);
+    console.log("📊 Zone calibration update:", data);
 
-    // Update any open zone details modal
     const modal = document.getElementById('zoneDetailsModal');
-    if (!modal) return;
+    if (!modal || !modal.classList.contains('show')) {
+        console.log("Modal not open, skipping update");
+        return;
+    }
 
-    // Check if modal is currently shown
-    if (!modal.classList.contains('show')) return;
+    const modalTitle = modal.querySelector('#zone-details-title');
+    if (!modalTitle || !modalTitle.textContent.includes(data.zone_name)) {
+        console.log("Modal is for different zone, skipping");
+        return;
+    }
 
-    // Check if this modal is for the updating zone
-    const modalTitle = modal.querySelector('.modal-title');
-    if (!modalTitle || !modalTitle.textContent.includes(data.zone_name)) return;
-
-    // Update or create calibration progress display
     let progressContainer = modal.querySelector('.calibration-progress');
 
     if (data.state === 'calibrating') {
@@ -552,15 +552,19 @@ function handleZoneCalibration(data) {
         let linkTableHtml = '';
         if (data.links && Object.keys(data.links).length > 0) {
             const linkEntries = Object.entries(data.links);
+            linkEntries.sort((a, b) => b[1].sample_count - a[1].sample_count);
 
             linkTableHtml = `
                 <div class="mt-3">
-                    <h6>Live Link Quality (${linkEntries.length} links)</h6>
+                    <h6 class="text-muted">
+                        <i class="fas fa-link"></i> Live Link Quality
+                        <span class="badge bg-secondary">${linkEntries.length} links</span>
+                    </h6>
                     <div style="max-height: 300px; overflow-y: auto;">
-                        <table class="table table-sm table-hover">
-                            <thead class="sticky-top bg-white">
+                        <table class="table table-sm table-hover table-bordered">
+                            <thead class="table-light sticky-top">
                                 <tr>
-                                    <th style="width: 40%">Link</th>
+                                    <th style="width: 35%">Link Pair</th>
                                     <th>RSSI</th>
                                     <th>Smoothed</th>
                                     <th>Samples</th>
@@ -570,24 +574,19 @@ function handleZoneCalibration(data) {
                             <tbody>
             `;
 
-            // Sort by sample count descending
-            linkEntries.sort((a, b) => b[1].sample_count - a[1].sample_count);
-
             for (const [key, link] of linkEntries) {
-                // Extract short device identifiers (last 4 chars of each side)
+                // Extract short identifiers (last 2 octets)
                 const parts = key.split(':');
-                const src = parts.slice(0, 8).join(':');
-                const dst = parts.slice(8).join(':');
-                const shortSrc = src.split(':').slice(-2).join(':');
-                const shortDst = dst.split(':').slice(-2).join(':');
+                const src = parts.slice(0, 8).join(':').split(':').slice(-2).join(':');
+                const dst = parts.slice(8).join(':').split(':').slice(-2).join(':');
 
-                // Color code RSSI
+                // Color-code RSSI
                 let rssiClass = 'secondary';
                 if (link.last_rssi > -70) rssiClass = 'success';
                 else if (link.last_rssi > -80) rssiClass = 'warning';
                 else if (link.last_rssi > -90) rssiClass = 'danger';
 
-                // Determine status
+                // Status badge
                 let statusBadge = '<span class="badge bg-secondary">Collecting</span>';
                 if (link.baseline_mean !== null) {
                     statusBadge = '<span class="badge bg-success"><i class="fas fa-check"></i> Ready</span>';
@@ -595,51 +594,44 @@ function handleZoneCalibration(data) {
                     statusBadge = '<span class="badge bg-info">Processing</span>';
                 }
 
+                const smoothedVal = link.smoothed_rssi !== null ? link.smoothed_rssi.toFixed(1) : '-';
+
                 linkTableHtml += `
                     <tr>
-                        <td><small class="font-monospace">${shortSrc}↔${shortDst}</small></td>
+                        <td><small class="font-monospace">${src}↔${dst}</small></td>
                         <td><span class="badge bg-${rssiClass}">${link.last_rssi || 'N/A'}</span></td>
-                        <td>${link.smoothed_rssi !== null ? link.smoothed_rssi.toFixed(1) : '-'}</td>
+                        <td><code>${smoothedVal}</code></td>
                         <td><span class="badge bg-light text-dark">${link.sample_count}</span></td>
                         <td>${statusBadge}</td>
                     </tr>
                 `;
             }
 
-            linkTableHtml += `
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
+            linkTableHtml += '</tbody></table></div></div>';
         } else {
             linkTableHtml = `
                 <div class="alert alert-warning mt-3">
-                    <i class="fas fa-exclamation-triangle"></i> No links detected yet.
-                    Ensure devices are communicating on the network.
+                    <i class="fas fa-exclamation-triangle"></i> No active links detected.
+                    Ensure zone devices are communicating.
                 </div>
             `;
         }
 
         const progressHtml = `
-            <div class="alert alert-info mb-3">
+            <div class="alert alert-info mb-0">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <strong><i class="fas fa-sync fa-spin"></i> Calibrating...</strong>
                     <span class="badge bg-primary fs-6">${data.progress}%</span>
                 </div>
                 <div class="progress mb-2" style="height: 24px;">
-                    <div class="progress-bar progress-bar-striped progress-bar-animated"
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info"
                          style="width: ${data.progress}%">
                         ${data.elapsed}s / ${data.total}s
                     </div>
                 </div>
-                <div class="d-flex justify-content-between">
-                    <small class="text-muted">
-                        <i class="fas fa-link"></i> ${data.link_count} active links
-                    </small>
-                    <small class="text-muted">
-                        <i class="fas fa-check-circle"></i> ${data.ready_links} ready
-                    </small>
+                <div class="d-flex justify-content-between text-muted small">
+                    <span><i class="fas fa-link"></i> ${data.link_count} active</span>
+                    <span><i class="fas fa-check-circle"></i> ${data.ready_links} ready</span>
                 </div>
                 ${linkTableHtml}
             </div>
@@ -647,20 +639,21 @@ function handleZoneCalibration(data) {
 
         if (!progressContainer) {
             progressContainer = document.createElement('div');
-            progressContainer.className = 'calibration-progress';
+            progressContainer.className = 'calibration-progress mb-3';
             const modalBody = modal.querySelector('.modal-body');
-            if (modalBody && modalBody.firstChild) {
+            if (modalBody) {
+                // Insert at the very top
                 modalBody.insertBefore(progressContainer, modalBody.firstChild);
             }
         }
+
         progressContainer.innerHTML = progressHtml;
+
     } else {
-        // Calibration complete - remove progress display
+        // Calibration complete/monitoring - remove progress display
         if (progressContainer) {
             progressContainer.remove();
         }
-
-        // Refresh zone details to show new state
-        fetchZones(); // This already exists in your zones.js
+        fetchZones(); // Refresh to show final state
     }
 }

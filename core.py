@@ -581,21 +581,61 @@ class ZigbeeService:
                 # Register as listener for application-level events
                 self.app.add_listener(self)
 
+                # ================================================================
+                # STEP 7: HOOK RADIO LAYER FOR LIVE RSSI/LQI CAPTURE
+                # ================================================================
+                if radio_type == "EZSP":
+                    try:
+                        # Access the EZSP protocol object
+                        ezsp = self.app._ezsp
 
-                # === HOOK RSSI CAPTURE FOR ZONES  ===
+                        # Wrap the frame reception handler to extract LQI metadata
+                        if hasattr(ezsp, 'frame_received'):
+                            original_frame_received = ezsp.frame_received
+
+                            def frame_received_with_lqi(frame_name, args):
+                                # Store LQI if present in frame
+                                if 'lastHopLqi' in args:
+                                    ezsp._last_packet_lqi = args['lastHopLqi']
+                                elif 'lqi' in args:
+                                    ezsp._last_packet_lqi = args['lqi']
+
+                                # Call original handler
+                                return original_frame_received(frame_name, args)
+
+                            ezsp.frame_received = frame_received_with_lqi
+                            logger.info("✅ Hooked EZSP frame handler for live LQI extraction")
+                    except Exception as e:
+                        logger.warning(f"Could not hook EZSP radio layer: {e}")
+
+                # ================================================================
+                # STEP 8: HOOK handle_message TO CAPTURE RSSI WITH LIVE LQI
+                # ================================================================
                 self._original_handle_message = self.handle_message
 
                 def wrapped_handle_message(sender, profile, cluster, src_ep, dst_ep, message):
                     # Call original first
                     result = self._original_handle_message(sender, profile, cluster, src_ep, dst_ep, message)
 
-                    # Capture RSSI/LQI for zones if available
+                    # Capture RSSI/LQI for zones
                     if hasattr(self, 'zone_manager') and self.zone_manager:
                         ieee = str(sender.ieee)
                         coordinator_ieee = str(self.app.ieee)
+                        lqi = None
 
-                        # Get LQI from device object (updated by zigpy on packet reception)
-                        lqi = getattr(sender, 'lqi', None)
+                        # Method 1: Try to get LQI from EZSP frame metadata (most accurate)
+                        if radio_type == "EZSP":
+                            try:
+                                ezsp = self.app._ezsp
+                                if hasattr(ezsp, '_last_packet_lqi'):
+                                    lqi = ezsp._last_packet_lqi
+                                    delattr(ezsp, '_last_packet_lqi')  # Consume it
+                            except:
+                                pass
+
+                        # Method 2: Fall back to device cached LQI
+                        if lqi is None:
+                            lqi = getattr(sender, 'lqi', None)
 
                         if lqi is not None:
                             # Convert LQI to approximate RSSI
@@ -612,7 +652,11 @@ class ZigbeeService:
 
                 # Replace the method on self
                 self.handle_message = wrapped_handle_message
-                logger.info("✅ Live RSSI/LQI capture hooked for zones")
+                logger.info("✅ Live RSSI/LQI capture hook installed")
+
+                # Load existing devices from database
+                for ieee, zigpy_dev in self.app.devices.items():
+                    await self._async_device_restored(zigpy_dev)
 
                 # Load existing devices from database
                 for ieee, zigpy_dev in self.app.devices.items():
