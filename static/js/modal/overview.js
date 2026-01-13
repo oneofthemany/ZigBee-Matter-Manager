@@ -217,6 +217,9 @@ export function renderOverviewTab(device) {
                 <button type="button" class="btn btn-outline-secondary" onclick="window.doAction('poll', '${device.ieee}')">
                     <i class="fas fa-sync"></i> Poll
                 </button>
+                <button type="button" class="btn btn-outline-info" onclick="window.doAction('reconfigure', '${device.ieee}')" title="Force Bindings & Reporting Config">
+                    <i class="fas fa-wrench"></i> Reconfigure
+                </button>
                 <button type="button" class="btn btn-outline-primary" onclick="window.doAction('interview', '${device.ieee}')">
                     <i class="fas fa-fingerprint"></i> Re-Interview
                 </button>

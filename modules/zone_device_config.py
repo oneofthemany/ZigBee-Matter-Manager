@@ -110,12 +110,12 @@ async def _configure_fallback_reporting(ieee: str, zigpy_dev):
                 await cluster.bind()
                 await cluster.configure_reporting(
                     attr_id,
-                    min_interval=min_int,
-                    max_interval=max_int,
-                    reportable_change=change
+                    min_interval=2,
+                    max_interval=5,
+                    reportable_change=1
                 )
-                logger.info(f"[{ieee}] Configured fallback reporting on 0x{cluster_id:04X}")
-                return  # One successful config is enough
+                logger.info(f"[{ieee}] Configured fast LQI reporting on 0x{cluster_id:04X}")
+                return
 
             except Exception as e:
                 logger.debug(f"[{ieee}] Fallback config 0x{cluster_id:04X} failed: {e}")
