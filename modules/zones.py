@@ -584,9 +584,11 @@ class ZoneManager:
         """Start zone manager background tasks."""
         self._running = True
 
-        # Existing tasks
-        self._presence_task = asyncio.create_task(self._presence_check_loop())
-        self._calibration_task = asyncio.create_task(self._calibration_loop())
+        # Use _evaluation_loop (Handles both presence and calibration)
+        self._evaluation_task = asyncio.create_task(self._evaluation_loop())
+
+        # Use _collection_loop (Handles data gathering)
+        self._collection_task = asyncio.create_task(self._collection_loop())
 
         # Add periodic neighbor scan for fresh LQI data
         self._neighbor_scan_task = asyncio.create_task(self._periodic_neighbor_scan())
@@ -673,10 +675,10 @@ class ZoneManager:
         """Stop zone manager."""
         self._running = False
 
-        # Cancel all tasks
+        # Cancel all tasks (matching the ones created in start_zone)
         for task in [
-            getattr(self, '_presence_task', None),
-            getattr(self, '_calibration_task', None),
+            getattr(self, '_evaluation_task', None),
+            getattr(self, '_collection_task', None),
             getattr(self, '_neighbor_scan_task', None),
         ]:
             if task:
@@ -776,11 +778,29 @@ class ZoneManager:
 
     async def _evaluation_loop(self) -> None:
         """Background task to evaluate zone states."""
+        import time
+        last_broadcast = 0
+
         while True:
             try:
                 await asyncio.sleep(2)
+                now = time.time()
+
+                # Check if we should broadcast live stats (every 5 seconds)
+                should_broadcast = (now - last_broadcast) >= 5.0
+
                 for zone in self.zones.values():
+                    # 1. Run the logic to detect presence
                     zone.evaluate()
+
+                    # 2. Force a UI update even if state hasn't changed
+                    if should_broadcast:
+                        # This sends the 'zone_update' packet with fresh link stats
+                        asyncio.create_task(self._publish_zone_state(zone))
+
+                if should_broadcast:
+                    last_broadcast = now
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -907,19 +927,10 @@ class ZoneManager:
         """Publish zone state to MQTT and WebSocket."""
         # 1. WebSocket Broadcast (Frontend Live Updates)
         if self._event_emitter:
+            # FIX: Use to_dict() so the WebSocket payload matches the full API payload
+            # This ensures sample_count, min/max_rssi, etc. are included in updates.
             ws_payload = {
-                'zone': {
-                    'name': zone.name,
-                    'state': zone.state.name.lower(),
-                    'occupied': zone.state == ZoneState.OCCUPIED,
-                    'links': {
-                        k: {
-                            'last_rssi': l.last_rssi,
-                            'deviation': l.get_deviation(),
-                            'baseline_mean': l.baseline_mean
-                        } for k, l in zone.links.items()
-                    }
-                }
+                'zone': zone.to_dict()
             }
             await self._event_emitter('zone_update', ws_payload)
 

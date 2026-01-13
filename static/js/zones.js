@@ -42,34 +42,40 @@ export function initZones() {
 
     // --- LIVE UPDATES: Listen for WebSocket events ---
     window.addEventListener('zone-update', (event) => {
-        console.log("🎯 Zone event received:", event.detail);
-
         // Handle different event types
         if (event.detail.type === 'zone_calibration') {
-            // Live calibration progress with link stats
             handleZoneCalibration(event.detail.payload);
-        } else if (event.detail.type === 'zone_state') {
-            // State change (occupied/vacant)
+
+        } else if (event.detail.type === 'zone_update') {
+            // General update containing full zone data (links, state, RSSI)
             const payload = event.detail.payload;
+
             if (payload && payload.zone) {
-                const zoneName = payload.zone.name;
-                const currentZone = zonesData.get(zoneName);
+                const zoneData = payload.zone;
+                const zoneName = zoneData.name;
+
+                // 1. Update the local cache immediately
+                let currentZone = zonesData.get(zoneName);
                 if (currentZone) {
-                    currentZone.state = payload.zone.state;
-                    currentZone.occupied = payload.zone.occupied;
+                    Object.assign(currentZone, zoneData);
+
+                    // 2. Update the Grid Card UI (if necessary)
                     updateZoneCardUI(currentZone);
 
-                    // Update modal if open for this zone
+                    // 3. Update the Modal if it is currently open for this zone
                     const modalEl = document.getElementById('zoneDetailsModal');
                     const modalTitle = document.getElementById('zone-details-title');
-                    if (modalEl.classList.contains('show') && modalTitle.innerText === zoneName) {
-                        renderZoneModalContent(currentZone, document.querySelector('#zoneDetailsModal .modal-body'), false);
+
+                    // Check if modal is visible AND matches the updated zone
+                    if (modalEl && modalEl.classList.contains('show') && modalTitle && modalTitle.innerText === zoneName) {
+                        const modalBody = modalEl.querySelector('.modal-body');
+                        // Use partial render (false) to update numbers without resetting tabs
+                        renderZoneModalContent(currentZone, modalBody, false);
                     }
                 }
+            } else {
+                fetchZones();
             }
-        } else if (event.detail.type === 'zone_update') {
-            // General update - refresh zone list
-            fetchZones();
         }
     });
 
