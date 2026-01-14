@@ -14,7 +14,7 @@ LAST_MESSAGE_RSSI_ATTR = 0x011D
 # Critical Clusters for LQI generation
 # We force these to report every 5 seconds
 TARGET_CLUSTERS = {
-    #0x0006: 0x0000,  # OnOff -> OnOff Status
+    0x0006: 0x0000,  # OnOff -> OnOff Status
     #0x0008: 0x0000,  # LevelControl -> Current Level
     #0x0300: 0x0003,  # ColorControl -> Current X (or 0x0007 Color Temp)
     #0x0B04: 0x050B,  # ElectricalMeasurement -> Active Power
