@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 # Import services
 from core import ZigbeeService
 from mqtt import MQTTService
-from handlers.zigbee_debug import get_debugger
+from modules.zigbee_debug import get_debugger
 from modules.json_helpers import prepare_for_json, safe_json_dumps
 from modules.groups import GroupManager
 from modules.mqtt_explorer import MQTTExplorer
@@ -466,16 +466,30 @@ async def reconfigure_device_endpoint(request: DeviceRequest):
     """Force reconfiguration with Aggressive LQI Reporting."""
     logger.info(f"[{request.ieee}] Starting manual reconfiguration...")
 
-    # 1. Run Standard Config (Bindings, basic setup)
-    # This sets the default 300s reporting you saw in logs
-    await zigbee_service.configure_device(request.ieee)
+    try:
+        # Check device exists and is a router
+        if request.ieee not in zigbee_service.devices:
+            return {"success": False, "error": "Device not found"}
 
-    # 2. OVERRIDE with Aggressive Zone Config (5s reporting)
-    # This sends a second set of commands to overwrite the defaults
-    logger.info(f"[{request.ieee}] Applying aggressive zone reporting...")
-    await configure_zone_device_reporting(zigbee_service, [request.ieee])
+        device = zigbee_service.devices[request.ieee]
+        role = device.get_role()
 
-    return {"success": True}
+        if role not in ("Router", "Coordinator"):
+            return {"success": False, "error": f"Device is {role}, not a Router. Only routers support aggressive reporting."}
+
+        # 1. Run Standard Config
+        await zigbee_service.configure_device(request.ieee)
+
+        # 2. OVERRIDE with Aggressive Zone Config
+        logger.info(f"[{request.ieee}] Applying aggressive zone reporting...")
+        result = await configure_zone_device_reporting(zigbee_service, [request.ieee])
+
+        return {"success": True, **result}
+
+    except Exception as e:
+        logger.error(f"[{request.ieee}] Reconfiguration failed: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
 
 @app.post("/api/device/rename")
 async def rename_device(request: RenameRequest):
