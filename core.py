@@ -31,17 +31,16 @@ from zigpy.zcl.clusters.security import IasZone
 
 # Import Device Wrapper
 from device import ZigManDevice
-from handlers.zigbee_debug import get_debugger
-from handlers.fast_path import FastPathProcessor
-from modules.device_ban import get_ban_manager
-#from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
-
 
 # import services
 from modules.json_helpers import prepare_for_json, sanitise_device_state
 from modules.packet_stats import packet_stats
 from modules.zones import ZoneManager
 from handlers.zones_handler import setup_rssi_listener
+from modules.zigbee_debug import get_debugger
+from handlers.fast_path import FastPathProcessor
+from modules.device_ban import get_ban_manager
+#from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
 
 # Try Loading Quirks
 logger = logging.getLogger("core")
