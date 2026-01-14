@@ -590,8 +590,8 @@ class ZoneManager:
         # Use _collection_loop (Handles data gathering)
         self._collection_task = asyncio.create_task(self._collection_loop())
 
-        # Add periodic neighbor scan for fresh LQI data
-        self._neighbor_scan_task = asyncio.create_task(self._periodic_neighbor_scan())
+        # Add periodic neighbor scan for fresh LQI data - REMOVED AS INTERFERES WITH PACKET CAPTURE
+        #self._neighbor_scan_task = asyncio.create_task(self._periodic_neighbor_scan())
 
         logger.info("Zone manager started")
 
