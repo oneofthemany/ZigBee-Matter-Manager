@@ -1805,13 +1805,17 @@ class ZigbeeService:
         """Reconfigure a device (bindings and reporting)."""
         if ieee in self.devices:
             try:
-                # Pass config to device.configure
                 await self.devices[ieee].configure(config)
 
-                # Save settings to file for persistence if they are legacy style
-                if config and 'tuya_settings' in config:
-                    self.device_settings[ieee] = config
-                    self._save_json("./data/device_settings.json", self.device_settings)
+                # Save settings if any meaningful config provided
+                if config:
+                    # Merge with existing settings
+                    existing = self.device_settings.get(ieee, {})
+                    existing.update({k: v for k, v in config.items() if v is not None and k != 'ieee'})
+
+                    if existing:
+                        self.device_settings[ieee] = existing
+                        self._save_json("./data/device_settings.json", self.device_settings)
 
                 return {"success": True}
 
