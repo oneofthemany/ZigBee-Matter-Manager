@@ -935,7 +935,7 @@ class GroupManager:
                     color_ctrl = get_cluster(0x0300)
                     if color_ctrl:
                         mireds = int(command['color_temp'])
-                        await color_ctrl.move_to_color_temperature(mireds, transition_time=10)
+                        await color_ctrl.move_to_color_temp(mireds, transition_time=10)
                         result["success"] = True
 
                 # 4. COVERS
