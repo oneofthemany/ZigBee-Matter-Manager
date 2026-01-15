@@ -40,6 +40,7 @@ from handlers.zones_handler import setup_rssi_listener
 from modules.zigbee_debug import get_debugger
 from handlers.fast_path import FastPathProcessor
 from modules.device_ban import get_ban_manager
+from modules.touchlink import create_touchlink_manager, TouchlinkManager
 #from handlers.sensors import configure_illuminance_reporting, configure_temperature_reporting
 
 # Try Loading Quirks
@@ -276,6 +277,9 @@ class ZigbeeService:
             self.mqtt.group_command_callback = self.group_manager.handle_mqtt_group_command
 
         self._accepting_commands = False  # Block commands until ready
+
+        # Touchlink
+        self._touchlink: Optional[TouchlinkManager] = None
 
         os.makedirs("logs", exist_ok=True)
 
@@ -565,6 +569,10 @@ class ZigbeeService:
                     auto_form=True,
                     start_radio=True
                 )
+
+                self._touchlink = await create_touchlink_manager(self.app)
+                if self._touchlink:
+                    logger.info(f"✅ Touchlink support enabled ({self._touchlink.coordinator_type})")
 
                 # ================================================================
                 # STEP 6: Wrap with resilience system (EZSP only for now)
@@ -1628,237 +1636,42 @@ class ZigbeeService:
                 logger.error(f"Failed to enable broadcast pairing: {e}")
                 return {"success": False, "error": str(e)}
 
-async def touchlink_scan(self, channel: int = None):
-    """Perform Touchlink scan for Light Link devices."""
-    try:
-        logger.info("Starting Touchlink scan for Light Link devices...")
+    async def touchlink_scan(self, channel: int = None):
+        """Perform Touchlink scan for Light Link devices."""
+        if self._touchlink is None:
+            self._touchlink = await create_touchlink_manager(self.app)
 
-        # Check coordinator type
-        is_ezsp = hasattr(self.app, '_ezsp')
-        is_znp = 'znp' in str(type(self.app)).lower()
+        if self._touchlink is None:
+            return {
+                "success": False,
+                "error": "Touchlink not supported by this coordinator",
+                "note": "For Philips Hue: Use Hue Dimmer (hold ON+OFF 10s) or power cycle 5x"
+            }
 
-        if is_znp:
-            logger.warning("ZNP coordinator detected - Touchlink scanning limited")
-
-            # ZNP doesn't support true touchlink scanning
-            # Best we can do is enable permit join with touchlink key
-            try:
-                await self.app.permit(254)
-
-                return {
-                    "success": True,
-                    "devices": [],  # ZNP can't return discovered devices
-                    "message": "ZNP coordinator - Touchlink scanning not fully supported",
-                    "note": "Pairing enabled for 254s. For Philips Hue reset, use: Hue Dimmer (hold ON+OFF 10s near bulb) or power cycle pattern (5x: 8s ON, 2s OFF)"
-                }
-            except Exception as e:
-                logger.error(f"ZNP permit failed: {e}")
-                return {"success": False, "error": str(e)}
-
-        # EZSP coordinator - has proper touchlink support
-        if is_ezsp and hasattr(self.app, 'touchlink'):
-            results = []
-            channels = [channel] if channel else list(range(11, 27))
-
-            for ch in channels:
-                logger.info(f"Scanning channel {ch}...")
-                try:
-                    async with asyncio.timeout(5.0):
-                        scan_result = await self.app.touchlink.scan(channel=ch)
-
-                        if scan_result:
-                            for device in scan_result:
-                                results.append({
-                                    "ieee": str(device.ieee) if hasattr(device, 'ieee') else "unknown",
-                                    "channel": ch,
-                                    "rssi": getattr(device, 'rssi', None)
-                                })
-                except asyncio.TimeoutError:
-                    pass
-                except Exception as e:
-                    logger.debug(f"Channel {ch} error: {e}")
-
-            if results:
-                return {"success": True, "devices": results}
-            else:
-                return {
-                    "success": True,
-                    "devices": [],
-                    "message": "No devices found. Ensure bulb is powered on and within 20cm."
-                }
-
-        # Fallback
-        return {
-            "success": False,
-            "error": "Touchlink not supported by this coordinator",
-            "note": "For Philips Hue: Use Hue Dimmer switch (hold ON+OFF 10s) or power cycle 5x (8s ON, 2s OFF)"
-        }
-
-    except Exception as e:
-        logger.error(f"Touchlink scan failed: {e}")
-        return {"success": False, "error": str(e)}
+        return await self._touchlink.scan(channel)
 
 
     async def touchlink_identify(self, channel: int = None):
-        """
-        Scan for Touchlink devices and make them identify (blink).
-        Returns list of found devices.
-        """
-        try:
-            logger.info("Starting Touchlink identify scan...")
+        """Scan for Touchlink devices and make them identify (blink)."""
+        if self._touchlink is None:
+            self._touchlink = await create_touchlink_manager(self.app)
 
-            if not hasattr(self.app, '_ezsp'):
-                return {"success": False, "error": "Touchlink requires EZSP coordinator"}
+        if self._touchlink is None:
+            return {"success": False, "error": "Touchlink not supported"}
 
-            # Use zigpy's touchlink if available
-            if hasattr(self.app, 'touchlink'):
-                results = []
-
-                # Scan on specified channel or all channels
-                channels = [channel] if channel else list(range(11, 27))
-
-                for ch in channels:
-                    logger.info(f"Scanning channel {ch}...")
-                    try:
-                        async with asyncio.timeout(5.0):
-                            scan_result = await self.app.touchlink.scan(channel=ch)
-
-                            if scan_result:
-                                for device in scan_result:
-                                    logger.info(f"Found device: {device}")
-                                    # Send identify request
-                                    try:
-                                        await self.app.touchlink.identify(device, duration=10)
-                                        results.append({
-                                            "ieee": str(device.ieee) if hasattr(device, 'ieee') else "unknown",
-                                            "channel": ch,
-                                            "rssi": getattr(device, 'rssi', None),
-                                            "identified": True
-                                        })
-                                    except Exception as e:
-                                        logger.warning(f"Identify failed: {e}")
-                                        results.append({
-                                            "ieee": str(device.ieee) if hasattr(device, 'ieee') else "unknown",
-                                            "channel": ch,
-                                            "identified": False,
-                                            "error": str(e)
-                                        })
-                    except asyncio.TimeoutError:
-                        logger.debug(f"No devices on channel {ch}")
-                    except Exception as e:
-                        logger.warning(f"Channel {ch} scan error: {e}")
-
-                return {"success": True, "devices": results}
-
-            return {"success": False, "error": "Touchlink not supported by this coordinator"}
-
-        except Exception as e:
-            logger.error(f"Touchlink identify failed: {e}")
-            return {"success": False, "error": str(e)}
+        return await self._touchlink.identify(channel)
 
 
     async def touchlink_factory_reset(self, channel: int = None):
-        """
-        Scan for Touchlink devices and factory reset them.
-        WARNING: This will reset ALL found devices on the scanned channels!
+        """Scan for Touchlink devices and factory reset them."""
+        if self._touchlink is None:
+            self._touchlink = await create_touchlink_manager(self.app)
 
-        For Philips Hue: Bring bulb within 10-20cm of coordinator, power on.
-        """
-        try:
-            logger.info("Starting Touchlink factory reset scan...")
+        if self._touchlink is None:
+            return {"success": False, "error": "Touchlink not supported"}
 
-            if not hasattr(self.app, '_ezsp'):
-                return {"success": False, "error": "Touchlink requires EZSP coordinator"}
+        return await self._touchlink.factory_reset(channel)
 
-            results = []
-
-            # Use zigpy's touchlink if available
-            if hasattr(self.app, 'touchlink'):
-                channels = [channel] if channel else list(range(11, 27))
-
-                for ch in channels:
-                    logger.info(f"Scanning channel {ch} for devices to reset...")
-                    try:
-                        async with asyncio.timeout(10.0):
-                            scan_result = await self.app.touchlink.scan(channel=ch)
-
-                            if scan_result:
-                                for device in scan_result:
-                                    ieee = str(device.ieee) if hasattr(device, 'ieee') else "unknown"
-                                    logger.warning(f"Found device {ieee} on channel {ch} - sending factory reset!")
-
-                                    try:
-                                        # Send factory reset command
-                                        await self.app.touchlink.reset(device)
-                                        logger.info(f"Factory reset sent to {ieee}")
-                                        results.append({
-                                            "ieee": ieee,
-                                            "channel": ch,
-                                            "reset": True
-                                        })
-
-                                        # Brief delay between resets
-                                        await asyncio.sleep(0.5)
-
-                                    except Exception as e:
-                                        logger.error(f"Reset failed for {ieee}: {e}")
-                                        results.append({
-                                            "ieee": ieee,
-                                            "channel": ch,
-                                            "reset": False,
-                                            "error": str(e)
-                                        })
-
-                    except asyncio.TimeoutError:
-                        logger.debug(f"No devices on channel {ch}")
-                    except Exception as e:
-                        logger.warning(f"Channel {ch} error: {e}")
-
-                if results:
-                    return {"success": True, "devices": results, "message": f"Reset {len([r for r in results if r.get('reset')])} devices"}
-                else:
-                    return {"success": False, "error": "No Touchlink devices found. Ensure bulb is powered on and within 20cm of coordinator."}
-
-            # Fallback for older zigpy without touchlink object
-            # Try using ZLL cluster directly
-            logger.info("Attempting direct ZLL reset...")
-
-            try:
-                # Well-known Touchlink/ZLL key
-                touchlink_key = bytes([0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
-                                       0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF])
-
-                # Get coordinator endpoint with LightLink cluster
-                coord = self.app.get_device(self.app.state.node_info.ieee)
-
-                for ep_id, ep in coord.endpoints.items():
-                    if ep_id == 0:
-                        continue
-                    if 0x1000 in ep.out_clusters:  # LightLink cluster
-                        zll = ep.out_clusters[0x1000]
-
-                        # Scan request
-                        logger.info("Sending ZLL scan request...")
-                        result = await zll.scan_request(
-                            inter_pan_transaction_id=0x12345678,
-                            zigbee_information=0x04,
-                            touchlink_information=0x12
-                        )
-                        logger.info(f"ZLL scan result: {result}")
-
-                        return {"success": True, "message": "ZLL scan initiated", "result": str(result)}
-
-                return {"success": False, "error": "No LightLink cluster found on coordinator"}
-
-            except Exception as e:
-                logger.error(f"Direct ZLL reset failed: {e}")
-                return {"success": False, "error": f"ZLL reset failed: {e}"}
-
-        except Exception as e:
-            logger.error(f"Touchlink factory reset failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"success": False, "error": str(e)}
     def get_pairing_status(self):
         """Get current pairing status and remaining time."""
         remaining = max(0, int(self.pairing_expiration - time.time()))
