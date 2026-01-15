@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Try to import zigpy_znp - may not be available on EZSP systems
 try:
     from zigpy_znp.api import ZNP
+    from zigpy_znp.commands.af import InterPanCtl
     import zigpy_znp.commands as c
     import zigpy_znp.types as znp_t
     ZIGPY_ZNP_AVAILABLE = True
@@ -376,7 +377,7 @@ class TouchlinkManager:
         # AF.interPanCtl cmd=1 sets the channel
         await self._znp.request(
             c.AF.InterPanCtl.Req(
-                Cmd=c.af.InterPanCommand.InterPanSet,
+                Cmd=c.af.InterPanCtl.InterPanSet,
                 Data=t.Bytes([channel])
             )
         )
@@ -385,7 +386,7 @@ class TouchlinkManager:
         if not self._interpan_registered:
             await self._znp.request(
                 c.AF.InterPanCtl.Req(
-                    Cmd=c.af.InterPanCommand.InterPanReg,
+                    Cmd=c.af.InterPanCtl.InterPanReg,
                     Data=t.Bytes([INTERPAN_ENDPOINT])
                 )
             )
@@ -403,7 +404,7 @@ class TouchlinkManager:
         try:
             await self._znp.request(
                 c.AF.InterPanCtl.Req(
-                    Cmd=c.af.InterPanCommand.InterPanClr,
+                    Cmd=c.af.InterPanCtl.InterPanClr,
                     Data=t.Bytes([])
                 )
             )
