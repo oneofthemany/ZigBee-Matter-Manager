@@ -121,6 +121,7 @@ class RenameRequest(BaseModel):
 class ConfigureRequest(BaseModel):
     ieee: str
     qos: Optional[int] = None
+    polling_interval: Optional[int] = None
     reporting: Optional[dict] = None
     tuya_settings: Optional[dict] = None
     updates: Optional[dict] = None
@@ -507,9 +508,18 @@ async def rename_device(request: RenameRequest):
 
 @app.post("/api/device/configure")
 async def configure_device(request: ConfigureRequest):
-    """Configure device bindings and reporting."""
+    """Configure device bindings, reporting, and polling."""
+    # Handle polling interval separately (uses its own storage)
+    if request.polling_interval is not None:
+        await zigbee_service.set_polling_interval(request.ieee, request.polling_interval)
+        logger.info(f"[{request.ieee}] Polling interval set to {request.polling_interval}s")
+
     # Convert Pydantic model to dict safely
     config_dict = request.model_dump() if hasattr(request, 'model_dump') else request.dict()
+
+    # Remove polling_interval from config dict (handled above)
+    config_dict.pop('polling_interval', None)
+
     return await zigbee_service.configure_device(request.ieee, config=config_dict)
 
 
