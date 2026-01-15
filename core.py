@@ -712,6 +712,7 @@ class ZigbeeService:
 
             except Exception as e:
                 logger.warning(f"Startup Attempt {attempt + 1} failed: {e}")
+                logger.error(f"Full traceback:\n{traceback.format_exc()}")
                 if self.app:
                     try:
                         await self.app.shutdown()
