@@ -243,7 +243,7 @@ class OnOffHandler(ClusterHandler):
         elif attrid == self.ATTR_STARTUP_ON_OFF:
             val = value.value if hasattr(value, 'value') else value
             self.device.update_state({
-                f"startup_behavior_{self.endpoint.endpoint_id}": int(val)
+                f"startup_behaviour_{self.endpoint.endpoint_id}": int(val)
             }, endpoint_id=self.endpoint.endpoint_id) # Ensure EP ID is passed up
 
     def _is_contact_sensor(self) -> bool:
@@ -329,13 +329,13 @@ class OnOffHandler(ClusterHandler):
     def get_pollable_attributes(self) -> Dict[int, str]:
         return {
             self.ATTR_ON_OFF: "state",
-            self.ATTR_STARTUP_ON_OFF: f"startup_behavior_{self.endpoint.endpoint_id}"
+            self.ATTR_STARTUP_ON_OFF: f"startup_behaviour_{self.endpoint.endpoint_id}"
         }
 
     def get_configuration_options(self) -> List[Dict]:
         return [{
-            "name": f"startup_behavior_{self.endpoint.endpoint_id}",
-            "label": f"Power On Behavior (EP{self.endpoint.endpoint_id})",
+            "name": f"startup_behaviour_{self.endpoint.endpoint_id}",
+            "label": f"Power On Behaviour (EP{self.endpoint.endpoint_id})",
             "type": "select",
             "options": [
                 {"value": 0, "label": "Off"}, {"value": 1, "label": "On"},
@@ -347,17 +347,17 @@ class OnOffHandler(ClusterHandler):
 
 
     async def apply_configuration(self, updates: Dict[str, Any]):
-        """Apply OnOff cluster configuration (startup behavior)."""
+        """Apply OnOff cluster configuration (startup behaviour)."""
         ep_id = self.endpoint.endpoint_id
-        key = f"startup_behavior_{ep_id}"
+        key = f"startup_behaviour_{ep_id}"
 
         if key in updates:
             try:
                 value = int(updates[key])
                 await self.cluster.write_attributes({self.ATTR_STARTUP_ON_OFF: value})
-                logger.info(f"[{self.device.ieee}] Set EP{ep_id} startup behavior: {value}")
+                logger.info(f"[{self.device.ieee}] Set EP{ep_id} startup behaviour: {value}")
             except Exception as e:
-                logger.warning(f"[{self.device.ieee}] Failed to set startup behavior EP{ep_id}: {e}")
+                logger.warning(f"[{self.device.ieee}] Failed to set startup behaviour EP{ep_id}: {e}")
 
 
     # --- HA Discovery ---
@@ -485,10 +485,10 @@ class OnOffHandler(ClusterHandler):
                     "component": "select",
                     "object_id": f"start_up_on_off_{ep}",
                     "config": {
-                        "name": f"Start Up Behavior {ep}",
+                        "name": f"Start Up Behaviour {ep}",
                         "entity_category": "config",
                         "options": ["OFF", "ON", "TOGGLE", "PREVIOUS"],
-                        "value_template": f"{{{{ value_json.startup_behavior_{ep} }}}}",
+                        "value_template": f"{{{{ value_json.startup_behaviour_{ep} }}}}",
                         "command_topic": "CMD_TOPIC_PLACEHOLDER",
                         "command_template": f'{{"command": "startup", "value": "{{{{ value }}}}", "endpoint": {ep}}}'
                     }
