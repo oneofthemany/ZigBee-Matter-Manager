@@ -213,12 +213,42 @@ export function renderControlTab(device) {
                 }
 
                 if (hasColor) {
+                    const hue = s.hue || s.color_hue || 0;
+                    const sat = s.saturation || s.color_saturation || 254;
+                    const colorMode = s.color_mode || 'color_temp';
+                    const cssHue = Math.round((hue / 254) * 360);
+                    const cssSat = Math.round((sat / 254) * 100);
+
                     html += `
                         <div class="mb-3">
+                            <label class="form-label small text-muted">Color Mode</label>
+                            <div class="btn-group w-100 mb-2" role="group">
+                                <input type="radio" class="btn-check" name="colorMode_${epId}" id="colorModeTemp_${epId}"
+                                       ${colorMode === 'color_temp' ? 'checked' : ''} onchange="window.showColorMode('${device.ieee}', ${epId}, 'temp')">
+                                <label class="btn btn-outline-secondary btn-sm" for="colorModeTemp_${epId}">Temp</label>
+                                <input type="radio" class="btn-check" name="colorMode_${epId}" id="colorModeColor_${epId}"
+                                       ${colorMode !== 'color_temp' ? 'checked' : ''} onchange="window.showColorMode('${device.ieee}', ${epId}, 'color')">
+                                <label class="btn btn-outline-secondary btn-sm" for="colorModeColor_${epId}">Color</label>
+                            </div>
+                        </div>
+                        <div id="colorTempPanel_${epId}" class="mb-3" style="${colorMode !== 'color_temp' ? 'display:none' : ''}">
                             <label class="form-label small text-muted">Color Temp: ${kelvin}K</label>
                             <input type="range" class="form-range" min="2000" max="6500" value="${kelvin}"
                                    style="background: linear-gradient(to right, #ffae00, #ffead1, #fff, #d1eaff, #99ccff);"
                                    onchange="window.sendCommand('${device.ieee}', 'color_temp', this.value, ${epId})">
+                        </div>
+                        <div id="colorPickerPanel_${epId}" class="mb-3" style="${colorMode === 'color_temp' ? 'display:none' : ''}">
+                            <label class="form-label small text-muted">Color</label>
+                            <div class="d-flex gap-2 align-items-center">
+                                <input type="color" class="form-control form-control-color" id="colorPicker_${device.ieee}_${epId}"
+                                       value="${window.hslToHex(cssHue, cssSat, 50)}"
+                                       onchange="window.sendColorFromPicker('${device.ieee}', this.value, ${epId})">
+                                <div class="flex-grow-1">
+                                    <label class="form-label small text-muted mb-0">Saturation</label>
+                                    <input type="range" class="form-range" min="0" max="100" value="${cssSat}" id="satSlider_${device.ieee}_${epId}"
+                                           onchange="window.sendHSColor('${device.ieee}', null, this.value, ${epId})">
+                                </div>
+                            </div>
                         </div>`;
                 }
 

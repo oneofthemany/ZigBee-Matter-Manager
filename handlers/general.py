@@ -429,10 +429,28 @@ class OnOffHandler(ClusterHandler):
                 "schema": "json",
             }
             color_modes = []
+
             if has_color:
-                color_modes.extend(["color_temp", "xy"])
-                config["min_mireds"] = 153
-                config["max_mireds"] = 500
+                # Get actual capabilities from ColorClusterHandler
+                color_handler = self.device.handlers.get((ep, 0x0300)) or self.device.handlers.get(0x0300)
+
+                if color_handler and hasattr(color_handler, '_color_capabilities') and color_handler._color_capabilities:
+                    caps = color_handler._color_capabilities
+                    if caps & 0x0010:  # COLOR_CAP_COLOR_TEMP
+                        color_modes.append("color_temp")
+                    if caps & 0x0008:  # COLOR_CAP_XY
+                        color_modes.append("xy")
+                    if caps & 0x0001:  # COLOR_CAP_HUE_SAT
+                        color_modes.append("hs")
+
+                    config["min_mireds"] = getattr(color_handler, '_min_mireds', 153)
+                    config["max_mireds"] = getattr(color_handler, '_max_mireds', 500)
+                else:
+                    # Fallback - assume common capabilities
+                    color_modes.extend(["color_temp", "xy"])
+                    config["min_mireds"] = 153
+                    config["max_mireds"] = 500
+
             elif has_level:
                 color_modes.append("brightness")
             else:
