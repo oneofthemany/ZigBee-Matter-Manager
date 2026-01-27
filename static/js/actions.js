@@ -741,3 +741,33 @@ export async function handleUnbanClick(ieee) {
         alert("Failed to unban: " + (res.error || "Unknown error"));
     }
 }
+
+/**
+ * Remove orphans
+ */
+export async function cleanupOrphans() {
+    if (!confirm('This will find and remove devices that exist in the database but are not active on the network. Continue?')) {
+        return;
+    }
+
+    // First, show what will be removed
+    const orphaned = await fetch('/api/devices/orphaned').then(r => r.json());
+
+    if (orphaned.count === 0) {
+        alert('No orphaned devices found. Database is clean!');
+        return;
+    }
+
+    const msg = `Found ${orphaned.count} orphaned devices:\n\n${orphaned.orphaned.join('\n')}\n\nRemove these from database?`;
+
+    if (!confirm(msg)) return;
+
+    const result = await fetch('/api/devices/cleanup-orphaned', {
+        method: 'POST'
+    }).then(r => r.json());
+
+    alert(`Cleanup complete:\n✓ Removed: ${result.count_removed}\n✗ Failed: ${result.count_failed}`);
+
+    // Refresh device list
+    await fetchAllDevices();
+}

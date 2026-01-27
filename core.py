@@ -1559,6 +1559,79 @@ class ZigbeeService:
             "ieee": None
         })
 
+    async def find_duplicate_devices(self) -> dict:
+        """Find devices that exist in database but not in active network."""
+        import sqlite3
+
+        # Use the database path from config or default
+        db_path = "zigbee.db"  # Same path used in config
+
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # Get table version
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'devices_v%'")
+            devices_table = cursor.fetchone()
+            if not devices_table:
+                conn.close()
+                return {"error": "Could not detect table version"}
+
+            version = devices_table[0].split('_')[-1]
+
+            # Get all devices from database
+            cursor.execute(f"SELECT ieee FROM devices_{version}")
+            db_devices = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            # Get active devices from zigpy
+            active_devices = [str(ieee).lower() for ieee in self.app.devices.keys()]
+
+            # Normalize IEEE addresses for comparison
+            db_devices_normalized = [ieee.lower() for ieee in db_devices]
+
+            # Find orphaned devices (in DB but not active)
+            orphaned = [ieee for ieee in db_devices_normalized if ieee not in active_devices]
+
+            return {
+                "total_in_db": len(db_devices),
+                "active": len(active_devices),
+                "orphaned": orphaned,
+                "count": len(orphaned)
+            }
+        except Exception as e:
+            logger.error(f"Failed to find duplicate devices: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
+
+    async def cleanup_orphaned_devices(self) -> dict:
+        """Remove all orphaned devices from database."""
+        result = await self.find_duplicate_devices()
+
+        if "error" in result:
+            return result
+
+        orphaned = result["orphaned"]
+        removed = []
+        failed = []
+
+        for ieee in orphaned:
+            try:
+                await self._force_cleanup_device_db(ieee)
+                removed.append(ieee)
+                logger.info(f"Removed orphaned device: {ieee}")
+            except Exception as e:
+                failed.append({"ieee": ieee, "error": str(e)})
+                logger.error(f"Failed to remove {ieee}: {e}")
+
+        return {
+            "removed": removed,
+            "failed": failed,
+            "count_removed": len(removed),
+            "count_failed": len(failed)
+        }
+
     # =========================================================================
     # POLLING MANAGEMENT API
     # =========================================================================
@@ -1771,8 +1844,9 @@ class ZigbeeService:
         """Force cleanup device from all zigpy database tables."""
         import sqlite3
 
+        db_path = "zigbee.db"
+
         try:
-            db_path = self.app._dblistener._database._database._filename
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
 

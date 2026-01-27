@@ -634,6 +634,16 @@ async def add_device_to_tab(tab_name: str, data: dict):
 async def remove_device_from_tab(tab_name: str, ieee: str):
     return zigbee_service.remove_device_from_tab(tab_name, ieee)
 
+@app.get("/api/devices/orphaned")
+async def get_orphaned_devices():
+    """Find devices in database but not active in network."""
+    return await zigbee_service.find_duplicate_devices()
+
+@app.post("/api/devices/cleanup-orphaned")
+async def cleanup_orphaned():
+    """Remove all orphaned devices from database."""
+    return await zigbee_service.cleanup_orphaned_devices()
+
 # ============================================================================
 # ROUTES - NETWORK INFORMATION
 # ============================================================================
