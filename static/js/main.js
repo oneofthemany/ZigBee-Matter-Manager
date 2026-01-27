@@ -61,7 +61,8 @@ import {
     bindDevices,
     startTouchlinkScan,
     openBannedModal,
-    handleUnbanClick
+    handleUnbanClick,
+    cleanupOrphans
 } from './actions.js';
 import {
     initMesh,
@@ -81,6 +82,7 @@ window.openDeviceModal = openDeviceModal;
 window.renamePrompt = renamePrompt;
 window.fetchAllDevices = fetchAllDevices;
 window.getDeviceStateHtml = getDeviceStateHtml;
+window.cleanupOrphans = cleanupOrphans;
 
 // Device actions
 window.sendCommand = sendCommand;
@@ -140,7 +142,7 @@ window.manageTabDevices = manageTabDevices;
 window.toggleDeviceInTab = toggleDeviceInTab;
 
 // ============================================================================
-// APPLICATION INITIALIZATION
+// APPLICATION INITIALISATION
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -150,13 +152,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Start update interval for "last seen" times
     setInterval(updateLastSeenTimes, 1000);
 
-
     // Initialise Tabs
     loadTabs();
 
     // Initialise Mesh Tab listener
     initMesh();
-
 
     // Initialise Groups
     initGroups();
