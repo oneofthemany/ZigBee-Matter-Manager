@@ -179,5 +179,16 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsTab.addEventListener('click', loadConfigYaml);
     }
 
+    const topologyTab = document.querySelector('button[data-bs-target="#topology"]');
+    if (topologyTab) {
+        topologyTab.addEventListener('shown.bs.tab', () => {
+            // This ensures the D3 force simulation or SVG scales
+            // correctly once the container is actually visible.
+            if (typeof loadMeshTopology === 'function') {
+                loadMeshTopology();
+            }
+        });
+    }
+
     console.log("Zigbee Gateway Frontend Initialized");
 });
