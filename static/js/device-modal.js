@@ -5,7 +5,7 @@
 
 import { state } from './state.js';
 import { renderOverviewTab, saveConfig } from './modal/overview.js';
-import { renderControlTab } from './modal/control.js';
+import { renderControlTab, updateControlValues } from './modal/control.js';
 import { renderBindingTab } from './modal/binding.js';
 import { renderCapsTab } from './modal/clusters.js';
 
@@ -61,16 +61,24 @@ export function openDeviceModal(d) {
 
 export function refreshModalState(device) {
     console.log("4. Refreshing Modal Content for:", device.friendly_name);
+
     // Update Overview Tab if it exists
     const overviewTab = document.getElementById('tab-overview');
     if (overviewTab) {
         overviewTab.innerHTML = renderOverviewTab(device);
     }
 
-    // Update Control Tab if it exists
+    // Update Control Tab - using targeted updates
     const controlTab = document.getElementById('tab-control');
     if (controlTab) {
-        controlTab.innerHTML = renderControlTab(device);
+        // Check if user is currently interacting with controls
+        if (state.controlInteractionActive) {
+            // Only update non-interactive elements (badges, labels)
+            updateControlValues(device);
+        } else {
+            // Full re-render if no active interaction
+            controlTab.innerHTML = renderControlTab(device);
+        }
     }
 
     // Update Binding Tab if it exists
