@@ -129,3 +129,84 @@ export function showToast(message, type = 'info') {
         }, 3000);
     }
 }
+
+// Color mode toggle
+window.showColorMode = function(ieee, epId, mode) {
+    const tempPanel = document.getElementById(`colorTempPanel_${epId}`);
+    const colorPanel = document.getElementById(`colorPickerPanel_${epId}`);
+    if (mode === 'temp') {
+        tempPanel.style.display = '';
+        colorPanel.style.display = 'none';
+    } else {
+        tempPanel.style.display = 'none';
+        colorPanel.style.display = '';
+    }
+};
+
+// Convert HSL to hex for color picker
+window.hslToHex = function(h, s, l) {
+    s /= 100;
+    l /= 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * color).toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+// Convert hex to HS
+window.hexToHS = function(hex) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s;
+    const d = max - min;
+    s = max === 0 ? 0 : d / max;
+    if (max === min) {
+        h = 0;
+    } else {
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return { h: Math.round(h * 360), s: Math.round(s * 100) };
+};
+
+// Send color from picker (converts hex to HS)
+window.sendColorFromPicker = function(ieee, hexColor, epId) {
+    const hs = window.hexToHS(hexColor);
+    window.sendHSColor(ieee, hs.h, hs.s, epId);
+};
+
+// Send HS color command
+window.sendHSColor = function(ieee, hue, sat, epId) {
+    // Get current values if one is null
+    if (hue === null) {
+        const picker = document.getElementById(`colorPicker_${ieee}_${epId}`);
+        if (picker) {
+            const hs = window.hexToHS(picker.value);
+            hue = hs.h;
+        }
+    }
+    if (sat === null) {
+        const slider = document.getElementById(`satSlider_${ieee}_${epId}`);
+        if (slider) sat = parseInt(slider.value);
+    }
+
+    // Send via WebSocket
+    if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+        window.ws.send(JSON.stringify({
+            type: 'command',
+            ieee: ieee,
+            command: 'hs_color',
+            value: [hue, sat],
+            endpoint_id: epId
+        }));
+    }
+};

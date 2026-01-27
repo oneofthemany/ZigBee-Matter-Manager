@@ -904,7 +904,37 @@ class ZigManDevice:
                         optimistic_state['color_temp_mireds'] = mireds
                         success = True
                     else:
-                        logger.error(f"[{self.ieee}] No ColorClusterHandler (0x0300) found - handlers: {list(self.handlers.keys())}")
+                        logger.error(f"[{self.ieee}] No ColorClusterHandler (0x0300) for color_temp")
+
+                elif command == 'xy_color' and value is not None:
+                    h = get_handler(0x0300)
+                    if h:
+                        x, y = value if isinstance(value, (list, tuple)) else (0.5, 0.5)
+                        if isinstance(x, float) and x <= 1.0:
+                            x = int(x * 65535)
+                        if isinstance(y, float) and y <= 1.0:
+                            y = int(y * 65535)
+                        await h.set_xy_color(int(x), int(y))
+                        optimistic_state['color_x'] = x
+                        optimistic_state['color_y'] = y
+                        optimistic_state['color_mode'] = 'xy'
+                        success = True
+                    else:
+                        logger.error(f"[{self.ieee}] No ColorClusterHandler (0x0300) for xy_color")
+
+                elif command == 'hs_color' and value is not None:
+                    h = get_handler(0x0300)
+                    if h:
+                        hue, sat = value if isinstance(value, (list, tuple)) else (0, 100)
+                        zcl_hue = int((hue / 360) * 254)
+                        zcl_sat = int((sat / 100) * 254)
+                        await h.set_hue_sat(zcl_hue, zcl_sat)
+                        optimistic_state['hue'] = zcl_hue
+                        optimistic_state['saturation'] = zcl_sat
+                        optimistic_state['color_mode'] = 'hs'
+                        success = True
+                    else:
+                        logger.error(f"[{self.ieee}] No ColorClusterHandler (0x0300) for hs_color")
 
             # AQARA MANUFACTURER CLUSTER COMMANDS (0xFCC0)
             if not success and command in ['window_detection', 'valve_detection', 'motor_calibration', 'child_lock']:
