@@ -281,6 +281,11 @@ class ZigbeeService:
         # Touchlink
         self._touchlink: Optional[TouchlinkManager] = None
 
+        # tabs
+
+        self.device_tabs = self._load_json("./data/device_tabs.json") or {}
+        # Format: {"Heating": ["ieee1", "ieee2"], "Lighting": ["ieee3"]}
+
         os.makedirs("logs", exist_ok=True)
 
 
@@ -1686,7 +1691,6 @@ class ZigbeeService:
 
     async def remove_device(self, ieee, force=False):
         """Remove a device from the network and cleanup."""
-        # Normalize IEEE
         ieee = str(ieee).lower()
 
         try:
@@ -1694,7 +1698,6 @@ class ZigbeeService:
             z_ieee = zigpy.types.EUI64.convert(ieee)
             zdev = None
 
-            # Check zigpy's internal list
             if z_ieee in self.app.devices:
                 zdev = self.app.devices[z_ieee]
 
@@ -1702,19 +1705,19 @@ class ZigbeeService:
             if not force and zdev:
                 logger.info(f"[{ieee}] Sending Leave Request...")
                 try:
-                    # Short timeout for leave request
                     async with asyncio.timeout(5.0):
                         await zdev.zdo.leave()
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.warning(f"[{ieee}] Leave request failed/timed out: {e}")
 
             # 3. FORCE REMOVE from Zigpy (Database)
-            # CRITICAL FIX: Await the remove() call!
             if zdev:
                 await self.app.remove(z_ieee)
                 logger.info(f"[{ieee}] Removed from zigpy application")
-            else:
-                pass
+
+            # 3.5. Force database cleanup if requested
+            if force:
+                await self._force_cleanup_device_db(ieee)
 
             # 4. Cleanup Local State (In-Memory)
             if ieee in self.devices:
@@ -1763,6 +1766,56 @@ class ZigbeeService:
             logger.error(f"Remove failed: {e}")
             return {"success": False, "error": str(e)}
 
+
+    async def _force_cleanup_device_db(self, ieee: str):
+        """Force cleanup device from all zigpy database tables."""
+        import sqlite3
+
+        try:
+            db_path = self.app._dblistener._database._database._filename
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # Dynamically detect table version
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'devices_v%'")
+            devices_table = cursor.fetchone()
+
+            if not devices_table:
+                logger.warning(f"[{ieee}] Could not detect zigpy table version")
+                conn.close()
+                return
+
+            # Extract version suffix (e.g., "v13")
+            version = devices_table[0].split('_')[-1]
+
+            tables = [
+                f'devices_{version}',
+                f'endpoints_{version}',
+                f'clusters_{version}',
+                f'node_descriptors_{version}',
+                f'attributes_cache_{version}',
+                f'neighbors_{version}',
+                f'routes_{version}',
+                f'relays_{version}'
+            ]
+
+            logger.info(f"[{ieee}] Force cleaning database tables (version: {version})...")
+
+            for table in tables:
+                try:
+                    cursor.execute(f"DELETE FROM {table} WHERE ieee=?", (ieee,))
+                    deleted = cursor.rowcount
+                    if deleted > 0:
+                        logger.info(f"[{ieee}] Deleted {deleted} rows from {table}")
+                except sqlite3.Error as e:
+                    logger.debug(f"[{ieee}] Could not clean {table}: {e}")
+
+            conn.commit()
+            conn.close()
+            logger.info(f"[{ieee}] Database cleanup complete")
+
+        except Exception as e:
+            logger.error(f"[{ieee}] Database cleanup failed: {e}")
     async def rename_device(self, ieee, name):
         """Rename a device."""
         self.friendly_names[ieee] = name
@@ -2045,6 +2098,52 @@ class ZigbeeService:
                 return {"success": False, "error": str(e)}
         return {"success": False, "error": "Device not found"}  #
 
+
+    def create_device_tab(self, tab_name: str) -> dict:
+        """Create new device tab/category."""
+        if tab_name in self.device_tabs:
+            return {"success": False, "error": "Tab already exists"}
+
+        self.device_tabs[tab_name] = []
+        self._save_json("./data/device_tabs.json", self.device_tabs)
+        return {"success": True, "tab_name": tab_name}
+
+    def delete_device_tab(self, tab_name: str) -> dict:
+        """Delete device tab."""
+        if tab_name not in self.device_tabs:
+            return {"success": False, "error": "Tab not found"}
+
+        del self.device_tabs[tab_name]
+        self._save_json("./data/device_tabs.json", self.device_tabs)
+        return {"success": True}
+
+    def add_device_to_tab(self, tab_name: str, ieee: str) -> dict:
+        """Add device to tab."""
+        if tab_name not in self.device_tabs:
+            return {"success": False, "error": "Tab not found"}
+
+        ieee = str(ieee).lower()
+        if ieee not in self.device_tabs[tab_name]:
+            self.device_tabs[tab_name].append(ieee)
+            self._save_json("./data/device_tabs.json", self.device_tabs)
+
+        return {"success": True}
+
+    def remove_device_from_tab(self, tab_name: str, ieee: str) -> dict:
+        """Remove device from tab."""
+        if tab_name not in self.device_tabs:
+            return {"success": False, "error": "Tab not found"}
+
+        ieee = str(ieee).lower()
+        if ieee in self.device_tabs[tab_name]:
+            self.device_tabs[tab_name].remove(ieee)
+            self._save_json("./data/device_tabs.json", self.device_tabs)
+
+        return {"success": True}
+
+    def get_device_tabs(self) -> dict:
+        """Get all tabs."""
+        return self.device_tabs
 
     # =========================================================================
     # TOPOLOGY & MESH (REAL DATA)
