@@ -135,11 +135,11 @@ window.showColorMode = function(ieee, epId, mode) {
     const tempPanel = document.getElementById(`colorTempPanel_${epId}`);
     const colorPanel = document.getElementById(`colorPickerPanel_${epId}`);
     if (mode === 'temp') {
-        tempPanel.style.display = '';
-        colorPanel.style.display = 'none';
+        if (tempPanel) tempPanel.style.display = '';
+        if (colorPanel) colorPanel.style.display = 'none';
     } else {
-        tempPanel.style.display = 'none';
-        colorPanel.style.display = '';
+        if (tempPanel) tempPanel.style.display = 'none';
+        if (colorPanel) colorPanel.style.display = '';
     }
 };
 
@@ -178,35 +178,67 @@ window.hexToHS = function(hex) {
     return { h: Math.round(h * 360), s: Math.round(s * 100) };
 };
 
+// Interaction debounce for color controls (prevents modal refresh during use)
+let colorInteractionTimeout = null;
+function setColorInteractionActive() {
+    // Use the shared state if available, otherwise create local flag
+    if (window.state) {
+        window.state.controlInteractionActive = true;
+    }
+    if (colorInteractionTimeout) clearTimeout(colorInteractionTimeout);
+    colorInteractionTimeout = setTimeout(() => {
+        if (window.state) {
+            window.state.controlInteractionActive = false;
+        }
+    }, 1000); // Longer timeout for color picking
+}
+
 // Send color from picker (converts hex to HS)
 window.sendColorFromPicker = function(ieee, hexColor, epId) {
+    setColorInteractionActive();
+
     const hs = window.hexToHS(hexColor);
-    window.sendHSColor(ieee, hs.h, hs.s, epId);
+
+    // Optimistic UI update - update saturation slider to match picked color
+    const satSlider = document.getElementById(`satSlider_${ieee}_${epId}`);
+    if (satSlider) {
+        satSlider.value = hs.s;
+    }
+
+    // Send command
+    window.sendCommand(ieee, 'hs_color', [hs.h, hs.s], epId);
 };
 
 // Send HS color command
 window.sendHSColor = function(ieee, hue, sat, epId) {
+    setColorInteractionActive();
+
     // Get current values if one is null
-    if (hue === null) {
+    if (hue === null || hue === undefined) {
         const picker = document.getElementById(`colorPicker_${ieee}_${epId}`);
         if (picker) {
             const hs = window.hexToHS(picker.value);
             hue = hs.h;
+        } else {
+            hue = 0;
         }
     }
-    if (sat === null) {
+    if (sat === null || sat === undefined) {
         const slider = document.getElementById(`satSlider_${ieee}_${epId}`);
-        if (slider) sat = parseInt(slider.value);
+        if (slider) {
+            sat = parseInt(slider.value);
+        } else {
+            sat = 100;
+        }
     }
 
-    // Send via WebSocket
-    if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-        window.ws.send(JSON.stringify({
-            type: 'command',
-            ieee: ieee,
-            command: 'hs_color',
-            value: [hue, sat],
-            endpoint_id: epId
-        }));
+    // Optimistic UI update - update color picker to reflect new HS values
+    const picker = document.getElementById(`colorPicker_${ieee}_${epId}`);
+    if (picker) {
+        const newHex = window.hslToHex(hue, sat, 50);
+        picker.value = newHex;
     }
+
+    // Send via REST API
+    window.sendCommand(ieee, 'hs_color', [hue, sat], epId);
 };
