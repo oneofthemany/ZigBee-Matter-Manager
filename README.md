@@ -1,8 +1,8 @@
-# **Zigbee Manager Gateway**
+# **Zigbee Manager: A Python MQTT Gateway for Home Assistant**
 
 ## ** Overview**
 
-The **Zigbee Manager Gateway** is a high-performance, resilient, and feature-rich application designed to manage a large Zigbee mesh network. It utilizes a modern Python backend (FastAPI, zigpy/bellows) for robust network control and integrates seamlessly with Home Assistant via MQTT Discovery. The application features a real-time single-page web interface for device management, topology visualization, and deep debugging.
+The **Zigbee Manager** is a high-performance, resilient, and feature-rich application designed to manage a large Zigbee mesh network. It utilizes a modern Python backend (FastAPI, zigpy/bellows) for robust network control and integrates seamlessly with Home Assistant via MQTT Discovery. The application features a real-time single-page web interface for device management, topology visualization, and deep debugging.
 
 ## ** Key Features**
 
@@ -66,14 +66,14 @@ The provided [deploy.sh](https://github.com/oneofthemany/ZigBee-Manager/blob/mai
 2. **Run Deployment:**  
    sudo bash deploy.sh
 
-   This script sets up the necessary environment and services in /opt/zigbee-gateway.
+   This script sets up the necessary environment and services in /opt/zigbee-manager.
 
 ## **🛠️ Configuration**
 
 The core configuration file is [config.yaml](https://github.com/oneofthemany/ZigBee-Manager/blob/main/config.yaml).
 
 1. **Edit Configuration:** After deployment, edit the file in the install directory:  
-   sudo nano /opt/zigbee-gateway/config.yaml
+   sudo nano /opt/zigbee-manager/config.yaml
 
 2. **Review Critical Sections:**
     * **mqtt:** Update broker\_host, username, and password to match your MQTT broker credentials.
@@ -82,7 +82,7 @@ The core configuration file is [config.yaml](https://github.com/oneofthemany/Zig
         * channel, pan\_id, network\_key: Used to form or join a Zigbee network.
         * ezsp\_config: Advanced coordinator settings, pre-tuned for large, sensor-heavy networks.
 3. **Start Service:**  
-   sudo systemctl start zigbee-gateway
+   sudo systemctl start zigbee-manager
 
 ## **🌐 Web Interface Usage**
 
@@ -121,6 +121,6 @@ The application includes extensive built-in diagnostics. For detailed guides, re
 
 | Command | Description |
 | :---- | :---- |
-| sudo systemctl status zigbee-gateway | Check if the main service is running. |
-| sudo journalctl \-u zigbee-gateway \-f | View system logs for the service. |
-| sudo tail \-f /opt/zigbee-gateway/logs/zigbee.log | View application logs. |
+| sudo systemctl status zigbee-manager | Check if the main service is running. |
+| sudo journalctl \-u zigbee-manager \-f | View system logs for the service. |
+| sudo tail \-f /opt/zigbee-manager/logs/zigbee.log | View application logs. |
