@@ -21,7 +21,7 @@ The **MQTT Explorer** is a powerful debugging and monitoring tool integrated int
 - 🔍 **Debugging device communication** - See exactly what messages devices are sending and receiving
 - 📊 **Monitoring Home Assistant integration** - Verify MQTT discovery and command topics
 - 🧪 **Testing MQTT messages** - Publish test messages to any topic
-- 📈 **Analyzing traffic patterns** - View statistics on message rates and topic usage
+- 📈 **Analysing traffic patterns** - View statistics on message rates and topic usage
 - 🐛 **Troubleshooting connectivity** - Identify missing messages or incorrect payloads
 
 ### Architecture
