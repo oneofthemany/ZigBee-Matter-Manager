@@ -269,7 +269,7 @@ Response: {
 
 ## Advanced Debugging
 
-### Analyzing Packet Flows
+### Analysing Packet Flows
 
 1. Enable debugging
 2. Trigger the issue (e.g., move in front of motion sensor)
