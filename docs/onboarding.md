@@ -2,7 +2,7 @@
 
 This guide explains how to debug and onboard new Zigbee devices (especially ones not in your current portfolio) using:
 
-- The **ZigbeeDebugger** from `zigbee_debug.py`
+- The **ZigbeeDebugger** from `modules/zigbee_debug.py`
 - The **cluster handler framework** in `handlers/base.py` and `handlers/__init__.py`
 - The existing general / sensors / hvac / tuya handlers as concrete examples
 
@@ -14,7 +14,7 @@ It's written for people who are comfortable editing Python and restarting the ba
 
 ### 1.1 Core pieces
 
-#### 1. ZigbeeDebugger (`zigbee_debug.py`)
+#### 1. ZigbeeDebugger (`modules/zigbee_debug.py`)
 
 A global debugger instance that:
 
