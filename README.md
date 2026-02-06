@@ -17,16 +17,16 @@ The **Zigbee Manager** is a high-performance, resilient, and feature-rich applic
 
 ### **🛡️ Stability & Performance**
 
-* **Resilience System:** ZHA-inspired core resilience handling (resilience.py), featuring automatic retry and exponential backoff for transient command failures.
+* **Resilience System:** ZHA-inspired core resilience handling (modules/resilience.py), featuring automatic retry and exponential backoff for transient command failures.
 * **NCP Failure Recovery:** Implements a watchdog and recovery logic to automatically handle critical Network Co-Processor (NCP) failures.
-* **EZSP Tuning:** Enhanced EZSP configuration logic (config\_enhanced.py) dynamically tunes the coordinator stack settings based on network size for maximum stability.
+* **EZSP Tuning:** Enhanced EZSP configuration logic (modules/config\_enhanced.py) dynamically tunes the coordinator stack settings based on network size for maximum stability.
 * **Fast Path Processing:** A specialized, non-blocking pipeline (handlers/fast\_path.py) for time-critical sensor events (e.g., motion/presence) to ensure minimal MQTT publication latency.
-* **MQTT Queue:** Uses a non-blocking background queue (mqtt\_queue.py) to prevent event loop stalls during MQTT publishing bursts.
+* **MQTT Queue:** Uses a non-blocking background queue (modules/mqtt\_queue.py) to prevent event loop stalls during MQTT publishing bursts.
 
 ### **🔎 Diagnostics & Debugging**
 
 * **Live Debug Log:** Real-time stream of application logs with filtering capabilities.
-* **Packet Capture:** Dedicated Debug Packets modal for capturing and analyzing raw Zigbee Cluster Library (ZCL) frames (handlers/zigbee\_debug.py).
+* **Packet Capture:** Dedicated Debug Packets modal for capturing and Analysing raw Zigbee Cluster Library (ZCL) frames (handlers/zigbee\_debug.py).
 * **Packet Decoding:** Provides deep inspection and human-readable summaries for IAS Zone (0x0500), Occupancy Sensing (0x0406), and Tuya Manufacturer-Specific (0xEF00) packets.
 * **Mesh Topology:** Dynamic mesh visualization using D3.js with manual refresh/scan functionality to update Link Quality Indicator (LQI) data.
 
@@ -40,12 +40,12 @@ The **Zigbee Manager** is a high-performance, resilient, and feature-rich applic
 
 The application is structured into a Python backend core and a thin frontend web interface:
 
-| Component | Technology | Role |
-| :---- | :---- | :---- |
-| **Core** | Python (FastAPI, zigpy/bellows) | Manages the Zigbee radio, implements the device lifecycle (joining, removal), and enforces resilience and error handling. |
-| **MQTT Service** | mqtt.py (aiomqtt) | Handles connection to the MQTT broker, manages automatic reconnection, and implements Home Assistant MQTT Discovery. |
-| **Cluster Handlers** | handlers/ package | The application's intelligence layer. Decodes raw ZCL messages, updates normalized device state, and implements complex device-specific logic (e.g., Aquara TRV configuration, Hue motion sensor handling). |
-| **Frontend** | HTML, Bootstrap 5, D3.js | A single-page application that connects to the backend via **WebSocket (/ws)** for real-time state updates and event logging. |
+| Component            | Technology                      | Role                                                                                                                                                                                                        |
+|:---------------------|:--------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Core**             | Python (FastAPI, zigpy/bellows) | Manages the Zigbee radio, implements the device lifecycle (joining, removal), and enforces resilience and error handling.                                                                                   |
+| **MQTT Service**     | mqtt.py (aiomqtt)               | Handles connection to the MQTT broker, manages automatic reconnection, and implements Home Assistant MQTT Discovery.                                                                                        |
+| **Cluster Handlers** | handlers/ package               | The application's intelligence layer. Decodes raw ZCL messages, updates normalized device state, and implements complex device-specific logic (e.g., Aquara TRV configuration, Hue motion sensor handling). |
+| **Frontend**         | HTML, Bootstrap 5, D3.js        | A single-page application that connects to the backend via **WebSocket (/ws)** for real-time state updates and event logging.                                                                               |
 
 ## **⚙️ Installation**
 
@@ -70,10 +70,10 @@ The provided [deploy.sh](https://github.com/oneofthemany/ZigBee-Manager/blob/mai
 
 ## **🛠️ Configuration**
 
-The core configuration file is [config.yaml](https://github.com/oneofthemany/ZigBee-Manager/blob/main/config.yaml).
+The core configuration file is [config.yaml](https://github.com/oneofthemany/ZigBee-Manager/blob/main/config/config.yaml).
 
 1. **Edit Configuration:** After deployment, edit the file in the install directory:  
-   sudo nano /opt/zigbee-manager/config.yaml
+   sudo vi /opt/zigbee-manager/config/config.yaml
 
 2. **Review Critical Sections:**
     * **mqtt:** Update broker\_host, username, and password to match your MQTT broker credentials.
@@ -88,13 +88,13 @@ The core configuration file is [config.yaml](https://github.com/oneofthemany/Zig
 
 Access the web interface at http://YOUR\_IP:8000.
 
-| Tab | Functionality |
-| :---- | :---- |
-| **Devices** | Main device table, showing LQI, status, last seen, and device actions. |
-| **Topology** | Interactive force-directed graph of the mesh network. |
-| **Settings** | Web editor for config.yaml and system restart controls. |
-| **Debug Log** | Real-time event log and raw packet analyzer (requires debug to be enabled). |
-| **Groups** | UI for defining and controlling native Zigbee Groups (lights, switches, covers). |
+| Tab           | Functionality                                                                    |
+|:--------------|:---------------------------------------------------------------------------------|
+| **Devices**   | Main device table, showing LQI, status, last seen, and device actions.           |
+| **Topology**  | Interactive force-directed graph of the mesh network.                            |
+| **Settings**  | Web editor for config.yaml and system restart controls.                          |
+| **Debug Log** | Real-time event log and raw packet analyzer (requires debug to be enabled).      |
+| **Groups**    | UI for defining and controlling native Zigbee Groups (lights, switches, covers). |
 
 ## **🐛 Debugging & Troubleshooting**
 
@@ -110,17 +110,17 @@ The application includes extensive built-in diagnostics. For detailed guides, re
 
 ### **Documentation & Guides**
 
-| File | Content |
-| :---- | :---- |
-| [docs/onboarding.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/onboarding.md) | Step-by-step manual for debugging and creating support for new, unsupported devices. |
-| [docs/debugging.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/debugging.md) | Comprehensive guide on using the built-in debugger, filters, and log files. |
-| [docs/aqara\_cluster\_guide.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/aqara_cluster_guide.md) | Detailed explanation of the Aqara manufacturer cluster (0xFCC0) implementation and usage. |
-| [docs/structure.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/structure.md) | File structure map of the application. |
+| File                                                                                                                   | Content                                                                                     |
+|:-----------------------------------------------------------------------------------------------------------------------|:--------------------------------------------------------------------------------------------|
+| [docs/onboarding.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/onboarding.md)                      | Step-by-step manual for debugging and creating support for new, unsupported devices.        |
+| [docs/debugging.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/debugging.md)                        | Comprehensive guide on using the built-in debugger, filters, and log files.                 |
+| [docs/aqara\_cluster\_guide.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/aqara_cluster_guide.md)  | Detailed explanation of the Aqara manufacturer cluster (0xFCC0) implementation and usage.   |
+| [docs/structure.md](https://github.com/oneofthemany/ZigBee-Manager/tree/main/docs/structure.md)                        | File structure map of the application.                                                      |
 
 ### **Useful Commands**
 
-| Command | Description |
-| :---- | :---- |
-| sudo systemctl status zigbee-manager | Check if the main service is running. |
-| sudo journalctl \-u zigbee-manager \-f | View system logs for the service. |
-| sudo tail \-f /opt/zigbee-manager/logs/zigbee.log | View application logs. |
+| Command                                           | Description                           |
+|:--------------------------------------------------|:--------------------------------------|
+| sudo systemctl status zigbee-manager              | Check if the main service is running. |
+| sudo journalctl \-u zigbee-manager \-f            | View system logs for the service.     |
+| sudo tail \-f /opt/zigbee-manager/logs/zigbee.log | View application logs.                |
