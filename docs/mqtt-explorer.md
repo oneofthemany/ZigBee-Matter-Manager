@@ -114,10 +114,6 @@ The MQTT Explorer uses a **separate MQTT client** that subscribes to all topics 
 2. Click the **"MQTT Explorer"** tab in the navigation bar
 3. The interface will load with monitoring stopped (default state)
 
-![Screenshot: MQTT Explorer Tab Location](screenshots/mqtt-explorer-tab.png)
-
-> **Screenshot Description:** The navigation bar shows tabs for Devices, Topology, Settings, Groups, Debug Log, and the newly added **MQTT Explorer** tab with a broadcast tower icon (📡). The tab is positioned after Debug Log.
-
 ---
 
 ## User Interface Guide
@@ -126,15 +122,9 @@ The MQTT Explorer uses a **separate MQTT client** that subscribes to all topics 
 
 The MQTT Explorer interface is divided into two main columns:
 
-![Screenshot: MQTT Explorer Main Interface](screenshots/mqtt-explorer-main.png)
+![Screenshot: MQTT Explorer Main Interface](../screenshots/mqtt-explorer-main.png)
 
-> **Screenshot Description:**
-> - **Left column (70%)** - Message list with live updates
-> - **Right column (30%)** - Publish form and help information
-> - **Header** - Control buttons and status badge
-> - **Statistics bar** - Four metric cards showing real-time data
-
-### 1. Control Bar
+### 1. Messages
 
 Located at the top of the left column:
 
@@ -406,7 +396,7 @@ Contextual help in the right column:
 
 ![Screenshot: Monitoring Device States](screenshots/example-device-states.png)
 
-> **Screenshot Description:** Message table showing:
+> **Message table showing:** 
 > ```
 > Time          Topic                              Payload
 > 14:23:45.123  zigbee/Living_Room_Light/state    {"state":"ON","brightness":254}
@@ -437,9 +427,7 @@ Contextual help in the right column:
 3. Remove and re-add a device to trigger discovery
 4. Watch for discovery messages
 
-![Screenshot: HA Discovery Messages](screenshots/example-ha-discovery.png)
-
-> **Screenshot Description:** Message table showing:
+> **Message table showing:** 
 > ```
 > Time          Topic                                           Payload
 > 14:25:01.123  homeassistant/light/.../config                 {"name":"Living Room"...}
@@ -478,9 +466,7 @@ Contextual help in the right column:
 
 ![Screenshot: Command Testing](screenshots/example-command-test.png)
 
-> **Screenshot Description:** Split view showing:
->
-> **Top: Message Table**
+> **Split view showing:**
 > ```
 > 14:30:01.123  zigbee/Living_Room_Light/set    {"state":"ON","brightness":128}  QoS 1
 > 14:30:01.234  zigbee/Living_Room_Light/state  {"state":"ON","brightness":128}  QoS 0
@@ -511,7 +497,7 @@ Contextual help in the right column:
 
 ![Screenshot: Motion Event Search](screenshots/example-motion-search.png)
 
-> **Screenshot Description:** Message table with search active:
+> **Message table with search active:** 
 > ```
 > Search: "motion" [x]
 > 
@@ -545,9 +531,8 @@ Contextual help in the right column:
 3. Restart Home Assistant
 4. Watch for `online` message
 
-![Screenshot: HA Birth Message](screenshots/example-ha-birth.png)
 
-> **Screenshot Description:** Single message highlighted:
+> **Single message highlighted:** 
 > ```
 > Time          Topic                    Payload    QoS/Retain
 > 14:40:05.123  homeassistant/status    online     QoS 1  R
@@ -616,9 +601,7 @@ Matches zero or more topic levels:
 - ✅ `homeassistant/sensor/zigbee_def456/config`
 - ❌ `homeassistant/light/hue_abc123/config` (not zigbee_)
 
-![Screenshot: Wildcard Examples](screenshots/advanced-wildcards.png)
-
-> **Screenshot Description:** Help panel showing:
+> **Help panel showing:** 
 >
 > **Wildcard Examples**
 > ```
@@ -649,29 +632,6 @@ Future feature to export captured messages:
 
 The statistics dashboard provides insights:
 
-![Screenshot: Statistics Analysis](screenshots/advanced-statistics.png)
-
-> **Screenshot Description:** Expanded statistics view showing:
->
-> **Message Rate Graph** (if implemented)
-> - Line chart showing msgs/sec over time
-> - 60-second window
-> - Spikes indicate burst activity
->
-> **Top Topics** (if implemented)
-> - Bar chart of most active topics
-> - Example:
-    >   ```
->   zigbee/Bedroom_Sensor/state     142 msgs
->   zigbee/Living_Room_Light/state   89 msgs
->   homeassistant/status             12 msgs
->   ```
->
-> **Traffic Patterns**
-> - Peak time identification
-> - Average message size
-> - Most common QoS levels
-
 **Interpreting Statistics:**
 
 **Total Messages**
@@ -698,12 +658,12 @@ The statistics dashboard provides insights:
 
 **Latency Characteristics:**
 
-| Event Type | Expected Latency | Notes |
-|------------|-----------------|--------|
-| Message capture | <5ms | MQTT client to buffer |
-| WebSocket broadcast | <10ms | Buffer to frontend |
-| Total end-to-end | <20ms | Broker to display |
-| Message processing | <1ms | Filtering and search |
+| Event Type          | Expected Latency | Notes                   |
+|---------------------|------------------|-------------------------|
+| Message capture     | <5ms             | MQTT client to buffer   |
+| WebSocket broadcast | <10ms            | Buffer to frontend      |
+| Total end-to-end    | <20ms            | Broker to display       |
+| Message processing  | <1ms             | Filtering and search    |
 
 **Performance Tips:**
 - ✅ Use specific topic filters (reduces processing)
@@ -716,9 +676,7 @@ The statistics dashboard provides insights:
 
 Combine MQTT Explorer with other gateway features:
 
-![Screenshot: Multi-Tool Debugging](screenshots/advanced-multi-tool.png)
-
-> **Screenshot Description:** Browser window with three tabs open:
+> **Browser window with three tabs open:** 
 >
 > **Tab 1: MQTT Explorer**
 > - Shows MQTT message for motion sensor
@@ -1378,15 +1336,15 @@ http://localhost:8000/?mqtt_filter=zigbee/+/state
 
 **Q: How does this compare to MQTT Explorer (desktop app)?**
 
-| Feature | Desktop MQTT Explorer | This Tool |
-|---------|----------------------|-----------|
-| Installation | Separate app | Built into gateway |
-| Real-time | Yes | Yes |
-| Topic tree | Yes | No (list view) |
-| History | Persistent | Buffer only |
-| Publishing | Yes | Yes |
-| Filtering | Tree-based | Pattern-based |
-| Best for | Development, setup | Runtime debugging |
+| Feature       | Desktop MQTT Explorer | This Tool            |
+|---------------|-----------------------|----------------------|
+| Installation  | Separate app          | Built into gateway   |
+| Real-time     | Yes                   | Yes                  |
+| Topic tree    | Yes                   | No (list view)       |
+| History       | Persistent            | Buffer only          |
+| Publishing    | Yes                   | Yes                  |
+| Filtering     | Tree-based            | Pattern-based        |
+| Best for      | Development, setup    | Runtime debugging    |
 
 **Use desktop app when:**
 - Setting up MQTT broker initially
