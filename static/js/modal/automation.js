@@ -4,6 +4,7 @@
  *
  * Renders threshold-based automation rules for a device.
  * Supports compound AND conditions (multiple threshold rows).
+ * Includes conditional execution paths (check target state before firing).
  * Includes trace log viewer for debugging rule evaluation.
  */
 
@@ -59,15 +60,15 @@ export function renderAutomationTab(device) {
             </div>
 
             <!-- Add Rule Form (hidden) -->
-            <div id="automation-add-form" class="card mb-3" style="display:none;">
-                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+            <div id="automation-add-form" class="card mb-3 border-primary shadow-sm" style="display:none;">
+                <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
                     <strong><i class="fas fa-bolt"></i> New Automation Rule</strong>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="window.hideAddAutomationForm()">
+                    <button class="btn btn-sm btn-outline-light" onclick="window.hideAddAutomationForm()">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
                 <div class="card-body">
-                    <!-- Conditions Builder -->
+                    <!-- Step 1: Trigger Conditions -->
                     <div class="mb-3">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <label class="form-label fw-bold small mb-0">1. When ALL of these are true...</label>
@@ -75,22 +76,53 @@ export function renderAutomationTab(device) {
                                 <i class="fas fa-plus"></i> Add Condition
                             </button>
                         </div>
-                        <div id="conditions-builder"></div>
+                        <div id="conditions-builder" class="bg-light p-2 rounded border-start border-primary border-4"></div>
                     </div>
 
-                    <!-- Target Action -->
+                    <!-- Step 2: Conditional Check (New) -->
                     <div class="mb-3">
-                        <label class="form-label fw-bold small">2. Then send command to...</label>
-                        <div class="row g-2">
-                            <div class="col-md-6">
-                                <select class="form-select form-select-sm" id="auto-target"
-                                        onchange="window.onAutomationTargetChange(this)">
-                                    <option value="">Loading actuators...</option>
+                        <label class="form-label fw-bold small">2. Only if this device is...</label>
+                        <div class="row g-2 p-2 rounded bg-light border-start border-warning border-4">
+                            <div class="col-md-5">
+                                <select class="form-select form-select-sm" id="cond-target-device"
+                                        onchange="window.onTargetConditionDeviceChange(this)">
+                                    <option value="">(Optional) Select device...</option>
                                 </select>
                             </div>
                             <div class="col-md-3">
-                                <select class="form-select form-select-sm" id="auto-command">
-                                    <option value="">Select...</option>
+                                <select class="form-select form-select-sm" id="cond-target-attr">
+                                    <option value="">Attribute...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <select class="form-select form-select-sm" id="cond-target-op">
+                                    <option value="eq">=</option>
+                                    <option value="neq">≠</option>
+                                    <option value="gt">&gt;</option>
+                                    <option value="lt">&lt;</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <input type="text" class="form-control form-control-sm" id="cond-target-val" placeholder="Value">
+                            </div>
+                        </div>
+                        <div class="form-text small">Optional check: E.g. only run if Lamp is 'off'.</div>
+                    </div>
+
+                    <!-- Step 3: Target Action -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold small">3. Then send command to...</label>
+                        <div class="row g-2 p-2 rounded bg-light border-start border-success border-4">
+                            <div class="col-md-6">
+                                <select class="form-select form-select-sm" id="auto-target"
+                                        onchange="window.onAutomationTargetChange(this)">
+                                    <option value="">Select actuator...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select form-select-sm" id="auto-command"
+                                        onchange="window.onCommandChange(this)">
+                                    <option value="">Select command...</option>
                                 </select>
                             </div>
                             <div class="col-md-3">
@@ -101,16 +133,16 @@ export function renderAutomationTab(device) {
                     </div>
 
                     <!-- Options -->
-                    <div class="row g-2 mb-3">
+                    <div class="row g-2 mb-0">
                         <div class="col-md-4">
                             <label class="form-label small text-muted mb-0">Cooldown (seconds)</label>
                             <input type="number" class="form-control form-control-sm" id="auto-cooldown"
                                    value="5" min="0" max="3600">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label small text-muted mb-0">Endpoint (optional)</label>
+                            <label class="form-label small text-muted mb-0">Endpoint</label>
                             <input type="number" class="form-control form-control-sm" id="auto-endpoint"
-                                   placeholder="Auto">
+                                   placeholder="Auto-populated">
                         </div>
                         <div class="col-md-4 d-flex align-items-end">
                             <button class="btn btn-primary btn-sm w-100" onclick="window.saveAutomationRule()">
@@ -171,7 +203,7 @@ export async function initAutomationTab(ieee) {
         cachedActuators = await actuatorsRes.json();
 
         renderRulesList(rules);
-        populateTargetSelect();
+        populatePickers();
 
         // Reset condition builder
         conditionRows = [];
@@ -208,6 +240,7 @@ function renderRulesList(rules) {
     let html = '';
     rules.forEach(rule => {
         const conditions = rule.conditions || [];
+        const targetCond = rule.target_condition || null;
         const a = rule.action || {};
         const enabled = rule.enabled !== false;
         const targetName = rule.target_name || rule.target_ieee;
@@ -222,26 +255,32 @@ function renderRulesList(rules) {
             const prefix = idx === 0 ?
                 '<strong class="text-primary">IF</strong>' :
                 '<strong class="text-warning">AND</strong>';
-            condHtml += `<div class="small">${prefix} <code>${c.attribute}</code>
-                <span class="badge bg-light text-dark border">${opLabel}</span>
-                <code>${c.value}</code></div>`;
+            condHtml += `<div class="small d-inline-block me-2">${prefix} <code>${c.attribute}</code> <span class="badge bg-light text-dark border">${opLabel}</span> <code>${c.value}</code></div>`;
         });
 
+        // Render target condition if present
+        let targetCondHtml = '';
+        if (targetCond) {
+            const opLabel = OPERATOR_LABELS[targetCond.operator] || targetCond.operator;
+            targetCondHtml = `<div class="small mt-1"><strong class="text-danger">ONLY IF</strong> <span>${targetCond.target_name || targetCond.ieee}</span> <code>${targetCond.attribute}</code> <span class="badge bg-light text-dark border">${opLabel}</span> <code>${targetCond.value}</code></div>`;
+        }
+
         html += `
-            <div class="card mb-2 ${enabled ? '' : 'opacity-50'}" id="rule-${rule.id}">
+            <div class="card mb-2 ${enabled ? '' : 'opacity-50 border-dashed'}" id="rule-${rule.id}">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
                             ${condHtml}
+                            ${targetCondHtml}
                             <div class="small mt-1">
                                 <strong class="text-success">THEN</strong>
                                 <span class="badge bg-info text-dark">${a.command}${valueDisplay}</span>
                                 <i class="fas fa-arrow-right text-muted mx-1"></i>
-                                <span title="${rule.target_ieee}">${targetName}${epDisplay}</span>
+                                <span class="fw-bold" title="${rule.target_ieee}">${targetName}${epDisplay}</span>
                             </div>
                         </div>
                         <div class="d-flex gap-1 ms-2">
-                            <span class="badge bg-secondary" title="Cooldown">${cooldownDisplay}</span>
+                            <span class="badge bg-secondary d-flex align-items-center" title="Cooldown"><i class="fas fa-hourglass-half me-1"></i> ${cooldownDisplay}</span>
                             <button class="btn btn-sm ${enabled ? 'btn-outline-success' : 'btn-outline-secondary'}"
                                     onclick="window.toggleAutomationRule('${rule.id}')"
                                     title="${enabled ? 'Disable' : 'Enable'}">
@@ -314,7 +353,6 @@ function refreshConditionsBuilder() {
     if (!container) return;
 
     if (conditionRows.length === 0) {
-        // Auto-add first row
         conditionRows.push(conditionIdCounter++);
     }
 
@@ -326,18 +364,31 @@ function refreshConditionsBuilder() {
 // FORM HELPERS
 // ============================================================================
 
-function populateTargetSelect() {
-    const select = document.getElementById('auto-target');
-    if (!select) return;
+function populatePickers() {
+    // Populate Target Actuator Select
+    const targetSelect = document.getElementById('auto-target');
+    const condDeviceSelect = document.getElementById('cond-target-device');
 
-    select.innerHTML = '<option value="">Select target device...</option>';
-    cachedActuators.forEach(dev => {
-        if (dev.ieee === currentSourceIeee) return;
-        select.innerHTML += `<option value="${dev.ieee}"
-            data-commands='${JSON.stringify(dev.commands)}'>
-            ${dev.friendly_name} (${dev.model})
-        </option>`;
-    });
+    if (targetSelect) {
+        targetSelect.innerHTML = '<option value="">Select target actuator...</option>';
+        cachedActuators.forEach(dev => {
+            if (dev.ieee === currentSourceIeee) return;
+            targetSelect.innerHTML += `<option value="${dev.ieee}"
+                data-commands='${JSON.stringify(dev.commands)}'>
+                ${dev.friendly_name} (${dev.model})
+            </option>`;
+        });
+    }
+
+    // Populate Conditional Device Select (includes sensors)
+    if (condDeviceSelect) {
+        condDeviceSelect.innerHTML = '<option value="">(Optional) Select device...</option>';
+        // For Step 2, we show all known names from state.deviceCache or cachedActuators
+        // Using cachedActuators as a starting point for reliable IEEE list
+        cachedActuators.forEach(dev => {
+            condDeviceSelect.innerHTML += `<option value="${dev.ieee}">${dev.friendly_name}</option>`;
+        });
+    }
 }
 
 function populateCommandsFor(commands) {
@@ -347,7 +398,10 @@ function populateCommandsFor(commands) {
 
     select.innerHTML = '<option value="">Select command...</option>';
     (commands || []).forEach(cmd => {
-        select.innerHTML += `<option value="${cmd.command}" data-type="${cmd.type || 'button'}">
+        // Embed the endpoint_id in a data attribute for auto-filling
+        select.innerHTML += `<option value="${cmd.command}"
+            data-type="${cmd.type || 'button'}"
+            data-endpoint="${cmd.endpoint_id || ''}">
             ${cmd.label || cmd.command}${cmd.endpoint_id ? ' (EP' + cmd.endpoint_id + ')' : ''}
         </option>`;
     });
@@ -372,7 +426,6 @@ async function loadTraceLog() {
             return;
         }
 
-        // Show newest first
         const reversed = [...entries].reverse();
         let html = '';
 
@@ -382,7 +435,6 @@ async function loadTraceLog() {
             const result = entry.result || '';
             const ruleId = entry.rule_id || '';
 
-            // Color coding by result
             let color = 'text-muted';
             if (result === 'SUCCESS' || result === 'FIRING') color = 'text-success';
             else if (result === 'NO_MATCH' || result === 'NOT_RELEVANT' || result === 'DISABLED') color = 'text-secondary';
@@ -397,7 +449,6 @@ async function loadTraceLog() {
             if (ruleId && ruleId !== '-') html += `<code>${ruleId}</code> `;
             html += `${entry.message || ''}`;
 
-            // Show condition details if present
             if (entry.conditions && entry.conditions.length > 0) {
                 html += `<div class="ms-3 mt-1">`;
                 entry.conditions.forEach(c => {
@@ -407,13 +458,11 @@ async function loadTraceLog() {
                     html += ` → actual: ${c.actual_raw || '?'} (${c.actual_type || '?'})`;
                     html += ` [${c.result}]`;
                     if (c.value_source) html += ` src:${c.value_source}`;
-                    if (c.reason) html += ` — ${c.reason}`;
                     html += `</div>`;
                 });
                 html += `</div>`;
             }
 
-            // Show error/traceback
             if (entry.error) {
                 html += `<div class="ms-3 text-danger">${entry.error}</div>`;
             }
@@ -433,6 +482,37 @@ async function loadTraceLog() {
 // WINDOW-EXPOSED EVENT HANDLERS
 // ============================================================================
 
+window.onTargetConditionDeviceChange = async function(selectEl) {
+    const ieee = selectEl.value;
+    const attrSelect = document.getElementById('cond-target-attr');
+    if (!attrSelect) return;
+
+    if (!ieee) {
+        attrSelect.innerHTML = '<option value="">Attribute...</option>';
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/attributes`);
+        const attrs = await res.json();
+        attrSelect.innerHTML = attrs.map(a => `<option value="${a.attribute}">${a.attribute} (${a.current_value})</option>`).join('');
+    } catch (e) {
+        console.error("Failed to load attributes for target condition:", e);
+    }
+};
+
+window.onCommandChange = function(selectEl) {
+    const selected = selectEl.options[selectEl.selectedIndex];
+    if (!selected) return;
+
+    const epId = selected.dataset.endpoint;
+    const epInput = document.getElementById('auto-endpoint');
+
+    if (epInput) {
+        epInput.value = epId || ''; // Clear if none, else populate
+    }
+};
+
 window.onConditionAttributeChange = function(rowId, selectEl) {
     const selected = selectEl.options[selectEl.selectedIndex];
     if (!selected || !selected.value) return;
@@ -441,7 +521,6 @@ window.onConditionAttributeChange = function(rowId, selectEl) {
     const operators = JSON.parse(selected.dataset.operators || '["eq","neq"]');
     const currentValue = selected.dataset.current;
 
-    // Populate operator select for this row
     const opSelect = document.querySelector(`#cond-row-${rowId} .cond-operator`);
     if (opSelect) {
         opSelect.innerHTML = '';
@@ -450,20 +529,16 @@ window.onConditionAttributeChange = function(rowId, selectEl) {
         });
     }
 
-    // Hint
     const hint = document.getElementById(`cond-hint-${rowId}`);
     if (hint) {
         hint.textContent = `Current: ${currentValue} (${type})`;
     }
 
-    // Pre-fill for booleans
     const valueInput = document.querySelector(`#cond-row-${rowId} .cond-value`);
     if (valueInput && type === 'boolean') {
         valueInput.value = String(currentValue).toLowerCase() === 'true' ? 'true' : 'false';
-        valueInput.setAttribute('placeholder', 'true / false');
     } else if (valueInput) {
         valueInput.value = '';
-        valueInput.setAttribute('placeholder', 'Value');
     }
 };
 
@@ -491,7 +566,6 @@ window.removeConditionRow = function(rowId) {
 window.showAddAutomationForm = function() {
     const form = document.getElementById('automation-add-form');
     if (form) form.style.display = 'block';
-    // Init with one condition row
     conditionRows = [conditionIdCounter++];
     refreshConditionsBuilder();
 };
@@ -522,7 +596,6 @@ window.refreshAutomationTrace = function() {
 // ============================================================================
 
 window.saveAutomationRule = async function() {
-    // Gather conditions from all rows
     const conditions = [];
     let valid = true;
 
@@ -540,7 +613,6 @@ window.saveAutomationRule = async function() {
             return;
         }
 
-        // Coerce value type
         let value = rawValue;
         if (value.toLowerCase() === 'true') value = true;
         else if (value.toLowerCase() === 'false') value = false;
@@ -550,8 +622,29 @@ window.saveAutomationRule = async function() {
     });
 
     if (!valid || conditions.length === 0) {
-        alert('Please fill in all condition fields (attribute, operator, value).');
+        alert('Please fill in Step 1 condition fields.');
         return;
+    }
+
+    // Capture Target Condition (Step 2)
+    const targetCondIeee = document.getElementById('cond-target-device').value;
+    let targetCondition = null;
+    if (targetCondIeee) {
+        const tAttr = document.getElementById('cond-target-attr').value;
+        const tOp = document.getElementById('cond-target-op').value;
+        const tValRaw = document.getElementById('cond-target-val').value;
+
+        if (!tAttr || tValRaw === '') {
+            alert('Please complete all fields for the Step 2 Conditional Check.');
+            return;
+        }
+
+        let tVal = tValRaw;
+        if (tVal.toLowerCase() === 'true') tVal = true;
+        else if (tVal.toLowerCase() === 'false') tVal = false;
+        else if (!isNaN(tVal) && tVal !== '') tVal = parseFloat(tVal);
+
+        targetCondition = { ieee: targetCondIeee, attribute: tAttr, operator: tOp, value: tVal };
     }
 
     const targetIeee = document.getElementById('auto-target')?.value;
@@ -562,11 +655,10 @@ window.saveAutomationRule = async function() {
     const endpointId = endpointRaw ? parseInt(endpointRaw) : null;
 
     if (!targetIeee || !command) {
-        alert('Please select a target device and command.');
+        alert('Please select a target device and command in Step 3.');
         return;
     }
 
-    // Coerce command value
     let cmdVal = commandValue;
     if (cmdVal !== null && cmdVal !== '') {
         if (!isNaN(cmdVal)) cmdVal = parseFloat(cmdVal);
@@ -581,6 +673,7 @@ window.saveAutomationRule = async function() {
             body: JSON.stringify({
                 source_ieee: currentSourceIeee,
                 conditions,
+                target_condition: targetCondition, // New field
                 target_ieee: targetIeee,
                 command,
                 command_value: cmdVal,
