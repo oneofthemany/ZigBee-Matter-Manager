@@ -766,7 +766,7 @@ export async function cleanupOrphans() {
         method: 'POST'
     }).then(r => r.json());
 
-    alert(`Cleanup complete:\n✓ Removed: ${result.count_removed}\n✗ Failed: ${result.count_failed}`);
+    alert(`Cleanup complete:\n✓ Removed: ${result.count_removed}\n♻ Recovered: ${result.count_recovered}\n✗ Failed: ${result.count_failed}`);
 
     // Refresh device list
     await fetchAllDevices();
