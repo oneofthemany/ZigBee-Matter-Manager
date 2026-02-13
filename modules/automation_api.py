@@ -1,5 +1,5 @@
 """
-Automation API - FastAPI routes for threshold-based automation rules.
+Automation API - FastAPI routes for state-machine automation rules.
 """
 
 import logging
@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# PYDANTIC MODELS
+# MODELS
 # ============================================================================
 
 class ConditionItem(BaseModel):
     attribute: str
     operator: str
     value: Any
-    sustain: Optional[int] = Field(None, description="Optional: seconds condition must hold")
+    sustain: Optional[int] = None
 
 
 class PrerequisiteItem(BaseModel):
@@ -29,20 +29,33 @@ class PrerequisiteItem(BaseModel):
     value: Any
 
 
+class StepItem(BaseModel):
+    type: str  # "command", "delay", "wait_for", "condition"
+    # command
+    target_ieee: Optional[str] = None
+    command: Optional[str] = None
+    value: Optional[Any] = None
+    endpoint_id: Optional[int] = None
+    # delay
+    seconds: Optional[int] = None
+    # wait_for / condition
+    ieee: Optional[str] = None
+    attribute: Optional[str] = None
+    operator: Optional[str] = None
+    # wait_for value uses 'value' field
+    timeout: Optional[int] = None
+
+
 class AutomationCreateRequest(BaseModel):
-    name: Optional[str] = Field("", description="Human-friendly rule name")
+    name: Optional[str] = ""
     source_ieee: str
     conditions: Optional[List[ConditionItem]] = None
-    # Single condition shorthand
     attribute: Optional[str] = None
     operator: Optional[str] = None
     value: Optional[Any] = None
     prerequisites: Optional[List[PrerequisiteItem]] = Field(default_factory=list)
-    target_ieee: str
-    command: str
-    command_value: Optional[Any] = None
-    endpoint_id: Optional[int] = None
-    delay: Optional[int] = Field(None, description="Optional delay in seconds before executing")
+    then_sequence: List[StepItem] = Field(default_factory=list)
+    else_sequence: List[StepItem] = Field(default_factory=list)
     cooldown: int = 5
     enabled: bool = True
 
@@ -51,173 +64,180 @@ class AutomationUpdateRequest(BaseModel):
     name: Optional[str] = None
     conditions: Optional[List[ConditionItem]] = None
     prerequisites: Optional[List[PrerequisiteItem]] = None
-    target_ieee: Optional[str] = None
-    command: Optional[str] = None
-    command_value: Optional[Any] = None
-    endpoint_id: Optional[int] = None
-    delay: Optional[int] = None
+    then_sequence: Optional[List[StepItem]] = None
+    else_sequence: Optional[List[StepItem]] = None
     cooldown: Optional[int] = None
     enabled: Optional[bool] = None
 
 
 # ============================================================================
-# ROUTE REGISTRATION
+# HELPERS
 # ============================================================================
 
-def register_automation_routes(
-        app: FastAPI,
-        automation_getter: Union[Any, Callable[[], Any]],
-):
+def _conditions_to_dicts(items):
+    if not items:
+        return []
+    result = []
+    for c in items:
+        d = {"attribute": c.attribute, "operator": c.operator, "value": c.value}
+        if c.sustain is not None and c.sustain > 0:
+            d["sustain"] = c.sustain
+        result.append(d)
+    return result
+
+
+def _prereqs_to_dicts(items):
+    if not items:
+        return []
+    return [{"ieee": p.ieee, "attribute": p.attribute,
+             "operator": p.operator, "value": p.value} for p in items]
+
+
+def _steps_to_dicts(items):
+    if not items:
+        return []
+    result = []
+    for s in items:
+        d = {"type": s.type}
+        if s.type == "command":
+            d.update({"target_ieee": s.target_ieee, "command": s.command})
+            if s.value is not None:
+                d["value"] = s.value
+            if s.endpoint_id is not None:
+                d["endpoint_id"] = s.endpoint_id
+        elif s.type == "delay":
+            d["seconds"] = s.seconds or 0
+        elif s.type in ("wait_for", "condition"):
+            d.update({"ieee": s.ieee, "attribute": s.attribute,
+                      "operator": s.operator, "value": s.value})
+            if s.type == "wait_for" and s.timeout:
+                d["timeout"] = s.timeout
+        result.append(d)
+    return result
+
+
+# ============================================================================
+# REGISTRATION
+# ============================================================================
+
+def register_automation_routes(app: FastAPI,
+                               automation_getter: Union[Any, Callable[[], Any]]):
     def get_engine():
-        if callable(automation_getter):
-            return automation_getter()
-        return automation_getter
-
-    def _conditions_to_dicts(conditions):
-        if not conditions:
-            return []
-        result = []
-        for c in conditions:
-            d = {"attribute": c.attribute, "operator": c.operator, "value": c.value}
-            if c.sustain is not None and c.sustain > 0:
-                d["sustain"] = c.sustain
-            result.append(d)
-        return result
-
-    def _prereqs_to_dicts(prereqs):
-        if not prereqs:
-            return []
-        return [{"ieee": p.ieee, "attribute": p.attribute,
-                 "operator": p.operator, "value": p.value}
-                for p in prereqs]
-
-    # -----------------------------------------------------------------
+        return automation_getter() if callable(automation_getter) else automation_getter
 
     @app.get("/api/automations", tags=["automations"])
     async def list_automations(source_ieee: Optional[str] = None):
-        engine = get_engine()
-        if not engine:
-            return []
-        return engine.get_rules(source_ieee=source_ieee)
+        e = get_engine()
+        return e.get_rules(source_ieee=source_ieee) if e else []
 
     @app.get("/api/automations/stats", tags=["automations"])
-    async def get_automation_stats():
-        engine = get_engine()
-        if not engine:
-            return {"total_rules": 0}
-        return engine.get_stats()
+    async def get_stats():
+        e = get_engine()
+        return e.get_stats() if e else {"total_rules": 0}
 
     @app.get("/api/automations/trace", tags=["automations"])
-    async def get_automation_trace(rule_id: Optional[str] = None):
-        engine = get_engine()
-        if not engine:
+    async def get_trace(rule_id: Optional[str] = None):
+        e = get_engine()
+        if not e:
             return []
-        entries = engine.get_trace_log()
+        entries = e.get_trace_log()
         if rule_id:
-            entries = [e for e in entries if e.get("rule_id") == rule_id]
+            entries = [x for x in entries if x.get("rule_id") == rule_id]
         return entries
 
     @app.get("/api/automations/rule/{rule_id}", tags=["automations"])
-    async def get_automation_rule(rule_id: str):
-        engine = get_engine()
-        if not engine:
-            raise HTTPException(status_code=503, detail="Engine not initialised")
-        rule = engine.get_rule(rule_id)
-        if not rule:
-            raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
-        return rule
+    async def get_rule(rule_id: str):
+        e = get_engine()
+        if not e:
+            raise HTTPException(503, "Engine not initialised")
+        r = e.get_rule(rule_id)
+        if not r:
+            raise HTTPException(404, f"Rule not found: {rule_id}")
+        return r
 
     @app.post("/api/automations", tags=["automations"])
-    async def create_automation(request: AutomationCreateRequest):
-        engine = get_engine()
-        if not engine:
-            raise HTTPException(status_code=503, detail="Engine not initialised")
+    async def create(request: AutomationCreateRequest):
+        e = get_engine()
+        if not e:
+            raise HTTPException(503, "Engine not initialised")
         data = request.model_dump()
         if data.get("conditions"):
             data["conditions"] = _conditions_to_dicts(request.conditions)
         if data.get("prerequisites"):
             data["prerequisites"] = _prereqs_to_dicts(request.prerequisites)
-        result = engine.add_rule(data)
+        data["then_sequence"] = _steps_to_dicts(request.then_sequence)
+        data["else_sequence"] = _steps_to_dicts(request.else_sequence)
+        result = e.add_rule(data)
         if not result.get("success"):
-            raise HTTPException(status_code=400, detail=result.get("error", "Unknown"))
+            raise HTTPException(400, result.get("error", "Unknown"))
         return result
 
     @app.put("/api/automations/{rule_id}", tags=["automations"])
-    async def update_automation(rule_id: str, request: AutomationUpdateRequest):
-        engine = get_engine()
-        if not engine:
-            raise HTTPException(status_code=503, detail="Engine not initialised")
+    async def update(rule_id: str, request: AutomationUpdateRequest):
+        e = get_engine()
+        if not e:
+            raise HTTPException(503, "Engine not initialised")
         updates = {k: v for k, v in request.model_dump().items() if v is not None}
         if not updates:
-            raise HTTPException(status_code=400, detail="No fields to update")
+            raise HTTPException(400, "No fields to update")
         if "conditions" in updates and request.conditions:
             updates["conditions"] = _conditions_to_dicts(request.conditions)
         if "prerequisites" in updates and request.prerequisites:
             updates["prerequisites"] = _prereqs_to_dicts(request.prerequisites)
-        result = engine.update_rule(rule_id, updates)
+        if "then_sequence" in updates and request.then_sequence:
+            updates["then_sequence"] = _steps_to_dicts(request.then_sequence)
+        if "else_sequence" in updates and request.else_sequence:
+            updates["else_sequence"] = _steps_to_dicts(request.else_sequence)
+        result = e.update_rule(rule_id, updates)
         if not result.get("success"):
             code = 404 if "not found" in result.get("error", "").lower() else 400
-            raise HTTPException(status_code=code, detail=result.get("error"))
+            raise HTTPException(code, result.get("error"))
         return result
 
     @app.patch("/api/automations/{rule_id}/toggle", tags=["automations"])
-    async def toggle_automation(rule_id: str):
-        engine = get_engine()
-        if not engine:
-            raise HTTPException(status_code=503, detail="Engine not initialised")
-        rule = engine.get_rule(rule_id)
-        if not rule:
-            raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
-        return engine.update_rule(rule_id, {"enabled": not rule.get("enabled", True)})
+    async def toggle(rule_id: str):
+        e = get_engine()
+        if not e:
+            raise HTTPException(503, "Engine not initialised")
+        r = e.get_rule(rule_id)
+        if not r:
+            raise HTTPException(404, f"Rule not found: {rule_id}")
+        return e.update_rule(rule_id, {"enabled": not r.get("enabled", True)})
 
     @app.delete("/api/automations/{rule_id}", tags=["automations"])
-    async def delete_automation(rule_id: str):
-        engine = get_engine()
-        if not engine:
-            raise HTTPException(status_code=503, detail="Engine not initialised")
-        result = engine.delete_rule(rule_id)
+    async def delete(rule_id: str):
+        e = get_engine()
+        if not e:
+            raise HTTPException(503, "Engine not initialised")
+        result = e.delete_rule(rule_id)
         if not result.get("success"):
-            code = 404 if "not found" in result.get("error", "").lower() else 400
-            raise HTTPException(status_code=code, detail=result.get("error"))
+            raise HTTPException(404, result.get("error"))
         return result
 
-    # -----------------------------------------------------------------
-    # HELPER ENDPOINTS
-    # -----------------------------------------------------------------
-
+    # Helpers
     @app.get("/api/automations/device/{ieee}/attributes", tags=["automations"])
-    async def get_device_attributes(ieee: str):
-        engine = get_engine()
-        if not engine:
-            return []
-        return engine.get_source_attributes(ieee)
+    async def attrs(ieee: str):
+        e = get_engine()
+        return e.get_source_attributes(ieee) if e else []
 
     @app.get("/api/automations/device/{ieee}/state", tags=["automations"])
-    async def get_device_state(ieee: str):
-        engine = get_engine()
-        if not engine:
-            return {}
-        return engine.get_device_state(ieee)
+    async def dev_state(ieee: str):
+        e = get_engine()
+        return e.get_device_state(ieee) if e else {}
 
     @app.get("/api/automations/device/{ieee}/actions", tags=["automations"])
-    async def get_device_actions(ieee: str):
-        engine = get_engine()
-        if not engine:
-            return []
-        return engine.get_target_actions(ieee)
+    async def actions(ieee: str):
+        e = get_engine()
+        return e.get_target_actions(ieee) if e else []
 
     @app.get("/api/automations/actuators", tags=["automations"])
-    async def get_actuator_devices():
-        engine = get_engine()
-        if not engine:
-            return []
-        return engine.get_actuator_devices()
+    async def actuators():
+        e = get_engine()
+        return e.get_actuator_devices() if e else []
 
     @app.get("/api/automations/devices", tags=["automations"])
-    async def get_all_devices():
-        engine = get_engine()
-        if not engine:
-            return []
-        return engine.get_all_devices_summary()
+    async def all_devices():
+        e = get_engine()
+        return e.get_all_devices_summary() if e else []
 
     logger.info("Automation API routes registered")
