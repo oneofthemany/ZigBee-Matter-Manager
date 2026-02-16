@@ -483,8 +483,10 @@ window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)retur
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
             else{w.innerHTML=_vI('cv',id,vo,typ==='boolean'?String(cur).toLowerCase():'');}}};}
     const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_vI('cv',id,vo,typ==='boolean'?String(cur).toLowerCase():'');};
-window._aAddCond=()=>{if(condRows.length>=5)return;condRows.push(condIdC++);_refConds();};
-window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);_refConds();};
+window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));};
+window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);const row=document.getElementById(`c-${id}`);if(row)row.remove();
+    if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.className='badge bg-primary small';b.textContent='IF';}
+        const rm=first.querySelector('.btn-outline-danger');if(rm)rm.closest('.col-auto').innerHTML='<div style="width:31px"></div>';}};};
 
 // Prerequisites
 window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector(`#p-${id} .pa`);if(!aS||!ieee)return;
@@ -494,8 +496,8 @@ window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector
         aS.onchange=()=>window._aPa(id,aS);
     }catch(e){}};
 window._aPa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset?.vo||'[]');const w=document.getElementById(`pv-${id}`);if(w)w.innerHTML=_vI('pv',id,vo,o.dataset?.type==='boolean'?String(o.dataset.current).toLowerCase():'');};
-window._aAddPrereq=()=>{if(prereqRows.length>=8)return;prereqRows.push(prereqIdC++);_refPrereqs();};
-window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);_refPrereqs();};
+window._aAddPrereq=()=>{if(prereqRows.length>=8)return;const nid=prereqIdC++;prereqRows.push(nid);const el=document.getElementById('pb');if(el)el.insertAdjacentHTML('beforeend',_renderPrereq(nid));};
+window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);const row=document.getElementById(`p-${id}`);if(row)row.remove();};
 
 // Steps
 window._aAddStep = (path, type) => {
@@ -524,7 +526,7 @@ window._aAddStep = (path, type) => {
     _renderStepTree('else');
 };
 
-window._aRmStep=(sid,path)=>{_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');};
+window._aRmStep=(sid,path)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');};
 window._aSTC=(sid,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;_popCmds(sid,JSON.parse(o.dataset.cmds||'[]'));};
 window._aSDC=(sid,sel)=>{if(sel.value)_loadAttrs(sid,sel.value);};
 window._aICDev=(icId,sel)=>{if(sel.value)_loadICAttrs(icId,sel.value);};
@@ -544,7 +546,7 @@ window._aAddIC = sid => {
     _renderStepTree('else');
 };
 
-window._aRmIC=(sid,icId)=>{const s=_findStepById(sid);if(!s||!s.inline_conditions)return;s.inline_conditions=s.inline_conditions.filter(c=>c._id!==icId);_renderStepTree('then');_renderStepTree('else');};
+window._aRmIC=(sid,icId)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);const s=_findStepById(sid);if(!s||!s.inline_conditions)return;s.inline_conditions=s.inline_conditions.filter(c=>c._id!==icId);_renderStepTree('then');_renderStepTree('else');};
 
 window._aAddBranch = sid => {
     const s = _findStepById(sid);
@@ -729,72 +731,7 @@ async function _loadTr() {
     }catch(err){el.innerHTML=`<div class="text-danger">${err.message}</div>`;}
 }
 
-// ============================================================================
-// TOGGLE / DELETE / REFRESH
-// ============================================================================
 
-window._autoToggle = async id=>{ try{const r=await fetch(`/api/automations/${id}/toggle`,{method:'PATCH'});if(r.ok)await _refresh();}catch(e){alert(e.message);} };
-window._autoDelete = async id=>{ if(!confirm('Delete?'))return;try{const r=await fetch(`/api/automations/${id}`,{method:'DELETE'});if(r.ok)await _refresh();}catch(e){alert(e.message);} };
-async function _refresh() { if(!currentSourceIeee)return;try{const r=await fetch(`/api/automations?source_ieee=${encodeURIComponent(currentSourceIeee)}`);renderRulesList(await r.json());}catch(e){} }
-
-// ============================================================================
-// COERCE + TRACE
-// ============================================================================
-
-function _coerce(v) {
-    if(typeof v!=='string')return v;
-    const t=v.trim(),l=t.toLowerCase();
-    if(l==='true')return true;if(l==='false')return false;
-    if(!isNaN(t)&&t!=='')return parseFloat(t);
-    return t;
-}
-function _coerceTyped(v,type) {
-    if(!type) return _coerce(v);
-    if(type==='boolean') return _coerce(v);
-    if(type==='float') { const n=parseFloat(v); return isNaN(n)?v:n; }
-    if(type==='integer') { const n=parseInt(v,10); return isNaN(n)?_coerce(v):n; }
-    return String(v).trim();
-}
-
-async function _loadTrace() {
-    const el=document.getElementById('automation-trace-content');if(!el)return;
-    const fv=document.getElementById('trace-filter')?.value||'';
-    const url=fv?`/api/automations/trace?rule_id=${encodeURIComponent(fv)}`:'/api/automations/trace';
-    try{
-        const entries=await(await fetch(url)).json();
-        if(!entries?.length){el.innerHTML='<div class="text-muted p-2">No trace entries.</div>';return;}
-        let h='';
-        [...entries].reverse().forEach(e=>{
-            const ts=new Date(e.timestamp*1000).toLocaleTimeString(),r=e.result||'';
-            let cl='text-muted';
-            if(r==='SUCCESS'||r.includes('FIRING')||r==='COMPLETE'||r==='WAIT_MET')cl='text-success';
-            else if(r.includes('FAIL')||r.includes('ERROR')||r==='EXCEPTION'||r.includes('MISSING'))cl='text-danger';
-            else if(r==='BLOCKED'||r==='SUSTAIN_WAIT'||r==='DELAY'||r==='WAITING')cl='text-warning';
-            else if(r==='CANCELLED'||r==='WAIT_TIMEOUT')cl='text-info';
-
-            h+=`<div class="border-bottom py-1 ${cl}"><span class="text-muted">${ts}</span> <span class="badge bg-dark">${e.phase||''}</span> <span class="badge bg-secondary">${r}</span> `;
-            if(e.rule_id&&e.rule_id!=='-')h+=`<code>${e.rule_id}</code> `;
-            h+=e.message||'';
-            if(e.conditions?.length){
-                h+='<div class="ms-3 mt-1">';
-                e.conditions.forEach(c=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
-                    h+=`<div class="${cc}">#${c.index} ${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → actual: ${c.actual_raw||'?'} (${c.actual_type||'?'}) [${c.result}]`;
-                    if(c.sustain_elapsed!=null)h+=` ⏱${c.sustain_elapsed}s`;if(c.value_source)h+=` src:${c.value_source}`;if(c.reason)h+=` — ${c.reason}`;h+='</div>';});
-                h+='</div>';}
-            if(e.prerequisites?.length){
-                h+='<div class="ms-3 mt-1">';
-                e.prerequisites.forEach(p=>{const pc=p.result==='PASS'?'text-success':'text-danger';
-                    h+=`<div class="${pc}">CHECK ${p.device_name||p.ieee} ${p.attribute} ${p.operator||''} ${p.threshold_raw||'?'}`;
-                    if(p.threshold_normalised)h+=` [norm:${p.threshold_normalised}]`;
-                    h+=` → actual: ${p.actual_raw||'?'}`;if(p.actual_normalised)h+=` [norm:${p.actual_normalised}]`;
-                    h+=` [${p.result}]`;if(p.reason)h+=` — ${p.reason}`;h+='</div>';});
-                h+='</div>';}
-            if(e.error)h+=`<div class="ms-3 text-danger">${e.error}</div>`;
-            h+='</div>';
-        });
-        el.innerHTML=h;
-    }catch(err){el.innerHTML=`<div class="text-danger">${err.message}</div>`;}
-}
 
 
 // ============================================================================
@@ -803,19 +740,17 @@ async function _loadTrace() {
 window._aDownloadJson = async (id) => {
     try {
         const res = await fetch(`/api/automations/rule/${id}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-
-        // Create a blob and trigger download
         const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json' });
-        const url = window.URL.createObjectURL(blob);
+        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `automation_${id}.json`;
+        a.download = `automation_${data.name ? data.name.replace(/[^a-z0-9_-]/gi,'_') : id}.json`;
         document.body.appendChild(a);
         a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
     } catch (e) {
-        alert("Failed to download: " + e.message);
+        alert('Failed to download: ' + e.message);
     }
 };
