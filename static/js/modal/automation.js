@@ -104,6 +104,7 @@ function _renderRules(rules) {
                     <button class="btn btn-sm btn-outline-primary" onclick="window._aEdit('${rule.id}')"><i class="fas fa-edit"></i></button>
                     <button class="btn btn-sm ${en?'btn-outline-success':'btn-outline-secondary'}" onclick="window._aToggle('${rule.id}')"><i class="fas fa-${en?'toggle-on':'toggle-off'}"></i></button>
                     <button class="btn btn-sm btn-outline-danger" onclick="window._aDel('${rule.id}')"><i class="fas fa-trash"></i></button>
+                    <button class="btn btn-sm btn-outline-info" onclick="window._aDownloadJson('${rule.id}')" title="Download JSON"><i class="fas fa-download"></i></button>
                 </div>
             </div>
         </div></div>`;
@@ -200,13 +201,17 @@ function _addBtns(path) {
 // VALUE INPUT
 // ============================================================================
 
-function _vI(cls, id, opts, cur) {
+// Add 'idAttr' parameter to handle both data-sid and data-icid
+function _vI(cls, id, opts, cur, idAttr = 'data-id') {
     if(opts?.length) {
-        let h=`<select class="form-select form-select-sm ${cls}" data-id="${id}">`;
-        opts.forEach(v=>{h+=`<option value="${v}" ${cur!==undefined&&String(cur).toLowerCase()===String(v).toLowerCase()?'selected':''}>${v}</option>`;});
+        // pass the specific class (s-vl or ic-vl) and the ID attribute
+        let h=`<select class="form-select form-select-sm ${cls}" ${idAttr}="${id}">`;
+        opts.forEach(v=>{
+            h+=`<option value="${v}" ${cur!==undefined&&String(cur).toLowerCase()===String(v).toLowerCase()?'selected':''}>${v}</option>`;
+        });
         return h+'</select>';
     }
-    return `<input type="text" class="form-control form-control-sm ${cls}" data-id="${id}" placeholder="Value" value="${cur!==undefined?cur:''}">`;
+    return `<input type="text" class="form-control form-control-sm ${cls}" ${idAttr}="${id}" placeholder="Value" value="${cur!==undefined?cur:''}">`;
 }
 
 // ============================================================================
@@ -292,10 +297,11 @@ function _renderStep(step, path, idx, total) {
     } else if(step.type==='if_then_else') {
         const logic = step.condition_logic||'and';
         const ics = step.inline_conditions||[];
-        let icH = ics.map((ic,j)=>_renderInlineCond(ic,j,sid)).join('');
+        let icH = ics.map((ic,j)=>_renderInlineCond(ic,j,sid,ics.length)).join('');
+        const showLogic = ics.length > 1;
         body=`<div class="mb-2"><div class="d-flex gap-2 align-items-center mb-1">
             <span class="small fw-bold">IF</span>
-            <select class="form-select form-select-sm s-logic" data-sid="${sid}" style="width:70px"><option value="and" ${logic==='and'?'selected':''}>AND</option><option value="or" ${logic==='or'?'selected':''}>OR</option></select>
+            <select class="form-select form-select-sm s-logic" data-sid="${sid}" style="width:70px${showLogic?'':';display:none'}"><option value="and" ${logic==='and'?'selected':''}>AND</option><option value="or" ${logic==='or'?'selected':''}>OR</option></select>
             <button class="btn btn-sm btn-outline-primary py-0" onclick="window._aAddIC(${sid})"><i class="fas fa-plus"></i></button></div>
             <div id="ic-${sid}">${icH}</div></div>
         <div class="border-start border-success border-3 ps-2 mb-2"><div class="small fw-bold text-success mb-1">THEN</div><div id="ite-then-${sid}">${(step.then_steps||[]).map((s,i)=>_renderStep(s,`ite-then-${sid}`,i,(step.then_steps||[]).length)).join('')}</div>
@@ -317,16 +323,17 @@ function _renderStep(step, path, idx, total) {
         </div>${body}</div>`;
 }
 
-function _renderInlineCond(ic, idx, parentSid) {
+function _renderInlineCond(ic, idx, parentSid, total) {
     const devs=cachedAllDevices.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
     const icId = ic._id;
+    const rmBtn = total > 1 ? `<button class="btn btn-sm btn-outline-danger py-0" onclick="window._aRmIC(${parentSid},${icId})"><i class="fas fa-times"></i></button>` : '';
     return `<div class="row g-1 mb-1 align-items-center" id="ic-row-${icId}">
         <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input ic-neg" type="checkbox" data-icid="${icId}" ${ic.negate?'checked':''}><label class="small text-danger">NOT</label></div></div>
         <div class="col"><select class="form-select form-select-sm ic-ieee" data-icid="${icId}" onchange="window._aICDev(${icId},this)"><option value="">Device...</option>${devs}</select></div>
         <div class="col"><select class="form-select form-select-sm ic-attr" data-icid="${icId}"><option value="">Attr...</option></select></div>
         <div class="col-auto"><select class="form-select form-select-sm ic-op" data-icid="${icId}" style="width:65px">${Object.entries(OP).map(([k,v])=>`<option value="${k}" ${ic.operator===k?'selected':''}>${v}</option>`).join('')}</select></div>
         <div class="col" id="icv-${icId}"><input type="text" class="form-control form-control-sm ic-vl" data-icid="${icId}" placeholder="Value" value="${ic.value!=null?ic.value:''}"></div>
-        <div class="col-auto"><button class="btn btn-sm btn-outline-danger py-0" onclick="window._aRmIC(${parentSid},${icId})"><i class="fas fa-times"></i></button></div>
+        <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
 
@@ -364,8 +371,24 @@ async function _loadAttrs(sid,ieee,selAttr,selVal) {
     try{const d=await(await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/state`)).json();
         aS.innerHTML='<option value="">Attr...</option>';
         (d.attributes||[]).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.textContent=`${a.attribute} (${a.current_value})`;if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
-        aS.onchange=()=>{const o=aS.options[aS.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset.vo||'[]');const w=document.getElementById(`sv-${sid}`);if(w)w.innerHTML=_vI('s-vl',sid,vo,'');};
-        if(selAttr){const o=aS.options[aS.selectedIndex];if(o){const vo=JSON.parse(o.dataset.vo||'[]');const w=document.getElementById(`sv-${sid}`);if(w)w.innerHTML=_vI('s-vl',sid,vo,selVal!=null?selVal:'');}}
+
+        aS.onchange=()=>{
+            const o=aS.options[aS.selectedIndex];
+            if(!o)return;
+            const vo=JSON.parse(o.dataset.vo||'[]');
+            const w=document.getElementById(`sv-${sid}`);
+            // PASS 'data-sid' as the ID attribute name
+            if(w)w.innerHTML=_vI('s-vl', sid, vo, '', 'data-sid');
+        };
+        if(selAttr){
+            const o=aS.options[aS.selectedIndex];
+            if(o){
+                const vo=JSON.parse(o.dataset.vo||'[]');
+                const w=document.getElementById(`sv-${sid}`);
+                // PASS 'data-sid' as the ID attribute name
+                if(w)w.innerHTML=_vI('s-vl', sid, vo, selVal!=null?selVal:'', 'data-sid');
+            }
+        }
     }catch(e){}
 }
 
@@ -374,8 +397,24 @@ async function _loadICAttrs(icId,ieee,selAttr,selVal) {
     try{const d=await(await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/state`)).json();
         aS.innerHTML='<option value="">Attr...</option>';
         (d.attributes||[]).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.textContent=`${a.attribute} (${a.current_value})`;if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
-        aS.onchange=()=>{const o=aS.options[aS.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset.vo||'[]');const w=document.getElementById(`icv-${icId}`);if(w)w.innerHTML=_vI('ic-vl',icId,vo,'');};
-        if(selAttr){const o=aS.options[aS.selectedIndex];if(o){const vo=JSON.parse(o.dataset.vo||'[]');const w=document.getElementById(`icv-${icId}`);if(w)w.innerHTML=_vI('ic-vl',icId,vo,selVal!=null?selVal:'');}}
+
+        aS.onchange=()=>{
+            const o=aS.options[aS.selectedIndex];
+            if(!o)return;
+            const vo=JSON.parse(o.dataset.vo||'[]');
+            const w=document.getElementById(`icv-${icId}`);
+            // PASS 'data-icid' as the ID attribute name
+            if(w)w.innerHTML=_vI('ic-vl', icId, vo, '', 'data-icid');
+        };
+        if(selAttr){
+            const o=aS.options[aS.selectedIndex];
+            if(o){
+                const vo=JSON.parse(o.dataset.vo||'[]');
+                const w=document.getElementById(`icv-${icId}`);
+                // PASS 'data-icid' as the ID attribute name
+                if(w)w.innerHTML=_vI('ic-vl', icId, vo, selVal!=null?selVal:'', 'data-icid');
+            }
+        }
     }catch(e){}
 }
 
@@ -459,23 +498,66 @@ window._aAddPrereq=()=>{if(prereqRows.length>=8)return;prereqRows.push(prereqIdC
 window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);_refPrereqs();};
 
 // Steps
-window._aAddStep=(path,type)=>{const list=_findStepList(path);if(!list||list.length>=15)return;
-    const s={_id:_uid(),type};
-    if(type==='delay')s.seconds=5;if(type==='wait_for')s.timeout=300;
-    if(type==='if_then_else'){s.inline_conditions=[{_id:_uid(),ieee:'',attribute:'',operator:'eq',value:''}];s.condition_logic='and';s.then_steps=[];s.else_steps=[];}
-    if(type==='parallel')s.branches=[[],[]];
-    list.push(s); _renderStepTree(path.startsWith('then')||path.includes('then')?'then':'else');
-    // For nested, re-render both trees
-    _renderStepTree('then');_renderStepTree('else');
+window._aAddStep = (path, type) => {
+    const list = _findStepList(path);
+    if (!list || list.length >= 15) return;
+
+    // FIX: Sync current UI values to the tree before adding a new step
+    _syncTreeFromDOM(thenTree);
+    _syncTreeFromDOM(elseTree);
+
+    const s = { _id: _uid(), type };
+    if (type === 'delay') s.seconds = 5;
+    if (type === 'wait_for') s.timeout = 300;
+    if (type === 'if_then_else') {
+        s.inline_conditions = [{ _id: _uid(), ieee: '', attribute: '', operator: 'eq', value: '' }];
+        s.condition_logic = 'and';
+        s.then_steps = [];
+        s.else_steps = [];
+    }
+    if (type === 'parallel') s.branches = [[], []];
+
+    list.push(s);
+
+    // Re-render sequences
+    _renderStepTree('then');
+    _renderStepTree('else');
 };
+
 window._aRmStep=(sid,path)=>{_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');};
 window._aSTC=(sid,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;_popCmds(sid,JSON.parse(o.dataset.cmds||'[]'));};
 window._aSDC=(sid,sel)=>{if(sel.value)_loadAttrs(sid,sel.value);};
 window._aICDev=(icId,sel)=>{if(sel.value)_loadICAttrs(icId,sel.value);};
-window._aAddIC=sid=>{const s=_findStepById(sid);if(!s)return;if(!s.inline_conditions)s.inline_conditions=[];
-    s.inline_conditions.push({_id:_uid(),ieee:'',attribute:'',operator:'eq',value:''});_renderStepTree('then');_renderStepTree('else');};
+
+window._aAddIC = sid => {
+    const s = _findStepById(sid);
+    if (!s) return;
+
+    // FIX: Sync current UI values
+    _syncTreeFromDOM(thenTree);
+    _syncTreeFromDOM(elseTree);
+
+    if (!s.inline_conditions) s.inline_conditions = [];
+    s.inline_conditions.push({ _id: _uid(), ieee: '', attribute: '', operator: 'eq', value: '' });
+
+    _renderStepTree('then');
+    _renderStepTree('else');
+};
+
 window._aRmIC=(sid,icId)=>{const s=_findStepById(sid);if(!s||!s.inline_conditions)return;s.inline_conditions=s.inline_conditions.filter(c=>c._id!==icId);_renderStepTree('then');_renderStepTree('else');};
-window._aAddBranch=sid=>{const s=_findStepById(sid);if(!s||!s.branches)return;s.branches.push([]);_renderStepTree('then');_renderStepTree('else');};
+
+window._aAddBranch = sid => {
+    const s = _findStepById(sid);
+    if (!s || !s.branches) return;
+
+    // FIX: Sync current UI values
+    _syncTreeFromDOM(thenTree);
+    _syncTreeFromDOM(elseTree);
+
+    s.branches.push([]);
+    _renderStepTree('then');
+    _renderStepTree('else');
+};
 
 // Form
 window._aShowForm=()=>_showForm(null);
@@ -558,19 +640,31 @@ function _syncTreeFromDOM(steps) {
             s.ieee=document.querySelector(`.s-ieee[data-sid="${sid}"]`)?.value||'';
             s.attribute=document.querySelector(`.s-attr[data-sid="${sid}"]`)?.value||'';
             s.operator=document.querySelector(`.s-op[data-sid="${sid}"]`)?.value||'eq';
-            const v=document.querySelector(`.s-vl[data-sid="${sid}"]`)?.value;
-            s.value=_co(v||'');
+
+            // Check if it's a select dropdown or a text input
+            const valEl = document.querySelector(`.s-vl[data-sid="${sid}"]`);
+            const rawVal = valEl?.value;
+            s.value = _co(rawVal !== undefined ? rawVal : '');
+
             s.negate=document.querySelector(`.s-neg[data-sid="${sid}"]`)?.checked||false;
             if(s.type==='wait_for')s.timeout=parseInt(document.querySelector(`.s-tout[data-sid="${sid}"]`)?.value)||300;
         } else if(s.type==='if_then_else') {
             s.condition_logic=document.querySelector(`.s-logic[data-sid="${sid}"]`)?.value||'and';
             (s.inline_conditions||[]).forEach(ic=>{
-                ic.ieee=document.querySelector(`.ic-ieee[data-icid="${ic._id}"]`)?.value||'';
-                ic.attribute=document.querySelector(`.ic-attr[data-icid="${ic._id}"]`)?.value||'';
-                ic.operator=document.querySelector(`.ic-op[data-icid="${ic._id}"]`)?.value||'eq';
-                const v=document.querySelector(`.ic-vl[data-icid="${ic._id}"]`)?.value;
-                ic.value=(ic.operator==='in'||ic.operator==='nin') ? String(v||'').split(',').map(x=>_co(x.trim())) : _co(v||'');
-                ic.negate=document.querySelector(`.ic-neg[data-icid="${ic._id}"]`)?.checked||false;
+                const icid = ic._id;
+                ic.ieee=document.querySelector(`.ic-ieee[data-icid="${icid}"]`)?.value||'';
+                ic.attribute=document.querySelector(`.ic-attr[data-icid="${icid}"]`)?.value||'';
+                ic.operator=document.querySelector(`.ic-op[data-icid="${icid}"]`)?.value||'eq';
+
+                // Support dropdown values for inline conditions
+                const icValEl = document.querySelector(`.ic-vl[data-icid="${icid}"]`);
+                const icRawVal = icValEl?.value;
+
+                ic.value=(ic.operator==='in'||ic.operator==='nin')
+                    ? String(icRawVal||'').split(',').map(x=>_co(x.trim()))
+                    : _co(icRawVal||'');
+
+                ic.negate=document.querySelector(`.ic-neg[data-icid="${icid}"]`)?.checked||false;
             });
             _syncTreeFromDOM(s.then_steps||[]);
             _syncTreeFromDOM(s.else_steps||[]);
@@ -701,3 +795,27 @@ async function _loadTrace() {
         el.innerHTML=h;
     }catch(err){el.innerHTML=`<div class="text-danger">${err.message}</div>`;}
 }
+
+
+// ============================================================================
+// DOWNLOAD AUTOMATION FLOW
+// ============================================================================
+window._aDownloadJson = async (id) => {
+    try {
+        const res = await fetch(`/api/automations/rule/${id}`);
+        const data = await res.json();
+
+        // Create a blob and trigger download
+        const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `automation_${id}.json`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (e) {
+        alert("Failed to download: " + e.message);
+    }
+};
