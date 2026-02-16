@@ -2412,6 +2412,16 @@ class ZigbeeService:
         """Called by ZigManDevice when state changes."""
         ieee = zha_device.ieee
 
+
+        # >>> Instant Universal Automation Trigger <<<
+        # Fire automation immediately before any debouncing/sleeping occurs
+        if hasattr(self, 'automation') and changed_data:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.automation.evaluate(ieee, changed_data))
+            except Exception as e:
+                logger.error(f"[{ieee}] Instant automation trigger failed: {e}")
+
         # Cancel any pending debounced update for this device
         if ieee in self._update_debounce_tasks:
             self._update_debounce_tasks[ieee].cancel()
@@ -2506,8 +2516,8 @@ class ZigbeeService:
         self._emit_sync("device_updated", {"ieee": ieee, "data": safe_mqtt_payload})
 
         # Evaluate automation rules (direct zigbee, bypasses MQTT)
-        if hasattr(self, 'automation'):
-            await self.automation.evaluate(ieee, changed_data)
+        #if hasattr(self, 'automation'):
+        #    await self.automation.evaluate(ieee, changed_data)
 
         # PUBLISH TO MQTT (only changed attributes)
         if self.mqtt:
