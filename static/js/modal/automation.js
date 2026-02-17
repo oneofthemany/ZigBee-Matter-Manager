@@ -21,6 +21,21 @@ const OPT = {'eq':'equals','neq':'not equal','gt':'>','lt':'<','gte':'≥','lte'
 const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns'};
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel'};
 
+// ── Group optgroup builder ──
+function _devOpts(list, selectedIeee, extraAttrs='') {
+    const devs = list.filter(d => !d._is_group);
+    const grps = list.filter(d => d._is_group);
+    let h = devs.map(d =>
+        `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${d.friendly_name}</option>`
+    ).join('');
+    if (grps.length) {
+        h += `<optgroup label="── Groups ──">` + grps.map(d =>
+            `<option value="${d.ieee}" ${extraAttrs ? extraAttrs.replace('$IEEE', d.ieee).replace('$SEL', d.ieee===selectedIeee?'selected':'') : (d.ieee===selectedIeee?'selected':'')}>${d.friendly_name}</option>`
+        ).join('') + '</optgroup>';
+    }
+    return h;
+}
+
 function _uid() { return stepIdC++; }
 
 // ============================================================================
@@ -238,7 +253,11 @@ function _setC(id,c){
 }
 
 function _renderPrereq(id) {
-    const devs=cachedAllDevices.filter(d=>d.ieee!==currentSourceIeee).map(d=>`<option value="${d.ieee}">${d.friendly_name}</option>`).join('');
+    const _filtP=cachedAllDevices.filter(d=>d.ieee!==currentSourceIeee);
+    const _devP=_filtP.filter(d=>!d._is_group);
+    const _grpP=_filtP.filter(d=>d._is_group);
+    let devs=_devP.map(d=>`<option value="${d.ieee}">${d.friendly_name}</option>`).join('');
+    if(_grpP.length){devs+=`<optgroup label="── Groups ──">`+_grpP.map(d=>`<option value="${d.ieee}">${d.friendly_name}</option>`).join('')+'</optgroup>';}
     return `<div class="row g-1 mb-1 align-items-center" id="p-${id}">
         <div class="col-auto"><span class="badge bg-info text-dark small">CHECK</span></div>
         <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input pn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
@@ -278,7 +297,10 @@ function _renderStep(step, path, idx, total) {
     let body = '';
 
     if(step.type==='command') {
-        const acts=cachedActuators.map(d=>`<option value="${d.ieee}" data-cmds='${JSON.stringify(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+            const _devActs=cachedActuators.filter(d=>!d._is_group);
+            const _grpActs=cachedActuators.filter(d=>d._is_group);
+            let acts=_devActs.map(d=>`<option value="${d.ieee}" data-cmds='${JSON.stringify(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+            if(_grpActs.length){acts+=`<optgroup label="── Groups ──">`+_grpActs.map(d=>`<option value="${d.ieee}" data-cmds='${JSON.stringify(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
         body=`<div class="row g-1"><div class="col-md-5"><select class="form-select form-select-sm s-tgt" data-sid="${sid}" onchange="window._aSTC(${sid},this)"><option value="">Target...</option>${acts}</select></div>
             <div class="col-md-4"><select class="form-select form-select-sm s-cmd" data-sid="${sid}"><option value="">Cmd...</option></select></div>
             <div class="col-md-3"><input type="text" class="form-control form-control-sm s-val" data-sid="${sid}" placeholder="Value" value="${step.value!=null?step.value:''}"></div></div>
@@ -286,7 +308,10 @@ function _renderStep(step, path, idx, total) {
     } else if(step.type==='delay') {
         body=`<div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-sec" data-sid="${sid}" value="${step.seconds||5}" min="1" style="width:80px"><span class="small">seconds</span></div>`;
     } else if(step.type==='wait_for'||step.type==='condition') {
-        const devs=cachedAllDevices.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+            const _devW=cachedAllDevices.filter(d=>!d._is_group);
+            const _grpW=cachedAllDevices.filter(d=>d._is_group);
+            let devs=_devW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+            if(_grpW.length){devs+=`<optgroup label="── Groups ──">`+_grpW.map(d=>`<option value="${d.ieee}" ${step.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
         const neg = step.type==='condition'||step.type==='wait_for'?`<div class="form-check form-check-inline mb-0"><input class="form-check-input s-neg" type="checkbox" data-sid="${sid}" ${step.negate?'checked':''}><label class="small text-danger">NOT</label></div>`:'';
         const tout = step.type==='wait_for'?`<input type="number" class="form-control form-control-sm s-tout" data-sid="${sid}" value="${step.timeout||300}" min="1" style="width:65px" title="Timeout(s)">`:'';
         body=`<div class="row g-1 align-items-center"><div class="col-auto">${neg}</div><div class="col"><select class="form-select form-select-sm s-ieee" data-sid="${sid}" onchange="window._aSDC(${sid},this)"><option value="">Device...</option>${devs}</select></div>
@@ -324,7 +349,10 @@ function _renderStep(step, path, idx, total) {
 }
 
 function _renderInlineCond(ic, idx, parentSid, total) {
-    const devs=cachedAllDevices.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+    const _devIC=cachedAllDevices.filter(d=>!d._is_group);
+    const _grpIC=cachedAllDevices.filter(d=>d._is_group);
+    let devs=_devIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+    if(_grpIC.length){devs+=`<optgroup label="── Groups ──">`+_grpIC.map(d=>`<option value="${d.ieee}" ${ic.ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
     const icId = ic._id;
     const rmBtn = total > 1 ? `<button class="btn btn-sm btn-outline-danger py-0" onclick="window._aRmIC(${parentSid},${icId})"><i class="fas fa-times"></i></button>` : '';
     return `<div class="row g-1 mb-1 align-items-center" id="ic-row-${icId}">

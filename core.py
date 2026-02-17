@@ -290,7 +290,8 @@ class ZigbeeService:
         self.automation = AutomationEngine(
             device_registry_getter=lambda: self.devices,
             friendly_names_getter=lambda: self.friendly_names,
-            event_emitter=self.callback
+            event_emitter=self.callback,
+            group_manager_getter=lambda: getattr(self, 'group_manager', None)
         )
 
         os.makedirs("logs", exist_ok=True)
