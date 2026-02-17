@@ -50,13 +50,13 @@ Conditions evaluate attributes on the source device. Multiple conditions are com
 
 **Supported Operators:**
 
-| Symbol | Meaning |
-|---|---|
-| `=` | equals |
-| `≠` | not equal |
-| `>` `<` `>=` `<=` | numeric comparisons |
-| `∈` | in list (comma-separated) |
-| `∉` | not in list |
+| Symbol            | Meaning                   |
+|-------------------|---------------------------|
+| `=`               | equals                    |
+| `≠`               | not equal                 |
+| `>` `<` `>=` `<=` | numeric comparisons       |
+| `∈`               | in list (comma-separated) |
+| `∉`               | not in list               |
 
 **Sustain** — optional hold timer (seconds). The condition must remain true for the specified duration before triggering.
 
@@ -136,22 +136,22 @@ Each saved rule displays as a card showing conditions, prerequisites, sequence s
 
 **State Badges:**
 
-| Badge | Meaning |
-|---|---|
-| `matched` (green) | Conditions currently true |
-| `unmatched` (grey) | Conditions currently false |
-| `init` (dark) | Not yet evaluated |
-| `⏳` (yellow) | Sequence currently running |
+| Badge               | Meaning                     |
+|---------------------|-----------------------------|
+| `matched` (green)   | Conditions currently true   |
+| `unmatched` (grey)  | Conditions currently false  |
+| `init` (dark)       | Not yet evaluated           |
+| `⏳` (yellow)        | Sequence currently running  |
 
 **Action Buttons:**
 
-| Button | Action |
-|---|---|
-| 🔍 | Open trace log filtered to this rule |
-| ✏️ | Edit the rule |
-| ⏻ | Enable / disable |
-| 🗑️ | Delete the rule |
-| ⬇️ | Download rule as JSON |
+| Button | Action                               |
+|--------|--------------------------------------|
+| 🔍     | Open trace log filtered to this rule |
+| ✏️     | Edit the rule                        |
+| ⏻      | Enable / disable                     |
+| 🗑️    | Delete the rule                      |
+| ⬇️     | Download rule as JSON                |
 
 ---
 
@@ -171,12 +171,12 @@ The trace log shows real-time evaluation history for debugging automation behavi
 
 **Result Colours:**
 
-| Colour | Results |
-|---|---|
-| Green | SUCCESS, FIRING, COMPLETE, WAIT_MET, GATE_PASS, IF_TRUE, PARALLEL_DONE |
-| Red | FAIL, ERROR, EXCEPTION, MISSING, CMD_FAIL |
-| Yellow | BLOCKED, SUSTAIN_WAIT, DELAY, WAITING |
-| Blue | CANCELLED, WAIT_TIMEOUT, IF_FALSE |
+| Colour  | Results                                                                  |
+|---------|--------------------------------------------------------------------------|
+| Green   | SUCCESS, FIRING, COMPLETE, WAIT_MET, GATE_PASS, IF_TRUE, PARALLEL_DONE   |
+| Red     | FAIL, ERROR, EXCEPTION, MISSING, CMD_FAIL                                |
+| Yellow  | BLOCKED, SUSTAIN_WAIT, DELAY, WAITING                                    |
+| Blue    | CANCELLED, WAIT_TIMEOUT, IF_FALSE                                        |
 
 Filter by a specific rule using the dropdown, or select **System** to see engine-level events.
 
