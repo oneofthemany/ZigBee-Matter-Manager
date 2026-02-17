@@ -23,7 +23,7 @@ Rules track **matched/unmatched** state and only fire on transitions — not on 
 | init (first eval) | matched   | Run **THEN**            |
 | init (first eval) | unmatched | Nothing                 |
 
-![State machine diagram showing transitions between init, matched, and unmatched states](images/state-machine-diagram.png)
+![State machine diagram showing transitions between init, matched, and unmatched states](./images/state-machine-diagram.png)
 
 ### Rule Structure
 
@@ -40,13 +40,13 @@ Every automation rule consists of four parts:
 
 Click **Add Rule** on the Automation tab to open the rule builder.
 
-![Add Rule form showing empty condition, prerequisite, and sequence builders](images/add-rule-form.png)
+![Add Rule form showing empty condition, prerequisite, and sequence builders](./images/add-rule-form.png)
 
 ### Step 1: Trigger Conditions
 
 Conditions evaluate attributes on the source device. Multiple conditions are combined with AND logic. Each condition specifies an attribute, operator, and threshold value.
 
-![Condition builder with IF/AND badges, attribute dropdown, operator, and value fields](images/condition-builder.png)
+![Condition builder with IF/AND badges, attribute dropdown, operator, and value fields](./images/condition-builder.png)
 
 **Supported Operators:**
 
@@ -64,7 +64,7 @@ Conditions evaluate attributes on the source device. Multiple conditions are com
 
 Prerequisites check the current state of **other devices** before the rule fires. These support a **NOT** flag to negate the check.
 
-![Prerequisite builder with CHECK badge, NOT checkbox, device picker, and attribute fields](images/prerequisite-builder.png)
+![Prerequisite builder with CHECK badge, NOT checkbox, device picker, and attribute fields](./images/prerequisite-builder.png)
 
 Example: Only fire if the hallway light is currently OFF.
 
@@ -72,13 +72,13 @@ Example: Only fire if the hallway light is currently OFF.
 
 Action steps that execute when conditions transition from unmatched → matched.
 
-![THEN sequence builder with Command, Delay, Wait, Gate, If/Then/Else, and Parallel buttons](images/then-sequence-builder.png)
+![THEN sequence builder with Command, Delay, Wait, Gate, If/Then/Else, and Parallel buttons](./images/then-sequence-builder.png)
 
 ### Step 4: ELSE Sequence
 
 Action steps that execute when conditions transition from matched → unmatched.
 
-![ELSE sequence builder with a delay step followed by a command step](images/else-sequence-builder.png)
+![ELSE sequence builder with a delay step followed by a command step](./images/else-sequence-builder.png)
 
 ---
 
@@ -88,33 +88,33 @@ Action steps that execute when conditions transition from matched → unmatched.
 
 Sends a ZigBee command to a target device. Select the target, command, and optional value. Endpoint is auto-detected.
 
-![Command step showing target device dropdown, command dropdown, and value input](images/step-command.png)
+![Command step showing target device dropdown, command dropdown, and value input](./images/step-command.png)
 
 ### Delay
 
 Pauses the sequence for a specified number of seconds.
 
-![Delay step with seconds input field](images/step-delay.png)
+![Delay step with seconds input field](./images/step-delay.png)
 
 ### Wait For
 
 Pauses until a device attribute matches a condition, with a configurable timeout. If the timeout expires, the sequence stops.
 
-![Wait For step with device picker, attribute, operator, value, and timeout fields](images/step-wait-for.png)
+![Wait For step with device picker, attribute, operator, value, and timeout fields](./images/step-wait-for.png)
 
 ### Gate
 
 An inline condition check that stops the sequence if the condition is false. Supports NOT for negation.
 
-![Gate step with NOT checkbox, device picker, attribute, operator, and value](images/step-gate.png)
+![Gate step with NOT checkbox, device picker, attribute, operator, and value](./images/step-gate.png)
 
 ### If / Then / Else (Branching)
 
 Evaluates one or more inline conditions and branches into nested THEN or ELSE paths. When a single condition is used, the AND/OR selector is hidden for a clean simple IF. Adding a second condition reveals the AND/OR logic toggle.
 
-![If/Then/Else step with single inline condition, nested THEN and ELSE sequences](images/step-if-then-else-single.png)
+![If/Then/Else step with single inline condition, nested THEN and ELSE sequences](./images/step-if-then-else-single.png)
 
-![If/Then/Else step with multiple inline conditions and AND/OR toggle visible](images/step-if-then-else-multi.png)
+![If/Then/Else step with multiple inline conditions and AND/OR toggle visible](./images/step-if-then-else-multi.png)
 
 Each inline condition supports NOT negation, device selection, attribute, operator, and value — identical to prerequisites but evaluated inline during sequence execution.
 
@@ -122,7 +122,7 @@ Each inline condition supports NOT negation, device selection, attribute, operat
 
 Executes two or more branches concurrently. All branches run simultaneously and the step completes when all branches finish.
 
-![Parallel step with Branch 1 and Branch 2 containers, each with their own step builders](images/step-parallel.png)
+![Parallel step with Branch 1 and Branch 2 containers, each with their own step builders](./images/step-parallel.png)
 
 Additional branches can be added with the **+ Branch** button.
 
@@ -132,7 +132,7 @@ Additional branches can be added with the **+ Branch** button.
 
 Each saved rule displays as a card showing conditions, prerequisites, sequence summaries, and state.
 
-![Rule card showing IF/AND conditions, CHECK prerequisites, THEN/ELSE summaries, and action buttons](images/rule-card.png)
+![Rule card showing IF/AND conditions, CHECK prerequisites, THEN/ELSE summaries, and action buttons](./images/rule-card.png)
 
 **State Badges:**
 
@@ -159,7 +159,7 @@ Each saved rule displays as a card showing conditions, prerequisites, sequence s
 
 Each rule can be downloaded as a JSON file via the download button on the rule card. The exported file contains the complete rule definition including conditions, prerequisites, and both sequences — useful for backup, sharing, or importing into another instance.
 
-![Download button on rule card and example JSON file](images/json-download.png)
+![Download button on rule card and example JSON file](./images/json-download.png)
 
 ---
 
@@ -167,7 +167,7 @@ Each rule can be downloaded as a JSON file via the download button on the rule c
 
 The trace log shows real-time evaluation history for debugging automation behaviour. Open it via the **Trace** button.
 
-![Trace log panel with timestamp, phase badges, result badges, and condition evaluation details](images/trace-log.png)
+![Trace log panel with timestamp, phase badges, result badges, and condition evaluation details](./images/trace-log.png)
 
 **Result Colours:**
 
@@ -197,8 +197,6 @@ A practical example — turn on a light when a door opens in low light, turn it 
 - ⏱ Delay → 5 seconds
 - ⚡ Command → Hall Light → OFF
 
-![Complete door contact rule showing conditions, THEN command, and ELSE delay + command](images/example-door-contact.png)
-
 ---
 
 ## Example: Branching with If/Then/Else
@@ -213,8 +211,6 @@ A more advanced example using inline branching — when motion is detected, chec
     - IF Kitchen Light `brightness` < `50`
         - THEN: ⚡ Kitchen Light → brightness = 255
         - ELSE: ⚡ Kitchen Light → brightness = 128
-
-![Branching rule with nested If/Then/Else step inside the THEN sequence](images/example-branching.png)
 
 ---
 
