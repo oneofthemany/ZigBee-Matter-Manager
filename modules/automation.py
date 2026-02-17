@@ -67,10 +67,12 @@ class AutomationEngine:
 
     def __init__(self, device_registry_getter: Callable[[], Dict],
                  friendly_names_getter: Callable[[], Dict],
-                 event_emitter: Optional[Callable] = None):
+                 event_emitter: Optional[Callable] = None,
+                 group_manager_getter: Optional[Callable] = None):
         self._get_devices = device_registry_getter
         self._get_names = friendly_names_getter
         self._event_emitter = event_emitter
+        self._get_group_manager = group_manager_getter
 
         self.rules: List[Dict[str, Any]] = []
         self._source_index: Dict[str, List[str]] = {}
@@ -612,16 +614,14 @@ class AutomationEngine:
             val = p["value"]
             negate = p.get("negate", False)
 
-            dev = devices.get(ieee)
-            dname = names.get(ieee, ieee)
+            dname, state = self._resolve_state(ieee)
 
-            if not dev:
+            if state is None:
                 results.append({"index": j+1, "ieee": ieee, "device_name": dname,
                                 "attribute": attr, "result": "FAIL",
-                                "reason": "Device not found"})
+                                "reason": "Device/group not found"})
                 all_met = False; break
 
-            state = dev.state or {}
             actual = state.get(attr)
             if actual is None:
                 results.append({"index": j+1, "ieee": ieee, "device_name": dname,
@@ -671,16 +671,14 @@ class AutomationEngine:
             negate = ic.get("negate", False)
             duration = ic.get("duration", 0) or 0  # "for" N seconds — check sustained
 
-            dev = devices.get(ieee)
-            dname = names.get(ieee, ieee)
+            dname, state = self._resolve_state(ieee)
 
-            if not dev:
+            if state is None:
                 results.append({"device_name": dname, "attribute": attr,
-                                "result": "FAIL", "reason": "Device not found"})
+                                "result": "FAIL", "reason": "Device/group not found"})
                 all_pass = False
                 continue
 
-            state = dev.state or {}
             actual = state.get(attr)
             if actual is None:
                 results.append({"device_name": dname, "attribute": attr,
@@ -785,8 +783,13 @@ class AutomationEngine:
         endpoint_id = step.get("endpoint_id")
         devices = self._get_devices()
         names = self._get_names()
-        tname = names.get(target_ieee, target_ieee)
 
+        # ── GROUP TARGET ROUTING ──
+        if target_ieee.startswith("group:"):
+            await self._step_group_command(rule_id, step, tag)
+            return
+
+        tname = names.get(target_ieee, target_ieee)
         target = devices.get(target_ieee)
         if not target or not hasattr(target, 'send_command'):
             self._stats["execution_failures"] += 1
@@ -826,24 +829,83 @@ class AutomationEngine:
                         f"{tag} 💥 {tname} {command}: {e}", level="ERROR",
                         traceback=traceback.format_exc())
 
+
+    async def _step_group_command(self, rule_id, step, tag):
+        """Execute a command step targeting a group."""
+        target_id_str = step["target_ieee"]
+        command = step["command"]
+        value = step.get("value")
+
+        try:
+            group_id = int(target_id_str.split(":", 1)[1])
+        except (ValueError, IndexError):
+            self._trace(rule_id, "step", "TARGET_ERROR",
+                        f"{tag} Invalid group target: {target_id_str}", level="ERROR")
+            return
+
+        gm = self._get_group_manager() if self._get_group_manager else None
+        if not gm or group_id not in gm.groups:
+            self._stats["execution_failures"] += 1
+            self._trace(rule_id, "step", "TARGET_ERROR",
+                        f"{tag} Group {group_id} not found", level="ERROR")
+            return
+
+        group_name = gm.groups[group_id]["name"]
+
+        # Build command dict for control_group()
+        cmd = {}
+        if command in ("on", "off", "toggle"):
+            cmd["state"] = command.upper()
+        elif command == "brightness":
+            cmd["brightness"] = int(value) if value is not None else 254
+        elif command == "color_temp":
+            cmd["color_temp"] = int(value) if value is not None else 370
+        elif command in ("open", "close", "stop"):
+            cmd["cover_state"] = command.upper()
+        elif command == "position":
+            cmd["position"] = int(value) if value is not None else 50
+        elif command in ("lock", "unlock"):
+            cmd["state"] = command.upper()
+        else:
+            cmd[command] = value
+
+        self._trace(rule_id, "step", "SENDING",
+                    f"{tag} → Group '{group_name}' {command}={value}")
+        try:
+            result = await gm.control_group(group_id, cmd)
+            success = result.get("success", False)
+            self._stats["executions"] += 1
+            if success:
+                self._stats["execution_successes"] += 1
+                self._trace(rule_id, "step", "SUCCESS",
+                            f"{tag} ✅ Group '{group_name}' {command}={value}")
+            else:
+                self._stats["execution_failures"] += 1
+                self._trace(rule_id, "step", "CMD_FAIL",
+                            f"{tag} ❌ Group '{group_name}' {command} failed: "
+                            f"{result.get('error', '')}", level="ERROR")
+        except Exception as e:
+            self._stats["execution_failures"] += 1
+            self._stats["errors"] += 1
+            self._trace(rule_id, "step", "EXCEPTION",
+                        f"{tag} 💥 Group '{group_name}' failed: {e}", level="ERROR")
+
+
     async def _step_wait_for(self, rule_id, step, tag) -> bool:
         ieee = step["ieee"]
         attr = step["attribute"]
         op = step["operator"]
         threshold = step["value"]
         timeout = step.get("timeout", 300) or 300
-        names = self._get_names()
-        dname = names.get(ieee, ieee)
 
+        dname, _ = self._resolve_state(ieee)
         self._trace(rule_id, "step", "WAITING",
                     f"{tag} ⏳ {dname} {attr} {op} {threshold} (timeout {timeout}s)")
 
         start = time.time()
         while time.time() - start < timeout:
-            devices = self._get_devices()
-            dev = devices.get(ieee)
-            if dev:
-                state = dev.state or {}
+            _, state = self._resolve_state(ieee)
+            if state:
                 val = state.get(attr)
                 if val is not None:
                     try:
@@ -866,14 +928,11 @@ class AutomationEngine:
         op = step["operator"]
         threshold = step["value"]
         negate = step.get("negate", False)
-        devices = self._get_devices()
-        names = self._get_names()
-        dname = names.get(ieee, ieee)
 
-        dev = devices.get(ieee)
-        if not dev:
+        dname, state = self._resolve_state(ieee)
+        if not state:
             return False
-        val = (dev.state or {}).get(attr)
+        val = state.get(attr)
         if val is None:
             return False
         try:
@@ -987,8 +1046,113 @@ class AutomationEngine:
         return value
 
     # =========================================================================
-    # HELPERS (frontend)
+    # GROUP STATE HELPERS
     # =========================================================================
+
+    def _get_group_state(self, group_id: int) -> dict:
+        """Aggregate state from group members.
+        ON/OFF: any ON → ON. Numerics: average. Others: first value."""
+        gm = self._get_group_manager() if self._get_group_manager else None
+        if not gm or group_id not in gm.groups:
+            return {}
+        devices = self._get_devices()
+        members = [devices.get(ieee) for ieee in gm.groups[group_id].get("members", [])
+                   if devices.get(ieee)]
+        if not members:
+            return {}
+
+        all_states = [m.state or {} for m in members]
+        all_keys = set()
+        for s in all_states:
+            all_keys.update(s.keys())
+
+        skip = {"last_seen", "available", "manufacturer", "model",
+                "power_source", "lqi", "linkquality"}
+        merged = {}
+        for key in all_keys:
+            if key in skip or key.endswith("_raw") or key.startswith("attr_"):
+                continue
+            values = [s[key] for s in all_states if key in s and s[key] is not None]
+            if not values:
+                continue
+            first = values[0]
+            if isinstance(first, str) and first.upper() in ("ON", "OFF"):
+                merged[key] = "ON" if any(
+                    v.upper() == "ON" for v in values if isinstance(v, str)
+                ) else "OFF"
+            elif isinstance(first, bool):
+                merged[key] = any(values)
+            elif isinstance(first, (int, float)):
+                merged[key] = round(sum(values) / len(values), 1)
+            else:
+                merged[key] = first
+        return merged
+
+    def _resolve_state(self, ieee_or_group: str):
+        """Resolve (friendly_name, state_dict) for device OR group:<id>.
+        Returns (name, None) if not found."""
+        if ieee_or_group.startswith("group:"):
+            try:
+                gid = int(ieee_or_group.split(":", 1)[1])
+            except (ValueError, IndexError):
+                return ieee_or_group, None
+            gm = self._get_group_manager() if self._get_group_manager else None
+            if not gm or gid not in gm.groups:
+                return ieee_or_group, None
+            return f"\U0001F517 {gm.groups[gid]['name']}", self._get_group_state(gid)
+
+        devices = self._get_devices()
+        names = self._get_names()
+        dev = devices.get(ieee_or_group)
+        if not dev:
+            return names.get(ieee_or_group, ieee_or_group), None
+        return names.get(ieee_or_group, ieee_or_group), dev.state or {}
+
+    @staticmethod
+    def _get_group_commands(group_type: str, capabilities: list) -> list:
+        """Generate command list for a group based on type/capabilities."""
+        cmds = []
+        if group_type in ("light", "switch"):
+            cmds.extend([
+                {"command": "on",     "label": "On",     "endpoint_id": None},
+                {"command": "off",    "label": "Off",    "endpoint_id": None},
+                {"command": "toggle", "label": "Toggle", "endpoint_id": None},
+            ])
+        if "brightness" in capabilities:
+            cmds.append({"command": "brightness", "label": "Brightness",
+                         "type": "slider", "min": 0, "max": 254, "endpoint_id": None})
+        if "color_temp" in capabilities:
+            cmds.append({"command": "color_temp", "label": "Color Temp",
+                         "type": "slider", "min": 153, "max": 500, "endpoint_id": None})
+        if group_type == "cover":
+            cmds.extend([
+                {"command": "open",  "label": "Open",  "endpoint_id": None},
+                {"command": "close", "label": "Close", "endpoint_id": None},
+                {"command": "stop",  "label": "Stop",  "endpoint_id": None},
+                {"command": "position", "label": "Position",
+                 "type": "slider", "min": 0, "max": 100, "endpoint_id": None},
+            ])
+        if group_type == "lock":
+            cmds.extend([
+                {"command": "lock",   "label": "Lock",   "endpoint_id": None},
+                {"command": "unlock", "label": "Unlock", "endpoint_id": None},
+            ])
+        return cmds
+
+    def _is_group_homogeneous(self, gm, group: dict) -> bool:
+        """True only if all members resolve to exactly one device type."""
+        members = group.get("members", [])
+        if len(members) < 2:
+            return False
+        types = set()
+        for ieee in members:
+            device = self._get_devices().get(ieee)
+            if not device:
+                continue
+            dtype = gm.get_device_type(device)
+            if dtype:
+                types.add(dtype)
+        return len(types) == 1
 
     def get_source_attributes(self, ieee: str) -> List[Dict[str, Any]]:
         devices = self._get_devices()
@@ -1011,21 +1175,49 @@ class AutomationEngine:
         return sorted(attrs, key=lambda x:x["attribute"])
 
     def get_device_state(self, ieee: str) -> Dict[str, Any]:
+        # ── GROUP TARGET ──
+        if ieee.startswith("group:"):
+            try:
+                gid = int(ieee.split(":", 1)[1])
+            except (ValueError, IndexError):
+                return {}
+            gm = self._get_group_manager() if self._get_group_manager else None
+            if not gm or gid not in gm.groups:
+                return {}
+            group = gm.groups[gid]
+            gstate = self._get_group_state(gid)
+            attrs = []
+            for k, v in gstate.items():
+                a = {"attribute": k, "current_value": v, "type": self._type(v),
+                     "operators": ["eq", "neq", "in", "nin"] if isinstance(v, str) else
+                     ["eq", "neq"] if isinstance(v, bool) else
+                     ["eq", "neq", "gt", "lt", "gte", "lte"]}
+                if isinstance(v, bool):
+                    a["value_options"] = ["true", "false"]
+                elif isinstance(v, str) and v.upper() in ("ON", "OFF"):
+                    a["value_options"] = ["ON", "OFF"]
+                attrs.append(a)
+            return {"ieee": ieee,
+                    "friendly_name": f"\U0001F517 {group['name']}",
+                    "state": gstate, "attributes": attrs}
+
+        # ── NORMAL DEVICE ──
         devices = self._get_devices()
         names = self._get_names()
         if ieee not in devices: return {}
         state = devices[ieee].state or {}
         attrs = []
-        for k,v in state.items():
+        for k, v in state.items():
             if k.endswith("_raw") or k.startswith("attr_"): continue
-            a={"attribute":k,"current_value":v,"type":self._type(v),
-               "operators":["eq","neq","in","nin"] if isinstance(v,str) else
-               ["eq","neq"] if isinstance(v,bool) else
-               ["eq","neq","gt","lt","gte","lte"]}
-            if isinstance(v,bool): a["value_options"]=["true","false"]
-            elif isinstance(v,str) and v.upper() in ("ON","OFF"): a["value_options"]=["ON","OFF"]
+            a = {"attribute": k, "current_value": v, "type": self._type(v),
+                 "operators": ["eq", "neq", "in", "nin"] if isinstance(v, str) else
+                 ["eq", "neq"] if isinstance(v, bool) else
+                 ["eq", "neq", "gt", "lt", "gte", "lte"]}
+            if isinstance(v, bool): a["value_options"] = ["true", "false"]
+            elif isinstance(v, str) and v.upper() in ("ON", "OFF"): a["value_options"] = ["ON", "OFF"]
             attrs.append(a)
-        return {"ieee":ieee,"friendly_name":names.get(ieee,ieee),"state":state,"attributes":attrs}
+        return {"ieee": ieee, "friendly_name": names.get(ieee, ieee),
+                "state": state, "attributes": attrs}
 
     def get_target_actions(self, ieee):
         d = self._get_devices().get(ieee)
@@ -1034,23 +1226,118 @@ class AutomationEngine:
     def get_actuator_devices(self):
         devices = self._get_devices(); names = self._get_names()
         out = []
-        for ieee,dev in devices.items():
-            caps = getattr(dev,"capabilities",None)
+        for ieee, dev in devices.items():
+            caps = getattr(dev, "capabilities", None)
             if not caps: continue
-            hc = getattr(caps,"has_capability",lambda x:False)
-            if not any(hc(c) for c in ["on_off","light","switch","cover","window_covering","thermostat","fan_control"]):
+            hc = getattr(caps, "has_capability", lambda x: False)
+            if not any(hc(c) for c in ["on_off", "light", "switch", "cover",
+                                       "window_covering", "thermostat", "fan_control"]):
                 continue
-            out.append({"ieee":ieee,"friendly_name":names.get(ieee,ieee),
-                        "model":getattr(dev,"model","Unknown"),
-                        "commands":dev.get_control_commands() if hasattr(dev,"get_control_commands") else []})
-        return sorted(out, key=lambda d:d.get("friendly_name",""))
+            out.append({"ieee": ieee, "friendly_name": names.get(ieee, ieee),
+                        "model": getattr(dev, "model", "Unknown"),
+                        "commands": dev.get_control_commands() if hasattr(dev, "get_control_commands") else []})
+
+        # Append eligible homogeneous groups
+        gm = self._get_group_manager() if self._get_group_manager else None
+        if gm:
+            for group_id, group in gm.groups.items():
+                if not self._is_group_homogeneous(gm, group):
+                    continue
+                gtype = group.get("type", "switch")
+                caps_list = group.get("capabilities", [])
+                out.append({
+                    "ieee": f"group:{group_id}",
+                    "friendly_name": f"\U0001F517 {group['name']}",
+                    "model": f"{gtype.capitalize()} Group ({len(group['members'])} devices)",
+                    "commands": self._get_group_commands(gtype, caps_list),
+                    "_is_group": True,
+                })
+
+        return sorted(out, key=lambda d: d.get("friendly_name", ""))
+
+
+    @staticmethod
+    def _get_group_commands(group_type: str, capabilities: list) -> list:
+        """Generate command list for a group based on type and capabilities."""
+        cmds = []
+        if group_type in ("light", "switch"):
+            cmds.extend([
+                {"command": "on",     "label": "On",     "endpoint_id": None},
+                {"command": "off",    "label": "Off",    "endpoint_id": None},
+                {"command": "toggle", "label": "Toggle", "endpoint_id": None},
+            ])
+        if "brightness" in capabilities:
+            cmds.append({"command": "brightness", "label": "Brightness",
+                         "type": "slider", "min": 0, "max": 254, "endpoint_id": None})
+        if "color_temp" in capabilities:
+            cmds.append({"command": "color_temp", "label": "Color Temp",
+                         "type": "slider", "min": 153, "max": 500, "endpoint_id": None})
+        if group_type == "cover":
+            cmds.extend([
+                {"command": "open",     "label": "Open",     "endpoint_id": None},
+                {"command": "close",    "label": "Close",    "endpoint_id": None},
+                {"command": "stop",     "label": "Stop",     "endpoint_id": None},
+                {"command": "position", "label": "Position",
+                 "type": "slider", "min": 0, "max": 100, "endpoint_id": None},
+            ])
+        if group_type == "lock":
+            cmds.extend([
+                {"command": "lock",   "label": "Lock",   "endpoint_id": None},
+                {"command": "unlock", "label": "Unlock", "endpoint_id": None},
+            ])
+        return cmds
+
+    def _is_group_homogeneous(self, gm, group: dict) -> bool:
+        """Check all members resolve to the same device type."""
+        members = group.get("members", [])
+        if len(members) < 2:
+            return False
+        types = set()
+        for ieee in members:
+            device = self._get_devices().get(ieee)
+            if not device:
+                continue
+            dtype = gm.get_device_type(device)
+            if dtype:
+                types.add(dtype)
+        return len(types) == 1
+
+    def get_group_target_actions(self, group_id: int) -> list:
+        """Get available commands for a group target."""
+        gm = self._get_group_manager() if self._get_group_manager else None
+        if not gm or group_id not in gm.groups:
+            return []
+        group = gm.groups[group_id]
+        return self._get_group_commands(group.get("type", "switch"),
+                                        group.get("capabilities", []))
+
 
     def get_all_devices_summary(self):
         devices = self._get_devices(); names = self._get_names()
-        return sorted([{"ieee":ieee,"friendly_name":names.get(ieee,ieee),
-                        "model":getattr(d,"model","Unknown"),
-                        "state_keys":[k for k in (d.state or{}).keys() if not k.endswith("_raw") and not k.startswith("attr_")]}
-                       for ieee,d in devices.items()], key=lambda x:x.get("friendly_name",""))
+        out = sorted([
+            {"ieee": ieee, "friendly_name": names.get(ieee, ieee),
+             "model": getattr(d, "model", "Unknown"),
+             "state_keys": [k for k in (d.state or {}).keys()
+                            if not k.endswith("_raw") and not k.startswith("attr_")]}
+            for ieee, d in devices.items()
+        ], key=lambda x: x.get("friendly_name", ""))
+
+        # Append homogeneous groups
+        gm = self._get_group_manager() if self._get_group_manager else None
+        if gm:
+            for group_id, group in gm.groups.items():
+                if not self._is_group_homogeneous(gm, group):
+                    continue
+                gstate = self._get_group_state(group_id)
+                out.append({
+                    "ieee": f"group:{group_id}",
+                    "friendly_name": f"\U0001F517 {group['name']}",
+                    "model": f"{group.get('type', 'switch').capitalize()} Group",
+                    "state_keys": list(gstate.keys()),
+                    "_is_group": True,
+                })
+
+        return out
 
     @staticmethod
     def _type(v):
