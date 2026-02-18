@@ -17,8 +17,16 @@ let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
 let thenTree = [], elseTree = [], stepIdC = 0;
 
 const OP = {'eq':'=','neq':'≠','gt':'>','lt':'<','gte':'>=','lte':'<=','in':'∈','nin':'∉'};
-const OPT = {'eq':'equals','neq':'not equal','gt':'>','lt':'<','gte':'≥','lte':'≤','in':'in list','nin':'not in list'};
+
+const OPT = {'eq':'equals','neq':'not equal','gt':'greater than','lt':'less than','gte':'greater or equal','lte':'less or equal','in':'in list','nin':'not in list'};
+
+function _opOpts(sel) {
+    return Object.entries(OP).map(([k,v]) =>
+        `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
+    ).join('');
+}
 const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns'};
+
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel'};
 
 // ── Group optgroup builder ──
@@ -238,7 +246,7 @@ function _renderCond(id) {
     const idx=condRows.indexOf(id);
     return `<div class="row g-1 mb-1 align-items-center" id="c-${id}"><div class="col-auto"><span class="badge ${idx===0?'bg-primary':'bg-warning text-dark'} small">${idx===0?'IF':'AND'}</span></div>
         <div class="col"><select class="form-select form-select-sm ca" data-id="${id}" onchange="window._aCa(${id},this)"><option value="">Attr...</option>${opts}</select></div>
-        <div class="col-auto"><select class="form-select form-select-sm co" data-id="${id}" style="width:85px"><option value="">Op</option></select></div>
+        <div class="col-auto"><select class="form-select form-select-sm co" data-id="${id}" style="width:120px"><option value="">Op...</option></select></div>
         <div class="col" id="cv-${id}"><input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="Value"></div>
         <div class="col-auto" style="width:65px"><input type="number" class="form-control form-control-sm cs" data-id="${id}" placeholder="⏱s" min="0"></div>
         <div class="col-auto">${idx>0?`<button class="btn btn-sm btn-outline-danger" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>`:'<div style="width:31px"></div>'}</div></div>`;
@@ -263,7 +271,7 @@ function _renderPrereq(id) {
         <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input pn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
         <div class="col"><select class="form-select form-select-sm pd" data-id="${id}" onchange="window._aPd(${id},this)"><option value="">Device...</option>${devs}</select></div>
         <div class="col"><select class="form-select form-select-sm pa" data-id="${id}" onchange="window._aPa(${id},this)"><option value="">Attr...</option></select></div>
-        <div class="col-auto"><select class="form-select form-select-sm po" data-id="${id}" style="width:70px">${Object.entries(OP).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
+        <div class="col-auto"><select class="form-select form-select-sm po" data-id="${id}" style="width:120px">${_opOpts('')}</select></div>
         <div class="col" id="pv-${id}"><input type="text" class="form-control form-control-sm pv" data-id="${id}" placeholder="Value"></div>
         <div class="col-auto"><button class="btn btn-sm btn-outline-danger" onclick="window._aRmP(${id})"><i class="fas fa-times"></i></button></div></div>`;
 }
@@ -316,7 +324,7 @@ function _renderStep(step, path, idx, total) {
         const tout = step.type==='wait_for'?`<input type="number" class="form-control form-control-sm s-tout" data-sid="${sid}" value="${step.timeout||300}" min="1" style="width:65px" title="Timeout(s)">`:'';
         body=`<div class="row g-1 align-items-center"><div class="col-auto">${neg}</div><div class="col"><select class="form-select form-select-sm s-ieee" data-sid="${sid}" onchange="window._aSDC(${sid},this)"><option value="">Device...</option>${devs}</select></div>
             <div class="col"><select class="form-select form-select-sm s-attr" data-sid="${sid}"><option value="">Attr...</option></select></div>
-            <div class="col-auto"><select class="form-select form-select-sm s-op" data-sid="${sid}" style="width:65px">${Object.entries(OP).map(([k,v])=>`<option value="${k}" ${step.operator===k?'selected':''}>${v}</option>`).join('')}</select></div>
+            <div class="col-auto"><select class="form-select form-select-sm s-op" data-sid="${sid}" style="width:120px">${_opOpts(step.operator||'')}</select></div>
             <div class="col" id="sv-${sid}"><input type="text" class="form-control form-control-sm s-vl" data-sid="${sid}" placeholder="Value" value="${step.value!=null?step.value:''}"></div>
             ${tout?`<div class="col-auto">${tout}</div>`:''}</div>`;
     } else if(step.type==='if_then_else') {
@@ -359,7 +367,7 @@ function _renderInlineCond(ic, idx, parentSid, total) {
         <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input ic-neg" type="checkbox" data-icid="${icId}" ${ic.negate?'checked':''}><label class="small text-danger">NOT</label></div></div>
         <div class="col"><select class="form-select form-select-sm ic-ieee" data-icid="${icId}" onchange="window._aICDev(${icId},this)"><option value="">Device...</option>${devs}</select></div>
         <div class="col"><select class="form-select form-select-sm ic-attr" data-icid="${icId}"><option value="">Attr...</option></select></div>
-        <div class="col-auto"><select class="form-select form-select-sm ic-op" data-icid="${icId}" style="width:65px">${Object.entries(OP).map(([k,v])=>`<option value="${k}" ${ic.operator===k?'selected':''}>${v}</option>`).join('')}</select></div>
+        <div class="col-auto"><select class="form-select form-select-sm ic-op" data-icid="${icId}" style="width:120px">${_opOpts(ic.operator||'')}</select></div>
         <div class="col" id="icv-${icId}"><input type="text" class="form-control form-control-sm ic-vl" data-icid="${icId}" placeholder="Value" value="${ic.value!=null?ic.value:''}"></div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
