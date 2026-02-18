@@ -260,29 +260,73 @@ function _setC(id,c){
         const ss=document.querySelector(`#c-${id} .cs`);if(ss&&c.sustain)ss.value=c.sustain;},20);
 }
 
-function _renderPrereq(id) {
-    const _filtP=cachedAllDevices.filter(d=>d.ieee!==currentSourceIeee);
-    const _devP=_filtP.filter(d=>!d._is_group);
-    const _grpP=_filtP.filter(d=>d._is_group);
-    let devs=_devP.map(d=>`<option value="${d.ieee}">${d.friendly_name}</option>`).join('');
-    if(_grpP.length){devs+=`<optgroup label="── Groups ──">`+_grpP.map(d=>`<option value="${d.ieee}">${d.friendly_name}</option>`).join('')+'</optgroup>';}
-    return `<div class="row g-1 mb-1 align-items-center" id="p-${id}">
-        <div class="col-auto"><span class="badge bg-info text-dark small">CHECK</span></div>
-        <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input pn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
+function _renderPrereq(id, ptype) {
+    ptype = ptype || 'device';
+    const _filtP = cachedAllDevices.filter(d => d.ieee !== currentSourceIeee);
+    const _devP  = _filtP.filter(d => !d._is_group);
+    const _grpP  = _filtP.filter(d => d._is_group);
+    let devs = _devP.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('');
+    if (_grpP.length) devs += `<optgroup label="── Groups ──">` + _grpP.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('') + '</optgroup>';
+
+    const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const dayBoxes = DAYS.map((d,i) => `<label class="me-1 small"><input type="checkbox" class="ptd" data-id="${id}" data-day="${i}" checked> ${d}</label>`).join('');
+
+    const deviceRow = `
         <div class="col"><select class="form-select form-select-sm pd" data-id="${id}" onchange="window._aPd(${id},this)"><option value="">Device...</option>${devs}</select></div>
         <div class="col"><select class="form-select form-select-sm pa" data-id="${id}" onchange="window._aPa(${id},this)"><option value="">Attr...</option></select></div>
-        <div class="col-auto"><select class="form-select form-select-sm po" data-id="${id}" style="width:120px">${_opOpts('')}</select></div>
-        <div class="col" id="pv-${id}"><input type="text" class="form-control form-control-sm pv" data-id="${id}" placeholder="Value"></div>
-        <div class="col-auto"><button class="btn btn-sm btn-outline-danger" onclick="window._aRmP(${id})"><i class="fas fa-times"></i></button></div></div>`;
+        <div class="col-auto"><select class="form-select form-select-sm po" data-id="${id}" style="width:70px">${Object.entries(OP).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
+        <div class="col" id="pv-${id}"><input type="text" class="form-control form-control-sm pv" data-id="${id}" placeholder="Value"></div>`;
+
+    const timeRow = `
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label><input type="time" class="form-control form-control-sm pt-from" data-id="${id}" style="width:110px" value="00:00"></div>
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label><input type="time" class="form-control form-control-sm pt-to" data-id="${id}" style="width:110px" value="23:59"></div>
+        <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
+
+    return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="p-${id}">
+        <div class="col-auto"><span class="badge bg-info text-dark small">CHECK</span></div>
+        <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input pn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
+        <div class="col-auto">
+            <select class="form-select form-select-sm ptype" data-id="${id}" style="width:90px" onchange="window._aPType(${id},this)">
+                <option value="device" ${ptype==='device'?'selected':''}>Device</option>
+                <option value="time_window" ${ptype==='time_window'?'selected':''}>Time/Day</option>
+            </select>
+        </div>
+        <div class="prereq-body-${id} d-contents">${ptype === 'time_window' ? timeRow : deviceRow}</div>
+        <div class="col-auto"><button class="btn btn-sm btn-outline-danger" onclick="window._aRmP(${id})"><i class="fas fa-times"></i></button></div>
+    </div>`;
 }
-function _refPrereqs(){const el=document.getElementById('pb');if(el)el.innerHTML=prereqRows.map(id=>_renderPrereq(id)).join('');}
-function _setP(id,p){
-    const d=document.querySelector(`#p-${id} .pd`);if(!d)return;d.value=p.ieee;
-    const neg=document.querySelector(`#p-${id} .pn`);if(neg)neg.checked=!!p.negate;
-    window._aPd(id,d);
-    setTimeout(()=>{const a=document.querySelector(`#p-${id} .pa`);if(a){a.value=p.attribute;window._aPa(id,a);}
-        setTimeout(()=>{const o=document.querySelector(`#p-${id} .po`);if(o)o.value=p.operator;
-            const v=document.querySelector(`#pv-${id} .pv`);if(v)v.value=String(p.value);},20);},100);
+
+function _refPrereqs() {
+    const el = document.getElementById('pb');
+    if (el) el.innerHTML = prereqRows.map(id => _renderPrereq(id)).join('');
+}
+
+function _setP(id, p) {
+    const ptype = p.type || 'device';
+    // Rebuild row with correct type first
+    const row = document.getElementById(`p-${id}`);
+    if (!row) return;
+    row.outerHTML = _renderPrereq(id, ptype);
+    const r2 = document.getElementById(`p-${id}`);
+    if (!r2) return;
+
+    const neg = r2.querySelector(`.pn`); if (neg) neg.checked = !!p.negate;
+
+    if (ptype === 'time_window') {
+        const tf = r2.querySelector('.pt-from'); if (tf) tf.value = p.time_from || '00:00';
+        const tt = r2.querySelector('.pt-to');   if (tt) tt.value = p.time_to   || '23:59';
+        const days = p.days ?? [0,1,2,3,4,5,6];
+        r2.querySelectorAll('.ptd').forEach(cb => {
+            cb.checked = days.includes(parseInt(cb.dataset.day));
+        });
+    } else {
+        const d = r2.querySelector('.pd'); if (d) { d.value = p.ieee; window._aPd(id, d); }
+        setTimeout(() => {
+            const a = r2.querySelector('.pa'); if (a) { a.value = p.attribute; }
+            const o = r2.querySelector('.po'); if (o) { o.value = p.operator; if (o.onchange) o.onchange(); }
+            const v = r2.querySelector(`#pv-${id} .pv`); if (v) v.value = Array.isArray(p.value) ? p.value.join(', ') : String(p.value);
+        }, 50);
+    }
 }
 
 // ============================================================================
@@ -535,6 +579,20 @@ window._aPa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o)return;const
 window._aAddPrereq=()=>{if(prereqRows.length>=8)return;const nid=prereqIdC++;prereqRows.push(nid);const el=document.getElementById('pb');if(el)el.insertAdjacentHTML('beforeend',_renderPrereq(nid));};
 window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);const row=document.getElementById(`p-${id}`);if(row)row.remove();};
 
+window._aPType = (id, sel) => {
+    const ptype = sel.value;
+    const row = document.getElementById(`p-${id}`);
+    if (!row) return;
+    const body = row.querySelector(`.prereq-body-${id}`);  // won't work with div.d-contents trick
+    // Rebuild the full row keeping NOT state and new type
+    const neg = row.querySelector('.pn')?.checked || false;
+    const newHtml = _renderPrereq(id, ptype);
+    row.outerHTML = newHtml;
+    const newRow = document.getElementById(`p-${id}`);
+    if (newRow) { const pn = newRow.querySelector('.pn'); if (pn) pn.checked = neg; }
+};
+
+
 // Steps
 window._aAddStep = (path, type) => {
     const list = _findStepList(path);
@@ -634,13 +692,31 @@ window._aSave=async()=>{
         const c={attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);conditions.push(c);});
     if(!valid||!conditions.length)return alert('Fill all conditions.');
 
-    const prerequisites=[];
-    prereqRows.forEach(id=>{const ieee=document.querySelector(`#p-${id} .pd`)?.value,a=document.querySelector(`#p-${id} .pa`)?.value,
-        o=document.querySelector(`#p-${id} .po`)?.value,vE=document.querySelector(`#pv-${id} .pv`),r=vE?.value;
-        const neg=document.querySelector(`#p-${id} .pn`)?.checked||false;
-        if(!ieee||!a||!o||r===undefined||r==='')return;
-        const pval = (o==='in'||o==='nin') ? String(r).split(',').map(v=>_co(v.trim())) : _co(r);
-        prerequisites.push({ieee,attribute:a,operator:o,value:pval,negate:neg});});
+    const prerequisites = [];
+    prereqRows.forEach(id => {
+        const row = document.getElementById(`p-${id}`);
+        if (!row) return;
+        const ptype = row.querySelector('.ptype')?.value || 'device';
+        const neg   = row.querySelector('.pn')?.checked || false;
+
+        if (ptype === 'time_window') {
+            const tf = row.querySelector('.pt-from')?.value;
+            const tt = row.querySelector('.pt-to')?.value;
+            if (!tf || !tt) return;
+            const days = [];
+            row.querySelectorAll('.ptd').forEach(cb => { if (cb.checked) days.push(parseInt(cb.dataset.day)); });
+            prerequisites.push({ type: 'time_window', time_from: tf, time_to: tt, days, negate: neg });
+        } else {
+            const ieee = row.querySelector('.pd')?.value;
+            const a    = row.querySelector('.pa')?.value;
+            const o    = row.querySelector('.po')?.value;
+            const vE   = row.querySelector(`#pv-${id} .pv`);
+            const r    = vE?.value;
+            if (!ieee || !a || !o || r === undefined || r === '') return;
+            const pval = (o === 'in' || o === 'nin') ? String(r).split(',').map(v => _co(v.trim())) : _co(r);
+            prerequisites.push({ type: 'device', ieee, attribute: a, operator: o, value: pval, negate: neg });
+        }
+    });
 
     // Gather step trees (reads current DOM values into the tree, then clean for API)
     _syncTreeFromDOM(thenTree);
