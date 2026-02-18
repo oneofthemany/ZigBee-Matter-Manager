@@ -220,11 +220,24 @@ class AutomationEngine:
         if len(prereqs) > MAX_PREREQUISITES_PER_RULE:
             return f"Max {MAX_PREREQUISITES_PER_RULE} prerequisites"
         for i, p in enumerate(prereqs):
-            for f in ("ieee", "attribute", "operator", "value"):
-                if f not in p:
-                    return f"Prerequisite {i+1} missing '{f}'"
-            if p["operator"] not in OPERATORS:
-                return f"Prerequisite {i+1} invalid operator"
+            ptype = p.get("type", "device")
+            if ptype == "time_window":
+                for f in ("time_from", "time_to"):
+                    if f not in p:
+                        return f"Prerequisite {i+1} (time_window) missing '{f}'"
+                import re
+                for f in ("time_from", "time_to"):
+                    if not re.match(r"^\d{2}:\d{2}$", str(p[f])):
+                        return f"Prerequisite {i+1} '{f}' must be HH:MM"
+                days = p.get("days", [])
+                if not isinstance(days, list) or not all(isinstance(d, int) and 0 <= d <= 6 for d in days):
+                    return f"Prerequisite {i+1} 'days' must be list of ints 0-6"
+            else:
+                for f in ("ieee", "attribute", "operator", "value"):
+                    if f not in p:
+                        return f"Prerequisite {i+1} missing '{f}'"
+                if p["operator"] not in OPERATORS:
+                    return f"Prerequisite {i+1} invalid operator"
         return None
 
     def _validate_sequence(self, steps: List[Dict], label: str, depth: int = 0) -> Optional[str]:
@@ -603,16 +616,58 @@ class AutomationEngine:
 
         return all_ok, results, has_sustain
 
+
     def _eval_prerequisites(self, prereqs, devices, names):
         """Evaluate prerequisites (AND). Returns (all_met, results)."""
+        import datetime
         results = []
         all_met = True
         for j, p in enumerate(prereqs):
+            ptype = p.get("type", "device")
+            negate = p.get("negate", False)
+
+            if ptype == "time_window":
+                now_dt = datetime.datetime.now()
+                now_time = now_dt.time()
+                weekday = now_dt.weekday()  # 0=Mon … 6=Sun
+
+                t_from = datetime.time(*map(int, p["time_from"].split(":")))
+                t_to   = datetime.time(*map(int, p["time_to"].split(":")))
+                days   = p.get("days", list(range(7)))  # empty = all days
+
+                # Day check
+                day_ok = (not days) or (weekday in days)
+
+                # Time window check (handles overnight wrap e.g. 22:00 → 06:00)
+                if t_from <= t_to:
+                    time_ok = t_from <= now_time <= t_to
+                else:  # overnight
+                    time_ok = now_time >= t_from or now_time <= t_to
+
+                matched = day_ok and time_ok
+                if negate:
+                    matched = not matched
+
+                results.append({
+                    "index": j + 1,
+                    "type": "time_window",
+                    "time_from": p["time_from"],
+                    "time_to": p["time_to"],
+                    "days": days,
+                    "negate": negate,
+                    "now_time": now_dt.strftime("%H:%M"),
+                    "now_weekday": weekday,
+                    "result": "PASS" if matched else "FAIL",
+                })
+                if not matched:
+                    all_met = False
+                    break
+                continue
+
             ieee = p["ieee"]
             attr = p["attribute"]
-            op = p["operator"]
-            val = p["value"]
-            negate = p.get("negate", False)
+            op   = p["operator"]
+            val  = p["value"]
 
             dname, state = self._resolve_state(ieee)
 
