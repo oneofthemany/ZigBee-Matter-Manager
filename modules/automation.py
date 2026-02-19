@@ -555,6 +555,11 @@ class AutomationEngine:
             task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
             self._running_sequences[rule_id] = task
 
+            # ── EVENT ATTRIBUTE RESET ──
+            _EVENT_ATTRS = {"action", "click", "button_action", "event", "scene", "command"}
+            if any(c.get("attribute") in _EVENT_ATTRS for c in conditions):
+                self._rule_states[rule_id] = "unmatched"
+
     # =========================================================================
     # CONDITION / PREREQUISITE EVALUATION
     # =========================================================================
