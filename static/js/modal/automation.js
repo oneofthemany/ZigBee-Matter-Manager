@@ -113,7 +113,15 @@ function _renderRules(rules) {
         });
         (rule.prerequisites||[]).forEach(p => {
             const neg = p.negate?'<span class="badge bg-danger ms-1">NOT</span>':'';
-            cH += `<div class="small"><strong class="text-info">CHECK</strong>${neg} ${p.device_name||p.ieee} <code>${p.attribute}</code> ${OP[p.operator]||p.operator} <code>${p.value}</code></div>`;
+            let pDesc;
+            if (p.type === 'time_window') {
+                const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+                const dayStr = (!p.days || p.days.length === 7) ? 'Every day' : p.days.map(d => DAY_NAMES[d]).join(', ');
+                pDesc = `<code>${p.time_from} → ${p.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+            } else {
+                pDesc = `${p.device_name||p.ieee} <code>${p.attribute}</code> ${OP[p.operator]||p.operator} <code>${p.value}</code>`;
+            }
+            cH += `<div class="small"><strong class="text-info">CHECK</strong>${neg} ${pDesc}</div>`;
         });
         const tH = _seqSummary(rule.then_sequence||[], 'THEN', 'success');
         const eH = _seqSummary(rule.else_sequence||[], 'ELSE', 'danger');
@@ -291,7 +299,7 @@ function _renderPrereq(id, ptype) {
                 <option value="time_window" ${ptype==='time_window'?'selected':''}>Time/Day</option>
             </select>
         </div>
-        <div class="prereq-body-${id} d-contents">${ptype === 'time_window' ? timeRow : deviceRow}</div>
+        <div class="prereq-body-${id}" style="display:contents">${ptype === 'time_window' ? timeRow : deviceRow}</div>
         <div class="col-auto"><button class="btn btn-sm btn-outline-danger" onclick="window._aRmP(${id})"><i class="fas fa-times"></i></button></div>
     </div>`;
 }
