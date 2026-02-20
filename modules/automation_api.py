@@ -20,11 +20,17 @@ class ConditionItem(BaseModel):
     sustain: Optional[int] = None
 
 class PrerequisiteItem(BaseModel):
-    ieee: str
-    attribute: str
-    operator: str
-    value: Any
+    type: str = "device"
+    # device fields
+    ieee: Optional[str] = None
+    attribute: Optional[str] = None
+    operator: Optional[str] = None
+    value: Optional[Any] = None
     negate: bool = False
+    # time_window fields
+    time_from: Optional[str] = None
+    time_to: Optional[str] = None
+    days: Optional[List[int]] = None
 
 class AutomationCreateRequest(BaseModel):
     name: Optional[str] = ""
@@ -60,8 +66,26 @@ def _conds_to_dicts(items):
 
 def _prereqs_to_dicts(items):
     if not items: return []
-    return [{"ieee":p.ieee,"attribute":p.attribute,"operator":p.operator,
-             "value":p.value,"negate":p.negate} for p in items]
+    result = []
+    for p in items:
+        if p.type == "time_window":
+            result.append({
+                "type": "time_window",
+                "time_from": p.time_from,
+                "time_to": p.time_to,
+                "days": p.days if p.days is not None else list(range(7)),
+                "negate": p.negate,
+            })
+        else:
+            result.append({
+                "type": "device",
+                "ieee": p.ieee,
+                "attribute": p.attribute,
+                "operator": p.operator,
+                "value": p.value,
+                "negate": p.negate,
+            })
+    return result
 
 
 def register_automation_routes(app: FastAPI,
