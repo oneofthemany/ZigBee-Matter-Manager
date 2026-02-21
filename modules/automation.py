@@ -619,25 +619,30 @@ class AutomationEngine:
 
 
     def _eval_prerequisites(self, prereqs, devices, names):
-        """Evaluate prerequisites (AND). Returns (all_met, results)."""
+        """Evaluate prerequisites. time_window entries are OR'd; device entries are AND'd."""
         import datetime
         results = []
         all_met = True
-        for j, p in enumerate(prereqs):
-            ptype = p.get("type", "device")
-            negate = p.get("negate", False)
 
-            if ptype == "time_window":
+        # ---- Partition ----
+        tw_prereqs  = [(j, p) for j, p in enumerate(prereqs) if p.get("type") == "time_window"]
+        dev_prereqs = [(j, p) for j, p in enumerate(prereqs) if p.get("type", "device") != "time_window"]
+
+        # ---- time_window: OR logic ----
+        if tw_prereqs:
+            tw_any_passed = False
+            for j, p in tw_prereqs:
+                negate = p.get("negate", False)
                 now_dt = datetime.datetime.now()
                 now_time = now_dt.time()
-                weekday = now_dt.weekday()  # 0=Mon … 6=Sun
+                weekday = now_dt.weekday()
                 t_from = datetime.time(*map(int, p["time_from"].split(":")))
                 t_to   = datetime.time(*map(int, p["time_to"].split(":")))
                 days   = p.get("days", list(range(7)))
                 day_ok = (not days) or (weekday in days)
                 if t_from <= t_to:
                     time_ok = t_from <= now_time <= t_to
-                else:  # overnight wrap e.g. 22:30 → 08:00
+                else:  # overnight wrap
                     time_ok = now_time >= t_from or now_time <= t_to
                 matched = day_ok and time_ok
                 if negate:
@@ -653,18 +658,21 @@ class AutomationEngine:
                     "now_weekday": weekday,
                     "result": "PASS" if matched else "FAIL",
                 })
-                if not matched:
-                    all_met = False; break
-                continue
+                if matched:
+                    tw_any_passed = True
 
-            # --- device prerequisite ---
+            if not tw_any_passed:
+                all_met = False
+                return all_met, results
+
+        for j, p in dev_prereqs:
+            negate = p.get("negate", False)
             ieee = p["ieee"]
             attr = p["attribute"]
-            op = p["operator"]
-            val = p["value"]
+            op   = p["operator"]
+            val  = p["value"]
 
             dname, state = self._resolve_state(ieee)
-
             if state is None:
                 results.append({"index": j+1, "ieee": ieee, "device_name": dname,
                                 "attribute": attr, "result": "FAIL",
