@@ -217,21 +217,22 @@
                             Changes are written to config.yaml and take effect after a service restart.
                         </div>
                     </div>
+                    <!-- SSL -->
+                    <div class="card mt-3 border-secondary">
+                        <div class="card-header bg-light py-2">
+                            <span class="fw-bold"><i class="fas fa-lock me-1"></i> HTTPS / SSL</span>
+                        </div>
+                        <div class="card-body d-flex align-items-center gap-3">
+                            <div class="form-check form-switch fs-5 mb-0">
+                                <input class="form-check-input" type="checkbox" id="sslToggle" onchange="toggleSSL(this.checked)">
+                                <label class="form-check-label" for="sslToggle">Enable HTTPS (self-signed cert)</label>
+                            </div>
+                            <small class="text-muted">Requires service restart to take effect</small>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- SSL -->
-                <div class="card mt-3 border-secondary">
-                    <div class="card-header bg-light py-2">
-                        <span class="fw-bold"><i class="fas fa-lock me-1"></i> HTTPS / SSL</span>
-                    </div>
-                    <div class="card-body d-flex align-items-center gap-3">
-                        <div class="form-check form-switch fs-5 mb-0">
-                            <input class="form-check-input" type="checkbox" id="sslToggle" onchange="toggleSSL(this.checked)">
-                            <label class="form-check-label" for="sslToggle">Enable HTTPS (self-signed cert)</label>
-                        </div>
-                        <small class="text-muted">Requires service restart to take effect</small>
-                    </div>
-                </div>
+
 
                 <!-- ------------------------------------------------------------------ -->
                 <!-- SECURITY TAB                                                         -->
@@ -330,6 +331,30 @@
                                     Click <strong>Scan Spectrum</strong> to visualise the 2.4GHz environment
                                 </div>
                             </div>
+
+                            <!-- Chart history -->
+                            <div class="mt-4">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <span class="fw-semibold small">Historical Interference</span>
+                                    <div class="d-flex gap-2 align-items-center">
+                                        <select class="form-select form-select-sm" id="historyHours" style="width:120px"
+                                                onchange="loadSpectrumHistory()">
+                                            <option value="6">Last 6h</option>
+                                            <option value="24" selected>Last 24h</option>
+                                            <option value="72">Last 3 days</option>
+                                            <option value="168">Last 7 days</option>
+                                        </select>
+                                        <button class="btn btn-outline-secondary btn-sm" onclick="loadSpectrumHistory()">
+                                            <i class="fas fa-sync-alt"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="spectrumHistory" class="border rounded p-2 bg-white" style="min-height:160px;">
+                                    <div class="text-center text-muted py-4 small">No history yet — background scans run hourly.</div>
+                                </div>
+                                <div class="text-muted small mt-1" id="spectrumHistoryMeta"></div>
+                            </div>
+
                         </div>
                     </div>
                 </div>
