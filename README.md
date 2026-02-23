@@ -2,10 +2,10 @@
   <img src="docs/images/logo-placeholder.png" alt="Zigbee Manager" width="120">
 </p>
 
-<h1 align="center">Zigbee Manager</h1>
+<h1 align="center">ZigBee Manager</h1>
 
 <p align="center">
-  <strong>A Python-powered Zigbee gateway with real-time web UI and Home Assistant integration</strong>
+  <strong>A Python-powered ZigBee Manager with real-time web UI and Home Assistant integration</strong>
 </p>
 
 <p align="center">
