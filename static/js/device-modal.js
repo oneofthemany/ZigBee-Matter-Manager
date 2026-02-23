@@ -9,9 +9,10 @@ import { renderControlTab, updateControlValues } from './modal/control.js';
 import { renderBindingTab } from './modal/binding.js';
 import { renderCapsTab } from './modal/clusters.js';
 import { renderAutomationTab, initAutomationTab } from './modal/automation.js';
+import { renderMappingsTab, initMappingsTab, hasGenericContent } from './modal/mappings.js';
 
 // Re-export these functions so main.js (and others) can still import them from here
-export { renderOverviewTab, renderControlTab, renderBindingTab, renderCapsTab, renderAutomationTab, saveConfig };
+export { renderOverviewTab, renderControlTab, renderBindingTab, renderCapsTab, renderAutomationTab, renderMappingsTab, saveConfig };
 
 export function openDeviceModal(d) {
     const cachedDev = (d && d.ieee && state.deviceCache[d.ieee]) ? state.deviceCache[d.ieee] : d;
@@ -38,6 +39,7 @@ export function openDeviceModal(d) {
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-binding">Binding</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-caps">Clusters</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-automation">Automation</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-mappings">Mappings</button></li>
         </ul>
 
         <div class="tab-content">
@@ -56,6 +58,9 @@ export function openDeviceModal(d) {
             <div class="tab-pane fade" id="tab-automation">
                 ${renderAutomationTab(cachedDev)}
             </div>
+            <div class="tab-pane fade" id="tab-mappings">
+                ${renderMappingsTab(cachedDev)}
+            </div>
         </div>
     `;
 
@@ -69,6 +74,13 @@ export function openDeviceModal(d) {
     }
     const modalEl = document.getElementById('capModal');
     if (modalEl) new bootstrap.Modal(modalEl).show();
+
+    const mapTab = modalBody.querySelector('[data-bs-target="#tab-mappings"]');
+    if (mapTab) {
+        mapTab.addEventListener('shown.bs.tab', () => {
+            initMappingsTab(cachedDev.ieee);
+        });
+    }
 }
 
 export function refreshModalState(device) {

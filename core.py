@@ -231,6 +231,11 @@ class ZigbeeService:
         self.devices: Dict[str, ZigManDevice] = {}
         self.friendly_names = self._load_json("./data/names.json")
         self.device_settings = self._load_json("./data/device_settings.json")
+
+        # Device override manager
+        from modules.device_overrides import get_override_manager
+        self.override_manager = get_override_manager()
+
         self.polling_config = self._load_json("./data/polling_config.json")
 
         # --- STATE CACHE ---

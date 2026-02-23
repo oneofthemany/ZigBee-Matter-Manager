@@ -31,6 +31,7 @@ from handlers.aqara import *
 from handlers.lightlink import *
 from handlers.lighting import *
 from handlers.diagnostics import *
+from handlers.generic import *
 
 
 logger = logging.getLogger("device")
@@ -38,6 +39,13 @@ logger = logging.getLogger("device")
 # How long before a device is considered unavailable
 CONSIDER_UNAVAILABLE_BATTERY = 60 * 60 * 25  # 25 hours for battery devices
 CONSIDER_UNAVAILABLE_MAINS = 60 * 60 * 25    # 25 hours for mains-powered devices
+
+SKIP_GENERIC_CLUSTERS = {
+    0x0019,  # OTA Upgrade
+    0x0021,  # Green Power Proxy
+    0x0020,  # Poll Control
+    0x000A,  # Time
+}
 
 
 class ZigManDevice:
@@ -113,33 +121,61 @@ class ZigManDevice:
             self._schedule_basic_info_query()
 
         # Perform initial cleanup of state
-        self.sanitize_state()
+        self.sanitise_state()
 
         logger.info(f"[{self.ieee}] Device wrapper created - "
                     f"Model: {self.model}, Manufacturer: {self.manufacturer}, "
                     f"Quirk: {self.quirk_name}")
 
-    def sanitize_state(self):
+    def sanitise_state(self):
         """Purges invalid fields from self.state based on current capabilities."""
+
+        # 1. Remove generic keys from infrastructure clusters (OTA, Poll Control, etc.)
+        # Remove generic keys from infrastructure clusters
+        INFRASTRUCTURE_PREFIXES = (
+            'cluster_0019_', 'cluster_0021_', 'cluster_0020_', 'cluster_000a_'
+        )
+        infra_keys = [k for k in self.state if k.startswith(INFRASTRUCTURE_PREFIXES)]
+        if infra_keys:
+            logger.info(f"[{self.ieee}] 🧹 Purging infrastructure keys: {infra_keys}")
+            for k in infra_keys:
+                del self.state[k]
+
+        # 2. Remove stale opple raw struct keys (these should be parsed into named attributes)
+        OPPLE_PARSED_ATTRS = ('opple_0x00dc', 'opple_0x00df', 'opple_0x00e5', 'opple_0x00f7')
+        opple_stale = [k for k in self.state if k in OPPLE_PARSED_ATTRS]
+        if opple_stale:
+            logger.info(f"[{self.ieee}] 🧹 Purging stale opple struct keys: {opple_stale}")
+            for k in opple_stale:
+                del self.state[k]
+
+        # 3. Remove stale xiaomi raw struct keys (these should be parsed into named attributes)
+        XIAOMI_BASIC_RAW = ('attr_0000_ff01', 'attr_0000_ff02')
+        xiaomi_stale = [k for k in self.state if k in XIAOMI_BASIC_RAW]
+        if xiaomi_stale:
+            logger.info(f"[{self.ieee}] 🧹 Purging stale Xiaomi Basic keys: {xiaomi_stale}")
+            for k in xiaomi_stale:
+                del self.state[k]
+
+        # 4. Capability-based sanitisation
         if not hasattr(self, 'capabilities'):
             return
 
         keys_to_remove = []
         for key in self.state:
-            # Check if field is allowed
             if not self.capabilities.allows_field(key):
                 keys_to_remove.append(key)
 
         if keys_to_remove:
-            logger.info(f"[{self.ieee}] 🧹 SANITIZING STATE: Removing unsupported keys: {keys_to_remove}")
+            logger.info(f"[{self.ieee}] 🧹 SANITISING STATE: Removing unsupported keys: {keys_to_remove}")
             for key in keys_to_remove:
                 del self.state[key]
 
-            # Sync back to cache immediately if we purged something
-            if hasattr(self.service, 'state_cache'):
-                self.service.state_cache[self.ieee] = self.state.copy()
-                self.service._cache_dirty = True
-                logger.info(f"[{self.ieee}] 💾 Cache dirty flagged after sanitization")
+        # Sync back to cache if anything was purged
+        if (infra_keys or keys_to_remove) and hasattr(self, 'service') and hasattr(self.service, 'state_cache'):
+            self.service.state_cache[self.ieee] = self.state.copy()
+            self.service._cache_dirty = True
+            logger.info(f"[{self.ieee}] 💾 Cache dirty flagged after sanitisation")
 
     def _schedule_basic_info_query(self):
         """Schedule a background task to query basic info."""
@@ -170,7 +206,7 @@ class ZigManDevice:
                         # Re-detect capabilities in case quirks apply now
                         self.capabilities._detect_capabilities()
                         # Sanitize state again with new capabilities
-                        self.sanitize_state()
+                        self.sanitise_state()
                         # Update state so cache gets the new info
                         self.update_state(updates)
                     break
@@ -290,19 +326,26 @@ class ZigManDevice:
                 cid = cluster.cluster_id
                 handler_cls = HANDLER_REGISTRY.get(cid)
 
-                if handler_cls:
-                    if cid in preferred_endpoints and ep_id != preferred_endpoints[cid]:
-                        logger.debug(f"[{self.ieee}] Skipping cluster 0x{cid:04x} on EP{ep_id} (preferred EP{preferred_endpoints[cid]})")
+                if not handler_cls:
+                    if cid in SKIP_GENERIC_CLUSTERS:
+                        logger.debug(f"[{self.ieee}] Skipping infrastructure cluster 0x{cid:04X} — no generic fallback")
                         return
+                    from handlers.generic import GenericClusterHandler
+                    handler_cls = GenericClusterHandler
+                    logger.info(f"[{self.ieee}] No handler for 0x{cid:04X} on EP{ep_id} — using GenericClusterHandler")
 
-                    try:
-                        handler_key = (ep_id, cid)
-                        handler = handler_cls(self, cluster)
-                        self.handlers[handler_key] = handler
-                        if cid not in self.handlers or ep_id == 1:
-                            self.handlers[cid] = handler
-                    except Exception as e:
-                        logger.error(f"[{self.ieee}] Failed to attach handler for EP{ep_id} 0x{cid:04x}: {e}")
+                if cid in preferred_endpoints and ep_id != preferred_endpoints[cid]:
+                    logger.debug(f"[{self.ieee}] Skipping cluster 0x{cid:04x} on EP{ep_id} (preferred EP{preferred_endpoints[cid]})")
+                    return
+
+                try:
+                    handler_key = (ep_id, cid)
+                    handler = handler_cls(self, cluster)
+                    self.handlers[handler_key] = handler
+                    if cid not in self.handlers or ep_id == 1:
+                        self.handlers[cid] = handler
+                except Exception as e:
+                    logger.error(f"[{self.ieee}] Failed to attach handler for EP{ep_id} 0x{cid:04x}: {e}")
 
             for cluster in ep.in_clusters.values(): attach_handler(cluster, is_server=True)
             for cluster in ep.out_clusters.values(): attach_handler(cluster, is_server=False)
@@ -312,7 +355,7 @@ class ZigManDevice:
 
         if hasattr(self, 'capabilities'):
             self.capabilities._detect_capabilities()
-            self.sanitize_state()
+            self.sanitise_state()
 
     def restore_state(self, cached_state):
         """
@@ -343,7 +386,7 @@ class ZigManDevice:
                 logger.info(f"[{self.ieee}] 💉 Injected missing Model: {self.model}")
 
             # 3. PURGE: Aggressively remove fields that don't belong
-            self.sanitize_state()
+            self.sanitise_state()
 
 
             # 4. SYNC BACK: CRITICAL STEP
