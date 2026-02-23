@@ -1,6 +1,6 @@
 /**
  * mesh.js
- * Enhanced mesh visualization with connection table and packet statistics
+ * Enhanced mesh visualisation with connection table and packet statistics
  */
 
 // Module-level state
@@ -9,15 +9,15 @@ let dashboardSimulation = null;
 let dashboardSvg = null;
 let dashboardG = null;
 let dashboardZoom = null;
-let meshInitialized = false;
+let meshInitialised = false;
 let labelsVisible = true;
 let statsInterval = null;
 
 /**
- * Initialize mesh module
+ * Initialise mesh module
  */
 export function initMesh() {
-    console.log('Mesh module initialized');
+    console.log('Mesh module initialised');
 
     const tabEl = document.querySelector('button[data-bs-target="#topology"]');
     if (tabEl) {
@@ -34,13 +34,13 @@ export function initMesh() {
 }
 
 /**
- * Load mesh topology visualization with connection table
+ * Load mesh topology visualisation with connection table
  */
 export async function loadMeshTopology() {
     const meshContainer = document.querySelector('.mesh-topology-container');
     if (!meshContainer) return;
 
-    console.log('Loading mesh topology visualization...');
+    console.log('Loading mesh topology visualisation...');
 
     meshContainer.innerHTML = `
         <div class="text-center py-4">
@@ -60,14 +60,14 @@ export async function loadMeshTopology() {
             const meshContainer = document.querySelector('.mesh-topology-container');
             meshContainer.innerHTML = buildMeshUI();
 
-            // Initialize D3 and Tables
-            initializeD3Visualization(data);
-            populateConnectionTable(data.connection_table || []);
+            // Initialise D3 and Tables
+            initialiseD3Visualisation(data);
+            populateConnectionTable(data.connection_table || [], data.nodes || []);
             populatePacketStats(data.nodes || [], data.stats_summary || {});
 
             // Setup Tab Event Listeners for Auto-Refresh
             const statsTabBtn = document.querySelector('button[data-bs-target="#meshPacketStats"]');
-            const otherTabs = document.querySelectorAll('button[data-bs-target="#meshVisualization"], button[data-bs-target="#meshConnectionTable"]');
+            const otherTabs = document.querySelectorAll('button[data-bs-target="#meshVisualisation"], button[data-bs-target="#meshConnectionTable"]');
 
             if (statsTabBtn) {
                 // When Packet Stats tab is shown, start polling every 2 seconds
@@ -132,7 +132,7 @@ function buildMeshUI() {
             <!-- Sub-tabs for different views -->
             <ul class="nav nav-tabs px-2 pt-2" role="tablist">
                 <li class="nav-item">
-                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#meshVisualization">
+                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#meshVisualisation">
                         <i class="fas fa-project-diagram"></i> Visualisation
                     </button>
                 </li>
@@ -151,7 +151,7 @@ function buildMeshUI() {
             <!-- Tab content -->
             <div class="tab-content">
                 <!-- Visualisation Tab -->
-                <div class="tab-pane fade show active" id="meshVisualization">
+                <div class="tab-pane fade show active" id="meshVisualisation">
                     <div class="mesh-visualisation-wrapper" style="height: 1000px; position: relative; border: 1px solid #dee2e6; border-radius: 0 0 4px 4px; overflow: hidden;">
                         <svg class="mesh-svg" id="dashboard-mesh-svg" style="width: 100%; height: 100%;"></svg>
                     </div>
@@ -207,11 +207,11 @@ function buildMeshUI() {
 }
 
 /**
- * Initialize D3 visualization
+ * Initialise D3 visualszation
  * Online devices participate in force simulation with real links.
  * Offline devices are grouped in a separate area with no links.
  */
-function initializeD3Visualization(data) {
+function initialiseD3Visualisation(data) {
     const svg = d3.select('#dashboard-mesh-svg');
     const container = svg.node().parentElement;
     const width = container.clientWidth;
@@ -437,20 +437,25 @@ Rate: ${stats.rx_rate || 0}/min`;
         }
     }
 
-    meshInitialized = true;
+    meshInitialised = true;
 }
 
 /**
  * Populate the connection table with a Tree View
+ * Now includes online/offline status for all devices
  */
-function populateConnectionTable(connections) {
+function populateConnectionTable(connections, nodes) {
     const tbody = document.getElementById('connectionTableBody');
     if (!tbody) return;
+
+    // Build online status lookup from nodes
+    const onlineMap = {};
+    (nodes || []).forEach(n => { onlineMap[n.id] = n.online; });
 
     if (!connections || connections.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="3" class="text-center text-muted py-4">
+                <td colspan="4" class="text-center text-muted py-4">
                     <i class="fas fa-info-circle"></i> No connection data available.
                     Try running a topology scan.
                 </td>
@@ -459,7 +464,7 @@ function populateConnectionTable(connections) {
         return;
     }
 
-    // Helpers (Internal to this scope as before)
+    // Helpers
     const getLqiClass = (lqi) => {
         if (lqi >= 200) return 'signal-excellent';
         if (lqi >= 150) return 'signal-good';
@@ -479,6 +484,14 @@ function populateConnectionTable(connections) {
         return html;
     };
 
+    const getStatusBadge = (ieee) => {
+        const online = onlineMap[ieee];
+        if (online === undefined) return '';
+        return online
+            ? '<span class="badge bg-success ms-1" style="font-size:0.6rem">Online</span>'
+            : '<span class="badge bg-danger ms-1" style="font-size:0.6rem">Offline</span>';
+    };
+
     // 1. Group connections by Source IEEE Address
     const grouped = {};
     connections.forEach(conn => {
@@ -488,30 +501,33 @@ function populateConnectionTable(connections) {
                 name: conn.source_name,
                 ieee: conn.source_ieee,
                 role: conn.source_role,
+                online: onlineMap[conn.source_ieee] !== false,
                 targets: []
             };
         }
         grouped[sourceId].targets.push(conn);
     });
 
-    // 2. Build HTML
+    // 2. Build HTML — online sources first, then offline
     let html = '';
 
-    // Sort groups alphabetically by name
-    const sortedGroups = Object.values(grouped).sort((a, b) =>
-        (a.name || '').localeCompare(b.name || '')
-    );
+    const sortedGroups = Object.values(grouped).sort((a, b) => {
+        // Online first, then alphabetical
+        if (a.online !== b.online) return a.online ? -1 : 1;
+        return (a.name || '').localeCompare(b.name || '');
+    });
 
     sortedGroups.forEach((group, index) => {
         const collapseId = `conn-collapse-${index}`;
+        const rowOpacity = group.online ? '' : 'opacity: 0.6;';
 
         // Parent Row (Source Device)
         html += `
-            <tr style="cursor: pointer;">
+            <tr style="cursor: pointer; ${rowOpacity}">
                 <td data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" class="d-flex align-items-center border-0">
                     <i class="fas fa-chevron-right me-3 transition-icon text-muted"></i>
                     <div>
-                        <span class="fw-medium">${escapeHtml(group.name)}</span>
+                        <span class="fw-medium">${escapeHtml(group.name)}</span>${getStatusBadge(group.ieee)}
                         <small class="text-muted d-block">${group.ieee.slice(-8)}</small>
                     </div>
                 </td>
@@ -535,24 +551,29 @@ function populateConnectionTable(connections) {
                                     <tr>
                                         <th>Target Device</th>
                                         <th>Role</th>
+                                        <th>Status</th>
                                         <th>Relationship</th>
                                         <th>LQI</th>
                                         <th>Signal</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${group.targets.map(t => `
-                                        <tr>
+                                    ${group.targets.map(t => {
+                                        const tOnline = onlineMap[t.target_ieee] !== false;
+                                        const tOpacity = tOnline ? '' : 'opacity: 0.6;';
+                                        return `
+                                        <tr style="${tOpacity}">
                                             <td>
                                                 <span class="fw-medium">${escapeHtml(t.target_name)}</span>
                                                 <small class="text-muted d-block">${t.target_ieee.slice(-8)}</small>
                                             </td>
                                             <td><span class="badge ${getRoleBadgeClass(t.target_role)}">${t.target_role}</span></td>
+                                            <td>${getStatusBadge(t.target_ieee)}</td>
                                             <td><span class="badge bg-secondary">${t.relationship}</span></td>
                                             <td class="${getLqiClass(t.lqi)} fw-bold">${t.lqi}</td>
                                             <td>${getSignalBars(t.lqi)}</td>
                                         </tr>
-                                    `).join('')}
+                                    `}).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -599,6 +620,8 @@ function populatePacketStats(nodes, summary) {
     // ---------------------
 
     // Summary cards
+    const onlineCount = nodes.filter(n => n.online).length;
+    const offlineCount = nodes.filter(n => !n.online).length;
     const summaryContainer = document.getElementById('packetStatsSummary');
     if (summaryContainer) {
         summaryContainer.innerHTML = `
@@ -607,6 +630,10 @@ function populatePacketStats(nodes, summary) {
                     <div class="card-body py-2">
                         <div class="small text-muted">Devices</div>
                         <div class="h5 mb-0">${summary.total_devices || nodes.length}</div>
+                        <div class="small">
+                            <span class="text-success">${onlineCount} online</span>
+                            ${offlineCount > 0 ? `<span class="text-danger ms-1">${offlineCount} offline</span>` : ''}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -657,15 +684,23 @@ function populatePacketStats(nodes, summary) {
     const tbody = document.getElementById('packetStatsBody');
     if (!tbody) return;
 
-    // Sort by Total Rate (Activity) instead of historical volume
+    // Sort: online first (by activity), then offline (by activity)
     const sortedNodes = [...nodes].sort((a, b) => {
+        // Online devices first
+        if (a.online !== b.online) return a.online ? -1 : 1;
+        // Then by current activity rate
         const aRate = (a.packet_stats?.rx_rate || 0) + (a.packet_stats?.tx_rate || 0);
         const bRate = (b.packet_stats?.rx_rate || 0) + (b.packet_stats?.tx_rate || 0);
-        return bRate - aRate; // Busiest right now at the top
+        return bRate - aRate;
     });
 
     tbody.innerHTML = sortedNodes.map(node => {
         const stats = node.packet_stats || {};
+        const isOffline = !node.online;
+        const rowStyle = isOffline ? 'opacity: 0.6;' : '';
+        const statusBadge = isOffline
+            ? '<span class="badge bg-danger ms-1" style="font-size:0.6rem">Offline</span>'
+            : '<span class="badge bg-success ms-1" style="font-size:0.6rem">Online</span>';
 
         // Calculate current activity: RX Rate + TX Rate (Packets Per Minute)
         const currentPpm = (stats.rx_rate || 0) + (stats.tx_rate || 0);
@@ -678,9 +713,9 @@ function populatePacketStats(nodes, summary) {
         const visualPercent = Math.min(loadPercent, 100);
 
         return `
-            <tr>
+            <tr style="${rowStyle}">
                 <td>
-                    <span class="fw-medium">${escapeHtml(node.friendly_name)}</span>
+                    <span class="fw-medium">${escapeHtml(node.friendly_name)}</span>${statusBadge}
                     <small class="text-muted d-block">${node.ieee_address.slice(-8)}</small>
                 </td>
                 <td class="text-end">${formatNumber(stats.rx_packets || 0)}</td>
@@ -762,7 +797,7 @@ export async function dashboardMeshRefresh() {
             attempts++;
         }
 
-        // 3. Reload the visualization with fresh data
+        // 3. Reload the visualisation with fresh data
         await loadMeshTopology();
 
     } catch (error) {
