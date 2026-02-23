@@ -953,6 +953,101 @@ async def cleanup_orphaned():
     return await zigbee_service.cleanup_orphaned_devices()
 
 # ============================================================================
+# ROUTES - DEVICE OVERRIDES
+# ============================================================================
+
+@app.get("/api/device_overrides")
+async def get_device_overrides():
+    """Get all device override definitions."""
+    from modules.device_overrides import get_override_manager
+    mgr = get_override_manager()
+    return {
+        "success": True,
+        "definitions": mgr.list_definitions(),
+        "ieee_overrides": mgr.list_ieee_overrides()
+    }
+
+
+@app.post("/api/device_overrides/definition")
+async def add_device_definition(data: dict):
+    """Add/update a model-level device definition."""
+    from modules.device_overrides import get_override_manager
+    model = data.get("model", "")
+    manufacturer = data.get("manufacturer", "")
+    definition = data.get("definition", {})
+
+    if not model:
+        return {"success": False, "error": "model is required"}
+
+    mgr = get_override_manager()
+    mgr.add_definition(model, manufacturer, definition)
+    return {"success": True}
+
+
+@app.delete("/api/device_overrides/definition")
+async def remove_device_definition(data: dict):
+    """Remove a model-level device definition."""
+    from modules.device_overrides import get_override_manager
+    mgr = get_override_manager()
+    result = mgr.remove_definition(data.get("model", ""), data.get("manufacturer", ""))
+    return {"success": result}
+
+
+@app.post("/api/device_overrides/ieee_mapping")
+async def set_ieee_mapping(data: dict):
+    """Set an attribute mapping for a specific device."""
+    from modules.device_overrides import get_override_manager
+    mgr = get_override_manager()
+    mgr.set_ieee_mapping(
+        ieee=data["ieee"],
+        raw_key=data["raw_key"],
+        friendly_name=data["friendly_name"],
+        scale=data.get("scale", 1),
+        unit=data.get("unit", ""),
+        device_class=data.get("device_class", "")
+    )
+    return {"success": True}
+
+
+@app.delete("/api/device_overrides/ieee_mapping")
+async def remove_ieee_mapping(data: dict):
+    """Remove a per-device attribute mapping."""
+    from modules.device_overrides import get_override_manager
+    mgr = get_override_manager()
+    result = mgr.remove_ieee_mapping(data["ieee"], data["raw_key"])
+    return {"success": result}
+
+
+@app.get("/api/device_overrides/{ieee}")
+async def get_device_mappings(ieee: str):
+    """Get all override mappings active for a specific device."""
+    from modules.device_overrides import get_override_manager
+    mgr = get_override_manager()
+
+    # Get device model/manufacturer
+    model = ""
+    manufacturer = ""
+    if ieee in zigbee_service.devices:
+        dev = zigbee_service.devices[ieee]
+        model = str(getattr(dev.zigpy_dev, 'model', '') or '')
+        manufacturer = str(getattr(dev.zigpy_dev, 'manufacturer', '') or '')
+
+    return {
+        "success": True,
+        "ieee": ieee,
+        "model": model,
+        "manufacturer": manufacturer,
+        "model_definition": mgr.get_definition(model, manufacturer),
+        "ieee_mappings": mgr.get_ieee_mappings(ieee),
+        # Show raw generic keys currently in state
+        "unmapped_keys": [
+            k for k in zigbee_service.devices[ieee].state.keys()
+            if k.startswith("cluster_")
+        ] if ieee in zigbee_service.devices else []
+    }
+
+
+# ============================================================================
 # ROUTES - NETWORK INFORMATION
 # ============================================================================
 
