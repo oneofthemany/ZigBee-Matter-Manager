@@ -241,7 +241,7 @@ static/js/modal/
 
 - **Use the debugger** — if you're not sure what a device is reporting, check the Debug Packets modal or `logs/zigbee_debug.log`. The GenericClusterHandler logs every attribute and command it receives.
 
-- **Scale matters** — ZCL attributes often use integer representations. Temperature is centidegrees (÷100), humidity is centipercent (÷100), voltage might be in decivolts (÷10). Check the ZCL specification or Zigbee2MQTT converter for the correct divisor.
+- **Scale matters** — ZCL attributes often use integer representations. Temperature is centidegrees (÷100), humidity is centipercent (÷100), voltage might be in decivolts (÷10). Check the ZCL specification for the correct divisor.
 
 - **Promote early** — once you've confirmed the mappings work for one device, promote to a model definition immediately. If you buy a second one, it'll just work.
 
