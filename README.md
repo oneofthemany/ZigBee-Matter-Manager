@@ -46,14 +46,14 @@ The system is designed for production-grade home automation — running 40+ devi
 
 ```bash
 # Clone the repository
-git clone https://github.com/oneofthemany/ZigBee-Manager.git
-cd ZigBee-Manager
+git clone https://github.com/oneofthemany/ZigBee-Matter-Manager.git
+cd ZigBee-Matter-Manager
 
 # Run the automated deployment (sets up venv, systemd service, user)
 sudo bash deploy.sh
 
 # Start the service
-sudo systemctl start zigbee-manager
+sudo systemctl start zigbee-matter-manager
 ```
 
 Open **http://YOUR_IP:8000** in your browser.
@@ -287,7 +287,7 @@ For the full file structure see [docs/structure.md](https://github.com/oneofthem
 Configuration is managed through the **Settings tab** in the web UI, which provides a structured form interface backed by `config.yaml`. Direct file editing is also available via the Advanced sub-tab or on disk.
 
 ```bash
-sudo vi /opt/zigbee-manager/config/config.yaml
+sudo vi /opt/zigbee_matter_manager/config/config.yaml
 ```
 
 ### First Boot — Auto-Generated Credentials
@@ -370,11 +370,11 @@ The **Spectrum Analysis** tab performs a live energy scan via the coordinator ac
 ### Service Commands
 
 ```bash
-sudo systemctl status zigbee_manager             # Check service status
-sudo systemctl kill -s SIGKILL zigbee_manager    # Kill the service
-sudo systemctl start zigbee_manager              # Start the service
-sudo journalctl -u zigbee_manager -f             # Follow system logs
-sudo tail -f /opt/zigbee_manager/logs/zigbee.log # Follow app logs
+sudo systemctl status zigbee-matter-manager             # Check service status
+sudo systemctl kill -s SIGKILL zigbee-matter-manager    # Kill the service
+sudo systemctl start zigbee-matter-manager              # Start the service
+sudo journalctl -u zigbee-matter-manager -f             # Follow system logs
+sudo tail -f /opt/zigbee_matter_manager/logs/zigbee.log        # Follow app logs
 ```
 
 ---
