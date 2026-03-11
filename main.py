@@ -41,7 +41,6 @@ from modules.network_init import (
 from modules.spectrum_monitor import SpectrumMonitor, get_history, get_channel_averages, save_scan
 
 
-
 # ============================================================================
 # LOGGING CONFIGURATION (NON-BLOCKING)
 # ============================================================================
@@ -82,6 +81,13 @@ logging.getLogger('device').setLevel(logging.INFO)
 
 logger = logging.getLogger('main')
 
+@app.get("/sw.js")
+async def service_worker():
+    return FileResponse(
+        "static/sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"}
+    )
 
 # ============================================================================
 # CONFIGURATION
@@ -498,6 +504,14 @@ async def read_index():
     """Serve the main UI."""
     return FileResponse('static/index.html')
 
+@app.get("/sw.js")
+async def service_worker():
+    """Serve service worker from root scope for PWA support."""
+    return FileResponse(
+        'static/sw.js',
+        media_type='application/javascript',
+        headers={'Service-Worker-Allowed': '/'}
+    )
 
 # ============================================================================
 # ROUTES - STRUCTURED CONFIGURATION
