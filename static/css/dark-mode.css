@@ -1,16 +1,5 @@
 /* ============================================================
    ZigBee Matter Manager — Dark Mode Theme
-   ============================================================
-   INSTALLATION:
-   1. Copy to: static/css/dark-mode.css
-   2. Add to index.html <head> AFTER bootstrap and your CSS:
-      <link rel="stylesheet" href="/static/css/dark-mode.css">
-   3. Add the theme-toggle.js script (see companion file)
-
-   HOW IT WORKS:
-   - Light mode is the default (your existing look)
-   - When <html data-theme="dark"> is set, dark mode activates
-   - The toggle JS handles switching + localStorage persistence
    ============================================================ */
 
 
@@ -160,11 +149,6 @@
 
 /* ----------------------------------------------------------
    TABLES
-   ----------------------------------------------------------
-   Bootstrap 5 tables use --bs-table-bg, --bs-table-color,
-   --bs-table-hover-bg etc. applied directly on <td>/<th>.
-   We must override these internal variables AND the fallback
-   background-color on every cell.
    ---------------------------------------------------------- */
 
 [data-theme="dark"] .table {
@@ -635,6 +619,103 @@
     box-shadow: var(--shadow-md) !important;
 }
 
+
+/* ----------------------------------------------------------
+   GROUPS TAB — member-device pills, device checkboxes,
+   group cards, modal member list
+   ---------------------------------------------------------- */
+
+/* Member device pills (hardcoded #e7f3ff in groups.css) */
+[data-theme="dark"] .member-device {
+    background: rgba(96, 165, 250, 0.15) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Group cards (border-left: 4px solid #0d6efd already fine) */
+[data-theme="dark"] .group-card {
+    background-color: var(--bg-surface) !important;
+    border-color: var(--border-color) !important;
+    border-left-color: #3b82f6 !important;
+}
+
+[data-theme="dark"] .group-card:hover {
+    box-shadow: var(--shadow-md) !important;
+}
+
+[data-theme="dark"] .group-card .card-body {
+    background-color: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Device checkbox items in group creation (hardcoded #e0e0e0 border, #f8f9fa hover) */
+[data-theme="dark"] .device-checkbox-item {
+    border-bottom-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] .device-checkbox-item:hover {
+    background-color: var(--bg-surface-raised) !important;
+}
+
+/* Compatible devices list container */
+[data-theme="dark"] #compatibleDevicesList {
+    background-color: var(--bg-surface-sunken) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* Group control modal — member list items (border rounded divs) */
+[data-theme="dark"] #groupMembersList .border.rounded,
+[data-theme="dark"] #groupMembersList .d-flex.border {
+    background-color: var(--bg-surface-raised) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] #groupMembersList .text-muted {
+    color: var(--text-muted) !important;
+}
+
+/* Group control panel cards */
+[data-theme="dark"] #groupControlPanel .card {
+    background-color: var(--bg-surface-raised) !important;
+    border-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] #groupControlPanel .card-body {
+    background-color: var(--bg-surface-raised) !important;
+}
+
+/* Group info display */
+[data-theme="dark"] #groupInfoDisplay {
+    color: var(--text-primary) !important;
+}
+
+/* Capability badges (bg-success, bg-info, bg-warning, bg-primary already have colour) */
+/* Just ensure text contrast in dark mode */
+[data-theme="dark"] .capability-badge.bg-warning {
+    color: #1a1d27 !important;
+}
+
+/* Base device info alert */
+[data-theme="dark"] #baseDeviceInfo.alert-info {
+    background-color: var(--alert-info-bg) !important;
+    border-color: var(--alert-info-border) !important;
+    color: var(--alert-info-text) !important;
+}
+
+/* Common capabilities alert */
+[data-theme="dark"] #commonCapabilitiesSection.alert-success {
+    background-color: rgba(34, 197, 94, 0.12) !important;
+    border-color: rgba(34, 197, 94, 0.2) !important;
+    color: #4ade80 !important;
+}
+
+/* Add device select in modal */
+[data-theme="dark"] #addDeviceSelect {
+    background-color: var(--bg-input) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
 /* font-monospace text */
 [data-theme="dark"] .font-monospace {
     color: var(--text-secondary);
@@ -642,6 +723,220 @@
 
 [data-theme="dark"] code {
     color: #f0abfc;
+}
+
+
+/* ----------------------------------------------------------
+   MESH TOPOLOGY — dark mode for D3 viz, tables, controls
+   ---------------------------------------------------------- */
+
+/* Controls bar */
+[data-theme="dark"] .mesh-controls,
+[data-theme="dark"] .mesh-controls.bg-light {
+    background-color: var(--bg-card-header) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+/* Legend text */
+[data-theme="dark"] .mesh-legend {
+    color: var(--text-secondary);
+}
+
+/* Mesh wrapper tabs */
+[data-theme="dark"] .mesh-wrapper .nav-tabs {
+    border-bottom-color: var(--border-color) !important;
+    background: var(--bg-card-header) !important;
+}
+
+[data-theme="dark"] .mesh-wrapper .nav-tabs .nav-link {
+    color: var(--text-secondary) !important;
+}
+
+[data-theme="dark"] .mesh-wrapper .nav-tabs .nav-link.active {
+    color: var(--text-link) !important;
+    border-bottom-color: var(--text-link) !important;
+}
+
+/* SVG visualisation background */
+[data-theme="dark"] .mesh-visualisation-wrapper {
+    background-color: var(--bg-surface-sunken) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* D3 SVG — node labels */
+[data-theme="dark"] .mesh-label {
+    fill: var(--text-secondary) !important;
+}
+
+/* D3 SVG — offline zone background rect (set via JS, but we can override stroke) */
+[data-theme="dark"] #dashboard-mesh-svg rect[fill="#fff5f5"] {
+    fill: rgba(220, 53, 69, 0.08) !important;
+}
+
+/* D3 SVG — offline zone label text */
+[data-theme="dark"] #dashboard-mesh-svg text[fill="#dc3545"] {
+    fill: #f87171 !important;
+}
+
+/* D3 SVG — general text */
+[data-theme="dark"] #dashboard-mesh-svg text[fill="#333"] {
+    fill: var(--text-secondary) !important;
+}
+
+[data-theme="dark"] #dashboard-mesh-svg text[fill="#999"] {
+    fill: var(--text-muted) !important;
+}
+
+/* Connection table — table-dark header stays dark, but nested tables need fixing */
+[data-theme="dark"] #connectionTable {
+    --bs-table-bg: var(--bg-surface);
+    --bs-table-color: var(--text-primary);
+    --bs-table-border-color: var(--border-color);
+    --bs-table-striped-bg: var(--table-stripe);
+    --bs-table-striped-color: var(--text-primary);
+    --bs-table-hover-bg: var(--table-hover);
+    --bs-table-hover-color: var(--text-primary);
+}
+
+[data-theme="dark"] #connectionTable > :not(caption) > * > * {
+    background-color: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] #connectionTable thead.table-dark th,
+[data-theme="dark"] #connectionTable thead.sticky-top th {
+    background-color: #111827 !important;
+    color: #e5e7eb !important;
+    border-color: #1f2937 !important;
+}
+
+/* Nested connection table inside collapse */
+[data-theme="dark"] .nested-connection-table {
+    background-color: var(--bg-surface-sunken) !important;
+}
+
+[data-theme="dark"] .nested-connection-table th {
+    background-color: var(--bg-surface-raised) !important;
+    color: var(--text-secondary) !important;
+}
+
+[data-theme="dark"] .nested-connection-table td {
+    background-color: var(--bg-surface-sunken) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* Collapse bg-light panel */
+[data-theme="dark"] .collapse .bg-light,
+[data-theme="dark"] .collapse .p-3.bg-light {
+    background-color: var(--bg-surface-sunken) !important;
+}
+
+/* ----------------------------------------------------------
+   #meshPacketStats — tab pane + summary cards + table
+   ---------------------------------------------------------- */
+
+/* Tab pane container */
+[data-theme="dark"] #meshPacketStats {
+    background-color: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] #meshPacketStats > .p-3 {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Summary cards */
+[data-theme="dark"] #packetStatsSummary .card {
+    background-color: var(--bg-surface-raised) !important;
+    border-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] #packetStatsSummary .card-body {
+    background-color: var(--bg-surface-raised) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] #packetStatsSummary .small.text-muted {
+    color: var(--text-muted) !important;
+}
+
+[data-theme="dark"] #packetStatsSummary .h5 {
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] #packetStatsSummary .text-success {
+    color: #4ade80 !important;
+}
+
+[data-theme="dark"] #packetStatsSummary .text-danger {
+    color: #f87171 !important;
+}
+
+/* Stats table */
+[data-theme="dark"] #packetStatsTable {
+    --bs-table-bg: var(--bg-surface);
+    --bs-table-color: var(--text-primary);
+    --bs-table-border-color: var(--border-color);
+    --bs-table-striped-bg: var(--table-stripe);
+    --bs-table-striped-color: var(--text-primary);
+    --bs-table-hover-bg: var(--table-hover);
+    --bs-table-hover-color: var(--text-primary);
+}
+
+[data-theme="dark"] #packetStatsTable > :not(caption) > * > * {
+    background-color: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] #packetStatsTable thead.table-dark th,
+[data-theme="dark"] #packetStatsTable thead.sticky-top th {
+    background-color: #111827 !important;
+    color: #e5e7eb !important;
+    border-color: #1f2937 !important;
+}
+
+/* Table-responsive wrapper */
+[data-theme="dark"] #meshPacketStats .table-responsive {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Hover on table rows */
+[data-theme="dark"] #connectionTable > tbody > tr:hover > * {
+    background-color: var(--table-hover) !important;
+}
+
+[data-theme="dark"] #packetStatsTable > tbody > tr:hover > * {
+    background-color: var(--table-hover) !important;
+}
+
+/* fw-medium and fw-bold text inside stats rows */
+[data-theme="dark"] #packetStatsTable .fw-medium,
+[data-theme="dark"] #packetStatsTable .fw-bold {
+    color: var(--text-primary) !important;
+}
+
+/* Error text */
+[data-theme="dark"] #packetStatsTable .text-danger {
+    color: #f87171 !important;
+}
+
+/* Status badges inside table */
+[data-theme="dark"] #packetStatsTable .badge.bg-success {
+    background-color: #166534 !important;
+    color: #bbf7d0 !important;
+}
+
+[data-theme="dark"] #packetStatsTable .badge.bg-danger {
+    background-color: #7f1d1d !important;
+    color: #fecaca !important;
+}
+
+/* Progress bars (load indicator) */
+[data-theme="dark"] #packetStatsTable .progress {
+    background-color: var(--bg-surface-sunken) !important;
 }
 
 
