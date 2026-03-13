@@ -609,8 +609,6 @@ class ZigbeeService:
                     start_radio=True
                 )
 
-                self.app.add_listener(self)
-
                 self._touchlink = await create_touchlink_manager(self.app)
                 if self._touchlink:
                     logger.info(f"✅ Touchlink support enabled ({self._touchlink.coordinator_type})")
@@ -630,6 +628,9 @@ class ZigbeeService:
                         event_callback=self.event_callback
                     )
                     logger.info("✅ Resilience system enabled")
+
+                # Register as listener for application-level events
+                self.app.add_listener(self)
 
                 # ================================================================
                 # STEP 7: HOOK RADIO LAYER FOR LIVE RSSI/LQI CAPTURE
