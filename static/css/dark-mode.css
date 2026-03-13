@@ -757,6 +757,61 @@
     border-bottom-color: var(--text-link) !important;
 }
 
+/* Mesh wrapper + tab-content — prevent white flash on tab switch */
+[data-theme="dark"] .mesh-wrapper {
+    background-color: var(--bg-surface) !important;
+}
+
+[data-theme="dark"] .mesh-wrapper .tab-content {
+    background-color: var(--bg-surface) !important;
+}
+
+[data-theme="dark"] .mesh-wrapper .tab-pane {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Each mesh sub-tab pane explicitly */
+[data-theme="dark"] #meshVisualisation {
+    background-color: var(--bg-surface-sunken) !important;
+}
+
+[data-theme="dark"] #meshConnectionTable {
+    background-color: var(--bg-surface) !important;
+}
+
+[data-theme="dark"] #meshConnectionTable > .p-3 {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Kill the Bootstrap fade transition white flash —
+   the .fade class fades opacity 0→1, revealing whatever
+   is behind (white body). Force bg on the fading element. */
+[data-theme="dark"] .mesh-wrapper .tab-pane.fade {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Also fix the main topology tab container */
+[data-theme="dark"] #topology {
+    background-color: var(--bg-surface) !important;
+}
+
+[data-theme="dark"] #topology .card {
+    background-color: var(--bg-surface) !important;
+}
+
+[data-theme="dark"] #topology .card-body {
+    background-color: var(--bg-surface) !important;
+}
+
+/* Global fix: all tab-panes should have dark bg during fade transition */
+[data-theme="dark"] .tab-pane {
+    background-color: var(--bg-surface);
+}
+
+[data-theme="dark"] .tab-content {
+    background-color: var(--bg-body);
+}
+
 /* SVG visualisation background */
 [data-theme="dark"] .mesh-visualisation-wrapper {
     background-color: var(--bg-surface-sunken) !important;
@@ -796,6 +851,7 @@
     --bs-table-striped-color: var(--text-primary);
     --bs-table-hover-bg: var(--table-hover);
     --bs-table-hover-color: var(--text-primary);
+    border-color: var(--border-color) !important;
 }
 
 [data-theme="dark"] #connectionTable > :not(caption) > * > * {
@@ -811,14 +867,34 @@
     border-color: #1f2937 !important;
 }
 
-/* Nested connection table inside collapse */
+/* Table-responsive wrapper inside connection table */
+[data-theme="dark"] #meshConnectionTable .table-responsive {
+    background-color: var(--bg-surface) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* Connection table hover — only on actual data rows, not collapse child rows */
+[data-theme="dark"] #connectionTable > tbody > tr:hover > td {
+    background-color: var(--table-hover) !important;
+    color: var(--text-primary) !important;
+}
+
+/* The child row that contains the collapse panel — no hover effect */
+[data-theme="dark"] #connectionTable > tbody > tr > td.child-row-cell {
+    background-color: transparent !important;
+    padding: 0 !important;
+}
+
+/* Nested connection table inside collapse — borders */
 [data-theme="dark"] .nested-connection-table {
     background-color: var(--bg-surface-sunken) !important;
+    border-color: var(--border-color) !important;
 }
 
 [data-theme="dark"] .nested-connection-table th {
     background-color: var(--bg-surface-raised) !important;
     color: var(--text-secondary) !important;
+    border-color: var(--border-color) !important;
 }
 
 [data-theme="dark"] .nested-connection-table td {
@@ -827,10 +903,32 @@
     border-color: var(--border-color) !important;
 }
 
-/* Collapse bg-light panel */
+/* table-bordered inside nested tables */
+[data-theme="dark"] .nested-connection-table.table-bordered,
+[data-theme="dark"] .nested-connection-table.table-bordered > :not(caption) > * {
+    border-color: var(--border-color) !important;
+}
+
+[data-theme="dark"] .nested-connection-table.table-bordered > :not(caption) > * > * {
+    border-color: var(--border-color) !important;
+}
+
+/* Nested table hover */
+[data-theme="dark"] .nested-connection-table > tbody > tr:hover > td {
+    background-color: var(--table-hover) !important;
+}
+
+/* Collapse bg-light panel (the expanded content wrapper) */
 [data-theme="dark"] .collapse .bg-light,
-[data-theme="dark"] .collapse .p-3.bg-light {
+[data-theme="dark"] .collapse .p-3.bg-light,
+[data-theme="dark"] .collapse .p-3.bg-light.border-bottom {
     background-color: var(--bg-surface-sunken) !important;
+    border-color: var(--border-color) !important;
+}
+
+/* Shadow-inset class used in collapse panels */
+[data-theme="dark"] .shadow-inset {
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3) !important;
 }
 
 /* ----------------------------------------------------------
@@ -903,11 +1001,7 @@
     background-color: var(--bg-surface) !important;
 }
 
-/* Hover on table rows */
-[data-theme="dark"] #connectionTable > tbody > tr:hover > * {
-    background-color: var(--table-hover) !important;
-}
-
+/* Hover on packet stats table rows */
 [data-theme="dark"] #packetStatsTable > tbody > tr:hover > * {
     background-color: var(--table-hover) !important;
 }
