@@ -651,7 +651,6 @@ class ZigbeeService:
 
                 # Initialise OTA Manager
                 self.ota_manager = OTAManager(self, event_emitter=self.callback)
-                self.ota_manager.start_background_checks()
                 logger.info("✅ OTA Manager initialised")
 
                 # ================================================================
