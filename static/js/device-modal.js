@@ -12,6 +12,7 @@ import { renderCapsTab } from './modal/clusters.js';
 import { renderAutomationTab, initAutomationTab } from './modal/automation.js';
 import { renderMappingsTab, initMappingsTab, hasGenericContent } from './modal/mappings.js';
 import { bindScheduleEvents } from './modal/schedule.js';
+import { renderOTATab, handleOTAProgress } from './modal/ota.js';
 
 
 // Re-export these functions so main.js (and others) can still import them from here
