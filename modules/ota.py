@@ -332,7 +332,23 @@ class OTAManager:
         zigpy_dev = device.zigpy_dev
 
         try:
-            await self.app.ota.broadcast_notify(zigpy_dev)
+            # Find OTA cluster on the device (usually output cluster)
+            ota_cluster = None
+            for ep_id, ep in zigpy_dev.endpoints.items():
+                if ep_id == 0:
+                    continue
+                if 0x0019 in ep.out_clusters:
+                    ota_cluster = ep.out_clusters[0x0019]
+                    break
+                if 0x0019 in ep.in_clusters:
+                    ota_cluster = ep.in_clusters[0x0019]
+                    break
+
+            if ota_cluster is None:
+                return {"success": False, "error": "Device has no OTA cluster"}
+
+            # image_notify: payload_type=0 (QueryJitter), jitter=100
+            await ota_cluster.image_notify(0, 100)
             return {"success": True, "message": "Image notify sent"}
         except Exception as e:
             logger.warning(f"[{ieee}] OTA notify failed: {e}")
