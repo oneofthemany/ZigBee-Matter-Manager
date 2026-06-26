@@ -1901,6 +1901,19 @@ function editCircuit(circuitId) {
           <option value="thermostat" ${c.receiver_command === 'thermostat' ? 'selected' : ''}>thermostat</option>
           <option value="switch" ${c.receiver_command === 'switch' ? 'selected' : ''}>switch</option>
         </select></div>
+      <div class="mb-2 form-check form-switch small">
+        <input type="checkbox" class="form-check-input" id="fpCircuitOH" ${c.operating_hours ? 'checked' : ''}/>
+        <label class="form-check-label" for="fpCircuitOH">Respect operating hours</label></div>
+      <div class="mb-2 form-check form-switch small">
+        <input type="checkbox" class="form-check-input" id="fpCircuitWS" ${c.weather_suppression ? 'checked' : ''}/>
+        <label class="form-check-label" for="fpCircuitWS">Weather suppression</label></div>
+      ${c.receiver_command === 'thermostat' ? `
+      <div class="row g-1 mb-2">
+        <div class="col-6"><label class="form-label small text-muted mb-0">Call setpoint °C</label>
+          <input type="number" step="0.5" min="4" max="90" class="form-control form-control-sm" id="fpCircuitCallSp" value="${c.receiver_call_setpoint ?? 30}"/></div>
+        <div class="col-6"><label class="form-label small text-muted mb-0">Idle setpoint °C</label>
+          <input type="number" step="0.5" min="4" max="90" class="form-control form-control-sm" id="fpCircuitIdleSp" value="${c.receiver_idle_setpoint ?? 7}"/></div>
+      </div>` : ''}
       <div class="small text-muted mb-2">ID: <code>${escapeHtml(c.id)}</code></div>
       <div class="small text-info"><i class="fas fa-info-circle me-1"></i>Assign rooms to this circuit via the room properties panel.</div>`;
 
@@ -1908,9 +1921,24 @@ function editCircuit(circuitId) {
         c.name = document.getElementById('fpCircuitName').value.trim() || c.name;
         const recVal = document.getElementById('fpCircuitReceiver').value;
         if (recVal) c.receiver_ieee = recVal; else delete c.receiver_ieee;
+        const prevCmd = c.receiver_command;
         c.receiver_command = document.getElementById('fpCircuitCmd').value;
+        c.operating_hours = document.getElementById('fpCircuitOH').checked;
+        c.weather_suppression = document.getElementById('fpCircuitWS').checked;
+        const callEl = document.getElementById('fpCircuitCallSp');
+        if (callEl) {
+            const v = parseFloat(callEl.value);
+            if (!Number.isNaN(v)) c.receiver_call_setpoint = v; else delete c.receiver_call_setpoint;
+        }
+        const idleEl = document.getElementById('fpCircuitIdleSp');
+        if (idleEl) {
+            const v = parseFloat(idleEl.value);
+            if (!Number.isNaN(v)) c.receiver_idle_setpoint = v; else delete c.receiver_idle_setpoint;
+        }
         renderCircuitList();
         renderScene();
+        // Switching command toggles the setpoint fields — re-render the panel.
+        if (prevCmd !== c.receiver_command) editCircuit(circuitId);
     };
     propsDiv.querySelectorAll('input, select').forEach(el => el.addEventListener('change', update));
 }
@@ -2203,6 +2231,7 @@ function renderRoomProps(r) {
              <select class="form-select form-select-sm" data-prop="room.circuit_id">${circuitOpts}</select></div>`
         : `<div class="mb-2 small text-muted fst-italic"><i class="fas fa-info-circle me-1"></i>Add a circuit in the sidebar to assign this room.</div>`;
     const oohAction = r.out_of_hours_action || 'setback';
+    const etMode = r.external_temp_mode || 'advisory';
     return `
       <div class="text-muted small text-uppercase mb-2">Room</div>
       <div class="mb-2"><label class="form-label small">Name</label>
@@ -2244,6 +2273,17 @@ function renderRoomProps(r) {
                    value="${r.night_setback_offset_c??-3}"/>
           </div>
         </div>
+      </div>
+      <div class="mb-2"><label class="form-label small">External temperature sensor</label>
+        <select class="form-select form-select-sm" data-prop="room.external_temp_mode" data-rerender-on-change>
+          <option value="advisory" ${etMode==='advisory'?'selected':''}>Advisory (correct readings only)</option>
+          <option value="push" ${etMode==='push'?'selected':''}>Push (write to TRVs)</option>
+          <option value="off" ${etMode==='off'?'selected':''}>Off</option>
+        </select>
+        ${etMode==='push' ? `
+        <div class="mt-1"><label class="form-label small text-muted mb-0">Push interval (sec)</label>
+          <input type="number" step="30" min="30" max="86400" class="form-control form-control-sm"
+                 data-prop="room.external_temp_push_interval_sec" value="${r.external_temp_push_interval_sec??300}"/></div>` : ''}
       </div>
       <div class="mb-2"><label class="form-label small">Floor type</label>
         <select class="form-select form-select-sm" data-prop="room.floor_type">
@@ -2361,7 +2401,20 @@ function renderRadiatorProps(r) {
             .map(t => `<option value="${t}" ${r.type === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select></div>
       <div class="mb-2"><label class="form-label small">Bound TRV</label>
-        <select class="form-select form-select-sm" data-prop="radiator.trv_ieee">${trvOpts}</select></div>
+        <select class="form-select form-select-sm" data-prop="radiator.trv_ieee" data-rerender-on-change>${trvOpts}</select></div>
+      ${r.trv_ieee ? `
+      <div class="mb-2 ps-2 border-start">
+        <div class="small text-muted text-uppercase mb-1">TRV behaviour</div>
+        <div class="form-check form-switch small">
+          <input type="checkbox" class="form-check-input" id="fpTrvWin" data-prop="radiator.window_detection" ${r.window_detection ? 'checked' : ''}/>
+          <label class="form-check-label" for="fpTrvWin">Window/open detection</label></div>
+        <div class="form-check form-switch small">
+          <input type="checkbox" class="form-check-input" id="fpTrvLock" data-prop="radiator.child_lock" ${r.child_lock ? 'checked' : ''}/>
+          <label class="form-check-label" for="fpTrvLock">Child lock</label></div>
+        <div class="form-check form-switch small">
+          <input type="checkbox" class="form-check-input" id="fpTrvValve" data-prop="radiator.valve_detection" ${r.valve_detection ? 'checked' : ''}/>
+          <label class="form-check-label" for="fpTrvValve">Valve detection</label></div>
+      </div>` : ''}
       <div class="mb-2 form-check form-switch small">
         <input type="checkbox" class="form-check-input" id="fpRadRefl" data-prop="radiator.reflective_panel" ${r.reflective_panel ? 'checked' : ''}/>
         <label class="form-check-label" for="fpRadRefl">Reflective panel behind</label></div>
@@ -2498,6 +2551,13 @@ function bindPropsHandlers() {
             }
             renderScene();
         });
+    });
+
+    // Selects that show/hide dependent fields re-render the panel after their
+    // model update (this listener is registered after the generic one above,
+    // so the value is already written when renderProps() rebuilds).
+    root.querySelectorAll('[data-rerender-on-change]').forEach(el => {
+        el.addEventListener('change', () => renderProps());
     });
 
     // Schedule slot handlers (room props panel)
