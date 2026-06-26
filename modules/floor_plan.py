@@ -480,14 +480,41 @@ def _clean_room(raw: Any, existing_ids: set) -> Optional[dict]:
     ct = str(raw.get("ceiling_type") or "").lower()
     if ct in VALID_CEILING_TYPES:
         out["ceiling_type"] = ct
-    for temp_key, lo, hi, default in (
-            ("target_temp",   5.0, 32.0, None),
-            ("night_setback", 5.0, 32.0, None),
-            ("min_temp",      5.0, 32.0, None),
-    ):
+
+    for temp_key in ("target_temp", "night_setback", "min_temp"):
         v = _as_float(raw.get(temp_key))
-        if v is not None and lo <= v <= hi:
+        if v is not None and 5.0 <= v <= 32.0:
             out[temp_key] = round(v, 1)
+
+    ooh = str(raw.get("out_of_hours_action") or "").lower()
+    if ooh in ("setback", "min_only", "off"):
+        out["out_of_hours_action"] = ooh
+    ooh_offset = _as_float(raw.get("night_setback_offset_c"))
+    if ooh_offset is not None and -10.0 <= ooh_offset <= 0.0:
+        out["night_setback_offset_c"] = round(ooh_offset, 1)
+
+    raw_sched = raw.get("schedule")
+    if isinstance(raw_sched, list):
+        clean_sched = []
+        valid_days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        for slot in raw_sched:
+            if not isinstance(slot, dict):
+                continue
+            days = [d for d in (slot.get("days") or []) if d in valid_days]
+            if not days:
+                continue
+            try:
+                temp = round(float(slot.get("temp") or 20.0), 1)
+            except (TypeError, ValueError):
+                temp = 20.0
+            clean_sched.append({
+                "days": days,
+                "start": str(slot.get("start", "07:00")),
+                "end": str(slot.get("end", "22:00")),
+                "temp": temp,
+            })
+        out["schedule"] = clean_sched
+
     return out
 
 
@@ -1366,15 +1393,16 @@ def project_floor_plan_to_circuits(
                 c2["receiver_endpoint"] = pc["receiver_endpoint"]
 
             new_rooms = []
-
             for fp_room, level in rooms_by_circuit.get(cid, []):
                 base = existing_room_by_plan_id.get(fp_room["id"])
                 room_dict = _project_room(fp_room, level, base)
-                # Temperature priority: base_room (already in room_dict via
-                # dict(base_room)) → fp_room editor values → hard defaults.
-                for k in ("target_temp", "night_setback", "min_temp"):
+                # Carry schedule/temp fields from floor-plan room definition
+                for k in ("target_temp", "night_setback", "min_temp",
+                          "out_of_hours_action", "night_setback_offset_c"):
                     if k not in room_dict and fp_room.get(k) is not None:
                         room_dict[k] = fp_room[k]
+                if "schedule" not in room_dict and fp_room.get("schedule"):
+                    room_dict["schedule"] = fp_room["schedule"]
                 room_dict.setdefault("target_temp", 20.0)
                 room_dict.setdefault("night_setback", 17.0)
                 room_dict.setdefault("min_temp", 16.0)
