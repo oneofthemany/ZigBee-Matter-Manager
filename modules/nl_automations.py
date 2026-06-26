@@ -46,6 +46,12 @@ _ACTION_VERBS = [
 _ACTION_VERB_RE = re.compile(
     r"\b(" + "|".join(p for p, _ in _ACTION_VERBS) + r")\b", re.I)
 
+# Media verbs that aren't already device verbs, so _split_action can find the
+# action clause for "announce …", "pause the lounge speaker", etc. ("stop" is
+# already a device verb; media intent there is decided by a matched player.)
+_MEDIA_VERB_RE = re.compile(
+    r"\b(announce|say|speak|pause|resume|skip|next|previous)\b|\bvolume\b", re.I)
+
 _PRONOUNS = {"it", "them", "that", "this", "those", "they"}
 
 # Attribute candidate lists per semantic concept (resolved against real attrs).
@@ -99,6 +105,8 @@ _EXAMPLES = [
     "turn on the lamp when it gets dark",
     "turn on the hallway lights between 08:00 and 23:30",
     "when the kitchen temperature goes above 25 turn on the fan otherwise turn it off",
+    "when the front door opens announce \"front door opened\" on the kitchen speaker",
+    "pause the lounge speaker when motion clears in the lounge",
 ]
 
 
@@ -113,6 +121,7 @@ class NLAutomationParser:
         self._engine = engine
         self._devices: List[Dict[str, Any]] = []
         self._act_ieees: set = set()
+        self._players: Optional[List[Dict[str, Any]]] = None  # media players, lazily loaded
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -544,6 +553,13 @@ class NLAutomationParser:
 
     def _parse_single_action(self, clause: str, source_ieee: Optional[str]
                              ) -> Tuple[Optional[Dict], Optional[str]]:
+        # Media intent (announce / control / volume on a named player) first —
+        # it only succeeds when a real player is matched, so device rules are
+        # untouched (e.g. "stop the kitchen light" stays a device command).
+        mstep, mnote = self._parse_media_action(clause)
+        if mstep:
+            return mstep, mnote
+
         vm = _ACTION_VERB_RE.search(clause)
         if not vm:
             return None, None
@@ -612,6 +628,82 @@ class NLAutomationParser:
             if c.get("command") == command:
                 return c.get("endpoint_id")
         return None
+
+    # ── Media actions (announce / control / volume on a player) ──────────────
+    def _load_players(self) -> List[Dict[str, Any]]:
+        if self._players is not None:
+            return self._players
+        self._players = []
+        try:
+            getter = getattr(self._engine, "_get_media_service", None)
+            svc = getter() if getter else None
+            if svc and getattr(svc, "enabled", False):
+                self._players = [{"player_id": p.player_id, "name": p.name}
+                                 for p in svc.controller.snapshot()]
+        except Exception:
+            self._players = []
+        return self._players
+
+    def _match_player(self, text: str) -> Optional[Dict[str, Any]]:
+        nt = _norm(text)
+        best = None
+        for p in self._load_players():
+            pn = _norm(p["name"])
+            if pn and pn in nt and (best is None or len(pn) > len(_norm(best["name"]))):
+                best = p
+        return best
+
+    def _parse_media_action(self, clause: str
+                            ) -> Tuple[Optional[Dict], Optional[str]]:
+        if not self._load_players():
+            return None, None
+        player = self._match_player(clause)
+        if not player:
+            return None, None
+        low = " " + clause.lower() + " "
+        pid, pname = player["player_id"], player["name"]
+
+        # ANNOUNCE / SAY / SPEAK
+        if re.search(r"\b(announce|say|speak)\b", low):
+            text = self._extract_announce_text(clause)
+            if not text:
+                return None, None
+            return ({"type": "media", "player_id": pid,
+                     "media_action": "announce", "text": text},
+                    f'announce "{text[:30]}" → {pname}')
+
+        # VOLUME ("set the kitchen speaker to 30%", "kitchen speaker volume 30%")
+        pm = re.search(r"(\d+)\s*%", clause)
+        if pm and re.search(r"\b(volume|vol|set)\b", low):
+            return ({"type": "media", "player_id": pid, "media_action": "volume",
+                     "volume": max(0.0, min(1.0, int(pm.group(1)) / 100))},
+                    f"volume {pm.group(1)}% → {pname}")
+
+        # CONTROL (pause / resume / stop / next / previous)
+        for pat, act in ((r"\bpause\b", "pause"), (r"\b(resume|unpause|play)\b", "resume"),
+                         (r"\b(skip|next)\b", "next"), (r"\b(previous|prev|back)\b", "prev"),
+                         (r"\bstop\b", "stop")):
+            if re.search(pat, low):
+                return ({"type": "media", "player_id": pid,
+                         "media_action": "control", "control_action": act},
+                        f"{act} → {pname}")
+        return None, None
+
+    def _extract_announce_text(self, clause: str) -> str:
+        # Quoted text is unambiguous — prefer it.
+        q = re.search(r'["“‘]([^"“”‘’]+)["”’]'
+                      r"|'([^']+)'", clause)
+        if q:
+            return (q.group(1) or q.group(2) or "").strip()
+        m = re.search(r"\b(announce|say|speak)\b\s*(?:that\s+|:\s*)?", clause, re.I)
+        if not m:
+            return ""
+        rest = clause[m.end():].strip()
+        # Drop a trailing " on <player>" target phrase (target is last).
+        idx = rest.lower().rfind(" on ")
+        if idx > 0:
+            rest = rest[:idx]
+        return rest.strip(" .,:\"'")
 
     # ── Time / delay extraction ─────────────────────────────────────────────
 
@@ -733,16 +825,17 @@ class NLAutomationParser:
 
     def _split_action(self, t: str) -> Tuple[Optional[str], Optional[str]]:
         """Return (action_clause, trigger_clause)."""
-        vm = _ACTION_VERB_RE.search(t)
-        if not vm:
+        cands = [m for m in (_ACTION_VERB_RE.search(t), _MEDIA_VERB_RE.search(t)) if m]
+        if not cands:
             # No action verb → whole thing is the trigger (time-only or error).
             return None, self._strip_leads(t)
-        # Action runs from the verb to the next clause boundary.
-        tail = t[vm.start():]
+        # Action runs from the earliest matching verb to the next clause boundary.
+        start = min(m.start() for m in cands)
+        tail = t[start:]
         bm = re.search(r"\b(when|if|whenever)\b|,", tail)
-        end = vm.start() + (bm.start() if bm else len(tail))
-        action = t[vm.start():end].strip()
-        remainder = (t[:vm.start()] + " " + t[end:]).strip()
+        end = start + (bm.start() if bm else len(tail))
+        action = t[start:end].strip()
+        remainder = (t[:start] + " " + t[end:]).strip()
         trigger = self._strip_leads(remainder)
         return action, trigger
 

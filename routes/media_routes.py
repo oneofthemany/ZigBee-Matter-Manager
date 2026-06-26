@@ -56,6 +56,20 @@ class TidalFavoriteBody(BaseModel):
     action: str               # add | remove
 
 
+class AnnounceBody(BaseModel):
+    player_id: str
+    text: str
+    lang: Optional[str] = None
+    volume: Optional[float] = None
+
+
+class FadeBody(BaseModel):
+    player_id: str
+    volume: float             # target level 0.0–1.0
+    fade_seconds: int = 300
+    stop_at_end: bool = False
+
+
 def register_media_routes(app: FastAPI, get_media_service):
 
     def _svc():
@@ -138,6 +152,31 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @app.get("/api/media/recent")
+    async def recent():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return {"success": True, "items": svc.controller.recently_played()}
+
+    @app.post("/api/media/announce")
+    async def announce(body: AnnounceBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            return await svc.announce(body.player_id, body.text, body.lang, body.volume)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/media/volume/fade")
+    async def volume_fade(body: FadeBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        svc.controller.fade_volume(body.player_id, body.volume, body.fade_seconds, body.stop_at_end)
+        return {"success": True}
 
     @app.get("/api/media/radio/search")
     async def radio_search(q: str, limit: int = 25):

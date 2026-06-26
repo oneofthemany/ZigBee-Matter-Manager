@@ -36,6 +36,12 @@ class MediaService:
         self.controller = MediaController()
         self._task: Optional[asyncio.Task] = None
 
+        # Text-to-speech for announcements. Default is the keyless Google
+        # Translate TTS endpoint (returns a plain MP3 Cast/WiiM play directly).
+        tts_cfg = config.get("tts", {}) or {}
+        self._tts_base = tts_cfg.get("base_url", "https://translate.google.com/translate_tts")
+        self._tts_lang = tts_cfg.get("lang", "en")
+
         # ---- Sources ----
         rb_cfg = config.get("radio_browser", {}) or {}
         self.radio = RadioBrowserSource(enabled=rb_cfg.get("enabled", True))
@@ -88,6 +94,31 @@ class MediaService:
         # UI. Radio is LIVE (duration 0) so it never auto-advances.
         await self.controller.play_items(player_id, [item])
         return item
+
+    async def announce(self, player_id: str, text: str, lang: str = None,
+                       volume: float = None) -> dict:
+        """Speak ``text`` on a player via TTS (e.g. an automation alert).
+        Optionally sets volume first. Plays directly, bypassing the queue."""
+        text = (text or "").strip()
+        if not text:
+            return {"success": False, "error": "No text to announce"}
+        if volume is not None:
+            await self.controller.set_volume(player_id, float(volume))
+        item = MediaItem(
+            url=self._tts_url(text, lang),
+            title=text[:60],
+            artist="Announcement",
+            media_type="tts",            # no resolver → URL used as-is
+            content_type="audio/mpeg",
+        )
+        await self.controller.play_url(player_id, item)
+        return {"success": True}
+
+    def _tts_url(self, text: str, lang: str = None) -> str:
+        from urllib.parse import quote
+        # The Translate TTS endpoint caps ~200 chars/request; truncate for safety.
+        return (f"{self._tts_base}?ie=UTF-8&client=tw-ob"
+                f"&tl={lang or self._tts_lang}&q={quote(text[:200])}")
 
     async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
                          mode: str = "play") -> dict:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import Dict, List, Optional
 
 from modules.media.models import MediaItem, PlayerState, PlaybackState
@@ -43,6 +44,10 @@ class MediaController:
         # a "radio" queue infinite. Set by the source via register_extender.
         self._extender = None
         self._extending: set[str] = set()
+        # Background volume-fade tasks per player (wake-up ramps / sleep timers).
+        self._fades: Dict[str, asyncio.Task] = {}
+        # Recently-played history (most-recent first), for quick replay in the UI.
+        self._recent: deque = deque(maxlen=30)
 
     # ------------------------------------------------------------------
     # Registration / lifecycle
@@ -123,6 +128,8 @@ class MediaController:
                 s.artwork_url = it.artwork_url
             if it.media_type:
                 s.media_type = it.media_type
+            if it.source_id:
+                s.now_playing_id = it.source_id
 
     def snapshot(self) -> List[PlayerState]:
         return list(self._cache.values())
@@ -132,7 +139,24 @@ class MediaController:
     # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
         item = await self._resolve(item, player_id)
+        self._record_recent(item)
         await self._dispatch(player_id, "play_url", item)
+
+    def _record_recent(self, item: MediaItem) -> None:
+        # Announcements (TTS) are transient — never history-worthy.
+        if item.media_type == "tts" or not (item.title or item.url):
+            return
+        if self._recent and self._recent[0].get("title") == item.title \
+                and self._recent[0].get("source_id") == item.source_id:
+            return                                  # dedupe consecutive repeats
+        self._recent.appendleft({
+            "title": item.title, "artist": item.artist,
+            "artwork_url": item.artwork_url, "media_type": item.media_type,
+            "source_id": item.source_id, "url": item.url,
+        })
+
+    def recently_played(self) -> List[dict]:
+        return list(self._recent)
 
     async def _resolve(self, item: MediaItem, player_id: Optional[str] = None) -> MediaItem:
         """Refresh a time-limited stream URL via the source's resolver, if any.
@@ -287,6 +311,39 @@ class MediaController:
 
     async def set_volume(self, player_id: str, level: float) -> None:
         await self._dispatch(player_id, "set_volume", max(0.0, min(1.0, level)))
+
+    def fade_volume(self, player_id: str, target: float, duration_s: int,
+                    stop_at_end: bool = False) -> None:
+        """Ramp a player's volume to ``target`` over ``duration_s`` in the
+        background (wake-up ramp up, or sleep-timer fade out + optional stop).
+        Fire-and-forget; a new fade cancels any running one for that player."""
+        old = self._fades.pop(player_id, None)
+        if old and not old.done():
+            old.cancel()
+        self._fades[player_id] = asyncio.create_task(
+            self._run_fade(player_id, target, duration_s, stop_at_end))
+
+    async def _run_fade(self, player_id: str, target: float, duration_s: int,
+                        stop_at_end: bool) -> None:
+        try:
+            cached = self._cache.get(player_id)
+            start = cached.volume if cached else 0.3
+            target = max(0.0, min(1.0, target))
+            duration_s = max(1, int(duration_s))
+            steps = max(1, min(duration_s // 3, 60))   # ~every 3s, capped at 60
+            interval = duration_s / steps
+            for i in range(1, steps + 1):
+                await self.set_volume(player_id, start + (target - start) * (i / steps))
+                await asyncio.sleep(interval)
+            if stop_at_end:
+                await self.control(player_id, "stop")
+            logger.info(f"Volume fade {player_id} → {target:.0%} over {duration_s}s done")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Volume fade failed for {player_id}: {e}")
+        finally:
+            self._fades.pop(player_id, None)
 
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._dispatch(player_id, "set_muted", muted)
