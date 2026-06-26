@@ -333,29 +333,14 @@ class MatterBridge:
             logger.debug(f"Skipping non-dict message: {type(data).__name__}")
             return
 
-            if isinstance(result, list):
-                # Node list response (from get_nodes or start_listening node dump)
-                node_count = 0
-                for node in result:
-                    if isinstance(node, dict) and "node_id" in node:
-                        await self._upsert_node(node)
-                        node_count += 1
-                logger.info(f"Matter: loaded {node_count} nodes")
-
-                # Publish discovery for all devices after initial load
-                if node_count > 0:
-                    await self._publish_all_discovery()
-
-            elif isinstance(result, dict):
-                # Server info response from start_listening — log and continue.
-                # Node data follows as separate event messages.
-                sdk_ver = result.get("sdk_version", "?")
-                thread_set = result.get("thread_credentials_set", False)
-                bt = result.get("bluetooth_enabled", False)
-                logger.info(
-                    f"Matter server info: SDK {sdk_ver}, "
-                    f"thread_credentials={thread_set}, bluetooth={bt}"
-                )
+        # Initial ServerInfoMessage — sent once on connect, top-level (no event/result)
+        if "sdk_version" in data and "event" not in data and "result" not in data:
+            logger.info(
+                f"Matter server info: SDK {data.get('sdk_version', '?')}, "
+                f"schema={data.get('schema_version', '?')}, "
+                f"thread_credentials={data.get('thread_credentials_set', False)}, "
+                f"bluetooth={data.get('bluetooth_enabled', False)}"
+            )
             return
 
         # Event-based messages
