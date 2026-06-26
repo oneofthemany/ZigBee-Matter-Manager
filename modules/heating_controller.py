@@ -1076,6 +1076,10 @@ class HeatingController:
             # Parse TRVs from either the new 'trvs' list (dicts) or legacy 'trv_ieees' list (strings).
             trvs = self._clean_trvs(r)
 
+            sensor_ieee = r.get("temperature_sensor_ieee")
+            sensor_ieee = str(sensor_ieee).strip() if sensor_ieee else None
+            sensor_ieee = sensor_ieee or None
+
             if not trvs and not sensor_ieee:
                 logger.warning(
                     f"Room '{rid}' has no TRVs and no temperature_sensor_ieee "
@@ -1104,10 +1108,6 @@ class HeatingController:
                     "end": str(slot.get("end", "22:00")),
                     "temp": _as_float(slot.get("temp"), 20.0),
                 })
-
-            sensor_ieee = r.get("temperature_sensor_ieee")
-            sensor_ieee = str(sensor_ieee).strip() if sensor_ieee else None
-            sensor_ieee = sensor_ieee or None
 
             mode = str(r.get("external_temp_mode", "advisory" if sensor_ieee else "off")).lower()
             if mode not in ("off", "advisory", "push"):
@@ -1614,13 +1614,10 @@ class HeatingController:
         prior_calling = False
         try:
             for c in (self._last_decision.get("circuits") or []):
-                if c.get("id") != circuit["id"]:
-                    continue
                 for r in (c.get("rooms") or []):
                     if r.get("room_id") == room["id"]:
                         prior_calling = bool(r.get("calling_for_heat"))
                         break
-                break
         except Exception:
             pass
 
@@ -2359,14 +2356,13 @@ class HeatingController:
 
         try:
             profile = compute_profile(
-                room_id=room_id,
+                room_id=rid,
                 dimensions=dimensions,
-                insulation=insulation,
-                temperature_series=temp_series,
+                insulation=self._insulation,
+                temperature_series=series,
                 outdoor_temp_getter=outdoor_getter,
-                heating_state_getter=heating_state_getter,
-                floor_plan=heating.get("floor_plan"),
-                floor_plan_ref=found_room.get("floor_plan_ref"),
+                floor_plan=self._config_floor_plan(),
+                floor_plan_ref=room.get("floor_plan_ref"),
             )
         except Exception as e:
             logger.debug(f"compute_profile failed for {rid}: {e}")
@@ -2376,12 +2372,12 @@ class HeatingController:
         radiator_watts = _as_float(rad_cfg.get("watts_at_dt50"), None)
 
         entry = {
-            "w_per_k": prof.blended_w_per_k,
-            "tau_seconds": prof.tau_seconds,
+            "w_per_k": profile.blended_w_per_k,
+            "tau_seconds": profile.tau_seconds,
             "radiator_watts": radiator_watts,
             "confidence": (
-                "high" if (prof.measured_confidence or 0) >= 0.7
-                else "medium" if (prof.measured_confidence or 0) >= 0.3
+                "high" if (profile.measured_confidence or 0) >= 0.7
+                else "medium" if (profile.measured_confidence or 0) >= 0.3
                 else "low"
             ),
             "expires_at": now_ts + PROFILE_CACHE_TTL_SEC,
