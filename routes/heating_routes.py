@@ -1319,7 +1319,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
 
 
     @app.get("/api/heating/circuits/{circuit_id}/rooms/{room_id}/sizing")
-    async def circuit_room_sizing(circuit_id: str, room_id: str):
+    async def circuit_room_sizing(circuit_id: str, room_id: str, target_temp: float = None):
         """
         Radiator / BTU sizing for one room.
         Uses Phase 3 thermal profile + design outdoor temp + flow temp
