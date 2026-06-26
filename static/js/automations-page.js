@@ -110,7 +110,8 @@ function _renderPage(container, devices) {
                     <option value="" ${filterDevice === '' ? 'selected' : ''}>All Devices</option>
                     ${sourcesWithRules.map(ieee => {
                         const d = devMap[ieee];
-                        return `<option value="${ieee}" ${ieee === filterDevice ? 'selected' : ''}>${d ? d.friendly_name : ieee}</option>`;
+                        const label = ieee === '__time__' ? '⏰ Time / Alarm' : (d ? d.friendly_name : ieee);
+                        return `<option value="${ieee}" ${ieee === filterDevice ? 'selected' : ''}>${label}</option>`;
                     }).join('')}
                 </select>
                 <select class="form-select form-select-sm" id="ap-filter-state" style="width:auto" onchange="window._apFilterState(this.value)">
@@ -139,7 +140,8 @@ function _renderPage(container, devices) {
                 <div class="mb-3">
                     <label class="form-label small fw-bold">Source Device (trigger)</label>
                     <select class="form-select form-select-sm" id="ap-source-select" onchange="window._apSourceSelected(this.value)">
-                        <option value="">Select a device...</option>
+                        <option value="">Select a trigger…</option>
+                        <option value="__time__">⏰ Time / Alarm (no device)</option>
                         ${devices.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('')}
                     </select>
                 </div>
@@ -192,12 +194,14 @@ function _renderRulesList(devMap = devMapCache) {
 
     let html = '';
     for (const [ieee, deviceRules] of Object.entries(grouped)) {
+        const isTime = ieee === '__time__';
         const dev = devMap ? devMap[ieee] : null;
-        const devName = dev ? dev.friendly_name : ieee;
+        const devName = isTime ? 'Time / Alarm' : (dev ? dev.friendly_name : ieee);
         const devModel = dev ? `<span class="text-muted small ms-2">${dev.manufacturer || ''} ${dev.model || ''}</span>` : '';
+        const headIcon = isTime ? 'fa-clock' : 'fa-microchip';
 
         html += `<div class="mb-3">
-            <h6 class="border-bottom pb-1 mb-2"><i class="fas fa-microchip text-muted me-1"></i> ${devName}${devModel}</h6>`;
+            <h6 class="border-bottom pb-1 mb-2"><i class="fas ${headIcon} text-muted me-1"></i> ${devName}${devModel}</h6>`;
 
         deviceRules.forEach(rule => {
             const en = rule.enabled !== false;
@@ -220,6 +224,10 @@ function _renderRulesList(devMap = devMapCache) {
                     const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                     const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
                     cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+                } else if (c.type === 'time') {
+                    const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                    const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
+                    cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
                 } else if (c.type === 'sun') {
                     cDesc = _sunDesc(c);
                 } else {
