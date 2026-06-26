@@ -596,6 +596,7 @@ async function _aiCheckHost() {
     box.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin"></i> Measuring CPU / RAM / GPU…</span>';
     try {
         const h = await (await fetch('/api/ai/host')).json();
+        _aiHost = h;
         const v = h.verdict || {};
         const cls = !v.llm_viable ? 'secondary' : v.tier === 'gpu' ? 'success'
             : v.tier === 'cpu' ? 'warning' : 'info';
@@ -630,10 +631,123 @@ async function _aiCheckHost() {
                 ${h.backends?.container_runtime ? `<span class="badge bg-light text-dark border">${h.backends.container_runtime}</span>` : ''}</div>
             ${fits ? `<div class="mt-2 small"><strong>Fits here:</strong> ${fits}</div>` : ''}
             ${v.recommended_model ? `<div class="mt-1 small text-muted">Recommended: <code>${_esc(v.recommended_model)}</code></div>` : ''}
+            <div id="ai-ollama" class="mt-2"></div>
         `;
+        _aiOllamaRender();
     } catch (e) {
         box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
     }
+}
+
+// ── Ollama enablement (privileged actions behind explicit confirm) ───────────
+
+async function _aiOllamaRender() {
+    const box = document.getElementById('ai-ollama');
+    if (!box) return;
+    const h = _aiHost || {};
+    if (!h.verdict || !h.verdict.llm_viable) { box.innerHTML = ''; return; }
+    try {
+        const s = await (await fetch('/api/ai/ollama/status')).json();
+        if (s.job && s.job.status === 'running') { _aiOllamaRenderJob(s.job); _aiOllamaPoll(); return; }
+
+        let html = '<div class="border rounded p-2 small"><div class="fw-bold mb-1"><i class="fas fa-server me-1"></i>Local Ollama</div>';
+        if (!s.runtime) {
+            box.innerHTML = html + '<div class="text-muted">No podman/docker runtime found — can\'t manage a local container here.</div></div>';
+            return;
+        }
+        const rec = h.verdict.recommended_model;
+        const haveModel = rec && (s.models || []).some(m => m.name === rec || (m.name || '').startsWith(rec));
+        if (!s.running) {
+            const label = s.container_exists ? 'Start Ollama' : 'Install Ollama';
+            html += `<div class="mb-1">Status: <span class="badge bg-secondary">not running</span></div>`;
+            html += `<button class="btn btn-sm btn-success" onclick="window._aiOllamaInstall(${s.container_exists})"><i class="fas fa-download me-1"></i>${label}</button>`;
+            html += `<div class="text-muted mt-1">Runs <code>${_esc(s.runtime)} ${s.container_exists ? 'start' : 'run'} ollama</code> on your host${s.gpu_passthrough ? ' with GPU passthrough' : ' (CPU only)'}.</div>`;
+        } else {
+            html += `<div class="mb-1">Status: <span class="badge bg-success">running</span> · ${(s.models || []).length} model(s)</div>`;
+            if (s.models && s.models.length) {
+                html += '<div class="mb-1">' + s.models.map(m =>
+                    `<span class="badge bg-light text-dark border">${_esc(m.name)}${m.size_gb ? ` (${m.size_gb} GB)` : ''}</span>`).join(' ') + '</div>';
+            }
+            if (rec && !haveModel) {
+                html += `<button class="btn btn-sm btn-primary me-1" onclick="window._aiOllamaPull('${_esc(rec)}')"><i class="fas fa-cloud-download-alt me-1"></i>Pull ${_esc(rec)}</button>`;
+            }
+            if (haveModel) {
+                html += `<button class="btn btn-sm btn-success" onclick="window._aiOllamaUse('${_esc(rec)}')"><i class="fas fa-plug me-1"></i>Use ${_esc(rec)} for AI</button>`;
+            }
+        }
+        box.innerHTML = html + '</div>';
+    } catch (e) {
+        box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
+    }
+}
+
+function _aiOllamaRenderJob(j) {
+    const box = document.getElementById('ai-ollama');
+    if (!box) return;
+    const tail = (j.log || []).slice(-6).map(_esc).join('\n');
+    const st = j.status === 'running'
+        ? `<i class="fas fa-spinner fa-spin"></i> ${_esc(j.action || 'working')}…`
+        : j.status === 'done' ? '<span class="text-success">done</span>'
+            : '<span class="text-danger">error</span>';
+    box.innerHTML = `<div class="border rounded p-2 small">
+        <div class="fw-bold mb-1">Ollama ${_esc(j.action || '')} ${st}</div>
+        <pre class="mb-0 bg-dark text-light p-2 rounded" style="max-height:140px;overflow:auto;font-size:.72rem">${tail || '…'}</pre>
+    </div>`;
+}
+
+function _aiOllamaPoll() {
+    const tick = async () => {
+        try {
+            const j = await (await fetch('/api/ai/ollama/job')).json();
+            _aiOllamaRenderJob(j);
+            if (j.status === 'running') { setTimeout(tick, 2000); }
+            else { setTimeout(_aiOllamaRender, 600); }
+        } catch (e) { setTimeout(tick, 3000); }
+    };
+    tick();
+}
+
+async function _aiOllamaInstall(exists) {
+    const msg = exists
+        ? 'Start the existing Ollama container on this host?'
+        : 'Start the Ollama container via podman/docker on this host? This downloads the Ollama image (~hundreds of MB) the first time.';
+    if (!confirm(msg)) return;
+    try {
+        const r = await fetch('/api/ai/ollama/install', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) { alert(d.detail || d.error || 'Install failed'); return; }
+        _aiOllamaPoll();
+    } catch (e) { alert(e.message); }
+}
+
+async function _aiOllamaPull(model) {
+    if (!confirm(`Download "${model}" into Ollama? This can be several GB and may take a while.`)) return;
+    try {
+        const r = await fetch('/api/ai/ollama/pull', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
+        });
+        const d = await r.json();
+        if (!r.ok) { alert(d.detail || d.error || 'Pull failed'); return; }
+        _aiOllamaPoll();
+    } catch (e) { alert(e.message); }
+}
+
+async function _aiOllamaUse(model) {
+    try {
+        const r = await fetch('/api/ai/config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'ollama', base_url: 'http://localhost:11434/v1', model })
+        });
+        const d = await r.json();
+        _aiConfigured = !!d.configured;
+        const badge = document.getElementById('ai-status-badge');
+        if (badge) {
+            badge.className = `badge ${_aiConfigured ? 'bg-success' : 'bg-secondary'} small`;
+            badge.textContent = `AI: ${_aiConfigured ? 'connected' : 'optional'}`;
+        }
+        _aiOllamaRender();
+    } catch (e) { alert(e.message); }
 }
 
 // ============================================================================
@@ -698,6 +812,9 @@ window._aiTestConnection = _aiTestConnection;
 window._aiUseExample = _aiUseExample;
 window._aiShowHelp = _aiShowHelp;
 window._aiCheckHost = _aiCheckHost;
+window._aiOllamaInstall = _aiOllamaInstall;
+window._aiOllamaPull = _aiOllamaPull;
+window._aiOllamaUse = _aiOllamaUse;
 window._aiToggleChat = _aiToggleChat;
 window._aiChatSend = _aiChatSend;
 window._aiChatClear = _aiChatClear;
