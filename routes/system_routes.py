@@ -13,6 +13,21 @@ from modules.zigbee_debug import get_debugger
 
 logger = logging.getLogger("routes.system")
 
+
+def _read_app_version():
+    """Read /app/VERSION once at import. Used by the health endpoint so the
+    upgrade watcher can confirm the NEW version actually booted after a swap."""
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "VERSION")) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+_APP_VERSION = _read_app_version()
+
+
 def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, get_manager):
     """Register system management routes."""
 
@@ -227,9 +242,10 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         and by the in-app upgrade health probe. Must remain cheap and
         synchronous-friendly — no DB queries, no I/O, no waiting on
         subsystems. If it returns 200, the FastAPI process is up and
-        serving; that's all callers need.
+        serving; that's all callers need. The optional `version` lets the
+        upgrade watcher confirm the NEW image actually booted after a swap.
         """
-        return {"status": "ok"}
+        return {"status": "ok", "version": _APP_VERSION}
 
     # ---- MQTT Explorer ----
 

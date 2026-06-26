@@ -419,6 +419,122 @@ kill_port_squatters() {
     done
 }
 
+# ── HEALTH WAITER (stable + version-aware) ──────────────────────────────────
+# Poll the candidate URLs until the app answers 200 for N CONSECUTIVE checks
+# (a single 200 isn't enough — a container can answer once then crash-loop).
+#
+# If $expect_version is non-empty AND the health response includes a "version"
+# field, the version must match before a check counts. This catches the case
+# where the OLD image somehow ended up serving the port after the swap. It is
+# best-effort: a health response WITHOUT a version field (older image being
+# rolled back to) still passes, so we never break rollbacks to old tags.
+#
+# Args: timeout_seconds expect_version url...
+# Returns 0 once stable-healthy, 1 on timeout.
+wait_until_healthy() {
+    local timeout="$1"; shift
+    local expect_version="$1"; shift
+    local urls=("$@")
+    local elapsed=0 stable=0 working=""
+    local need=2  # consecutive passes required
+
+    [[ ${#urls[@]} -eq 0 ]] && return 1
+
+    while (( elapsed < timeout )); do
+        if working=$(is_app_healthy "${urls[@]}"); then
+            if [[ -n "$expect_version" ]]; then
+                local got
+                got=$(curl -fsS -k --max-time 3 "$working" 2>/dev/null \
+                      | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+                      | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+                if [[ -n "$got" && "$got" != "$expect_version" ]]; then
+                    log "Health: responding but version=$got (want $expect_version) — not counting"
+                    stable=0
+                    sleep 3; elapsed=$((elapsed + 3)); continue
+                fi
+            fi
+            stable=$((stable + 1))
+            if (( stable >= need )); then
+                log "Health: stable ($stable consecutive passes) via $working"
+                return 0
+            fi
+        else
+            stable=0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    return 1
+}
+
+# ── HARDENED ROLLBACK ────────────────────────────────────────────────────────
+# Single rollback path used by every do_swap failure branch. Relies on do_swap's
+# locals ($previous_name, $target_version) via bash dynamic scope.
+#
+# Unlike the old inline rollback, this one:
+#   - waits for the dying container to release :8000/:5580 before restarting the
+#     previous one (otherwise the restore fails to bind and we end up with
+#     NOTHING running),
+#   - VERIFIES the restored container actually serves (not just "started"),
+#   - retries once with a port-squatter kill, and
+#   - reports an honest CRITICAL status if it genuinely cannot restore service.
+rollback_to_previous() {
+    local reason="${1:-unknown failure}"
+    log "Rollback: $reason — restoring $previous_name"
+    write_status "rolling_back" "$target_version" 85 "Rolling back: $reason"
+
+    # Tear down the failed new container.
+    "$RUNTIME" stop -t 10 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    "$RUNTIME" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+    # Let the ports come free before we try to bind them again.
+    if ! wait_for_ports_free 60; then
+        log "Rollback: ports still busy — killing squatters"
+        kill_port_squatters 8000 5580
+    fi
+
+    if ! "$RUNTIME" inspect "$previous_name" >/dev/null 2>&1; then
+        log "Rollback: CRITICAL — previous container $previous_name not found"
+        unmask_unit_if_needed
+        container_unit_start
+        write_status "failed" "$target_version" 100 "Rollback failed" \
+            "Upgrade failed ($reason) AND no previous container was available to restore. Manual intervention required — see build.log / upgrade_watcher.log."
+        return 1
+    fi
+
+    "$RUNTIME" rename "$previous_name" "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    "$RUNTIME" start "$CONTAINER_NAME" >>"$WATCHER_LOG" 2>&1 || true
+    unmask_unit_if_needed
+    container_unit_start
+
+    # Build health candidates from config and CONFIRM the restored app serves.
+    local health_candidates=()
+    while IFS= read -r url; do [[ -n "$url" ]] && health_candidates+=("$url"); done < <(detect_health_urls)
+
+    if wait_until_healthy 45 "" "${health_candidates[@]}"; then
+        log "Rollback: previous container restored and verified healthy"
+        write_status "failed" "$target_version" 100 "Rolled back" \
+            "Upgrade failed ($reason); previous version restored and verified healthy. See build.log."
+        return 1
+    fi
+
+    # Restored container didn't come up — last-resort kill + restart.
+    log "Rollback: restored container not healthy — last-resort restart"
+    kill_port_squatters 8000 5580
+    "$RUNTIME" restart "$CONTAINER_NAME" >>"$WATCHER_LOG" 2>&1 || true
+    if wait_until_healthy 45 "" "${health_candidates[@]}"; then
+        log "Rollback: recovered on retry"
+        write_status "failed" "$target_version" 100 "Rolled back (after retry)" \
+            "Upgrade failed ($reason); previous version restored after a retry. See build.log."
+        return 1
+    fi
+
+    log "Rollback: CRITICAL — could not restore a healthy service"
+    write_status "failed" "$target_version" 100 "Rollback could not restore service" \
+        "CRITICAL: upgrade failed ($reason) and the previous version did NOT come back healthy. The app may be DOWN — check '${RUNTIME} ps -a' and ${WATCHER_LOG}."
+    return 1
+}
+
 # ── BUILD: clone target tag, build image, tag with version ──────────────────
 do_build() {
     local target_version
@@ -856,13 +972,18 @@ do_swap() {
     local run_helper
     if ! run_helper=$(find_run_helper); then
         log "Swap: run_container.sh not found in any known location"
-        write_status "failed" "$target_version" 50 "Swap failed" "run_container.sh helper not installed"
-        # Restore old container
-        "$RUNTIME" rename "$previous_name" "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" start "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        unmask_unit_if_needed
-        container_unit_start
+        rollback_to_previous "run_container.sh helper not installed"
         return 1
+    fi
+
+    # The old container has stopped but the host ports may still be in TIME_WAIT
+    # (or rootlessport may not have released them yet). Wait for them to be
+    # bindable before starting the new container, otherwise it fails to bind
+    # :8000/:5580 and we'd needlessly roll back a perfectly good image.
+    write_status "swapping" "$target_version" 55 "Waiting for ports to free"
+    if ! wait_for_ports_free 60; then
+        log "Swap: ports still busy after wait — killing squatters before start"
+        kill_port_squatters 8000 5580
     fi
 
     write_status "swapping" "$target_version" 60 "Starting new container"
@@ -874,13 +995,18 @@ do_swap() {
     log_to_build "Helper: $run_helper"
     log_to_build ""
 
+    # Bound the start so a hung run_container.sh can't wedge the swap forever
+    # (only if coreutils `timeout` exists; otherwise run unbounded).
+    local run_timeout=""
+    command -v timeout >/dev/null 2>&1 && run_timeout="timeout 180"
+
     if ! RUNTIME="$RUNTIME" \
          IMAGE_TAG="$new_tag" \
          CONTAINER_NAME="$CONTAINER_NAME" \
          DATA_DIR="$DATA_DIR" \
-         bash "$run_helper" 2>&1 | tee -a "$BUILD_LOG" >>"$WATCHER_LOG"
+         $run_timeout bash "$run_helper" 2>&1 | tee -a "$BUILD_LOG" >>"$WATCHER_LOG"
     then
-        log "Swap: new container failed to start — rolling back"
+        log "Swap: new container failed to start (or timed out) — rolling back"
 
         log_to_build ""
         log_to_build "=== NEW CONTAINER FAILED TO START — capturing logs ==="
@@ -890,17 +1016,11 @@ do_swap() {
         log_to_build "=== Failed container inspect ==="
         "$RUNTIME" inspect "$CONTAINER_NAME" 2>>"$BUILD_LOG" | head -100 >>"$BUILD_LOG" || true
 
-        write_status "rolling_back" "$target_version" 70 "New container failed — rolling back"
-        "$RUNTIME" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" rename "$previous_name" "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" start "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        unmask_unit_if_needed
-        container_unit_start
-        write_status "failed" "$target_version" 100 "Rolled back" "New container failed to start; old container restored. See build.log for details."
+        rollback_to_previous "new container failed to start"
         return 1
     fi
 
-    # ── STEP 4: Health check ─────────────────────────────────────────────────
+    # ── STEP 4: Health check (stable + version-aware) ─────────────────────────
     write_status "swapping" "$target_version" 80 "Health-checking new container"
 
     local health_candidates=()
@@ -909,22 +1029,10 @@ do_swap() {
     done < <(detect_health_urls)
 
     log "Swap: health-check candidates: ${health_candidates[*]}"
-    log "Swap: waiting up to ${HEALTH_TIMEOUT}s for new container to become healthy"
+    log "Swap: waiting up to ${HEALTH_TIMEOUT}s for v${target_version} to become stable-healthy"
 
-    local healthy=0 elapsed=0 working_url=""
-    while (( elapsed < HEALTH_TIMEOUT )); do
-        if working_url=$(is_app_healthy "${health_candidates[@]}"); then
-            healthy=1
-            log "Swap: health check passed via $working_url"
-            break
-        fi
-        sleep 3
-        elapsed=$((elapsed + 3))
-    done
-
-    if (( healthy == 0 )); then
+    if ! wait_until_healthy "$HEALTH_TIMEOUT" "$target_version" "${health_candidates[@]}"; then
         log "Swap: health check failed — rolling back"
-        write_status "rolling_back" "$target_version" 90 "Health check failed — rolling back"
 
         log_to_build ""
         log_to_build "=== HEALTH CHECK FAILED — capturing failed container logs ==="
@@ -932,14 +1040,7 @@ do_swap() {
         "$RUNTIME" logs --tail=100 "$CONTAINER_NAME" >>"$BUILD_LOG" 2>&1 || \
             log_to_build "(no container logs available)"
 
-        "$RUNTIME" stop -t 10 "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" rename "$previous_name" "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        "$RUNTIME" start "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        unmask_unit_if_needed
-        container_unit_start
-        local tried="${health_candidates[*]}"
-        write_status "failed" "$target_version" 100 "Rolled back after health failure" "New container did not respond at any of: ${tried} within ${HEALTH_TIMEOUT}s. See build.log for the new container's startup log."
+        rollback_to_previous "new container did not become stable-healthy within ${HEALTH_TIMEOUT}s"
         return 1
     fi
 

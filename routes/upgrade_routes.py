@@ -18,9 +18,10 @@ import logging
 from typing import Any, Dict
 
 from fastapi import FastAPI, Body, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from modules import upgrade_manager as um
+from modules import live_edits
 
 logger = logging.getLogger("routes.upgrade")
 
@@ -35,8 +36,16 @@ def register_upgrade_routes(app: FastAPI):
             state = um.load_state()
             host_status = um.read_status()
 
+            # Cheap count so the upgrade card can warn that an upgrade will
+            # discard live, in-container edits (full list via /live-edits).
+            try:
+                live_edit_count = live_edits.detect_live_edits(use_cache=True).get("count", 0)
+            except Exception:
+                live_edit_count = 0
+
             return {
                 "success": True,
+                "live_edit_count": live_edit_count,
                 "current_version": state.get("current_version"),
                 "latest_available": state.get("latest_available"),
                 "update_available": bool(
@@ -66,6 +75,40 @@ def register_upgrade_routes(app: FastAPI):
             }
         except Exception as e:
             logger.error(f"Failed to get upgrade status: {e}")
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+    @app.get("/api/upgrade/live-edits")
+    async def get_live_edits():
+        """List in-container code edits that an image-based upgrade would discard.
+
+        Used by the UI to warn before build/swap. Never fails the page —
+        returns an empty result on any detection error.
+        """
+        try:
+            return {"success": True, **live_edits.detect_live_edits()}
+        except Exception as e:
+            logger.error(f"Live-edit detection failed: {e}")
+            return {"success": True, "supported": False, "method": "none",
+                    "exact": False, "count": 0, "files": []}
+
+    @app.get("/api/upgrade/live-edits/export")
+    async def export_live_edits():
+        """Download a zip of the current content of live-edited files so the
+        user can keep them before an upgrade discards them."""
+        try:
+            data, fname = live_edits.build_export_archive()
+            if not data:
+                return JSONResponse(
+                    {"success": False, "error": "No live edits to export"},
+                    status_code=404,
+                )
+            return Response(
+                content=data,
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            )
+        except Exception as e:
+            logger.error(f"Live-edit export failed: {e}")
             return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
     @app.post("/api/upgrade/check")
