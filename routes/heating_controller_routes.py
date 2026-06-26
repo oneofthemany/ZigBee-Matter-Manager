@@ -700,15 +700,17 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
             reprojected = False
 
             if mode == "manual":
-                for c in controller_block.get("circuits") or []:
+                import copy
+                manual_circuits = copy.deepcopy(controller_block.get("circuits") or [])
+                for c in manual_circuits:
                     for r in c.get("rooms") or []:
                         if not isinstance(r, dict):
                             continue
-                        # Strip plan linkage so the manual UI isn't locked
                         if r.pop("floor_plan_ref", None):
                             stripped += 1
                         r.pop("radiators", None)
                         r.pop("temperature_sensors", None)
+                heating["circuits"] = _clean_circuits(manual_circuits)
 
             elif mode == "floor_plan":
                 plan = heating.get("floor_plan")
@@ -790,7 +792,12 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                         "night_setback_offset_c": float(oh_block.get("night_setback_offset_c", -3.0)),
                         "out_of_hours_action": str(oh_block.get("out_of_hours_action", "setback")).lower(),
                     },
-                    "circuits": _clean_circuits(heating.get("circuits") or []),
+                    "circuits": _clean_circuits(
+                        controller_block.get("circuits")
+                        if (controller_block.get("config_mode") or "manual") == "floor_plan"
+                        else heating.get("circuits")
+                             or []
+                    ),
                 },
             }
         except Exception as e:
@@ -907,7 +914,11 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                         oh_out["out_of_hours_action"] = a
 
             if "circuits" in incoming:
-                heating["circuits"] = _clean_circuits(incoming["circuits"])
+                config_mode = controller_block.get("config_mode") or "manual"
+                if config_mode == "floor_plan":
+                    controller_block["circuits"] = _clean_circuits(incoming["circuits"])
+                else:
+                    heating["circuits"] = _clean_circuits(incoming["circuits"])
 
             _save_config(cfg)
             logger.info("Heating controller config saved via API")
@@ -1024,7 +1035,12 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
 
             cfg = _load_config()
             heating = cfg.setdefault("heating", {})
-            circuits = heating.get("circuits") or []
+            controller_block = heating.setdefault("controller", {})
+            config_mode = controller_block.get("config_mode") or "manual"
+            if config_mode == "floor_plan":
+                circuits = controller_block.get("circuits") or []
+            else:
+                circuits = heating.get("circuits") or []
             target_circuit = next(
                 (c for c in circuits if c.get("id") == circuit_id), None
             )
@@ -1046,7 +1062,10 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
 
             # Re-clean before persisting to apply the standard sanitiser
             # (clamps, type coercion, schedule normalisation).
-            heating["circuits"] = _clean_circuits(circuits)
+            if config_mode == "floor_plan":
+                controller_block["circuits"] = _clean_circuits(circuits)
+            else:
+                heating["circuits"] = _clean_circuits(circuits)
             _save_config(cfg)
 
             ctrl = _resolve()
