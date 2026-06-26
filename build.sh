@@ -542,10 +542,16 @@ RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
 WORKDIR /app
 
 # ── Application requirements (layer cache) ──
-COPY requirements.txt .
+# Install from the fully-pinned lockfile for reproducible builds/upgrades.
+# requirements.lock is generated from requirements.txt via:
+#   uv pip compile requirements.txt --python-version 3.11 \
+#       --python-platform x86_64-manylinux_2_31 -o requirements.lock
+# It already includes python-matter-server[server] (and its home-assistant-chip-core
+# native runtime), so no separate extras install is needed. The manylinux_2_31
+# platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
+COPY requirements.lock .
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir "python-matter-server[server]"
+ && pip install --no-cache-dir -r requirements.lock
 DOCKERFILE_TOP
 
     # Part 2 — zmm_telemetry Rust appender (optional)
