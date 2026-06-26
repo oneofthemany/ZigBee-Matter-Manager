@@ -8,32 +8,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 
+from handlers.matter_parsers import BaseMatterParser
+
 logger = logging.getLogger("routes.matter_attributes")
 
-# Matter cluster name lookup (common clusters)
-MATTER_CLUSTER_NAMES = {
-    3: "Identify", 4: "Groups", 5: "Scenes", 6: "OnOff",
-    8: "LevelControl", 15: "BinaryInputBasic",
-    28: "OtaSoftwareUpdateProvider", 29: "OtaSoftwareUpdateRequestor",
-    30: "LocalizationConfiguration", 31: "TimeFormatLocalization",
-    40: "BasicInformation", 41: "OtaSoftwareUpdateProvider",
-    43: "LocalizationConfiguration", 44: "TimeFormatLocalization",
-    45: "UnitLocalization", 48: "GeneralCommissioning",
-    49: "NetworkCommissioning", 50: "DiagnosticLogs",
-    51: "GeneralDiagnostics", 52: "SoftwareDiagnostics",
-    53: "ThreadNetworkDiagnostics", 54: "WiFiNetworkDiagnostics",
-    55: "EthernetNetworkDiagnostics", 59: "Switch",
-    60: "AdministratorCommissioning", 62: "OperationalCredentials",
-    63: "GroupKeyManagement", 69: "BooleanState",
-    257: "DoorLock", 258: "WindowCovering",
-    512: "PumpConfigurationAndControl",
-    513: "Thermostat", 514: "FanControl",
-    516: "ThermostatUserInterfaceConfiguration",
-    768: "ColorControl", 769: "BallastConfiguration",
-    1024: "IlluminanceMeasurement", 1026: "TemperatureMeasurement",
-    1027: "PressureMeasurement", 1028: "FlowMeasurement",
-    1029: "RelativeHumidityMeasurement", 1030: "OccupancySensing",
-}
+# Canonical cluster-name lookup — single source of truth in matter_parsers.
+MATTER_CLUSTER_NAMES = BaseMatterParser.CLUSTER_NAMES
 
 # Common attribute names per cluster
 MATTER_ATTR_NAMES = {
