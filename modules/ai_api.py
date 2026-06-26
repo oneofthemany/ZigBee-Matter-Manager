@@ -120,6 +120,17 @@ async def nl_help():
     return ai_auto.local.help()
 
 
+@router.get("/host")
+async def host_capability():
+    """llmfit-style host assessment: can this box run a local LLM, and which?
+
+    Read-only — measures CPU/RAM/GPU and recommends a model/backend. Gates
+    whether the install/serving UI should offer anything at all.
+    """
+    from modules.llm_host import HostCapabilityAssessor
+    return HostCapabilityAssessor().assess()
+
+
 @router.get("/status")
 async def ai_status():
     """Check AI provider configuration status."""
