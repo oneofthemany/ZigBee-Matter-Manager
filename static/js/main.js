@@ -18,6 +18,9 @@ let editorInitialised = false;
 import { initSettings } from './settings.js';
 initSettings();
 
+import { initMedia } from './media.js';
+initMedia();
+
 import { initNotifications } from './notifications.js';
 initNotifications();
 

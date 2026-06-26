@@ -9,6 +9,18 @@ weather:
   poll_interval_minutes: 60
   mqtt_publish: false
 
+media:
+  enabled: true
+  poll_interval_seconds: 10
+  cast:
+    enabled: true
+    app_id: "CC1AD845"        # default media receiver; swap for a custom Web Receiver later
+  wiim:
+    enabled: true
+    devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
+  radio_browser:
+    enabled: true
+
 heating:
   enabled: true
   property: { type, age, insulation, glazing, floor_area_m2, floors }

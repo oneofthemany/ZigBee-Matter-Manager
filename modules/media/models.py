@@ -1,0 +1,93 @@
+"""
+Media subsystem data models.
+
+Plain dataclasses with ``to_dict()`` so routes can serialise them straight to
+JSON for the UI / WebSocket push. Kept deliberately small and provider-agnostic.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Optional, List, Dict, Any
+
+
+class PlaybackState(str, Enum):
+    IDLE = "idle"
+    PLAYING = "playing"
+    PAUSED = "paused"
+    BUFFERING = "buffering"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class MediaItem:
+    """Something playable — a radio station, or any direct stream URL."""
+    url: str
+    title: str = ""
+    artist: str = ""
+    artwork_url: str = ""
+    # "radio" | "url" | (later) "tidal" etc. Helps the UI render hints.
+    media_type: str = "url"
+    content_type: str = "audio/mpeg"  # MIME hint for players that want one
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RadioStation:
+    """A Radio-Browser directory entry, normalised."""
+    uuid: str
+    name: str
+    url: str               # resolved stream URL (url_resolved)
+    favicon: str = ""
+    homepage: str = ""
+    country: str = ""
+    tags: str = ""
+    codec: str = ""
+    bitrate: int = 0
+
+    def to_media_item(self) -> MediaItem:
+        return MediaItem(
+            url=self.url,
+            title=self.name,
+            artist=self.country or "Radio",
+            artwork_url=self.favicon,
+            media_type="radio",
+            content_type="audio/mpeg" if (self.codec or "").upper() != "AAC" else "audio/aac",
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class PlayerState:
+    """
+    Snapshot of a single player. ``provider`` distinguishes ecosystems
+    ("cast" | "wiim"); ``player_id`` is globally unique (provider-prefixed).
+    """
+    player_id: str
+    provider: str
+    name: str
+    available: bool = True
+    state: PlaybackState = PlaybackState.UNKNOWN
+    volume: float = 0.0           # 0.0–1.0
+    muted: bool = False
+    # Whether this device is itself a group (Cast group, or a WiiM master).
+    is_group: bool = False
+    group_members: List[str] = field(default_factory=list)  # player_ids
+    # Now-playing
+    title: str = ""
+    artist: str = ""
+    artwork_url: str = ""
+    media_type: str = ""
+    position_ms: int = 0
+    duration_ms: int = 0
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["state"] = self.state.value
+        return d

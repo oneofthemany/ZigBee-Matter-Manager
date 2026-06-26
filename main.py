@@ -147,6 +147,7 @@ try:
     from modules.matter_definitions import get_definition_store
     from modules.rotary_bindings import get_rotary_binding_manager
     from modules.weather import WeatherService
+    from modules.media import MediaService
     from modules.heating_advisor import HeatingAdvisor
     from modules.heating_controller import HeatingController
     from modules.heating_anomaly_watcher import HeatingAnomalyWatcher
@@ -184,6 +185,7 @@ try:
         register_presence_routes,
         register_sun_routes,
         register_floor_plan_routes,
+        register_media_routes,
         register_api_docs_routes,
         manager, broadcast_event,
     )
@@ -279,6 +281,10 @@ zigbee_service = ZigbeeService(
 weather_service = WeatherService(
     config=CONFIG.get("weather", {}),
     mqtt_service=mqtt_service,
+)
+
+media_service = MediaService(
+    config=CONFIG.get("media", {}),
 )
 
 
@@ -561,6 +567,10 @@ async def lifespan(app: FastAPI):
     weather_service.start()
     logger.info("Weather service initialised")
 
+    # media (multi-room audio: Cast / WiiM / radio)
+    media_service.start()
+    logger.info("Media service initialised")
+
     # heating
     heating_advisor.start()
     logger.info("Heating Advisor initialised")
@@ -728,6 +738,7 @@ async def lifespan(app: FastAPI):
     system_monitor.stop()
     telemetry_collector.stop()
     weather_service.stop()
+    media_service.stop()
     heating_advisor.stop()
     heating_controller.stop()
     heating_anomaly_watcher.stop()
@@ -864,6 +875,7 @@ register_automation_routes(app,
 register_backup_routes(app, get_zigbee_service)
 register_weather_routes(app, lambda: weather_service)
 register_sun_routes(app, lambda: weather_service)
+register_media_routes(app, lambda: media_service)
 register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher)
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)

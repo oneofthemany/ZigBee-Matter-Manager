@@ -101,6 +101,7 @@
    <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#devices"><i class="fas fa-list"></i> Devices</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#groups"><i class="fas fa-layer-group"></i> Groups</button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#media"><i class="fas fa-music"></i> Media</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automations"><i class="fas fa-bolt"></i> Automations</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#heating"><i class="fas fa-temperature-high"></i> Heating</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> Zones</button></li>
@@ -527,6 +528,55 @@
             <div id="system-content">
                 <div class="text-center text-muted py-4">
                     <i class="fas fa-spinner fa-spin"></i> Loading system telemetry...
+                </div>
+            </div>
+        </div>
+
+        <!-- MEDIA TAB -->
+        <div class="tab-pane fade" id="media">
+            <div class="row g-3">
+                <div class="col-lg-7">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                            <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> Players</span>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-secondary" onclick="window.mediaRefresh()" title="Rescan">
+                                    <i class="fas fa-sync-alt"></i>
+                                </button>
+                                <button class="btn btn-outline-primary" onclick="window.mediaOpenGroupBuilder()" title="Group players">
+                                    <i class="fas fa-object-group"></i> Group
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="mediaPlayers">
+                            <div class="text-center text-muted py-4">
+                                <i class="fas fa-spinner fa-spin"></i> Discovering players...
+                            </div>
+                        </div>
+                        <div class="card-footer text-muted small">
+                            <i class="fas fa-info-circle me-1"></i>
+                            Cast speaker groups are managed in the Google Home app and appear here automatically.
+                            WiiM players can be grouped here.
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-5">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-light py-2">
+                            <span class="fw-bold"><i class="fas fa-broadcast-tower me-1"></i> Radio</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="input-group input-group-sm mb-3">
+                                <input type="text" class="form-control" id="mediaRadioQuery"
+                                       placeholder="Search stations (e.g. jazz, BBC, classical)"
+                                       onkeydown="if(event.key==='Enter')window.mediaRadioSearch()">
+                                <button class="btn btn-primary" onclick="window.mediaRadioSearch()">
+                                    <i class="fas fa-search"></i>
+                                </button>
+                            </div>
+                            <div id="mediaRadioResults"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

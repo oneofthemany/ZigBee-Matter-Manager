@@ -228,6 +228,13 @@ export function initWS() {
                     }
                     break;
 
+                // handle media player state push
+                case "media_state":
+                    if (typeof window.handleMediaState === 'function') {
+                        window.handleMediaState(msg.payload || msg.data);
+                    }
+                    break;
+
                 // handle mqtt message
                 case "mqtt_message":
                     if (msg.payload) {
