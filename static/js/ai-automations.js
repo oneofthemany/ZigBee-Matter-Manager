@@ -50,6 +50,14 @@ export function renderAIPanel() {
             <!-- Settings (hidden by default) -->
             <div id="ai-settings" style="display:none" class="mb-3 p-2 bg-light rounded small">
                 <div id="ai-settings-alert"></div>
+                <!-- Host capability check -->
+                <div class="mb-2 d-flex justify-content-between align-items-center">
+                    <span class="fw-bold"><i class="fas fa-microchip me-1"></i> Host check</span>
+                    <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._aiCheckHost()">
+                        <i class="fas fa-gauge-high me-1"></i> Assess this host
+                    </button>
+                </div>
+                <div id="ai-host" class="mb-3"></div>
                 <div class="row g-2 mb-2">
                     <div class="col-md-3">
                         <label class="form-label small mb-0">Provider</label>
@@ -465,6 +473,56 @@ async function _aiTestConnection() {
 }
 
 // ============================================================================
+// HOST CAPABILITY CHECK
+// ============================================================================
+
+async function _aiCheckHost() {
+    const box = document.getElementById('ai-host');
+    if (!box) return;
+    box.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin"></i> Measuring CPU / RAM / GPU…</span>';
+    try {
+        const h = await (await fetch('/api/ai/host')).json();
+        const v = h.verdict || {};
+        const cls = !v.llm_viable ? 'secondary' : v.tier === 'gpu' ? 'success'
+            : v.tier === 'cpu' ? 'warning' : 'info';
+        const gpu = h.gpu && h.gpu.present
+            ? `${h.gpu.name}${h.gpu.vram_total_gb ? ` · ${h.gpu.vram_free_gb ?? h.gpu.vram_total_gb}/${h.gpu.vram_total_gb} GB VRAM` : ''}`
+            : 'none detected';
+        const fits = (h.recommendations || []).filter(r => r.fits)
+            .map(r => `<span class="badge bg-light text-dark border" title="~${r.est_gb} GB ${r.where}">${_esc(r.name)}</span>`).join(' ');
+        const ollama = h.backends?.ollama || {};
+        const ollamaBadge = ollama.running
+            ? '<span class="badge bg-success">Ollama running</span>'
+            : ollama.installed
+                ? '<span class="badge bg-info text-dark">Ollama installed (stopped)</span>'
+                : ollama.installable
+                    ? '<span class="badge bg-secondary">Ollama not installed</span>'
+                    : '';
+        const sglang = h.backends?.sglang?.viable
+            ? '<span class="badge bg-success">SGLang viable</span>'
+            : `<span class="badge bg-secondary" title="${_esc(h.backends?.sglang?.reason || '')}">SGLang n/a</span>`;
+        box.innerHTML = `
+            <div class="alert alert-${cls} py-2 mb-2 small">
+                <div class="fw-bold">${_esc(v.headline || 'Assessment complete')}</div>
+                <div>${_esc(v.detail || '')}</div>
+            </div>
+            <div class="row g-2 small">
+                <div class="col-md-4"><strong>CPU:</strong> ${_esc(h.cpu?.model || '?')}
+                    <span class="text-muted">(${h.cpu?.cores_logical} threads)</span></div>
+                <div class="col-md-4"><strong>RAM:</strong> ${h.ram?.available_gb}/${h.ram?.total_gb} GB free</div>
+                <div class="col-md-4"><strong>GPU:</strong> ${_esc(gpu)}</div>
+            </div>
+            <div class="mt-2 small"><strong>Backends:</strong> ${ollamaBadge} ${sglang}
+                ${h.backends?.container_runtime ? `<span class="badge bg-light text-dark border">${h.backends.container_runtime}</span>` : ''}</div>
+            ${fits ? `<div class="mt-2 small"><strong>Fits here:</strong> ${fits}</div>` : ''}
+            ${v.recommended_model ? `<div class="mt-1 small text-muted">Recommended: <code>${_esc(v.recommended_model)}</code></div>` : ''}
+        `;
+    } catch (e) {
+        box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
+    }
+}
+
+// ============================================================================
 // HELP / EXAMPLES
 // ============================================================================
 
@@ -525,4 +583,5 @@ window._aiProviderChanged = _aiProviderChanged;
 window._aiTestConnection = _aiTestConnection;
 window._aiUseExample = _aiUseExample;
 window._aiShowHelp = _aiShowHelp;
+window._aiCheckHost = _aiCheckHost;
 window._aiGeneratedRule = null;
