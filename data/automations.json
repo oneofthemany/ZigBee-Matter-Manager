@@ -1,0 +1,44 @@
+{
+  "rules": [
+    {
+      "id": "auto_c918f07b",
+      "name": "Porch night",
+      "enabled": true,
+      "source_ieee": "P1",
+      "conditions": [
+        {
+          "type": "sun",
+          "from": "sunset",
+          "to": "sunrise",
+          "days": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "negate": false
+        }
+      ],
+      "prerequisites": [],
+      "then_sequence": [
+        {
+          "type": "command",
+          "target_ieee": "P1",
+          "command": "on"
+        }
+      ],
+      "else_sequence": [
+        {
+          "type": "command",
+          "target_ieee": "P1",
+          "command": "off"
+        }
+      ],
+      "cooldown": 5,
+      "created": 1782500485.323788
+    }
+  ]
+}

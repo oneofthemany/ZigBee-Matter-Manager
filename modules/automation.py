@@ -159,14 +159,13 @@ class AutomationEngine:
                 for rule in self.rules:
                     if not rule.get("enabled", True):
                         continue
-                    for c in rule.get("conditions", []):
-                        if c.get("type") == "time_window":
+                    for c in rule.get("conditions", []) + rule.get("prerequisites", []):
+                        ct = c.get("type")
+                        if ct == "time_window":
                             boundaries.add(c.get("time_from"))
                             boundaries.add(c.get("time_to"))
-                    for p in rule.get("prerequisites", []):
-                        if p.get("type") == "time_window":
-                            boundaries.add(p.get("time_from"))
-                            boundaries.add(p.get("time_to"))
+                        elif ct == "sun":
+                            boundaries.update(self._sun_boundary_hhmm(c))
 
                 if now_hhmm in boundaries:
                     logger.info(f"[AUTO] Time boundary hit {now_hhmm} — evaluating timed rules")
@@ -191,11 +190,12 @@ class AutomationEngine:
             if not rule.get("enabled", True):
                 continue
 
+            _TEMPORAL = ("time_window", "sun")
             has_tw_cond = any(
-                c.get("type") == "time_window" for c in rule.get("conditions", [])
+                c.get("type") in _TEMPORAL for c in rule.get("conditions", [])
             )
             has_tw_prereq = any(
-                p.get("type") == "time_window" for p in rule.get("prerequisites", [])
+                p.get("type") in _TEMPORAL for p in rule.get("prerequisites", [])
             )
             if not (has_tw_cond or has_tw_prereq):
                 continue
@@ -380,6 +380,10 @@ class AutomationEngine:
                         return f"Condition {i+1} (time_window) missing '{f}'"
                     if not re.match(r"^\d{2}:\d{2}$", str(c[f])):
                         return f"Condition {i+1} '{f}' must be HH:MM"
+            elif ctype == "sun":
+                err = self._validate_sun(c, f"Condition {i+1}")
+                if err:
+                    return err
             else:
                 for f in ("attribute", "operator", "value"):
                     if f not in c:
@@ -409,12 +413,28 @@ class AutomationEngine:
                         return f"Prerequisite {i+1} (time_window) missing '{f}'"
                     if not re.match(r"^\d{2}:\d{2}$", str(p[f])):
                         return f"Prerequisite {i+1} '{f}' must be HH:MM"
+            elif ptype == "sun":
+                err = self._validate_sun(p, f"Prerequisite {i+1}")
+                if err:
+                    return err
             else:
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in p:
                         return f"Prerequisite {i+1} missing '{f}'"
                 if p["operator"] not in OPERATORS:
                     return f"Prerequisite {i+1} invalid operator"
+        return None
+
+    @staticmethod
+    def _validate_sun(c: Dict, label: str) -> Optional[str]:
+        import re
+        for f in ("from", "to"):
+            v = c.get(f)
+            if v not in ("sunrise", "sunset") and not re.match(r"^\d{2}:\d{2}$", str(v or "")):
+                return f"{label} sun '{f}' must be 'sunrise', 'sunset', or HH:MM"
+        for f in ("offset_from", "offset_to"):
+            if f in c and not isinstance(c[f], (int, float)):
+                return f"{label} sun '{f}' must be a number of minutes"
         return None
 
     def _validate_sequence(self, steps: List[Dict], label: str, depth: int = 0) -> Optional[str]:
@@ -749,6 +769,14 @@ class AutomationEngine:
 
         for i, cond in enumerate(conditions):
             ctype = cond.get("type", "attribute")
+            if ctype == "sun":
+                import datetime
+                matched, info = self._eval_sun(cond, datetime.datetime.now())
+                results.append({"index": i + 1, "type": "sun", **info,
+                                "result": "PASS" if matched else "FAIL"})
+                if not matched:
+                    all_ok = False; break
+                continue
             if ctype == "time_window":
                 import datetime
                 negate = cond.get("negate", False)
@@ -831,19 +859,28 @@ class AutomationEngine:
 
 
     def _eval_prerequisites(self, prereqs, devices, names):
-        """Evaluate prerequisites. time_window entries are OR'd; device entries are AND'd."""
+        """Evaluate prerequisites. Temporal entries (time_window/sun) are OR'd;
+        device entries are AND'd."""
         import datetime
         results = []
         all_met = True
 
         # ---- Partition ----
-        tw_prereqs  = [(j, p) for j, p in enumerate(prereqs) if p.get("type") == "time_window"]
-        dev_prereqs = [(j, p) for j, p in enumerate(prereqs) if p.get("type", "device") != "time_window"]
+        _TEMPORAL = ("time_window", "sun")
+        tw_prereqs  = [(j, p) for j, p in enumerate(prereqs) if p.get("type") in _TEMPORAL]
+        dev_prereqs = [(j, p) for j, p in enumerate(prereqs) if p.get("type", "device") not in _TEMPORAL]
 
-        # ---- time_window: OR logic ----
+        # ---- temporal: OR logic ----
         if tw_prereqs:
             tw_any_passed = False
             for j, p in tw_prereqs:
+                if p.get("type") == "sun":
+                    matched, info = self._eval_sun(p, datetime.datetime.now())
+                    results.append({"index": j + 1, "type": "sun", **info,
+                                    "result": "PASS" if matched else "FAIL"})
+                    if matched:
+                        tw_any_passed = True
+                    continue
                 negate = p.get("negate", False)
                 now_dt = datetime.datetime.now()
                 now_time = now_dt.time()
@@ -922,6 +959,74 @@ class AutomationEngine:
                 all_met = False; break
 
         return all_met, results
+
+    # =========================================================================
+    # SUN (dynamic sunrise/sunset) — re-resolved every evaluation, so rules
+    # track the seasons rather than freezing to one day's clock times.
+    # =========================================================================
+
+    def _eval_sun(self, cond, now_dt):
+        """Return (matched: bool, info: dict). Window between two boundaries that
+        may be 'sunrise', 'sunset', or a fixed 'HH:MM', each with an optional
+        minute offset. Overnight wrap supported, identical to time_window."""
+        import datetime
+        from modules.sun_times import sun_times
+        st = sun_times(now_dt.date())
+        info = {"from": cond.get("from"), "to": cond.get("to"),
+                "now_time": now_dt.strftime("%H:%M")}
+        if not st.get("available"):
+            info["reason"] = "location not configured (set weather lat/lon)"
+            return False, info
+
+        t_from = self._resolve_sun_boundary(cond.get("from", "sunset"), st,
+                                            cond.get("offset_from", 0))
+        t_to = self._resolve_sun_boundary(cond.get("to", "sunrise"), st,
+                                          cond.get("offset_to", 0))
+        if t_from is None or t_to is None:
+            info["reason"] = f"polar {st.get('polar')}" if st.get("polar") else "no sun event"
+            return False, info
+
+        info["resolved"] = f"{t_from.strftime('%H:%M')}–{t_to.strftime('%H:%M')}"
+        days = cond.get("days", list(range(7)))
+        day_ok = now_dt.weekday() in days
+        now_time = now_dt.time()
+        if t_from <= t_to:
+            time_ok = t_from <= now_time <= t_to
+        else:  # overnight wrap
+            time_ok = now_time >= t_from or now_time <= t_to
+        matched = day_ok and time_ok
+        if cond.get("negate"):
+            matched = not matched
+        return matched, info
+
+    @staticmethod
+    def _resolve_sun_boundary(spec, st, offset_min):
+        import datetime
+        if spec in ("sunrise", "sunset"):
+            base = st.get(spec)
+            if base is None:
+                return None
+            ref = datetime.datetime.combine(datetime.date.today(), base) \
+                + datetime.timedelta(minutes=offset_min or 0)
+            return ref.time()
+        try:
+            hh, mm = map(int, str(spec).split(":"))
+            return datetime.time(hh, mm)
+        except Exception:
+            return None
+
+    def _sun_boundary_hhmm(self, cond) -> set:
+        """Today's resolved HH:MM boundaries for a sun condition, for the
+        scheduler's boundary set."""
+        from modules.sun_times import sun_times
+        st = sun_times()
+        out = set()
+        for spec, off in ((cond.get("from", "sunset"), cond.get("offset_from", 0)),
+                          (cond.get("to", "sunrise"), cond.get("offset_to", 0))):
+            t = self._resolve_sun_boundary(spec, st, off)
+            if t is not None:
+                out.add(t.strftime("%H:%M"))
+        return out
 
     def _eval_inline_conditions(self, inline_conditions, logic="and"):
         """Evaluate inline conditions for if_then_else steps.

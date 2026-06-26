@@ -14,6 +14,13 @@ import { initAIAutomations, renderAIPanel } from './ai-automations.js';
 
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
+// Readable label for a dynamic sun condition (sunrise/sunset window).
+function _sunDesc(c) {
+    const off = x => x ? ` ${x > 0 ? '+' : ''}${x}m` : '';
+    const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span> ' : '';
+    return `${neg}🌅 <code>${c.from}${off(c.offset_from)} → ${c.to}${off(c.offset_to)}</code>`;
+}
+
 let allRulesCache = [];
 let devMapCache = {};
 let filterDevice = '';
@@ -184,6 +191,8 @@ function _renderRulesList(devMap = devMapCache) {
                     const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                     const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
                     cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+                } else if (c.type === 'sun') {
+                    cDesc = _sunDesc(c);
                 } else {
                     const sus = c.sustain ? `<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>` : '';
                     const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
@@ -200,6 +209,8 @@ function _renderRulesList(devMap = devMapCache) {
                     const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
                     const dayStr = (!p.days || p.days.length === 7) ? 'Every day' : p.days.map(d => DAY_NAMES[d]).join(', ');
                     pDesc = `${neg} Time <code>${p.time_from} → ${p.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+                } else if (p.type === 'sun') {
+                    pDesc = _sunDesc(p);
                 } else {
                     pDesc = `${neg} <code>${p.device_name || p.ieee || '?'}</code> ${p.attribute} ${OP[p.operator] || p.operator} <code>${p.value}</code>`;
                 }

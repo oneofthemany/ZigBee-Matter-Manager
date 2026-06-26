@@ -29,6 +29,15 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel'};
 
+// Readable label for a dynamic sun condition (sunrise/sunset window).
+function _sunDesc(c) {
+    const off = x => x ? ` ${x > 0 ? '+' : ''}${x}m` : '';
+    const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span> ' : '';
+    return `${neg}🌅 <code>${c.from}${off(c.offset_from)} → ${c.to}${off(c.offset_to)}</code>`;
+}
+// Boundary choices for the Sun condition From/To pickers.
+const _SUN_OPTS = [['sunrise','Sunrise'],['sunset','Sunset'],['00:00','Start of day'],['23:59','End of day']];
+
 // ── Group optgroup builder ──
 function _devOpts(list, selectedIeee, extraAttrs='') {
     const devs = list.filter(d => !d._is_group);
@@ -113,6 +122,8 @@ function _renderRules(rules) {
                 const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                 const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
                 cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+            } else if (c.type === 'sun') {
+                cDesc = _sunDesc(c);
             } else {
                 const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
                 const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
@@ -127,6 +138,8 @@ function _renderRules(rules) {
                 const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 const dayStr = (!p.days || p.days.length === 7) ? 'Every day' : p.days.map(d => DAY_NAMES[d]).join(', ');
                 pDesc = `<code>${p.time_from} → ${p.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+            } else if (p.type === 'sun') {
+                pDesc = _sunDesc(p);
             } else {
                 pDesc = `${p.device_name||p.ieee} <code>${p.attribute}</code> ${OP[p.operator]||p.operator} <code>${p.value}</code>`;
             }
@@ -276,10 +289,18 @@ function _renderCond(id, ctype) {
         <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label><input type="time" class="form-control form-control-sm ct-from" data-id="${id}" style="width:110px" value="00:00"></div>
         <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label><input type="time" class="form-control form-control-sm ct-to" data-id="${id}" style="width:110px" value="23:59"></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
+    const sunSel = (cls, sel) => `<select class="form-select form-select-sm ${cls}" data-id="${id}" style="width:115px">${_SUN_OPTS.map(([v,l])=>`<option value="${v}" ${sel===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    const sunRow = `
+        <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input cn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label>${sunSel('cs-from','sunset')}</div>
+        <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm cs-off-from" data-id="${id}" placeholder="±min" title="offset minutes"></div>
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label>${sunSel('cs-to','sunrise')}</div>
+        <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm cs-off-to" data-id="${id}" placeholder="±min" title="offset minutes"></div>`;
+    const body = ctype==='time_window' ? timeRow : ctype==='sun' ? sunRow : attrRow;
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
-        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option></select></div>
-        <div style="display:contents">${ctype==='time_window'?timeRow:attrRow}</div>
+        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option></select></div>
+        <div style="display:contents">${body}</div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
@@ -297,6 +318,12 @@ function _setC(id,c){
         const tt = r2.querySelector('.ct-to');   if (tt) tt.value = c.time_to   || '23:59';
         const days = c.days ?? [0,1,2,3,4,5,6];
         r2.querySelectorAll('.ctd').forEach(cb => { cb.checked = days.includes(parseInt(cb.dataset.day)); });
+    } else if (ctype === 'sun') {
+        const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
+        const sf = r2.querySelector('.cs-from'); if (sf) sf.value = c.from || 'sunset';
+        const st = r2.querySelector('.cs-to');   if (st) st.value = c.to   || 'sunrise';
+        const of = r2.querySelector('.cs-off-from'); if (of && c.offset_from) of.value = c.offset_from;
+        const ot = r2.querySelector('.cs-off-to');   if (ot && c.offset_to)   ot.value = c.offset_to;
     } else {
         const s=r2.querySelector('.ca');if(!s)return;s.value=c.attribute;window._aCa(id,s);
         setTimeout(()=>{const o=r2.querySelector('.co');if(o){o.value=c.operator;if(o.onchange)o.onchange();}
@@ -327,6 +354,13 @@ function _renderPrereq(id, ptype) {
         <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label><input type="time" class="form-control form-control-sm pt-from" data-id="${id}" style="width:110px" value="00:00"></div>
         <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label><input type="time" class="form-control form-control-sm pt-to" data-id="${id}" style="width:110px" value="23:59"></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
+    const sunSel = (cls, sel) => `<select class="form-select form-select-sm ${cls}" data-id="${id}" style="width:115px">${_SUN_OPTS.map(([v,l])=>`<option value="${v}" ${sel===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    const sunRow = `
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label>${sunSel('ps-from','sunset')}</div>
+        <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm ps-off-from" data-id="${id}" placeholder="±min"></div>
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label>${sunSel('ps-to','sunrise')}</div>
+        <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm ps-off-to" data-id="${id}" placeholder="±min"></div>`;
+    const body = ptype === 'time_window' ? timeRow : ptype === 'sun' ? sunRow : deviceRow;
 
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="p-${id}">
         <div class="col-auto"><span class="badge bg-info text-dark small">CHECK</span></div>
@@ -335,9 +369,10 @@ function _renderPrereq(id, ptype) {
             <select class="form-select form-select-sm ptype" data-id="${id}" style="width:90px" onchange="window._aPType(${id},this)">
                 <option value="device" ${ptype==='device'?'selected':''}>Device</option>
                 <option value="time_window" ${ptype==='time_window'?'selected':''}>Time/Day</option>
+                <option value="sun" ${ptype==='sun'?'selected':''}>Sun</option>
             </select>
         </div>
-        <div class="prereq-body-${id}" style="display:contents">${ptype === 'time_window' ? timeRow : deviceRow}</div>
+        <div class="prereq-body-${id}" style="display:contents">${body}</div>
         <div class="col-auto"><button class="btn btn-sm btn-outline-danger" onclick="window._aRmP(${id})"><i class="fas fa-times"></i></button></div>
     </div>`;
 }
@@ -365,6 +400,11 @@ function _setP(id, p) {
         r2.querySelectorAll('.ptd').forEach(cb => {
             cb.checked = days.includes(parseInt(cb.dataset.day));
         });
+    } else if (ptype === 'sun') {
+        const sf = r2.querySelector('.ps-from'); if (sf) sf.value = p.from || 'sunset';
+        const st = r2.querySelector('.ps-to');   if (st) st.value = p.to   || 'sunrise';
+        const of = r2.querySelector('.ps-off-from'); if (of && p.offset_from) of.value = p.offset_from;
+        const ot = r2.querySelector('.ps-off-to');   if (ot && p.offset_to)   ot.value = p.offset_to;
     } else {
         const d = r2.querySelector('.pd'); if (d) { d.value = p.ieee; window._aPd(id, d); }
         setTimeout(() => {
@@ -620,8 +660,10 @@ window._aCType = (id, sel) => {
     const neg = row.querySelector('.cn')?.checked || false;
     row.outerHTML = _renderCond(id, ctype);
     const newRow = document.getElementById(`c-${id}`);
-    if (newRow && ctype !== 'time_window') { /* attr row needs no restore */ }
-    if (newRow && ctype === 'time_window') { const n = newRow.querySelector('.cn'); if (n) n.checked = neg; }
+    // Carry the NOT flag across to the temporal rows that have it.
+    if (newRow && (ctype === 'time_window' || ctype === 'sun')) {
+        const n = newRow.querySelector('.cn'); if (n) n.checked = neg;
+    }
 };
 // Prerequisites
 window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector(`#p-${id} .pa`);if(!aS||!ieee)return;
@@ -746,6 +788,16 @@ window._aSave=async()=>{
             const neg=row.querySelector('.cn')?.checked||false;
             const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
             conditions.push({type:'time_window',time_from:tf,time_to:tt,days,negate:neg});
+        } else if(ctype==='sun'){
+            const frm=row.querySelector('.cs-from')?.value||'sunset';
+            const to=row.querySelector('.cs-to')?.value||'sunrise';
+            const neg=row.querySelector('.cn')?.checked||false;
+            const offF=parseInt(row.querySelector('.cs-off-from')?.value);
+            const offT=parseInt(row.querySelector('.cs-off-to')?.value);
+            const c={type:'sun',from:frm,to:to,negate:neg};
+            if(!isNaN(offF))c.offset_from=offF;
+            if(!isNaN(offT))c.offset_to=offT;
+            conditions.push(c);
         } else {
             const a=row.querySelector('.ca')?.value,o=row.querySelector('.co')?.value;
             const vE=row.querySelector(`#cv-${id} .cv`),r=vE?.value,s=row.querySelector('.cs')?.value;
@@ -773,6 +825,14 @@ window._aSave=async()=>{
             const days = [];
             row.querySelectorAll('.ptd').forEach(cb => { if (cb.checked) days.push(parseInt(cb.dataset.day)); });
             prerequisites.push({ type: 'time_window', time_from: tf, time_to: tt, days, negate: neg });
+        } else if (ptype === 'sun') {
+            const c = { type: 'sun', from: row.querySelector('.ps-from')?.value || 'sunset',
+                        to: row.querySelector('.ps-to')?.value || 'sunrise', negate: neg };
+            const offF = parseInt(row.querySelector('.ps-off-from')?.value);
+            const offT = parseInt(row.querySelector('.ps-off-to')?.value);
+            if (!isNaN(offF)) c.offset_from = offF;
+            if (!isNaN(offT)) c.offset_to = offT;
+            prerequisites.push(c);
         } else {
             const ieee = row.querySelector('.pd')?.value;
             const a    = row.querySelector('.pa')?.value;
@@ -903,6 +963,8 @@ async function _loadTr() {
                     const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                     const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
                     cLine=`#${c.index} Time${c.negate?' NOT':''} ${c.time_from}→${c.time_to} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
+                }else if(c.type==='sun'){
+                    cLine=`#${c.index} Sun ${c.from}→${c.to}${c.resolved?` (${c.resolved})`:''} now=${c.now_time||''}`;
                 }else{
                     cLine=`#${c.index} ${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → ${c.actual_raw||'?'} (${c.actual_type||''})`;
                     if(c.sustain_elapsed!=null)cLine+=` ⏱${c.sustain_elapsed}s`;if(c.value_source)cLine+=` ${c.value_source}`;
@@ -914,6 +976,8 @@ async function _loadTr() {
                 if(p.type==='time_window'){
                     const dayStr=(!p.days||p.days.length===7)?'Every day':p.days.map(d=>DAY_NAMES[d]).join(',');
                     pLine=`CHECK${p.negate?' NOT':''} Time ${p.time_from}→${p.time_to} [${dayStr}] now=${p.now_time} weekday=${p.now_weekday}`;
+                }else if(p.type==='sun'){
+                    pLine=`CHECK Sun ${p.from}→${p.to}${p.resolved?` (${p.resolved})`:''} now=${p.now_time||''}`;
                 }else{
                     pLine=`CHECK${p.negate?' NOT':''} ${p.device_name||p.ieee} ${p.attribute} ${p.operator||''} ${p.threshold_raw||'?'} → ${p.actual_raw||'?'}`;
                 }
