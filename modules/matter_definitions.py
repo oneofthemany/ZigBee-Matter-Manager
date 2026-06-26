@@ -352,13 +352,15 @@ def generate_definition_draft(attributes: dict) -> dict:
     If an existing definition is found, merge new scan data into it
     while preserving rotary_bindings targets and user edits.
     """
-    from handlers.matter_parsers import BaseMatterParser, BasicInfoAttrs
+    from handlers.matter_parsers import (
+        BaseMatterParser, MatterClusters, BasicInfoAttrs, PowerSourceAttrs,
+    )
 
     base = BaseMatterParser()
-    vendor_name = base.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_NAME, "Unknown")
-    vendor_id = base.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_ID, 0)
-    product_name = base.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_NAME, "")
-    part_number = base.find_attr(attributes, 40, BasicInfoAttrs.PART_NUMBER, "")
+    vendor_name = base.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_NAME, "Unknown")
+    vendor_id = base.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_ID, 0)
+    product_name = base.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, "")
+    part_number = base.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PART_NUMBER, "")
     device_type = base.get_device_type(attributes)
 
     store = get_definition_store()
@@ -478,17 +480,17 @@ def generate_definition_draft(attributes: dict) -> dict:
             action_key = f"{group}_button_action"
             if action_key not in state_mapping:
                 state_mapping[action_key] = {
-                    "ep": int(ep_id_str), "cluster": 59, "attr": -1,
+                    "ep": int(ep_id_str), "cluster": MatterClusters.SWITCH, "attr": -1,
                     "type": "event_action",
                     "description": f"{ep_info.get('label', '')} action",
                     "value_options": ["press", "single", "double", "triple", "hold", "release"],
                 }
 
     # Battery
-    bat = base.find_attr(attributes, 47, 12)
+    bat = base.find_attr(attributes, MatterClusters.POWER_SOURCE, PowerSourceAttrs.BAT_PERCENT_REMAINING)
     if bat is not None:
         state_mapping["battery"] = {
-            "ep": 0, "cluster": 47, "attr": 12,
+            "ep": 0, "cluster": MatterClusters.POWER_SOURCE, "attr": PowerSourceAttrs.BAT_PERCENT_REMAINING,
             "type": "battery", "description": "Battery percentage",
         }
         capabilities.add("battery")
@@ -567,23 +569,26 @@ class DefinitionParser:
         return self._def.get("product_id", self._def.get("model", "Unknown"))
 
     def get_friendly_name(self, attributes: dict) -> str:
-        label = self.find_attr(attributes, 40, 5, "")
+        from handlers.matter_parsers import MatterClusters, BasicInfoAttrs
+        label = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.NODE_LABEL, "")
         if label:
             return str(label)
         return self._def.get("model", "Matter Device")
 
     def parse_basic_info(self, attributes: dict) -> dict:
+        from handlers.matter_parsers import MatterClusters, BasicInfoAttrs
+        bi = MatterClusters.BASIC_INFORMATION
         return {
-            "vendor_name": self.find_attr(attributes, 40, 1, self._def.get("manufacturer", "")),
-            "vendor_id": self.find_attr(attributes, 40, 2, self._def.get("vendor_id", 0)),
-            "product_name": self.find_attr(attributes, 40, 3, self._def.get("model", "")),
-            "product_id": self.find_attr(attributes, 40, 4, 0),
-            "node_label": self.find_attr(attributes, 40, 5, ""),
-            "part_number": self.find_attr(attributes, 40, 12, self._def.get("product_id", "")),
-            "hardware_version": self.find_attr(attributes, 40, 8, ""),
-            "software_version": self.find_attr(attributes, 40, 10, ""),
-            "serial_number": self.find_attr(attributes, 40, 15, ""),
-            "location": self.find_attr(attributes, 40, 6, ""),
+            "vendor_name": self.find_attr(attributes, bi, BasicInfoAttrs.VENDOR_NAME, self._def.get("manufacturer", "")),
+            "vendor_id": self.find_attr(attributes, bi, BasicInfoAttrs.VENDOR_ID, self._def.get("vendor_id", 0)),
+            "product_name": self.find_attr(attributes, bi, BasicInfoAttrs.PRODUCT_NAME, self._def.get("model", "")),
+            "product_id": self.find_attr(attributes, bi, BasicInfoAttrs.PRODUCT_ID, 0),
+            "node_label": self.find_attr(attributes, bi, BasicInfoAttrs.NODE_LABEL, ""),
+            "part_number": self.find_attr(attributes, bi, BasicInfoAttrs.PART_NUMBER, self._def.get("product_id", "")),
+            "hardware_version": self.find_attr(attributes, bi, BasicInfoAttrs.HARDWARE_VERSION_STRING, ""),
+            "software_version": self.find_attr(attributes, bi, BasicInfoAttrs.SOFTWARE_VERSION_STRING, ""),
+            "serial_number": self.find_attr(attributes, bi, BasicInfoAttrs.SERIAL_NUMBER, ""),
+            "location": self.find_attr(attributes, bi, BasicInfoAttrs.LOCATION, ""),
             "definition": self._def.get("product_id", ""),
         }
 

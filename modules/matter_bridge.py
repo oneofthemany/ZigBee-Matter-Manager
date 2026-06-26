@@ -15,7 +15,7 @@ import time
 import logging
 from typing import Dict, Optional, Callable, Any, List
 
-from handlers.matter_parsers import get_parser_for_node, BaseMatterParser
+from handlers.matter_parsers import get_parser_for_node, BaseMatterParser, MatterClusters
 
 try:
     import aiohttp
@@ -665,7 +665,7 @@ class MatterBridge:
             endpoint_id = 1
 
             if command in ("on", "off", "toggle"):
-                cluster_id = 6
+                cluster_id = MatterClusters.ON_OFF
                 command_name = {"on": "On", "off": "Off", "toggle": "Toggle"}[command]
                 await self._send_command("device_command", {
                     "node_id": node_id,
@@ -675,7 +675,7 @@ class MatterBridge:
                 })
 
             elif command == "brightness":
-                cluster_id = 8
+                cluster_id = MatterClusters.LEVEL_CONTROL
                 level = int((value or 0) * 2.54)
                 await self._send_command("device_command", {
                     "node_id": node_id,
@@ -686,7 +686,7 @@ class MatterBridge:
                 })
 
             elif command == "color_temp":
-                cluster_id = 768
+                cluster_id = MatterClusters.COLOR_CONTROL
                 mireds = int(1000000 / max(value or 4000, 1))
                 await self._send_command("device_command", {
                     "node_id": node_id,
