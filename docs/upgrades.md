@@ -861,7 +861,7 @@ The UI shows this when `request_build` / `request_swap` finds the lock file held
 ps aux | grep -E "podman build|upgrade.sh" | grep -v grep
 ```
 
-If anything is running, **wait for it**. Builds typically take 2–10 minutes on x86_64 / Rock 5B with warm cache; up to 25 minutes on a cold cache.
+If anything is running, **wait for it**. Builds typically take a few moments.
 
 If nothing is running, the lock is stale. The Python side auto-detects stale locks (PID dead OR age > 60min) and clears them. If you want to force-clear immediately, the UI surfaces a "Force-clear lock" option after a 409, or:
 
