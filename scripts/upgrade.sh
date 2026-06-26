@@ -1058,6 +1058,12 @@ do_swap() {
     log "Swap: Cleaning up clone directory..."
     find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name 'build.sh' ! -name 'scripts' -exec rm -rf {} + 2>/dev/null || true
 
+    # Prune stale images now that the new version is healthy. Keeps the running
+    # and rollback (-previous) images; honours the configured retention. Runs in
+    # "auto" mode so it never writes status or fails the (already-successful) swap.
+    log "Swap: running image GC (retention-based + dangling)"
+    do_gc auto || log "Swap: GC returned non-zero (non-fatal)"
+
     write_status "idle" "$target_version" 100 "Upgrade complete" ""
     return 0
 }
@@ -1136,29 +1142,100 @@ do_cancel() {
     write_status "idle" "" 0 "Cancelled by user" ""
 }
 
-# ── GC: prune old images beyond retention ────────────────────────────────────
+# ── GC: prune old images beyond retention + dangling layers ──────────────────
+# Bugs this replaces:
+#   - `grep "^${IMAGE_NAME}:"` never matched: podman prints repositories with a
+#     registry prefix (localhost/zigbee-matter-manager), so the anchored match
+#     found nothing and GC silently removed nothing.
+#   - dangling <none> images (old build layers from each rebuild) were never
+#     pruned, so they piled up at ~2GB each.
+#   - the running and rollback (-previous) images weren't explicitly protected.
+#
+# `mode` = "auto" when called internally from do_swap: suppress status writes
+# and never fail the caller.
 do_gc() {
+    local mode="${1:-manual}"
+
+    # Retention: trigger payload first, then persisted state, default 2, min 1.
     local keep
-    keep=$(echo "$TRIGGER_PAYLOAD" | jq -r '.retention_count // 2')
-    log "GC: keeping $keep most recent image tags"
+    keep=$(echo "$TRIGGER_PAYLOAD" | jq -r '.retention_count // empty' 2>/dev/null || echo "")
+    if [[ -z "$keep" || ! "$keep" =~ ^[0-9]+$ ]]; then
+        keep=$(jq -r '.retention_count // empty' "$VERSION_STATE_FILE" 2>/dev/null || echo "")
+    fi
+    [[ "$keep" =~ ^[0-9]+$ ]] || keep=2
+    (( keep < 1 )) && keep=1
+    log "GC: keeping $keep most recent version image(s) (mode=$mode)"
 
-    # List tags matching IMAGE_NAME:<version>-<arch>, sort by created desc, keep first N
-    local to_remove
-    to_remove=$("$RUNTIME" images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' 2>/dev/null \
-        | grep "^${IMAGE_NAME}:" \
-        | grep -vE ":(latest|latest-[a-z0-9_]+)$" \
-        | sort -k2 -r \
-        | awk -v keep="$keep" 'NR > keep {print $1}')
+    # Normalise any image id to a comparable 12-char form (strips sha256:).
+    norm_id() { local x="${1#sha256:}"; echo "${x:0:12}"; }
 
-    if [[ -z "$to_remove" ]]; then
-        log "GC: nothing to remove"
-        return 0
+    # ── Build the protected set: images we must never remove ─────────────────
+    local protected=""
+    local c iid
+    for c in "$CONTAINER_NAME" "${CONTAINER_NAME}-previous"; do
+        iid=$("$RUNTIME" inspect -f '{{.Image}}' "$c" 2>/dev/null || echo "")
+        [[ -n "$iid" ]] && protected+="$(norm_id "$iid")"$'\n'
+    done
+    # The recorded rollback target tag, resolved to an id.
+    local prev_tag prev_id
+    prev_tag=$(jq -r '.previous_image_tag // empty' "$VERSION_STATE_FILE" 2>/dev/null || echo "")
+    if [[ -n "$prev_tag" ]]; then
+        prev_id=$("$RUNTIME" image inspect -f '{{.Id}}' "$prev_tag" 2>/dev/null || echo "")
+        [[ -n "$prev_id" ]] && protected+="$(norm_id "$prev_id")"$'\n'
     fi
 
-    for tag in $to_remove; do
-        log "GC: removing $tag"
-        "$RUNTIME" rmi "$tag" >>"$WATCHER_LOG" 2>&1 || log "GC: failed to remove $tag"
+    is_protected() { grep -qxF "$(norm_id "$1")" <<< "$protected"; }
+
+    # ── Version-tagged candidates, newest first ──────────────────────────────
+    # Format: ID|REPO:TAG|CREATED_AT. Match the repo with an OPTIONAL registry
+    # prefix (localhost/, registry.example.com/ns/, …). Exclude latest* tags.
+    # Sort by the CreatedAt field (third '|' column) descending — robust to the
+    # spaces inside the timestamp.
+    local listing
+    listing=$("$RUNTIME" images --format '{{.ID}}|{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' 2>/dev/null \
+        | grep -E "\|([^|]*/)?${IMAGE_NAME}:" \
+        | grep -vE ":(latest|latest-[a-z0-9_]+)\|" \
+        | sort -t'|' -k3 -r)
+
+    local removed=0 kept=0 idx=0 id reftag created
+    while IFS='|' read -r id reftag created; do
+        [[ -z "$reftag" ]] && continue
+        idx=$((idx + 1))
+        if (( idx <= keep )); then
+            kept=$((kept + 1))
+            continue
+        fi
+        if is_protected "$id"; then
+            log "GC: keeping in-use/rollback image $reftag"
+            kept=$((kept + 1))
+            continue
+        fi
+        log "GC: removing old version $reftag"
+        if "$RUNTIME" rmi "$reftag" >>"$WATCHER_LOG" 2>&1; then
+            removed=$((removed + 1))
+        else
+            log "GC: failed to remove $reftag (in use?)"
+        fi
+    done <<< "$listing"
+
+    # ── Dangling <none> layers from past rebuilds ────────────────────────────
+    local dangling d
+    dangling=$("$RUNTIME" images --filter dangling=true --quiet 2>/dev/null | sort -u)
+    for d in $dangling; do
+        is_protected "$d" && continue
+        log "GC: removing dangling image $d"
+        if "$RUNTIME" rmi "$d" >>"$WATCHER_LOG" 2>&1; then
+            removed=$((removed + 1))
+        else
+            log "GC: dangling $d in use — skipped"
+        fi
     done
+
+    log "GC: done — kept $kept, removed $removed image(s)"
+    if [[ "$mode" != "auto" ]]; then
+        write_status "idle" "" 0 "GC complete — removed ${removed} image(s)" ""
+    fi
+    return 0
 }
 
 # ── INSTALL WATCHER: drop marker so the app knows we're alive ────────────────
