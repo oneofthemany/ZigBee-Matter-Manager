@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Dict, List, Optional
 
 import pychromecast  # ImportError here is caught by MediaService (optional dep)
@@ -37,6 +38,11 @@ _STATE_MAP = {
 
 def _pid(uuid) -> str:
     return f"cast:{uuid}"
+
+
+def _is_group(info) -> bool:
+    """True for a Google-Home speaker group. Normalised against str/enum/case."""
+    return str(getattr(info, "cast_type", "")).lower() == "group"
 
 
 class CastPlayerProvider(PlayerProvider):
@@ -63,7 +69,13 @@ class CastPlayerProvider(PlayerProvider):
             info = self._browser.devices.get(uuid) if self._browser else None
             if info is not None:
                 self._infos[str(uuid)] = info
-                logger.info(f"Cast discovered: {getattr(info, 'friendly_name', uuid)}")
+                # Log cast_type so group-detection issues are diagnosable:
+                # Google-Home speaker groups should report cast_type 'group'.
+                logger.info(
+                    f"Cast discovered: {getattr(info, 'friendly_name', uuid)} "
+                    f"(cast_type={getattr(info, 'cast_type', '?')}, "
+                    f"is_group={_is_group(info)})"
+                )
 
         def _removed(uuid, _service, _cast_info):
             self._infos.pop(str(uuid), None)
@@ -143,14 +155,13 @@ class CastPlayerProvider(PlayerProvider):
         return out
 
     def _state_from_info(self, uuid_str: str, info) -> PlayerState:
-        cast_type = getattr(info, "cast_type", "cast")
         return PlayerState(
             player_id=_pid(uuid_str),
             provider=self.provider,
             name=getattr(info, "friendly_name", uuid_str),
             available=True,
             state=PlaybackState.UNKNOWN,
-            is_group=(cast_type == "group"),
+            is_group=_is_group(info),
         )
 
     async def get_state(self, player_id: str) -> Optional[PlayerState]:
@@ -177,7 +188,7 @@ class CastPlayerProvider(PlayerProvider):
             state=_STATE_MAP.get(getattr(mc_status, "player_state", "UNKNOWN"), PlaybackState.UNKNOWN),
             volume=float(getattr(cast_status, "volume_level", 0.0) or 0.0),
             muted=bool(getattr(cast_status, "volume_muted", False)),
-            is_group=(getattr(info, "cast_type", "cast") == "group"),
+            is_group=_is_group(info),
             title=getattr(mc_status, "title", "") or "",
             artist=getattr(mc_status, "artist", "") or "",
             artwork_url=artwork,
@@ -196,14 +207,41 @@ class CastPlayerProvider(PlayerProvider):
         await asyncio.to_thread(self._play, cast, item)
 
     def _play(self, cast, item: MediaItem):
-        mc = cast.media_controller
-        mc.play_media(
-            item.url,
-            content_type=item.content_type or "audio/mpeg",
-            title=item.title or None,
-            stream_type="LIVE" if item.media_type == "radio" else "BUFFERED",
-        )
-        mc.block_until_active(timeout=10)
+        # Cold-start hardening: on a fresh connection the first play_media can
+        # race the default-receiver launch and get dropped (the "buffers, then
+        # only plays on the 2nd try" symptom). We ensure the socket client is
+        # connected, then issue play_media and confirm it actually goes active —
+        # retrying once if it doesn't, so the user never has to click twice.
+        stream_type = "LIVE" if item.media_type == "radio" else "BUFFERED"
+        last_err = None
+        for attempt in (1, 2):
+            try:
+                cast.wait(timeout=10)            # ensure the socket client is up
+                mc = cast.media_controller
+                mc.play_media(
+                    item.url,
+                    content_type=item.content_type or "audio/mpeg",
+                    title=item.title or None,
+                    stream_type=stream_type,
+                )
+                mc.block_until_active(timeout=15)
+                # Confirm playback actually started before declaring success.
+                deadline = time.time() + 6
+                while time.time() < deadline:
+                    if mc.status.player_state in ("PLAYING", "BUFFERING"):
+                        return
+                    time.sleep(0.5)
+                last_err = RuntimeError(
+                    f"media did not start (state={mc.status.player_state})"
+                )
+            except Exception as e:
+                last_err = e
+            logger.info(
+                f"Cast '{getattr(cast, 'name', '?')}' play attempt {attempt} "
+                f"did not start; {'retrying' if attempt == 1 else 'giving up'}"
+            )
+        if last_err:
+            raise last_err
 
     async def pause(self, player_id: str) -> None:
         await self._mc_call(player_id, "pause")
