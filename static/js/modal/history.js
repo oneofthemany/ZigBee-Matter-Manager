@@ -6,6 +6,11 @@
  * Data source: /api/telemetry/device/{ieee}/...
  */
 
+import { createChart } from '../chart-utils.js';
+
+// Live ECharts instance for the numeric view; disposed/recreated each refresh.
+let _histChart = null;
+
 const HOURS_OPTIONS = [
     { v: 1,   label: '1h'  },
     { v: 6,   label: '6h'  },
@@ -104,6 +109,10 @@ function _buildHistChart(data, attr) {
     const wrap = document.getElementById('hist-chart-wrap');
     if (!wrap) return;
 
+    // Any rebuild starts fresh — drop the previous chart so we don't leak
+    // instances when the attribute/range changes or we switch view modes.
+    if (_histChart) { _histChart.dispose(); _histChart = null; }
+
     const numeric = data.some(r => r.avg !== null && r.avg !== undefined);
 
     if (!numeric) {
@@ -127,100 +136,75 @@ function _buildHistChart(data, attr) {
         return;
     }
 
-    // Numeric: SVG with dots + line + min/max band
-    const W = wrap.clientWidth || 700;
-    const H = 240;
-    const pad = { top: 10, right: 10, bottom: 38, left: 50 };
-    const plotW = W - pad.left - pad.right;
-    const plotH = H - pad.top - pad.bottom;
+    // Numeric: ECharts line with a min/max confidence band behind the average.
+    wrap.innerHTML = '<div id="hist-chart-canvas" style="height:240px"></div>';
+    _histChart = createChart(document.getElementById('hist-chart-canvas'));
 
-    const times = data.map(d => new Date(d.ts).getTime());
-    const tMin = Math.min(...times);
-    const tMax = Math.max(...times);
-    const tRange = (tMax - tMin) || 1;
+    // Sample counts keyed by timestamp, for the tooltip.
+    const samplesByTs = {};
+    data.forEach(d => { samplesByTs[new Date(d.ts).getTime()] = d.samples; });
 
-    const values = data.flatMap(d => [d.min, d.max, d.avg].filter(v => v !== null && v !== undefined));
-    const vMin = Math.min(...values);
-    const vMax = Math.max(...values);
-    // Pad value range by 5% so a single point doesn't sit flush on the axis
-    const vPad = ((vMax - vMin) || Math.max(Math.abs(vMin), 1)) * 0.05;
-    const vLo = vMin - vPad;
-    const vHi = vMax + vPad;
-    const vRange = vHi - vLo || 1;
+    const avgData = data.map(d => [new Date(d.ts).getTime(), d.avg]);
+    // Confidence band via the stacked-area trick: a transparent baseline at
+    // `min`, then `max - min` stacked on top with a filled area.
+    const minData  = data.map(d => [new Date(d.ts).getTime(), d.min]);
+    const bandData = data.map(d => [new Date(d.ts).getTime(), (d.max ?? d.avg) - (d.min ?? d.avg)]);
 
-    const x = t => pad.left + ((t - tMin) / tRange) * plotW;
-    const y = v => pad.top + plotH - ((v - vLo) / vRange) * plotH;
-
-    // Min/max band — only meaningful with ≥ 2 points
-    let bandPolygon = '';
-    let linePolyline = '';
-    if (data.length >= 2) {
-        const topPts = data.map(d => `${x(new Date(d.ts).getTime())},${y(d.max)}`).join(' ');
-        const botPts = data.slice().reverse().map(d => `${x(new Date(d.ts).getTime())},${y(d.min)}`).join(' ');
-        bandPolygon = `<polygon points="${topPts} ${botPts}" fill="#4a90e2" fill-opacity="0.15" stroke="none"/>`;
-        const avgPoints = data.map(d => `${x(new Date(d.ts).getTime())},${y(d.avg)}`).join(' ');
-        linePolyline = `<polyline points="${avgPoints}" fill="none" stroke="#4a90e2" stroke-width="1.5" stroke-linejoin="round"/>`;
-    }
-
-    // Always render dots — guarantees visibility for single-point series too
-    const dots = data.map(d => {
-        const cx = x(new Date(d.ts).getTime());
-        const cy = y(d.avg);
-        const iso = new Date(d.ts).toISOString().replace('T', ' ').slice(0, 19);
-        return `<circle cx="${cx}" cy="${cy}" r="2.5" fill="#4a90e2" stroke="#fff" stroke-width="1">
-                    <title>${iso} — ${d.avg?.toFixed(2)} (${d.samples} samples)</title>
-                </circle>`;
-    }).join('');
-
-    // Y-axis ticks
-    const yTicks = 4;
-    const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => {
-        const v = vLo + (vRange * i / yTicks);
-        const yp = y(v);
-        return `
-            <line x1="${pad.left}" x2="${W - pad.right}" y1="${yp}" y2="${yp}" stroke="#eee" stroke-width="0.5"/>
-            <text x="${pad.left - 4}" y="${yp + 3}" font-size="9" fill="#888" text-anchor="end">${v.toFixed(2)}</text>
-        `;
-    }).join('');
-
-    // X-axis ticks — format depends on the range being shown
-    const xTickCount = 5;
-    const spanMs = tRange;
-    // Rules:
-    //   <= 90min window:  HH:MM:SS
-    //   <= 24h window:    HH:MM
-    //   <= 7d window:     MM/DD HH:MM  (first tick and midnight-crossers show MM/DD)
-    //   >  7d window:     MM/DD
-    const fmt = (d) => {
-        const pad2 = n => String(n).padStart(2, '0');
-        const MM = pad2(d.getMonth() + 1);
-        const DD = pad2(d.getDate());
-        const hh = pad2(d.getHours());
-        const mm = pad2(d.getMinutes());
-        const ss = pad2(d.getSeconds());
-        if (spanMs <= 90 * 60 * 1000)          return { top: `${hh}:${mm}:${ss}`, bot: `${MM}/${DD}` };
-        if (spanMs <= 24 * 60 * 60 * 1000)     return { top: `${hh}:${mm}`, bot: `${MM}/${DD}` };
-        if (spanMs <= 7 * 24 * 60 * 60 * 1000) return { top: `${hh}:${mm}`, bot: `${MM}/${DD}` };
-        return { top: `${MM}/${DD}`, bot: `${d.getFullYear()}` };
-    };
-
-    const xLabels = Array.from({ length: xTickCount + 1 }, (_, i) => {
-        const t = tMin + (tRange * i / xTickCount);
-        const xp = x(t);
-        const parts = fmt(new Date(t));
-        return `
-            <text x="${xp}" y="${H - 18}" font-size="9" fill="#666" text-anchor="middle">${parts.top}</text>
-            <text x="${xp}" y="${H - 6}"  font-size="8" fill="#aaa" text-anchor="middle">${parts.bot}</text>
-        `;
-    }).join('');
-
-    wrap.innerHTML = `
-        <svg id="hist-chart-svg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-            <g>${yLabels}</g>
-            <g>${xLabels}</g>
-            ${bandPolygon}
-            ${linePolyline}
-            ${dots}
-        </svg>
-    `;
+    _histChart.setOption({
+        animationDuration: 500,
+        grid: { top: 16, right: 14, bottom: 24, left: 52 },
+        tooltip: {
+            trigger: 'axis',
+            formatter: (params) => {
+                const p = params.find(x => x.seriesName === attr) || params[0];
+                const ts = p.value[0];
+                const when = new Date(ts).toLocaleString();
+                const n = samplesByTs[ts];
+                const avg = p.value[1];
+                return `${when}<br/><strong>${attr}: ${avg == null ? '—' : Number(avg).toFixed(2)}</strong>`
+                    + (n != null ? `<br/><span style="opacity:.7">${n} samples</span>` : '');
+            },
+        },
+        xAxis: { type: 'time', axisLabel: { fontSize: 9, hideOverlap: true } },
+        yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 9 } },
+        series: [
+            // Invisible baseline for the band.
+            {
+                name: '_min',
+                type: 'line',
+                stack: 'band',
+                data: minData,
+                symbol: 'none',
+                lineStyle: { opacity: 0 },
+                silent: true,
+                tooltip: { show: false },
+                z: 1,
+            },
+            // The band itself (height = max - min).
+            {
+                name: '_band',
+                type: 'line',
+                stack: 'band',
+                data: bandData,
+                symbol: 'none',
+                lineStyle: { opacity: 0 },
+                areaStyle: { color: '#4a90e2', opacity: 0.15 },
+                silent: true,
+                tooltip: { show: false },
+                z: 1,
+            },
+            // The average line + points on top.
+            {
+                name: attr,
+                type: 'line',
+                data: avgData,
+                smooth: true,
+                showSymbol: data.length < 60,
+                symbolSize: 5,
+                lineStyle: { width: 1.5, color: '#4a90e2' },
+                itemStyle: { color: '#4a90e2', borderColor: '#fff', borderWidth: 1 },
+                z: 2,
+            },
+        ],
+    });
 }

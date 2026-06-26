@@ -20,11 +20,15 @@
  */
 
 import { state } from './state.js';
+import { createChart } from './chart-utils.js';
 
 // Cache of last snapshot — also enables a quick re-render if the user opens
 // the modal between WS pushes.
 let _last = null;
 let _initialised = false;
+
+// Persistent ECharts sparkline (updated in place every WS push).
+let _sparkChart = null;
 
 /**
  * One-shot initialisation. Safe to call multiple times.
@@ -63,6 +67,7 @@ export function handlePacketFlow(payload) {
  */
 export function clearPacketFlow() {
     _last = null;
+    if (_sparkChart) { _sparkChart.dispose(); _sparkChart = null; }
     const ids = ['flowGlobalRate', 'flowPeakLine', 'flowSparkline',
                  'flowAnomalies', 'flowTopTalkers', 'flowClusters',
                  'flowStatsSummary', 'flowPeakHistory'];
@@ -287,33 +292,43 @@ function renderSparkline(history) {
     const el = document.getElementById('flowSparkline');
     if (!el) return;
     if (!history || history.length === 0) {
+        if (_sparkChart) { _sparkChart.dispose(); _sparkChart = null; }
         el.innerHTML = '';
         return;
     }
-    const w = 200, h = 30;
     const max = Math.max(1, ...history);
-    const step = w / Math.max(1, history.length - 1);
-    const points = history.map((v, i) => {
-        const x = i * step;
-        const y = h - (v / max) * h;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
 
-    const areaPts = points + ` ${w},${h} 0,${h}`;
-    el.innerHTML = `
-        <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}"
-             preserveAspectRatio="none"
-             style="display:block;overflow:visible;">
-            <polygon fill="rgba(13,110,253,0.15)" points="${areaPts}"/>
-            <polyline fill="none" stroke="#0d6efd" stroke-width="1.5"
-                      points="${points}"/>
-        </svg>
-        <div class="d-flex justify-content-between text-muted"
-             style="font-size:9px;line-height:1;">
-            <span>-60s</span>
-            <span>peak ${max}/s</span>
-            <span>now</span>
-        </div>`;
+    // Build the skeleton (chart + caption row) once, then update in place.
+    if (!_sparkChart) {
+        el.innerHTML = `
+            <div id="flowSparkCanvas" style="height:34px"></div>
+            <div class="d-flex justify-content-between text-muted"
+                 style="font-size:9px;line-height:1;">
+                <span>-60s</span>
+                <span id="flowSparkPeak"></span>
+                <span>now</span>
+            </div>`;
+        _sparkChart = createChart(document.getElementById('flowSparkCanvas'));
+    }
+
+    _sparkChart.setOption({
+        animation: false,
+        grid: { top: 2, right: 0, bottom: 2, left: 0 },
+        tooltip: { show: false },
+        xAxis: { type: 'category', show: false, boundaryGap: false,
+                 data: history.map((_, i) => i) },
+        yAxis: { type: 'value', show: false, min: 0, max },
+        series: [{
+            type: 'line',
+            data: history,
+            symbol: 'none',
+            lineStyle: { width: 1.5, color: '#0d6efd' },
+            areaStyle: { color: 'rgba(13,110,253,0.15)' },
+        }],
+    });
+
+    const peak = document.getElementById('flowSparkPeak');
+    if (peak) peak.textContent = `peak ${max}/s`;
 }
 
 function renderAnomalies(anoms) {

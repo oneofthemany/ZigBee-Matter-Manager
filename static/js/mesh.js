@@ -1,14 +1,14 @@
 /**
  * mesh.js
- * Enhanced mesh visualisation with connection table and packet statistics
+ * Enhanced mesh visualisation with connection table and packet statistics.
+ * Topology graph is rendered with ECharts (force layout); see chart-utils.js.
  */
+
+import { createChart } from './chart-utils.js';
 
 // Module-level state
 let dashboardMeshData = null;
-let dashboardSimulation = null;
-let dashboardSvg = null;
-let dashboardG = null;
-let dashboardZoom = null;
+let _meshChart = null;          // managed ECharts graph instance
 let meshInitialised = false;
 let labelsVisible = true;
 let statsInterval = null;
@@ -60,8 +60,8 @@ export async function loadMeshTopology() {
             const meshContainer = document.querySelector('.mesh-topology-container');
             meshContainer.innerHTML = buildMeshUI();
 
-            // Initialise D3 and Tables
-            initialiseD3Visualisation(data);
+            // Initialise graph and Tables
+            initialiseMeshGraph(data);
             populateConnectionTable(data.connection_table || [], data.nodes || []);
             populatePacketStats(data.nodes || [], data.stats_summary || {});
 
@@ -153,7 +153,7 @@ function buildMeshUI() {
                 <!-- Visualisation Tab -->
                 <div class="tab-pane fade show active" id="meshVisualisation">
                     <div class="mesh-visualisation-wrapper" style="height: 1000px; position: relative; border: 1px solid #dee2e6; border-radius: 0 0 4px 4px; overflow: hidden;">
-                        <svg class="mesh-svg" id="dashboard-mesh-svg" style="width: 100%; height: 100%;"></svg>
+                        <div id="dashboard-mesh-graph" style="width: 100%; height: 100%;"></div>
                     </div>
                 </div>
 
@@ -207,235 +207,130 @@ function buildMeshUI() {
 }
 
 /**
- * Initialise D3 visualszation
- * Online devices participate in force simulation with real links.
- * Offline devices are grouped in a separate area with no links.
+ * Initialise the mesh topology graph (ECharts force layout).
+ * Online devices participate in the force simulation with real links.
+ * Offline devices are pinned in a grid (bottom-right) with no links.
  */
-function initialiseD3Visualisation(data) {
-    const svg = d3.select('#dashboard-mesh-svg');
-    const container = svg.node().parentElement;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+function initialiseMeshGraph(data) {
+    const el = document.getElementById('dashboard-mesh-graph');
+    if (!el) return;
 
-    svg.selectAll('*').remove();
+    if (_meshChart) { _meshChart.dispose(); _meshChart = null; }
+    _meshChart = createChart(el);
 
-    // Set up zoom
-    dashboardZoom = d3.zoom()
-        .scaleExtent([0.1, 4])
-        .on('zoom', (event) => {
-            dashboardG.attr('transform', event.transform);
-        });
+    const width = el.clientWidth || 800;
 
-    svg.call(dashboardZoom);
-
-    dashboardG = svg.append('g');
-    dashboardSvg = svg;
-
-    // Arrow marker for directed links
-    svg.append('defs').append('marker')
-        .attr('id', 'arrowhead')
-        .attr('viewBox', '-0 -5 10 10')
-        .attr('refX', 20)
-        .attr('refY', 0)
-        .attr('orient', 'auto')
-        .attr('markerWidth', 6)
-        .attr('markerHeight', 6)
-        .append('path')
-        .attr('d', 'M 0,-5 L 10,0 L 0,5')
-        .attr('fill', '#999');
-
-    // =========================================================================
-    // SEPARATE ONLINE vs OFFLINE
-    // =========================================================================
     const allNodes = data.nodes || [];
     const allLinks = data.links || [];
-
     const onlineIds = new Set(allNodes.filter(n => n.online).map(n => n.id));
-    const onlineNodes = allNodes.filter(n => n.online);
-    const offlineNodes = allNodes.filter(n => !n.online);
 
-    // Only keep links where BOTH source and target are online
+    // Only keep links where BOTH source and target are online.
     const onlineLinks = allLinks.filter(l => {
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
         return onlineIds.has(srcId) && onlineIds.has(tgtId);
     });
 
-    // =========================================================================
-    // OFFLINE ZONE - fixed positions, bottom-right area
-    // =========================================================================
-    const offlineAreaX = width - 250;
-    const offlineAreaY = 80;
-    const offlineSpacing = 35;
-    const offlineCols = 3;
-
-    offlineNodes.forEach((node, i) => {
-        const col = i % offlineCols;
-        const row = Math.floor(i / offlineCols);
-        node.fx = offlineAreaX + (col * offlineSpacing * 2);
-        node.fy = offlineAreaY + (row * offlineSpacing);
-    });
-
-    // =========================================================================
-    // DRAW OFFLINE ZONE BACKGROUND
-    // =========================================================================
-    if (offlineNodes.length > 0) {
-        const offlineRows = Math.ceil(offlineNodes.length / offlineCols);
-        const bgPadding = 20;
-        const bgWidth = (offlineCols * offlineSpacing * 2) + bgPadding * 2;
-        const bgHeight = (offlineRows * offlineSpacing) + bgPadding * 2 + 25;
-
-        dashboardG.append('rect')
-            .attr('x', offlineAreaX - bgPadding)
-            .attr('y', offlineAreaY - bgPadding - 25)
-            .attr('width', bgWidth)
-            .attr('height', bgHeight)
-            .attr('rx', 8)
-            .attr('fill', '#fff5f5')
-            .attr('stroke', '#dc3545')
-            .attr('stroke-width', 1)
-            .attr('stroke-dasharray', '5,5')
-            .attr('opacity', 0.8);
-
-        dashboardG.append('text')
-            .attr('x', offlineAreaX - bgPadding + bgWidth / 2)
-            .attr('y', offlineAreaY - bgPadding - 8)
-            .attr('text-anchor', 'middle')
-            .attr('font-size', '12px')
-            .attr('font-weight', 'bold')
-            .attr('fill', '#dc3545')
-            .text(`Offline (${offlineNodes.length})`);
-    }
-
-    // =========================================================================
-    // COLOUR HELPERS
-    // =========================================================================
-    const getLinkColor = (lqi) => {
+    const linkColor = (lqi) => {
         if (lqi >= 200) return '#00b894';
         if (lqi >= 150) return '#fdcb6e';
         if (lqi >= 100) return '#e17055';
         return '#d63031';
     };
 
-    // =========================================================================
-    // FORCE SIMULATION — online nodes only participate in forces
-    // =========================================================================
-    const combinedNodes = [...onlineNodes, ...offlineNodes];
-
-    dashboardSimulation = d3.forceSimulation(combinedNodes)
-        .force('link', d3.forceLink(onlineLinks).id(d => d.id).distance(100))
-        .force('charge', d3.forceManyBody().strength(d => d.online ? -300 : 0))
-        .force('center', d3.forceCenter(width / 2 - 100, height / 2))
-        .force('collision', d3.forceCollide().radius(d => d.online ? 40 : 15));
-
-    // =========================================================================
-    // DRAW LINKS (online only)
-    // =========================================================================
-    const link = dashboardG.append('g')
-        .selectAll('line')
-        .data(onlineLinks)
-        .join('line')
-        .attr('stroke', d => getLinkColor(d.lqi))
-        .attr('stroke-opacity', 0.6)
-        .attr('stroke-width', d => Math.max(1, d.lqi / 50))
-        .attr('marker-end', 'url(#arrowhead)');
-
-    // =========================================================================
-    // DRAW NODES (all — online + offline)
-    // =========================================================================
-    const node = dashboardG.append('g')
-        .selectAll('g')
-        .data(combinedNodes)
-        .join('g')
-        .call(d3.drag()
-            .on('start', dragstarted)
-            .on('drag', dragged)
-            .on('end', dragended));
-
-    // Node shapes based on role and online status
-    node.each(function(d) {
-        const el = d3.select(this);
-        if (d.role === 'Coordinator') {
-            el.append('rect')
-                .attr('width', 24)
-                .attr('height', 24)
-                .attr('x', -12)
-                .attr('y', -12)
-                .attr('fill', '#0d6efd')
-                .attr('rx', 4);
-        } else if (!d.online) {
-            // Offline — dimmed with red outline
-            el.append('circle')
-                .attr('r', 8)
-                .attr('fill', '#f8d7da')
-                .attr('stroke', '#dc3545')
-                .attr('stroke-width', 2)
-                .attr('opacity', 0.7);
-        } else {
-            // Online
-            el.append('circle')
-                .attr('r', 10)
-                .attr('fill', d.role === 'Router' ? '#198754' : '#6c757d')
-                .attr('stroke', '#fff')
-                .attr('stroke-width', 2);
-        }
-    });
-
-    // Labels
-    node.append('text')
-        .attr('class', 'mesh-label')
-        .attr('dx', 15)
-        .attr('dy', 4)
-        .attr('font-size', d => d.online ? '11px' : '9px')
-        .attr('fill', d => d.online ? '#333' : '#999')
-        .text(d => d.friendly_name || d.id.slice(-8));
-
-    // Tooltips
-    node.append('title')
-        .text(d => {
-            const stats = d.packet_stats || {};
-            return `${d.friendly_name || d.id}
-Role: ${d.role}
-LQI: ${d.lqi}
-NWK: ${d.network_address}
-Online: ${d.online ? 'Yes' : 'No'}
-RX: ${stats.rx_packets || 0} | TX: ${stats.tx_packets || 0}
-Rate: ${stats.rx_rate || 0}/min`;
+    // Pinned grid positions for offline nodes (bottom-right corner).
+    const offlineNodes = allNodes.filter(n => !n.online);
+    const offCols = 3, offSpacing = 38;
+    const offX0 = Math.max(80, width - 230), offY0 = 60;
+    const offlinePos = new Map();
+    offlineNodes.forEach((n, i) => {
+        offlinePos.set(n.id, {
+            x: offX0 + (i % offCols) * offSpacing,
+            y: offY0 + Math.floor(i / offCols) * offSpacing,
         });
-
-    // =========================================================================
-    // SIMULATION TICK
-    // =========================================================================
-    dashboardSimulation.on('tick', () => {
-        link
-            .attr('x1', d => d.source.x)
-            .attr('y1', d => d.source.y)
-            .attr('x2', d => d.target.x)
-            .attr('y2', d => d.target.y);
-
-        node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
 
-    // Drag functions
-    function dragstarted(event, d) {
-        if (!event.active) dashboardSimulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-    }
+    // Categories drive node colour + legend; offline nodes override per-node.
+    const categories = [
+        { name: 'Coordinator', itemStyle: { color: '#0d6efd' } },
+        { name: 'Router',      itemStyle: { color: '#198754' } },
+        { name: 'End Device',  itemStyle: { color: '#6c757d' } },
+        { name: 'Offline',     itemStyle: { color: '#f8d7da' } },
+    ];
 
-    function dragged(event, d) {
-        d.fx = event.x;
-        d.fy = event.y;
-    }
-
-    function dragended(event, d) {
-        if (!event.active) dashboardSimulation.alphaTarget(0);
-        // Only release online nodes — offline stay pinned
-        if (d.online) {
-            d.fx = null;
-            d.fy = null;
+    const nodes = allNodes.map(n => {
+        const isCoord = n.role === 'Coordinator';
+        const node = {
+            id: n.id,
+            name: n.friendly_name || n.id.slice(-8),
+            symbol: isCoord ? 'rect' : 'circle',
+            symbolSize: isCoord ? 22 : (n.online ? 18 : 14),
+            category: !n.online ? 3 : isCoord ? 0 : n.role === 'Router' ? 1 : 2,
+            itemStyle: n.online
+                ? { borderColor: '#fff', borderWidth: 2 }
+                : { color: '#f8d7da', borderColor: '#dc3545', borderWidth: 2, opacity: 0.85 },
+            _info: n,   // full record, for the tooltip
+        };
+        if (!n.online) {
+            const p = offlinePos.get(n.id);
+            node.x = p.x;
+            node.y = p.y;
+            node.fixed = true;
+            node.label = { color: '#999', fontSize: 9 };
         }
-    }
+        return node;
+    });
+
+    const links = onlineLinks.map(l => ({
+        source: typeof l.source === 'object' ? l.source.id : l.source,
+        target: typeof l.target === 'object' ? l.target.id : l.target,
+        lineStyle: {
+            color: linkColor(l.lqi),
+            width: Math.max(1, l.lqi / 50),
+            opacity: 0.6,
+        },
+        _lqi: l.lqi,
+    }));
+
+    _meshChart.setOption({
+        tooltip: {
+            confine: true,
+            formatter: (p) => {
+                if (p.dataType === 'edge') {
+                    return `LQI: <strong>${p.data._lqi}</strong>`;
+                }
+                const n = p.data._info || {};
+                const s = n.packet_stats || {};
+                return `<strong>${n.friendly_name || n.id}</strong><br/>`
+                    + `Role: ${n.role}<br/>`
+                    + `LQI: ${n.lqi}<br/>`
+                    + `NWK: ${n.network_address}<br/>`
+                    + `Online: ${n.online ? 'Yes' : 'No'}<br/>`
+                    + `RX: ${s.rx_packets || 0} · TX: ${s.tx_packets || 0}<br/>`
+                    + `Rate: ${s.rx_rate || 0}/min`;
+            },
+        },
+        legend: { show: false },
+        series: [{
+            type: 'graph',
+            layout: 'force',
+            roam: true,
+            draggable: true,
+            data: nodes,
+            links,
+            categories,
+            force: { repulsion: 240, edgeLength: 110, gravity: 0.06, friction: 0.6 },
+            edgeSymbol: ['none', 'arrow'],
+            edgeSymbolSize: 7,
+            label: {
+                show: labelsVisible,
+                position: 'right',
+                fontSize: 11,
+                formatter: (p) => p.data.name,
+            },
+            emphasis: { focus: 'adjacency', lineStyle: { width: 4 } },
+        }],
+    });
 
     meshInitialised = true;
 }
@@ -831,29 +726,18 @@ export async function dashboardMeshRefresh() {
     }
 }
 
+// Reset and Center both restore the initial zoom/pan and re-run the layout.
 export function dashboardMeshReset() {
-    if (dashboardSvg && dashboardZoom) {
-        dashboardSvg.transition().duration(750).call(
-            dashboardZoom.transform,
-            d3.zoomIdentity
-        );
-    }
+    if (dashboardMeshData) initialiseMeshGraph(dashboardMeshData);
 }
 
 export function dashboardMeshCenter() {
-    if (dashboardSimulation && dashboardSvg && dashboardZoom) {
-        const svg = dashboardSvg.node();
-        const width = svg.clientWidth;
-        const height = svg.clientHeight;
-
-        dashboardSvg.transition().duration(750).call(
-            dashboardZoom.transform,
-            d3.zoomIdentity.translate(width / 2, height / 2).scale(1)
-        );
-    }
+    if (dashboardMeshData) initialiseMeshGraph(dashboardMeshData);
 }
 
 export function toggleMeshLabels() {
     labelsVisible = !labelsVisible;
-    d3.selectAll('.mesh-label').style('display', labelsVisible ? 'block' : 'none');
+    if (_meshChart) {
+        _meshChart.instance().setOption({ series: [{ label: { show: labelsVisible } }] });
+    }
 }
