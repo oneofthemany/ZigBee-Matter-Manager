@@ -48,6 +48,8 @@ class MediaService:
         self.tidal = TidalSource(enabled=tidal_cfg.get("enabled", False))
         self.controller.add_source(self.tidal)
         self.controller.register_resolver("tidal", self.tidal.resolve_url)
+        # Infinite radio: top up from the seed track's "track radio".
+        self.controller.register_extender(self.tidal.track_radio)
 
         # ---- Player providers ----
         wiim_cfg = config.get("wiim", {}) or {}

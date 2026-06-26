@@ -260,6 +260,112 @@ class TidalSource(SourceProvider):
             return []
 
     # ------------------------------------------------------------------
+    # User library (favourites + own playlists)
+    # ------------------------------------------------------------------
+    async def library(self, kind: str) -> List[dict]:
+        """kind: 'playlists' | 'albums' | 'artists' → summary dicts with artwork."""
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._library, kind)
+
+    def _library(self, kind: str) -> List[dict]:
+        try:
+            user = self._session.user
+            fav = getattr(user, "favorites", None)
+            if kind == "albums":
+                rows = fav.albums() if fav else []
+                return [self._album_summary(a) for a in (rows or [])]
+            if kind == "artists":
+                rows = fav.artists() if fav else []
+                return [self._artist_summary(a) for a in (rows or [])]
+            if kind == "playlists":
+                # User's own playlists + followed/favourited playlists.
+                rows = []
+                for getter in ("playlist_and_favorite_playlists", "playlists"):
+                    fn = getattr(user, getter, None)
+                    if callable(fn):
+                        try:
+                            rows = fn()
+                            break
+                        except Exception:
+                            continue
+                if not rows and fav:
+                    rows = fav.playlists()
+                # Normalise tuples (some versions return (playlist, type) pairs).
+                out, seen = [], set()
+                for r in (rows or []):
+                    pl = r[0] if isinstance(r, tuple) else r
+                    pid = str(getattr(pl, "id", ""))
+                    if pid and pid not in seen:
+                        seen.add(pid)
+                        out.append(self._playlist_summary(pl))
+                return out
+        except Exception as e:
+            logger.warning(f"Tidal library({kind}) failed: {e}")
+        return []
+
+    # ------------------------------------------------------------------
+    # Artist play / radio (infinite)
+    # ------------------------------------------------------------------
+    async def artist_tracks(self, artist_id: str) -> List[MediaItem]:
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._artist_tracks, artist_id)
+
+    def _artist_tracks(self, artist_id: str) -> List[MediaItem]:
+        try:
+            artist = self._session.artist(int(artist_id))
+            tracks = artist.get_top_tracks(limit=50)
+            return [self._track_to_item(t) for t in (tracks or [])]
+        except Exception as e:
+            logger.warning(f"Tidal artist tracks failed: {e}")
+            return []
+
+    async def artist_radio(self, artist_id: str) -> List[MediaItem]:
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._artist_radio, artist_id)
+
+    def _artist_radio(self, artist_id: str) -> List[MediaItem]:
+        try:
+            artist = self._session.artist(int(artist_id))
+            tracks = artist.get_radio()
+            return [self._track_to_item(t) for t in (tracks or [])]
+        except Exception as e:
+            logger.warning(f"Tidal artist radio failed: {e}")
+            return []
+
+    async def track_radio(self, track_id: str) -> List[MediaItem]:
+        """Tracks similar to a seed track — used for 'radio' and infinite extend."""
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._track_radio, track_id)
+
+    def _track_radio(self, track_id: str) -> List[MediaItem]:
+        try:
+            # In 0.8 track radio lives on the Session.
+            if hasattr(self._session, "get_track_radio"):
+                tracks = self._session.get_track_radio(int(track_id))
+            else:
+                tracks = self._session.track(int(track_id)).get_track_radio()
+            return [self._track_to_item(t) for t in (tracks or [])]
+        except Exception as e:
+            logger.warning(f"Tidal track radio failed: {e}")
+            return []
+
+    async def single_item(self, track_id: str) -> Optional[MediaItem]:
+        if not self._session:
+            return None
+        return await asyncio.to_thread(self._single_item, track_id)
+
+    def _single_item(self, track_id: str) -> Optional[MediaItem]:
+        try:
+            return self._track_to_item(self._session.track(int(track_id)))
+        except Exception as e:
+            logger.warning(f"Tidal track load failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Mapping helpers
     # ------------------------------------------------------------------
     def _track_to_item(self, t) -> MediaItem:
@@ -315,4 +421,18 @@ class TidalSource(SourceProvider):
             "artist": f"{getattr(p, 'num_tracks', '')} tracks",
             "artwork": artwork,
             "type": "playlist",
+        }
+
+    def _artist_summary(self, a) -> dict:
+        artwork = ""
+        try:
+            artwork = a.image(320)        # artist picture
+        except Exception:
+            pass
+        return {
+            "id": str(getattr(a, "id", "")),
+            "name": getattr(a, "name", ""),
+            "artist": "Artist",
+            "artwork": artwork,
+            "type": "artist",
         }

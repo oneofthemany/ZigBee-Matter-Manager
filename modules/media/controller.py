@@ -39,6 +39,10 @@ class MediaController:
         # media_type -> async (source_id) -> fresh url. Lets sources (e.g. Tidal)
         # re-resolve time-limited stream URLs just before playback.
         self._resolvers: Dict[str, "callable"] = {}
+        # async (seed_source_id) -> [MediaItem]. Appends similar tracks to keep
+        # a "radio" queue infinite. Set by the source via register_extender.
+        self._extender = None
+        self._extending: set[str] = set()
 
     # ------------------------------------------------------------------
     # Registration / lifecycle
@@ -56,6 +60,11 @@ class MediaController:
         """Register an async `(source_id) -> fresh_url` for a media_type whose
         stream URLs expire (e.g. Tidal). Called just before each play."""
         self._resolvers[media_type] = resolver
+
+    def register_extender(self, extender) -> None:
+        """Register an async `(seed_source_id) -> [MediaItem]` used to keep a
+        `auto_extend` ('radio') queue infinite by appending similar tracks."""
+        self._extender = extender
 
     async def start(self) -> None:
         await asyncio.gather(
@@ -155,12 +164,15 @@ class MediaController:
     # ------------------------------------------------------------------
     # Queue (automation-ready)
     # ------------------------------------------------------------------
-    async def play_items(self, player_id: str, items: List[MediaItem], start: int = 0) -> None:
-        """Replace the player's queue with `items` and start playing `start`."""
+    async def play_items(self, player_id: str, items: List[MediaItem],
+                         start: int = 0, auto_extend: bool = False) -> None:
+        """Replace the player's queue with `items` and start playing `start`.
+        `auto_extend` marks the queue as infinite radio (appends similar tracks)."""
         if not items:
             return
         q = self._queue.get(player_id, create=True)
         cur = q.load(items, start)
+        q.auto_extend = auto_extend
         self._advancing.discard(player_id)
         if cur:
             await self.play_url(player_id, cur.item)
@@ -216,6 +228,9 @@ class MediaController:
             # A new track is running → clear the advance latch.
             if state.state in _ACTIVE:
                 self._advancing.discard(player_id)
+            # Infinite radio: top up the queue before it runs dry.
+            if q.auto_extend and q.remaining() <= 3 and player_id not in self._extending:
+                await self._extend_queue(player_id, q)
             ended = state.ended or self._transition_ended(player_id, state)
             if ended and player_id not in self._advancing:
                 nxt = q.advance()
@@ -228,6 +243,27 @@ class MediaController:
                         logger.warning(f"Auto-advance failed for {player_id}: {e}")
                         self._advancing.discard(player_id)
         self._prev_states = dict(self._cache)
+
+    async def _extend_queue(self, player_id: str, q) -> None:
+        """Append more similar tracks to an infinite-radio queue (deduped)."""
+        if not self._extender:
+            return
+        cur = q.current()
+        seed = cur.item.source_id if cur else None
+        if not seed:
+            return
+        self._extending.add(player_id)
+        try:
+            more = await self._extender(seed)
+            have = q.source_ids()
+            fresh = [it for it in (more or []) if it.source_id and it.source_id not in have]
+            if fresh:
+                q.add(fresh)
+                logger.info(f"Radio extended {player_id} +{len(fresh)} tracks")
+        except Exception as e:
+            logger.warning(f"Radio extend failed for {player_id}: {e}")
+        finally:
+            self._extending.discard(player_id)
 
     def _transition_ended(self, player_id: str, state: PlayerState) -> bool:
         """Fallback end-detection: was playing a finite track, now idle near its end."""
