@@ -467,7 +467,7 @@ async function dismissFailedUpgrade() {
 }
 
 async function startSwap() {
-    if (!confirm('Swap to the new container?\n\nYou will be briefly disconnected (~15s). The page will reload automatically.')) return;
+    if (!confirm('Swap to the new container?\n\nYou will be disconnected for a few minutes. The page will reload automatically.')) return;
     const res = await fetch('/api/upgrade/swap', { method: 'POST' });
     const data = await res.json();
     if (data.success) {
@@ -491,9 +491,9 @@ function waitForHealth() {
                 return;
             }
         } catch (_) { /* expected during swap */ }
-        if (attempts > 60) {
+        if (attempts > 150) {
             clearInterval(iv);
-            toast('danger', 'Server did not come back within 2 minutes. Check the host logs.');
+            toast('danger', 'Server did not come back within 5 minutes. Check the host logs.');
         }
     }, 2000);
 }
