@@ -5,6 +5,7 @@
  */
 
 import { createChart } from './chart-utils.js';
+import { reapplySort } from './table-utils.js';
 
 // Module-level state
 let dashboardMeshData = null;
@@ -161,8 +162,8 @@ function buildMeshUI() {
                 <div class="tab-pane fade" id="meshConnectionTable">
                     <div class="p-3" style="max-height: 1000px; overflow-y: auto;">
                         <div class="table-responsive">
-                            <table class="table table-sm table-striped table-hover" id="connectionTable">
-                                <thead class="table-dark sticky-top">
+                            <table class="table table-sm table-striped table-hover tbl" id="connectionTable">
+                                <thead class="sticky-top">
                                     <tr>
                                         <th>Source Device</th>
                                         <th>Role</th>
@@ -181,18 +182,18 @@ function buildMeshUI() {
                         <div class="row g-2 mb-3" id="packetStatsSummary"></div>
 
                         <div class="table-responsive" style="max-height: 1000px; overflow-y: auto;">
-                            <table class="table table-sm table-striped table-hover" id="packetStatsTable">
-                                <thead class="table-dark sticky-top">
+                            <table class="table table-sm table-striped table-hover tbl tbl-sortable" id="packetStatsTable">
+                                <thead class="sticky-top">
                                     <tr>
                                         <th>Device</th>
-                                        <th class="text-end">RX Packets</th>
-                                        <th class="text-end">TX Packets</th>
-                                        <th class="text-end">Total</th>
-                                        <th class="text-end">RX/min</th>
-                                        <th class="text-end">TX/min</th>
-                                        <th class="text-end">Errors</th>
-                                        <th class="text-end">Error %</th>
-                                        <th>Load</th>
+                                        <th class="text-end" data-sort-type="number">RX Packets</th>
+                                        <th class="text-end" data-sort-type="number">TX Packets</th>
+                                        <th class="text-end" data-sort-type="number">Total</th>
+                                        <th class="text-end" data-sort-type="number">RX/min</th>
+                                        <th class="text-end" data-sort-type="number">TX/min</th>
+                                        <th class="text-end" data-sort-type="number">Errors</th>
+                                        <th class="text-end" data-sort-type="number">Error %</th>
+                                        <th data-sort-type="number">Load</th>
                                     </tr>
                                 </thead>
                                 <tbody id="packetStatsBody"></tbody>
@@ -610,18 +611,18 @@ function populatePacketStats(nodes, summary) {
 
         return `
             <tr style="${rowStyle}">
-                <td>
+                <td data-sort-value="${escapeHtml(node.friendly_name || '')}">
                     <span class="fw-medium">${escapeHtml(node.friendly_name)}</span>${statusBadge}
                     <small class="text-muted d-block">${node.ieee_address.slice(-8)}</small>
                 </td>
-                <td class="text-end">${formatNumber(stats.rx_packets || 0)}</td>
-                <td class="text-end">${formatNumber(stats.tx_packets || 0)}</td>
-                <td class="text-end fw-bold">${formatNumber(stats.total_packets || 0)}</td>
-                <td class="text-end">${stats.rx_rate || 0}</td>
-                <td class="text-end">${stats.tx_rate || 0}</td>
-                <td class="text-end ${stats.errors > 0 ? 'text-danger' : ''}">${stats.errors || 0}</td>
-                <td class="text-end ${stats.error_rate > 5 ? 'text-danger' : ''}">${stats.error_rate || 0}%</td>
-                <td style="width: 100px; vertical-align: middle;">
+                <td class="text-end" data-sort-value="${stats.rx_packets || 0}">${formatNumber(stats.rx_packets || 0)}</td>
+                <td class="text-end" data-sort-value="${stats.tx_packets || 0}">${formatNumber(stats.tx_packets || 0)}</td>
+                <td class="text-end fw-bold" data-sort-value="${stats.total_packets || 0}">${formatNumber(stats.total_packets || 0)}</td>
+                <td class="text-end" data-sort-value="${stats.rx_rate || 0}">${stats.rx_rate || 0}</td>
+                <td class="text-end" data-sort-value="${stats.tx_rate || 0}">${stats.tx_rate || 0}</td>
+                <td class="text-end ${stats.errors > 0 ? 'text-danger' : ''}" data-sort-value="${stats.errors || 0}">${stats.errors || 0}</td>
+                <td class="text-end ${stats.error_rate > 5 ? 'text-danger' : ''}" data-sort-value="${stats.error_rate || 0}">${stats.error_rate || 0}%</td>
+                <td style="width: 100px; vertical-align: middle;" data-sort-value="${loadPercent}">
                     <div class="progress" style="height: 8px;" title="Current: ${currentPpm} PPM / Threshold: ${PPM_THRESHOLD} PPM">
                         <div class="progress-bar ${getLoadBarClass(loadPercent)}"
                              style="width: ${visualPercent}%"></div>
@@ -630,6 +631,9 @@ function populatePacketStats(nodes, summary) {
             </tr>
         `;
     }).join('');
+
+    // Keep the user's chosen column sort across the 2s auto-refresh.
+    reapplySort(document.getElementById('packetStatsTable'));
 }
 
 function addMobileLabelsToPacketStats() {

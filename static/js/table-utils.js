@@ -113,6 +113,17 @@ function sortTableByIndex(table, idx, dir) {
     });
 }
 
+/**
+ * Re-apply a table's current sort. Call this after a table that re-renders its
+ * own rows (e.g. a polling stats table) rebuilds its <tbody>, so the user's
+ * chosen sort survives the refresh.
+ * @param {HTMLTableElement} table
+ */
+export function reapplySort(table) {
+    if (!table || table.dataset.sortIndex === undefined) return;
+    sortTableByIndex(table, parseInt(table.dataset.sortIndex, 10), table.dataset.sortDir || 'asc');
+}
+
 function onHeaderClick(e) {
     const th = e.target.closest('table.tbl-sortable > thead th');
     if (!th || th.dataset.noSort !== undefined) return;

@@ -134,7 +134,7 @@
         return '<div class="d-flex justify-content-end mb-2">' +
             '<button class="btn btn-sm btn-primary" data-action="user-new">' +
             '<i class="fas fa-plus"></i> New User</button></div>' +
-            '<table class="table table-sm align-middle">' +
+            '<table class="table table-sm align-middle tbl tbl-sortable">' +
             '<thead class="table-light"><tr><th>Username</th><th>Groups</th>' +
             '<th>Scopes (effective)</th><th>Description</th><th></th></tr></thead>' +
             '<tbody>' + rows + '</tbody></table>';
@@ -163,7 +163,7 @@
         return '<div class="d-flex justify-content-end mb-2">' +
             '<button class="btn btn-sm btn-primary" data-action="group-new">' +
             '<i class="fas fa-plus"></i> New Group</button></div>' +
-            '<table class="table table-sm align-middle">' +
+            '<table class="table table-sm align-middle tbl tbl-sortable">' +
             '<thead class="table-light"><tr><th>Name</th><th>Scopes</th>' +
             '<th>Description</th><th></th></tr></thead>' +
             '<tbody>' + rows + '</tbody></table>';
@@ -206,7 +206,7 @@
         return '<div class="d-flex justify-content-end mb-2">' +
             '<button class="btn btn-sm btn-primary" data-action="token-new">' +
             '<i class="fas fa-plus"></i> Issue Token</button></div>' +
-            '<table class="table table-sm align-middle">' +
+            '<table class="table table-sm align-middle tbl tbl-sortable">' +
             '<thead class="table-light"><tr><th>Label</th><th>User</th>' +
             '<th>Scopes</th><th>Last Used</th><th>Expires</th><th>Status</th><th></th></tr></thead>' +
             '<tbody>' + rows + '</tbody></table>' +

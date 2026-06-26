@@ -280,7 +280,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
 
         devicesHtml = `
             <div class="table-responsive">
-                <table class="table table-sm table-striped small align-middle">
+                <table class="table table-sm table-striped small align-middle tbl tbl-sortable">
                     <thead>
                         <tr>
                             <th>Device</th>

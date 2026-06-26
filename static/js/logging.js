@@ -7,6 +7,7 @@ import { state } from './state.js';
 import { getTimestamp } from './utils.js';
 import { analysePacket, renderPacketAnalysis } from './packet-analysis.js';
 import { initPacketFlow } from './packet-flow.js';
+import { compareValues } from './table-utils.js';
 
 // Local utility: HTML-escape arbitrary values. Defined at the very top of
 // the module so it's unambiguously in scope for every function below,
@@ -697,24 +698,26 @@ function renderDebugPacketTable() {
         return { p, idx, ieeeShort, devName, devModel, analysis, isMatter };
     });
 
-    // Sort
+    // Sort (comparison delegated to the shared compareValues for consistency)
     const { col, dir } = _debugSortState;
-    rows.sort((a, b) => {
-        let va, vb;
+    const COL_TYPE = {
+        time: 'number', device: 'string', type: 'string', ieee: 'string',
+        cluster: 'number', cmd: 'string', summary: 'string',
+    };
+    const colValue = (r) => {
         switch (col) {
-            case 'time':    va = a.p.timestamp || 0;               vb = b.p.timestamp || 0;               break;
-            case 'device':  va = a.devName.toLowerCase();          vb = b.devName.toLowerCase();          break;
-            case 'type':    va = a.devModel.toLowerCase();         vb = b.devModel.toLowerCase();         break;
-            case 'ieee':    va = (a.p.ieee || '').toLowerCase();   vb = (b.p.ieee || '').toLowerCase();   break;
-            case 'cluster': va = a.p.cluster || 0;                 vb = b.p.cluster || 0;                 break;
-            case 'cmd':     va = a.analysis.command.toLowerCase(); vb = b.analysis.command.toLowerCase(); break;
-            case 'summary': va = (a.analysis.summary || '').toLowerCase(); vb = (b.analysis.summary || '').toLowerCase(); break;
-            default:        va = a.p.timestamp || 0;               vb = b.p.timestamp || 0;
+            case 'device':  return r.devName;
+            case 'type':    return r.devModel;
+            case 'ieee':    return r.p.ieee || '';
+            case 'cluster': return r.p.cluster || 0;
+            case 'cmd':     return r.analysis.command;
+            case 'summary': return r.analysis.summary || '';
+            case 'time':
+            default:        return r.p.timestamp || 0;
         }
-        if (va < vb) return dir === 'asc' ? -1 : 1;
-        if (va > vb) return dir === 'asc' ?  1 : -1;
-        return 0;
-    });
+    };
+    const sign = dir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => sign * compareValues(colValue(a), colValue(b), COL_TYPE[col] || 'string'));
 
     // Build sortable header
     const COLS = [

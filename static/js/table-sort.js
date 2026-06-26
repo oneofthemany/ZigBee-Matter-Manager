@@ -1,8 +1,12 @@
 /**
- * Table Sorting Module
- * Based on ZHA patterns and modern JavaScript best practices
- * Provides sortable table functionality with multi-type column support
+ * Device Table Sorting
+ * The devices table re-renders its rows from a live socket, so it sorts the
+ * data array (rather than DOM click-sort) and re-applies on every render.
+ * Comparison itself is delegated to the shared compareValues() in
+ * table-utils.js so all tables order values identically.
  */
+
+import { compareValues } from './table-utils.js';
 
 /**
  * Sort state management
@@ -11,71 +15,6 @@ const sortState = {
     column: null,
     direction: 'asc', // 'asc' or 'desc'
     type: 'string'    // 'string', 'number', 'boolean', 'date'
-};
-
-/**
- * Type-specific comparison functions
- */
-const comparators = {
-    /**
-     * String comparison (case-insensitive, natural sort)
-     */
-    string: (a, b, direction) => {
-        const valA = String(a || '').toLowerCase();
-        const valB = String(b || '').toLowerCase();
-
-        // Natural sort for strings containing numbers
-        const result = valA.localeCompare(valB, undefined, {
-            numeric: true,
-            sensitivity: 'base'
-        });
-
-        return direction === 'asc' ? result : -result;
-    },
-
-    /**
-     * Numeric comparison
-     */
-    number: (a, b, direction) => {
-        const numA = parseFloat(a);
-        const numB = parseFloat(b);
-
-        // Handle NaN values - push to end
-        if (isNaN(numA) && isNaN(numB)) return 0;
-        if (isNaN(numA)) return 1;
-        if (isNaN(numB)) return -1;
-
-        const result = numA - numB;
-        return direction === 'asc' ? result : -result;
-    },
-
-    /**
-     * Boolean comparison (true > false)
-     */
-    boolean: (a, b, direction) => {
-        const boolA = Boolean(a);
-        const boolB = Boolean(b);
-
-        if (boolA === boolB) return 0;
-        const result = boolA ? 1 : -1;
-        return direction === 'asc' ? result : -result;
-    },
-
-    /**
-     * Date/timestamp comparison
-     */
-    date: (a, b, direction) => {
-        const dateA = new Date(a).getTime();
-        const dateB = new Date(b).getTime();
-
-        // Handle invalid dates
-        if (isNaN(dateA) && isNaN(dateB)) return 0;
-        if (isNaN(dateA)) return 1;
-        if (isNaN(dateB)) return -1;
-
-        const result = dateA - dateB;
-        return direction === 'asc' ? result : -result;
-    }
 };
 
 /**
@@ -111,13 +50,10 @@ function extractValue(device, column) {
 export function sortDevices(devices, column, type, direction) {
     if (!devices || devices.length === 0) return devices;
 
-    const comparator = comparators[type] || comparators.string;
-
-    return [...devices].sort((a, b) => {
-        const valueA = extractValue(a, column);
-        const valueB = extractValue(b, column);
-        return comparator(valueA, valueB, direction);
-    });
+    const sign = direction === 'desc' ? -1 : 1;
+    return [...devices].sort((a, b) =>
+        sign * compareValues(extractValue(a, column), extractValue(b, column), type)
+    );
 }
 
 /**

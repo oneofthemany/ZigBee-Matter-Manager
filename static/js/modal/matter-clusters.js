@@ -115,7 +115,7 @@ function renderCluster(cluster, epId, nodeId) {
                 <span class="badge bg-secondary">${cluster.attributes.length}</span>
             </div>
             <div class="card-body p-0">
-                <table class="table table-sm table-striped mb-0">
+                <table class="table table-sm table-striped mb-0 tbl tbl-sortable">
                     <thead>
                         <tr class="small">
                             <th style="width:30%">Attribute</th>

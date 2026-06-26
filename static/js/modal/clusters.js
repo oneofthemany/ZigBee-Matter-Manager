@@ -136,7 +136,7 @@ window.discoverClusterAttributes = async function(ieee, epId, clusterId, badgeEl
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive" style="max-height: 400px; overflow-y: auto">
-                        <table class="table table-sm table-hover mb-0" style="font-size: 0.78rem">
+                        <table class="table table-sm table-hover mb-0 tbl tbl-sortable" style="font-size: 0.78rem">
                             <thead class="table-light sticky-top">
                                 <tr>
                                     <th>ID</th>

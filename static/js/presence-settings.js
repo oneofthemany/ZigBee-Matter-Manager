@@ -74,7 +74,7 @@
           '<div class="card-body p-0">' +
             (users.length === 0
               ? '<div class="text-center text-muted py-4">No users configured. Add one to start tracking presence.</div>'
-              : '<table class="table table-sm mb-0"><thead class="table-light"><tr>' +
+              : '<table class="table table-sm mb-0 tbl tbl-sortable"><thead class="table-light"><tr>' +
                   '<th>Name</th><th>ID</th><th>State</th><th>Distance</th><th>Home</th><th>Radius</th><th></th>' +
                 '</tr></thead><tbody>' + rows + '</tbody></table>') +
           '</div>' +

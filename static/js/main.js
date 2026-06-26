@@ -49,6 +49,7 @@ import {
 import { initHeating } from './heating.js';
 
 import { initSystemTab } from './system-telemetry.js';
+import { initTables } from './table-utils.js';
 
 import {
     openDeviceModal,
@@ -263,6 +264,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setInterval(updateLastSeenTimes, 1000);
 
         // Module inits
+        initTables();          // delegated table sort/filter (once)
         initOtbr();
         loadTabs();
         initMesh();
