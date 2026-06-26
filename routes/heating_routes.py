@@ -813,6 +813,14 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             return {"success": False, "error": str(e)}
 
     def _active_circuits(heating: dict):
+        """Return the circuits list that is currently authoritative.
+
+        In floor_plan mode the circuits live under heating.controller.circuits
+        (written by the floor-plan projection).  In manual mode (or when no
+        mode is set) they live under heating.circuits.  All per-room endpoints
+        must use this helper so they can find rooms regardless of which mode
+        the user is in.
+        """
         controller_block = heating.get("controller") or {}
         config_mode = controller_block.get("config_mode") or "manual"
         if config_mode == "floor_plan":
@@ -1449,9 +1457,10 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             insulation = (heating.get("property") or {}).get("insulation", "partial")
 
             # Locate room
+            circuits = heating.get("circuits") or []
             found_room = None
             found_circuit = None
-            for c in _active_circuits(heating):
+            for c in circuits:
                 if str(c.get("id")) != str(circuit_id):
                     continue
                 found_circuit = c

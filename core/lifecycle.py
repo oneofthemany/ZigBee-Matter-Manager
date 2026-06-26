@@ -210,6 +210,18 @@ class DeviceLifecycleMixin:
             self._emit_sync("join_progress", {"ieee": ieee, "stage": "configuring"})
             await zdev.configure()
             logger.info(f"[{ieee}] Device configured successfully")
+
+            # Apply matching device profile (unified Zigbee+Matter system).
+            # Runs after handler configure so per-handler reporting wins on conflicts,
+            # before MQTT announce so the friendly capability set is in discovery,
+            # and before poll() so friendly keys are present in the first state snapshot.
+            # Idempotent — no-op when no profile matches.
+            try:
+                from modules.device_profile_apply import apply_profile
+                await apply_profile(zdev)
+            except Exception as _e:
+                logger.debug(f"[{ieee}] apply_profile skipped: {_e}")
+
             self._emit_sync("join_progress", {"ieee": ieee, "stage": "polling"})
 
             await zdev.poll()
@@ -245,6 +257,7 @@ class DeviceLifecycleMixin:
         self._emit_sync("log", {"level": "WARNING",
                                 "message": f"[{ieee}] ({name}) Device Left - marked offline",
                                 "ieee": ieee, "device_name": name, "category": "connection"})
+        self._emit_sync("device_offline", {"ieee": ieee, "name": name})
 
     def device_removed(self, device: zigpy.device.Device):
         ieee = str(device.ieee)
@@ -286,6 +299,18 @@ class DeviceLifecycleMixin:
     def handle_device_update(self, zha_device, changed_data, full_state=None,
                              qos: Optional[int] = None, endpoint_id: Optional[int] = None):
         """Called by ZigManDevice when state changes."""
+        try:
+            from modules.device_profile_apply import transform_state_with_profile
+            if isinstance(updates, dict) and any(k.startswith("cluster_") for k in updates):
+                merged = {**device.state, **updates}
+                transformed = transform_state_with_profile(device, merged)
+                extras = {k: v for k, v in transformed.items()
+                          if k not in updates and k not in device.state}
+                if extras:
+                    updates = {**updates, **extras}
+        except Exception:
+            pass
+
         ieee = zha_device.ieee
 
         # >>> Instant Universal Automation Trigger <<<

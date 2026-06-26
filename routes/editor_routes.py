@@ -20,9 +20,10 @@ PROJECT_ROOT = Path("/app")
 ALLOWED_DIRS = [
     "",              # Root .py files (main.py, device.py, mqtt.py etc.)
     "core",
-    "routes",
-    "modules",
+    "device",
     "handlers",
+    "modules",
+    "routes",
     "static",
     "static/js",
     "static/js/modal",
@@ -30,7 +31,6 @@ ALLOWED_DIRS = [
     "static/css/api",
     "config",
     "config/matter_definitions",
-    "docs",
     "data",
     "scripts",
 ]

@@ -50,6 +50,10 @@ function resetState(plan) {
         showGrid: true,
         showBackground: true,
         showSun: false,
+        showThermal: false,
+        showContours: false,
+        showColdZones: false,
+        heatFluxWm2: 50,
         sunData: null,
         calibration: null,         // { p1: {x,y} } during 2-click calibrate
     };
@@ -236,6 +240,26 @@ function ensureModal() {
                   <input class="form-check-input" type="checkbox" id="fpToggleSun">
                   <label class="form-check-label" for="fpToggleSun">Sun path (today)</label>
                 </div>
+                <div class="form-check form-switch small">
+                  <input class="form-check-input" type="checkbox" id="fpToggleThermal">
+                  <label class="form-check-label" for="fpToggleThermal">Thermal overlay</label>
+                </div>
+                <div class="form-check form-switch small ms-3">
+                  <input class="form-check-input" type="checkbox" id="fpToggleContours" disabled>
+                  <label class="form-check-label text-muted" for="fpToggleContours">Contour lines</label>
+                </div>
+                <div class="form-check form-switch small ms-3">
+                  <input class="form-check-input" type="checkbox" id="fpToggleColdZones" disabled>
+                  <label class="form-check-label text-muted" for="fpToggleColdZones">Cold zones</label>
+                </div>
+                <div id="fpColdZoneControls" style="display:none" class="ms-4 mb-1">
+                  <label class="small text-muted d-block mb-1">Building heat loss</label>
+                  <select class="form-select form-select-sm py-0" id="fpHeatFlux" style="font-size:0.78rem">
+                    <option value="30">Well insulated — 30 W/m²</option>
+                    <option value="50" selected>Average — 50 W/m²</option>
+                    <option value="80">Poorly insulated — 80 W/m²</option>
+                  </select>
+                </div>
                 <div class="d-flex gap-1 mt-2">
                   <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomOut">−</button>
                   <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomFit">Fit</button>
@@ -305,7 +329,33 @@ function bindModalEvents() {
     document.getElementById('fpToggleSun').addEventListener('change', async e => {
         _state.showSun = e.target.checked;
         if (_state.showSun) await loadSunData();
-        renderOverlay();
+        renderScene(); renderOverlay();
+    });
+    document.getElementById('fpToggleThermal').addEventListener('change', e => {
+        _state.showThermal = e.target.checked;
+        const contoursEl = document.getElementById('fpToggleContours');
+        const coldEl = document.getElementById('fpToggleColdZones');
+        contoursEl.disabled = !_state.showThermal;
+        coldEl.disabled = !_state.showThermal;
+        if (!_state.showThermal) {
+            _state.showContours = false; contoursEl.checked = false;
+            _state.showColdZones = false; coldEl.checked = false;
+            document.getElementById('fpColdZoneControls').style.display = 'none';
+        }
+        renderScene();
+    });
+    document.getElementById('fpToggleContours').addEventListener('change', e => {
+        _state.showContours = e.target.checked;
+        renderScene();
+    });
+    document.getElementById('fpToggleColdZones').addEventListener('change', e => {
+        _state.showColdZones = e.target.checked;
+        document.getElementById('fpColdZoneControls').style.display = _state.showColdZones ? '' : 'none';
+        renderScene();
+    });
+    document.getElementById('fpHeatFlux').addEventListener('change', e => {
+        _state.heatFluxWm2 = parseInt(e.target.value, 10) || 50;
+        renderScene();
     });
     document.getElementById('fpZoomIn').addEventListener('click', () => zoomBy(1.25));
     document.getElementById('fpZoomOut').addEventListener('click', () => zoomBy(0.8));
@@ -337,6 +387,10 @@ function bindModalEvents() {
     svg.addEventListener('mousemove', onCanvasMouseMove);
     svg.addEventListener('mouseup', onCanvasMouseUp);
     svg.addEventListener('wheel', onCanvasWheel, { passive: false });
+    svg.addEventListener('touchstart',  onCanvasTouchStart,  { passive: false });
+    svg.addEventListener('touchmove',   onCanvasTouchMove,   { passive: false });
+    svg.addEventListener('touchend',    onCanvasTouchEnd,    { passive: false });
+    svg.addEventListener('touchcancel', onCanvasTouchEnd,    { passive: false });
     // Right-click finishes a wall or room chain (or just suppresses the
     // browser context menu when nothing is in progress).
     svg.addEventListener('contextmenu', e => {
@@ -402,12 +456,40 @@ function renderAll() {
     renderCircuitList();
     renderToolbar();
     renderCompass();
+    syncViewToggles();
     renderScene();
     renderOverlay();
     renderProps();
     document.getElementById('fpNorthDeg').value = Math.round(_state.plan.north_offset_deg);
     syncBackgroundControls();
     requestAnimationFrame(zoomFit);
+}
+
+// Sync sidebar checkbox/toggle state to _state so the UI always reflects the
+// actual render state (fixes stale DOM after modal close/reopen).
+function syncViewToggles() {
+    const set = (id, checked, disabled = false) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.checked = checked;
+        el.disabled = disabled;
+    };
+    set('fpToggleGrid',       _state.showGrid);
+    set('fpToggleBackground', _state.showBackground);
+    set('fpToggleSun',        _state.showSun);
+    set('fpToggleThermal',    _state.showThermal);
+    set('fpToggleContours',   _state.showContours,  !_state.showThermal);
+    set('fpToggleColdZones',  _state.showColdZones, !_state.showThermal);
+
+    // Cold zone sub-controls
+    const czCtrl = document.getElementById('fpColdZoneControls');
+    if (czCtrl) czCtrl.style.display = _state.showColdZones ? '' : 'none';
+    const hfEl = document.getElementById('fpHeatFlux');
+    if (hfEl) hfEl.value = String(_state.heatFluxWm2 || 50);
+
+    // Keep grid visibility in sync with state
+    const grid = document.getElementById('fpGrid');
+    if (grid) grid.style.display = _state.showGrid ? '' : 'none';
 }
 
 function syncBackgroundControls() {
@@ -497,6 +579,109 @@ function renderCompass() {
 function modelToSvg(p)  { return { x: p.x,  y: -p.y }; }
 function svgToModel(p)  { return { x: p.x,  y: -p.y }; }
 
+// Returns the model-space centre point of a radiator (wall-mounted or freestanding).
+function radiatorCenter(r, lvl) {
+    const wall = r.wall_id ? lvl.walls.find(w => w.id === r.wall_id) : null;
+    if (wall) {
+        const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+        const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+        const len = r.length_m || 0.6;
+        const t0 = Math.max(0, Math.min(wlen - len, (r.offset_m ?? wlen / 2)));
+        return { x: wall.x1 + ux * (t0 + len / 2), y: wall.y1 + uy * (t0 + len / 2) };
+    }
+    return { x: r.x ?? 0, y: r.y ?? 0 };
+}
+
+// Centroid of the whole plan — average of room centroids, falling back to wall midpoints.
+function planCentroid(lvl) {
+    const rooms = lvl.rooms || [];
+    if (rooms.length > 0) {
+        let cx = 0, cy = 0;
+        for (const r of rooms) { const c = polygonCentroid(r.polygon); cx += c.x; cy += c.y; }
+        return { x: cx / rooms.length, y: cy / rooms.length };
+    }
+    const walls = lvl.walls || [];
+    if (walls.length > 0) {
+        const cx = walls.reduce((s, w) => s + (w.x1 + w.x2) / 2, 0) / walls.length;
+        const cy = walls.reduce((s, w) => s + (w.y1 + w.y2) / 2, 0) / walls.length;
+        return { x: cx, y: cy };
+    }
+    return { x: 0, y: 0 };
+}
+
+// Compute which rooms receive direct solar gain through their windows today.
+// Returns a Map<room.id, sunMinutes>.
+function computeSolarGain(lvl, sunData, northOffsetDeg) {
+    const result = new Map();
+    if (!sunData || !sunData.points) return result;
+    const stepMin = sunData.step_minutes || 20;
+    const daytime = sunData.points.filter(pt => pt.el > 0);
+    if (daytime.length === 0) return result;
+
+    for (const opening of (lvl.openings || [])) {
+        if (opening.kind !== 'window') continue;
+        const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+        if (!wall) continue;
+
+        const dx = wall.x2 - wall.x1, dy = wall.y2 - wall.y1;
+        const wlen = Math.hypot(dx, dy) || 1;
+        const ux = dx / wlen, uy = dy / wlen;
+        const nx = -uy, ny = ux; // one perpendicular
+
+        // Window midpoint in model space
+        const wmx = wall.x1 + ux * (opening.offset_m + opening.width_m / 2);
+        const wmy = wall.y1 + uy * (opening.offset_m + opening.width_m / 2);
+
+        // Count sun-minutes for each face of this wall
+        let minN = 0, minNeg = 0;
+        for (const pt of daytime) {
+            const planAz = ((pt.az + northOffsetDeg) % 360 + 360) % 360;
+            const sx = Math.sin(planAz * Math.PI / 180);
+            const sy = Math.cos(planAz * Math.PI / 180);
+            if (sx * nx + sy * ny > 0.15) minN += stepMin;
+            else if (sx * (-nx) + sy * (-ny) > 0.15) minNeg += stepMin;
+        }
+        if (minN === 0 && minNeg === 0) continue;
+
+        for (const room of (lvl.rooms || [])) {
+            if (!room.polygon || room.polygon.length < 3) continue;
+
+            // Check window midpoint is on a polygon edge (within 0.3 m tolerance)
+            let onBoundary = false;
+            for (let i = 0; i < room.polygon.length; i++) {
+                const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
+                const ex = b[0] - a[0], ey = b[1] - a[1];
+                const elen2 = ex * ex + ey * ey || 1;
+                const t = Math.max(0, Math.min(1, ((wmx - a[0]) * ex + (wmy - a[1]) * ey) / elen2));
+                if (Math.hypot(wmx - (a[0] + t * ex), wmy - (a[1] + t * ey)) < 0.3) {
+                    onBoundary = true; break;
+                }
+            }
+            if (!onBoundary) continue;
+
+            // Determine which side of the wall the room is on
+            const centroid = polygonCentroid(room.polygon);
+            const dot = (centroid.x - wmx) * nx + (centroid.y - wmy) * ny;
+            // Room is on +n side → exterior face is -n → sun enters via minNeg
+            const sunMin = dot > 0 ? minNeg : minN;
+            if (sunMin > 0) result.set(room.id, (result.get(room.id) || 0) + sunMin);
+        }
+    }
+    return result;
+}
+
+// Resolve the live open/closed state of a contact sensor bound to an opening.
+// Returns true (open), false (closed), or null (no sensor / unknown).
+function openingContactState(opening, lvl) {
+    const contact = (lvl.contacts || []).find(c => c.opening_id === opening.id);
+    if (!contact) return null;
+    const dev = (_availableDevices.contacts || []).find(d => d.ieee === contact.ieee);
+    if (!dev) return null;
+    if (typeof dev.is_open   === 'boolean') return dev.is_open;
+    if (typeof dev.contact   === 'boolean') return !dev.contact; // zigbee2mqtt: contact=true → closed
+    return null;
+}
+
 function clientToSvg(evt) {
     const svg = document.getElementById('fpCanvas');
     const pt = svg.createSVGPoint();
@@ -543,6 +728,83 @@ function renderScene() {
                  pointer-events="none"/>`);
     }
 
+    // Thermal overlay — radial heat gradients projected from radiator positions,
+    // clipped to each room polygon, with thermostat rings on sensors.
+    if (_state.showThermal) {
+        const allWatts = lvl.radiators.map(r => r.watts_at_dt50 || 0);
+        const maxWatts = Math.max(...allWatts, 100);
+        const thermalDefs = [];
+        const thermalPaths = [];
+
+        for (const room of lvl.rooms) {
+            if (!room.polygon || room.polygon.length < 3) continue;
+            const rads = lvl.radiators.filter(r => r.room_id === room.id);
+            if (rads.length === 0) continue;
+
+            const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
+            const intensity = Math.min(1, totalWatts / maxWatts);
+
+            let heatX = 0, heatY = 0;
+            for (const r of rads) {
+                const c = radiatorCenter(r, lvl);
+                heatX += c.x; heatY += c.y;
+            }
+            heatX /= rads.length; heatY /= rads.length;
+            const hsvg = modelToSvg({ x: heatX, y: heatY });
+
+            const xs = room.polygon.map(p => p[0]);
+            const ys = room.polygon.map(p => p[1]);
+            const diag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+            const gradR = Math.max(diag * 0.9, 1.5);
+
+            const uid = room.id.replace(/[^a-z0-9]/gi, '_');
+            const roomPath = polygonToPath(room.polygon);
+
+            thermalDefs.push(`
+              <radialGradient id="tg_${uid}" cx="${hsvg.x}" cy="${hsvg.y}" r="${gradR}" gradientUnits="userSpaceOnUse">
+                <stop offset="0%"   stop-color="rgba(239,68,68,${(0.42 * intensity).toFixed(2)})"/>
+                <stop offset="40%"  stop-color="rgba(251,146,60,${(0.17 * intensity).toFixed(2)})"/>
+                <stop offset="100%" stop-color="rgba(239,68,68,0)"/>
+              </radialGradient>
+              <clipPath id="tc_${uid}"><path d="${roomPath}"/></clipPath>`);
+
+            thermalPaths.push(`<path d="${roomPath}" fill="url(#tg_${uid})" clip-path="url(#tc_${uid})" pointer-events="none"/>`);
+
+            // Temperature contour rings — clipped isotherms at 30 / 55 / 75 % of the gradient radius
+            if (_state.showContours) {
+                const contours = [
+                    { frac: 0.30, opacity: 0.55 },
+                    { frac: 0.55, opacity: 0.38 },
+                    { frac: 0.75, opacity: 0.22 },
+                ];
+                for (const { frac, opacity } of contours) {
+                    thermalPaths.push(`<circle cx="${hsvg.x}" cy="${hsvg.y}" r="${(gradR * frac).toFixed(3)}"
+                      clip-path="url(#tc_${uid})" fill="none"
+                      stroke="rgba(239,68,68,${(opacity * intensity).toFixed(2)})"
+                      stroke-width="0.035" stroke-dasharray="0.16 0.09"
+                      pointer-events="none"/>`);
+                }
+            }
+        }
+
+        // Thermostat rings on sensors
+        for (const s of lvl.sensors) {
+            const sp = modelToSvg({ x: s.x ?? 0, y: s.y ?? 0 });
+            thermalPaths.push(`
+              <circle cx="${sp.x}" cy="${sp.y}" r="0.40"
+                      fill="none" stroke="rgba(34,197,94,0.55)" stroke-width="0.045"
+                      stroke-dasharray="0.12 0.08" pointer-events="none"/>
+              <circle cx="${sp.x}" cy="${sp.y}" r="0.19"
+                      fill="rgba(34,197,94,0.14)" stroke="rgba(34,197,94,0.4)" stroke-width="0.03"
+                      pointer-events="none"/>`);
+        }
+
+        if (thermalDefs.length > 0 || thermalPaths.length > 0) {
+            parts.push(`<defs>${thermalDefs.join('')}</defs>`);
+            parts.push(...thermalPaths);
+        }
+    }
+
     // Rooms (under shapes but over the image)
     // Build circuit colour palette for rooms
     const CIRCUIT_COLOURS = [
@@ -582,6 +844,177 @@ function renderScene() {
             parts.push(`<text class="fp-room-label" x="${sc.x}" y="${sc.y + 0.22}" font-size="0.13" text-anchor="middle"
                         fill="#64748b" pointer-events="none">${escapeHtml(circuitName)}</text>`);
         }
+    }
+
+    // Solar gain overlay — amber fill on rooms that receive direct sunlight via windows today.
+    if (_state.showSun && _state.sunData) {
+        const solarGain = computeSolarGain(lvl, _state.sunData, _state.plan.north_offset_deg);
+        if (solarGain.size > 0) {
+            const maxMin = Math.max(...solarGain.values());
+            for (const room of lvl.rooms) {
+                const minutes = solarGain.get(room.id);
+                if (!minutes) continue;
+                const intensity = Math.min(1, minutes / maxMin);
+                const fillOpacity = (0.12 + 0.22 * intensity).toFixed(2);
+                const hours = (minutes / 60).toFixed(1);
+                const roomPath = polygonToPath(room.polygon);
+                const c = polygonCentroid(room.polygon);
+                const sc = modelToSvg(c);
+                // Offset label below name/circuit lines already in the room
+                const labelY = sc.y + (circuitColourMap[room.circuit_id] ? 0.55 : 0.38);
+                parts.push(`<path d="${roomPath}" fill="rgba(251,191,36,${fillOpacity})" pointer-events="none"/>`);
+                parts.push(`<text x="${sc.x}" y="${labelY}" font-size="0.16" text-anchor="middle"
+                                  fill="rgba(120,80,0,0.88)" pointer-events="none">${hours}h sun</text>`);
+            }
+        }
+    }
+
+    // Cold zones — threshold demarcation + window/door draft overlay.
+    // Requires thermal to be on (shares the radiator heat data).
+    if (_state.showColdZones && _state.showThermal) {
+        const heatFlux = _state.heatFluxWm2 || 50; // W/m²
+        const coldDefs = [];
+        const coldPaths = [];
+        const definedClips = new Set();
+
+        const ensureRoomClip = (uid, roomPath) => {
+            if (definedClips.has(uid)) return;
+            coldDefs.push(`<clipPath id="cz_${uid}"><path d="${roomPath}"/></clipPath>`);
+            definedClips.add(uid);
+        };
+
+        // ── Heated-radius cold zone per room ──
+        for (const room of lvl.rooms) {
+            if (!room.polygon || room.polygon.length < 3) continue;
+            const rads = lvl.radiators.filter(r => r.room_id === room.id);
+            const uid = room.id.replace(/[^a-z0-9]/gi, '_');
+            const roomPath = polygonToPath(room.polygon);
+            ensureRoomClip(uid, roomPath);
+
+            if (rads.length === 0) {
+                // No radiator → entire room is below threshold
+                coldPaths.push(`<path d="${roomPath}" fill="rgba(59,130,246,0.20)" pointer-events="none"/>`);
+                const c = polygonCentroid(room.polygon);
+                const sc = modelToSvg(c);
+                coldPaths.push(`<text x="${sc.x}" y="${sc.y + 0.60}" font-size="0.17" text-anchor="middle"
+                                       fill="rgba(37,99,235,0.8)" pointer-events="none">no heating</text>`);
+                continue;
+            }
+
+            const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
+            if (totalWatts === 0) continue;
+
+            let heatX = 0, heatY = 0;
+            for (const r of rads) { const c = radiatorCenter(r, lvl); heatX += c.x; heatY += c.y; }
+            heatX /= rads.length; heatY /= rads.length;
+            const hsvg = modelToSvg({ x: heatX, y: heatY });
+
+            // Heated radius: area that the radiator can maintain above threshold
+            const heatedR = Math.sqrt(totalWatts / (heatFlux * Math.PI));
+
+            // If radiator covers the whole room, no cold zone to show
+            const xs = room.polygon.map(p => p[0]);
+            const ys = room.polygon.map(p => p[1]);
+            const roomDiag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+            if (heatedR >= roomDiag * 0.62) continue;
+
+            // Mask punches out the heated circle; clip-path hard-bounds to room polygon.
+            const maskId = `czm_${uid}`;
+            coldDefs.push(`
+              <mask id="${maskId}" maskUnits="userSpaceOnUse">
+                <rect x="-5000" y="-5000" width="10000" height="10000" fill="white"/>
+                <circle cx="${hsvg.x}" cy="${hsvg.y}" r="${heatedR}" fill="black"/>
+              </mask>`);
+            coldPaths.push(`<path d="${roomPath}" fill="rgba(59,130,246,0.17)"
+                                  mask="url(#${maskId})" clip-path="url(#cz_${uid})"
+                                  pointer-events="none"/>`);
+
+            // Demarcation line at the threshold boundary
+            coldPaths.push(`<circle cx="${hsvg.x}" cy="${hsvg.y}" r="${heatedR}"
+                                   clip-path="url(#cz_${uid})" fill="none"
+                                   stroke="rgba(59,130,246,0.75)" stroke-width="0.045"
+                                   stroke-dasharray="0.20 0.10" pointer-events="none"/>`);
+
+            // Target temp label anchored in the cold zone (toward farthest corner)
+            const targetT = room.target_temp;
+            if (targetT) {
+                const fxs = xs.reduce((f, x) => Math.abs(x - heatX) > Math.abs(f - heatX) ? x : f, xs[0]);
+                const fys = ys.reduce((f, y) => Math.abs(y - heatY) > Math.abs(f - heatY) ? y : f, ys[0]);
+                const lp = modelToSvg({ x: heatX + (fxs - heatX) * 0.65, y: heatY + (fys - heatY) * 0.65 });
+                coldPaths.push(`<text x="${lp.x}" y="${lp.y}" font-size="0.17" text-anchor="middle"
+                                       fill="rgba(37,99,235,0.80)" pointer-events="none">&lt;${targetT}°C</text>`);
+            }
+        }
+
+        // ── Window / door draft zones ──
+        for (const opening of (lvl.openings || [])) {
+            const wall = lvl.walls.find(w => w.id === opening.wall_id);
+            if (!wall) continue;
+
+            const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+            const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+            const wmx = wall.x1 + ux * (opening.offset_m + opening.width_m / 2);
+            const wmy = wall.y1 + uy * (opening.offset_m + opening.width_m / 2);
+            const wsvg = modelToSvg({ x: wmx, y: wmy });
+
+            const isOpen = openingContactState(opening, lvl);
+
+            // Draft intensity: state × glazing × door-type
+            const glazingFactor = { single: 1.45, double: 1.0, triple: 0.60 }[opening.glazing] ?? 1.0;
+            const doorFactor    = opening.kind === 'door'
+                ? ({ external: 1.15, internal: 0.55 }[opening.door_type] ?? 0.8)
+                : 1.0;
+            const stateBase = isOpen === true ? 0.40 : isOpen === false ? 0.07 : 0.18;
+            const draftOpacity = Math.min(0.55, stateBase * glazingFactor * doorFactor);
+            if (draftOpacity < 0.04) continue;
+
+            // Draft reach scales with opening width and state
+            const draftR = Math.max(1.0, opening.width_m * 1.4) * (isOpen === true ? 1.5 : 1.0);
+
+            // Apply to every room whose polygon edge contains this opening
+            for (const room of lvl.rooms) {
+                if (!room.polygon || room.polygon.length < 3) continue;
+                let onBoundary = false;
+                for (let i = 0; i < room.polygon.length; i++) {
+                    const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
+                    const ex = b[0] - a[0], ey = b[1] - a[1];
+                    const elen2 = ex * ex + ey * ey || 1;
+                    const t = Math.max(0, Math.min(1, ((wmx - a[0]) * ex + (wmy - a[1]) * ey) / elen2));
+                    if (Math.hypot(wmx - (a[0] + t * ex), wmy - (a[1] + t * ey)) < 0.3) {
+                        onBoundary = true; break;
+                    }
+                }
+                if (!onBoundary) continue;
+
+                const uid  = room.id.replace(/[^a-z0-9]/gi, '_');
+                const oid  = opening.id.replace(/[^a-z0-9]/gi, '_');
+                const gid  = `dg_${uid}_${oid}`;
+                ensureRoomClip(uid, polygonToPath(room.polygon));
+
+                coldDefs.push(`
+                  <radialGradient id="${gid}" cx="${wsvg.x}" cy="${wsvg.y}" r="${draftR}"
+                                  gradientUnits="userSpaceOnUse">
+                    <stop offset="0%"   stop-color="rgba(96,165,250,${draftOpacity.toFixed(2)})"/>
+                    <stop offset="55%"  stop-color="rgba(96,165,250,${(draftOpacity * 0.35).toFixed(2)})"/>
+                    <stop offset="100%" stop-color="rgba(96,165,250,0)"/>
+                  </radialGradient>`);
+
+                coldPaths.push(`<path d="${polygonToPath(room.polygon)}"
+                                      fill="url(#${gid})" clip-path="url(#cz_${uid})"
+                                      pointer-events="none"/>`);
+
+                // State label when known, coloured red/green
+                if (isOpen !== null) {
+                    const lc = isOpen ? 'rgba(220,38,38,0.90)' : 'rgba(22,163,74,0.85)';
+                    coldPaths.push(`<text x="${wsvg.x}" y="${wsvg.y - 0.28}" font-size="0.15"
+                                          text-anchor="middle" fill="${lc}"
+                                          pointer-events="none">${isOpen ? 'open' : 'closed'}</text>`);
+                }
+            }
+        }
+
+        if (coldDefs.length) parts.push(`<defs>${coldDefs.join('')}</defs>`);
+        parts.push(...coldPaths);
     }
 
     // Walls
@@ -788,13 +1221,15 @@ function renderScene() {
 
 function renderOverlay() {
     const ov = document.getElementById('fpOverlay');
+    const m2px = _state.zoom;
+    // Always sync the overlay transform so all overlays (sun, calibration,
+    // draw-preview) render in the same coordinate space as fpScene.
+    ov.setAttribute('transform',
+        `translate(${_state.pan.x}, ${_state.pan.y}) scale(${m2px}, ${m2px})`);
     let html = '';
 
     // Drawing preview
     if (_state.drawBuffer) {
-        const m2px = _state.zoom;
-        ov.setAttribute('transform',
-            `translate(${_state.pan.x}, ${_state.pan.y}) scale(${m2px}, ${m2px})`);
         const db = _state.drawBuffer;
 
         // Window/door: single-segment drag (start → cur) along a host wall
@@ -844,9 +1279,6 @@ function renderOverlay() {
 
     // Calibration: show first picked point and rubber-band to mouse
     if (_state.calibration && _state.calibration.p1) {
-        const m2px = _state.zoom;
-        ov.setAttribute('transform',
-            `translate(${_state.pan.x}, ${_state.pan.y}) scale(${m2px}, ${m2px})`);
         const cal = _state.calibration;
         const p1svg = modelToSvg(cal.p1);
         // Crosshair-style marker: ring + centre dot for clear targeting.
@@ -880,22 +1312,60 @@ function renderOverlay() {
         }
     }
 
-    // Sun overlay
-    if (_state.showSun && _state.sunData && _state.sunData.points) {
-        const r = 5; // metres radius
-        const path = [];
-        for (const pt of _state.sunData.points) {
-            if (pt.el <= 0) continue;
-            const planAz = (pt.az + _state.plan.north_offset_deg) % 360;
-            const ang = (planAz * Math.PI) / 180;
-            const x = Math.sin(ang) * r * Math.cos(pt.el * Math.PI / 180);
-            const y = Math.cos(ang) * r * Math.cos(pt.el * Math.PI / 180);
-            const s = modelToSvg({ x, y });
-            path.push(`${s.x},${s.y}`);
-        }
-        if (path.length > 1) {
-            html += `<polyline class="fp-sun-path" points="${path.join(' ')}"
-                              fill="none" stroke-width="0.05" stroke-dasharray="0.15 0.08"/>`;
+    // Sun overlay — arc projected onto the floor plan, centred on the plan centroid.
+    // Radial distance encodes solar elevation (high sun = arc pulled inward).
+    if (_state.showSun) {
+        if (!_state.sunData) {
+            // Data not yet loaded or location not configured — show hint
+            html += `<text class="fp-sun-label" x="0" y="0" font-size="0.28" text-anchor="middle"
+                           opacity="0.6">Sun position unavailable — check location config</text>`;
+        } else {
+            const sd = _state.sunData;
+            const ARC_R = 7; // metres — arc radius around the plan centroid
+            const lvl = currentLevel();
+            const origin = planCentroid(lvl);
+
+            const sunPtToSvg = (pt) => {
+                const planAz = ((pt.az + _state.plan.north_offset_deg) % 360 + 360) % 360;
+                const ang = planAz * Math.PI / 180;
+                const projR = ARC_R * Math.cos(pt.el * Math.PI / 180);
+                return modelToSvg({ x: origin.x + Math.sin(ang) * projR, y: origin.y + Math.cos(ang) * projR });
+            };
+
+            const daytime = (sd.points || []).filter(pt => pt.el > 0);
+            if (daytime.length > 1) {
+                const arcPts = daytime.map(sunPtToSvg);
+                const dStr = arcPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+
+                // Outer glow — thick, low opacity
+                html += `<path class="fp-sun-path-glow" d="${dStr}" stroke-width="0.35" stroke-linecap="round"/>`;
+                // Inner solid arc
+                html += `<path class="fp-sun-path" d="${dStr}" stroke-width="0.08" stroke-linecap="round"/>`;
+
+                // Endpoint dots at sunrise / sunset
+                const srPt = arcPts[0], ssPt = arcPts[arcPts.length - 1];
+                html += `<circle class="fp-sun-endpoint" cx="${srPt.x}" cy="${srPt.y}" r="0.15"/>`;
+                html += `<circle class="fp-sun-endpoint" cx="${ssPt.x}" cy="${ssPt.y}" r="0.15"/>`;
+
+                // Rise / set time labels
+                const fmtT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                const srL = fmtT(sd.sunrise), ssL = fmtT(sd.sunset);
+                if (srL) html += `<text class="fp-sun-label" x="${srPt.x}" y="${srPt.y - 0.30}" font-size="0.24" text-anchor="middle">${srL}</text>`;
+                if (ssL) html += `<text class="fp-sun-label" x="${ssPt.x}" y="${ssPt.y - 0.30}" font-size="0.24" text-anchor="middle">${ssL}</text>`;
+
+                // Current-time marker — closest data point to local clock
+                const nowMs = Date.now();
+                let closest = null, minDt = Infinity;
+                for (const pt of daytime) {
+                    const dt = Math.abs(new Date(pt.ts).getTime() - nowMs);
+                    if (dt < minDt) { minDt = dt; closest = pt; }
+                }
+                if (closest) {
+                    const sp = sunPtToSvg(closest);
+                    html += `<circle class="fp-sun-marker" cx="${sp.x}" cy="${sp.y}" r="0.22" stroke-width="0.05"/>`;
+                    html += `<circle class="fp-sun-marker-ring" cx="${sp.x}" cy="${sp.y}" r="0.36" stroke-width="0.045" fill="none"/>`;
+                }
+            }
         }
     }
 
@@ -1130,6 +1600,101 @@ function onCanvasWheel(e) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     zoomBy(factor, e.clientX, e.clientY);
+}
+
+// ──────────────────────────── touch support ────────────────────────────
+//
+// Strategy:
+//   • Single finger, small movement (<8px) + released quickly (<400ms) → tap
+//     (simulates mousedown + mouseup so wall/room/window drawing still works)
+//   • Single finger, larger movement → pan
+//   • Two fingers → pinch-to-zoom (calls the same zoomBy used by the wheel)
+//
+// All three are independent of the drawing mode so the user can always pan
+// or zoom without changing tools.
+
+let _touch = null;   // active touch gesture state
+
+function onCanvasTouchStart(e) {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+        const t = e.touches[0];
+        _touch = {
+            mode: 'single',
+            id: t.identifier,
+            startX: t.clientX, startY: t.clientY,
+            curX: t.clientX, curY: t.clientY,
+            startTime: Date.now(),
+            moved: false,
+        };
+    } else if (e.touches.length === 2) {
+        // Second finger arrived — cancel any single-touch pan/tap in progress
+        if (_isPanning) { _isPanning = false; _panStart = null; }
+        const dx = e.touches[1].clientX - e.touches[0].clientX;
+        const dy = e.touches[1].clientY - e.touches[0].clientY;
+        _touch = {
+            mode: 'pinch',
+            dist: Math.hypot(dx, dy) || 1,
+        };
+    }
+}
+
+function onCanvasTouchMove(e) {
+    e.preventDefault();
+    if (!_touch) return;
+
+    if (_touch.mode === 'single' && e.touches.length === 1) {
+        const t = e.touches[0];
+        const dx = t.clientX - _touch.startX;
+        const dy = t.clientY - _touch.startY;
+
+        if (!_touch.moved && Math.hypot(dx, dy) > 8) {
+            // Crossed the movement threshold — switch to pan mode
+            _touch.moved = true;
+            _isPanning = true;
+            _panStart = { x: _touch.startX - _state.pan.x, y: _touch.startY - _state.pan.y };
+        }
+
+        if (_touch.moved) {
+            _state.pan.x = t.clientX - _panStart.x;
+            _state.pan.y = t.clientY - _panStart.y;
+            renderScene(); renderOverlay();
+        } else {
+            // Still within tap threshold — feed live position to drawing tools
+            // so they can show a preview snap indicator while the finger rests.
+            onCanvasMouseMove({ clientX: t.clientX, clientY: t.clientY });
+        }
+        _touch.curX = t.clientX;
+        _touch.curY = t.clientY;
+
+    } else if (_touch.mode === 'pinch' && e.touches.length === 2) {
+        const dx = e.touches[1].clientX - e.touches[0].clientX;
+        const dy = e.touches[1].clientY - e.touches[0].clientY;
+        const dist = Math.hypot(dx, dy) || 1;
+        const factor = dist / _touch.dist;
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        zoomBy(factor, cx, cy);
+        _touch.dist = dist;
+    }
+}
+
+function onCanvasTouchEnd(e) {
+    e.preventDefault();
+    if (!_touch) return;
+
+    if (_touch.mode === 'single') {
+        const dt = Date.now() - _touch.startTime;
+        if (!_touch.moved && dt < 400) {
+            // Tap — simulate a click so drawing tools and selection work
+            const synth = { clientX: _touch.startX, clientY: _touch.startY, button: 0, shiftKey: false };
+            onCanvasMouseDown(synth);
+            onCanvasMouseUp(synth);
+        }
+        if (_isPanning) { _isPanning = false; _panStart = null; renderToolbar(); }
+    }
+
+    _touch = null;
 }
 
 function clientToSvgModel(evt) {
@@ -1608,6 +2173,24 @@ function renderOpeningProps(o) {
       <button class="btn btn-sm btn-outline-danger w-100" data-action="delete-opening"><i class="fas fa-trash me-1"></i>Delete</button>`;
 }
 
+function renderFpScheduleSlots(slots) {
+    if (!slots || !slots.length) return '<div class="text-muted small fst-italic mb-1">No slots — room uses operating hours defaults.</div>';
+    const days = ['mon','tue','wed','thu','fri','sat','sun'];
+    return slots.map((slot, i) => `
+      <div class="fp-slot border rounded p-1 mb-1" data-slot-idx="${i}">
+        <div class="d-flex flex-wrap gap-1 mb-1">
+          ${days.map(d => `<label class="fp-day-label"><input type="checkbox" data-slot-day="${d}" data-slot-idx="${i}" ${(slot.days||[]).includes(d) ? 'checked' : ''}><span>${d.charAt(0).toUpperCase()}</span></label>`).join('')}
+        </div>
+        <div class="row g-1 align-items-center">
+          <div class="col-auto"><input type="time" class="form-control form-control-sm fp-slot-start" data-slot-idx="${i}" value="${slot.start||'07:00'}"/></div>
+          <div class="col-auto text-muted small">→</div>
+          <div class="col-auto"><input type="time" class="form-control form-control-sm fp-slot-end" data-slot-idx="${i}" value="${slot.end||'22:00'}"/></div>
+          <div class="col"><input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm fp-slot-temp" data-slot-idx="${i}" value="${slot.temp??20}" placeholder="°C"/></div>
+          <div class="col-auto"><button class="btn btn-sm btn-outline-danger fp-del-slot" data-slot-idx="${i}" title="Delete slot"><i class="fas fa-times"></i></button></div>
+        </div>
+      </div>`).join('');
+}
+
 function renderRoomProps(r) {
     if (!r) return '';
     const planCircuits = _state.plan.circuits || [];
@@ -1619,28 +2202,46 @@ function renderRoomProps(r) {
         ? `<div class="mb-2"><label class="form-label small">Circuit</label>
              <select class="form-select form-select-sm" data-prop="room.circuit_id">${circuitOpts}</select></div>`
         : `<div class="mb-2 small text-muted fst-italic"><i class="fas fa-info-circle me-1"></i>Add a circuit in the sidebar to assign this room.</div>`;
+    const oohAction = r.out_of_hours_action || 'setback';
     return `
       <div class="text-muted small text-uppercase mb-2">Room</div>
       <div class="mb-2"><label class="form-label small">Name</label>
         <input class="form-control form-control-sm" data-prop="room.name" value="${escapeAttr(r.name || '')}"/></div>
       ${circuitSection}
-      <div class="mb-2">
-        <label class="form-label small">Temperature targets</label>
+      <div class="mb-2"><label class="form-label small">Temperature targets</label>
         <div class="row g-1">
           <div class="col-4">
             <label class="form-label small text-muted mb-0">Target (°C)</label>
-            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
-                   data-prop="room.target_temp" value="${r.target_temp ?? 20}"/>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm" data-prop="room.target_temp" value="${r.target_temp??20}"/>
           </div>
           <div class="col-4">
             <label class="form-label small text-muted mb-0">Setback (°C)</label>
-            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
-                   data-prop="room.night_setback" value="${r.night_setback ?? 17}"/>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm" data-prop="room.night_setback" value="${r.night_setback??17}"/>
           </div>
           <div class="col-4">
             <label class="form-label small text-muted mb-0">Min (°C)</label>
-            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
-                   data-prop="room.min_temp" value="${r.min_temp ?? 16}"/>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm" data-prop="room.min_temp" value="${r.min_temp??16}"/>
+          </div>
+        </div>
+      </div>
+      <div class="mb-2">
+        <label class="form-label small">Schedule <span class="badge bg-secondary">${(r.schedule||[]).length}</span></label>
+        <div class="fp-schedule-slots" data-room-id="${r.id}">${renderFpScheduleSlots(r.schedule||[])}</div>
+        <button class="btn btn-sm btn-outline-secondary w-100 mt-1 fp-add-slot"><i class="fas fa-plus me-1"></i>Add time slot</button>
+      </div>
+      <div class="mb-2"><label class="form-label small">Outside scheduled hours</label>
+        <div class="row g-1">
+          <div class="col-7">
+            <select class="form-select form-select-sm" data-prop="room.out_of_hours_action">
+              <option value="setback" ${oohAction==='setback'?'selected':''}>Setback (lower target)</option>
+              <option value="min_only" ${oohAction==='min_only'?'selected':''}>Frost-protect only</option>
+              <option value="off" ${oohAction==='off'?'selected':''}>Off (no heat call)</option>
+            </select>
+          </div>
+          <div class="col-5">
+            <input type="number" step="0.5" min="-10" max="0" class="form-control form-control-sm"
+                   placeholder="Offset °C" data-prop="room.night_setback_offset_c"
+                   value="${r.night_setback_offset_c??-3}"/>
           </div>
         </div>
       </div>
@@ -1896,6 +2497,53 @@ function bindPropsHandlers() {
                 renderCircuitList();
             }
             renderScene();
+        });
+    });
+
+    // Schedule slot handlers (room props panel)
+    const fpAddSlot = root.querySelector('.fp-add-slot');
+    if (fpAddSlot) {
+        fpAddSlot.addEventListener('click', () => {
+            const lvl = currentLevel();
+            const room = lvl.rooms.find(r => r.id === sel.id);
+            if (!room) return;
+            if (!Array.isArray(room.schedule)) room.schedule = [];
+            room.schedule.push({ days: ['mon','tue','wed','thu','fri'], start: '07:00', end: '22:00', temp: room.target_temp || 20 });
+            renderProps();
+        });
+    }
+    root.querySelectorAll('.fp-del-slot').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const lvl = currentLevel();
+            const room = lvl.rooms.find(r => r.id === sel.id);
+            if (!room || !Array.isArray(room.schedule)) return;
+            const idx = parseInt(btn.dataset.slotIdx, 10);
+            room.schedule.splice(idx, 1);
+            renderProps();
+        });
+    });
+    root.querySelectorAll('[data-slot-day]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const lvl = currentLevel();
+            const room = lvl.rooms.find(r => r.id === sel.id);
+            if (!room || !Array.isArray(room.schedule)) return;
+            const idx = parseInt(cb.dataset.slotIdx, 10);
+            const slot = room.schedule[idx]; if (!slot) return;
+            const day = cb.dataset.slotDay;
+            if (cb.checked) { if (!slot.days.includes(day)) slot.days.push(day); }
+            else { slot.days = slot.days.filter(d => d !== day); }
+        });
+    });
+    root.querySelectorAll('.fp-slot-start, .fp-slot-end, .fp-slot-temp').forEach(inp => {
+        inp.addEventListener('change', () => {
+            const lvl = currentLevel();
+            const room = lvl.rooms.find(r => r.id === sel.id);
+            if (!room || !Array.isArray(room.schedule)) return;
+            const idx = parseInt(inp.dataset.slotIdx, 10);
+            const slot = room.schedule[idx]; if (!slot) return;
+            if (inp.classList.contains('fp-slot-start')) slot.start = inp.value;
+            else if (inp.classList.contains('fp-slot-end')) slot.end = inp.value;
+            else slot.temp = parseFloat(inp.value) || slot.temp;
         });
     });
 
