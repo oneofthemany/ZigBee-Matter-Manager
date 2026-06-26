@@ -131,16 +131,27 @@ class MediaController:
     # Control (routed by player_id prefix)
     # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
-        item = await self._resolve(item)
+        item = await self._resolve(item, player_id)
         await self._dispatch(player_id, "play_url", item)
 
-    async def _resolve(self, item: MediaItem) -> MediaItem:
-        """Refresh a time-limited stream URL via the source's resolver, if any."""
+    async def _resolve(self, item: MediaItem, player_id: Optional[str] = None) -> MediaItem:
+        """Refresh a time-limited stream URL via the source's resolver, if any.
+
+        The resolver may return a plain URL string, or a ``{"url","content_type"}``
+        dict when the playable format depends on the target device (e.g. Tidal
+        lossless is DASH on Cast but AAC on WiiM). The provider is derived from
+        ``player_id`` so the source can choose."""
         resolver = self._resolvers.get(item.media_type)
         if resolver and item.source_id:
+            provider = player_id.split(":", 1)[0] if player_id else None
             try:
-                fresh = await resolver(item.source_id)
-                if fresh:
+                fresh = await resolver(item.source_id, provider)
+                if isinstance(fresh, dict):
+                    if fresh.get("url"):
+                        item.url = fresh["url"]
+                    if fresh.get("content_type"):
+                        item.content_type = fresh["content_type"]
+                elif fresh:
                     item.url = fresh
             except Exception as e:
                 logger.warning(f"URL resolve failed for {item.media_type}:{item.source_id}: {e}")

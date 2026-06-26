@@ -22,7 +22,12 @@ media:
     enabled: true
   tidal:
     enabled: false            # turn on, then log in under Settings → APIs → Media
-    quality: high             # high = AAC (Phase 2). Lossless arrives in Phase 3.
+    quality: high             # high = 320k AAC (plays on Cast + WiiM).
+                              # lossless = FLAC via DASH — Cast only; WiiM auto-falls back to AAC.
+                              # Requires manifest_base_url below (else AAC everywhere).
+    manifest_base_url: ""     # public URL of THIS app, reachable by Cast on the LAN,
+                              # e.g. "https://192.168.1.1:8000". Needed for lossless so
+                              # Cast can fetch the DASH manifest. Cast needs valid TLS or http.
 
 heating:
   enabled: true

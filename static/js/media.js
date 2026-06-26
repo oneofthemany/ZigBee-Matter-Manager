@@ -12,7 +12,7 @@ let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
 let _searchSource = 'radio'; // 'radio' | 'tidal'
 let _tidalState = null;      // last known tidal status state string
-let _tidalTab = 'search';    // tidal sub-tab: search | playlists | albums | artists
+let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
 
 // ---------------------------------------------------------------------------
 // Init
@@ -37,6 +37,8 @@ export function initMedia() {
     window.mediaSearch = doSearch;
     window.mediaTidalPlay = tidalPlay;
     window.mediaTidalTab = tidalTab;
+    window.mediaTidalFav = tidalFav;
+    window.mediaTidalLyrics = tidalLyrics;
     window.mediaQueueMode = queueMode;
     window.mediaQueueClear = queueClear;
 }
@@ -308,7 +310,7 @@ function renderTidalTabs() {
             onclick="window.mediaTidalTab('${key}')">${label}</button></li>`;
     out.innerHTML = `
       <ul class="nav nav-pills nav-fill mb-2 small">
-        ${tab('search', 'Search')}${tab('playlists', 'Playlists')}${tab('albums', 'Albums')}${tab('artists', 'Artists')}
+        ${tab('search', 'Search')}${tab('mixes', 'Mixes')}${tab('playlists', 'Playlists')}${tab('albums', 'Albums')}${tab('artists', 'Artists')}
       </ul>
       <div id="tidalTabContent"></div>`;
     tidalTab(_tidalTab);
@@ -395,15 +397,16 @@ async function tidalSearch() {
     const section = (title, rows) => rows ? `<div class="fw-bold small text-uppercase text-muted mt-2">${title}</div>${rows}` : '';
     const tracks = (r.tracks || []).map(t => mediaCard(t.artwork_url, t.title, t.artist, [
         playBtn('track', t.source_id, t.title), radioBtn('track', t.source_id, t.title),
+        lyricsBtn(t.source_id, t.title), favBtn('track', t.source_id, false),
     ])).join('');
     const albums = (r.albums || []).map(a => mediaCard(a.artwork, a.name, a.artist, [
-        playBtn('album', a.id, a.name),
+        playBtn('album', a.id, a.name), favBtn('album', a.id, false),
     ])).join('');
     const artists = (r.artists || []).map(a => mediaCard(a.artwork, a.name, 'Artist', [
-        playBtn('artist', a.id, a.name), radioBtn('artist', a.id, a.name),
+        playBtn('artist', a.id, a.name), radioBtn('artist', a.id, a.name), favBtn('artist', a.id, false),
     ])).join('');
     const playlists = (r.playlists || []).map(pl => mediaCard(pl.artwork, pl.name, pl.artist, [
-        playBtn('playlist', pl.id, pl.name),
+        playBtn('playlist', pl.id, pl.name), favBtn('playlist', pl.id, false),
     ])).join('');
     out.innerHTML = (tracks || albums || artists || playlists)
         ? section('Tracks', tracks) + section('Artists', artists) + section('Albums', albums) + section('Playlists', playlists)
@@ -420,10 +423,17 @@ async function loadTidalLibrary(kind) {
     const items = data.items || [];
     if (!items.length) { out.innerHTML = `<div class="text-muted small py-2">No ${kind} in your library.</div>`; return; }
     out.innerHTML = items.map(it => {
-        const k = it.type;  // album | artist | playlist
-        const actions = k === 'artist'
-            ? [playBtn('artist', it.id, it.name), radioBtn('artist', it.id, it.name)]
-            : [playBtn(k, it.id, it.name)];
+        const k = it.type;  // album | artist | playlist | mix
+        let actions;
+        if (k === 'mix') {
+            // Mixes are personalised, not favouritable — just play them.
+            actions = [playBtn('mix', it.id, it.name)];
+        } else if (k === 'artist') {
+            actions = [playBtn('artist', it.id, it.name), radioBtn('artist', it.id, it.name),
+                       favBtn('artist', it.id, true)];
+        } else {
+            actions = [playBtn(k, it.id, it.name), favBtn(k, it.id, true)];
+        }
         return mediaCard(it.artwork, it.name, it.artist, actions);
     }).join('');
 }
@@ -453,6 +463,73 @@ function radioBtn(kind, id, name) {
     return `<button class="btn btn-outline-primary" title="Radio (infinite)"
       onclick="window.mediaTidalPlay('${kind}','${esc(id)}','radio', ${JSON.stringify(name).replace(/"/g, '&quot;')})">
       <i class="fas fa-infinity"></i></button>`;
+}
+// Heart toggle. `faved` seeds the visual state (library items are favourites
+// already; search results default to un-favourited). State flips optimistically
+// from the server response, tracked on the button's data-faved attribute.
+function favBtn(kind, id, faved) {
+    return `<button class="btn ${faved ? 'btn-danger' : 'btn-outline-danger'}"
+      title="${faved ? 'Remove from' : 'Add to'} favourites" data-faved="${faved ? '1' : '0'}"
+      onclick="window.mediaTidalFav('${kind}','${esc(id)}', this)">
+      <i class="fas fa-heart"></i></button>`;
+}
+function lyricsBtn(trackId, title) {
+    return `<button class="btn btn-outline-secondary" title="Lyrics"
+      onclick="window.mediaTidalLyrics('${esc(trackId)}', ${JSON.stringify(title).replace(/"/g, '&quot;')})">
+      <i class="fas fa-align-left"></i></button>`;
+}
+
+async function tidalFav(kind, id, el) {
+    const action = el.getAttribute('data-faved') === '1' ? 'remove' : 'add';
+    const r = await apiPost('/api/media/tidal/favorite', { kind, id, action });
+    if (!r.success) { toast(r.error || 'Favourite failed', 'error'); return; }
+    const on = !!r.favorited;
+    el.setAttribute('data-faved', on ? '1' : '0');
+    el.classList.toggle('btn-danger', on);
+    el.classList.toggle('btn-outline-danger', !on);
+    el.title = (on ? 'Remove from' : 'Add to') + ' favourites';
+    toast(on ? 'Added to favourites' : 'Removed from favourites', 'success');
+}
+
+async function tidalLyrics(trackId, title) {
+    showOverlay(title || 'Lyrics', spinner());
+    const data = await apiGet(`/api/media/tidal/lyrics?track_id=${encodeURIComponent(trackId)}`);
+    if (!data.success) {
+        showOverlay(title || 'Lyrics', `<div class="text-muted small">${esc(data.error || 'No lyrics')}</div>`);
+        return;
+    }
+    const lyr = data.lyrics || {};
+    const plain = lyr.text || lrcToPlain(lyr.synced);
+    showOverlay(title || 'Lyrics',
+        `<pre class="mb-0 small" style="white-space:pre-wrap;font-family:inherit">${esc(plain || 'No lyrics')}</pre>`);
+}
+
+// Strip [mm:ss.xx] timestamps from LRC-style synced lyrics for plain display.
+function lrcToPlain(lrc) {
+    return String(lrc || '').replace(/\[\d{1,2}:\d{2}(\.\d{1,3})?\]/g, '').trim();
+}
+
+// Lightweight centred modal overlay (used for lyrics). Click the backdrop to close.
+function showOverlay(title, innerHtml) {
+    let ov = document.getElementById('mediaOverlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'mediaOverlay';
+        ov.className = 'position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center';
+        ov.style.cssText = 'background:rgba(0,0,0,.5);z-index:1080';
+        ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+        document.body.appendChild(ov);
+    }
+    ov.innerHTML = `
+      <div class="card shadow" style="max-width:520px;width:90%;max-height:80vh">
+        <div class="card-header d-flex justify-content-between align-items-center py-2">
+          <span class="fw-semibold text-truncate me-2">${esc(title)}</span>
+          <button class="btn btn-sm btn-outline-secondary"
+                  onclick="document.getElementById('mediaOverlay').remove()">
+            <i class="fas fa-times"></i></button>
+        </div>
+        <div class="card-body overflow-auto">${innerHtml}</div>
+      </div>`;
 }
 
 async function tidalPlay(kind, id, mode, name) {
