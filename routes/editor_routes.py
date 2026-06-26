@@ -7,7 +7,7 @@ import os
 import time
 import shutil
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
