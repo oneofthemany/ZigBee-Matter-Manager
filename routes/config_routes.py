@@ -75,6 +75,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "web_ssl": cfg.get("web", {}).get("ssl", {}),
                     "logging": cfg.get("logging", {}),
                     "weather": cfg.get("weather", {}),
+                    "media": cfg.get("media", {}),
                     "ota": {
                         "enabled": bool(ota.get("enabled", True)),
                         # `providers` is the explicit override list (rarely used).
@@ -127,6 +128,37 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     weather_cfg["poll_interval_minutes"] = int(w["poll_interval_minutes"])
                 if "mqtt_publish" in w:
                     weather_cfg["mqtt_publish"] = bool(w["mqtt_publish"])
+
+            if "media" in incoming:
+                m = incoming["media"] or {}
+                media_cfg = cfg.setdefault("media", {})
+                if "enabled" in m:
+                    media_cfg["enabled"] = bool(m["enabled"])
+                if m.get("poll_interval_seconds"):
+                    media_cfg["poll_interval_seconds"] = int(m["poll_interval_seconds"])
+                if "cast" in m:
+                    cast_in = m["cast"] or {}
+                    cast_cfg = media_cfg.setdefault("cast", {})
+                    if "enabled" in cast_in:
+                        cast_cfg["enabled"] = bool(cast_in["enabled"])
+                    if cast_in.get("app_id"):
+                        cast_cfg["app_id"] = str(cast_in["app_id"]).strip()
+                if "wiim" in m:
+                    wiim_in = m["wiim"] or {}
+                    wiim_cfg = media_cfg.setdefault("wiim", {})
+                    if "enabled" in wiim_in:
+                        wiim_cfg["enabled"] = bool(wiim_in["enabled"])
+                    if "devices" in wiim_in:
+                        # Normalise to a clean list of non-empty IP strings.
+                        wiim_cfg["devices"] = [
+                            str(d).strip() for d in (wiim_in["devices"] or [])
+                            if str(d).strip()
+                        ]
+                if "radio_browser" in m:
+                    rb_in = m["radio_browser"] or {}
+                    rb_cfg = media_cfg.setdefault("radio_browser", {})
+                    if "enabled" in rb_in:
+                        rb_cfg["enabled"] = bool(rb_in["enabled"])
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

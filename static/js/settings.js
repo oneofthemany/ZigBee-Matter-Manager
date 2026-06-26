@@ -515,9 +515,94 @@ function renderApisTab(config) {
     <button class="btn btn-outline-secondary btn-sm" onclick="window.refreshWeatherNow()">
       <i class="fas fa-sync-alt me-1"></i> Fetch Now
     </button>
+
+    <hr class="my-4">
+    ${renderMediaSection(config)}
     `;
 
     loadWeatherStatus();
+}
+
+// ============================================================================
+// MEDIA SECTION (Cast / WiiM / Radio) — lives in the External APIs tab
+// ============================================================================
+
+function renderMediaSection(config) {
+    const m = config.media || {};
+    const cast = m.cast || {};
+    const wiim = m.wiim || {};
+    const rb = m.radio_browser || {};
+    const devices = (wiim.devices || []).join('\n');
+    return `
+    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
+      <i class="fas fa-music me-1"></i> Media Players
+    </h6>
+    <p class="text-muted small mb-3">
+      Multi-room audio for Google Cast (Nest/Home) and WiiM players, plus internet radio.
+      Self-contained — no Home Assistant required. Changes take effect after a service restart.
+    </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-2">
+        <label class="form-label small fw-semibold">Enabled</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_enabled" ${m.enabled ? 'checked' : ''}>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Poll Interval (s)</label>
+        <input type="number" class="form-control" id="cfg_media_poll" value="${m.poll_interval_seconds ?? 10}" min="3">
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Google Cast</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_cast_enabled" ${cast.enabled !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Enable discovery</label>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold">Cast App ID</label>
+        <input type="text" class="form-control" id="cfg_media_cast_appid"
+               value="${w_escape(cast.app_id || 'CC1AD845')}" placeholder="CC1AD845">
+        <small class="text-muted">Default media receiver. Swap for a custom Web Receiver later.</small>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">WiiM</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_wiim_enabled" ${wiim.enabled !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Enable</label>
+        </div>
+      </div>
+      <div class="col-md-9">
+        <label class="form-label small fw-semibold">WiiM Device IPs</label>
+        <textarea class="form-control" id="cfg_media_wiim_devices" rows="3"
+                  placeholder="One IP per line, e.g.&#10;192.168.1.50&#10;192.168.1.51">${w_escape(devices)}</textarea>
+        <small class="text-muted">Manual list for now; mDNS auto-discovery comes later.</small>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold">Radio-Browser</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_rb_enabled" ${rb.enabled !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Enable station directory</label>
+        </div>
+      </div>
+    </div>
+    `;
+}
+
+// Small HTML-attribute escaper (settings.js has no shared esc helper).
+function w_escape(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
 }
 
 async function loadWeatherStatus() {
@@ -1030,6 +1115,22 @@ function collectFormValues() {
             longitude: parseFloat(document.getElementById('cfg_weather_lon')?.value) || null,
             poll_interval_minutes: Number(document.getElementById('cfg_weather_interval')?.value) || 30,
             mqtt_publish: document.getElementById('cfg_weather_mqtt')?.checked ?? false,
+        },
+        media: {
+            enabled: document.getElementById('cfg_media_enabled')?.checked ?? false,
+            poll_interval_seconds: Number(document.getElementById('cfg_media_poll')?.value) || 10,
+            cast: {
+                enabled: document.getElementById('cfg_media_cast_enabled')?.checked ?? true,
+                app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',
+            },
+            wiim: {
+                enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? true,
+                devices: (document.getElementById('cfg_media_wiim_devices')?.value || '')
+                    .split('\n').map(s => s.trim()).filter(Boolean),
+            },
+            radio_browser: {
+                enabled: document.getElementById('cfg_media_rb_enabled')?.checked ?? true,
+            },
         },
         ota: {
             enabled: document.getElementById('cfg_ota_enabled')?.checked ?? true,
