@@ -1044,7 +1044,7 @@ class HeatingController:
                 continue
             cid = str(c.get("id") or c["name"]).lower().replace(" ", "_")
             rooms = self._clean_rooms(c.get("rooms") or [])
-            out.append({
+            cleaned = {
                 "id": cid,
                 "name": str(c["name"]),
                 "receiver_ieee": str(c.get("receiver_ieee") or "").strip() or None,
@@ -1053,7 +1053,16 @@ class HeatingController:
                 "rooms": rooms,
                 "weather_suppression": _as_bool(c.get("weather_suppression"), None),
                 "operating_hours": _as_bool(c.get("operating_hours"), None),
-            })
+            }
+            # Optional receiver setpoint overrides — only carry when set so the
+            # call-site .get(default) fallbacks (30.0 / 7.0) still apply otherwise.
+            call_sp = _as_float(c.get("receiver_call_setpoint"))
+            if call_sp is not None:
+                cleaned["receiver_call_setpoint"] = call_sp
+            idle_sp = _as_float(c.get("receiver_idle_setpoint"))
+            if idle_sp is not None:
+                cleaned["receiver_idle_setpoint"] = idle_sp
+            out.append(cleaned)
         return out
 
     def _config_floor_plan(self) -> Optional[Dict[str, Any]]:

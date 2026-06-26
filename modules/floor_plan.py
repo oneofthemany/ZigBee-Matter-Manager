@@ -515,6 +515,13 @@ def _clean_room(raw: Any, existing_ids: set) -> Optional[dict]:
             })
         out["schedule"] = clean_sched
 
+    etm = str(raw.get("external_temp_mode") or "").lower()
+    if etm in ("off", "advisory", "push"):
+        out["external_temp_mode"] = etm
+    eti = _as_float(raw.get("external_temp_push_interval_sec"))
+    if eti is not None and eti > 0:
+        out["external_temp_push_interval_sec"] = int(_clamp(eti, 30, 86400))
+
     return out
 
 
@@ -571,6 +578,11 @@ def _clean_radiator(raw: Any) -> Optional[dict]:
     trv = raw.get("trv_ieee")
     if isinstance(trv, str) and trv.strip():
         out["trv_ieee"] = trv.strip().lower()
+        # Per-TRV behaviour flags (applied to the TRV device by the controller)
+        for flag in ("window_detection", "child_lock", "valve_detection"):
+            fv = _as_bool(raw.get(flag), None)
+            if fv is not None:
+                out[flag] = fv
     return out
 
 
@@ -660,6 +672,18 @@ def _clean_plan_circuit(raw: Any, existing_ids: set) -> Optional[dict]:
     ep = raw.get("receiver_endpoint")
     if ep is not None:
         out["receiver_endpoint"] = ep
+    oh = _as_bool(raw.get("operating_hours"), None)
+    if oh is not None:
+        out["operating_hours"] = oh
+    ws = _as_bool(raw.get("weather_suppression"), None)
+    if ws is not None:
+        out["weather_suppression"] = ws
+    call_sp = _as_float(raw.get("receiver_call_setpoint"))
+    if call_sp is not None and 4.0 <= call_sp <= 90.0:
+        out["receiver_call_setpoint"] = round(call_sp, 1)
+    idle_sp = _as_float(raw.get("receiver_idle_setpoint"))
+    if idle_sp is not None and 4.0 <= idle_sp <= 90.0:
+        out["receiver_idle_setpoint"] = round(idle_sp, 1)
     return out
 
 
@@ -1245,7 +1269,11 @@ def _trvs_for_room(level_radiators: List[dict], room_id: str) -> List[dict]:
         if not ieee or ieee in seen:
             continue
         seen.add(ieee)
-        out.append({"ieee": ieee})
+        t = {"ieee": ieee}
+        for flag in ("window_detection", "child_lock", "valve_detection"):
+            if r.get(flag) is not None:
+                t[flag] = r[flag]
+        out.append(t)
     return out
 
 
@@ -1354,7 +1382,10 @@ def project_floor_plan_to_circuits(
         # Build a lookup of existing controller rooms keyed by plan room id
         # so we can carry over user-set fields (target_temp etc.).
         existing_room_by_plan_id: Dict[str, dict] = {}
+        existing_circuit_by_id: Dict[str, dict] = {}
         for c in circuits:
+            if isinstance(c, dict) and c.get("id"):
+                existing_circuit_by_id[c["id"]] = c
             for r in (c.get("rooms") or []):
                 ref = (r.get("floor_plan_ref") or {})
                 pid = ref.get("room_id") or r.get("id")
@@ -1392,13 +1423,25 @@ def project_floor_plan_to_circuits(
             if "receiver_endpoint" in pc:
                 c2["receiver_endpoint"] = pc["receiver_endpoint"]
 
+            # Circuit-level settings: prefer the plan circuit, fall back to an
+            # existing controller circuit so migration from manual config keeps
+            # operating-hours / weather-suppression / receiver setpoints.
+            existing_c = existing_circuit_by_id.get(cid, {})
+            for k in ("operating_hours", "weather_suppression",
+                      "receiver_call_setpoint", "receiver_idle_setpoint"):
+                if pc.get(k) is not None:
+                    c2[k] = pc[k]
+                elif existing_c.get(k) is not None:
+                    c2[k] = existing_c[k]
+
             new_rooms = []
             for fp_room, level in rooms_by_circuit.get(cid, []):
                 base = existing_room_by_plan_id.get(fp_room["id"])
                 room_dict = _project_room(fp_room, level, base)
                 # Carry schedule/temp fields from floor-plan room definition
                 for k in ("target_temp", "night_setback", "min_temp",
-                          "out_of_hours_action", "night_setback_offset_c"):
+                          "out_of_hours_action", "night_setback_offset_c",
+                          "external_temp_mode", "external_temp_push_interval_sec"):
                     if k not in room_dict and fp_room.get(k) is not None:
                         room_dict[k] = fp_room[k]
                 if "schedule" not in room_dict and fp_room.get("schedule"):
@@ -1406,7 +1449,7 @@ def project_floor_plan_to_circuits(
                 room_dict.setdefault("target_temp", 20.0)
                 room_dict.setdefault("night_setback", 17.0)
                 room_dict.setdefault("min_temp", 16.0)
-                room_dict.setdefault("external_temp_mode", "push")
+                room_dict.setdefault("external_temp_mode", "advisory")
                 room_dict.setdefault("external_temp_push_interval_sec", 300)
                 room_dict.setdefault("schedule", [])
                 new_rooms.append(room_dict)
