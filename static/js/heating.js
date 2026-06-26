@@ -24,6 +24,7 @@ import {
     initHeatingController,
     loadControllerStatus,
 } from './heating-controller.js';
+import { createChart } from './chart-utils.js';
 
 
 // Chart palette tuned for both light and dark mode visibility.
@@ -81,11 +82,12 @@ const DAYS = [
     { key: 'sun', label: 'Su' },
 ];
 
-// Re-render the chart immediately when the user toggles theme so colours
-// and tooltip styling update without waiting for the next 20s tick.
+// Recompute the theme-specific line palette on theme toggle (chart-utils
+// re-themes axes/tooltip automatically, but the bespoke series colours from
+// getChartPalette() need a redraw). Refetch + redraw rather than wait 20s.
 document.addEventListener('themechange', () => {
     if (lastDashboard) {
-        loadHeatingHistory();  // refetch + redraw
+        loadHeatingHistory();  // refetch + redraw with the new palette
     }
 });
 // ============================================================================
@@ -909,9 +911,8 @@ function renderZonesDashboard(zones) {
         </div>`;
 }
 
-// Cached chart state so refreshes don't flash
-let _historyChartSeries = null;
-let _historyHoverHandler = null;
+// Live ECharts instance for the temperature history chart.
+let _heatingHistoryChart = null;
 
 function renderHistoryChart(historyData) {
     const container = document.getElementById('heatingHistoryChart');
@@ -957,19 +958,9 @@ function renderHistoryChart(historyData) {
         return;
     }
 
-    _historyChartSeries = series;
+    if (_heatingHistoryChart) { _heatingHistoryChart.dispose(); _heatingHistoryChart = null; }
 
-    // === Geometry ===
-    const W = 900;
-    const H = 280;
-    const PAD_L = 46;   // left for y-axis
-    const PAD_R = 16;
-    const PAD_T = 12;
-    const PAD_B = 40;   // bottom for x-axis labels
-    const plotW = W - PAD_L - PAD_R;
-    const plotH = H - PAD_T - PAD_B;
-
-    // === Scale domains ===
+    // === Y range (nice 1°C rounding, min 4° visible) + X range ===
     let tMin = Infinity, tMax = -Infinity, xMin = Infinity, xMax = -Infinity;
     for (const s of series) for (const p of s.points) {
         const [ts, val] = parsePoint(p);
@@ -983,185 +974,55 @@ function renderHistoryChart(historyData) {
         container.innerHTML = noDataBlock('No valid data points', 'Telemetry exists but no samples have numeric values.');
         return;
     }
-
-    // Nice-round Y range at 1°C intervals with a bit of padding
     tMin = Math.floor(tMin - 0.5);
     tMax = Math.ceil(tMax + 0.5);
     if (tMax - tMin < 4) tMax = tMin + 4;   // minimum 4° visible
 
-    // X range — default to "last 24h ending now" so the axis is stable
+    // Anchor the axis to "last 24h ending now", extending if data is wider.
     const now = Date.now();
-    xMax = Math.max(xMax, now);
-    xMin = Math.min(xMin, now - 24 * 3600 * 1000);
+    xMax = Math.max(isFinite(xMax) ? xMax : now, now);
+    xMin = Math.min(isFinite(xMin) ? xMin : now - 24 * 3600 * 1000, now - 24 * 3600 * 1000);
 
-    const xScale = t => PAD_L + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
-    const yScale = v => PAD_T + plotH - ((v - tMin) / Math.max(0.1, tMax - tMin)) * plotH;
-
-    // === Y-axis ticks (every 1°C, labels every 2°C if range is large) ===
-    const yTicks = [];
-    const yLabelStep = (tMax - tMin > 10) ? 2 : 1;
-    for (let v = tMin; v <= tMax + 0.001; v += 1) {
-        yTicks.push({ v, isLabel: (Math.round(v) % yLabelStep === 0) });
-    }
-
-    // === X-axis ticks (every 2 hours) ===
-    const xTicks = [];
-    const start = new Date(xMin);
-    start.setMinutes(0, 0, 0);
-    start.setHours(start.getHours() + 1);
-    for (let t = start.getTime(); t <= xMax; t += 2 * 3600 * 1000) {
-        xTicks.push(t);
-    }
-
-    const fmtHour = ms => {
-        const d = new Date(ms);
-        const h = d.getHours().toString().padStart(2, '0');
-        return `${h}:00`;
-    };
-
-    // === Palette ===
     const palette = getChartPalette();
 
-    // === Paths ===
-    const paths = series.map((s, i) => {
-        const colour = palette[i % palette.length];
-        const d = s.points.map(p => {
-            const [ts, val] = parsePoint(p);
-            if (val == null || !isFinite(val) || !isFinite(ts)) return '';
-            return `${xScale(ts).toFixed(1)},${yScale(val).toFixed(1)}`;
-        }).filter(Boolean).join(' L ');
-        return d ? `<path d="M ${d}" fill="none" stroke="${colour}" stroke-width="1.8"
-                         stroke-linejoin="round" stroke-linecap="round"
-                         data-series-index="${i}" class="history-line"/>` : '';
-    }).join('');
+    container.innerHTML = '<div id="heatingHistoryCanvas" style="height:300px"></div>';
+    _heatingHistoryChart = createChart(document.getElementById('heatingHistoryCanvas'));
 
-    // === Grid ===
-    const yGrid = yTicks.map(t => `
-        <line x1="${PAD_L}" x2="${W - PAD_R}" y1="${yScale(t.v)}" y2="${yScale(t.v)}"
-              stroke="currentColor" stroke-opacity="${t.isLabel ? 0.15 : 0.05}"
-              stroke-dasharray="${t.isLabel ? '' : '2,2'}"/>`).join('');
+    const echartsSeries = series.map((s, i) => ({
+        name: s.name,
+        type: 'line',
+        showSymbol: false,
+        smooth: true,
+        connectNulls: true,
+        lineStyle: { width: 1.8, color: palette[i % palette.length] },
+        itemStyle: { color: palette[i % palette.length] },
+        data: s.points
+            .map(p => parsePoint(p))
+            .filter(([ts, val]) => isFinite(ts) && val != null && isFinite(val)),
+    }));
 
-    const xGrid = xTicks.map(t => `
-        <line x1="${xScale(t)}" x2="${xScale(t)}" y1="${PAD_T}" y2="${PAD_T + plotH}"
-              stroke="currentColor" stroke-opacity="0.05"/>`).join('');
-
-    // === Labels ===
-    const yLabels = yTicks.filter(t => t.isLabel).map(t => `
-        <text x="${PAD_L - 6}" y="${yScale(t.v) + 4}" text-anchor="end"
-              font-size="11" fill="currentColor" opacity="0.7">${t.v}°C</text>`).join('');
-
-    const xLabels = xTicks.map(t => `
-        <text x="${xScale(t)}" y="${PAD_T + plotH + 16}" text-anchor="middle"
-              font-size="11" fill="currentColor" opacity="0.7">${fmtHour(t)}</text>`).join('');
-
-    // === Axes ===
-    const xAxis = `<line x1="${PAD_L}" x2="${W - PAD_R}" y1="${PAD_T + plotH}" y2="${PAD_T + plotH}"
-                         stroke="currentColor" stroke-opacity="0.3"/>`;
-    const yAxis = `<line x1="${PAD_L}" x2="${PAD_L}" y1="${PAD_T}" y2="${PAD_T + plotH}"
-                         stroke="currentColor" stroke-opacity="0.3"/>`;
-
-    // === Legend ===
-    const legend = series.map((s, i) => `
-        <span class="me-3 small d-inline-flex align-items-center">
-            <span style="display:inline-block;width:18px;height:3px;background:${palette[i % palette.length]};margin-right:6px;border-radius:2px;"></span>
-            ${escapeHtml(s.name)}
-        </span>`).join('');
-
-    container.innerHTML = `
-        <div class="mb-2">${legend}</div>
-        <div class="position-relative" id="heatingHistorySvgWrap">
-            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
-                 style="width:100%;height:auto;color:var(--bs-body-color);display:block;"
-                 id="heatingHistorySvg">
-                ${yGrid}${xGrid}${xAxis}${yAxis}${yLabels}${xLabels}${paths}
-                <line id="hover-line" x1="0" x2="0" y1="${PAD_T}" y2="${PAD_T + plotH}"
-                      stroke="currentColor" stroke-opacity="0.4" stroke-dasharray="3,3"
-                      style="display:none;pointer-events:none;"/>
-            </svg>
-            <div id="heatingHistoryTooltip"
-                 style="position:absolute;display:none;pointer-events:none;
-                        padding:6px 10px;border-radius:6px;font-size:12px;
-                        line-height:1.4;white-space:nowrap;z-index:10;
-                        transform:translate(-50%, -100%);margin-top:-8px;"></div>
-        </div>`;
-
-    // === Hover handler (single listener; replaces previous on re-render) ===
-    if (_historyHoverHandler) {
-        const old = document.getElementById('heatingHistorySvg');
-        if (old) old.removeEventListener('mousemove', _historyHoverHandler);
-    }
-
-    const svg = document.getElementById('heatingHistorySvg');
-    const tooltip = document.getElementById('heatingHistoryTooltip');
-    const hoverLine = document.getElementById('hover-line');
-
-    _historyHoverHandler = (evt) => {
-        const rect = svg.getBoundingClientRect();
-        const svgX = (evt.clientX - rect.left) * (W / rect.width);
-        const t = xMin + ((svgX - PAD_L) / plotW) * (xMax - xMin);
-        if (svgX < PAD_L || svgX > W - PAD_R) {
-            tooltip.style.display = 'none';
-            hoverLine.style.display = 'none';
-            return;
-        }
-        hoverLine.setAttribute('x1', svgX);
-        hoverLine.setAttribute('x2', svgX);
-        hoverLine.style.display = '';
-
-        // Nearest point per series
-        const readings = [];
-        for (let i = 0; i < _historyChartSeries.length; i++) {
-            const s = _historyChartSeries[i];
-            let best = null, bestDiff = Infinity;
-            for (const p of s.points) {
-                const [ts, val] = parsePoint(p);
-                if (val == null || !isFinite(val) || !isFinite(ts)) continue;
-                const diff = Math.abs(ts - t);
-                if (diff < bestDiff) { bestDiff = diff; best = { ts, val }; }
-            }
-            if (best && bestDiff < 30 * 60 * 1000) {  // within 30min
-                readings.push({
-                    name: s.name, val: best.val, ts: best.ts,
-                    colour: palette[i % palette.length],
-                });
-            }
-        }
-
-        if (readings.length === 0) {
-            tooltip.style.display = 'none';
-            return;
-        }
-
-        const d = new Date(t);
-        const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-        const dayLabel = (() => {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const cmp = new Date(d);
-            cmp.setHours(0, 0, 0, 0);
-            const diffDays = Math.round((today - cmp) / (24 * 3600 * 1000));
-            if (diffDays === 0) return 'today';
-            if (diffDays === 1) return 'yesterday';
-            return d.toLocaleDateString(undefined, { weekday: 'short' });
-        })();
-
-        tooltip.innerHTML = `
-            <div style="margin-bottom:4px;font-weight:600;">${hhmm} <span style="opacity:0.7;font-weight:400;">${dayLabel}</span></div>
-            ${readings.map(r => `
-                <div>
-                    <span style="display:inline-block;width:8px;height:8px;background:${r.colour};border-radius:2px;margin-right:6px;"></span>
-                    ${escapeHtml(r.name)}: <strong>${r.val.toFixed(1)}°C</strong>
-                </div>`).join('')}`;
-
-        tooltip.style.display = '';
-        tooltip.style.left = ((svgX / W) * rect.width) + 'px';
-        tooltip.style.top = (evt.clientY - rect.top) + 'px';
-    };
-
-    svg.addEventListener('mousemove', _historyHoverHandler);
-    svg.addEventListener('mouseleave', () => {
-        tooltip.style.display = 'none';
-        hoverLine.style.display = 'none';
+    _heatingHistoryChart.setOption({
+        animationDuration: 500,
+        color: palette,
+        grid: { top: 36, right: 16, bottom: 28, left: 48 },
+        legend: { top: 0, type: 'scroll', textStyle: { fontSize: 11 } },
+        tooltip: {
+            trigger: 'axis',
+            valueFormatter: (v) => (v == null ? '—' : `${Number(v).toFixed(1)}°C`),
+        },
+        xAxis: {
+            type: 'time',
+            min: xMin,
+            max: xMax,
+            axisLabel: { fontSize: 10, hideOverlap: true },
+        },
+        yAxis: {
+            type: 'value',
+            min: tMin,
+            max: tMax,
+            axisLabel: { fontSize: 10, formatter: '{value}°C' },
+        },
+        series: echartsSeries,
     });
 }
 

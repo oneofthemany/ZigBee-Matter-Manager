@@ -291,12 +291,6 @@ html, body {
         flex-wrap: wrap;
     }
 
-    /* SVG chart — ensure it scales */
-    #spectrumChart svg,
-    #spectrumHistory svg {
-        max-width: 100%;
-        height: auto;
-    }
 }
 
 

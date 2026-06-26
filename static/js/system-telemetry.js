@@ -5,16 +5,17 @@
  * Fluid real-time system monitoring with:
  *   - Surgical DOM updates (no innerHTML rebuilds during refresh)
  *   - CSS transitions on gauge bars and colours
- *   - Persistent SVG chart with polyline point updates
+ *   - ECharts time-series history chart (legend toggle + axis tooltip built in)
  *   - Staggered refresh: gauges 5s, chart 30s, DB stats 60s
  */
 
 import { state } from './state.js';
+import { createChart } from './chart-utils.js';
 
 let _gaugeTimer = null;
 let _chartTimer = null;
 let _dbTimer = null;
-let _chartBuilt = false;
+let _chart = null;
 let _chartData = [];
 
 const SERIES = [
@@ -71,7 +72,6 @@ function _renderSkeleton() {
     <style>
         .sys-bar { transition: width 0.8s ease, background-color 0.5s ease; }
         .sys-val { transition: color 0.5s ease; }
-        #sys-chart-svg polyline { transition: points 0.6s ease; }
     </style>
 
     <!-- Gauges -->
@@ -102,8 +102,10 @@ function _renderSkeleton() {
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._sysRefreshChart()"><i class="fas fa-sync-alt"></i></button>
             </div>
         </div>
-        <div class="card-body p-2" id="sys-history-chart" style="min-height:220px">
-            <div class="text-muted small text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading history...</div>
+        <div class="card-body p-2">
+            <div id="sys-history-chart" style="height:240px">
+                <div class="text-muted small text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading history...</div>
+            </div>
         </div>
     </div>
 
@@ -248,7 +250,7 @@ function _updateAlerts(alerts) {
 }
 
 // ============================================================================
-// HISTORY CHART — persistent SVG, update polyline points only
+// HISTORY CHART — ECharts time-series, full option rebuilt on each refresh
 // ============================================================================
 
 async function _refreshChart() {
@@ -259,159 +261,67 @@ async function _refreshChart() {
         const res = await fetch(`/api/telemetry/system/history?hours=${hours}&bucket=${bucket}`);
         const json = await res.json();
         if (!json.success || !json.data?.length) {
-            if (!_chartBuilt) {
+            if (!_chart) {
                 const el = document.getElementById('sys-history-chart');
                 if (el) el.innerHTML = '<div class="text-muted small text-center py-4">No history yet — collecting every 30s.</div>';
             }
             return;
         }
         _chartData = json.data;
-
-        if (!_chartBuilt) {
-            _buildChart();
-        }
-        _updateChartLines();
+        _renderChart();
     } catch (e) { /* silent */ }
 }
 
-function _buildChart() {
+function _renderChart() {
     const el = document.getElementById('sys-history-chart');
-    if (!el) return;
+    if (!el || !_chartData.length) return;
 
-    const W = el.clientWidth || 700;
-    const H = 200;
-
-    // Legend
-    const legend = SERIES.map(s =>
-        `<span class="me-3" style="font-size:0.7rem;cursor:pointer" onclick="window._sysToggleLine('${s.id}')">` +
-        `<span style="color:${s.color}">●</span> ${s.label}</span>`
-    ).join('');
-
-    el.innerHTML = `
-        <div class="mb-1" id="sys-chart-legend">${legend}</div>
-        <svg id="sys-chart-svg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-            <g id="sys-chart-grid"></g>
-            <g id="sys-chart-xlabels"></g>
-            ${SERIES.map(s =>
-                `<polyline id="sys-line-${s.id}" points="" fill="none" stroke="${s.color}" stroke-width="1.5" stroke-opacity="0.85" stroke-linejoin="round"/>`
-            ).join('')}
-            <line id="sys-chart-cursor" x1="0" y1="10" x2="0" y2="${H - 25}" stroke="#999" stroke-width="0.5" stroke-dasharray="3" visibility="hidden"/>
-            <text id="sys-chart-tooltip" x="0" y="0" font-size="10" fill="#333" visibility="hidden"></text>
-        </svg>`;
-
-    // Hover interaction
-    const svg = document.getElementById('sys-chart-svg');
-    if (svg) {
-        svg.addEventListener('mousemove', _chartHover);
-        svg.addEventListener('mouseleave', () => {
-            document.getElementById('sys-chart-cursor')?.setAttribute('visibility', 'hidden');
-            document.getElementById('sys-chart-tooltip')?.setAttribute('visibility', 'hidden');
-        });
+    // First data after a (re)build of the skeleton: clear the loader and init.
+    if (!_chart) {
+        el.innerHTML = '';
+        _chart = createChart(el);
     }
 
-    _chartBuilt = true;
-}
-
-function _updateChartLines() {
-    const svg = document.getElementById('sys-chart-svg');
-    if (!svg || !_chartData.length) return;
-
-    const W = svg.viewBox.baseVal.width || 700;
-    const H = svg.viewBox.baseVal.height || 200;
-    const pad = { top: 10, right: 10, bottom: 25, left: 35 };
-    const plotW = W - pad.left - pad.right;
-    const plotH = H - pad.top - pad.bottom;
-
-    const times = _chartData.map(d => new Date(d.ts).getTime());
-    const tMin = Math.min(...times);
-    const tMax = Math.max(...times);
-    const tRange = tMax - tMin || 1;
-
-    const x = t => pad.left + ((t - tMin) / tRange) * plotW;
-    const y = v => pad.top + plotH - (Math.min(Math.max(v, 0), 100) / 100) * plotH;
-
-    // Update polyline points
-    SERIES.forEach(s => {
-        const line = document.getElementById(`sys-line-${s.id}`);
-        if (!line) return;
-        const pts = _chartData
+    const series = SERIES.map(s => ({
+        name: s.label,
+        type: 'line',
+        showSymbol: false,
+        smooth: true,
+        sampling: 'lttb',
+        lineStyle: { width: 1.5, color: s.color },
+        itemStyle: { color: s.color },
+        data: _chartData
             .filter(d => d[s.key] != null)
-            .map(d => `${x(new Date(d.ts).getTime()).toFixed(1)},${y(d[s.key]).toFixed(1)}`)
-            .join(' ');
-        line.setAttribute('points', pts);
+            .map(d => [new Date(d.ts).getTime(), d[s.key]]),
+    }));
+
+    _chart.setOption({
+        animationDuration: 600,
+        grid: { top: 32, right: 12, bottom: 22, left: 38 },
+        legend: {
+            top: 0,
+            itemHeight: 8,
+            itemWidth: 14,
+            textStyle: { fontSize: 11 },
+            data: SERIES.map(s => s.label),
+        },
+        tooltip: {
+            trigger: 'axis',
+            valueFormatter: v => (v == null ? '—' : Number(v).toFixed(1)),
+        },
+        xAxis: {
+            type: 'time',
+            axisLabel: { fontSize: 9, hideOverlap: true },
+        },
+        yAxis: {
+            type: 'value',
+            min: 0,
+            max: 100,
+            splitNumber: 4,
+            axisLabel: { fontSize: 9 },
+        },
+        series,
     });
-
-    // Update grid (only rebuild if data range changed significantly)
-    const grid = document.getElementById('sys-chart-grid');
-    if (grid) {
-        let gridHtml = '';
-        for (let v = 0; v <= 100; v += 25) {
-            const yy = y(v);
-            gridHtml += `<text x="${pad.left - 4}" y="${yy + 3}" fill="#999" font-size="9" text-anchor="end">${v}</text>`;
-            gridHtml += `<line x1="${pad.left}" x2="${W - pad.right}" y1="${yy}" y2="${yy}" stroke="#f0f0f0" stroke-width="0.5"/>`;
-        }
-        // Border
-        gridHtml += `<rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" fill="none" stroke="#e0e0e0" stroke-width="0.5"/>`;
-        grid.innerHTML = gridHtml;
-    }
-
-    // Update X labels
-    const xLabels = document.getElementById('sys-chart-xlabels');
-    if (xLabels) {
-        let xlHtml = '';
-        const tickCount = Math.min(8, _chartData.length);
-        const step = Math.max(1, Math.floor(_chartData.length / tickCount));
-        for (let i = 0; i < _chartData.length; i += step) {
-            const t = new Date(_chartData[i].ts);
-            const xPos = x(t.getTime());
-            const label = `${t.getHours().toString().padStart(2, '0')}:${t.getMinutes().toString().padStart(2, '0')}`;
-            xlHtml += `<text x="${xPos}" y="${H - 3}" fill="#999" font-size="9" text-anchor="middle">${label}</text>`;
-        }
-        xLabels.innerHTML = xlHtml;
-    }
-}
-
-function _chartHover(e) {
-    if (!_chartData.length) return;
-    const svg = document.getElementById('sys-chart-svg');
-    if (!svg) return;
-
-    const rect = svg.getBoundingClientRect();
-    const svgW = svg.viewBox.baseVal.width || rect.width;
-    const mouseX = (e.clientX - rect.left) / rect.width * svgW;
-
-    const pad = { left: 35, right: 10 };
-    const plotW = svgW - pad.left - pad.right;
-    const frac = (mouseX - pad.left) / plotW;
-    const idx = Math.round(frac * (_chartData.length - 1));
-
-    if (idx < 0 || idx >= _chartData.length) return;
-    const d = _chartData[idx];
-    const t = new Date(d.ts);
-    const timeStr = `${t.getHours().toString().padStart(2, '0')}:${t.getMinutes().toString().padStart(2, '0')}`;
-
-    const cursor = document.getElementById('sys-chart-cursor');
-    const tooltip = document.getElementById('sys-chart-tooltip');
-    if (cursor) {
-        cursor.setAttribute('x1', mouseX);
-        cursor.setAttribute('x2', mouseX);
-        cursor.setAttribute('visibility', 'visible');
-    }
-    if (tooltip) {
-        const vals = SERIES.map(s => d[s.key] != null ? `${s.label}: ${d[s.key].toFixed(1)}` : null).filter(Boolean).join('  ');
-        tooltip.textContent = `${timeStr}  ${vals}`;
-        tooltip.setAttribute('x', Math.min(mouseX + 5, svgW - 200));
-        tooltip.setAttribute('y', 20);
-        tooltip.setAttribute('visibility', 'visible');
-    }
-}
-
-function _sysToggleLine(id) {
-    const line = document.getElementById(`sys-line-${id}`);
-    if (!line) return;
-    const hidden = line.getAttribute('stroke-opacity') === '0';
-    line.setAttribute('stroke-opacity', hidden ? '0.85' : '0');
-    line.setAttribute('stroke-width', hidden ? '1.5' : '0');
 }
 
 // ============================================================================
@@ -463,5 +373,4 @@ async function _sysPrune() {
 // ============================================================================
 
 window._sysRefreshChart = _refreshChart;
-window._sysToggleLine = _sysToggleLine;
 window._sysPrune = _sysPrune;
