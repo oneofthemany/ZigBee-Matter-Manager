@@ -16,6 +16,7 @@ config — so not in config.yaml). Login is a device/OAuth flow: we hand the UI 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -183,10 +184,49 @@ class TidalSource(SourceProvider):
     def _track_url(self, track_id: str) -> Optional[str]:
         try:
             track = self._session.track(int(track_id))
-            return track.get_url()
+            return self._stream_url(track)
         except Exception as e:
             logger.warning(f"Tidal URL resolve failed for {track_id}: {e}")
             return None
+
+    def _stream_url(self, track) -> Optional[str]:
+        """A directly-playable URL for an HIGH/AAC track.
+
+        tidalapi 0.7 exposed ``Track.get_url()``; 0.8 removed it in favour of
+        ``get_stream()`` → a (base64) manifest. For HIGH/LOW (AAC, "BTS" manifest)
+        the manifest carries plain ``urls`` we can hand straight to Cast/WiiM.
+        FLAC/HiRes uses a DASH manifest that needs assembling — that's Phase 3."""
+        # 0.7 fast-path, if the lib still offers it.
+        getter = getattr(track, "get_url", None)
+        if callable(getter):
+            try:
+                url = getter()
+                if url:
+                    return url
+            except Exception:
+                pass
+        # 0.8 path: get_stream() → manifest → url(s).
+        try:
+            stream = track.get_stream()
+        except Exception as e:
+            logger.warning(f"Tidal get_stream failed for {getattr(track, 'id', '?')}: {e}")
+            return None
+        try:
+            manifest = stream.get_stream_manifest()
+            urls = manifest.get_urls()
+            if urls:
+                return urls[0]
+        except Exception:
+            pass
+        # Last resort: decode the raw BTS manifest JSON ourselves.
+        try:
+            raw = base64.b64decode(stream.manifest).decode("utf-8")
+            urls = (json.loads(raw) or {}).get("urls") or []
+            if urls:
+                return urls[0]
+        except Exception as e:
+            logger.warning(f"Tidal manifest parse failed: {e}")
+        return None
 
     # ------------------------------------------------------------------
     # Search / browse
@@ -208,27 +248,27 @@ class TidalSource(SourceProvider):
         return [self._track_to_item(t) for t in (tracks or [])[:limit]]
 
     async def search_grouped(self, query: str, limit: int = 20) -> dict:
-        """Tracks + albums + playlists, for a richer browse UI."""
+        """Tracks + artists + albums + playlists, for a richer browse UI."""
         if not self._session:
-            return {"tracks": [], "albums": [], "playlists": []}
+            return {"tracks": [], "artists": [], "albums": [], "playlists": []}
         return await asyncio.to_thread(self._search_grouped, query, limit)
 
     def _search_grouped(self, query: str, limit: int) -> dict:
+        empty = {"tracks": [], "artists": [], "albums": [], "playlists": []}
         try:
             res = self._session.search(query, limit=limit)
         except Exception as e:
             logger.warning(f"Tidal search failed: {e}")
-            return {"tracks": [], "albums": [], "playlists": []}
-        if isinstance(res, dict):
-            tracks = res.get("tracks", []) or []
-            albums = res.get("albums", []) or []
-            playlists = res.get("playlists", []) or []
-        else:
-            tracks = getattr(res, "tracks", []) or []
-            albums = getattr(res, "albums", []) or []
-            playlists = getattr(res, "playlists", []) or []
+            return empty
+        pick = (res.get if isinstance(res, dict)
+                else lambda k, d: getattr(res, k, d))
+        tracks = pick("tracks", []) or []
+        artists = pick("artists", []) or []
+        albums = pick("albums", []) or []
+        playlists = pick("playlists", []) or []
         return {
             "tracks": [self._track_to_item(t).to_dict() for t in tracks[:limit]],
+            "artists": [self._artist_summary(a) for a in artists[:limit]],
             "albums": [self._album_summary(a) for a in albums[:limit]],
             "playlists": [self._playlist_summary(p) for p in playlists[:limit]],
         }
@@ -377,15 +417,12 @@ class TidalSource(SourceProvider):
                 artwork = album.image(320)
         except Exception:
             pass
-        # URL is resolved fresh at play time via resolve_url(); we still try to
-        # fill it here so an immediate single-track play works without a round-trip.
-        url = ""
-        try:
-            url = t.get_url()
-        except Exception:
-            pass
+        # URL is intentionally left blank: the controller re-resolves it fresh at
+        # play time via the registered resolver (resolve_url). Fetching a stream
+        # URL per search result would be a network round-trip each — and Tidal
+        # stream URLs are time-limited, so a search-time URL would be stale anyway.
         return MediaItem(
-            url=url,
+            url="",
             title=getattr(t, "name", "") or "Unknown",
             artist=artist,
             artwork_url=artwork or "",
