@@ -11,6 +11,7 @@
 import { state } from '../state.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [];
+let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
 // Step trees stored in memory — rendered to DOM
@@ -25,9 +26,14 @@ function _opOpts(sel) {
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
     ).join('');
 }
-const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns'};
+const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music'};
 
-const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel'};
+const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media'};
+
+// Media action picker options (label, value).
+const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['control','Control'],['volume','Volume']];
+const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
+const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
 // Readable label for a dynamic sun condition (sunrise/sunset window).
 function _sunDesc(c) {
@@ -96,6 +102,9 @@ export async function initAutomationTab(ieee) {
         cachedAttributes = await aR.json(); cachedActuators = await actR.json();
         cachedAllDevices = await dR.json(); _renderRules(await rR.json());
     } catch(e) { const el=document.getElementById('a-rules'); if(el)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`; }
+    // Media players are optional — a failure here must not break the tab.
+    try { const pj = await (await fetch('/api/media/players')).json(); cachedPlayers = pj.success ? (pj.players||[]) : []; }
+    catch(e) { cachedPlayers = []; }
 }
 
 // ============================================================================
@@ -174,6 +183,7 @@ function _seqSummary(steps, label, color) {
         if (s.type==='condition') return `<span class="badge bg-dark">🔒 ${s.device_name||s.ieee||'?'} ${s.attribute}</span>`;
         if (s.type==='if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
         if (s.type==='parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches||[]).length})</span>`;
+        if (s.type==='media') return `<span class="badge" style="background:#0a9396">♪ ${_mediaDesc(s)}</span>`;
         return '';
     }).join(' <i class="fas fa-arrow-right text-muted small"></i> ');
     return `<div class="small mt-1"><strong class="text-${color}">${label}</strong> ${parts}</div>`;
@@ -245,6 +255,7 @@ function _addBtns(path) {
         <button class="btn btn-outline-warning" onclick="window._aAddStep('${path}','delay')"><i class="fas fa-clock"></i> Delay</button>
         <button class="btn btn-outline-secondary" onclick="window._aAddStep('${path}','wait_for')"><i class="fas fa-hourglass-half"></i> Wait</button>
         <button class="btn btn-outline-dark" onclick="window._aAddStep('${path}','condition')"><i class="fas fa-filter"></i> Gate</button>
+        <button class="btn" style="color:#0a9396;border-color:#0a9396" onclick="window._aAddStep('${path}','media')"><i class="fas fa-music"></i> Media</button>
         <button class="btn btn-outline-primary" onclick="window._aAddStep('${path}','if_then_else')"><i class="fas fa-code-branch"></i> If/Then/Else</button>
         <button class="btn btn-outline-info" onclick="window._aAddStep('${path}','parallel')"><i class="fas fa-columns"></i> Parallel</button>
     </div>`;
@@ -477,6 +488,8 @@ function _renderStep(step, path, idx, total) {
             <div id="par-${sid}-${bi}">${br.map((s,i)=>_renderStep(s,`par-${sid}-${bi}`,i,br.length)).join('')}</div>
             ${_addBtns(`par-${sid}-${bi}`)}</div>`).join('');
         body += `<button class="btn btn-sm btn-outline-info" onclick="window._aAddBranch(${sid})"><i class="fas fa-plus"></i> Branch</button>`;
+    } else if(step.type==='media') {
+        body = _mediaStepBody(step, sid);
     }
 
     return `<div class="card card-body p-2 mb-1" style="background:#f8f9fa" id="step-${sid}">
@@ -503,6 +516,111 @@ function _renderInlineCond(ic, idx, parentSid, total) {
     </div>`;
 }
 
+// ── Media step rendering ──
+function _mediaStepBody(step, sid) {
+    const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}</option>`).join('');
+    const playerSel = `<select class="form-select form-select-sm s-mplayer" data-sid="${sid}"><option value="">Player…</option>${players}</select>`;
+    const actSel = `<select class="form-select form-select-sm s-maction" data-sid="${sid}" onchange="window._aMAction(${sid},this)">${MEDIA_ACTIONS.map(([v,l])=>`<option value="${v}" ${(step.media_action||'play_tidal')===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    const hint = cachedPlayers.length ? '' : `<div class="small text-warning mt-1">No media players found — is the media service enabled?</div>`;
+    return `<div class="row g-1 mb-1"><div class="col-md-6">${playerSel}</div><div class="col-md-6">${actSel}</div></div>
+        <div id="media-sub-${sid}">${_mediaSubHtml(step, sid)}</div>${hint}`;
+}
+
+function _mediaSubHtml(step, sid) {
+    const a = step.media_action || 'play_tidal';
+    if (a === 'control')
+        return `<select class="form-select form-select-sm s-mctrl" data-sid="${sid}" style="max-width:170px">${MEDIA_CONTROLS.map(([v,l])=>`<option value="${v}" ${step.control_action===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    if (a === 'volume') {
+        const pct = step.volume!=null ? Math.round(step.volume*100) : 30;
+        return `<div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="0" max="100" style="width:80px"><span class="small">% volume</span></div>`;
+    }
+    if (a === 'play_radio')
+        return `<div class="input-group input-group-sm">
+            <input type="text" class="form-control s-msearch" data-sid="${sid}" placeholder="Search stations…" onkeydown="if(event.key==='Enter'){event.preventDefault();window._aMediaSearch(${sid},'radio');}">
+            <button class="btn btn-outline-secondary" type="button" onclick="window._aMediaSearch(${sid},'radio')"><i class="fas fa-search"></i></button>
+            <select class="form-select s-mtarget" data-sid="${sid}">${_mediaSavedOpt(step)}</select></div>`;
+    // play_tidal
+    const kind = step.tidal_kind || 'playlist';
+    const kindSel = `<select class="form-select form-select-sm s-mkind" data-sid="${sid}" style="max-width:105px" onchange="window._aMediaKind(${sid},this)">${TIDAL_KINDS.map(([v,l])=>`<option value="${v}" ${kind===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    const search = kind === 'track'
+        ? `<input type="text" class="form-control s-msearch" data-sid="${sid}" placeholder="Search tracks…" onkeydown="if(event.key==='Enter'){event.preventDefault();window._aMediaSearch(${sid},'tidal');}"><button class="btn btn-outline-secondary" type="button" onclick="window._aMediaSearch(${sid},'tidal')"><i class="fas fa-search"></i></button>`
+        : '';
+    const modeSel = `<select class="form-select form-select-sm s-mmode" data-sid="${sid}" style="max-width:88px"><option value="play" ${step.tidal_mode!=='radio'?'selected':''}>Play</option><option value="radio" ${step.tidal_mode==='radio'?'selected':''}>Radio∞</option></select>`;
+    return `<div class="input-group input-group-sm">${kindSel}${search}
+        <select class="form-select s-mtarget" data-sid="${sid}">${_mediaSavedOpt(step)}</select>${modeSel}</div>`;
+}
+
+function _mediaSavedOpt(step) {
+    const id = step.tidal_id || step.station_uuid;
+    if (!id) return '<option value="">— pick —</option>';
+    const lbl = String(step.label || id).replace(/</g,'&lt;');
+    return `<option value="${id}" data-label="${lbl.replace(/"/g,'&quot;')}" selected>${lbl}</option>`;
+}
+
+function _mediaDesc(s) {
+    if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
+    if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
+    if (s.media_action==='play_radio') return `Radio: ${s.label||s.station_uuid||'?'}`;
+    if (s.media_action==='play_tidal') return `${s.tidal_kind||''}${s.tidal_mode==='radio'?'∞':''}: ${s.label||s.tidal_id||'?'}`;
+    return s.media_action||'media';
+}
+
+// Populate a media step's target dropdown from the user's Tidal library.
+async function _aMediaLoadLib(sid, kind, selId) {
+    const sel = document.querySelector(`.s-mtarget[data-sid="${sid}"]`); if(!sel) return;
+    const libKind = kind==='mix' ? 'mixes' : kind+'s';
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+        const j = await (await fetch(`/api/media/tidal/library?kind=${libKind}`)).json();
+        const items = j.success ? (j.items||[]) : [];
+        if (!items.length) { sel.innerHTML = `<option value="">${(j.error||'none in library')}</option>`; return; }
+        sel.innerHTML = '<option value="">— pick —</option>' + items.map(it=>
+            `<option value="${it.id}" data-label="${String(it.name||it.id).replace(/"/g,'&quot;')}" ${String(it.id)===String(selId)?'selected':''}>${it.name||it.id}</option>`).join('');
+        if (selId && !items.some(it=>String(it.id)===String(selId)))
+            sel.insertAdjacentHTML('afterbegin', `<option value="${selId}" selected>${selId}</option>`);
+    } catch(e) { sel.innerHTML = '<option value="">load failed</option>'; }
+}
+
+window._aMAction = (sid, sel) => {
+    _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
+    const s = _findStepById(sid); if(!s) return;
+    s.media_action = sel.value;
+    const sub = document.getElementById(`media-sub-${sid}`);
+    if (sub) sub.innerHTML = _mediaSubHtml(s, sid);
+    if (s.media_action==='play_tidal' && (s.tidal_kind||'playlist')!=='track')
+        _aMediaLoadLib(sid, s.tidal_kind||'playlist', s.tidal_id);
+};
+
+window._aMediaKind = (sid, sel) => {
+    _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
+    const s = _findStepById(sid); if(!s) return;
+    s.tidal_kind = sel.value; s.tidal_id=''; s.station_uuid=''; s.label='';
+    const sub = document.getElementById(`media-sub-${sid}`);
+    if (sub) sub.innerHTML = _mediaSubHtml(s, sid);
+    if (s.tidal_kind !== 'track') _aMediaLoadLib(sid, s.tidal_kind);
+};
+
+window._aMediaSearch = async (sid, kind) => {
+    const q = document.querySelector(`.s-msearch[data-sid="${sid}"]`)?.value?.trim();
+    const sel = document.querySelector(`.s-mtarget[data-sid="${sid}"]`);
+    if (!q || !sel) return;
+    sel.innerHTML = '<option value="">Searching…</option>';
+    try {
+        if (kind === 'radio') {
+            const j = await (await fetch(`/api/media/radio/search?q=${encodeURIComponent(q)}&limit=20`)).json();
+            const st = j.success ? (j.stations||[]) : [];
+            sel.innerHTML = '<option value="">— pick —</option>' + st.map(s=>
+                `<option value="${s.uuid}" data-label="${String(s.name||'').replace(/"/g,'&quot;')}">${s.name}${s.country?' · '+s.country:''}</option>`).join('');
+        } else {
+            const j = await (await fetch(`/api/media/tidal/search?q=${encodeURIComponent(q)}&limit=20`)).json();
+            const tr = (j.success && j.results) ? (j.results.tracks||[]) : [];
+            sel.innerHTML = '<option value="">— pick —</option>' + tr.map(t=>
+                `<option value="${t.source_id}" data-label="${String((t.title||'')+' — '+(t.artist||'')).replace(/"/g,'&quot;')}">${t.title} — ${t.artist}</option>`).join('');
+        }
+        if (sel.options.length <= 1) sel.innerHTML = '<option value="">no results</option>';
+    } catch(e) { sel.innerHTML = '<option value="">search failed</option>'; }
+};
+
 function _initStepSelects(steps, path) {
     steps.forEach(s => {
         if(s.type==='command' && s.target_ieee) {
@@ -516,6 +634,10 @@ function _initStepSelects(steps, path) {
             _initStepSelects(s.else_steps||[],'ite-else-'+s._id);
         } else if(s.type==='parallel') {
             (s.branches||[]).forEach((br,bi)=>_initStepSelects(br,`par-${s._id}-${bi}`));
+        } else if(s.type==='media') {
+            // Reload the library so an edited Tidal step shows its peers (saved id stays selected).
+            if(s.media_action==='play_tidal' && s.tidal_kind && s.tidal_kind!=='track')
+                _aMediaLoadLib(s._id, s.tidal_kind, s.tidal_id);
         }
     });
 }
@@ -702,6 +824,7 @@ window._aAddStep = (path, type) => {
     const s = { _id: _uid(), type };
     if (type === 'delay') s.seconds = 5;
     if (type === 'wait_for') s.timeout = 300;
+    if (type === 'media') { s.media_action = 'play_tidal'; s.tidal_kind = 'playlist'; s.tidal_mode = 'play'; }
     if (type === 'if_then_else') {
         s.inline_conditions = [{ _id: _uid(), ieee: '', attribute: '', operator: 'eq', value: '' }];
         s.condition_logic = 'and';
@@ -911,6 +1034,20 @@ function _syncTreeFromDOM(steps) {
             _syncTreeFromDOM(s.else_steps||[]);
         } else if(s.type==='parallel') {
             (s.branches||[]).forEach(br=>_syncTreeFromDOM(br));
+        } else if(s.type==='media') {
+            s.player_id=document.querySelector(`.s-mplayer[data-sid="${sid}"]`)?.value||'';
+            s.media_action=document.querySelector(`.s-maction[data-sid="${sid}"]`)?.value||'play_tidal';
+            const tgt=document.querySelector(`.s-mtarget[data-sid="${sid}"]`);
+            const tgtVal=tgt?.value||'';
+            const tgtLabel=tgt?.options[tgt.selectedIndex]?.dataset?.label||tgtVal;
+            if(s.media_action==='play_radio'){ s.station_uuid=tgtVal; s.label=tgtLabel; }
+            else if(s.media_action==='play_tidal'){
+                s.tidal_kind=document.querySelector(`.s-mkind[data-sid="${sid}"]`)?.value||'playlist';
+                s.tidal_id=tgtVal; s.label=tgtLabel;
+                s.tidal_mode=document.querySelector(`.s-mmode[data-sid="${sid}"]`)?.value||'play';
+            }
+            else if(s.media_action==='control'){ s.control_action=document.querySelector(`.s-mctrl[data-sid="${sid}"]`)?.value||'stop'; }
+            else if(s.media_action==='volume'){ const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value); s.volume=isNaN(v)?0.3:Math.max(0,Math.min(1,v/100)); }
         }
     });
 }
@@ -923,6 +1060,13 @@ function _cleanTree(steps) {
         else if(s.type==='wait_for'||s.type==='condition'){d.ieee=s.ieee;d.attribute=s.attribute;d.operator=s.operator;d.value=s.value;if(s.negate)d.negate=true;if(s.type==='wait_for')d.timeout=s.timeout;}
         else if(s.type==='if_then_else'){d.inline_conditions=(s.inline_conditions||[]).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.then_steps=_cleanTree(s.then_steps||[]);d.else_steps=_cleanTree(s.else_steps||[]);}
         else if(s.type==='parallel'){d.branches=(s.branches||[]).map(br=>_cleanTree(br));}
+        else if(s.type==='media'){
+            d.player_id=s.player_id; d.media_action=s.media_action;
+            if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
+            else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
+            else if(s.media_action==='control'){d.control_action=s.control_action;}
+            else if(s.media_action==='volume'){d.volume=s.volume;}
+        }
         return d;
     }).filter(d=>{
         if(d.type==='command')return d.target_ieee&&d.command;
@@ -930,6 +1074,14 @@ function _cleanTree(steps) {
         if(d.type==='wait_for'||d.type==='condition')return d.ieee&&d.attribute;
         if(d.type==='if_then_else')return(d.inline_conditions||[]).length>0;
         if(d.type==='parallel')return(d.branches||[]).length>=2;
+        if(d.type==='media'){
+            if(!d.player_id)return false;
+            if(d.media_action==='play_radio')return !!d.station_uuid;
+            if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
+            if(d.media_action==='control')return !!d.control_action;
+            if(d.media_action==='volume')return d.volume!=null;
+            return false;
+        }
         return false;
     });
 }

@@ -259,28 +259,7 @@ def register_media_routes(app: FastAPI, get_media_service):
         if not src:
             return {"success": False, "error": "Tidal unavailable"}
         try:
-            radio = body.mode == "radio"
-            items = []
-            if body.kind == "track":
-                if radio:
-                    items = await src.track_radio(body.id)
-                else:
-                    item = await src.single_item(body.id)
-                    items = [item] if item else []
-            elif body.kind == "album":
-                items = await src.album_items(body.id)
-            elif body.kind == "playlist":
-                items = await src.playlist_items(body.id)
-            elif body.kind == "artist":
-                items = await (src.artist_radio(body.id) if radio else src.artist_tracks(body.id))
-            elif body.kind == "mix":
-                items = await src.mix_items(body.id)
-            else:
-                return {"success": False, "error": "kind must be track|album|playlist|artist|mix"}
-            if not items:
-                return {"success": False, "error": "Nothing to play (empty, not found, or login required)"}
-            await svc.controller.play_items(body.player_id, items, auto_extend=radio)
-            return {"success": True, "count": len(items), "radio": radio}
+            return await svc.play_tidal(body.player_id, body.kind, body.id, body.mode)
         except Exception as e:
             return {"success": False, "error": str(e)}
 

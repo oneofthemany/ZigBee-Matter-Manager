@@ -59,7 +59,7 @@ VALID_COMMANDS = {
     "lock", "unlock"
 }
 
-FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition"}
+FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media"}
 BRANCHING_STEP_TYPES = {"if_then_else", "parallel"}
 ALL_STEP_TYPES = FLAT_STEP_TYPES | BRANCHING_STEP_TYPES
 
@@ -76,6 +76,10 @@ class AutomationEngine:
         self._event_emitter = event_emitter
         self._get_group_manager = group_manager_getter
         self._get_matter_devices = matter_device_getter or (lambda: {})
+        # Optional media service (Cast/WiiM/radio/Tidal). Injected post-construction
+        # via set_media_service_getter since the media service is built after the
+        # engine. Lets automation steps play radio/Tidal and control players.
+        self._get_media_service: Optional[Callable] = None
 
         self.rules: List[Dict[str, Any]] = []
         self._source_index: Dict[str, List[str]] = {}
@@ -96,6 +100,10 @@ class AutomationEngine:
 
         self._load_rules()
         logger.info(f"Automation engine initialised with {len(self.rules)} rule(s)")
+
+    def set_media_service_getter(self, getter: Callable) -> None:
+        """Wire the media service in after construction (see __init__)."""
+        self._get_media_service = getter
 
     def _get_all_devices(self) -> Dict:
         """Merged view of Zigbee + Matter devices."""
@@ -456,6 +464,19 @@ class AutomationEngine:
             elif st == "delay":
                 if not isinstance(step.get("seconds", 0), (int, float)) or step.get("seconds", 0) < 0:
                     return f"{label}[{i+1}]: delay needs positive seconds"
+            elif st == "media":
+                if not step.get("player_id"):
+                    return f"{label}[{i+1}]: media needs player_id"
+                ma = step.get("media_action")
+                if ma not in ("play_radio", "play_tidal", "control", "volume"):
+                    return f"{label}[{i+1}]: invalid media_action"
+                if ma == "play_radio" and not step.get("station_uuid"):
+                    return f"{label}[{i+1}]: play_radio needs station_uuid"
+                if ma == "play_tidal" and not (step.get("tidal_kind") and step.get("tidal_id")):
+                    return f"{label}[{i+1}]: play_tidal needs tidal_kind and tidal_id"
+                if ma == "control" and step.get("control_action") not in (
+                        "pause", "resume", "stop", "next", "prev"):
+                    return f"{label}[{i+1}]: control needs a valid control_action"
             elif st in ("wait_for", "condition"):
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
@@ -1110,6 +1131,8 @@ class AutomationEngine:
 
                 if st == "command":
                     await self._step_command(rule_id, step, f"{prefix}[{path} {num}/{total}]")
+                elif st == "media":
+                    await self._step_media(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "delay":
                     secs = step.get("seconds", 0) or 0
                     if secs > 0:
@@ -1205,6 +1228,51 @@ class AutomationEngine:
                         f"{tag} 💥 {tname} {command}: {e}", level="ERROR",
                         traceback=traceback.format_exc())
 
+
+    async def _step_media(self, rule_id, step, tag):
+        """Play radio/Tidal or control a media player (Cast/WiiM)."""
+        svc = self._get_media_service() if self._get_media_service else None
+        if not svc or not getattr(svc, "enabled", False):
+            self._stats["execution_failures"] += 1
+            self._trace(rule_id, "step", "MEDIA_UNAVAILABLE",
+                        f"{tag} Media service not enabled", level="WARNING")
+            return
+
+        player_id = step.get("player_id")
+        action = step.get("media_action")
+        label = step.get("label") or action
+        self._trace(rule_id, "step", "MEDIA", f"{tag} ♪ {label} → {player_id}")
+        try:
+            ok, detail = True, ""
+            if action == "play_radio":
+                await svc.play_radio_station(player_id, step["station_uuid"])
+            elif action == "play_tidal":
+                res = await svc.play_tidal(
+                    player_id, step.get("tidal_kind"), step.get("tidal_id"),
+                    step.get("tidal_mode", "play"))
+                ok = res.get("success", False)
+                detail = res.get("error", "") or f"{res.get('count', 0)} track(s)"
+            elif action == "control":
+                await svc.controller.control(player_id, step.get("control_action", "stop"))
+            elif action == "volume":
+                await svc.controller.set_volume(player_id, float(step.get("volume", 0.3)))
+            else:
+                ok, detail = False, f"unknown media_action '{action}'"
+
+            self._stats["executions"] += 1
+            if ok:
+                self._stats["execution_successes"] += 1
+                self._trace(rule_id, "step", "SUCCESS", f"{tag} ✅ {label} {detail}".rstrip())
+            else:
+                self._stats["execution_failures"] += 1
+                self._trace(rule_id, "step", "MEDIA_FAIL",
+                            f"{tag} ❌ {label}: {detail}", level="ERROR")
+        except Exception as e:
+            self._stats["errors"] += 1
+            self._stats["execution_failures"] += 1
+            self._trace(rule_id, "step", "EXCEPTION",
+                        f"{tag} 💥 media {label}: {e}", level="ERROR",
+                        traceback=traceback.format_exc())
 
     async def _step_group_command(self, rule_id, step, tag):
         """Execute a command step targeting a group."""

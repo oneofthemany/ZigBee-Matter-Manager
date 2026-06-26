@@ -287,6 +287,10 @@ media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
 
+# Let automation steps play radio/Tidal and control players (engine is built
+# before the media service, so wire the getter in now).
+zigbee_service.automation.set_media_service_getter(lambda: media_service)
+
 
 heating_advisor = HeatingAdvisor(
     config=CONFIG.get("heating", {}),
