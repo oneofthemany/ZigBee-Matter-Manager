@@ -41,6 +41,14 @@ class MediaService:
         self.radio = RadioBrowserSource(enabled=rb_cfg.get("enabled", True))
         self.controller.add_source(self.radio)
 
+        # Tidal — isolated/optional. Always registered as a source (its methods
+        # no-op until logged in); a fresh stream URL is resolved at play time.
+        tidal_cfg = config.get("tidal", {}) or {}
+        from modules.media.sources.tidal import TidalSource
+        self.tidal = TidalSource(enabled=tidal_cfg.get("enabled", False))
+        self.controller.add_source(self.tidal)
+        self.controller.register_resolver("tidal", self.tidal.resolve_url)
+
         # ---- Player providers ----
         wiim_cfg = config.get("wiim", {}) or {}
         if wiim_cfg.get("enabled", True):
@@ -70,7 +78,9 @@ class MediaService:
         if not station:
             raise ValueError(f"Radio station {station_uuid} not found")
         item = station.to_media_item()
-        await self.controller.play_url(player_id, item)
+        # Single-item queue so radio shows consistently in the now-playing/queue
+        # UI. Radio is LIVE (duration 0) so it never auto-advances.
+        await self.controller.play_items(player_id, [item])
         return item
 
     # ------------------------------------------------------------------
@@ -99,6 +109,7 @@ class MediaService:
         while True:
             try:
                 snapshot = await self.controller.refresh()
+                await self.controller.tick()        # auto-advance finished tracks
                 await self._broadcast(snapshot)
             except asyncio.CancelledError:
                 break

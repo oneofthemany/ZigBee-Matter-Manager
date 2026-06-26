@@ -521,6 +521,7 @@ function renderApisTab(config) {
     `;
 
     loadWeatherStatus();
+    loadTidalStatus();
 }
 
 // ============================================================================
@@ -532,6 +533,7 @@ function renderMediaSection(config) {
     const cast = m.cast || {};
     const wiim = m.wiim || {};
     const rb = m.radio_browser || {};
+    const tidal = m.tidal || {};
     const devices = (wiim.devices || []).join('\n');
     return `
     <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
@@ -586,7 +588,7 @@ function renderMediaSection(config) {
       </div>
     </div>
 
-    <div class="row g-3">
+    <div class="row g-3 mb-3">
       <div class="col-md-4">
         <label class="form-label small fw-semibold">Radio-Browser</label>
         <div class="form-check form-switch mt-1">
@@ -595,6 +597,29 @@ function renderMediaSection(config) {
         </div>
       </div>
     </div>
+
+    <hr class="my-3">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-music me-1"></i> Tidal</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_media_tidal_enabled" ${tidal.enabled ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-2">
+      Stream your Tidal HiFi library (AAC quality in this version; lossless arrives with the
+      stream server later). Uses an unofficial client — personal use only.
+    </p>
+    <div id="tidalStatusRow" class="mb-2"></div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-outline-primary btn-sm" onclick="window.tidalLogin()">
+        <i class="fas fa-right-to-bracket me-1"></i> Log in to Tidal
+      </button>
+      <button type="button" class="btn btn-outline-danger btn-sm" onclick="window.tidalLogout()">
+        <i class="fas fa-right-from-bracket me-1"></i> Log out
+      </button>
+    </div>
+    <div id="tidalLoginLink" class="mt-2"></div>
     `;
 }
 
@@ -603,6 +628,67 @@ function w_escape(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
+}
+
+// ---- Tidal login (lives in the Media settings section) ----
+window.tidalLogin = async function () {
+    const link = document.getElementById('tidalLoginLink');
+    if (link) link.innerHTML = '<span class="small text-muted"><i class="fas fa-spinner fa-spin"></i> Requesting link…</span>';
+    try {
+        const res = await fetch('/api/media/tidal/login', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            if (link) link.innerHTML = `<div class="alert alert-warning small py-2 mb-0">${w_escape(data.error || 'Login failed')}</div>`;
+            return;
+        }
+        const url = data.link;
+        if (link) link.innerHTML = `
+          <div class="alert alert-info small py-2 mb-0">
+            Open this link and authorise, then come back:
+            <a href="${w_escape(url)}" target="_blank" rel="noopener" class="d-block mt-1">${w_escape(url)}</a>
+          </div>`;
+        pollTidalStatus(40);
+    } catch (e) {
+        if (link) link.innerHTML = `<div class="alert alert-danger small py-2 mb-0">${w_escape(e.message)}</div>`;
+    }
+};
+
+window.tidalLogout = async function () {
+    await fetch('/api/media/tidal/logout', { method: 'POST' });
+    document.getElementById('tidalLoginLink').innerHTML = '';
+    loadTidalStatus();
+};
+
+async function pollTidalStatus(tries) {
+    for (let i = 0; i < tries; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const state = await loadTidalStatus();
+        if (state === 'logged_in') {
+            document.getElementById('tidalLoginLink').innerHTML =
+                '<div class="alert alert-success small py-2 mb-0">Logged in to Tidal.</div>';
+            return;
+        }
+    }
+}
+
+async function loadTidalStatus() {
+    const row = document.getElementById('tidalStatusRow');
+    try {
+        const res = await fetch('/api/media/tidal/status');
+        const data = await res.json();
+        const st = data.status || { state: 'unavailable' };
+        const badge = {
+            logged_in: `<span class="badge bg-success">Logged in${st.user ? ' · ' + w_escape(st.user) : ''}</span>`,
+            logged_out: '<span class="badge bg-secondary">Logged out</span>',
+            pending: '<span class="badge bg-warning text-dark">Login pending…</span>',
+            unavailable: '<span class="badge bg-light text-muted">Unavailable (enable + restart)</span>',
+        }[st.state] || '<span class="badge bg-light text-muted">Unknown</span>';
+        if (row) row.innerHTML = `Status: ${badge}`;
+        return st.state;
+    } catch (e) {
+        if (row) row.innerHTML = '<span class="text-muted small">Status unavailable</span>';
+        return 'unavailable';
+    }
 }
 
 async function loadWeatherStatus() {
@@ -1130,6 +1216,9 @@ function collectFormValues() {
             },
             radio_browser: {
                 enabled: document.getElementById('cfg_media_rb_enabled')?.checked ?? true,
+            },
+            tidal: {
+                enabled: document.getElementById('cfg_media_tidal_enabled')?.checked ?? false,
             },
         },
         ota: {

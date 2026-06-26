@@ -562,19 +562,30 @@
                 </div>
                 <div class="col-lg-5">
                     <div class="card shadow-sm">
-                        <div class="card-header bg-light py-2">
-                            <span class="fw-bold"><i class="fas fa-broadcast-tower me-1"></i> Radio</span>
+                        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button class="btn btn-primary" id="mediaSrcRadio"
+                                        onclick="window.mediaSetSource('radio')">
+                                    <i class="fas fa-broadcast-tower me-1"></i> Radio
+                                </button>
+                                <button class="btn btn-outline-primary" id="mediaSrcTidal"
+                                        onclick="window.mediaSetSource('tidal')">
+                                    <i class="fas fa-music me-1"></i> Tidal
+                                </button>
+                            </div>
+                            <span class="small text-muted" id="mediaSearchTarget"></span>
                         </div>
                         <div class="card-body">
+                            <div id="mediaTidalNotice"></div>
                             <div class="input-group input-group-sm mb-3">
-                                <input type="text" class="form-control" id="mediaRadioQuery"
+                                <input type="text" class="form-control" id="mediaSearchQuery"
                                        placeholder="Search stations (e.g. jazz, BBC, classical)"
-                                       onkeydown="if(event.key==='Enter')window.mediaRadioSearch()">
-                                <button class="btn btn-primary" onclick="window.mediaRadioSearch()">
+                                       onkeydown="if(event.key==='Enter')window.mediaSearch()">
+                                <button class="btn btn-primary" onclick="window.mediaSearch()">
                                     <i class="fas fa-search"></i>
                                 </button>
                             </div>
-                            <div id="mediaRadioResults"></div>
+                            <div id="mediaSearchResults"></div>
                         </div>
                     </div>
                 </div>

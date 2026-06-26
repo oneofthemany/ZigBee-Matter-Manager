@@ -20,6 +20,9 @@ media:
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
   radio_browser:
     enabled: true
+  tidal:
+    enabled: false            # turn on, then log in under Settings → APIs → Media
+    quality: high             # high = AAC (Phase 2). Lossless arrives in Phase 3.
 
 heating:
   enabled: true

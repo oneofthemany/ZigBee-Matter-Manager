@@ -3,10 +3,14 @@ MediaController — provider-agnostic orchestration.
 
 Holds the registry of players across all providers, routes control calls to the
 right provider by ``player_id`` prefix, and exposes a flat snapshot for the UI.
-Sources (radio etc.) are kept here too so routes have one entry point.
+Sources (radio/tidal) are kept here too so routes have one entry point.
 
-Deliberately thin: no queue, no stream server (Phase 1). It just fans control
-out to providers and aggregates their state.
+Phase 2: owns a per-player queue (`QueueController`) and auto-advances finished
+tracks via `tick()` (called from the service poll loop). Still no stream server —
+sequential playback; gapless/crossfade is Phase 3.
+
+The queue/play methods here are deliberately clean and side-effect-contained so
+the post-Phase-2 automation engine can call them directly.
 """
 from __future__ import annotations
 
@@ -14,11 +18,14 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 
-from modules.media.models import MediaItem, PlayerState
+from modules.media.models import MediaItem, PlayerState, PlaybackState
 from modules.media.players.base import PlayerProvider
 from modules.media.sources.base import SourceProvider
+from modules.media.queue import QueueController
 
 logger = logging.getLogger("modules.media.controller")
+
+_ACTIVE = (PlaybackState.PLAYING, PlaybackState.BUFFERING)
 
 
 class MediaController:
@@ -26,6 +33,12 @@ class MediaController:
         self._players: Dict[str, PlayerProvider] = {}   # provider key -> provider
         self._sources: Dict[str, SourceProvider] = {}   # source key   -> source
         self._cache: Dict[str, PlayerState] = {}        # player_id -> last state
+        self._queue = QueueController()
+        self._prev_states: Dict[str, PlayerState] = {}  # for end-transition detection
+        self._advancing: set[str] = set()               # players mid auto-advance
+        # media_type -> async (source_id) -> fresh url. Lets sources (e.g. Tidal)
+        # re-resolve time-limited stream URLs just before playback.
+        self._resolvers: Dict[str, "callable"] = {}
 
     # ------------------------------------------------------------------
     # Registration / lifecycle
@@ -38,6 +51,11 @@ class MediaController:
 
     def get_source(self, key: str) -> Optional[SourceProvider]:
         return self._sources.get(key)
+
+    def register_resolver(self, media_type: str, resolver) -> None:
+        """Register an async `(source_id) -> fresh_url` for a media_type whose
+        stream URLs expire (e.g. Tidal). Called just before each play."""
+        self._resolvers[media_type] = resolver
 
     async def start(self) -> None:
         await asyncio.gather(
@@ -72,8 +90,30 @@ class MediaController:
                 logger.debug(f"Provider list_players failed: {res}")
                 continue
             snapshot.extend(res)
+        for s in snapshot:
+            self._attach_queue(s)
         self._cache = {s.player_id: s for s in snapshot}
         return snapshot
+
+    def _attach_queue(self, s: PlayerState) -> None:
+        """Attach queue summary + enrich now-playing from the known queue item.
+        Devices often expose no metadata for a raw URL, so the queue item (which
+        we *do* know) is the better source of title/artist/artwork."""
+        q = self._queue.get(s.player_id)
+        if not q or not q.items:
+            return
+        s.queue = q.to_dict()
+        cur = q.current()
+        if cur and s.state in _ACTIVE + (PlaybackState.PAUSED,):
+            it = cur.item
+            if it.title:
+                s.title = it.title
+            if it.artist:
+                s.artist = it.artist
+            if it.artwork_url:
+                s.artwork_url = it.artwork_url
+            if it.media_type:
+                s.media_type = it.media_type
 
     def snapshot(self) -> List[PlayerState]:
         return list(self._cache.values())
@@ -82,17 +122,121 @@ class MediaController:
     # Control (routed by player_id prefix)
     # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
+        item = await self._resolve(item)
         await self._dispatch(player_id, "play_url", item)
 
+    async def _resolve(self, item: MediaItem) -> MediaItem:
+        """Refresh a time-limited stream URL via the source's resolver, if any."""
+        resolver = self._resolvers.get(item.media_type)
+        if resolver and item.source_id:
+            try:
+                fresh = await resolver(item.source_id)
+                if fresh:
+                    item.url = fresh
+            except Exception as e:
+                logger.warning(f"URL resolve failed for {item.media_type}:{item.source_id}: {e}")
+        return item
+
     async def control(self, player_id: str, action: str) -> None:
-        action_map = {
-            "pause": "pause", "resume": "resume", "stop": "stop_playback",
-            "next": "next_track", "prev": "prev_track",
-        }
+        # next/prev navigate the queue when there is one (radio/Tidal URLs have
+        # no device-native next/prev); otherwise fall back to the provider.
+        if action == "next":
+            return await self.queue_next(player_id)
+        if action == "prev":
+            return await self.queue_prev(player_id)
+        action_map = {"pause": "pause", "resume": "resume", "stop": "stop_playback"}
         method = action_map.get(action)
         if not method:
             raise ValueError(f"Unknown action: {action}")
+        if action == "stop":
+            self._advancing.discard(player_id)
         await self._dispatch(player_id, method)
+
+    # ------------------------------------------------------------------
+    # Queue (automation-ready)
+    # ------------------------------------------------------------------
+    async def play_items(self, player_id: str, items: List[MediaItem], start: int = 0) -> None:
+        """Replace the player's queue with `items` and start playing `start`."""
+        if not items:
+            return
+        q = self._queue.get(player_id, create=True)
+        cur = q.load(items, start)
+        self._advancing.discard(player_id)
+        if cur:
+            await self.play_url(player_id, cur.item)
+
+    async def queue_add(self, player_id: str, items: List[MediaItem]) -> None:
+        q = self._queue.get(player_id, create=True)
+        was_empty = not q.items
+        q.add(items)
+        if was_empty and q.current():
+            await self.play_url(player_id, q.current().item)
+
+    async def queue_next(self, player_id: str) -> None:
+        q = self._queue.get(player_id)
+        if q and q.items:
+            nxt = q.advance()
+            self._advancing.discard(player_id)
+            if nxt:
+                await self.play_url(player_id, nxt.item)
+                return
+        await self._dispatch(player_id, "next_track")
+
+    async def queue_prev(self, player_id: str) -> None:
+        q = self._queue.get(player_id)
+        if q and q.items:
+            prev = q.previous()
+            self._advancing.discard(player_id)
+            if prev:
+                await self.play_url(player_id, prev.item)
+                return
+        await self._dispatch(player_id, "prev_track")
+
+    def set_repeat(self, player_id: str, mode: str) -> None:
+        self._queue.get(player_id, create=True).set_repeat(mode)
+
+    def set_shuffle(self, player_id: str, on: bool) -> None:
+        self._queue.get(player_id, create=True).set_shuffle(on)
+
+    def get_queue(self, player_id: str) -> Optional[dict]:
+        return self._queue.summary(player_id)
+
+    def clear_queue(self, player_id: str) -> None:
+        self._queue.clear(player_id)
+        self._advancing.discard(player_id)
+
+    # ------------------------------------------------------------------
+    # Auto-advance (called from the service poll loop after refresh)
+    # ------------------------------------------------------------------
+    async def tick(self) -> None:
+        for player_id, state in list(self._cache.items()):
+            q = self._queue.get(player_id)
+            if not q or not q.items or not state.available:
+                continue
+            # A new track is running → clear the advance latch.
+            if state.state in _ACTIVE:
+                self._advancing.discard(player_id)
+            ended = state.ended or self._transition_ended(player_id, state)
+            if ended and player_id not in self._advancing:
+                nxt = q.advance()
+                if nxt:
+                    self._advancing.add(player_id)   # latch until next track plays
+                    try:
+                        await self.play_url(player_id, nxt.item)
+                        logger.info(f"Queue auto-advanced {player_id} → {nxt.item.title}")
+                    except Exception as e:
+                        logger.warning(f"Auto-advance failed for {player_id}: {e}")
+                        self._advancing.discard(player_id)
+        self._prev_states = dict(self._cache)
+
+    def _transition_ended(self, player_id: str, state: PlayerState) -> bool:
+        """Fallback end-detection: was playing a finite track, now idle near its end."""
+        prev = self._prev_states.get(player_id)
+        if not prev:
+            return False
+        if prev.state in _ACTIVE and state.state == PlaybackState.IDLE and prev.duration_ms > 0:
+            return prev.position_ms >= prev.duration_ms - 5000
+        return False
 
     async def set_volume(self, player_id: str, level: float) -> None:
         await self._dispatch(player_id, "set_volume", max(0.0, min(1.0, level)))

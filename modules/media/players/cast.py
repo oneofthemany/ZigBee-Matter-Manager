@@ -180,6 +180,10 @@ class CastPlayerProvider(PlayerProvider):
         cast_status = cast.status
         images = getattr(mc_status, "images", None) or []
         artwork = images[0].url if images and getattr(images[0], "url", None) else ""
+        # Cast tells us *why* it went idle. FINISHED = track ended naturally,
+        # which is the clean auto-advance signal (vs CANCELLED/STOPPED by user).
+        ended = (getattr(mc_status, "player_state", "") == "IDLE"
+                 and getattr(mc_status, "idle_reason", None) == "FINISHED")
         return PlayerState(
             player_id=_pid(uuid_str),
             provider=self.provider,
@@ -193,6 +197,7 @@ class CastPlayerProvider(PlayerProvider):
             artist=getattr(mc_status, "artist", "") or "",
             artwork_url=artwork,
             media_type="radio",
+            ended=ended,
             position_ms=int((getattr(mc_status, "current_time", 0) or 0) * 1000),
             duration_ms=int((getattr(mc_status, "duration", 0) or 0) * 1000),
         )
