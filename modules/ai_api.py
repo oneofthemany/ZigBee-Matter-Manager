@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _get_ai_assistant = None
 _get_ai_automations = None
+_get_ai_chat = None
 _config_saver = None
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -37,6 +38,10 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 class AIGenerateRequest(BaseModel):
     prompt: str = Field(..., description="Natural language automation description",
                         min_length=5, max_length=2000)
+
+
+class AIChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
 
 
 class AIConfigRequest(BaseModel):
@@ -54,7 +59,8 @@ class AIConfigRequest(BaseModel):
 
 def register_ai_routes(app: FastAPI, ai_assistant_getter: Callable,
                        ai_automations_getter: Callable,
-                       config_saver: Optional[Callable] = None):
+                       config_saver: Optional[Callable] = None,
+                       ai_chat_getter: Optional[Callable] = None):
     """
     Register AI API routes on the FastAPI app.
 
@@ -63,10 +69,12 @@ def register_ai_routes(app: FastAPI, ai_assistant_getter: Callable,
         ai_assistant_getter: callable returning AIAssistant instance
         ai_automations_getter: callable returning AIAutomations instance
         config_saver: optional callable(ai_config_dict) to persist to config.yaml
+        ai_chat_getter: optional callable returning AIChat instance
     """
-    global _get_ai_assistant, _get_ai_automations, _config_saver
+    global _get_ai_assistant, _get_ai_automations, _config_saver, _get_ai_chat
     _get_ai_assistant = ai_assistant_getter
     _get_ai_automations = ai_automations_getter
+    _get_ai_chat = ai_chat_getter
     _config_saver = config_saver
     app.include_router(router)
     logger.info("AI API routes registered")
@@ -118,6 +126,33 @@ async def nl_help():
     if not ai_auto:
         raise HTTPException(503, "AI automations module not available")
     return ai_auto.local.help()
+
+
+@router.post("/chat")
+async def chat_send(request: AIChatRequest):
+    """Send a message to the domain-aware chat (grounded in devices + rules)."""
+    chat = _get_ai_chat() if _get_ai_chat else None
+    if not chat:
+        raise HTTPException(503, "Chat module not available")
+    return await chat.send(request.message)
+
+
+@router.get("/chat/history")
+async def chat_history():
+    """Return the persisted chat history."""
+    chat = _get_ai_chat() if _get_ai_chat else None
+    if not chat:
+        return {"messages": []}
+    return {"messages": chat.get_history()}
+
+
+@router.delete("/chat/history")
+async def chat_clear():
+    """Clear the chat history."""
+    chat = _get_ai_chat() if _get_ai_chat else None
+    if not chat:
+        raise HTTPException(503, "Chat module not available")
+    return chat.clear()
 
 
 @router.get("/host")
