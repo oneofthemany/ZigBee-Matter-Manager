@@ -36,6 +36,7 @@ class MatterClusters:
     BASIC_INFORMATION = 40
     OTA_SOFTWARE = 41
     LOCALIZATION = 43
+    POWER_SOURCE = 47
     GENERAL_COMMISSIONING = 48
     NETWORK_COMMISSIONING = 49
     GENERAL_DIAGNOSTICS = 51
@@ -84,6 +85,11 @@ class BasicInfoAttrs:
     CAPABILITY_MINIMA = 19
     PART_NUMBER = 12          # model number string (e.g. "E2490")
     PRODUCT_APPEARANCE = 20
+
+
+class PowerSourceAttrs:
+    """PowerSource cluster (47) attribute IDs."""
+    BAT_PERCENT_REMAINING = 12    # 0-200 (half-percent units)
 
 
 class SwitchAttrs:
@@ -219,35 +225,35 @@ class BaseMatterParser:
     def parse_basic_info(self, attributes: dict) -> dict:
         """Extract device identity from BasicInformation cluster."""
         return {
-            "vendor_name": self.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_NAME, "Unknown"),
-            "vendor_id": self.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_ID, 0),
-            "product_name": self.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_NAME, ""),
-            "product_id": self.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_ID, 0),
-            "node_label": self.find_attr(attributes, 40, BasicInfoAttrs.NODE_LABEL, ""),
-            "part_number": self.find_attr(attributes, 40, BasicInfoAttrs.PART_NUMBER, ""),
-            "hardware_version": self.find_attr(attributes, 40, BasicInfoAttrs.HARDWARE_VERSION_STRING, ""),
-            "software_version": self.find_attr(attributes, 40, BasicInfoAttrs.SOFTWARE_VERSION_STRING, ""),
-            "serial_number": self.find_attr(attributes, 40, BasicInfoAttrs.SERIAL_NUMBER, ""),
-            "location": self.find_attr(attributes, 40, BasicInfoAttrs.LOCATION, ""),
+            "vendor_name": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_NAME, "Unknown"),
+            "vendor_id": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_ID, 0),
+            "product_name": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, ""),
+            "product_id": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_ID, 0),
+            "node_label": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.NODE_LABEL, ""),
+            "part_number": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PART_NUMBER, ""),
+            "hardware_version": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.HARDWARE_VERSION_STRING, ""),
+            "software_version": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.SOFTWARE_VERSION_STRING, ""),
+            "serial_number": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.SERIAL_NUMBER, ""),
+            "location": self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.LOCATION, ""),
         }
 
     def get_manufacturer(self, attributes: dict) -> str:
         """Get manufacturer name."""
-        return self.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_NAME, "Unknown")
+        return self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_NAME, "Unknown")
 
     def get_model(self, attributes: dict) -> str:
         """Get model identifier — prefers PartNumber, falls back to ProductName."""
-        part = self.find_attr(attributes, 40, BasicInfoAttrs.PART_NUMBER, "")
+        part = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PART_NUMBER, "")
         if part:
             return str(part)
-        return self.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_NAME, "Unknown")
+        return self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, "Unknown")
 
     def get_friendly_name(self, attributes: dict) -> str:
         """Get display name — prefers NodeLabel, falls back to ProductName."""
-        label = self.find_attr(attributes, 40, BasicInfoAttrs.NODE_LABEL, "")
+        label = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.NODE_LABEL, "")
         if label:
             return str(label)
-        return self.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_NAME, "Matter Device")
+        return self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, "Matter Device")
 
     # ── State Building ──────────────────────────────────────────────
 
@@ -333,7 +339,7 @@ class BaseMatterParser:
             state["locked"] = lock_state == 1
 
         # Power Source (cluster 47)
-        bat_percent = self.find_attr(attributes, 47, 12)  # BatPercentRemaining
+        bat_percent = self.find_attr(attributes, MatterClusters.POWER_SOURCE, PowerSourceAttrs.BAT_PERCENT_REMAINING)  # BatPercentRemaining
         if bat_percent is not None:
             state["battery"] = bat_percent // 2  # Matter reports 0-200
 
@@ -725,7 +731,7 @@ class SwitchParser(BaseMatterParser):
             state["current_position"] = endpoints_with_switch[0]["current_position"]
 
         # Battery from Power Source cluster
-        bat = self.find_attr(attributes, 47, 12)  # BatPercentRemaining
+        bat = self.find_attr(attributes, MatterClusters.POWER_SOURCE, PowerSourceAttrs.BAT_PERCENT_REMAINING)  # BatPercentRemaining
         if bat is not None:
             state["battery"] = bat // 2
 
@@ -771,13 +777,13 @@ class IkeaParser(BaseMatterParser):
 
     def get_friendly_name(self, attributes: dict) -> str:
         """IKEA devices often have empty NodeLabel — use ProductName."""
-        label = self.find_attr(attributes, 40, BasicInfoAttrs.NODE_LABEL, "")
+        label = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.NODE_LABEL, "")
         if label:
             return str(label)
-        product = self.find_attr(attributes, 40, BasicInfoAttrs.PRODUCT_NAME, "")
+        product = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, "")
         if product:
             return str(product)
-        part = self.find_attr(attributes, 40, BasicInfoAttrs.PART_NUMBER, "")
+        part = self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PART_NUMBER, "")
         if part:
             return f"IKEA {part}"
         return "IKEA Device"
@@ -834,7 +840,7 @@ def get_parser_for_node(attributes: dict) -> BaseMatterParser:
     base = BaseMatterParser()
 
     # Detect vendor
-    vendor_id = base.find_attr(attributes, 40, BasicInfoAttrs.VENDOR_ID, 0)
+    vendor_id = base.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.VENDOR_ID, 0)
 
     # Detect device type
     device_type = base.get_device_type(attributes)
