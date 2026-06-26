@@ -170,8 +170,8 @@ function _seqSummary(steps, label, color) {
 // FORM
 // ============================================================================
 
-function _showForm(rule) {
-    const isE = !!rule; editingRuleId = isE ? rule.id : null;
+function _showForm(rule, forceNew = false) {
+    const isE = !!rule; editingRuleId = (isE && !forceNew) ? rule.id : null;
     const el = document.getElementById('a-form'); if (!el) return;
     el.innerHTML = `
     <div class="card-header bg-light d-flex justify-content-between"><strong><i class="fas fa-${isE?'edit':'bolt'}"></i> ${isE?'Edit':'New'} Automation</strong>
@@ -712,6 +712,8 @@ window._aAddBranch = sid => {
 
 // Form
 window._aShowForm=()=>_showForm(null);
+// Populate the builder from a generated (unsaved) rule object, treated as new.
+window._aShowFormWith=(rule)=>_showForm(rule, true);
 window._aHideForm=()=>{document.getElementById('a-form').style.display='none';editingRuleId=null;};
 window._aEdit=async id=>{try{const r=await(await fetch(`/api/automations/rule/${id}`)).json();_showForm(r);document.getElementById('a-form')?.scrollIntoView({behavior:'smooth'});}catch(e){alert(e.message);}};
 

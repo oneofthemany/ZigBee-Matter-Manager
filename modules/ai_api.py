@@ -78,18 +78,46 @@ def register_ai_routes(app: FastAPI, ai_assistant_getter: Callable,
 
 @router.post("/automation")
 async def generate_automation(request: AIGenerateRequest):
-    """Generate an automation rule from natural language."""
+    """Generate an automation rule from natural language.
+
+    Local-first: the deterministic parser runs first (no network, SBC-friendly).
+    Only if it cannot fully resolve the sentence do we fall back to the LLM,
+    and only when a provider is configured. If neither succeeds we return the
+    local parser's helpful, grounded error rather than a bare 503.
+    """
     ai_auto = _get_ai_automations() if _get_ai_automations else None
     if not ai_auto:
         raise HTTPException(503, "AI automations module not available")
 
-    ai = _get_ai_assistant() if _get_ai_assistant else None
-    if not ai or not ai.is_configured():
-        raise HTTPException(503, "AI provider not configured. "
-                                 "Set provider and credentials in Settings → AI.")
+    # 1. Deterministic local parser.
+    local = ai_auto.local.parse(request.prompt)
+    if local.get("success"):
+        return local
 
-    result = await ai_auto.generate_rule(request.prompt)
-    return result
+    # 2. LLM fallback (only when configured).
+    ai = _get_ai_assistant() if _get_ai_assistant else None
+    if ai and ai.is_configured():
+        result = await ai_auto.generate_rule(request.prompt)
+        result.setdefault("source", "llm")
+        # Carry the local parser's hints if the LLM also fails.
+        if not result.get("success"):
+            result.setdefault("suggestions", local.get("partial"))
+            result.setdefault("examples", local.get("examples"))
+        return result
+
+    # 3. Neither — return the local parser's grounded guidance.
+    local.setdefault("error", "Could not understand the request.")
+    local["llm_available"] = False
+    return local
+
+
+@router.get("/nl-help")
+async def nl_help():
+    """Example phrasings + device names for the local NL builder."""
+    ai_auto = _get_ai_automations() if _get_ai_automations else None
+    if not ai_auto:
+        raise HTTPException(503, "AI automations module not available")
+    return ai_auto.local.help()
 
 
 @router.get("/status")

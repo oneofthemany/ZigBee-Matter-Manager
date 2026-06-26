@@ -98,9 +98,16 @@ class AIAutomations:
     def __init__(self, ai_assistant, automation_engine):
         self._ai = ai_assistant
         self._engine = automation_engine
+        from modules.nl_automations import NLAutomationParser
+        self.local = NLAutomationParser(automation_engine)
 
     def _build_device_context(self) -> str:
-        """Build a compact device summary for the LLM system prompt."""
+        """Build a compact device summary for the LLM system prompt.
+
+        Includes each attribute's type, current value and allowed values so the
+        model grounds conditions in reality instead of guessing (e.g. that
+        occupancy is boolean true/false, or that a contact reports ON/OFF).
+        """
         lines = []
 
         # All devices with their triggerable attributes
@@ -109,7 +116,13 @@ class AIAutomations:
             ieee = dev["ieee"]
             name = dev["friendly_name"]
             model = dev.get("model", "Unknown")
-            keys = dev.get("state_keys", [])
+
+            # Rich attribute metadata (type / current value / value_options).
+            try:
+                state = self._engine.get_device_state(ieee) or {}
+                attr_meta = state.get("attributes", []) or []
+            except Exception:
+                attr_meta = []
 
             # Get available actions if this is an actuator
             if ieee.startswith("group:"):
@@ -124,8 +137,19 @@ class AIAutomations:
             cmd_names = [a["command"] for a in actions] if actions else []
 
             line = f"- {name} [{ieee}] (model: {model})"
-            if keys:
-                line += f"\n  Attributes: {', '.join(keys)}"
+            if attr_meta:
+                descs = []
+                for a in attr_meta:
+                    d = f"{a['attribute']}:{a.get('type', '?')}"
+                    vo = a.get("value_options")
+                    if vo:
+                        d += f"={'/'.join(str(v) for v in vo)}"
+                    elif a.get("current_value") is not None:
+                        d += f"(now {a['current_value']})"
+                    descs.append(d)
+                line += "\n  Attributes: " + ", ".join(descs)
+            elif dev.get("state_keys"):
+                line += "\n  Attributes: " + ", ".join(dev["state_keys"])
             if cmd_names:
                 line += f"\n  Commands: {', '.join(cmd_names)}"
             lines.append(line)
