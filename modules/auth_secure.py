@@ -76,30 +76,29 @@ class SecureAuthManager:
 
     def _wrap_save(self) -> None:
         """Patch the wrapped AuthManager._save_locked to round-trip MFA."""
-        original_save = self.auth._save_locked
 
-    def patched_save() -> None:
-        """Write users + groups + tokens + mfa in a single atomic save."""
-        try:
-            path = self.auth.config_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "groups": [g.to_dict() for g in self.auth.groups.values()],
-                "users":  [u.to_dict() for u in self.auth.users.values()],
-                "tokens": [t.to_dict() for t in self.auth.tokens.values()],
-                "mfa":    [r.to_dict() for r in self.mfa.values()],
-            }
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            with open(tmp, "w") as f:
-                yaml.safe_dump(payload, f, default_flow_style=False, sort_keys=False)
-            import os
-            os.replace(tmp, path)
+        def patched_save() -> None:
+            """Write users + groups + tokens + mfa in a single atomic save."""
             try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-        except Exception as e:
-            logger.error(f"Failed to persist auth+MFA records: {e}")
+                path = self.auth.config_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "groups": [g.to_dict() for g in self.auth.groups.values()],
+                    "users":  [u.to_dict() for u in self.auth.users.values()],
+                    "tokens": [t.to_dict() for t in self.auth.tokens.values()],
+                    "mfa":    [r.to_dict() for r in self.mfa.values()],
+                }
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                with open(tmp, "w") as f:
+                    yaml.safe_dump(payload, f, default_flow_style=False, sort_keys=False)
+                import os
+                os.replace(tmp, path)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to persist auth+MFA records: {e}")
 
         self.auth._save_locked = patched_save
 
