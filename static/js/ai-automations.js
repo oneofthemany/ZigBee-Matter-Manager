@@ -42,6 +42,8 @@ export function renderAIPanel() {
                       title="Optional AI model for free-form requests">
                     AI: ${_aiConfigured ? 'connected' : 'optional'}
                 </span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._aiToggleChat()"
+                        title="Ask about your devices &amp; automations"><i class="fas fa-comments"></i> Chat</button>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._aiToggleSettings()"
                         title="AI Settings"><i class="fas fa-cog"></i></button>
             </div>
@@ -122,6 +124,26 @@ export function renderAIPanel() {
 
             <!-- Result area -->
             <div id="ai-result" class="mt-2" style="display:none"></div>
+
+            <!-- Domain-aware chat (hidden by default) -->
+            <div id="ai-chat" class="mt-3 border-top pt-2" style="display:none">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="small fw-bold"><i class="fas fa-comments me-1"></i> Ask about your devices &amp; automations</span>
+                    <button class="btn btn-sm btn-outline-danger py-0" onclick="window._aiChatClear()" title="Clear history">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+                <div id="ai-chat-log" class="border rounded p-2 mb-2 bg-white"
+                     style="height:260px;overflow-y:auto;font-size:.85rem"></div>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control" id="ai-chat-input"
+                           placeholder="e.g. why didn't my hallway light come on? which sensors are low battery?"
+                           onkeydown="if(event.key==='Enter')window._aiChatSend()">
+                    <button class="btn btn-info text-white" id="ai-chat-send" onclick="window._aiChatSend()">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </div>`;
 }
@@ -473,6 +495,97 @@ async function _aiTestConnection() {
 }
 
 // ============================================================================
+// DOMAIN-AWARE CHAT
+// ============================================================================
+
+function _aiToggleChat() {
+    const el = document.getElementById('ai-chat');
+    if (!el) return;
+    const showing = el.style.display !== 'none';
+    el.style.display = showing ? 'none' : 'block';
+    if (!showing) {
+        _aiChatLoad();
+        const inp = document.getElementById('ai-chat-input');
+        if (inp) inp.focus();
+    }
+}
+
+function _aiRenderChat(messages) {
+    const log = document.getElementById('ai-chat-log');
+    if (!log) return;
+    if (!messages || !messages.length) {
+        log.innerHTML = `<div class="text-muted">Ask anything about your setup — device states, why a rule fired, or for an automation idea. Grounded in your live devices and rules.</div>`;
+        return;
+    }
+    log.innerHTML = messages.map(m => {
+        const me = m.role === 'user';
+        return `<div class="mb-2 d-flex ${me ? 'justify-content-end' : 'justify-content-start'}">
+            <div class="px-2 py-1 rounded ${me ? 'bg-primary text-white' : 'bg-light border'}" style="max-width:85%;white-space:pre-wrap">${_esc(m.content)}</div>
+        </div>`;
+    }).join('');
+    log.scrollTop = log.scrollHeight;
+}
+
+async function _aiChatLoad() {
+    try {
+        const data = await (await fetch('/api/ai/chat/history')).json();
+        _aiRenderChat(data.messages || []);
+    } catch (e) {
+        _aiRenderChat([]);
+    }
+}
+
+async function _aiChatSend() {
+    const inp = document.getElementById('ai-chat-input');
+    const btn = document.getElementById('ai-chat-send');
+    const log = document.getElementById('ai-chat-log');
+    if (!inp || !inp.value.trim()) return;
+    const msg = inp.value.trim();
+    inp.value = '';
+
+    // Optimistic echo + typing indicator.
+    if (log) {
+        if (log.querySelector('.text-muted') && log.children.length === 1) log.innerHTML = '';
+        log.insertAdjacentHTML('beforeend',
+            `<div class="mb-2 d-flex justify-content-end"><div class="px-2 py-1 rounded bg-primary text-white" style="max-width:85%;white-space:pre-wrap">${_esc(msg)}</div></div>
+             <div id="ai-chat-typing" class="mb-2 text-muted small"><i class="fas fa-spinner fa-spin"></i> thinking…</div>`);
+        log.scrollTop = log.scrollHeight;
+    }
+    if (btn) btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/ai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg })
+        });
+        const data = await res.json();
+        document.getElementById('ai-chat-typing')?.remove();
+        if (data.success) {
+            await _aiChatLoad();
+        } else if (log) {
+            log.insertAdjacentHTML('beforeend',
+                `<div class="mb-2 text-danger small"><i class="fas fa-exclamation-triangle me-1"></i>${_esc(data.error || 'Chat failed')}</div>`);
+            log.scrollTop = log.scrollHeight;
+        }
+    } catch (e) {
+        document.getElementById('ai-chat-typing')?.remove();
+        if (log) log.insertAdjacentHTML('beforeend', `<div class="mb-2 text-danger small">${_esc(e.message)}</div>`);
+    } finally {
+        if (btn) btn.disabled = false;
+        if (inp) inp.focus();
+    }
+}
+
+async function _aiChatClear() {
+    if (!confirm('Clear chat history?')) return;
+    try {
+        await fetch('/api/ai/chat/history', { method: 'DELETE' });
+        _aiRenderChat([]);
+    } catch (e) { /* ignore */ }
+}
+
+// ============================================================================
 // HOST CAPABILITY CHECK
 // ============================================================================
 
@@ -584,4 +697,7 @@ window._aiTestConnection = _aiTestConnection;
 window._aiUseExample = _aiUseExample;
 window._aiShowHelp = _aiShowHelp;
 window._aiCheckHost = _aiCheckHost;
+window._aiToggleChat = _aiToggleChat;
+window._aiChatSend = _aiChatSend;
+window._aiChatClear = _aiChatClear;
 window._aiGeneratedRule = null;

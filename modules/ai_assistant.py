@@ -71,10 +71,15 @@ class AIAssistant:
                     f"model={self.model} base_url={self.base_url}")
 
     async def chat(self, system_prompt: str, user_message: str,
-                   temperature: Optional[float] = None) -> Optional[str]:
+                   temperature: Optional[float] = None,
+                   history: Optional[list] = None) -> Optional[str]:
         """
         Send a chat completion request and return the text response.
         Uses aiohttp to avoid adding openai SDK as a dependency.
+
+        history: optional list of prior turns [{"role": "user"|"assistant",
+        "content": str}, ...] injected between the system prompt and the new
+        user message so the model has conversational context.
         """
         import aiohttp
 
@@ -88,12 +93,14 @@ class AIAssistant:
                 headers["x-api-key"] = self.api_key
                 headers["anthropic-version"] = "2023-06-01"
 
+        prior = [{"role": m["role"], "content": m["content"]}
+                 for m in (history or [])
+                 if m.get("role") in ("user", "assistant") and m.get("content")]
+
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            "messages": [{"role": "system", "content": system_prompt}, *prior,
+                         {"role": "user", "content": user_message}],
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": self.max_tokens,
         }
@@ -104,7 +111,7 @@ class AIAssistant:
             payload = {
                 "model": self.model,
                 "system": system_prompt,
-                "messages": [{"role": "user", "content": user_message}],
+                "messages": [*prior, {"role": "user", "content": user_message}],
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": self.max_tokens,
             }

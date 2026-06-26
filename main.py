@@ -643,6 +643,8 @@ async def lifespan(app: FastAPI):
     ai_config = CONFIG.get("ai", {})
     ai_assistant = AIAssistant(ai_config)
     ai_automations = AIAutomations(ai_assistant, zigbee_service.automation)
+    from modules.ai_chat import AIChat
+    ai_chat = AIChat(ai_assistant, ai_automations)
     logger.info(f"AI Assistant initialised: {ai_assistant.provider}/{ai_assistant.model} "
                 f"configured={ai_assistant.is_configured()}")
 
@@ -663,6 +665,7 @@ async def lifespan(app: FastAPI):
         ai_assistant_getter=lambda: ai_assistant,
         ai_automations_getter=lambda: ai_automations,
         config_saver=_save_ai_config,
+        ai_chat_getter=lambda: ai_chat,
     )
 
 
