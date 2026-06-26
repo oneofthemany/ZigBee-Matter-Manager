@@ -55,7 +55,8 @@ OPERATORS = {
 
 VALID_COMMANDS = {
     "on", "off", "toggle", "brightness", "color_temp",
-    "open", "close", "stop", "position", "temperature"
+    "open", "close", "stop", "position", "temperature",
+    "lock", "unlock"
 }
 
 FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition"}
@@ -111,158 +112,158 @@ class AutomationEngine:
         return names
 
 
-        # =========================================================================
-        # TIME SCHEDULER
-        # =========================================================================
+    # =========================================================================
+    # TIME SCHEDULER
+    # =========================================================================
 
-        async def start(self):
-            """Start background time-boundary scheduler and set initial rule states."""
-            self._time_scheduler_task = asyncio.create_task(self._time_boundary_loop())
-            logger.info("Automation time scheduler started")
+    async def start(self):
+        """Start background time-boundary scheduler and set initial rule states."""
+        self._time_scheduler_task = asyncio.create_task(self._time_boundary_loop())
+        logger.info("Automation time scheduler started")
 
-        async def stop(self):
-            """Stop background tasks."""
-            if self._time_scheduler_task:
-                self._time_scheduler_task.cancel()
-                try:
-                    await self._time_scheduler_task
-                except asyncio.CancelledError:
-                    pass
+    async def stop(self):
+        """Stop background tasks."""
+        if self._time_scheduler_task:
+            self._time_scheduler_task.cancel()
+            try:
+                await self._time_scheduler_task
+            except asyncio.CancelledError:
+                pass
 
-        async def _time_boundary_loop(self):
-            """
-            Runs every 30s. At each time-window boundary (time_from / time_to)
-            re-evaluates all rules that contain time_window conditions so they
-            fire at the correct clock time rather than waiting for the next
-            incidental device update.
-            """
-            import datetime
-            last_minute_checked = None
+    async def _time_boundary_loop(self):
+        """
+        Runs every 30s. At each time-window boundary (time_from / time_to)
+        re-evaluates all rules that contain time_window conditions so they
+        fire at the correct clock time rather than waiting for the next
+        incidental device update.
+        """
+        import datetime
+        last_minute_checked = None
 
-            # Evaluate on startup so initial state is set correctly
-            await asyncio.sleep(2)  # Brief delay to let devices load
-            await self._evaluate_timed_rules()
+        # Evaluate on startup so initial state is set correctly
+        await asyncio.sleep(2)  # Brief delay to let devices load
+        await self._evaluate_timed_rules()
 
-            while True:
-                try:
-                    await asyncio.sleep(30)
-                    now_dt = datetime.datetime.now()
-                    now_hhmm = now_dt.strftime("%H:%M")
+        while True:
+            try:
+                await asyncio.sleep(30)
+                now_dt = datetime.datetime.now()
+                now_hhmm = now_dt.strftime("%H:%M")
 
-                    if now_hhmm == last_minute_checked:
+                if now_hhmm == last_minute_checked:
+                    continue
+                last_minute_checked = now_hhmm
+
+                # Collect all boundary times across all enabled rules
+                boundaries: set = set()
+                for rule in self.rules:
+                    if not rule.get("enabled", True):
                         continue
-                    last_minute_checked = now_hhmm
+                    for c in rule.get("conditions", []):
+                        if c.get("type") == "time_window":
+                            boundaries.add(c.get("time_from"))
+                            boundaries.add(c.get("time_to"))
+                    for p in rule.get("prerequisites", []):
+                        if p.get("type") == "time_window":
+                            boundaries.add(p.get("time_from"))
+                            boundaries.add(p.get("time_to"))
 
-                    # Collect all boundary times across all enabled rules
-                    boundaries: set = set()
-                    for rule in self.rules:
-                        if not rule.get("enabled", True):
-                            continue
-                        for c in rule.get("conditions", []):
-                            if c.get("type") == "time_window":
-                                boundaries.add(c.get("time_from"))
-                                boundaries.add(c.get("time_to"))
-                        for p in rule.get("prerequisites", []):
-                            if p.get("type") == "time_window":
-                                boundaries.add(p.get("time_from"))
-                                boundaries.add(p.get("time_to"))
+                if now_hhmm in boundaries:
+                    logger.info(f"[AUTO] Time boundary hit {now_hhmm} — evaluating timed rules")
+                    await self._evaluate_timed_rules()
 
-                    if now_hhmm in boundaries:
-                        logger.info(f"[AUTO] Time boundary hit {now_hhmm} — evaluating timed rules")
-                        await self._evaluate_timed_rules()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[AUTO] Time boundary loop error: {e}")
 
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"[AUTO] Time boundary loop error: {e}")
+    async def _evaluate_timed_rules(self):
+        """
+        Evaluate all enabled rules that have at least one time_window condition.
+        Uses empty changed_data since time_window conditions don't need attribute data.
+        Runs the same state-machine transition logic as evaluate().
+        """
+        now = time.time()
+        devices = self._get_all_devices()
+        names = self._get_all_names()
 
-        async def _evaluate_timed_rules(self):
-            """
-            Evaluate all enabled rules that have at least one time_window condition.
-            Uses empty changed_data since time_window conditions don't need attribute data.
-            Runs the same state-machine transition logic as evaluate().
-            """
-            now = time.time()
-            devices = self._get_all_devices()
-            names = self._get_all_names()
+        for rule in self.rules:
+            if not rule.get("enabled", True):
+                continue
 
-            for rule in self.rules:
-                if not rule.get("enabled", True):
-                    continue
+            has_tw_cond = any(
+                c.get("type") == "time_window" for c in rule.get("conditions", [])
+            )
+            has_tw_prereq = any(
+                p.get("type") == "time_window" for p in rule.get("prerequisites", [])
+            )
+            if not (has_tw_cond or has_tw_prereq):
+                continue
 
-                has_tw_cond = any(
-                    c.get("type") == "time_window" for c in rule.get("conditions", [])
-                )
-                has_tw_prereq = any(
-                    p.get("type") == "time_window" for p in rule.get("prerequisites", [])
-                )
-                if not (has_tw_cond or has_tw_prereq):
-                    continue
+            rule_id = rule["id"]
+            rule_name = rule.get("name") or rule_id
+            source_ieee = rule.get("source_ieee", "")
+            source_device = devices.get(source_ieee)
+            full_state = source_device.state if source_device else {}
 
-                rule_id = rule["id"]
-                rule_name = rule.get("name") or rule_id
-                source_ieee = rule.get("source_ieee", "")
-                source_device = devices.get(source_ieee)
-                full_state = source_device.state if source_device else {}
+            # Evaluate with empty changed_data — time_window conditions don't need it
+            all_matched, cond_results, has_sustain = self._eval_conditions_block(
+                rule.get("conditions", []), rule_id, {}, full_state, now)
 
-                # Evaluate with empty changed_data — time_window conditions don't need it
-                all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                    rule.get("conditions", []), rule_id, {}, full_state, now)
+            if has_sustain:
+                continue
 
-                if has_sustain:
-                    continue
+            prereq_results = []
+            prereqs_met = True
+            if all_matched:
+                prereqs = rule.get("prerequisites", [])
+                prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
 
-                prereq_results = []
-                prereqs_met = True
-                if all_matched:
-                    prereqs = rule.get("prerequisites", [])
-                    prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
+            conditions_met = all_matched and prereqs_met
+            new_state = "matched" if conditions_met else "unmatched"
+            prev_state = self._rule_states.get(rule_id)
 
-                conditions_met = all_matched and prereqs_met
-                new_state = "matched" if conditions_met else "unmatched"
-                prev_state = self._rule_states.get(rule_id)
-
-                if not all_matched:
-                    self._trace(rule_id, "evaluate", "NO_MATCH",
-                                f"Conditions not met: {rule_name}",
-                                level="DEBUG", conditions=cond_results)
-                elif not prereqs_met:
-                    self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
-                                f"Prerequisites not met: {rule_name}",
-                                conditions=cond_results, prerequisites=prereq_results)
-
-                self._rule_states[rule_id] = new_state
-
-                if prev_state == new_state:
-                    continue
-                if prev_state is None and new_state == "unmatched":
-                    continue
-
-                # Cooldown check
-                cooldown = rule.get("cooldown", DEFAULT_COOLDOWN)
-                elapsed = now - self._cooldowns.get(rule_id, 0)
-                if elapsed < cooldown:
-                    self._trace(rule_id, "cooldown", "BLOCKED",
-                                f"Cooldown {elapsed:.1f}s < {cooldown}s")
-                    continue
-
-                self._cooldowns[rule_id] = now
-                self._stats["transitions"] += 1
-
-                path = "THEN" if new_state == "matched" else "ELSE"
-                seq = rule.get("then_sequence" if path == "THEN" else "else_sequence", [])
-                if not seq:
-                    self._trace(rule_id, "transition", "NO_SEQUENCE",
-                                f"Transition → {new_state}, no {path} sequence: {rule_name}")
-                    continue
-
-                self._trace(rule_id, "transition", f"{path}_FIRING",
-                            f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
+            if not all_matched:
+                self._trace(rule_id, "evaluate", "NO_MATCH",
+                            f"Conditions not met: {rule_name}",
+                            level="DEBUG", conditions=cond_results)
+            elif not prereqs_met:
+                self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
+                            f"Prerequisites not met: {rule_name}",
                             conditions=cond_results, prerequisites=prereq_results)
 
-                self._cancel_sequence(rule_id)
-                task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
-                self._running_sequences[rule_id] = task
+            self._rule_states[rule_id] = new_state
+
+            if prev_state == new_state:
+                continue
+            if prev_state is None and new_state == "unmatched":
+                continue
+
+            # Cooldown check
+            cooldown = rule.get("cooldown", DEFAULT_COOLDOWN)
+            elapsed = now - self._cooldowns.get(rule_id, 0)
+            if elapsed < cooldown:
+                self._trace(rule_id, "cooldown", "BLOCKED",
+                            f"Cooldown {elapsed:.1f}s < {cooldown}s")
+                continue
+
+            self._cooldowns[rule_id] = now
+            self._stats["transitions"] += 1
+
+            path = "THEN" if new_state == "matched" else "ELSE"
+            seq = rule.get("then_sequence" if path == "THEN" else "else_sequence", [])
+            if not seq:
+                self._trace(rule_id, "transition", "NO_SEQUENCE",
+                            f"Transition → {new_state}, no {path} sequence: {rule_name}")
+                continue
+
+            self._trace(rule_id, "transition", f"{path}_FIRING",
+                        f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
+                        conditions=cond_results, prerequisites=prereq_results)
+
+            self._cancel_sequence(rule_id)
+            task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
+            self._running_sequences[rule_id] = task
 
     # =========================================================================
     # PERSISTENCE
@@ -757,7 +758,9 @@ class AutomationEngine:
                 t_from = datetime.time(*map(int, cond["time_from"].split(":")))
                 t_to   = datetime.time(*map(int, cond["time_to"].split(":")))
                 days   = cond.get("days", list(range(7)))
-                day_ok = (not days) or (weekday in days)
+                # An absent "days" key defaults to all 7 (handled by .get above);
+                # an explicitly empty list means "no days" → never matches.
+                day_ok = weekday in days
                 if t_from <= t_to:
                     time_ok = t_from <= now_time <= t_to
                 else:
@@ -848,7 +851,9 @@ class AutomationEngine:
                 t_from = datetime.time(*map(int, p["time_from"].split(":")))
                 t_to   = datetime.time(*map(int, p["time_to"].split(":")))
                 days   = p.get("days", list(range(7)))
-                day_ok = (not days) or (weekday in days)
+                # An absent "days" key defaults to all 7 (handled by .get above);
+                # an explicitly empty list means "no days" → never matches.
+                day_ok = weekday in days
                 if t_from <= t_to:
                     time_ok = t_from <= now_time <= t_to
                 else:  # overnight wrap
@@ -1374,52 +1379,6 @@ class AutomationEngine:
             return names.get(ieee_or_group, ieee_or_group), None
         return names.get(ieee_or_group, ieee_or_group), dev.state or {}
 
-    @staticmethod
-    def _get_group_commands(group_type: str, capabilities: list) -> list:
-        """Generate command list for a group based on type/capabilities."""
-        cmds = []
-        if group_type in ("light", "switch"):
-            cmds.extend([
-                {"command": "on",     "label": "On",     "endpoint_id": None},
-                {"command": "off",    "label": "Off",    "endpoint_id": None},
-                {"command": "toggle", "label": "Toggle", "endpoint_id": None},
-            ])
-        if "brightness" in capabilities:
-            cmds.append({"command": "brightness", "label": "Brightness",
-                         "type": "slider", "min": 0, "max": 254, "endpoint_id": None})
-        if "color_temp" in capabilities:
-            cmds.append({"command": "color_temp", "label": "Color Temp",
-                         "type": "slider", "min": 153, "max": 500, "endpoint_id": None})
-        if group_type == "cover":
-            cmds.extend([
-                {"command": "open",  "label": "Open",  "endpoint_id": None},
-                {"command": "close", "label": "Close", "endpoint_id": None},
-                {"command": "stop",  "label": "Stop",  "endpoint_id": None},
-                {"command": "position", "label": "Position",
-                 "type": "slider", "min": 0, "max": 100, "endpoint_id": None},
-            ])
-        if group_type == "lock":
-            cmds.extend([
-                {"command": "lock",   "label": "Lock",   "endpoint_id": None},
-                {"command": "unlock", "label": "Unlock", "endpoint_id": None},
-            ])
-        return cmds
-
-    def _is_group_homogeneous(self, gm, group: dict) -> bool:
-        """True only if all members resolve to exactly one device type."""
-        members = group.get("members", [])
-        if len(members) < 2:
-            return False
-        types = set()
-        for ieee in members:
-            device = self._get_devices().get(ieee)
-            if not device:
-                continue
-            dtype = gm.get_device_type(device)
-            if dtype:
-                types.add(dtype)
-        return len(types) == 1
-
     def get_source_attributes(self, ieee: str) -> List[Dict[str, Any]]:
         devices = self._get_devices()
         if ieee not in devices: return []
@@ -1629,4 +1588,4 @@ class AutomationEngine:
                 "enabled_rules":sum(1 for r in self.rules if r.get("enabled",True)),
                 "trace_entries":len(self._trace_log),
                 "active_sustains":len(self._sustain_tracker),
-                "running_sequences:wq":sum(1 for t in self._running_sequences.values() if not t.done())}
+                "running_sequences":sum(1 for t in self._running_sequences.values() if not t.done())}

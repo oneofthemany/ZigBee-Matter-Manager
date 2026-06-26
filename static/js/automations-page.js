@@ -15,6 +15,7 @@ import { initAIAutomations, renderAIPanel } from './ai-automations.js';
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
 let allRulesCache = [];
+let devMapCache = {};
 let filterDevice = '';
 let filterState = '';
 
@@ -58,6 +59,7 @@ function _renderPage(container, devices) {
     // Device lookup
     const devMap = {};
     devices.forEach(d => { devMap[d.ieee] = d; });
+    devMapCache = devMap;
 
     // Get unique source devices that have rules
     const sourcesWithRules = [...new Set(allRulesCache.map(r => r.source_ieee))];
@@ -71,17 +73,17 @@ function _renderPage(container, devices) {
             </div>
             <div class="d-flex gap-2">
                 <select class="form-select form-select-sm" id="ap-filter-dev" style="width:auto;max-width:220px" onchange="window._apFilterDev(this.value)">
-                    <option value="">All Devices</option>
+                    <option value="" ${filterDevice === '' ? 'selected' : ''}>All Devices</option>
                     ${sourcesWithRules.map(ieee => {
                         const d = devMap[ieee];
-                        return `<option value="${ieee}">${d ? d.friendly_name : ieee}</option>`;
+                        return `<option value="${ieee}" ${ieee === filterDevice ? 'selected' : ''}>${d ? d.friendly_name : ieee}</option>`;
                     }).join('')}
                 </select>
                 <select class="form-select form-select-sm" id="ap-filter-state" style="width:auto" onchange="window._apFilterState(this.value)">
-                    <option value="">All States</option>
-                    <option value="matched">Matched</option>
-                    <option value="unmatched">Unmatched</option>
-                    <option value="disabled">Disabled</option>
+                    <option value="" ${filterState === '' ? 'selected' : ''}>All States</option>
+                    <option value="matched" ${filterState === 'matched' ? 'selected' : ''}>Matched</option>
+                    <option value="unmatched" ${filterState === 'unmatched' ? 'selected' : ''}>Unmatched</option>
+                    <option value="disabled" ${filterState === 'disabled' ? 'selected' : ''}>Disabled</option>
                 </select>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._apRefresh()"><i class="fas fa-sync-alt"></i></button>
                 <button class="btn btn-sm btn-success" onclick="window._apCreate()"><i class="fas fa-plus"></i> New Rule</button>
@@ -129,7 +131,7 @@ function _renderPage(container, devices) {
 // RULES LIST
 // ============================================================================
 
-function _renderRulesList(devMap) {
+function _renderRulesList(devMap = devMapCache) {
     const el = document.getElementById('ap-rules-list');
     if (!el) return;
 
@@ -261,12 +263,12 @@ async function _apRefresh() {
 
 function _apFilterDev(val) {
     filterDevice = val;
-    loadAutomationsPage();
+    _renderRulesList();
 }
 
 function _apFilterState(val) {
     filterState = val;
-    loadAutomationsPage();
+    _renderRulesList();
 }
 
 // --- Create ---

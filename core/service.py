@@ -501,6 +501,14 @@ class ZigbeeService(
                 # Initialise zones
                 self._zones_init_task = asyncio.create_task(self._init_zones_internal())
 
+                # Start automation time-boundary scheduler so time_window rules
+                # fire at the correct clock time rather than waiting for an
+                # incidental device update.
+                try:
+                    await self.automation.start()
+                except Exception as e:
+                    logger.error(f"Failed to start automation scheduler: {e}")
+
                 return
 
             except _CODE_BUG_EXCEPTIONS as e:
@@ -567,6 +575,10 @@ class ZigbeeService(
     async def stop(self):
         """Shutdown the Zigbee network."""
         self.polling_scheduler.stop()
+
+        if self.automation:
+            with suppress(Exception):
+                await self.automation.stop()
 
         if self.zone_manager:
             await self.zone_manager.stop_zone()
