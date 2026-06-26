@@ -6,6 +6,7 @@ This is the PRIMARY handler for motion sensors that use IAS Zone cluster (0x0500
 Many sensors (including Philips Hue motion sensors) send motion events via
 Zone Status Change Notification commands, NOT via attribute reports.
 """
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
