@@ -1,0 +1,77 @@
+/*
+ * Shared table styling — paired with static/js/table-utils.js.
+ * Add class `tbl` to any Bootstrap `.table`; `tbl-sortable` for click-sort.
+ * Theme-aware via the same CSS variables dark-mode.css defines.
+ */
+
+/* --- Sticky header ------------------------------------------------------- */
+/* Works when the table sits in a scroll container (.table-responsive or any
+   element with overflow). The header stays pinned while rows scroll. */
+.tbl thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg-surface-raised, #f8f9fa);
+    color: var(--text-secondary, #495057);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: none;
+    white-space: nowrap;
+    border-bottom: 2px solid var(--border-color, #dee2e6);
+}
+
+/* --- Density + readability ---------------------------------------------- */
+.tbl tbody td {
+    vertical-align: middle;
+}
+.tbl tbody tr {
+    transition: background-color 0.12s ease;
+}
+
+/* --- Sortable headers ---------------------------------------------------- */
+.tbl-sortable thead th:not([data-no-sort]) {
+    cursor: pointer;
+    user-select: none;
+    padding-right: 1.25rem;          /* room for the caret */
+    position: sticky;                /* keep stickiness from .tbl */
+}
+.tbl-sortable thead th:not([data-no-sort]):hover {
+    background: var(--bg-surface-sunken, #eef0f2);
+}
+
+/* Caret: dimmed by default, highlighted on the active column. */
+.tbl-sortable thead th:not([data-no-sort])::after {
+    content: "\f0dc";                /* fa-sort */
+    font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", FontAwesome;
+    font-weight: 900;
+    font-size: 0.7em;
+    margin-left: 0.4em;
+    opacity: 0.3;
+    position: absolute;
+    right: 0.5rem;
+}
+.tbl-sortable thead th.tbl-sort-asc::after {
+    content: "\f0de";                /* fa-sort-up */
+    opacity: 0.9;
+    color: var(--bs-primary, #0d6efd);
+}
+.tbl-sortable thead th.tbl-sort-desc::after {
+    content: "\f0dd";                /* fa-sort-down */
+    opacity: 0.9;
+    color: var(--bs-primary, #0d6efd);
+}
+
+/* --- Filter input -------------------------------------------------------- */
+.tbl-filter {
+    max-width: 260px;
+}
+
+/* --- Dark mode tweaks ---------------------------------------------------- */
+[data-theme="dark"] .tbl thead th {
+    background: var(--bg-surface-raised, #222636);
+    color: var(--text-secondary, #c5c9d4);
+    border-bottom-color: var(--border-color, #2d3348);
+}
+[data-theme="dark"] .tbl-sortable thead th:not([data-no-sort]):hover {
+    background: var(--bg-surface-sunken, #1a1d2b);
+}

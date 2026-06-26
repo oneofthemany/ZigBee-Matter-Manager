@@ -72,7 +72,7 @@ function renderMappingsContent(container, ieee) {
                     <span class="badge bg-primary">${mappedKeys.length}</span>
                 </div>
                 <div class="card-body p-0">
-                    <table class="table table-sm table-hover mb-0">
+                    <table class="table table-sm table-hover mb-0 tbl tbl-sortable">
                         <thead><tr>
                             <th>Raw Key</th><th>Friendly Name</th><th>Scale</th><th>Unit</th><th></th>
                         </tr></thead>
@@ -109,7 +109,7 @@ function renderMappingsContent(container, ieee) {
                     <span class="badge bg-warning text-dark">${trulyUnmapped.length}</span>
                 </div>
                 <div class="card-body p-0">
-                    <table class="table table-sm table-hover mb-0">
+                    <table class="table table-sm table-hover mb-0 tbl tbl-sortable">
                         <thead><tr>
                             <th>Raw Key</th><th>Current Value</th><th></th>
                         </tr></thead>

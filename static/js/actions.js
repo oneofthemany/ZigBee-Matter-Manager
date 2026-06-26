@@ -702,8 +702,8 @@ function renderTouchlinkResults() {
     }
 
     resultsDiv.innerHTML = `
-        <table class="table table-hover mb-0">
-            <thead><tr><th>IEEE Address</th><th>Channel</th><th>RSSI</th><th>Actions</th></tr></thead>
+        <table class="table table-hover mb-0 tbl tbl-sortable">
+            <thead><tr><th>IEEE Address</th><th>Channel</th><th>RSSI</th><th data-no-sort>Actions</th></tr></thead>
             <tbody>
                 ${touchlinkDevices.map((d, i) => `
                     <tr>

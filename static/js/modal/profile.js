@@ -206,7 +206,7 @@ function _renderDiscover(container, ieee) {
 function _renderClusterList(ep, epId) {
     const clusterIds = Object.keys(ep.clusters || {}).sort();
     if (!clusterIds.length) return '<div class="small text-muted">No clusters cached.</div>';
-    let out = '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Cluster</th><th>Attrs</th><th>Dir</th></tr></thead><tbody>';
+    let out = '<div class="table-responsive"><table class="table table-sm mb-0 tbl tbl-sortable"><thead><tr><th>Cluster</th><th>Attrs</th><th>Dir</th></tr></thead><tbody>';
     for (const cid of clusterIds) {
         const cl = ep.clusters[cid];
         const attrCount = Object.keys(cl.attributes || {}).length;
@@ -239,7 +239,7 @@ function _renderClusterList(ep, epId) {
 function _renderAttrTable(cluster, epId, clusterId) {
     const attrIds = Object.keys(cluster.attributes || {}).sort();
     if (!attrIds.length) return '<div class="small text-muted p-2">No attributes cached on this cluster.</div>';
-    let out = '<table class="table table-sm table-borderless mb-0"><thead><tr><th>Attr</th><th>Name</th><th>Type</th><th>Value</th><th class="text-end">Access</th></tr></thead><tbody>';
+    let out = '<table class="table table-sm table-borderless mb-0 tbl tbl-sortable"><thead><tr><th>Attr</th><th>Name</th><th>Type</th><th>Value</th><th class="text-end">Access</th></tr></thead><tbody>';
     for (const aid of attrIds) {
         const a = cluster.attributes[aid];
         const access = [
@@ -345,7 +345,7 @@ function _renderMap(container, ieee) {
                     <span><i class="fas fa-tags"></i> <strong>Mapped (${mapped.length})</strong></span>
                 </div>
                 <div class="table-responsive">
-                    <table class="table table-sm mb-0">
+                    <table class="table table-sm mb-0 tbl">
                         <thead><tr><th>Raw key</th><th>Name</th><th>Scale</th><th>Unit</th><th>Class</th><th>Inv</th><th></th></tr></thead>
                         <tbody>
                             ${mapped.map(k => _renderMappedRow(k, mappings[k], ieee)).join('')}
@@ -362,7 +362,7 @@ function _renderMap(container, ieee) {
             <div class="card mb-3">
                 <div class="card-header bg-light"><i class="fas fa-question-circle"></i> <strong>Unmapped raw keys (${unmapped.length})</strong></div>
                 <div class="table-responsive">
-                    <table class="table table-sm mb-0">
+                    <table class="table table-sm mb-0 tbl">
                         <thead><tr><th>Raw key</th><th>Name</th><th>Current value</th><th class="text-end"></th></tr></thead>
                         <tbody>
                             ${unmapped.map(k => {
@@ -690,7 +690,7 @@ function _renderAssembleActions(d) {
                 <button class="btn btn-sm btn-outline-primary" id="pdActAdd"><i class="fas fa-plus"></i> Add</button>
             </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0 tbl">
                     <thead><tr><th>ID</th><th>Label</th><th>EP</th><th>Cluster</th><th>Command</th><th></th></tr></thead>
                     <tbody id="pdActRows">${rows || '<tr><td colspan="6" class="text-center text-muted small">No actions yet.</td></tr>'}</tbody>
                 </table>
@@ -718,7 +718,7 @@ function _renderAssembleReporting(d) {
                 <button class="btn btn-sm btn-outline-primary" id="pdRepAdd"><i class="fas fa-plus"></i> Add</button>
             </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0 tbl">
                     <thead><tr><th>EP</th><th>Cluster</th><th>Attr</th><th>Min (s)</th><th>Max (s)</th><th>Δ</th><th></th></tr></thead>
                     <tbody id="pdRepRows">${rows || '<tr><td colspan="7" class="text-center text-muted small">No reporting configured.</td></tr>'}</tbody>
                 </table>
@@ -753,7 +753,7 @@ function _renderAssembleAttributes(d) {
                 <i class="fas fa-tags"></i> <strong>Attribute mappings</strong>
             </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0 tbl">
                     <thead><tr><th>Location</th><th>Name</th><th>Scale</th><th>Unit</th><th>Class</th><th class="text-center">Inv</th></tr></thead>
                     <tbody id="pdAttrRows" data-rows='${JSON.stringify(rows).replace(/'/g, "&#39;")}'>
                         ${html || '<tr><td colspan="6" class="text-center text-muted small">No attributes mapped. Use the Map tab first.</td></tr>'}

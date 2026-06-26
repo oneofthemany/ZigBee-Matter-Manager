@@ -351,13 +351,13 @@ window._otbrLoadTopology = async function () {
                 </div>
                 <div class="card-body py-2">
                     <h6 class="small fw-bold text-muted mb-1">Nodes</h6>
-                    <table class="table table-sm table-striped mb-3">
+                    <table class="table table-sm table-striped mb-3 tbl tbl-sortable">
                         <thead><tr><th>Role</th><th>RLOC16</th><th>Address</th><th>Signal</th></tr></thead>
                         <tbody>${nodesHtml || '<tr><td colspan="4" class="text-muted">Only this node (no neighbors yet)</td></tr>'}</tbody>
                     </table>
                     ${data.links.length > 0 ? `
                     <h6 class="small fw-bold text-muted mb-1">Links</h6>
-                    <table class="table table-sm table-striped">
+                    <table class="table table-sm table-striped tbl tbl-sortable">
                         <thead><tr><th>Source</th><th>Target</th><th>Quality</th></tr></thead>
                         <tbody>${linksHtml}</tbody>
                     </table>` : ''}

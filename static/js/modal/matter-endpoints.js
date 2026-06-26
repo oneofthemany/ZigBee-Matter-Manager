@@ -296,7 +296,7 @@ function _renderDefEditor(container, defn, isEdit) {
                 <!-- Endpoints -->
                 <h6 class="mb-1 mt-2"><i class="fas fa-plug me-1"></i> Endpoints</h6>
                 <div class="table-responsive">
-                    <table class="table table-sm table-bordered mb-2">
+                    <table class="table table-sm table-bordered mb-2 tbl">
                         <thead>
                             <tr>
                                 <th style="width:8%">EP</th>
@@ -329,7 +329,7 @@ function _renderDefEditor(container, defn, isEdit) {
                 <!-- State Mapping -->
                 <h6 class="mb-1"><i class="fas fa-exchange-alt me-1"></i> State Mapping</h6>
                 <div class="table-responsive">
-                    <table class="table table-sm table-bordered mb-2">
+                    <table class="table table-sm table-bordered mb-2 tbl">
                         <thead>
                             <tr>
                                 <th style="width:20%">State Key</th>

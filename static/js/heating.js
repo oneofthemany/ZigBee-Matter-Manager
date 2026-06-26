@@ -804,8 +804,8 @@ function renderDevicesTable(devices) {
     }).join('');
     return `
         <div class="table-responsive">
-            <table class="table table-sm mb-0 align-middle">
-                <thead><tr><th>Device</th><th>Current</th><th>Setpoint</th><th>Mode</th><th>Action</th><th>24h on-time</th><th></th></tr></thead>
+            <table class="table table-sm mb-0 align-middle tbl tbl-sortable">
+                <thead><tr><th>Device</th><th>Current</th><th>Setpoint</th><th>Mode</th><th>Action</th><th>24h on-time</th><th data-no-sort></th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>
         </div>`;

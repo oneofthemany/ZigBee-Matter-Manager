@@ -119,8 +119,8 @@ function _buildHistChart(data, attr) {
         // Non-numeric: show timeline table of state changes
         wrap.innerHTML = `
             <div class="table-responsive" style="max-height:400px">
-                <table class="table table-sm table-striped">
-                    <thead><tr><th>Time</th><th>${attr}</th><th class="text-end">Samples</th></tr></thead>
+                <table class="table table-sm table-striped tbl tbl-sortable">
+                    <thead><tr><th>Time</th><th>${attr}</th><th class="text-end" data-sort-type="number">Samples</th></tr></thead>
                     <tbody>
                         ${data.map(r => `
                             <tr>
