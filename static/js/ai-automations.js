@@ -10,6 +10,7 @@
 import { initAutomationTab } from './modal/automation.js';
 
 let _aiConfigured = false;
+let _aiHost = null;            // last host assessment (for Ollama gating)
 
 // ============================================================================
 // INIT — called once from automations-page.js

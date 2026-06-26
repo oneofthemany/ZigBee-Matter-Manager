@@ -27,6 +27,7 @@ _get_ai_assistant = None
 _get_ai_automations = None
 _get_ai_chat = None
 _config_saver = None
+_ollama_mgr = None
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -42,6 +43,10 @@ class AIGenerateRequest(BaseModel):
 
 class AIChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
+
+
+class OllamaPullRequest(BaseModel):
+    model: str = Field(..., min_length=1, max_length=80)
 
 
 class AIConfigRequest(BaseModel):
@@ -164,6 +169,46 @@ async def host_capability():
     """
     from modules.llm_host import HostCapabilityAssessor
     return HostCapabilityAssessor().assess()
+
+
+# ── Ollama enablement (privileged; UI-gated behind explicit confirm) ─────────
+
+def _ollama():
+    global _ollama_mgr
+    if _ollama_mgr is None:
+        from modules.ollama_manager import OllamaManager
+        _ollama_mgr = OllamaManager()
+    return _ollama_mgr
+
+
+@router.get("/ollama/status")
+async def ollama_status():
+    """Detect whether the local Ollama container is installed/running + models."""
+    return _ollama().status()
+
+
+@router.get("/ollama/job")
+async def ollama_job():
+    """Poll the current install/pull job's status and streamed log."""
+    return _ollama().job_status()
+
+
+@router.post("/ollama/install")
+async def ollama_install():
+    """Start (or create) the Ollama container. Privileged; runs in background."""
+    result = _ollama().install()
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error"))
+    return result
+
+
+@router.post("/ollama/pull")
+async def ollama_pull(request: OllamaPullRequest):
+    """Pull a model into the running Ollama container. Runs in background."""
+    result = _ollama().pull(request.model)
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error"))
+    return result
 
 
 @router.get("/status")
