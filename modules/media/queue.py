@@ -35,6 +35,7 @@ class PlayerQueue:
         self.index: int = -1                 # current item index; -1 = empty
         self.repeat: str = "off"             # off | one | all
         self.shuffle: bool = False
+        self.auto_extend: bool = False       # infinite radio: append more near the end
         self._history: List[int] = []        # for `previous()`
         self._cycle_played: set[int] = set()  # shuffle: indices played this cycle
 
@@ -57,8 +58,16 @@ class PlayerQueue:
     def clear(self) -> None:
         self.items = []
         self.index = -1
+        self.auto_extend = False
         self._history.clear()
         self._cycle_played = set()
+
+    def remaining(self) -> int:
+        """Items left after the current one."""
+        return max(0, len(self.items) - self.index - 1)
+
+    def source_ids(self) -> set:
+        return {qi.item.source_id for qi in self.items if qi.item.source_id}
 
     def set_repeat(self, mode: str) -> None:
         if mode in REPEAT_MODES:
@@ -134,6 +143,7 @@ class PlayerQueue:
             "index": self.index,
             "repeat": self.repeat,
             "shuffle": self.shuffle,
+            "auto_extend": self.auto_extend,
             "current_id": cur.id if cur else None,
             "length": len(self.items),
         }

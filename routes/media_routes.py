@@ -45,10 +45,9 @@ class QueueModeBody(BaseModel):
 
 class TidalPlayBody(BaseModel):
     player_id: str
-    # exactly one of these:
-    track_id: Optional[str] = None
-    album_id: Optional[str] = None
-    playlist_id: Optional[str] = None
+    kind: str                 # track | album | playlist | artist
+    id: str
+    mode: str = "play"        # play | radio  (radio = infinite, auto-extends)
 
 
 def register_media_routes(app: FastAPI, get_media_service):
@@ -230,6 +229,21 @@ def register_media_routes(app: FastAPI, get_media_service):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    @app.get("/api/media/tidal/library")
+    async def tidal_library(kind: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        if kind not in ("playlists", "albums", "artists"):
+            return {"success": False, "error": "kind must be playlists|albums|artists"}
+        try:
+            return {"success": True, "items": await src.library(kind)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     @app.post("/api/media/tidal/play")
     async def tidal_play(body: TidalPlayBody):
         svc = _svc()
@@ -239,28 +253,27 @@ def register_media_routes(app: FastAPI, get_media_service):
         if not src:
             return {"success": False, "error": "Tidal unavailable"}
         try:
-            if body.track_id:
-                items = [i for i in [await _resolve_track(src, body.track_id)] if i]
-            elif body.album_id:
-                items = await src.album_items(body.album_id)
-            elif body.playlist_id:
-                items = await src.playlist_items(body.playlist_id)
+            radio = body.mode == "radio"
+            items = []
+            if body.kind == "track":
+                if radio:
+                    items = await src.track_radio(body.id)
+                else:
+                    item = await src.single_item(body.id)
+                    items = [item] if item else []
+            elif body.kind == "album":
+                items = await src.album_items(body.id)
+            elif body.kind == "playlist":
+                items = await src.playlist_items(body.id)
+            elif body.kind == "artist":
+                items = await (src.artist_radio(body.id) if radio else src.artist_tracks(body.id))
             else:
-                return {"success": False, "error": "Provide track_id, album_id or playlist_id"}
+                return {"success": False, "error": "kind must be track|album|playlist|artist"}
             if not items:
-                return {"success": False, "error": "Nothing to play (empty or not found)"}
-            await svc.controller.play_items(body.player_id, items)
-            return {"success": True, "count": len(items)}
+                return {"success": False, "error": "Nothing to play (empty, not found, or login required)"}
+            await svc.controller.play_items(body.player_id, items, auto_extend=radio)
+            return {"success": True, "count": len(items), "radio": radio}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    async def _resolve_track(src, track_id):
-        # Build a minimal MediaItem; the controller's resolver fetches a fresh URL.
-        from modules.media.models import MediaItem
-        url = await src.resolve_url(track_id)
-        if not url:
-            return None
-        return MediaItem(url=url, media_type="tidal", content_type="audio/mp4",
-                         source_id=str(track_id))
 
     logger.info("Media routes registered")

@@ -12,6 +12,7 @@ let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
 let _searchSource = 'radio'; // 'radio' | 'tidal'
 let _tidalState = null;      // last known tidal status state string
+let _tidalTab = 'search';    // tidal sub-tab: search | playlists | albums | artists
 
 // ---------------------------------------------------------------------------
 // Init
@@ -35,6 +36,7 @@ export function initMedia() {
     window.mediaSetSource = setSource;
     window.mediaSearch = doSearch;
     window.mediaTidalPlay = tidalPlay;
+    window.mediaTidalTab = tidalTab;
     window.mediaQueueMode = queueMode;
     window.mediaQueueClear = queueClear;
 }
@@ -289,10 +291,45 @@ function setSource(src) {
     document.getElementById('mediaSrcTidal')?.classList.toggle('btn-outline-primary', src !== 'tidal');
     const input = document.getElementById('mediaSearchQuery');
     if (input) input.placeholder = src === 'tidal'
-        ? 'Search Tidal (tracks, albums, playlists)'
+        ? 'Search Tidal (tracks, albums, artists, playlists)'
         : 'Search stations (e.g. jazz, BBC, classical)';
     document.getElementById('mediaSearchResults').innerHTML = '';
     refreshTidalNotice();
+    if (src === 'tidal') renderTidalTabs();
+    else showSearchBar(true);
+}
+
+// Tidal sub-tabs: Search | Playlists | Albums | Artists (the library)
+function renderTidalTabs() {
+    const out = document.getElementById('mediaSearchResults');
+    if (!out) return;
+    const tab = (key, label) =>
+        `<li class="nav-item"><button class="nav-link ${_tidalTab === key ? 'active' : ''}"
+            onclick="window.mediaTidalTab('${key}')">${label}</button></li>`;
+    out.innerHTML = `
+      <ul class="nav nav-pills nav-fill mb-2 small">
+        ${tab('search', 'Search')}${tab('playlists', 'Playlists')}${tab('albums', 'Albums')}${tab('artists', 'Artists')}
+      </ul>
+      <div id="tidalTabContent"></div>`;
+    tidalTab(_tidalTab);
+}
+
+function tidalTab(key) {
+    _tidalTab = key;
+    document.querySelectorAll('#mediaSearchResults .nav-link').forEach(b =>
+        b.classList.toggle('active', b.textContent.trim().toLowerCase() === key));
+    showSearchBar(key === 'search');
+    if (key === 'search') {
+        const c = document.getElementById('tidalTabContent');
+        if (c && !c.innerHTML) c.innerHTML = '<div class="text-muted small py-2">Type above to search Tidal.</div>';
+    } else {
+        loadTidalLibrary(key);
+    }
+}
+
+function showSearchBar(show) {
+    const bar = document.getElementById('mediaSearchBar');
+    if (bar) bar.style.display = show ? '' : 'none';
 }
 
 async function doSearch() {
@@ -348,7 +385,7 @@ async function refreshTidalNotice() {
 
 async function tidalSearch() {
     const q = document.getElementById('mediaSearchQuery')?.value?.trim();
-    const out = document.getElementById('mediaSearchResults');
+    const out = document.getElementById('tidalTabContent');
     if (!q || !out) return;
     if (_tidalState !== 'logged_in') { await refreshTidalNotice(); if (_tidalState !== 'logged_in') return; }
     out.innerHTML = spinner();
@@ -356,40 +393,78 @@ async function tidalSearch() {
     if (!data.success) { out.innerHTML = warn(data.error || 'Search failed'); return; }
     const r = data.results || {};
     const section = (title, rows) => rows ? `<div class="fw-bold small text-uppercase text-muted mt-2">${title}</div>${rows}` : '';
-    const tracks = (r.tracks || []).map(t => row(
-        t.title, t.artist, `window.mediaTidalPlay('track','${esc(t.source_id)}', ${JSON.stringify(t.title).replace(/"/g,'&quot;')})`)).join('');
-    const albums = (r.albums || []).map(a => row(
-        a.name, a.artist, `window.mediaTidalPlay('album','${esc(a.id)}', ${JSON.stringify(a.name).replace(/"/g,'&quot;')})`, 'fa-list')).join('');
-    const playlists = (r.playlists || []).map(pl => row(
-        pl.name, pl.artist, `window.mediaTidalPlay('playlist','${esc(pl.id)}', ${JSON.stringify(pl.name).replace(/"/g,'&quot;')})`, 'fa-list')).join('');
-    out.innerHTML = (tracks || albums || playlists)
-        ? section('Tracks', tracks) + section('Albums', albums) + section('Playlists', playlists)
+    const tracks = (r.tracks || []).map(t => mediaCard(t.artwork_url, t.title, t.artist, [
+        playBtn('track', t.source_id, t.title), radioBtn('track', t.source_id, t.title),
+    ])).join('');
+    const albums = (r.albums || []).map(a => mediaCard(a.artwork, a.name, a.artist, [
+        playBtn('album', a.id, a.name),
+    ])).join('');
+    const artists = (r.artists || []).map(a => mediaCard(a.artwork, a.name, 'Artist', [
+        playBtn('artist', a.id, a.name), radioBtn('artist', a.id, a.name),
+    ])).join('');
+    const playlists = (r.playlists || []).map(pl => mediaCard(pl.artwork, pl.name, pl.artist, [
+        playBtn('playlist', pl.id, pl.name),
+    ])).join('');
+    out.innerHTML = (tracks || albums || artists || playlists)
+        ? section('Tracks', tracks) + section('Artists', artists) + section('Albums', albums) + section('Playlists', playlists)
         : '<div class="text-muted small py-2">No results.</div>';
 }
 
-function row(title, subtitle, onclick, icon) {
+async function loadTidalLibrary(kind) {
+    const out = document.getElementById('tidalTabContent');
+    if (!out) return;
+    if (_tidalState !== 'logged_in') { await refreshTidalNotice(); if (_tidalState !== 'logged_in') { out.innerHTML = ''; return; } }
+    out.innerHTML = spinner();
+    const data = await apiGet(`/api/media/tidal/library?kind=${kind}`);
+    if (!data.success) { out.innerHTML = warn(data.error || 'Load failed'); return; }
+    const items = data.items || [];
+    if (!items.length) { out.innerHTML = `<div class="text-muted small py-2">No ${kind} in your library.</div>`; return; }
+    out.innerHTML = items.map(it => {
+        const k = it.type;  // album | artist | playlist
+        const actions = k === 'artist'
+            ? [playBtn('artist', it.id, it.name), radioBtn('artist', it.id, it.name)]
+            : [playBtn(k, it.id, it.name)];
+        return mediaCard(it.artwork, it.name, it.artist, actions);
+    }).join('');
+}
+
+// A result row with album/artist artwork thumbnail + action buttons.
+function mediaCard(art, title, subtitle, actions) {
+    const img = art
+        ? `<img src="${esc(art)}" width="40" height="40" class="rounded me-2 flex-shrink-0" style="object-fit:cover" loading="lazy">`
+        : '<span class="rounded me-2 bg-secondary-subtle d-inline-flex align-items-center justify-content-center flex-shrink-0" style="width:40px;height:40px"><i class="fas fa-music text-muted"></i></span>';
     return `
-      <div class="d-flex justify-content-between align-items-center border-bottom py-1">
-        <div class="text-truncate me-2">
+      <div class="d-flex align-items-center border-bottom py-1">
+        ${img}
+        <div class="text-truncate me-2 flex-grow-1">
           <div class="small fw-semibold text-truncate">${esc(title)}</div>
           <div class="text-muted text-truncate" style="font-size:.72rem">${esc(subtitle || '')}</div>
         </div>
-        <button class="btn btn-sm btn-outline-success" onclick="${onclick}">
-          <i class="fas ${icon || 'fa-play'}"></i>
-        </button>
+        <div class="btn-group btn-group-sm flex-shrink-0">${actions.join('')}</div>
       </div>`;
 }
 
-async function tidalPlay(kind, id, name) {
-    if (!requireSelected()) return;
-    const body = { player_id: _selectedId };
-    body[`${kind}_id`] = id;
-    const r = await apiPost('/api/media/tidal/play', body);
-    if (!r.success) toast(r.error || 'Tidal play failed', 'error');
-    else { toast(`Playing ${name}${r.count > 1 ? ` (${r.count} tracks)` : ''}`, 'success'); setTimeout(loadPlayers, 1500); }
+function playBtn(kind, id, name) {
+    return `<button class="btn btn-outline-success" title="Play"
+      onclick="window.mediaTidalPlay('${kind}','${esc(id)}','play', ${JSON.stringify(name).replace(/"/g, '&quot;')})">
+      <i class="fas fa-play"></i></button>`;
+}
+function radioBtn(kind, id, name) {
+    return `<button class="btn btn-outline-primary" title="Radio (infinite)"
+      onclick="window.mediaTidalPlay('${kind}','${esc(id)}','radio', ${JSON.stringify(name).replace(/"/g, '&quot;')})">
+      <i class="fas fa-infinity"></i></button>`;
 }
 
-function spinner() { return '<div class="text-muted small py-2"><i class="fas fa-spinner fa-spin"></i> Searching…</div>'; }
+async function tidalPlay(kind, id, mode, name) {
+    if (!requireSelected()) return;
+    const r = await apiPost('/api/media/tidal/play', { player_id: _selectedId, kind, id, mode });
+    if (!r.success) { toast(r.error || 'Tidal play failed', 'error'); return; }
+    const tag = r.radio ? ' radio ∞' : (r.count > 1 ? ` (${r.count} tracks)` : '');
+    toast(`Playing ${name}${tag}`, 'success');
+    setTimeout(loadPlayers, 1500);
+}
+
+function spinner() { return '<div class="text-muted small py-2"><i class="fas fa-spinner fa-spin"></i> Loading…</div>'; }
 function warn(m) { return `<div class="alert alert-warning mb-0">${esc(m)}</div>`; }
 
 // ---------------------------------------------------------------------------
