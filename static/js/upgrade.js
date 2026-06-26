@@ -408,7 +408,7 @@ async function checkForUpdates(force = true) {
 
 async function startBuild(version) {
     if (!version) return;
-    if (!confirm(`Build image for v${version}?\n\nThis takes 15-25 minutes. The current app stays running during the build.`)) return;
+    if (!confirm(`Build image for v${version}?\n\nThis takes a few moments. The current app stays running during the build.`)) return;
     const res = await fetch('/api/upgrade/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
