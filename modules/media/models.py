@@ -22,14 +22,18 @@ class PlaybackState(str, Enum):
 
 @dataclass
 class MediaItem:
-    """Something playable — a radio station, or any direct stream URL."""
+    """Something playable — a radio station, a Tidal track, or any stream URL."""
     url: str
     title: str = ""
     artist: str = ""
     artwork_url: str = ""
-    # "radio" | "url" | (later) "tidal" etc. Helps the UI render hints.
+    # "radio" | "url" | "tidal" etc. Helps the UI render hints + queue behaviour.
     media_type: str = "url"
     content_type: str = "audio/mpeg"  # MIME hint for players that want one
+    # Provider-specific source id (e.g. Tidal track id) — lets us re-resolve a
+    # fresh stream URL when a queued item's signed URL has expired.
+    source_id: str = ""
+    duration_ms: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -85,9 +89,24 @@ class PlayerState:
     media_type: str = ""
     position_ms: int = 0
     duration_ms: int = 0
+    # Provider hint that the current track finished naturally (vs user-stopped).
+    # Cast sets this from idle_reason==FINISHED; WiiM from curpos≈totlen.
+    ended: bool = False
+    # Queue summary, attached by the controller (providers don't know queues).
+    queue: Optional[Dict[str, Any]] = None
     updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["state"] = self.state.value
         return d
+
+
+@dataclass
+class QueueItem:
+    """One entry in a player's queue (a MediaItem plus a stable entry id)."""
+    id: str
+    item: MediaItem
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"id": self.id, "item": self.item.to_dict()}

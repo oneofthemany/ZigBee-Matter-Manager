@@ -153,6 +153,12 @@ class WiiMPlayerProvider(PlayerProvider):
         if is_group:
             members = await self._slave_member_ids(ip)
 
+        # WiiM has no idle_reason; flag "ended" when position reaches the track
+        # length (only meaningful for finite tracks, not live radio totlen==0).
+        # The controller's state-transition check is the safety net if a poll
+        # misses this window.
+        ended = duration > 0 and position >= duration - 3000
+
         return PlayerState(
             player_id=player_id,
             provider=self.provider,
@@ -166,6 +172,7 @@ class WiiMPlayerProvider(PlayerProvider):
             title=_decode_hex(status.get("Title", "")),
             artist=_decode_hex(status.get("Artist", "")),
             media_type="radio",
+            ended=ended,
             position_ms=position,
             duration_ms=duration,
         )

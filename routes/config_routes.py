@@ -159,6 +159,13 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     rb_cfg = media_cfg.setdefault("radio_browser", {})
                     if "enabled" in rb_in:
                         rb_cfg["enabled"] = bool(rb_in["enabled"])
+                if "tidal" in m:
+                    td_in = m["tidal"] or {}
+                    td_cfg = media_cfg.setdefault("tidal", {})
+                    if "enabled" in td_in:
+                        td_cfg["enabled"] = bool(td_in["enabled"])
+                    if td_in.get("quality"):
+                        td_cfg["quality"] = str(td_in["quality"]).strip()
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

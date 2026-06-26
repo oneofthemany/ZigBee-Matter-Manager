@@ -37,6 +37,20 @@ class GroupBody(BaseModel):
     member_ids: List[str] = []
 
 
+class QueueModeBody(BaseModel):
+    player_id: str
+    repeat: Optional[str] = None      # off | one | all
+    shuffle: Optional[bool] = None
+
+
+class TidalPlayBody(BaseModel):
+    player_id: str
+    # exactly one of these:
+    track_id: Optional[str] = None
+    album_id: Optional[str] = None
+    playlist_id: Optional[str] = None
+
+
 def register_media_routes(app: FastAPI, get_media_service):
 
     def _svc():
@@ -133,5 +147,120 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True, "stations": [s.to_dict() for s in stations]}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Queue
+    # ------------------------------------------------------------------
+    @app.get("/api/media/queue")
+    async def get_queue(player_id: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return {"success": True, "queue": svc.controller.get_queue(player_id)}
+
+    @app.post("/api/media/queue/mode")
+    async def queue_mode(body: QueueModeBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            if body.repeat is not None:
+                svc.controller.set_repeat(body.player_id, body.repeat)
+            if body.shuffle is not None:
+                svc.controller.set_shuffle(body.player_id, body.shuffle)
+            return {"success": True, "queue": svc.controller.get_queue(body.player_id)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/media/queue/clear")
+    async def queue_clear(body: ControlBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        svc.controller.clear_queue(body.player_id)
+        return {"success": True}
+
+    # ------------------------------------------------------------------
+    # Tidal
+    # ------------------------------------------------------------------
+    def _tidal(svc):
+        return svc.controller.get_source("tidal")
+
+    @app.get("/api/media/tidal/status")
+    async def tidal_status():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": True, "status": {"state": "unavailable"}}
+        return {"success": True, "status": await src.status()}
+
+    @app.post("/api/media/tidal/login")
+    async def tidal_login():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        link = await src.login_start() if src else None
+        if not link:
+            return {"success": False, "error": "Tidal unavailable (not installed/enabled)"}
+        return {"success": True, "link": link}
+
+    @app.post("/api/media/tidal/logout")
+    async def tidal_logout():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if src:
+            await src.logout()
+        return {"success": True}
+
+    @app.get("/api/media/tidal/search")
+    async def tidal_search(q: str, limit: int = 20):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        try:
+            return {"success": True, "results": await src.search_grouped(q, limit)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/media/tidal/play")
+    async def tidal_play(body: TidalPlayBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        try:
+            if body.track_id:
+                items = [i for i in [await _resolve_track(src, body.track_id)] if i]
+            elif body.album_id:
+                items = await src.album_items(body.album_id)
+            elif body.playlist_id:
+                items = await src.playlist_items(body.playlist_id)
+            else:
+                return {"success": False, "error": "Provide track_id, album_id or playlist_id"}
+            if not items:
+                return {"success": False, "error": "Nothing to play (empty or not found)"}
+            await svc.controller.play_items(body.player_id, items)
+            return {"success": True, "count": len(items)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _resolve_track(src, track_id):
+        # Build a minimal MediaItem; the controller's resolver fetches a fresh URL.
+        from modules.media.models import MediaItem
+        url = await src.resolve_url(track_id)
+        if not url:
+            return None
+        return MediaItem(url=url, media_type="tidal", content_type="audio/mp4",
+                         source_id=str(track_id))
 
     logger.info("Media routes registered")
