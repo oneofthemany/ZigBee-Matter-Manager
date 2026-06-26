@@ -87,6 +87,9 @@ class PlayerState:
     artist: str = ""
     artwork_url: str = ""
     media_type: str = ""
+    # Source id of the now-playing item (e.g. Tidal track id) — lets the UI
+    # fetch lyrics for what's actually playing. Set by the controller from the queue.
+    now_playing_id: str = ""
     position_ms: int = 0
     duration_ms: int = 0
     # Provider hint that the current track finished naturally (vs user-stopped).

@@ -20,6 +20,9 @@ media:
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
   radio_browser:
     enabled: true
+  tts:                        # text-to-speech for automation announcements
+    base_url: "https://translate.google.com/translate_tts"  # keyless; swap engine here
+    lang: en
   tidal:
     enabled: false            # turn on, then log in under Settings → APIs → Media
     quality: high             # high = 320k AAC (plays on Cast + WiiM).

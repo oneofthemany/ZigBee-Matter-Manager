@@ -468,7 +468,8 @@ class AutomationEngine:
                 if not step.get("player_id"):
                     return f"{label}[{i+1}]: media needs player_id"
                 ma = step.get("media_action")
-                if ma not in ("play_radio", "play_tidal", "control", "volume"):
+                if ma not in ("play_radio", "play_tidal", "control", "volume",
+                              "announce", "volume_fade"):
                     return f"{label}[{i+1}]: invalid media_action"
                 if ma == "play_radio" and not step.get("station_uuid"):
                     return f"{label}[{i+1}]: play_radio needs station_uuid"
@@ -477,6 +478,8 @@ class AutomationEngine:
                 if ma == "control" and step.get("control_action") not in (
                         "pause", "resume", "stop", "next", "prev"):
                     return f"{label}[{i+1}]: control needs a valid control_action"
+                if ma == "announce" and not step.get("text"):
+                    return f"{label}[{i+1}]: announce needs text"
             elif st in ("wait_for", "condition"):
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
@@ -1256,6 +1259,18 @@ class AutomationEngine:
                 await svc.controller.control(player_id, step.get("control_action", "stop"))
             elif action == "volume":
                 await svc.controller.set_volume(player_id, float(step.get("volume", 0.3)))
+            elif action == "announce":
+                res = await svc.announce(player_id, step.get("text", ""),
+                                         volume=step.get("volume"))
+                ok = res.get("success", False)
+                detail = res.get("error", "")
+            elif action == "volume_fade":
+                # Fire-and-forget background ramp (wake-up / sleep-timer fade).
+                svc.controller.fade_volume(
+                    player_id, float(step.get("volume", 0.3)),
+                    int(step.get("fade_seconds", 300)),
+                    bool(step.get("stop_at_end", False)))
+                detail = f"→ {int(float(step.get('volume', 0.3))*100)}% over {step.get('fade_seconds', 300)}s"
             else:
                 ok, detail = False, f"unknown media_action '{action}'"
 

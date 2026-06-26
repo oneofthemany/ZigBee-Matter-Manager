@@ -12,6 +12,7 @@ let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
 let _searchSource = 'radio'; // 'radio' | 'tidal'
 let _tidalState = null;      // last known tidal status state string
+let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
 
 // ---------------------------------------------------------------------------
@@ -20,7 +21,7 @@ let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albu
 export function initMedia() {
     const tab = document.querySelector('[data-bs-target="#media"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); });
+        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); });
     }
     // Expose handlers for inline onclick + the websocket dispatcher.
     window.handleMediaState = handleMediaState;
@@ -41,6 +42,7 @@ export function initMedia() {
     window.mediaTidalLyrics = tidalLyrics;
     window.mediaQueueMode = queueMode;
     window.mediaQueueClear = queueClear;
+    window.mediaReplay = replayRecent;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,8 +153,12 @@ function renderPlayers() {
     el.innerHTML = _players.map(p => {
         const selected = p.player_id === _selectedId;
         const playing = p.state === 'playing';
+        const lyricsLink = (p.media_type === 'tidal' && p.now_playing_id)
+            ? ` <button class="btn btn-link p-0 ms-1 align-baseline" title="Lyrics" style="font-size:.72rem"
+                  onclick="event.stopPropagation();window.mediaTidalLyrics('${esc(p.now_playing_id)}', ${JSON.stringify(p.title || 'Lyrics').replace(/"/g, '&quot;')})"><i class="fas fa-align-left"></i></button>`
+            : '';
         const nowPlaying = (p.title || p.artist)
-            ? `<div class="small text-truncate">${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}</div>`
+            ? `<div class="small text-truncate">${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}${lyricsLink}</div>`
             : '<div class="small text-muted fst-italic">Nothing playing</div>';
         const vol = Math.round((p.volume || 0) * 100);
         const disabled = p.available ? '' : 'disabled';
@@ -364,7 +370,7 @@ async function playStation(uuid, name) {
     if (!requireSelected()) return;
     const r = await apiPost('/api/media/play', { player_id: _selectedId, station_uuid: uuid });
     if (!r.success) toast(r.error || 'Play failed', 'error');
-    else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); }
+    else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +545,47 @@ async function tidalPlay(kind, id, mode, name) {
     const tag = r.radio ? ' radio ∞' : (r.count > 1 ? ` (${r.count} tracks)` : '');
     toast(`Playing ${name}${tag}`, 'success');
     setTimeout(loadPlayers, 1500);
+    setTimeout(loadRecent, 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Recently played (quick replay)
+// ---------------------------------------------------------------------------
+async function loadRecent() {
+    const el = document.getElementById('mediaRecent');
+    if (!el) return;
+    const data = await apiGet('/api/media/recent');
+    const items = (data.success && data.items) ? data.items : [];
+    _recentCache = items;
+    if (!items.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="fw-bold small text-uppercase text-muted mb-1 mt-2">
+        <i class="fas fa-clock-rotate-left me-1"></i>Recently played</div>`
+      + items.slice(0, 8).map((it, i) => {
+        const art = it.artwork_url
+            ? `<img src="${esc(it.artwork_url)}" width="32" height="32" class="rounded me-2 flex-shrink-0" style="object-fit:cover" loading="lazy">`
+            : '<span class="rounded me-2 bg-secondary-subtle d-inline-flex align-items-center justify-content-center flex-shrink-0" style="width:32px;height:32px"><i class="fas fa-music text-muted"></i></span>';
+        return `<div class="d-flex align-items-center border-bottom py-1">
+            ${art}
+            <div class="text-truncate me-2 flex-grow-1">
+              <div class="small text-truncate">${esc(it.title)}</div>
+              <div class="text-muted text-truncate" style="font-size:.7rem">${esc(it.artist || '')}</div>
+            </div>
+            <button class="btn btn-sm btn-outline-success" title="Play again" onclick="window.mediaReplay(${i})">
+              <i class="fas fa-rotate-right"></i></button>
+          </div>`;
+      }).join('');
+}
+
+async function replayRecent(i) {
+    if (!requireSelected()) return;
+    const it = _recentCache[i];
+    if (!it) return;
+    if (it.media_type === 'tidal' && it.source_id)
+        return tidalPlay('track', it.source_id, 'play', it.title);
+    // Radio / generic URL — replay straight from the stored URL.
+    const r = await apiPost('/api/media/play', { player_id: _selectedId, url: it.url, title: it.title, artist: it.artist });
+    if (!r.success) toast(r.error || 'Replay failed', 'error');
+    else { toast(`Playing ${it.title}`, 'success'); setTimeout(loadPlayers, 1500); }
 }
 
 function spinner() { return '<div class="text-muted small py-2"><i class="fas fa-spinner fa-spin"></i> Loading…</div>'; }

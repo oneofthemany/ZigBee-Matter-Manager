@@ -31,7 +31,7 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media'};
 
 // Media action picker options (label, value).
-const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['control','Control'],['volume','Volume']];
+const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_fade','Volume Fade']];
 const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
@@ -534,6 +534,19 @@ function _mediaSubHtml(step, sid) {
         const pct = step.volume!=null ? Math.round(step.volume*100) : 30;
         return `<div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="0" max="100" style="width:80px"><span class="small">% volume</span></div>`;
     }
+    if (a === 'announce') {
+        const vol = step.volume!=null ? Math.round(step.volume*100) : '';
+        return `<textarea class="form-control form-control-sm s-mtext mb-1" data-sid="${sid}" rows="2" placeholder="Spoken text, e.g. Front door has been open for 5 minutes">${step.text?String(step.text).replace(/</g,'&lt;'):''}</textarea>
+            <div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${vol}" min="0" max="100" placeholder="vol" style="width:75px"><span class="small text-muted">% volume (optional)</span></div>`;
+    }
+    if (a === 'volume_fade') {
+        const pct = step.volume!=null ? Math.round(step.volume*100) : 0;
+        const secs = step.fade_seconds!=null ? step.fade_seconds : 300;
+        return `<div class="d-flex gap-1 align-items-center flex-wrap">
+            <span class="small">to</span><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="0" max="100" style="width:72px"><span class="small">%</span>
+            <span class="small">over</span><input type="number" class="form-control form-control-sm s-mfade" data-sid="${sid}" value="${secs}" min="1" style="width:80px"><span class="small">s</span>
+            <div class="form-check form-check-inline mb-0 ms-2"><input class="form-check-input s-mstop" type="checkbox" data-sid="${sid}" ${step.stop_at_end?'checked':''}><label class="small">stop at end</label></div></div>`;
+    }
     if (a === 'play_radio')
         return `<div class="input-group input-group-sm">
             <input type="text" class="form-control s-msearch" data-sid="${sid}" placeholder="Search stations…" onkeydown="if(event.key==='Enter'){event.preventDefault();window._aMediaSearch(${sid},'radio');}">
@@ -560,6 +573,8 @@ function _mediaSavedOpt(step) {
 function _mediaDesc(s) {
     if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
     if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
+    if (s.media_action==='announce') return `Say: ${String(s.text||'').slice(0,28)}${(s.text||'').length>28?'…':''}`;
+    if (s.media_action==='volume_fade') return `Fade→${s.volume!=null?Math.round(s.volume*100):0}% /${s.fade_seconds||300}s${s.stop_at_end?' ⏹':''}`;
     if (s.media_action==='play_radio') return `Radio: ${s.label||s.station_uuid||'?'}`;
     if (s.media_action==='play_tidal') return `${s.tidal_kind||''}${s.tidal_mode==='radio'?'∞':''}: ${s.label||s.tidal_id||'?'}`;
     return s.media_action||'media';
@@ -1048,6 +1063,17 @@ function _syncTreeFromDOM(steps) {
             }
             else if(s.media_action==='control'){ s.control_action=document.querySelector(`.s-mctrl[data-sid="${sid}"]`)?.value||'stop'; }
             else if(s.media_action==='volume'){ const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value); s.volume=isNaN(v)?0.3:Math.max(0,Math.min(1,v/100)); }
+            else if(s.media_action==='announce'){
+                s.text=document.querySelector(`.s-mtext[data-sid="${sid}"]`)?.value||'';
+                const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value);
+                s.volume=isNaN(v)?null:Math.max(0,Math.min(1,v/100));
+            }
+            else if(s.media_action==='volume_fade'){
+                const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value);
+                s.volume=isNaN(v)?0:Math.max(0,Math.min(1,v/100));
+                s.fade_seconds=parseInt(document.querySelector(`.s-mfade[data-sid="${sid}"]`)?.value)||300;
+                s.stop_at_end=document.querySelector(`.s-mstop[data-sid="${sid}"]`)?.checked||false;
+            }
         }
     });
 }
@@ -1066,6 +1092,8 @@ function _cleanTree(steps) {
             else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
             else if(s.media_action==='control'){d.control_action=s.control_action;}
             else if(s.media_action==='volume'){d.volume=s.volume;}
+            else if(s.media_action==='announce'){d.text=s.text;if(s.volume!=null)d.volume=s.volume;}
+            else if(s.media_action==='volume_fade'){d.volume=s.volume;d.fade_seconds=s.fade_seconds||300;if(s.stop_at_end)d.stop_at_end=true;}
         }
         return d;
     }).filter(d=>{
@@ -1080,6 +1108,8 @@ function _cleanTree(steps) {
             if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
             if(d.media_action==='control')return !!d.control_action;
             if(d.media_action==='volume')return d.volume!=null;
+            if(d.media_action==='announce')return !!(d.text&&d.text.trim());
+            if(d.media_action==='volume_fade')return d.volume!=null;
             return false;
         }
         return false;
