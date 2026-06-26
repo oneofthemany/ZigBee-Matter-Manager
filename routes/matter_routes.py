@@ -95,6 +95,7 @@ def register_matter_routes(app: FastAPI, get_zigbee_service, get_matter_server, 
     @app.get("/api/multipan/status")
     async def multipan_status():
         """MultiPAN RCP stack status."""
+        zigbee_service = get_zigbee_service()
         if not zigbee_service.multipan:
             return {"enabled": False, "running": False}
         return zigbee_service.multipan.get_status()
