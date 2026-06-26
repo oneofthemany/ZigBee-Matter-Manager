@@ -134,7 +134,7 @@ class NLAutomationParser:
         t, prereq_text = self._split_keyword(
             t, r"only if|provided that|provided|as long as|while")
         t, delay_secs = self._extract_delay(t)
-        t, time_win, time_phrase = self._extract_time_window(t)
+        t, temporal_cond, time_phrase = self._extract_temporal(t)
         if time_phrase:
             matched["time"] = time_phrase
 
@@ -155,11 +155,10 @@ class NLAutomationParser:
             elif note:
                 return self._fail(note, matched)
 
-        # 4. Time window. With a device trigger it gates (prerequisite);
-        #    alone it IS the trigger condition.
-        if time_win:
-            tw = {"type": "time_window", "time_from": time_win[0],
-                  "time_to": time_win[1], "days": list(range(7)), "negate": False}
+        # 4. Temporal window (clock or sun). With a device trigger it gates
+        #    (prerequisite); alone it IS the trigger condition.
+        if temporal_cond:
+            tw = {**temporal_cond, "days": list(range(7)), "negate": False}
             if conditions:
                 prerequisites.append(tw)
             else:
@@ -505,11 +504,10 @@ class NLAutomationParser:
 
     def _parse_prerequisite(self, text: str
                             ) -> Tuple[Optional[Dict], Optional[str]]:
-        _, tw, _ = self._extract_time_window(" " + text + " ")
-        if tw:
-            return ({"type": "time_window", "time_from": tw[0],
-                     "time_to": tw[1], "days": list(range(7)),
-                     "negate": False}, f"time {tw[0]}–{tw[1]}")
+        _, tcond, phrase = self._extract_temporal(" " + text + " ")
+        if tcond:
+            return ({**tcond, "days": list(range(7)), "negate": False},
+                    phrase or "time")
         dev = self._match_device(text)
         if not dev:
             return None, None
@@ -630,12 +628,44 @@ class NLAutomationParser:
 
     _CLOCK = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
 
-    def _extract_time_window(self, t: str
-                             ) -> Tuple[str, Optional[Tuple[str, str]], Optional[str]]:
-        # Sunrise/sunset resolve to today's local clock time for this location.
-        nt, win, phrase = self._extract_sun_window(t)
+    def _extract_temporal(self, t: str
+                          ) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
+        """Pull a temporal window out of the text, returning a complete
+        condition dict (type 'sun' or 'time_window') the engine understands."""
+        nt, sun, phrase = self._extract_sun_window(t)
+        if sun:
+            return nt, sun, phrase
+        nt, win, phrase = self._extract_clock_window(t)
         if win:
-            return nt, win, phrase
+            return nt, {"type": "time_window", "time_from": win[0],
+                        "time_to": win[1]}, phrase
+        return t, None, None
+
+    def _extract_sun_window(self, t: str
+                            ) -> Tuple[str, Optional[Dict[str, str]], Optional[str]]:
+        """Emit a SYMBOLIC sun condition ({from,to} ∈ sunrise/sunset/HH:MM).
+        The engine resolves these to live local times each evaluation, so the
+        rule tracks the seasons instead of freezing to today's clock."""
+        if "sunrise" not in t and "sunset" not in t:
+            return t, None, None
+        patterns = [
+            (r"\bbetween\s+sunrise\s+and\s+sunset\b", ("sunrise", "sunset"), "sunrise→sunset"),
+            (r"\bbetween\s+sunset\s+and\s+sunrise\b", ("sunset", "sunrise"), "sunset→sunrise"),
+            (r"\b(?:after|from|past|at)\s+sunset\b", ("sunset", "sunrise"), "after sunset"),
+            (r"\b(?:before|until|till|by)\s+sunset\b", ("00:00", "sunset"), "before sunset"),
+            (r"\b(?:after|from|past)\s+sunrise\b", ("sunrise", "23:59"), "after sunrise"),
+            (r"\b(?:before|until|till|by)\s+sunrise\b", ("00:00", "sunrise"), "before sunrise"),
+            (r"\bat\s+sunrise\b", ("sunrise", "23:59"), "at sunrise"),
+        ]
+        for pat, (frm, to), phrase in patterns:
+            m = re.search(pat, t)
+            if m:
+                cond = {"type": "sun", "from": frm, "to": to}
+                return (t[:m.start()] + " " + t[m.end():]), cond, phrase
+        return t, None, None
+
+    def _extract_clock_window(self, t: str
+                              ) -> Tuple[str, Optional[Tuple[str, str]], Optional[str]]:
         C = self._CLOCK
         m = re.search(r"\bbetween\s+" + C + r"\s+and\s+" + C, t) or \
             re.search(r"\bfrom\s+" + C + r"\s+(?:to|until|till)\s+" + C, t)
@@ -662,72 +692,6 @@ class NLAutomationParser:
             if re.search(r"\b" + re.escape(phrase) + r"\b", t):
                 return (t.replace(phrase, " "), win, phrase)
         return t, None, None
-
-    def _extract_sun_window(self, t: str
-                            ) -> Tuple[str, Optional[Tuple[str, str]], Optional[str]]:
-        if "sunrise" not in t and "sunset" not in t:
-            return t, None, None
-        times = self._sun_times()
-        if not times:
-            return t, None, None
-        sr, ss = times["sunrise"], times["sunset"]
-        patterns = [
-            (r"\bbetween\s+sunrise\s+and\s+sunset\b", (sr, ss), "sunrise→sunset"),
-            (r"\bbetween\s+sunset\s+and\s+sunrise\b", (ss, sr), "sunset→sunrise"),
-            (r"\b(?:after|from|past|at)\s+sunset\b", (ss, "23:59"), "after sunset"),
-            (r"\b(?:before|until|till|by)\s+sunset\b", ("00:00", ss), "before sunset"),
-            (r"\b(?:after|from|past)\s+sunrise\b", (sr, "23:59"), "after sunrise"),
-            (r"\b(?:before|until|till|by)\s+sunrise\b", ("00:00", sr), "before sunrise"),
-            (r"\bat\s+sunrise\b", (sr, "23:59"), "at sunrise"),
-        ]
-        for pat, win, phrase in patterns:
-            m = re.search(pat, t)
-            if m:
-                return (t[:m.start()] + " " + t[m.end():]), win, phrase
-        return t, None, None
-
-    def _sun_times(self) -> Optional[Dict[str, str]]:
-        """Today's local sunrise/sunset (HH:MM) for the configured location."""
-        lat, lon = self._latlon()
-        if lat is None or lon is None:
-            return None
-        try:
-            from modules.sun_position import sunrise_sunset
-            rs = sunrise_sunset(lat, lon)
-        except Exception:
-            return None
-        sr = self._utc_iso_to_local_hhmm(rs.get("sunrise"))
-        ss = self._utc_iso_to_local_hhmm(rs.get("sunset"))
-        if not sr or not ss:   # polar day/night, or compute failure
-            return None
-        return {"sunrise": sr, "sunset": ss}
-
-    @staticmethod
-    def _latlon() -> Tuple[Optional[float], Optional[float]]:
-        try:
-            import yaml
-            with open("./config/config.yaml") as f:
-                cfg = yaml.safe_load(f) or {}
-            w = cfg.get("weather", {}) or {}
-            lat, lon = w.get("latitude"), w.get("longitude")
-            if lat is None or lon is None:
-                return None, None
-            return float(lat), float(lon)
-        except Exception:
-            return None, None
-
-    @staticmethod
-    def _utc_iso_to_local_hhmm(iso: Optional[str]) -> Optional[str]:
-        if not iso:
-            return None
-        try:
-            import datetime
-            dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=datetime.timezone.utc)
-            return dt.astimezone().strftime("%H:%M")
-        except Exception:
-            return None
 
     @staticmethod
     def _clock(token: str) -> Optional[str]:
@@ -850,21 +814,20 @@ class NLAutomationParser:
         parts = []
         src = self._name_for(rule["source_ieee"])
         conds = rule["conditions"]
-        only_time = all(c.get("type") == "time_window" for c in conds)
+        only_time = all(c.get("type") in ("time_window", "sun") for c in conds)
         if only_time:
-            c = conds[0]
-            parts.append(f"While the time is {c['time_from']}–{c['time_to']}")
+            parts.append("While " + self._temporal_phrase(conds[0]))
         else:
             cterms = []
             for c in conds:
-                if c.get("type") == "time_window":
-                    cterms.append(f"time is {c['time_from']}–{c['time_to']}")
+                if c.get("type") in ("time_window", "sun"):
+                    cterms.append(self._temporal_phrase(c))
                 else:
                     cterms.append(f"{c['attribute']} {c['operator']} {c['value']}")
             parts.append(f"When {src} " + " and ".join(cterms))
         for p in rule.get("prerequisites", []):
-            if p.get("type") == "time_window":
-                parts.append(f"only between {p['time_from']}–{p['time_to']}")
+            if p.get("type") in ("time_window", "sun"):
+                parts.append("only " + self._temporal_phrase(p))
             else:
                 neg = "NOT " if p.get("negate") else ""
                 parts.append(f"only if {neg}{self._name_for(p['ieee'])} "
@@ -886,6 +849,14 @@ class NLAutomationParser:
             elif s.get("type") == "delay":
                 out.append(f"wait {s['seconds']}s")
         return ", ".join(out)
+
+    @staticmethod
+    def _temporal_phrase(c: Dict) -> str:
+        if c.get("type") == "sun":
+            def lbl(x):
+                return {"sunrise": "sunrise", "sunset": "sunset"}.get(x, x)
+            return f"between {lbl(c.get('from'))} and {lbl(c.get('to'))}"
+        return f"the time is {c['time_from']}–{c['time_to']}"
 
     def _device_hint(self) -> str:
         names = [d["name"] for d in self._devices[:8]]

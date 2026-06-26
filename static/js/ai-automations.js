@@ -217,6 +217,7 @@ function _showGeneratedRule(rule, explanation, source) {
     // Conditions summary
     const condHtml = (rule.conditions || []).map(c => {
         if (c.type === 'time_window') return `<span class="badge bg-info">🕐 ${c.time_from}-${c.time_to}</span>`;
+        if (c.type === 'sun') return `<span class="badge bg-info">🌅 ${c.from}→${c.to}</span>`;
         return `<span class="badge bg-primary">${c.attribute} ${c.operator} ${c.value}</span>`;
     }).join(' <small class="text-muted">AND</small> ');
 
@@ -249,6 +250,7 @@ function _showGeneratedRule(rule, explanation, source) {
             <div class="mb-1"><strong>IF:</strong> ${condHtml}</div>
             ${(rule.prerequisites || []).length ? `<div class="mb-1"><strong>CHECK:</strong> ${rule.prerequisites.map(p => {
                 if (p.type === 'time_window') return `<span class="badge bg-info">🕐 ${p.time_from}-${p.time_to}</span>`;
+                if (p.type === 'sun') return `<span class="badge bg-info">🌅 ${p.from}→${p.to}</span>`;
                 return `<span class="badge bg-secondary">${p.negate ? 'NOT ' : ''}${p.ieee} ${p.attribute} ${p.operator} ${p.value}</span>`;
             }).join(' ')}</div>` : ''}
             <div class="mb-1"><strong>THEN:</strong> ${stepsHtml(rule.then_sequence)}</div>
