@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import os
+import threading
 import time
 from typing import List, Optional
 
@@ -31,26 +32,44 @@ logger = logging.getLogger("modules.media.tidal")
 SESSION_PATH = "./data/media/tidal_session.json"
 
 
-def _pick_quality(tidalapi):
-    """Return the HIGH/AAC quality enum, defensive across tidalapi versions."""
+def _quality_enum(tidalapi, want: str):
+    """Map our quality name to a tidalapi Quality enum, defensive across versions.
+
+    ``want='lossless'`` → FLAC (16/44 lossless). Anything else → 320k AAC
+    ("HIGH"), the single-URL stream that plays on every device. tidalapi 0.8
+    renamed the members (low_320k/high_lossless); 0.7 used high/lossless."""
     Q = tidalapi.Quality
-    for name in ("high", "low_320k", "high_lossless", "low"):
+    if want == "lossless":
+        for name in ("high_lossless", "lossless", "hi_res_lossless"):
+            if hasattr(Q, name):
+                return getattr(Q, name)
+    for name in ("high", "low_320k", "low_96k", "low"):
         if hasattr(Q, name):
             return getattr(Q, name)
-    # Last resort: first enum member.
     return list(Q)[0]
 
 
 class TidalSource(SourceProvider):
     source = "tidal"
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, quality: str = "high",
+                 manifest_base_url: str = ""):
         self.enabled = enabled
+        # "high" (320k AAC, single URL, every device) or "lossless" (FLAC via a
+        # DASH manifest — Cast only; WiiM transparently falls back to AAC).
+        self._quality = (quality or "high").lower()
+        # Public base URL of *this* app, reachable by Cast devices on the LAN,
+        # used to serve the DASH manifest for lossless (e.g. "https://192.168.1.1:8000").
+        # Empty → lossless disabled (AAC everywhere), so nothing breaks if unset.
+        self._manifest_base = (manifest_base_url or "").rstrip("/")
         self._session = None
         self._available = False           # tidalapi importable + session usable
         self._login_future = None
         self._login_link: Optional[str] = None
         self._pending = False
+        # Serialises the brief session.audio_quality swap during stream resolution
+        # (tidalapi has no per-call quality override; the swap is global).
+        self._stream_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -70,7 +89,7 @@ class TidalSource(SourceProvider):
         import tidalapi
         try:
             self._session = tidalapi.Session()
-            self._session.audio_quality = _pick_quality(tidalapi)
+            self._session.audio_quality = _quality_enum(tidalapi, self._quality)
             saved = self._load_session_file()
             if saved:
                 ok = self._session.load_oauth_session(
@@ -171,54 +190,73 @@ class TidalSource(SourceProvider):
     def _build_session_fresh(self):
         import tidalapi
         self._session = tidalapi.Session()
-        self._session.audio_quality = _pick_quality(tidalapi)
+        self._session.audio_quality = _quality_enum(tidalapi, self._quality)
 
     # ------------------------------------------------------------------
     # URL resolution (registered with the controller for media_type="tidal")
     # ------------------------------------------------------------------
-    async def resolve_url(self, source_id: str) -> Optional[str]:
+    async def resolve_url(self, source_id: str, provider: Optional[str] = None):
+        """Return a fresh, directly-playable stream for ``source_id``.
+
+        Returns a ``{"url", "content_type"}`` dict (the controller applies both).
+        For a Cast target with lossless enabled we hand back a URL to *our own*
+        DASH-manifest route (served fresh on fetch, segment URLs being short-lived);
+        otherwise a single 320k-AAC URL that plays on Cast and WiiM alike."""
         if not self._session:
             return None
-        return await asyncio.to_thread(self._track_url, source_id)
+        if self._wants_lossless(provider):
+            return {
+                "url": f"{self._manifest_base}/api/media/tidal/manifest/{source_id}.mpd",
+                "content_type": "application/dash+xml",
+            }
+        url = await asyncio.to_thread(self._aac_url, source_id)
+        return {"url": url, "content_type": "audio/mp4"} if url else None
 
-    def _track_url(self, track_id: str) -> Optional[str]:
+    def _wants_lossless(self, provider: Optional[str]) -> bool:
+        # FLAC/DASH only works on Cast, and only if we have a base URL Cast can
+        # reach to fetch the manifest. WiiM (LinkPlay) can't play DASH → AAC.
+        return (self._quality == "lossless"
+                and provider == "cast"
+                and bool(self._manifest_base))
+
+    def _aac_url(self, track_id: str) -> Optional[str]:
+        """A single directly-playable 320k-AAC URL (the BTS manifest path).
+
+        tidalapi 0.7 exposed ``Track.get_url()``; 0.8 removed it for
+        ``get_stream()`` → a base64 manifest carrying plain ``urls``."""
+        import tidalapi
         try:
             track = self._session.track(int(track_id))
-            return self._stream_url(track)
         except Exception as e:
-            logger.warning(f"Tidal URL resolve failed for {track_id}: {e}")
+            logger.warning(f"Tidal track lookup failed for {track_id}: {e}")
             return None
-
-    def _stream_url(self, track) -> Optional[str]:
-        """A directly-playable URL for an HIGH/AAC track.
-
-        tidalapi 0.7 exposed ``Track.get_url()``; 0.8 removed it in favour of
-        ``get_stream()`` → a (base64) manifest. For HIGH/LOW (AAC, "BTS" manifest)
-        the manifest carries plain ``urls`` we can hand straight to Cast/WiiM.
-        FLAC/HiRes uses a DASH manifest that needs assembling — that's Phase 3."""
-        # 0.7 fast-path, if the lib still offers it.
-        getter = getattr(track, "get_url", None)
-        if callable(getter):
+        with self._stream_lock:
+            prev = self._session.audio_quality
+            self._session.audio_quality = _quality_enum(tidalapi, "high")
             try:
-                url = getter()
-                if url:
-                    return url
-            except Exception:
-                pass
-        # 0.8 path: get_stream() → manifest → url(s).
+                getter = getattr(track, "get_url", None)   # 0.7 fast-path
+                if callable(getter):
+                    try:
+                        u = getter()
+                        if u:
+                            return u
+                    except Exception:
+                        pass
+                stream = track.get_stream()
+            except Exception as e:
+                logger.warning(f"Tidal get_stream failed for {track_id}: {e}")
+                return None
+            finally:
+                self._session.audio_quality = prev
+        return self._url_from_bts(stream)
+
+    def _url_from_bts(self, stream) -> Optional[str]:
         try:
-            stream = track.get_stream()
-        except Exception as e:
-            logger.warning(f"Tidal get_stream failed for {getattr(track, 'id', '?')}: {e}")
-            return None
-        try:
-            manifest = stream.get_stream_manifest()
-            urls = manifest.get_urls()
+            urls = stream.get_stream_manifest().get_urls()
             if urls:
                 return urls[0]
         except Exception:
             pass
-        # Last resort: decode the raw BTS manifest JSON ourselves.
         try:
             raw = base64.b64decode(stream.manifest).decode("utf-8")
             urls = (json.loads(raw) or {}).get("urls") or []
@@ -227,6 +265,41 @@ class TidalSource(SourceProvider):
         except Exception as e:
             logger.warning(f"Tidal manifest parse failed: {e}")
         return None
+
+    async def dash_manifest(self, track_id: str) -> Optional[str]:
+        """The raw DASH MPD (XML) for a lossless track, segment URLs and all —
+        served to Cast by the manifest route. Fetched fresh so URLs aren't stale."""
+        if not self._session:
+            return None
+        return await asyncio.to_thread(self._dash_manifest, track_id)
+
+    def _dash_manifest(self, track_id: str) -> Optional[str]:
+        import tidalapi
+        try:
+            track = self._session.track(int(track_id))
+        except Exception as e:
+            logger.warning(f"Tidal track lookup failed for {track_id}: {e}")
+            return None
+        with self._stream_lock:
+            prev = self._session.audio_quality
+            self._session.audio_quality = _quality_enum(tidalapi, "lossless")
+            try:
+                stream = track.get_stream()
+            except Exception as e:
+                logger.warning(f"Tidal lossless stream failed for {track_id}: {e}")
+                return None
+            finally:
+                self._session.audio_quality = prev
+        try:
+            raw = base64.b64decode(stream.manifest).decode("utf-8")
+            # A JSON (BTS) manifest means this track has no DASH/lossless variant.
+            if raw.lstrip().startswith("{"):
+                logger.info(f"Tidal track {track_id}: no DASH manifest (not lossless)")
+                return None
+            return raw
+        except Exception as e:
+            logger.warning(f"Tidal DASH decode failed for {track_id}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Search / browse
@@ -310,6 +383,8 @@ class TidalSource(SourceProvider):
 
     def _library(self, kind: str) -> List[dict]:
         try:
+            if kind == "mixes":
+                return self._mixes()
             user = self._session.user
             fav = getattr(user, "favorites", None)
             if kind == "albums":
@@ -406,6 +481,97 @@ class TidalSource(SourceProvider):
             return None
 
     # ------------------------------------------------------------------
+    # Lyrics
+    # ------------------------------------------------------------------
+    async def track_lyrics(self, track_id: str) -> Optional[dict]:
+        if not self._session:
+            return None
+        return await asyncio.to_thread(self._track_lyrics, track_id)
+
+    def _track_lyrics(self, track_id: str) -> Optional[dict]:
+        try:
+            lyr = self._session.track(int(track_id)).lyrics()
+        except Exception as e:
+            # tidalapi raises when a track simply has no lyrics — not an error.
+            logger.debug(f"Tidal lyrics unavailable for {track_id}: {e}")
+            return None
+        if not lyr:
+            return None
+        text = getattr(lyr, "text", "") or ""
+        synced = getattr(lyr, "subtitles", "") or ""   # LRC-style, time-tagged
+        if not (text or synced):
+            return None
+        return {"text": text, "synced": synced, "is_synced": bool(synced)}
+
+    # ------------------------------------------------------------------
+    # Favourites (write)
+    # ------------------------------------------------------------------
+    async def set_favorite(self, kind: str, item_id: str, on: bool) -> bool:
+        if not self._session:
+            return False
+        return await asyncio.to_thread(self._set_favorite, kind, item_id, on)
+
+    def _set_favorite(self, kind: str, item_id: str, on: bool) -> bool:
+        fav = getattr(getattr(self._session, "user", None), "favorites", None)
+        if not fav:
+            return False
+        verbs = {
+            "track":    ("add_track", "remove_track"),
+            "album":    ("add_album", "remove_album"),
+            "artist":   ("add_artist", "remove_artist"),
+            "playlist": ("add_playlist", "remove_playlist"),
+        }.get(kind)
+        if not verbs:
+            return False
+        fn = getattr(fav, verbs[0] if on else verbs[1], None)
+        if not callable(fn):
+            return False
+        try:
+            # Playlist ids are UUID strings; tracks/albums/artists are ints.
+            fn(item_id if kind == "playlist" else int(item_id))
+            return True
+        except Exception as e:
+            logger.warning(f"Tidal favourite {kind} {'add' if on else 'remove'} failed: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Mixes (personalised — "My Daily Discovery", "Mix 1-8", "New Arrivals")
+    # ------------------------------------------------------------------
+    def _mixes(self) -> List[dict]:
+        rows = []
+        for getter in (getattr(self._session, "mixes", None),
+                       getattr(getattr(self._session, "user", None), "mixes", None)):
+            if callable(getter):
+                try:
+                    rows = getter()
+                    if rows:
+                        break
+                except Exception:
+                    continue
+        out = []
+        for m in (rows or []):
+            try:
+                out.append(self._mix_summary(m))
+            except Exception:
+                continue
+        return out
+
+    async def mix_items(self, mix_id: str) -> List[MediaItem]:
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._mix_items, mix_id)
+
+    def _mix_items(self, mix_id: str) -> List[MediaItem]:
+        try:
+            items = self._session.mix(mix_id).items()
+        except Exception as e:
+            logger.warning(f"Tidal mix load failed: {e}")
+            return []
+        # A mix can contain videos too — keep tracks only (type-name is version-safe).
+        return [self._track_to_item(it) for it in (items or [])
+                if type(it).__name__ == "Track"]
+
+    # ------------------------------------------------------------------
     # Mapping helpers
     # ------------------------------------------------------------------
     def _track_to_item(self, t) -> MediaItem:
@@ -472,4 +638,18 @@ class TidalSource(SourceProvider):
             "artist": "Artist",
             "artwork": artwork,
             "type": "artist",
+        }
+
+    def _mix_summary(self, m) -> dict:
+        artwork = ""
+        try:
+            artwork = m.image(320)
+        except Exception:
+            pass
+        return {
+            "id": str(getattr(m, "id", "")),
+            "name": getattr(m, "title", "") or getattr(m, "name", "") or "Mix",
+            "artist": getattr(m, "sub_title", "") or "Mix",
+            "artwork": artwork,
+            "type": "mix",
         }

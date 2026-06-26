@@ -45,7 +45,11 @@ class MediaService:
         # no-op until logged in); a fresh stream URL is resolved at play time.
         tidal_cfg = config.get("tidal", {}) or {}
         from modules.media.sources.tidal import TidalSource
-        self.tidal = TidalSource(enabled=tidal_cfg.get("enabled", False))
+        self.tidal = TidalSource(
+            enabled=tidal_cfg.get("enabled", False),
+            quality=tidal_cfg.get("quality", "high"),
+            manifest_base_url=tidal_cfg.get("manifest_base_url", ""),
+        )
         self.controller.add_source(self.tidal)
         self.controller.register_resolver("tidal", self.tidal.resolve_url)
         # Infinite radio: top up from the seed track's "track radio".

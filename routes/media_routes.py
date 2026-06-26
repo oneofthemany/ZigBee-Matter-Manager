@@ -7,7 +7,7 @@ lifespan owns the service instance and routes resolve it lazily.
 import logging
 from typing import List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger("routes.media")
@@ -45,9 +45,15 @@ class QueueModeBody(BaseModel):
 
 class TidalPlayBody(BaseModel):
     player_id: str
-    kind: str                 # track | album | playlist | artist
+    kind: str                 # track | album | playlist | artist | mix
     id: str
     mode: str = "play"        # play | radio  (radio = infinite, auto-extends)
+
+
+class TidalFavoriteBody(BaseModel):
+    kind: str                 # track | album | artist | playlist
+    id: str
+    action: str               # add | remove
 
 
 def register_media_routes(app: FastAPI, get_media_service):
@@ -237,8 +243,8 @@ def register_media_routes(app: FastAPI, get_media_service):
         src = _tidal(svc)
         if not src:
             return {"success": False, "error": "Tidal unavailable"}
-        if kind not in ("playlists", "albums", "artists"):
-            return {"success": False, "error": "kind must be playlists|albums|artists"}
+        if kind not in ("playlists", "albums", "artists", "mixes"):
+            return {"success": False, "error": "kind must be playlists|albums|artists|mixes"}
         try:
             return {"success": True, "items": await src.library(kind)}
         except Exception as e:
@@ -267,13 +273,60 @@ def register_media_routes(app: FastAPI, get_media_service):
                 items = await src.playlist_items(body.id)
             elif body.kind == "artist":
                 items = await (src.artist_radio(body.id) if radio else src.artist_tracks(body.id))
+            elif body.kind == "mix":
+                items = await src.mix_items(body.id)
             else:
-                return {"success": False, "error": "kind must be track|album|playlist|artist"}
+                return {"success": False, "error": "kind must be track|album|playlist|artist|mix"}
             if not items:
                 return {"success": False, "error": "Nothing to play (empty, not found, or login required)"}
             await svc.controller.play_items(body.player_id, items, auto_extend=radio)
             return {"success": True, "count": len(items), "radio": radio}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @app.get("/api/media/tidal/lyrics")
+    async def tidal_lyrics(track_id: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        lyrics = await src.track_lyrics(track_id)
+        if not lyrics:
+            return {"success": False, "error": "No lyrics for this track"}
+        return {"success": True, "lyrics": lyrics}
+
+    @app.post("/api/media/tidal/favorite")
+    async def tidal_favorite(body: TidalFavoriteBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        if body.kind not in ("track", "album", "artist", "playlist"):
+            return {"success": False, "error": "kind must be track|album|artist|playlist"}
+        if body.action not in ("add", "remove"):
+            return {"success": False, "error": "action must be add|remove"}
+        ok = await src.set_favorite(body.kind, body.id, body.action == "add")
+        if not ok:
+            return {"success": False, "error": "Favourite update failed (login required?)"}
+        return {"success": True, "favorited": body.action == "add"}
+
+    @app.get("/api/media/tidal/manifest/{track_id}.mpd")
+    async def tidal_manifest(track_id: str):
+        # Served to Cast for lossless playback: a fresh DASH MPD whose segment
+        # URLs point straight at Tidal's CDN. Generated on each fetch (URLs expire).
+        svc = _svc()
+        if not svc:
+            return Response("media service not enabled", status_code=503)
+        src = _tidal(svc)
+        if not src:
+            return Response("tidal unavailable", status_code=503)
+        mpd = await src.dash_manifest(track_id)
+        if not mpd:
+            return Response("no lossless manifest for track", status_code=404)
+        return Response(content=mpd, media_type="application/dash+xml")
 
     logger.info("Media routes registered")
