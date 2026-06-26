@@ -70,12 +70,22 @@ async function loadPlayers() {
         return;
     }
     _players = data.players || [];
+    autoSelect();
     renderPlayers();
+}
+
+// If nothing is selected yet and there's exactly one (available) player,
+// select it automatically so radio "play" just works without a hidden step.
+function autoSelect() {
+    if (_selectedId) return;
+    const avail = _players.filter(p => p.available);
+    if (avail.length === 1) _selectedId = avail[0].player_id;
 }
 
 function handleMediaState(payload) {
     if (!payload) return;
     _players = payload.players || [];
+    autoSelect();
     // Don't yank a volume slider out from under the user mid-drag.
     const active = document.activeElement;
     if (active && active.type === 'range') return;
@@ -84,8 +94,26 @@ function handleMediaState(payload) {
 }
 
 function iconFor(p) {
-    if (p.is_group) return 'fa-object-group';
-    return p.provider === 'cast' ? 'fa-chromecast' : 'fa-speaker';
+    // Return the FULL Font Awesome class incl. style prefix. `fa-chromecast`
+    // is a BRAND icon (fab); `fa-speaker` doesn't exist in FA6-free — both
+    // render as a missing-glyph box if forced to `fas`.
+    if (p.is_group) return 'fas fa-layer-group';          // any group: stacked icon
+    return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
+}
+
+// Distinct, provider-aware badge so a Cast speaker GROUP is visually different
+// from an individual Cast device and from a WiiM group.
+function groupBadge(p) {
+    if (!p.is_group) return '';
+    if (p.provider === 'cast') {
+        return '<span class="badge bg-primary ms-1" title="Google Cast speaker group">'
+             + '<i class="fab fa-chromecast me-1"></i>Cast group</span>';
+    }
+    if (p.provider === 'wiim') {
+        return '<span class="badge bg-info text-dark ms-1" title="WiiM multiroom group">'
+             + '<i class="fas fa-volume-up me-1"></i>WiiM group</span>';
+    }
+    return '<span class="badge bg-secondary ms-1">group</span>';
 }
 
 function stateBadge(p) {
@@ -121,9 +149,9 @@ function renderPlayers() {
              onclick="window.mediaSelect('${esc(p.player_id)}')" style="cursor:pointer">
           <div class="d-flex justify-content-between align-items-center">
             <div class="text-truncate me-2">
-              <i class="fas ${iconFor(p)} me-1 text-muted"></i>
+              <i class="${iconFor(p)} me-1 text-muted"></i>
               <span class="fw-semibold">${esc(p.name)}</span>
-              ${p.is_group ? '<span class="badge bg-info text-dark ms-1">group</span>' : ''}
+              ${groupBadge(p)}
             </div>
             ${stateBadge(p)}
           </div>
@@ -138,6 +166,7 @@ function renderPlayers() {
               <i class="fas fa-stop"></i>
             </button>
             <input type="range" class="form-range flex-grow-1" min="0" max="100" value="${vol}" ${disabled}
+                   oninput="this.nextElementSibling.textContent=this.value+'%'"
                    onchange="window.mediaSetVolume('${esc(p.player_id)}', this.value)">
             <span class="small text-muted" style="width:2.5em">${vol}%</span>
             ${p.is_group && p.provider === 'wiim'
