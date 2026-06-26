@@ -480,6 +480,14 @@ def _clean_room(raw: Any, existing_ids: set) -> Optional[dict]:
     ct = str(raw.get("ceiling_type") or "").lower()
     if ct in VALID_CEILING_TYPES:
         out["ceiling_type"] = ct
+    for temp_key, lo, hi, default in (
+            ("target_temp",   5.0, 32.0, None),
+            ("night_setback", 5.0, 32.0, None),
+            ("min_temp",      5.0, 32.0, None),
+    ):
+        v = _as_float(raw.get(temp_key))
+        if v is not None and lo <= v <= hi:
+            out[temp_key] = round(v, 1)
     return out
 
 
@@ -1358,10 +1366,15 @@ def project_floor_plan_to_circuits(
                 c2["receiver_endpoint"] = pc["receiver_endpoint"]
 
             new_rooms = []
+
             for fp_room, level in rooms_by_circuit.get(cid, []):
                 base = existing_room_by_plan_id.get(fp_room["id"])
                 room_dict = _project_room(fp_room, level, base)
-                # Apply defaults for fields the plan doesn't carry
+                # Temperature priority: base_room (already in room_dict via
+                # dict(base_room)) → fp_room editor values → hard defaults.
+                for k in ("target_temp", "night_setback", "min_temp"):
+                    if k not in room_dict and fp_room.get(k) is not None:
+                        room_dict[k] = fp_room[k]
                 room_dict.setdefault("target_temp", 20.0)
                 room_dict.setdefault("night_setback", 17.0)
                 room_dict.setdefault("min_temp", 16.0)

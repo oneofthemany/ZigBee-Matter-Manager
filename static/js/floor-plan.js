@@ -1624,6 +1624,26 @@ function renderRoomProps(r) {
       <div class="mb-2"><label class="form-label small">Name</label>
         <input class="form-control form-control-sm" data-prop="room.name" value="${escapeAttr(r.name || '')}"/></div>
       ${circuitSection}
+      <div class="mb-2">
+        <label class="form-label small">Temperature targets</label>
+        <div class="row g-1">
+          <div class="col-4">
+            <label class="form-label small text-muted mb-0">Target (°C)</label>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
+                   data-prop="room.target_temp" value="${r.target_temp ?? 20}"/>
+          </div>
+          <div class="col-4">
+            <label class="form-label small text-muted mb-0">Setback (°C)</label>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
+                   data-prop="room.night_setback" value="${r.night_setback ?? 17}"/>
+          </div>
+          <div class="col-4">
+            <label class="form-label small text-muted mb-0">Min (°C)</label>
+            <input type="number" step="0.5" min="5" max="32" class="form-control form-control-sm"
+                   data-prop="room.min_temp" value="${r.min_temp ?? 16}"/>
+          </div>
+        </div>
+      </div>
       <div class="mb-2"><label class="form-label small">Floor type</label>
         <select class="form-select form-select-sm" data-prop="room.floor_type">
           <option value="">—</option>

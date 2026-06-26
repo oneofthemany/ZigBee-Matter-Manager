@@ -125,11 +125,11 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
         # When the plan has its own circuit definitions, derive circuits
         # purely from the plan (plan-native mode). Otherwise fall back to
         # reconciling against the existing controller circuit list.
-        if cleaned.get("circuits"):
-            existing_circuits = controller.get("circuits") or []
-        else:
-            existing_circuits = controller.get("circuits") or []
-
+        existing_circuits = (
+            controller.get("circuits")
+            or heating.get("circuits")
+            or []
+        )
         try:
             updated_circuits, warnings = project_floor_plan_to_circuits(
                 cleaned, existing_circuits
