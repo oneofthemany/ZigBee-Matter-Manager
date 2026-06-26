@@ -1,6 +1,5 @@
 /**
  * AI Automations - Natural Language Rule Generation
- * Location: static/js/ai-automations.js
  *
  * Adds an "AI Assist" panel to the global Automations tab.
  * User types natural language, AI generates a rule, user reviews
