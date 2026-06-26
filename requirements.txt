@@ -8,7 +8,7 @@ zha-quirks
 pydantic
 zigpy-znp==0.14.3
 aiohttp
-python-matter-server
+python-matter-server[server]
 python-multipart
 duckdb
 httpx
