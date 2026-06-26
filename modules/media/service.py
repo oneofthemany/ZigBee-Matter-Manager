@@ -89,6 +89,36 @@ class MediaService:
         await self.controller.play_items(player_id, [item])
         return item
 
+    async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
+                         mode: str = "play") -> dict:
+        """Resolve a Tidal track/album/playlist/artist/mix to items and play them.
+        ``mode='radio'`` makes track/artist play an infinite auto-extending queue.
+        Shared by the API route and the automation engine."""
+        src = self.controller.get_source("tidal")
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        radio = mode == "radio"
+        if kind == "track":
+            if radio:
+                items = await src.track_radio(tidal_id)
+            else:
+                item = await src.single_item(tidal_id)
+                items = [item] if item else []
+        elif kind == "album":
+            items = await src.album_items(tidal_id)
+        elif kind == "playlist":
+            items = await src.playlist_items(tidal_id)
+        elif kind == "artist":
+            items = await (src.artist_radio(tidal_id) if radio else src.artist_tracks(tidal_id))
+        elif kind == "mix":
+            items = await src.mix_items(tidal_id)
+        else:
+            return {"success": False, "error": "kind must be track|album|playlist|artist|mix"}
+        if not items:
+            return {"success": False, "error": "Nothing to play (empty, not found, or login required)"}
+        await self.controller.play_items(player_id, items, auto_extend=radio)
+        return {"success": True, "count": len(items), "radio": radio}
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
