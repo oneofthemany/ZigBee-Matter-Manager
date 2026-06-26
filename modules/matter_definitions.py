@@ -40,6 +40,10 @@ DEFINITIONS_DIR = os.environ.get(
     os.path.join(os.path.dirname(__file__), "..", "config", "matter_definitions"),
 )
 
+# Definition format version — bump when the schema changes so older saved
+# definitions can be migrated.
+DEFINITION_SCHEMA_VERSION = 1
+
 
 # =============================================================================
 # TAG SEMANTICS (Matter Descriptor cluster, TagList attribute)
@@ -177,6 +181,9 @@ class DefinitionStore:
 
     def save(self, defn: dict, filename: str = None) -> str:
         """Save a definition to disk. Returns filename."""
+        # Stamp the schema version so definitions saved directly via the API
+        # (not just generated drafts) are migratable later.
+        defn.setdefault("schema_version", DEFINITION_SCHEMA_VERSION)
         if not filename:
             vid = defn.get("vendor_id", 0)
             pid = defn.get("product_id", "unknown").lower().replace(" ", "_")
@@ -261,7 +268,12 @@ def scan_endpoints(attributes: dict) -> dict:
         ep_data["clusters"][cluster]["attributes"][attr] = value
 
     # Post-process: extract device types, tags, roles
+    from handlers.matter_parsers import MatterClusters
     for ep_id, ep_data in endpoints.items():
+        # Whether this endpoint exposes the Binding cluster — drives the
+        # bindings UI.
+        ep_data["has_binding_cluster"] = MatterClusters.BINDING in ep_data["clusters"]
+
         # Device types from Descriptor cluster (29)
         descriptor = ep_data["clusters"].get(29, {}).get("attributes", {})
         type_list = descriptor.get(0, [])
@@ -497,6 +509,7 @@ def generate_definition_draft(attributes: dict) -> dict:
 
     # ── Phase 4: Build draft ──
     draft = {
+        "schema_version": DEFINITION_SCHEMA_VERSION,
         "vendor_id": vendor_id,
         "product_id": part_number or product_name,
         "model": product_name,
