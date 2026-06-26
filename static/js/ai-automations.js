@@ -337,7 +337,13 @@ function _aiToggleSettings() {
     const visible = el.style.display !== 'none';
     el.style.display = visible ? 'none' : 'block';
 
-    if (!visible) _aiLoadSettings();
+    if (!visible) {
+        _aiLoadSettings();
+        // Auto-assess the host once so the Ollama install/enable controls surface
+        // automatically — previously they were hidden until the user found and
+        // clicked "Assess this host" by hand.
+        if (!_aiHost) _aiCheckHost();
+    }
 }
 
 // Provider defaults — mirrors PROVIDER_DEFAULTS in ai_assistant.py

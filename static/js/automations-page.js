@@ -25,6 +25,13 @@ let allRulesCache = [];
 let devMapCache = {};
 let filterDevice = '';
 let filterState = '';
+let locationConfigured = true;   // false → sun/sunrise-sunset can't resolve
+
+// A rule "uses sun" if any condition OR prerequisite is a dynamic sun window.
+function _ruleUsesSun(r) {
+    const has = arr => Array.isArray(arr) && arr.some(c => c && c.type === 'sun');
+    return has(r.conditions) || has(r.prerequisites);
+}
 
 // ============================================================================
 // INIT
@@ -52,6 +59,13 @@ export async function loadAutomationsPage() {
         allRulesCache = await rulesRes.json();
         const devices = await devsRes.json();
 
+        // Is a location configured? Sun (sunrise/sunset) rules can't fire without
+        // one. /api/sun/sunrise-sunset returns success:false when lat/lon are unset.
+        try {
+            const sun = await (await fetch('/api/sun/sunrise-sunset')).json();
+            locationConfigured = sun.success === true;
+        } catch { locationConfigured = true; /* don't false-alarm on a fetch error */ }
+
         _renderPage(container, devices);
     } catch (e) {
         container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> ${e.message}</div>`;
@@ -70,6 +84,19 @@ function _renderPage(container, devices) {
 
     // Get unique source devices that have rules
     const sourcesWithRules = [...new Set(allRulesCache.map(r => r.source_ieee))];
+
+    // Warn when sun-based rules exist but no location is set — they can never
+    // fire because sunrise/sunset can't be computed without latitude/longitude.
+    const sunRules = allRulesCache.filter(r => r.enabled !== false && _ruleUsesSun(r));
+    const locationBanner = (!locationConfigured && sunRules.length) ? `
+        <div class="alert alert-warning d-flex align-items-center justify-content-between py-2 mb-3">
+            <div><i class="fas fa-map-marker-alt me-2"></i>
+                <strong>${sunRules.length} sun-based rule${sunRules.length !== 1 ? 's' : ''} can't fire:</strong>
+                your location isn't set, so sunrise/sunset times can't be calculated.</div>
+            <button class="btn btn-sm btn-warning text-nowrap ms-3" onclick="window._apGoToLocationSettings(event)">
+                <i class="fas fa-location-dot me-1"></i>Set location
+            </button>
+        </div>` : '';
 
     container.innerHTML = `
         <!-- Header -->
@@ -96,6 +123,8 @@ function _renderPage(container, devices) {
                 <button class="btn btn-sm btn-success" onclick="window._apCreate()"><i class="fas fa-plus"></i> New Rule</button>
             </div>
         </div>
+
+        ${locationBanner}
 
         <!-- AI Automation Builder -->
         ${renderAIPanel()}
@@ -412,10 +441,31 @@ async function _apDelete(ruleId) {
     }
 }
 
+// Jump to Settings → Weather and focus the latitude field so the user can set
+// their location (sun rules need it). Activates the inner tab the field lives in.
+function _apGoToLocationSettings(ev) {
+    if (ev) ev.preventDefault();
+    const tabBtn = document.querySelector('button[data-bs-target="#settings"]');
+    if (tabBtn) tabBtn.click();
+    setTimeout(() => {
+        const lat = document.getElementById('cfg_weather_lat');
+        if (!lat) return;
+        // The field may sit inside an inner Bootstrap tab-pane — activate it.
+        const pane = lat.closest('.tab-pane');
+        if (pane && pane.id) {
+            const innerBtn = document.querySelector(`button[data-bs-target="#${pane.id}"]`);
+            if (innerBtn) innerBtn.click();
+        }
+        lat.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        lat.focus();
+    }, 450);
+}
+
 // ============================================================================
 // WINDOW HANDLERS
 // ============================================================================
 
+window._apGoToLocationSettings = _apGoToLocationSettings;
 window._apRefresh = _apRefresh;
 window._apFilterDev = _apFilterDev;
 window._apFilterState = _apFilterState;
