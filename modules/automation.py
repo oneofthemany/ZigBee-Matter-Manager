@@ -42,6 +42,13 @@ DATA_FILE = "./data/automations.json"
 DEFAULT_COOLDOWN = 5
 WAIT_FOR_POLL_INTERVAL = 2
 
+# Virtual source for time/alarm rules — automations triggered purely by the clock
+# (e.g. "play radio at 07:00") that aren't tied to any physical device. Such rules
+# fire from the time-boundary scheduler, never from a device update.
+TIME_SOURCE = "__time__"
+# Condition types that are time/astronomy based (no device attribute to watch).
+TEMPORAL_TYPES = ("time_window", "sun", "time")
+
 OPERATORS = {
     "eq":  lambda a, b: a == b,
     "neq": lambda a, b: a != b,
@@ -172,6 +179,13 @@ class AutomationEngine:
                         if ct == "time_window":
                             boundaries.add(c.get("time_from"))
                             boundaries.add(c.get("time_to"))
+                        elif ct == "time":
+                            # Alarm: evaluate at the fire minute and the minute after
+                            # (so the rule resets unmatched and can fire again).
+                            at = c.get("at")
+                            if at:
+                                boundaries.add(at)
+                                boundaries.add(self._plus_one_minute(at))
                         elif ct == "sun":
                             boundaries.update(self._sun_boundary_hhmm(c))
 
@@ -198,7 +212,7 @@ class AutomationEngine:
             if not rule.get("enabled", True):
                 continue
 
-            _TEMPORAL = ("time_window", "sun")
+            _TEMPORAL = TEMPORAL_TYPES
             has_tw_cond = any(
                 c.get("type") in _TEMPORAL for c in rule.get("conditions", [])
             )
@@ -388,6 +402,9 @@ class AutomationEngine:
                         return f"Condition {i+1} (time_window) missing '{f}'"
                     if not re.match(r"^\d{2}:\d{2}$", str(c[f])):
                         return f"Condition {i+1} '{f}' must be HH:MM"
+            elif ctype == "time":
+                if not re.match(r"^\d{2}:\d{2}$", str(c.get("at", ""))):
+                    return f"Condition {i+1} (alarm) 'at' must be HH:MM"
             elif ctype == "sun":
                 err = self._validate_sun(c, f"Condition {i+1}")
                 if err:
@@ -539,7 +556,13 @@ class AutomationEngine:
             return {"success": False, "error": "source_ieee required"}
         if len(self._source_index.get(source, [])) >= MAX_RULES_PER_DEVICE:
             return {"success": False, "error": f"Max {MAX_RULES_PER_DEVICE} rules"}
-        if source not in self._get_all_devices():
+        if source == TIME_SOURCE:
+            # Clock-triggered rule: must carry a temporal condition (it never sees
+            # a device update), but needs no physical source device to exist.
+            if not any(c.get("type") in TEMPORAL_TYPES for c in conditions):
+                return {"success": False,
+                        "error": "Time/alarm rule needs a time, alarm, or sun condition"}
+        elif source not in self._get_all_devices():
             return {"success": False, "error": f"Source not found: {source}"}
 
         rule = {
@@ -697,7 +720,8 @@ class AutomationEngine:
             rule_name = rule.get("name") or rule_id
 
             # Relevance
-            watched = {c["attribute"] for c in conditions if c.get("type", "attribute") != "time_window"}
+            watched = {c["attribute"] for c in conditions
+                       if c.get("type", "attribute") not in TEMPORAL_TYPES}
             if watched and not watched.intersection(changed_data.keys()):
                 continue
 
@@ -825,6 +849,27 @@ class AutomationEngine:
                     "time_from": cond["time_from"], "time_to": cond["time_to"],
                     "days": days, "negate": negate,
                     "now_time": now_dt.strftime("%H:%M"), "now_weekday": weekday,
+                    "result": "PASS" if matched else "FAIL",
+                })
+                if not matched:
+                    all_ok = False; break
+                continue
+            if ctype == "time":
+                # Point-in-time alarm: matched only during the exact HH:MM minute
+                # on the selected weekdays. Fires the THEN sequence once at that
+                # minute (the scheduler evaluates the boundary).
+                import datetime
+                negate = cond.get("negate", False)
+                now_dt = datetime.datetime.now()
+                at = str(cond.get("at", ""))
+                days = cond.get("days", list(range(7)))
+                matched = (now_dt.weekday() in days) and (now_dt.strftime("%H:%M") == at)
+                if negate:
+                    matched = not matched
+                results.append({
+                    "index": i + 1, "type": "time", "at": at, "days": days,
+                    "negate": negate, "now_time": now_dt.strftime("%H:%M"),
+                    "now_weekday": now_dt.weekday(),
                     "result": "PASS" if matched else "FAIL",
                 })
                 if not matched:
@@ -1038,6 +1083,16 @@ class AutomationEngine:
             return datetime.time(hh, mm)
         except Exception:
             return None
+
+    @staticmethod
+    def _plus_one_minute(hhmm: str) -> str:
+        """'07:00' -> '07:01' (wraps at midnight). Used for alarm reset boundary."""
+        try:
+            h, m = map(int, hhmm.split(":"))
+            total = (h * 60 + m + 1) % (24 * 60)
+            return f"{total // 60:02d}:{total % 60:02d}"
+        except Exception:
+            return hhmm
 
     def _sun_boundary_hhmm(self, cond) -> set:
         """Today's resolved HH:MM boundaries for a sun condition, for the

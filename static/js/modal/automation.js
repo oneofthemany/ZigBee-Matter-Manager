@@ -93,13 +93,16 @@ export function renderAutomationTab(device) {
 
 export async function initAutomationTab(ieee) {
     currentSourceIeee = ieee;
+    // The virtual "__time__" source has no physical device, so there are no
+    // device attributes to fetch — its rules trigger purely on the clock.
+    const isTime = ieee === '__time__';
     try {
         const [rR,aR,actR,dR] = await Promise.all([
             fetch(`/api/automations?source_ieee=${encodeURIComponent(ieee)}`),
-            fetch(`/api/automations/device/${encodeURIComponent(ieee)}/attributes`),
+            isTime ? Promise.resolve(null) : fetch(`/api/automations/device/${encodeURIComponent(ieee)}/attributes`),
             fetch('/api/automations/actuators'), fetch('/api/automations/devices'),
         ]);
-        cachedAttributes = await aR.json(); cachedActuators = await actR.json();
+        cachedAttributes = isTime ? [] : await aR.json(); cachedActuators = await actR.json();
         cachedAllDevices = await dR.json(); _renderRules(await rR.json());
     } catch(e) { const el=document.getElementById('a-rules'); if(el)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`; }
     // Media players are optional — a failure here must not break the tab.
@@ -131,6 +134,10 @@ function _renderRules(rules) {
                 const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                 const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
                 cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+            } else if (c.type === 'time') {
+                const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+                const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
+                cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
             } else if (c.type === 'sun') {
                 cDesc = _sunDesc(c);
             } else {
@@ -283,7 +290,8 @@ function _vI(cls, id, opts, cur, idAttr = 'data-id') {
 // ============================================================================
 
 function _renderCond(id, ctype) {
-    ctype = ctype || 'attribute';
+    // Default new conditions on the virtual time source to an alarm (no attrs exist).
+    ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
     const opts=cachedAttributes.map(a=>`<option value="${a.attribute}" data-type="${a.type}" data-operators='${JSON.stringify(a.operators)}' data-current="${a.current_value}" data-vo='${JSON.stringify(a.value_options||[])}'>${a.attribute} (${a.current_value})</option>`).join('');
     const idx=condRows.indexOf(id);
     const badge = `<span class="badge ${idx===0?'bg-primary':'bg-warning text-dark'} small">${idx===0?'IF':'AND'}</span>`;
@@ -307,10 +315,13 @@ function _renderCond(id, ctype) {
         <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm cs-off-from" data-id="${id}" placeholder="±min" title="offset minutes"></div>
         <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label>${sunSel('cs-to','sunrise')}</div>
         <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm cs-off-to" data-id="${id}" placeholder="±min" title="offset minutes"></div>`;
-    const body = ctype==='time_window' ? timeRow : ctype==='sun' ? sunRow : attrRow;
+    const alarmRow = `
+        <div class="col-auto"><label class="small text-muted mb-0 me-1">At</label><input type="time" class="form-control form-control-sm ct-at" data-id="${id}" style="width:120px" value="07:00"></div>
+        <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
+    const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow : ctype==='sun' ? sunRow : attrRow;
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
-        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option></select></div>
+        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option></select></div>
         <div style="display:contents">${body}</div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
@@ -327,6 +338,10 @@ function _setC(id,c){
         const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
         const tf = r2.querySelector('.ct-from'); if (tf) tf.value = c.time_from || '00:00';
         const tt = r2.querySelector('.ct-to');   if (tt) tt.value = c.time_to   || '23:59';
+        const days = c.days ?? [0,1,2,3,4,5,6];
+        r2.querySelectorAll('.ctd').forEach(cb => { cb.checked = days.includes(parseInt(cb.dataset.day)); });
+    } else if (ctype === 'time') {
+        const at = r2.querySelector('.ct-at'); if (at) at.value = c.at || '07:00';
         const days = c.days ?? [0,1,2,3,4,5,6];
         r2.querySelectorAll('.ctd').forEach(cb => { cb.checked = days.includes(parseInt(cb.dataset.day)); });
     } else if (ctype === 'sun') {
@@ -926,6 +941,11 @@ window._aSave=async()=>{
             const neg=row.querySelector('.cn')?.checked||false;
             const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
             conditions.push({type:'time_window',time_from:tf,time_to:tt,days,negate:neg});
+        } else if(ctype==='time'){
+            const at=row.querySelector('.ct-at')?.value;
+            if(!at){valid=false;return;}
+            const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
+            conditions.push({type:'time',at,days});
         } else if(ctype==='sun'){
             const frm=row.querySelector('.cs-from')?.value||'sunset';
             const to=row.querySelector('.cs-to')?.value||'sunrise';
