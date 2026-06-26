@@ -38,6 +38,14 @@ PROVIDER_DEFAULTS = {
         "model": "llama3.1:8b-instruct-q4_K_M",
         "requires_key": False,
     },
+    "sglang": {
+        # SGLang serves an OpenAI-compatible API (default port 30000). GPU-class
+        # backend — only surfaced in the UI when the host assessor says it's
+        # viable. Model is whatever the SGLang server was launched with.
+        "base_url": "http://localhost:30000/v1",
+        "model": "",
+        "requires_key": False,
+    },
     "anthropic": {
         "base_url": "https://api.anthropic.com/v1",
         "model": "claude-sonnet-4-20250514",

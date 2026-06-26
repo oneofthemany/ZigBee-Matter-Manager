@@ -53,6 +53,11 @@ _MOTION_ATTRS = ["occupancy", "presence", "motion", "occupied", "presence_state"
 _CONTACT_ATTRS = ["contact", "is_open", "opening", "door", "window", "is_closed"]
 _STATE_ATTRS = ["state", "state_1", "state_l1", "on", "on_1", "on_off"]
 _BUTTON_ATTRS = ["action", "click", "button_action", "event", "scene"]
+_LUX_ATTRS = ["illuminance", "illuminance_lux", "lux", "light_level", "illumination"]
+
+# Ambient-light thresholds (lux) for word-based "dark"/"bright" triggers.
+DARK_LUX = 10
+BRIGHT_LUX = 50
 
 _NUMERIC_KEYWORDS = {
     "temperature": ["temperature", "local_temperature", "device_temperature"],
@@ -90,6 +95,8 @@ _EXAMPLES = [
     "when the front door opens turn on the ensuite lights",
     "turn off the media socket after 30 minutes",
     "set the bedroom lights to 40% when motion is detected",
+    "turn on the porch light after sunset",
+    "turn on the lamp when it gets dark",
     "turn on the hallway lights between 08:00 and 23:30",
     "when the kitchen temperature goes above 25 turn on the fan otherwise turn it off",
 ]
@@ -348,6 +355,19 @@ class NLAutomationParser:
         p = " " + predicate.strip() + " "
         negated = bool(_NEGATION.search(p))
 
+        # 0. Ambient light by word ("dark" / "bright") → illuminance threshold.
+        #    Fully dynamic: the sensor reports real lux, so no seasonal drift.
+        if re.search(r"\b(dark|darkness|low light|gloomy|dingy)\b", p):
+            meta = self._find_attr_meta(ieee, _LUX_ATTRS)
+            if meta:
+                return {"type": "attribute", "attribute": meta["attribute"],
+                        "operator": "lt", "value": DARK_LUX}
+        if re.search(r"\b(bright|daylight|well[- ]?lit|sunny)\b", p):
+            meta = self._find_attr_meta(ieee, _LUX_ATTRS)
+            if meta:
+                return {"type": "attribute", "attribute": meta["attribute"],
+                        "operator": "gt", "value": BRIGHT_LUX}
+
         # 1. Numeric comparison.
         m = re.search(
             r"\b(above|over|greater than|more than|higher than|at least|>=|>|"
@@ -429,6 +449,9 @@ class NLAutomationParser:
             cands = _MOTION_ATTRS
         elif re.search(r"\b(door|window|contact|open|close|shut|ajar)\b", text):
             cands = _CONTACT_ATTRS
+        elif re.search(r"\b(dark|darkness|low light|bright|daylight|lux|"
+                       r"illuminanc|light level|gloomy)\b", text):
+            cands = _LUX_ATTRS
         else:
             for kw, attrs in _NUMERIC_KEYWORDS.items():
                 if kw in text:
@@ -609,6 +632,10 @@ class NLAutomationParser:
 
     def _extract_time_window(self, t: str
                              ) -> Tuple[str, Optional[Tuple[str, str]], Optional[str]]:
+        # Sunrise/sunset resolve to today's local clock time for this location.
+        nt, win, phrase = self._extract_sun_window(t)
+        if win:
+            return nt, win, phrase
         C = self._CLOCK
         m = re.search(r"\bbetween\s+" + C + r"\s+and\s+" + C, t) or \
             re.search(r"\bfrom\s+" + C + r"\s+(?:to|until|till)\s+" + C, t)
@@ -635,6 +662,72 @@ class NLAutomationParser:
             if re.search(r"\b" + re.escape(phrase) + r"\b", t):
                 return (t.replace(phrase, " "), win, phrase)
         return t, None, None
+
+    def _extract_sun_window(self, t: str
+                            ) -> Tuple[str, Optional[Tuple[str, str]], Optional[str]]:
+        if "sunrise" not in t and "sunset" not in t:
+            return t, None, None
+        times = self._sun_times()
+        if not times:
+            return t, None, None
+        sr, ss = times["sunrise"], times["sunset"]
+        patterns = [
+            (r"\bbetween\s+sunrise\s+and\s+sunset\b", (sr, ss), "sunrise→sunset"),
+            (r"\bbetween\s+sunset\s+and\s+sunrise\b", (ss, sr), "sunset→sunrise"),
+            (r"\b(?:after|from|past|at)\s+sunset\b", (ss, "23:59"), "after sunset"),
+            (r"\b(?:before|until|till|by)\s+sunset\b", ("00:00", ss), "before sunset"),
+            (r"\b(?:after|from|past)\s+sunrise\b", (sr, "23:59"), "after sunrise"),
+            (r"\b(?:before|until|till|by)\s+sunrise\b", ("00:00", sr), "before sunrise"),
+            (r"\bat\s+sunrise\b", (sr, "23:59"), "at sunrise"),
+        ]
+        for pat, win, phrase in patterns:
+            m = re.search(pat, t)
+            if m:
+                return (t[:m.start()] + " " + t[m.end():]), win, phrase
+        return t, None, None
+
+    def _sun_times(self) -> Optional[Dict[str, str]]:
+        """Today's local sunrise/sunset (HH:MM) for the configured location."""
+        lat, lon = self._latlon()
+        if lat is None or lon is None:
+            return None
+        try:
+            from modules.sun_position import sunrise_sunset
+            rs = sunrise_sunset(lat, lon)
+        except Exception:
+            return None
+        sr = self._utc_iso_to_local_hhmm(rs.get("sunrise"))
+        ss = self._utc_iso_to_local_hhmm(rs.get("sunset"))
+        if not sr or not ss:   # polar day/night, or compute failure
+            return None
+        return {"sunrise": sr, "sunset": ss}
+
+    @staticmethod
+    def _latlon() -> Tuple[Optional[float], Optional[float]]:
+        try:
+            import yaml
+            with open("./config/config.yaml") as f:
+                cfg = yaml.safe_load(f) or {}
+            w = cfg.get("weather", {}) or {}
+            lat, lon = w.get("latitude"), w.get("longitude")
+            if lat is None or lon is None:
+                return None, None
+            return float(lat), float(lon)
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _utc_iso_to_local_hhmm(iso: Optional[str]) -> Optional[str]:
+        if not iso:
+            return None
+        try:
+            import datetime
+            dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone().strftime("%H:%M")
+        except Exception:
+            return None
 
     @staticmethod
     def _clock(token: str) -> Optional[str]:

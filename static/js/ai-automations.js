@@ -66,6 +66,7 @@ export function renderAIPanel() {
                         <label class="form-label small mb-0">Provider</label>
                         <select class="form-select form-select-sm" id="ai-provider" onchange="window._aiProviderChanged(this.value)">
                             <option value="ollama">Ollama (local)</option>
+                            <option value="sglang" id="ai-provider-sglang" disabled>SGLang (assess host first)</option>
                             <option value="openai">OpenAI</option>
                             <option value="anthropic">Anthropic</option>
                             <option value="custom">Custom</option>
@@ -341,10 +342,27 @@ function _aiToggleSettings() {
 // Provider defaults — mirrors PROVIDER_DEFAULTS in ai_assistant.py
 const PROVIDER_DEFAULTS = {
     ollama:    { base_url: 'http://localhost:11434/v1', model: 'llama3.1:8b-instruct-q4_K_M', requires_key: false },
+    sglang:    { base_url: 'http://localhost:30000/v1', model: '', requires_key: false },
     openai:    { base_url: 'https://api.openai.com/v1', model: 'gpt-4o-mini', requires_key: true },
     anthropic: { base_url: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-20250514', requires_key: true },
     custom:    { base_url: '', model: '', requires_key: false },
 };
+
+// SGLang is GPU-class — only selectable once the host assessor confirms it.
+function _aiGateSglang(host) {
+    const opt = document.getElementById('ai-provider-sglang');
+    if (!opt) return;
+    const sg = host && host.backends && host.backends.sglang;
+    if (sg && sg.viable) {
+        opt.disabled = false;
+        opt.textContent = 'SGLang (local GPU)';
+        opt.title = '';
+    } else {
+        opt.disabled = true;
+        opt.textContent = 'SGLang (needs ≥12 GB GPU)';
+        opt.title = (sg && sg.reason) || 'Run the host check first';
+    }
+}
 
 async function _aiLoadSettings() {
     try {
@@ -368,6 +386,14 @@ async function _aiLoadSettings() {
 
         // Update key hint based on provider
         _updateKeyHint(data.provider || 'ollama');
+
+        // Gate the SGLang option: use cached assessment, else fetch once.
+        if (_aiHost) {
+            _aiGateSglang(_aiHost);
+        } else {
+            try { _aiHost = await (await fetch('/api/ai/host')).json(); _aiGateSglang(_aiHost); }
+            catch { /* leave disabled */ }
+        }
     } catch { /* ignore */ }
 }
 
@@ -399,7 +425,7 @@ function _updateKeyHint(provider) {
     const defaults = PROVIDER_DEFAULTS[provider] || PROVIDER_DEFAULTS.custom;
     hint.textContent = defaults.requires_key
         ? `(required for ${provider})`
-        : '(not required for Ollama)';
+        : `(not required for ${provider})`;
 }
 
 async function _aiSaveSettings() {
@@ -633,6 +659,7 @@ async function _aiCheckHost() {
             ${v.recommended_model ? `<div class="mt-1 small text-muted">Recommended: <code>${_esc(v.recommended_model)}</code></div>` : ''}
             <div id="ai-ollama" class="mt-2"></div>
         `;
+        _aiGateSglang(h);
         _aiOllamaRender();
     } catch (e) {
         box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
