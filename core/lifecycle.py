@@ -300,16 +300,16 @@ class DeviceLifecycleMixin:
                              qos: Optional[int] = None, endpoint_id: Optional[int] = None):
         """Called by ZigManDevice when state changes."""
         try:
-            from modules.device_profile_apply import transform_state_with_profile
-            if isinstance(updates, dict) and any(k.startswith("cluster_") for k in updates):
-                merged = {**device.state, **updates}
-                transformed = transform_state_with_profile(device, merged)
+            from modules.device_profiles_apply import transform_state_with_profile
+            if isinstance(changed_data, dict) and any(k.startswith("cluster_") for k in changed_data):
+                merged = {**zha_device.state, **changed_data}
+                transformed = transform_state_with_profile(zha_device, merged)
                 extras = {k: v for k, v in transformed.items()
-                          if k not in updates and k not in device.state}
+                          if k not in changed_data and k not in zha_device.state}
                 if extras:
-                    updates = {**updates, **extras}
-        except Exception:
-            pass
+                    changed_data = {**changed_data, **extras}
+        except Exception as e:
+            logger.debug(f"[{zha_device.ieee}] Profile transform failed: {e}")
 
         ieee = zha_device.ieee
 
