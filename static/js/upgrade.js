@@ -186,6 +186,22 @@ function renderBody(data) {
         `;
     }
 
+    // Warn that an image-based upgrade will discard live in-container edits.
+    let liveEditsBanner = '';
+    const liveEditCount = Number(data.live_edit_count || 0);
+    if (liveEditCount > 0) {
+        liveEditsBanner = `
+          <div class="alert alert-warning small mb-3">
+            <i class="fas fa-triangle-exclamation me-1"></i>
+            <strong>${liveEditCount} live-edited file${liveEditCount === 1 ? '' : 's'} not in any release.</strong>
+            Upgrading rebuilds from the published version and will <strong>discard</strong> these in-app edits.
+            <button class="btn btn-link btn-sm p-0 ms-1 align-baseline" onclick="window.showLiveEdits()">View files</button>
+            <span class="text-muted">·</span>
+            <button class="btn btn-link btn-sm p-0 align-baseline" onclick="window.exportLiveEdits()">Export as .zip</button>
+          </div>
+        `;
+    }
+
     let progressHtml = '';
     if (upgrade_state && upgrade_state !== 'idle') {
         const pct = Number(progress_percent || 0);
@@ -285,6 +301,7 @@ function renderBody(data) {
 
     body.innerHTML = `
       ${watcherBanner}
+      ${liveEditsBanner}
       <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
           <div class="small text-muted">Current version</div>
@@ -406,6 +423,75 @@ async function checkForUpdates(force = true) {
     }
 }
 
+// Returns true if it's OK to proceed. If live in-container edits exist that the
+// image-based op would discard, lists them and requires explicit confirmation.
+// Detection failure never blocks the operation.
+async function confirmDiscardLiveEdits(verb) {
+    let info;
+    try {
+        const res = await fetch('/api/upgrade/live-edits');
+        info = await res.json();
+    } catch (e) {
+        return true;
+    }
+    if (!info || !info.count) return true;
+
+    const files = (info.files || []).map(f => '  • ' + f.path);
+    const shown = files.slice(0, 15).join('\n');
+    const more = files.length > 15 ? `\n  …and ${files.length - 15} more` : '';
+    const exactNote = info.exact
+        ? ''
+        : '\n\n(Exact paths unavailable — counts inferred from editor backups.)';
+    return confirm(
+        `${info.count} live-edited file(s) will be PERMANENTLY LOST if you ${verb}:\n\n` +
+        `${shown}${more}${exactNote}\n\n` +
+        `These in-app edits are not in any release. To keep them, cancel and use ` +
+        `"Export as .zip" on the upgrade card first.\n\n` +
+        `Continue and discard them?`
+    );
+}
+
+window.exportLiveEdits = async function () {
+    try {
+        const res = await fetch('/api/upgrade/live-edits/export');
+        if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            toast('warning', j.error || 'Nothing to export');
+            return;
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename="([^"]+)"/);
+        const name = m ? m[1] : 'zmm-live-edits.zip';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast('success', 'Live edits exported — ' + name);
+    } catch (e) {
+        toast('danger', 'Export failed: ' + e.message);
+    }
+};
+
+window.showLiveEdits = async function () {
+    try {
+        const res = await fetch('/api/upgrade/live-edits');
+        const info = await res.json();
+        if (!info || !info.count) { toast('info', 'No live edits detected.'); return; }
+        const files = (info.files || [])
+            .map(f => `• ${f.path}${f.status && f.status !== 'edited' ? ` (${f.status})` : ''}`)
+            .join('\n');
+        const exactNote = info.exact ? '' : '\n\n(Paths inferred from editor backups.)';
+        alert(`${info.count} live-edited file(s) an upgrade would discard:\n\n${files}${exactNote}`);
+    } catch (e) {
+        toast('danger', 'Could not load live edits: ' + e.message);
+    }
+};
+
 async function startBuild(version) {
     if (!version) return;
     if (!confirm(`Build image for v${version}?\n\nThis takes a few moments. The current app stays running during the build.`)) return;
@@ -467,6 +553,7 @@ async function dismissFailedUpgrade() {
 }
 
 async function startSwap() {
+    if (!(await confirmDiscardLiveEdits('swap to the new image'))) return;
     if (!confirm('Swap to the new container?\n\nYou will be disconnected for a few minutes. The page will reload automatically.')) return;
     const res = await fetch('/api/upgrade/swap', { method: 'POST' });
     const data = await res.json();
@@ -499,6 +586,7 @@ function waitForHealth() {
 }
 
 async function startRollback() {
+    if (!(await confirmDiscardLiveEdits('roll back'))) return;
     if (!confirm('Roll back to the previous version?\n\nYou will be briefly disconnected.')) return;
     const res = await fetch('/api/upgrade/rollback', { method: 'POST' });
     const data = await res.json();

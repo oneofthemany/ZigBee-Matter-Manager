@@ -152,6 +152,26 @@ class TestRecoveryManager:
                 return {"success": False, "error": f"Path outside project: {path}"}
             resolved.append({"path": path, "content": content, "full": full})
 
+        # Pre-flight: reject Python files that don't even compile. A syntax
+        # error guarantees a boot crash, so catch it HERE — before touching
+        # disk — instead of discovering it through a restart→crash→boot_guard
+        # rollback cycle (which costs the user a couple of crash loops and a
+        # trip through the recovery server). Runtime errors still fall through
+        # to the restart+rollback path; only unambiguous syntax breakage is
+        # blocked up front.
+        for r in resolved:
+            if r["full"].suffix.lower() == ".py":
+                try:
+                    compile(r["content"], r["path"], "exec")
+                except SyntaxError as e:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Syntax error in {r['path']} line {e.lineno}: "
+                            f"{e.msg}. Nothing was deployed."
+                        ),
+                    }
+
         # Decide action: restart if ANY file requires it, else reload
         action = "reload"
         for r in resolved:
