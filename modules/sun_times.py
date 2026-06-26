@@ -2,8 +2,10 @@
 Shared Sunrise/Sunset Resolver
 ==============================
 Resolves today's (or any date's) sunrise/sunset to LOCAL clock time, cached per
-date. Location comes from config.yaml weather.{latitude,longitude}; the maths is
-done locally via modules.sun_position (no network).
+date. Location comes from the live WeatherService (the same coordinates that
+drive external-temperature / cloud-cover) when one is registered, falling back
+to config.yaml weather.{latitude,longitude}; the maths is done locally via
+modules.sun_position (no network).
 
 Used by both the automation engine (dynamic "sun" conditions that re-resolve
 every evaluation, so rules track the seasons) and the NL parser.
@@ -11,14 +13,31 @@ every evaluation, so rules track the seasons) and the NL parser.
 
 import datetime
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("modules.sun_times")
 
 _cache: Dict[str, Dict[str, Any]] = {}
 
+# Optional callable -> (lat, lon). Registered at startup so sun times share the
+# exact location the weather API uses, instead of independently re-reading
+# config.yaml (which can be a stale/template file or missing in a container CWD).
+_location_provider: Optional[Callable[[], Optional[Tuple[Any, Any]]]] = None
 
-def _latlon() -> Tuple[Optional[float], Optional[float]]:
+
+def set_location_provider(provider: Optional[Callable[[], Optional[Tuple[Any, Any]]]]) -> None:
+    """Register the authoritative location source (e.g. the WeatherService).
+
+    The provider returns ``(lat, lon)`` (or ``None`` / ``(None, None)`` when it
+    has no location yet). It takes priority over the config.yaml fallback. We
+    drop the date cache so a freshly-supplied location takes effect immediately.
+    """
+    global _location_provider
+    _location_provider = provider
+    _cache.clear()
+
+
+def _latlon_from_config() -> Tuple[Optional[float], Optional[float]]:
     try:
         import yaml
         with open("./config/config.yaml") as f:
@@ -30,6 +49,21 @@ def _latlon() -> Tuple[Optional[float], Optional[float]]:
         return float(lat), float(lon)
     except Exception:
         return None, None
+
+
+def _latlon() -> Tuple[Optional[float], Optional[float]]:
+    # 1. Live weather service (authoritative — already-loaded, in-memory config).
+    if _location_provider is not None:
+        try:
+            res = _location_provider()
+            if res:
+                lat, lon = res
+                if lat is not None and lon is not None:
+                    return float(lat), float(lon)
+        except Exception as e:
+            logger.debug(f"location provider failed, falling back to config: {e}")
+    # 2. Fallback: read config.yaml directly (standalone use / tests / pre-wire).
+    return _latlon_from_config()
 
 
 def _utc_iso_to_local_time(iso: Optional[str]) -> Optional[datetime.time]:
@@ -72,7 +106,11 @@ def sun_times(d: Optional[datetime.date] = None) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"sun computation failed: {e}")
 
-    if len(_cache) > 8:   # keep only a handful of recent dates
-        _cache.clear()
-    _cache[key] = res
+    # Only cache successful resolutions. An "unavailable" result usually means
+    # the location wasn't wired up yet at first call — don't pin that for the
+    # rest of the day; re-check until the weather service supplies coordinates.
+    if res["available"]:
+        if len(_cache) > 8:   # keep only a handful of recent dates
+            _cache.clear()
+        _cache[key] = res
     return res
