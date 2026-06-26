@@ -59,7 +59,7 @@ async function loadStructuredConfig() {
 }
 
 
-async function saveStructuredConfig() {
+async function saveStructuredConfig(silent = false) {
     const config = collectFormValues();
     try {
         const res = await fetch('/api/config/structured', {
@@ -69,12 +69,14 @@ async function saveStructuredConfig() {
         });
         const data = await res.json();
         if (data.success) {
-            showSettingsAlert('success', 'Configuration saved. Restart the service to apply.');
-        } else {
-            showSettingsAlert('danger', 'Save failed: ' + data.error);
+            if (!silent) showSettingsAlert('success', 'Configuration saved. Restart the service to apply.');
+            return true;
         }
+        showSettingsAlert('danger', 'Save failed: ' + data.error);
+        return false;
     } catch (e) {
         showSettingsAlert('danger', 'Error saving: ' + e.message);
+        return false;
     }
 }
 
@@ -463,15 +465,42 @@ function renderSecurityTab(config) {
 // ============================================================================
 
 function renderApisTab(config) {
-    const w = config.weather || {};
     const el = document.getElementById('apisFormBody');
     if (!el) return;
 
+    // Internal tabs so each provider group is its own pane (no long scroll).
     el.innerHTML = `
-    <!-- WEATHER -->
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-cloud-sun me-1"></i> Weather (Open-Meteo)
-    </h6>
+    <ul class="nav nav-tabs mb-3" role="tablist">
+      <li class="nav-item">
+        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#apiPaneWeather" type="button">
+          <i class="fas fa-cloud-sun me-1"></i> Weather
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneMedia" type="button">
+          <i class="fas fa-volume-up me-1"></i> Media
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneTidal" type="button">
+          <i class="fas fa-music me-1"></i> Tidal
+        </button>
+      </li>
+    </ul>
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="apiPaneWeather">${renderWeatherSection(config)}</div>
+      <div class="tab-pane fade" id="apiPaneMedia">${renderMediaSection(config)}</div>
+      <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
+    </div>
+    `;
+
+    loadWeatherStatus();
+    loadTidalStatus();
+}
+
+function renderWeatherSection(config) {
+    const w = config.weather || {};
+    return `
     <p class="text-muted small mb-3">
       Free weather API — no account or API key required.
       Provides outdoor temperature, humidity, wind and forecast for heating automation.
@@ -510,18 +539,11 @@ function renderApisTab(config) {
       </div>
     </div>
 
-    <!-- Live status -->
     <div id="weatherStatusRow" class="mb-2"></div>
     <button class="btn btn-outline-secondary btn-sm" onclick="window.refreshWeatherNow()">
       <i class="fas fa-sync-alt me-1"></i> Fetch Now
     </button>
-
-    <hr class="my-4">
-    ${renderMediaSection(config)}
     `;
-
-    loadWeatherStatus();
-    loadTidalStatus();
 }
 
 // ============================================================================
@@ -533,12 +555,8 @@ function renderMediaSection(config) {
     const cast = m.cast || {};
     const wiim = m.wiim || {};
     const rb = m.radio_browser || {};
-    const tidal = m.tidal || {};
     const devices = (wiim.devices || []).join('\n');
     return `
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-music me-1"></i> Media Players
-    </h6>
     <p class="text-muted small mb-3">
       Multi-room audio for Google Cast (Nest/Home) and WiiM players, plus internet radio.
       Self-contained — no Home Assistant required. Changes take effect after a service restart.
@@ -597,8 +615,12 @@ function renderMediaSection(config) {
         </div>
       </div>
     </div>
+    `;
+}
 
-    <hr class="my-3">
+function renderTidalSection(config) {
+    const tidal = (config.media || {}).tidal || {};
+    return `
     <div class="d-flex align-items-center justify-content-between mb-2">
       <span class="fw-semibold"><i class="fas fa-music me-1"></i> Tidal</span>
       <div class="form-check form-switch mb-0">
@@ -609,6 +631,7 @@ function renderMediaSection(config) {
     <p class="text-muted small mb-2">
       Stream your Tidal HiFi library (AAC quality in this version; lossless arrives with the
       stream server later). Uses an unofficial client — personal use only.
+      Enable, save &amp; restart, then log in.
     </p>
     <div id="tidalStatusRow" class="mb-2"></div>
     <div class="d-flex gap-2">
@@ -1456,8 +1479,22 @@ export async function saveSettingsConfig() {
     await saveStructuredConfig();
 }
 
+export async function saveSettingsConfigAndRestart() {
+    const ok = await saveStructuredConfig(true);
+    if (!ok) return;
+    showSettingsAlert('warning', 'Configuration saved — restarting the service. This page will reconnect shortly…');
+    try {
+        await fetch('/api/system/restart', { method: 'POST' });
+    } catch (e) {
+        // The connection drops as the process restarts — that's expected.
+    }
+    // Give the process time to come back, then reload.
+    setTimeout(() => window.location.reload(), 8000);
+}
+
 window.runSpectrumScan = runSpectrumScan;
 window.saveSettingsConfig = saveSettingsConfig;
+window.saveSettingsConfigAndRestart = saveSettingsConfigAndRestart;
 window.loadSpectrumHistory = loadSpectrumHistory;
 window.createNetworkBackup = createNetworkBackup;
 window.handleRestoreFile = handleRestoreFile;
