@@ -283,6 +283,12 @@ weather_service = WeatherService(
     mqtt_service=mqtt_service,
 )
 
+# Sun/sunrise-sunset calculations (used by automation "sun" conditions) share
+# the weather service's location instead of independently re-reading config.yaml,
+# so they track exactly the coordinates that drive external temp / cloud cover.
+from modules.sun_times import set_location_provider
+set_location_provider(lambda: (weather_service.latitude, weather_service.longitude))
+
 media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
