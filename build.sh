@@ -774,6 +774,25 @@ run_container() {
         ok "Mounted /dev/bus/usb for USB device reset support"
     fi
 
+    # ── Container-runtime socket passthrough (optional) ──
+    # Lets ZMM (a root container with no CLI inside) manage a sibling Ollama
+    # container for local AI, via the runtime's Docker-compatible REST API.
+    # Enable the host socket first:  systemctl enable --now podman.socket
+    local _rt_sock=""
+    if [[ "$RUNTIME" == "podman" ]]; then
+        _rt_sock="/run/podman/podman.sock"
+    else
+        _rt_sock="/var/run/docker.sock"
+    fi
+    if [[ -S "$_rt_sock" ]]; then
+        run_args+=(--volume "${_rt_sock}:${_rt_sock}")
+        run_args+=(--env "ZMM_CONTAINER_SOCK=${_rt_sock}")
+        ok "Mounted ${RUNTIME} socket (${_rt_sock}) for local AI container management"
+    else
+        info "No ${RUNTIME} socket at ${_rt_sock} — local AI (Ollama) install will be"
+        info "  unavailable. To enable: sudo systemctl enable --now podman.socket, then redeploy."
+    fi
+
     info "Starting container '${CONTAINER_NAME}' from ${image_tag} ..."
     "$RUNTIME" run "${run_args[@]}" "$image_tag"
     ok "Container started."

@@ -44,70 +44,12 @@ export function renderAIPanel() {
                 </span>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._aiToggleChat()"
                         title="Ask about your devices &amp; automations"><i class="fas fa-comments"></i> Chat</button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="window._aiToggleSettings()"
-                        title="AI Settings"><i class="fas fa-cog"></i></button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._aiOpenSettingsTab()"
+                        title="AI provider &amp; host settings (Settings → AI)"><i class="fas fa-cog"></i></button>
             </div>
         </div>
         <div class="card-body">
-            <!-- Settings (hidden by default) -->
-            <div id="ai-settings" style="display:none" class="mb-3 p-2 bg-light rounded small">
-                <div id="ai-settings-alert"></div>
-                <!-- Host capability check -->
-                <div class="mb-2 d-flex justify-content-between align-items-center">
-                    <span class="fw-bold"><i class="fas fa-microchip me-1"></i> Host check</span>
-                    <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._aiCheckHost()">
-                        <i class="fas fa-gauge-high me-1"></i> Assess this host
-                    </button>
-                </div>
-                <div id="ai-host" class="mb-3"></div>
-                <div class="row g-2 mb-2">
-                    <div class="col-md-3">
-                        <label class="form-label small mb-0">Provider</label>
-                        <select class="form-select form-select-sm" id="ai-provider" onchange="window._aiProviderChanged(this.value)">
-                            <option value="ollama">Ollama (local)</option>
-                            <option value="sglang" id="ai-provider-sglang" disabled>SGLang (assess host first)</option>
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                            <option value="custom">Custom</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label small mb-0">Model</label>
-                        <input type="text" class="form-control form-control-sm" id="ai-model" placeholder="e.g. llama3.1:8b-instruct-q4_K_M">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small mb-0">API Key <span class="text-muted" id="ai-key-hint">(not required for Ollama)</span></label>
-                        <div class="input-group input-group-sm">
-                            <input type="password" class="form-control form-control-sm" id="ai-apikey" placeholder="Leave blank for Ollama">
-                            <span class="input-group-text" id="ai-key-badge"></span>
-                        </div>
-                    </div>
-                    <div class="col-md-2 d-flex align-items-end">
-                        <button class="btn btn-sm btn-primary w-100" onclick="window._aiSaveSettings()">
-                            <i class="fas fa-save me-1"></i>Save
-                        </button>
-                    </div>
-                </div>
-                <div class="row g-2">
-                    <div class="col-md-5">
-                        <label class="form-label small mb-0">Base URL <span class="text-muted">(auto-detected per provider)</span></label>
-                        <input type="text" class="form-control form-control-sm" id="ai-baseurl" placeholder="http://localhost:11434/v1">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label small mb-0">Temperature</label>
-                        <input type="number" class="form-control form-control-sm" id="ai-temp" value="0.3" min="0" max="2" step="0.1">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label small mb-0">Max Tokens</label>
-                        <input type="number" class="form-control form-control-sm" id="ai-maxtokens" value="2000" min="500" max="8000" step="100">
-                    </div>
-                    <div class="col-md-3 d-flex align-items-end">
-                        <button class="btn btn-sm btn-outline-info w-100" onclick="window._aiTestConnection()">
-                            <i class="fas fa-plug me-1"></i>Test Connection
-                        </button>
-                    </div>
-                </div>
-            </div>
+            <!-- Provider & host config now live in Settings → AI (the cog above). -->
 
             <!-- Prompt input -->
             <div class="input-group">
@@ -147,6 +89,115 @@ export function renderAIPanel() {
             </div>
         </div>
     </div>`;
+}
+
+// ============================================================================
+// SETTINGS → AI  (host assessment · provider config · local Ollama)
+// ============================================================================
+// The infrastructure controls live here (not in the Automations builder) so
+// there's one home for "what model/provider does the AI use, and can this host
+// run one locally". Reuses the same element ids + window handlers.
+export function renderAISettingsPanel() {
+    return `
+    <div class="card border-info">
+        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center py-2">
+            <strong><i class="fas fa-brain me-1"></i> AI provider &amp; local model</strong>
+            <span id="ai-status-badge" class="badge ${_aiConfigured ? 'bg-success' : 'bg-secondary'} small">
+                AI: ${_aiConfigured ? 'connected' : 'optional'}
+            </span>
+        </div>
+        <div class="card-body small">
+            <div id="ai-settings-alert"></div>
+            <p class="text-muted">
+                The deterministic on-device parser handles most automations with no model.
+                A local (or remote) LLM is an optional fallback for free-form requests
+                and the device chat.
+            </p>
+            <!-- Host capability check -->
+            <div class="mb-2 d-flex justify-content-between align-items-center">
+                <span class="fw-bold"><i class="fas fa-microchip me-1"></i> Host check</span>
+                <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._aiCheckHost()">
+                    <i class="fas fa-gauge-high me-1"></i> Assess this host
+                </button>
+            </div>
+            <div id="ai-host" class="mb-3"></div>
+            <hr class="my-2">
+            <div class="fw-bold mb-2"><i class="fas fa-sliders-h me-1"></i> Provider</div>
+            <div class="row g-2 mb-2">
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">Provider</label>
+                    <select class="form-select form-select-sm" id="ai-provider" onchange="window._aiProviderChanged(this.value)">
+                        <option value="ollama">Ollama (local)</option>
+                        <option value="sglang" id="ai-provider-sglang" disabled>SGLang (assess host first)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">Model</label>
+                    <input type="text" class="form-control form-control-sm" id="ai-model" placeholder="e.g. llama3.1:8b-instruct-q4_K_M">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">API Key <span class="text-muted" id="ai-key-hint">(not required for Ollama)</span></label>
+                    <div class="input-group input-group-sm">
+                        <input type="password" class="form-control form-control-sm" id="ai-apikey" placeholder="Leave blank for Ollama">
+                        <span class="input-group-text" id="ai-key-badge"></span>
+                    </div>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button class="btn btn-sm btn-primary w-100" onclick="window._aiSaveSettings()">
+                        <i class="fas fa-save me-1"></i>Save
+                    </button>
+                </div>
+            </div>
+            <div class="row g-2">
+                <div class="col-md-5">
+                    <label class="form-label small mb-0">Base URL <span class="text-muted">(auto-detected per provider)</span></label>
+                    <input type="text" class="form-control form-control-sm" id="ai-baseurl" placeholder="http://localhost:11434/v1">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Temperature</label>
+                    <input type="number" class="form-control form-control-sm" id="ai-temp" value="0.3" min="0" max="2" step="0.1">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Max Tokens</label>
+                    <input type="number" class="form-control form-control-sm" id="ai-maxtokens" value="2000" min="500" max="8000" step="100">
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button class="btn btn-sm btn-outline-info w-100" onclick="window._aiTestConnection()">
+                        <i class="fas fa-plug me-1"></i>Test Connection
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+// Mount the panel into Settings → AI on first reveal, then load current config
+// and auto-assess the host so the Ollama controls surface without a manual click.
+export function initAISettingsTab() {
+    const btn = document.querySelector('[data-bs-target="#settingsAI"]');
+    if (!btn || btn.dataset.aiInit) return;
+    btn.dataset.aiInit = '1';
+    btn.addEventListener('shown.bs.tab', () => {
+        const host = document.getElementById('settingsAI');
+        if (host && !host.dataset.mounted) {
+            host.innerHTML = renderAISettingsPanel();
+            host.dataset.mounted = '1';
+        }
+        _aiLoadSettings();
+        _aiCheckHost();
+    });
+}
+
+function _aiOpenSettingsTab() {
+    const show = sel => {
+        const el = document.querySelector(sel);
+        if (el && window.bootstrap?.Tab) window.bootstrap.Tab.getOrCreateInstance(el).show();
+    };
+    show('[data-bs-target="#settings"]');
+    setTimeout(() => show('[data-bs-target="#settingsAI"]'), 200);
 }
 
 // ============================================================================
@@ -685,17 +736,20 @@ async function _aiOllamaRender() {
         if (s.job && s.job.status === 'running') { _aiOllamaRenderJob(s.job); _aiOllamaPoll(); return; }
 
         let html = '<div class="border rounded p-2 small"><div class="fw-bold mb-1"><i class="fas fa-server me-1"></i>Local Ollama</div>';
-        if (!s.runtime) {
-            box.innerHTML = html + '<div class="text-muted">No podman/docker runtime found — can\'t manage a local container here.</div></div>';
+        if (!s.mode) {
+            box.innerHTML = html + '<div class="text-muted">No container runtime reachable. ZMM runs as a container — mount the host podman socket so it can manage a sibling Ollama container. On the host: <code>sudo systemctl enable --now podman.socket</code>, then redeploy (build.sh mounts <code>/run/podman/podman.sock</code> automatically).</div></div>';
             return;
         }
+        const via = s.mode === 'socket'
+            ? `via host socket <code>${_esc(s.runtime)}</code>`
+            : `via <code>${_esc(s.runtime)}</code>`;
         const rec = h.verdict.recommended_model;
         const haveModel = rec && (s.models || []).some(m => m.name === rec || (m.name || '').startsWith(rec));
         if (!s.running) {
             const label = s.container_exists ? 'Start Ollama' : 'Install Ollama';
             html += `<div class="mb-1">Status: <span class="badge bg-secondary">not running</span></div>`;
             html += `<button class="btn btn-sm btn-success" onclick="window._aiOllamaInstall(${s.container_exists})"><i class="fas fa-download me-1"></i>${label}</button>`;
-            html += `<div class="text-muted mt-1">Runs <code>${_esc(s.runtime)} ${s.container_exists ? 'start' : 'run'} ollama</code> on your host${s.gpu_passthrough ? ' with GPU passthrough' : ' (CPU only)'}.</div>`;
+            html += `<div class="text-muted mt-1">Starts the <code>ollama</code> container ${via}${s.gpu_passthrough ? ' with GPU passthrough' : ' (CPU only)'}. ZMM will reach it at <code>${_esc(s.base_url || '')}</code>.</div>`;
         } else {
             html += `<div class="mb-1">Status: <span class="badge bg-success">running</span> · ${(s.models || []).length} model(s)</div>`;
             if (s.models && s.models.length) {
@@ -769,9 +823,13 @@ async function _aiOllamaPull(model) {
 
 async function _aiOllamaUse(model) {
     try {
+        // Use the base URL the manager reports (localhost natively, the slirp
+        // host gateway when ZMM is containerised).
+        let base = 'http://localhost:11434/v1';
+        try { const st = await (await fetch('/api/ai/ollama/status')).json(); if (st.base_url) base = st.base_url; } catch { /* default */ }
         const r = await fetch('/api/ai/config', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: 'ollama', base_url: 'http://localhost:11434/v1', model })
+            body: JSON.stringify({ provider: 'ollama', base_url: base, model })
         });
         const d = await r.json();
         _aiConfigured = !!d.configured;
@@ -846,6 +904,7 @@ window._aiTestConnection = _aiTestConnection;
 window._aiUseExample = _aiUseExample;
 window._aiShowHelp = _aiShowHelp;
 window._aiCheckHost = _aiCheckHost;
+window._aiOpenSettingsTab = _aiOpenSettingsTab;
 window._aiOllamaInstall = _aiOllamaInstall;
 window._aiOllamaPull = _aiOllamaPull;
 window._aiOllamaUse = _aiOllamaUse;
