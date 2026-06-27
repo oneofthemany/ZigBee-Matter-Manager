@@ -16,16 +16,43 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.ai_automations")
 
-# Operator display map (matches automation.js frontend labels)
+# Operator synonym map → the 8 operators the engine actually accepts
+# (modules.automation.OPERATORS). LLMs phrase comparisons many ways, so we
+# normalise aggressively; anything that still doesn't resolve is rejected with
+# a clear error rather than passed through to fail at save ("invalid operator").
 OPERATOR_MAP = {
-    "=": "eq", "==": "eq", "equals": "eq", "eq": "eq",
-    "!=": "neq", "≠": "neq", "not equal": "neq", "neq": "neq",
-    ">": "gt", "greater": "gt", "gt": "gt",
-    "<": "lt", "less": "lt", "lt": "lt",
-    ">=": "gte", "gte": "gte",
-    "<=": "lte", "lte": "lte",
-    "in": "in", "nin": "nin",
+    # equality
+    "=": "eq", "==": "eq", "equals": "eq", "equal": "eq", "equal to": "eq",
+    "is": "eq", "is equal to": "eq", "eq": "eq",
+    "!=": "neq", "<>": "neq", "≠": "neq", "not equal": "neq",
+    "not equal to": "neq", "is not": "neq", "isnt": "neq", "neq": "neq",
+    # greater
+    ">": "gt", "greater": "gt", "greater than": "gt", "more than": "gt",
+    "higher than": "gt", "above": "gt", "over": "gt", "exceeds": "gt", "gt": "gt",
+    # less
+    "<": "lt", "less": "lt", "less than": "lt", "fewer than": "lt",
+    "lower than": "lt", "below": "lt", "under": "lt", "lt": "lt",
+    # greater-or-equal / less-or-equal
+    ">=": "gte", "greater than or equal": "gte",
+    "greater than or equal to": "gte", "at least": "gte", "gte": "gte",
+    "<=": "lte", "less than or equal": "lte",
+    "less than or equal to": "lte", "at most": "lte", "lte": "lte",
+    # membership
+    "in": "in", "contains": "in", "one of": "in", "any of": "in",
+    "nin": "nin", "not in": "nin", "none of": "nin",
 }
+
+
+def _normalize_operator(op) -> Optional[str]:
+    """Map a free-form operator to one of the engine's 8 operators, or None.
+
+    Case/underscore/whitespace insensitive so 'Greater_Than', 'GREATER THAN'
+    and 'greater than' all resolve identically.
+    """
+    if op is None:
+        return None
+    key = re.sub(r"\s+", " ", str(op).strip().lower().replace("_", " "))
+    return OPERATOR_MAP.get(key)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a JSON generator for a Zigbee home automation system.
 You MUST respond with ONLY a raw JSON object. Never respond with text, explanations, apologies, or refusals.
@@ -259,10 +286,18 @@ class AIAutomations:
         if not conds:
             errors.append("No trigger conditions specified")
 
-        for c in conds:
-            op = c.get("operator", "")
-            if op in OPERATOR_MAP:
-                c["operator"] = OPERATOR_MAP[op]
+        for i, c in enumerate(conds):
+            # time_window / sun / time conditions carry no operator.
+            if c.get("type") in ("time_window", "sun", "time"):
+                continue
+            mapped = _normalize_operator(c.get("operator"))
+            if mapped:
+                c["operator"] = mapped
+            else:
+                errors.append(
+                    f"Condition {i+1} has an unsupported operator "
+                    f"'{c.get('operator')}' (use one of: eq, neq, gt, lt, "
+                    f"gte, lte, in, nin)")
 
         # Check command targets exist
         for seq_name in ("then_sequence", "else_sequence"):
@@ -280,9 +315,15 @@ class AIAutomations:
                     p["ieee"] = resolved
                 else:
                     errors.append(f"Unknown prerequisite device: {ieee}")
-            op = p.get("operator", "")
-            if op in OPERATOR_MAP:
-                p["operator"] = OPERATOR_MAP[op]
+            if p.get("type") in ("time_window", "sun", "time"):
+                continue
+            mapped = _normalize_operator(p.get("operator"))
+            if mapped:
+                p["operator"] = mapped
+            else:
+                errors.append(
+                    f"Prerequisite has an unsupported operator "
+                    f"'{p.get('operator')}'")
 
         return errors
 
