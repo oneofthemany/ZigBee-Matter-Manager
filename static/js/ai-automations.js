@@ -722,7 +722,7 @@ async function _aiOllamaRender() {
 
         let html = '<div class="border rounded p-2 small"><div class="fw-bold mb-1"><i class="fas fa-server me-1"></i>Local Ollama</div>';
         if (!s.mode) {
-            box.innerHTML = html + '<div class="text-muted">No container runtime reachable. ZMM runs as a container — mount the host podman socket so it can manage a sibling Ollama container. On the host: <code>sudo systemctl enable --now podman.socket</code>, then redeploy (build.sh mounts <code>/run/podman/podman.sock</code> automatically).</div></div>';
+            box.innerHTML = html + '<div class="text-muted">No container runtime reachable yet. The deploy/upgrade path enables and mounts the host podman socket automatically — run an <strong>Upgrade</strong> (or redeploy) and local AI will light up here. (If it persists, the host likely lacks systemd or podman socket support — use a remote provider instead.)</div></div>';
             return;
         }
         const via = s.mode === 'socket'
