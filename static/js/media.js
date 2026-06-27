@@ -14,6 +14,8 @@ let _searchSource = 'radio'; // 'radio' | 'tidal'
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
+let _radioFavs = [];         // pinned radio stations (full dicts)
+let _radioSearchCache = [];  // last radio search results, for star-toggle by index
 
 // ---------------------------------------------------------------------------
 // Init
@@ -21,7 +23,7 @@ let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albu
 export function initMedia() {
     const tab = document.querySelector('[data-bs-target="#media"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); });
+        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); });
     }
     // Expose handlers for inline onclick + the websocket dispatcher.
     window.handleMediaState = handleMediaState;
@@ -43,6 +45,9 @@ export function initMedia() {
     window.mediaQueueMode = queueMode;
     window.mediaQueueClear = queueClear;
     window.mediaReplay = replayRecent;
+    window.mediaPlayFav = playFavourite;
+    window.mediaRadioFavAdd = radioFavAdd;
+    window.mediaRadioFavRemove = radioFavRemove;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,8 +308,8 @@ function setSource(src) {
         : 'Search stations (e.g. jazz, BBC, classical)';
     document.getElementById('mediaSearchResults').innerHTML = '';
     refreshTidalNotice();
-    if (src === 'tidal') renderTidalTabs();
-    else showSearchBar(true);
+    if (src === 'tidal') { renderTidalTabs(); renderRadioFavStrip(); }
+    else { showSearchBar(true); renderRadioFavStrip(); }
 }
 
 // Tidal sub-tabs: Search | Playlists | Albums | Artists (the library)
@@ -353,17 +358,87 @@ async function radioSearch() {
     if (!data.success) { out.innerHTML = warn(data.error || 'Search failed'); return; }
     const stations = data.stations || [];
     if (!stations.length) { out.innerHTML = '<div class="text-muted small py-2">No stations found.</div>'; return; }
-    out.innerHTML = stations.map(s => `
+    _radioSearchCache = stations;
+    out.innerHTML = stations.map((s, i) => {
+        const faved = isFav(s.uuid);
+        return `
         <div class="d-flex justify-content-between align-items-center border-bottom py-1">
           <div class="text-truncate me-2">
             <div class="small fw-semibold text-truncate">${esc(s.name)}</div>
             <div class="text-muted" style="font-size:.72rem">${esc(s.country)} ${s.bitrate ? '· ' + s.bitrate + 'kbps' : ''} ${esc(s.codec)}</div>
           </div>
-          <button class="btn btn-sm btn-outline-success"
-                  onclick="window.mediaPlayStation('${esc(s.uuid)}', ${JSON.stringify(s.name).replace(/"/g, '&quot;')})">
-            <i class="fas fa-play"></i>
-          </button>
-        </div>`).join('');
+          <div class="btn-group btn-group-sm flex-shrink-0">
+            <button class="btn ${faved ? 'btn-warning' : 'btn-outline-warning'}" title="${faved ? 'Remove favourite' : 'Add favourite'}"
+                    onclick="window.mediaRadioFavAdd(${i})">
+              <i class="${faved ? 'fas' : 'far'} fa-star"></i>
+            </button>
+            <button class="btn btn-outline-success" title="Play"
+                    onclick="window.mediaPlayStation('${esc(s.uuid)}', ${JSON.stringify(s.name).replace(/"/g, '&quot;')})">
+              <i class="fas fa-play"></i>
+            </button>
+          </div>
+        </div>`;
+    }).join('');
+}
+
+// ── Radio favourites ────────────────────────────────────────────────────────
+function isFav(uuid) {
+    return _radioFavs.some(f => f.uuid === uuid);
+}
+
+async function loadRadioFavourites() {
+    const data = await apiGet('/api/media/radio/favourites');
+    _radioFavs = (data && data.success && data.stations) ? data.stations : [];
+    renderRadioFavStrip();
+}
+
+function renderRadioFavStrip() {
+    const strip = document.getElementById('mediaRadioFav');
+    if (!strip) return;
+    if (!_radioFavs.length) { strip.innerHTML = ''; return; }
+    strip.innerHTML = `
+      <div class="small text-muted mb-1"><i class="fas fa-star text-warning me-1"></i>Favourite stations</div>
+      <div class="d-flex flex-wrap gap-1">
+        ${_radioFavs.map(f => `
+          <div class="btn-group btn-group-sm">
+            <button class="btn btn-outline-primary" title="Play ${esc(f.name)}"
+                    onclick="window.mediaPlayFav('${esc(f.uuid)}', ${JSON.stringify(f.name).replace(/"/g, '&quot;')})">
+              <i class="fas fa-play me-1"></i>${esc(f.name)}
+            </button>
+            <button class="btn btn-outline-secondary" title="Remove favourite"
+                    onclick="window.mediaRadioFavRemove('${esc(f.uuid)}')">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>`).join('')}
+      </div>`;
+}
+
+async function radioFavAdd(index) {
+    const s = _radioSearchCache[index];
+    if (!s) return;
+    if (isFav(s.uuid)) { return radioFavRemove(s.uuid); }  // star toggles off
+    const r = await apiPost('/api/media/radio/favourites', s);
+    if (!r.success) { toast(r.error || 'Could not save favourite', 'error'); return; }
+    _radioFavs.push(s);
+    renderRadioFavStrip();
+    radioSearch();                       // refresh stars in the result list
+    toast(`Added ${s.name}`, 'success');
+}
+
+async function radioFavRemove(uuid) {
+    const res = await fetch(`/api/media/radio/favourites/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
+    const r = await res.json().catch(() => ({}));
+    if (!r.success) { toast(r.error || 'Could not remove favourite', 'error'); return; }
+    _radioFavs = _radioFavs.filter(f => f.uuid !== uuid);
+    renderRadioFavStrip();
+    if (_searchSource === 'radio' && _radioSearchCache.length) radioSearch();
+}
+
+async function playFavourite(uuid, name) {
+    if (!requireSelected()) return;
+    const r = await apiPost('/api/media/radio/favourites/play', { player_id: _selectedId, station_uuid: uuid });
+    if (!r.success) toast(r.error || 'Play failed', 'error');
+    else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
 }
 
 async function playStation(uuid, name) {

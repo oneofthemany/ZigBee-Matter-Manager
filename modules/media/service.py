@@ -47,6 +47,12 @@ class MediaService:
         self.radio = RadioBrowserSource(enabled=rb_cfg.get("enabled", True))
         self.controller.add_source(self.radio)
 
+        # Pinned radio stations so the user doesn't re-search the directory each
+        # time. Stored with the resolved stream URL → plays without a lookup.
+        from modules.media.favourites import RadioFavourites
+        self.radio_favourites = RadioFavourites(
+            rb_cfg.get("favourites_file", "./data/radio_favourites.json"))
+
         # Tidal — isolated/optional. Always registered as a source (its methods
         # no-op until logged in); a fresh stream URL is resolved at play time.
         tidal_cfg = config.get("tidal", {}) or {}
@@ -92,6 +98,20 @@ class MediaService:
         item = station.to_media_item()
         # Single-item queue so radio shows consistently in the now-playing/queue
         # UI. Radio is LIVE (duration 0) so it never auto-advances.
+        await self.controller.play_items(player_id, [item])
+        return item
+
+    async def play_radio_favourite(self, player_id: str, uuid: str) -> MediaItem:
+        """Play a pinned station straight from its stored snapshot — no
+        directory lookup. Falls back to a live lookup if it isn't pinned."""
+        fav = self.radio_favourites.get(uuid)
+        if not fav:
+            return await self.play_radio_station(player_id, uuid)
+        from modules.media.models import RadioStation
+        station = RadioStation(**{k: fav.get(k) for k in (
+            "uuid", "name", "url", "favicon", "homepage",
+            "country", "tags", "codec", "bitrate") if fav.get(k) is not None})
+        item = station.to_media_item()
         await self.controller.play_items(player_id, [item])
         return item
 
