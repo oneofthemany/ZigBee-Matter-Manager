@@ -382,21 +382,6 @@ async function _aiEditRule() {
 // SETTINGS
 // ============================================================================
 
-function _aiToggleSettings() {
-    const el = document.getElementById('ai-settings');
-    if (!el) return;
-    const visible = el.style.display !== 'none';
-    el.style.display = visible ? 'none' : 'block';
-
-    if (!visible) {
-        _aiLoadSettings();
-        // Auto-assess the host once so the Ollama install/enable controls surface
-        // automatically — previously they were hidden until the user found and
-        // clicked "Assess this host" by hand.
-        if (!_aiHost) _aiCheckHost();
-    }
-}
-
 // Provider defaults — mirrors PROVIDER_DEFAULTS in ai_assistant.py
 const PROVIDER_DEFAULTS = {
     ollama:    { base_url: 'http://localhost:11434/v1', model: 'llama3.1:8b-instruct-q4_K_M', requires_key: false },
@@ -897,7 +882,6 @@ function _esc(s) {
 window._aiGenerate = _aiGenerate;
 window._aiSaveRule = _aiSaveRule;
 window._aiEditRule = _aiEditRule;
-window._aiToggleSettings = _aiToggleSettings;
 window._aiSaveSettings = _aiSaveSettings;
 window._aiProviderChanged = _aiProviderChanged;
 window._aiTestConnection = _aiTestConnection;
