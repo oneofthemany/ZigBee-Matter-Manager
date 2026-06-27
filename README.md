@@ -52,14 +52,14 @@ The system is designed for production-grade home automation — running 40+ devi
 ### Podman Container
 ```bash
 # curl bash automated install
-curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash
+sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash
 
 # if you know the device
-curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --usb /dev/ttyUSB0
+sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --usb /dev/ttyUSB0
 
 # large/enterprise networks — bake the Rust telemetry appender into the image
 # (adds ~3–5 min to the build for the Rust toolchain + maturin compile)
-curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --with-appender --usb /dev/ttyUSB0
+sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --with-appender --usb /dev/ttyUSB0
 ```
 
 **Note**: You may see the following during boot - DO NOT PANIC THIS IS INTENTIONAL
