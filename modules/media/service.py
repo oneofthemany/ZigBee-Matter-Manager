@@ -83,7 +83,13 @@ class MediaService:
             try:
                 from modules.media.players.cast import CastPlayerProvider
                 self.controller.add_player_provider(
-                    CastPlayerProvider(app_id=cast_cfg.get("app_id") or "CC1AD845")
+                    CastPlayerProvider(
+                        app_id=cast_cfg.get("app_id") or "CC1AD845",
+                        # Custom receiver that shows album art + synced lyrics on
+                        # screened devices (Nest Hub). Empty → feature off.
+                        lyrics_app_id=cast_cfg.get("lyrics_app_id", ""),
+                        lyrics_getter=self.tidal.track_lyrics,
+                    )
                 )
             except ImportError as e:
                 logger.warning(f"Cast support unavailable (pychromecast not installed?): {e}")

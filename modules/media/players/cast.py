@@ -48,8 +48,14 @@ def _is_group(info) -> bool:
 class CastPlayerProvider(PlayerProvider):
     provider = "cast"
 
-    def __init__(self, app_id: str = "CC1AD845"):
+    def __init__(self, app_id: str = "CC1AD845", lyrics_app_id: str = "",
+                 lyrics_getter=None):
         self.app_id = app_id
+        # Optional custom receiver that renders album art + synced lyrics. When
+        # set (config media.cast.lyrics_app_id) and a Tidal track has lyrics, we
+        # cast to it and pass the LRC + artwork inline as media.customData.
+        self.lyrics_app_id = (lyrics_app_id or "").strip()
+        self._lyrics_getter = lyrics_getter   # async (source_id) -> {synced,text,..}|None
         self._zc: Optional[zeroconf_mod.Zeroconf] = None
         self._browser: Optional[CastBrowser] = None
         self._infos: Dict[str, object] = {}                 # uuid_str -> CastInfo
@@ -209,26 +215,72 @@ class CastPlayerProvider(PlayerProvider):
         cast = await self._get_cast(player_id.split(":", 1)[1])
         if not cast:
             raise RuntimeError(f"Cast device {player_id} unreachable")
-        await asyncio.to_thread(self._play, cast, item)
+        # If a lyrics receiver is configured and this is a Tidal track, try to
+        # fetch lyrics and route to the custom receiver with them attached.
+        custom_data = None
+        app_id = None
+        if (self.lyrics_app_id and self._lyrics_getter
+                and item.media_type == "tidal" and item.source_id):
+            try:
+                lyr = await self._lyrics_getter(item.source_id)
+            except Exception as e:
+                logger.debug(f"Lyrics fetch failed for {item.source_id}: {e}")
+                lyr = None
+            if lyr and (lyr.get("synced") or lyr.get("text")):
+                custom_data = {
+                    "title": item.title, "artist": item.artist,
+                    "artwork": item.artwork_url,
+                    "synced": lyr.get("synced", ""),
+                    "text": lyr.get("text", ""),
+                }
+                app_id = self.lyrics_app_id
+        await asyncio.to_thread(self._play, cast, item, custom_data, app_id)
 
-    def _play(self, cast, item: MediaItem):
+    def _play(self, cast, item: MediaItem, custom_data: Optional[dict] = None,
+              app_id: Optional[str] = None):
         # Cold-start hardening: on a fresh connection the first play_media can
         # race the default-receiver launch and get dropped (the "buffers, then
         # only plays on the 2nd try" symptom). We ensure the socket client is
         # connected, then issue play_media and confirm it actually goes active —
         # retrying once if it doesn't, so the user never has to click twice.
         stream_type = "LIVE" if item.media_type == "radio" else "BUFFERED"
+        # Rich metadata so screened devices (Nest Hub) show album art + artist,
+        # not a bare title. metadataType 3 == MUSIC_TRACK.
+        metadata = {"metadataType": 3, "title": item.title or "",
+                    "artist": item.artist or ""}
+        if item.artwork_url:
+            metadata["images"] = [{"url": item.artwork_url}]
+        # media_info rides along on the LOAD message; customData lands at
+        # media.customData, which the lyrics receiver reads. Empty otherwise.
+        media_info = {"customData": custom_data} if custom_data else None
         last_err = None
         for attempt in (1, 2):
             try:
                 cast.wait(timeout=10)            # ensure the socket client is up
                 mc = cast.media_controller
-                mc.play_media(
-                    item.url,
+                # Route to the custom lyrics receiver when requested. Pointing the
+                # media controller at our app id makes block_until_active launch
+                # (and load into) it instead of the default media receiver.
+                try:
+                    mc.app_id = app_id or self.app_id
+                except Exception:
+                    pass
+                play_kwargs = dict(
                     content_type=item.content_type or "audio/mpeg",
                     title=item.title or None,
+                    thumb=item.artwork_url or None,
+                    metadata=metadata,
                     stream_type=stream_type,
                 )
+                if media_info:
+                    play_kwargs["media_info"] = media_info
+                try:
+                    mc.play_media(item.url, **play_kwargs)
+                except TypeError:
+                    # Older pychromecast without media_info → play without the
+                    # inline lyrics customData (audio + art still work).
+                    play_kwargs.pop("media_info", None)
+                    mc.play_media(item.url, **play_kwargs)
                 mc.block_until_active(timeout=15)
                 # Confirm playback actually started before declaring success.
                 deadline = time.time() + 6

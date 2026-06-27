@@ -15,6 +15,10 @@ media:
   cast:
     enabled: true
     app_id: "CC1AD845"        # default media receiver; swap for a custom Web Receiver later
+    lyrics_app_id: ""         # custom Cast receiver showing album art + synced lyrics on
+                              # screened devices (Nest Hub). Host static/cast/receiver.html on
+                              # HTTPS, register it at cast.google.com/publish, put the App ID
+                              # here. Empty = use the default receiver (art only, no lyrics).
   wiim:
     enabled: true
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
