@@ -21,6 +21,9 @@ initSettings();
 import { initMedia } from './media.js';
 initMedia();
 
+import { initAISettingsTab } from './ai-automations.js';
+initAISettingsTab();
+
 import { initNotifications } from './notifications.js';
 initNotifications();
 

@@ -223,9 +223,18 @@ class HostCapabilityAssessor:
 
     @staticmethod
     def _container_runtime() -> Optional[str]:
+        # CLI on PATH (native / dev), else a mounted host socket (ZMM runs as a
+        # root container with no CLI — it drives the socket's REST API).
         for rt in ("podman", "docker"):
             if shutil.which(rt):
                 return rt
+        try:
+            from modules.ollama_manager import detect_container_socket
+            sock = detect_container_socket()
+            if sock:
+                return f"socket:{sock}"
+        except Exception:
+            pass
         return None
 
     @staticmethod
