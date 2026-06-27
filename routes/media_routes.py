@@ -70,6 +70,18 @@ class FadeBody(BaseModel):
     stop_at_end: bool = False
 
 
+class RadioFavBody(BaseModel):
+    uuid: str
+    name: str = ""
+    url: str = ""
+    favicon: str = ""
+    homepage: str = ""
+    country: str = ""
+    tags: str = ""
+    codec: str = ""
+    bitrate: int = 0
+
+
 def register_media_routes(app: FastAPI, get_media_service):
 
     def _svc():
@@ -189,6 +201,43 @@ def register_media_routes(app: FastAPI, get_media_service):
         try:
             stations = await source.search_stations(q, limit)
             return {"success": True, "stations": [s.to_dict() for s in stations]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Radio favourites — pinned stations, no re-search needed
+    # ------------------------------------------------------------------
+    @app.get("/api/media/radio/favourites")
+    async def radio_favourites_list():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return {"success": True, "stations": svc.radio_favourites.list()}
+
+    @app.post("/api/media/radio/favourites")
+    async def radio_favourite_add(body: RadioFavBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return svc.radio_favourites.add(body.model_dump())
+
+    @app.delete("/api/media/radio/favourites/{uuid}")
+    async def radio_favourite_remove(uuid: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return svc.radio_favourites.remove(uuid)
+
+    @app.post("/api/media/radio/favourites/play")
+    async def radio_favourite_play(body: PlayBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        if not body.station_uuid:
+            return {"success": False, "error": "Provide station_uuid"}
+        try:
+            item = await svc.play_radio_favourite(body.player_id, body.station_uuid)
+            return {"success": True, "now_playing": item.to_dict()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
