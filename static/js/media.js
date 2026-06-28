@@ -206,7 +206,7 @@ function renderPlayers() {
             <span class="small text-muted" style="width:2.5em">${vol}%</span>
             ${p.is_group && p.provider === 'wiim'
                 ? `<button class="btn btn-sm btn-outline-danger" onclick="window.mediaUngroup('${pid}')" title="Ungroup">
-                     <i class="fas fa-object-ungroup"></i></button>`
+                     <i class="far fa-object-ungroup"></i></button>`
                 : ''}
           </div>
           ${q ? queueControls(p, q) : ''}
@@ -687,7 +687,7 @@ function renderGroupBuilder() {
         return;
     }
     el.innerHTML = `
-      <div class="mb-2 fw-semibold"><i class="fas fa-object-group me-1"></i> Build a WiiM group</div>
+      <div class="mb-2 fw-semibold"><i class="far fa-object-group me-1"></i> Build a WiiM group</div>
       <p class="small text-muted">Pick a master (plays the source) and the members to sync to it.</p>
       <div class="mb-2">
         <label class="form-label small">Master</label>
