@@ -75,6 +75,52 @@ def _log(msg: str):
 _current_child: "subprocess.Popen | None" = None
 
 
+CONFIG_FILE = os.path.join(APP_DIR, "config", "config.yaml")
+# How long to wait for the Zigbee serial device before starting anyway (so a
+# missing dongle still reaches the setup wizard rather than blocking forever).
+DEVICE_WAIT_SECONDS = 45
+
+
+def _configured_serial_device() -> "str | None":
+    """Read zigbee.port from config.yaml. Return a /dev path to wait for, or
+    None for socket:// (MultiPAN) / unset / unreadable — nothing to wait on.
+    Mirrors run_container.sh's port resolution (first /dev or socket entry)."""
+    try:
+        with open(CONFIG_FILE) as f:
+            for line in f:
+                m = re.search(r'port:\s*([^\s#]+)', line)
+                if not m:
+                    continue
+                val = m.group(1).strip().strip('"\'')
+                if val.startswith("/dev/"):
+                    return val
+                if val.startswith("socket://"):
+                    return None      # bridge mode — no local device to await
+    except Exception:
+        pass
+    return None
+
+
+def _wait_for_device():
+    """Block (bounded) until the configured Zigbee dongle is present, so main.py
+    doesn't start before the kernel has enumerated it after a reboot — the cause
+    of the start/stop/start flap. No-op when no /dev device is configured."""
+    dev = _configured_serial_device()
+    if not dev:
+        return
+    if os.path.exists(dev):
+        return
+    _log(f"Waiting up to {DEVICE_WAIT_SECONDS}s for Zigbee device {dev} ...")
+    deadline = time.time() + DEVICE_WAIT_SECONDS
+    while time.time() < deadline:
+        if os.path.exists(dev):
+            _log(f"Zigbee device {dev} present — starting app")
+            return
+        time.sleep(1)
+    _log(f"Zigbee device {dev} still absent after {DEVICE_WAIT_SECONDS}s — "
+         f"starting anyway (setup wizard / recovery will handle it)")
+
+
 def _forward_signal(sig, frame):
     """Forward TERM/INT to the current child so shutdown is clean."""
     child = _current_child
@@ -216,6 +262,11 @@ def _main_wrote_crash_recently(elapsed_since_start: float) -> bool:
 
 def main():
     _log(f"Launcher starting (APP_DIR={APP_DIR})")
+
+    # Readiness gate: wait for the Zigbee dongle before the first launch so the
+    # frontend comes up once, fully functional — instead of starting too early,
+    # crashing on a not-yet-enumerated device, and being restarted by systemd.
+    _wait_for_device()
 
     quick_retries = 0
     while True:
