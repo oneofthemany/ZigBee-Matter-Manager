@@ -557,13 +557,23 @@
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
                             <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> Players</span>
-                            <div class="btn-group btn-group-sm">
-                                <button class="btn btn-outline-secondary" onclick="window.mediaRefresh()" title="Rescan">
-                                    <i class="fas fa-sync-alt"></i>
-                                </button>
-                                <button class="btn btn-outline-primary" onclick="window.mediaOpenGroupBuilder()" title="Group players">
-                                    <i class="far fa-object-group"></i> Group
-                                </button>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="form-check form-switch m-0" id="mediaKaraokeWrap" style="display:none"
+                                     title="Cast synced lyrics + album art to screened devices (Nest Hub)">
+                                    <input class="form-check-input" type="checkbox" role="switch" id="mediaKaraoke"
+                                           onchange="window.mediaSetKaraoke(this.checked)">
+                                    <label class="form-check-label small" for="mediaKaraoke">
+                                        <i class="fas fa-microphone me-1"></i>Karaoke
+                                    </label>
+                                </div>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-secondary" onclick="window.mediaRefresh()" title="Rescan">
+                                        <i class="fas fa-sync-alt"></i>
+                                    </button>
+                                    <button class="btn btn-outline-primary" onclick="window.mediaOpenGroupBuilder()" title="Group players">
+                                        <i class="far fa-object-group"></i> Group
+                                    </button>
+                                </div>
                             </div>
                         </div>
                         <div class="card-body" id="mediaPlayers">

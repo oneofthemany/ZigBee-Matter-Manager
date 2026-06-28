@@ -23,7 +23,7 @@ let _radioSearchCache = [];  // last radio search results, for star-toggle by in
 export function initMedia() {
     const tab = document.querySelector('[data-bs-target="#media"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); });
+        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); loadKaraoke(); });
     }
     // Expose handlers for inline onclick + the websocket dispatcher.
     window.handleMediaState = handleMediaState;
@@ -48,6 +48,26 @@ export function initMedia() {
     window.mediaPlayFav = playFavourite;
     window.mediaRadioFavAdd = radioFavAdd;
     window.mediaRadioFavRemove = radioFavRemove;
+    window.mediaSetKaraoke = setKaraoke;
+}
+
+// ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
+async function loadKaraoke() {
+    const wrap = document.getElementById('mediaKaraokeWrap');
+    const box = document.getElementById('mediaKaraoke');
+    if (!wrap || !box) return;
+    const d = await apiGet('/api/media/karaoke');
+    if (!d || !d.success) { wrap.style.display = 'none'; return; }
+    // Only surface the switch when a custom lyrics receiver is configured —
+    // otherwise it does nothing and would just confuse.
+    wrap.style.display = d.receiver_configured ? '' : 'none';
+    box.checked = !!d.enabled;
+}
+
+async function setKaraoke(on) {
+    const r = await apiPost('/api/media/karaoke', { enabled: !!on });
+    if (!r || !r.success) { toast('Could not change karaoke mode', 'error'); return; }
+    toast(`Karaoke ${r.karaoke ? 'on' : 'off'}`, 'success');
 }
 
 // ---------------------------------------------------------------------------

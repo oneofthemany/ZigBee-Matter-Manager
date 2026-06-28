@@ -35,6 +35,14 @@ class MediaService:
 
         self.controller = MediaController()
         self._task: Optional[asyncio.Task] = None
+        self.cast = None                       # set if Cast is enabled
+
+        # "Karaoke mode": cast synced lyrics (+ art) to the custom receiver.
+        # Default from config, then overridden by the persisted runtime toggle.
+        cast_cfg0 = config.get("cast", {}) or {}
+        self._prefs_file = "./data/media_prefs.json"
+        self._prefs = self._load_prefs()
+        self._karaoke = bool(self._prefs.get("karaoke", cast_cfg0.get("karaoke", True)))
 
         # Text-to-speech for announcements. Default is the keyless Google
         # Translate TTS endpoint (returns a plain MP3 Cast/WiiM play directly).
@@ -82,15 +90,15 @@ class MediaService:
             # Imported lazily so the app still boots if pychromecast isn't installed.
             try:
                 from modules.media.players.cast import CastPlayerProvider
-                self.controller.add_player_provider(
-                    CastPlayerProvider(
-                        app_id=cast_cfg.get("app_id") or "CC1AD845",
-                        # Custom receiver that shows album art + synced lyrics on
-                        # screened devices (Nest Hub). Empty → feature off.
-                        lyrics_app_id=cast_cfg.get("lyrics_app_id", ""),
-                        lyrics_getter=self.tidal.track_lyrics,
-                    )
+                self.cast = CastPlayerProvider(
+                    app_id=cast_cfg.get("app_id") or "CC1AD845",
+                    # Custom receiver that shows album art + synced lyrics on
+                    # screened devices (Nest Hub). Empty → feature off.
+                    lyrics_app_id=cast_cfg.get("lyrics_app_id", ""),
+                    lyrics_getter=self.tidal.track_lyrics,
+                    karaoke=self._karaoke,
                 )
+                self.controller.add_player_provider(self.cast)
             except ImportError as e:
                 logger.warning(f"Cast support unavailable (pychromecast not installed?): {e}")
 
@@ -106,6 +114,47 @@ class MediaService:
         # UI. Radio is LIVE (duration 0) so it never auto-advances.
         await self.controller.play_items(player_id, [item])
         return item
+
+    # ------------------------------------------------------------------
+    # Karaoke mode (cast synced lyrics to the custom receiver)
+    # ------------------------------------------------------------------
+    def get_karaoke(self) -> bool:
+        return self._karaoke
+
+    def set_karaoke(self, on: bool) -> dict:
+        self._karaoke = bool(on)
+        if self.cast is not None:
+            self.cast.karaoke = self._karaoke
+        self._prefs["karaoke"] = self._karaoke
+        self._save_prefs()
+        # Whether the feature can actually do anything (needs a custom receiver).
+        configured = bool(getattr(self.cast, "lyrics_app_id", "")) if self.cast else False
+        return {"success": True, "karaoke": self._karaoke,
+                "receiver_configured": configured}
+
+    def _load_prefs(self) -> dict:
+        import json
+        try:
+            with open(self._prefs_file, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning(f"Could not read {self._prefs_file}: {e}")
+            return {}
+
+    def _save_prefs(self) -> None:
+        import json, os, tempfile
+        d = os.path.dirname(self._prefs_file) or "."
+        try:
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._prefs, f, indent=2)
+            os.replace(tmp, self._prefs_file)
+        except Exception as e:
+            logger.error(f"Could not write {self._prefs_file}: {e}")
 
     async def play_radio_favourite(self, player_id: str, uuid: str) -> MediaItem:
         """Play a pinned station straight from its stored snapshot — no
