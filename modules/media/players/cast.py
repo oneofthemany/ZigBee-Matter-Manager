@@ -49,13 +49,14 @@ class CastPlayerProvider(PlayerProvider):
     provider = "cast"
 
     def __init__(self, app_id: str = "CC1AD845", lyrics_app_id: str = "",
-                 lyrics_getter=None):
+                 lyrics_getter=None, karaoke: bool = True):
         self.app_id = app_id
         # Optional custom receiver that renders album art + synced lyrics. When
-        # set (config media.cast.lyrics_app_id) and a Tidal track has lyrics, we
-        # cast to it and pass the LRC + artwork inline as media.customData.
+        # set (config media.cast.lyrics_app_id), karaoke is on, and a Tidal track
+        # has lyrics, we cast to it and pass the LRC + artwork as media.customData.
         self.lyrics_app_id = (lyrics_app_id or "").strip()
         self._lyrics_getter = lyrics_getter   # async (source_id) -> {synced,text,..}|None
+        self.karaoke = bool(karaoke)          # runtime-toggleable (see MediaService)
         self._zc: Optional[zeroconf_mod.Zeroconf] = None
         self._browser: Optional[CastBrowser] = None
         self._infos: Dict[str, object] = {}                 # uuid_str -> CastInfo
@@ -219,7 +220,7 @@ class CastPlayerProvider(PlayerProvider):
         # fetch lyrics and route to the custom receiver with them attached.
         custom_data = None
         app_id = None
-        if (self.lyrics_app_id and self._lyrics_getter
+        if (self.karaoke and self.lyrics_app_id and self._lyrics_getter
                 and item.media_type == "tidal" and item.source_id):
             try:
                 lyr = await self._lyrics_getter(item.source_id)
@@ -234,7 +235,31 @@ class CastPlayerProvider(PlayerProvider):
                     "text": lyr.get("text", ""),
                 }
                 app_id = self.lyrics_app_id
+                logger.info(
+                    f"Casting to lyrics receiver {app_id} for '{item.title}' "
+                    f"(synced={bool(lyr.get('synced'))}, plain={bool(lyr.get('text'))})")
+            else:
+                logger.info(
+                    f"Karaoke on but no lyrics for Tidal {item.source_id} "
+                    f"('{item.title}') — using default receiver")
         await asyncio.to_thread(self._play, cast, item, custom_data, app_id)
+
+    def _ensure_app(self, cast, app_id: str, timeout: float = 12.0):
+        """Launch a specific receiver app and wait until it's the running app.
+        pychromecast won't switch apps on its own (app_must_match=False), so a
+        custom receiver must be launched explicitly before loading media."""
+        try:
+            if getattr(getattr(cast, "status", None), "app_id", None) == app_id:
+                return
+            cast.start_app(app_id, force_launch=True)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if getattr(getattr(cast, "status", None), "app_id", None) == app_id:
+                    return
+                time.sleep(0.3)
+            logger.warning(f"Cast app {app_id} did not become active in {timeout}s")
+        except Exception as e:
+            logger.warning(f"Could not launch Cast app {app_id}: {e}")
 
     def _play(self, cast, item: MediaItem, custom_data: Optional[dict] = None,
               app_id: Optional[str] = None):
@@ -258,13 +283,15 @@ class CastPlayerProvider(PlayerProvider):
             try:
                 cast.wait(timeout=10)            # ensure the socket client is up
                 mc = cast.media_controller
-                # Route to the custom lyrics receiver when requested. Pointing the
-                # media controller at our app id makes block_until_active launch
-                # (and load into) it instead of the default media receiver.
-                try:
-                    mc.app_id = app_id or self.app_id
-                except Exception:
-                    pass
+                # Route to the right receiver. pychromecast loads into whatever
+                # app is currently running (app_must_match=False), so to use the
+                # custom lyrics receiver we must launch it explicitly first — and
+                # switch back off it for a plain track.
+                cur = getattr(getattr(cast, "status", None), "app_id", None)
+                if app_id:
+                    self._ensure_app(cast, app_id)
+                elif self.lyrics_app_id and cur == self.lyrics_app_id:
+                    self._ensure_app(cast, self.app_id)
                 play_kwargs = dict(
                     content_type=item.content_type or "audio/mpeg",
                     title=item.title or None,

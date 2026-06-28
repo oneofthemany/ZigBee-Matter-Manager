@@ -70,6 +70,10 @@ class FadeBody(BaseModel):
     stop_at_end: bool = False
 
 
+class KaraokeBody(BaseModel):
+    enabled: bool
+
+
 class RadioFavBody(BaseModel):
     uuid: str
     name: str = ""
@@ -203,6 +207,25 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True, "stations": [s.to_dict() for s in stations]}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Karaoke mode — cast synced lyrics to the custom receiver
+    # ------------------------------------------------------------------
+    @app.get("/api/media/karaoke")
+    async def karaoke_get():
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        configured = bool(getattr(getattr(svc, "cast", None), "lyrics_app_id", ""))
+        return {"success": True, "enabled": svc.get_karaoke(),
+                "receiver_configured": configured}
+
+    @app.post("/api/media/karaoke")
+    async def karaoke_set(body: KaraokeBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        return svc.set_karaoke(body.enabled)
 
     # ------------------------------------------------------------------
     # Radio favourites — pinned stations, no re-search needed

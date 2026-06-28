@@ -19,6 +19,8 @@ media:
                               # screened devices (Nest Hub). Host static/cast/receiver.html on
                               # HTTPS, register it at cast.google.com/publish, put the App ID
                               # here. Empty = use the default receiver (art only, no lyrics).
+    karaoke: true             # default for "karaoke mode" (cast synced lyrics). Runtime
+                              # toggle in the media tab overrides this; needs lyrics_app_id set.
   wiim:
     enabled: true
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
