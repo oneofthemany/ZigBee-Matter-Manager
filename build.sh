@@ -831,16 +831,33 @@ install_autostart() {
     local runtime_bin
     runtime_bin=$(which "$RUNTIME")
 
+    # Wait for the Zigbee dongle before `podman start` so the boot doesn't race
+    # USB enumeration — a missing --device makes `podman start` itself fail and
+    # systemd restart it (the "frontend up → down → up" flap). Skipped for
+    # socket:// MultiPAN (no local device). USB_DEVICE is resolved by run_container.
+    local device_pre=""
+    if [[ -n "${USB_DEVICE:-}" ]]; then
+        device_pre="ExecStartPre=/bin/bash -c 'for i in \$(seq 1 45); do [ -e \"${USB_DEVICE}\" ] && exit 0; sleep 1; done; echo \"device ${USB_DEVICE} absent after 45s; starting anyway\" >&2; exit 0'"
+    fi
+
     local unit_file="/etc/systemd/system/${CONTAINER_NAME}.service"
     sudo tee "$unit_file" > /dev/null << UNIT
 [Unit]
 Description=Zigbee Matter Manager Container
-After=network-online.target
+# Order after the network AND the clock is set — TLS/token checks fail if the
+# app starts before time sync. Don't let repeated early-boot retries trip the
+# systemd start limiter into giving up.
+After=network-online.target time-sync.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Restart=always
 RestartSec=10
+# MultiPAN/CPC bring-up can take 40-70s; don't let systemd kill a slow-but-fine
+# start. The launcher also waits for the device inside the container.
+TimeoutStartSec=300
+${device_pre}
 ExecStart=${runtime_bin} start -a ${CONTAINER_NAME}
 ExecStop=${runtime_bin} stop -t 15 ${CONTAINER_NAME}
 
