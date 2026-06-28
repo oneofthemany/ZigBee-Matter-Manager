@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<!--
+  ZigBee Manager — custom Cast receiver with synced lyrics + album art.
+
+  Host this single file on an HTTPS URL (Cast won't load a self-signed/HTTP
+  receiver), then register that URL as a *Custom Receiver* in the Google Cast
+  SDK Developer Console (https://cast.google.com/publish). Put the resulting
+  Application ID into ZigBee Manager: media.cast.lyrics_app_id in config.yaml.
+
+  No callback to your local server is needed: the app sends the artwork + the
+  LRC-timed lyrics inline as media.customData on each LOAD, so this page is fully
+  static and never has to reach your (self-signed) API.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>ZMM Lyrics Receiver</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000;
+      font-family: "Roboto", "Segoe UI", system-ui, sans-serif; color: #fff; }
+    /* The CAF media element still drives audio; we just overlay our own UI. */
+    cast-media-player { display: none; }
+
+    #bg { position: fixed; inset: 0; background-size: cover; background-position: center;
+      filter: blur(60px) brightness(0.35); transform: scale(1.2); transition: background-image .6s; }
+    #scrim { position: fixed; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.25), rgba(0,0,0,.7)); }
+
+    #stage { position: fixed; inset: 0; display: flex; align-items: center;
+      gap: 5vw; padding: 6vh 6vw; }
+    #left { flex: 0 0 34vh; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; text-align: center; }
+    #art { width: 34vh; height: 34vh; border-radius: 18px; object-fit: cover;
+      box-shadow: 0 20px 60px rgba(0,0,0,.6); background: #222; }
+    #title { font-size: 3.2vh; font-weight: 700; margin-top: 3vh; max-width: 34vh; }
+    #artist { font-size: 2.2vh; font-weight: 400; opacity: .75; margin-top: .6vh; max-width: 34vh; }
+
+    #lyrics { flex: 1 1 auto; height: 100%; position: relative; overflow: hidden;
+      -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent); }
+    #lyricsInner { position: absolute; left: 0; right: 0; top: 50%; transition: transform .45s cubic-bezier(.22,.61,.36,1); }
+    .ln { font-size: 3.4vh; line-height: 1.5; font-weight: 600; opacity: .35;
+      padding: 1.1vh 0; transition: opacity .3s, transform .3s; transform-origin: left center; }
+    .ln.active { opacity: 1; transform: scale(1.04); }
+    .ln.past { opacity: .3; }
+
+    /* Plain (unsynced) lyrics: a simple centred, slowly-readable block. */
+    #plain { white-space: pre-wrap; font-size: 3vh; line-height: 1.6; opacity: .9;
+      max-height: 100%; overflow: hidden; }
+
+    #idle { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 3vh; opacity: .5; }
+  </style>
+</head>
+<body>
+  <div id="bg"></div>
+  <div id="scrim"></div>
+  <div id="stage" style="display:none">
+    <div id="left">
+      <img id="art" alt="">
+      <div id="title"></div>
+      <div id="artist"></div>
+    </div>
+    <div id="lyrics"><div id="lyricsInner"></div></div>
+  </div>
+  <div id="idle">ZigBee Manager</div>
+  <!-- Required CAF media element (hidden) — handles the actual audio stream. -->
+  <cast-media-player></cast-media-player>
+
+  <script>
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+
+    let cues = [];        // [{t: seconds, text}]
+    let activeIdx = -1;
+    let haveSynced = false;
+
+    const $ = id => document.getElementById(id);
+
+    // ---- LRC parsing -------------------------------------------------------
+    // Lines look like:  [00:12.34]Some words   (one or more tags per line)
+    function parseLRC(lrc) {
+      const out = [];
+      const re = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
+      for (const raw of (lrc || '').split('\n')) {
+        const text = raw.replace(re, '').trim();
+        let m, tags = [];
+        re.lastIndex = 0;
+        while ((m = re.exec(raw)) !== null) {
+          const min = parseInt(m[1], 10), sec = parseInt(m[2], 10);
+          const frac = m[3] ? parseInt(m[3].padEnd(3, '0').slice(0, 3), 10) / 1000 : 0;
+          tags.push(min * 60 + sec + frac);
+        }
+        for (const t of tags) out.push({ t, text });
+      }
+      out.sort((a, b) => a.t - b.t);
+      return out;
+    }
+
+    // ---- UI -----------------------------------------------------------------
+    function showMeta(data) {
+      const art = data.artwork || '';
+      if (art) { $('art').src = art; $('bg').style.backgroundImage = `url("${art}")`; }
+      $('title').textContent = data.title || '';
+      $('artist').textContent = data.artist || '';
+      $('idle').style.display = 'none';
+      $('stage').style.display = 'flex';
+    }
+
+    function renderSynced() {
+      const inner = $('lyricsInner');
+      inner.innerHTML = '';
+      cues.forEach((c, i) => {
+        const d = document.createElement('div');
+        d.className = 'ln'; d.dataset.i = i; d.textContent = c.text || '♪';
+        inner.appendChild(d);
+      });
+      activeIdx = -1;
+    }
+
+    function renderPlain(text) {
+      const inner = $('lyricsInner');
+      inner.style.transition = 'none';
+      inner.style.transform = 'translateY(-50%)';
+      inner.innerHTML = `<div id="plain">${(text || '').replace(/[<>&]/g, '')}</div>`;
+    }
+
+    function tick() {
+      if (haveSynced && cues.length) {
+        const t = playerManager.getCurrentTimeSec() || 0;
+        let idx = -1;
+        for (let i = 0; i < cues.length; i++) { if (cues[i].t <= t + 0.15) idx = i; else break; }
+        if (idx !== activeIdx) {
+          const inner = $('lyricsInner');
+          inner.querySelectorAll('.ln').forEach((el, i) => {
+            el.classList.toggle('active', i === idx);
+            el.classList.toggle('past', i < idx);
+          });
+          const active = inner.querySelector(`.ln[data-i="${idx}"]`);
+          if (active) {
+            // Centre the active line within the lyrics column.
+            inner.style.transform = `translateY(${-active.offsetTop}px)`;
+          }
+          activeIdx = idx;
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    // ---- Wire LOAD: pull customData, set up the view -----------------------
+    function applyCustomData(cd) {
+      cues = []; haveSynced = false;
+      if (!cd) return;
+      showMeta(cd);
+      if (cd.synced) {
+        cues = parseLRC(cd.synced);
+        haveSynced = cues.length > 0;
+      }
+      if (haveSynced) { $('lyricsInner').style.transition = ''; renderSynced(); }
+      else if (cd.text) { renderPlain(cd.text); }
+      else { $('lyricsInner').innerHTML = ''; }
+    }
+
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      request => {
+        try {
+          const cd = (request.media && request.media.customData) || request.customData || null;
+          applyCustomData(cd);
+        } catch (e) { /* ignore — audio still plays */ }
+        return request;   // let CAF load + play the audio stream unchanged
+      });
+
+    // Reset to idle when playback finishes/stops.
+    playerManager.addEventListener(cast.framework.events.EventType.MEDIA_FINISHED, () => {
+      $('stage').style.display = 'none';
+      $('idle').style.display = 'flex';
+    });
+
+    const options = new cast.framework.CastReceiverOptions();
+    options.disableIdleTimeout = false;
+    context.start(options);
+  </script>
+</body>
+</html>
