@@ -555,6 +555,7 @@ function renderMediaSection(config) {
     const cast = m.cast || {};
     const wiim = m.wiim || {};
     const rb = m.radio_browser || {};
+    const tts = m.tts || {};
     const devices = (wiim.devices || []).join('\n');
     return `
     <p class="text-muted small mb-3">
@@ -588,6 +589,14 @@ function renderMediaSection(config) {
                value="${w_escape(cast.app_id || 'CC1AD845')}" placeholder="CC1AD845">
         <small class="text-muted">Default media receiver. Swap for a custom Web Receiver later.</small>
       </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Lyrics Receiver App ID</label>
+        <input type="text" class="form-control" id="cfg_media_cast_lyrics_appid"
+               value="${w_escape(cast.lyrics_app_id || '')}" placeholder="e.g. ABCD1234 (blank = off)">
+        <small class="text-muted">Custom Cast receiver for album art + synced lyrics on screened
+          devices (Nest Hub). Host <code>static/cast/receiver.html</code> on HTTPS, register it at
+          cast.google.com/publish. Karaoke on/off is a live toggle in the Media tab.</small>
+      </div>
     </div>
 
     <div class="row g-3 mb-3">
@@ -615,6 +624,24 @@ function renderMediaSection(config) {
         </div>
       </div>
     </div>
+
+    <hr class="my-3">
+    <div class="fw-semibold mb-2"><i class="fas fa-bullhorn me-1"></i> Announcements (TTS)</div>
+    <p class="text-muted small mb-2">Text-to-speech for automation announcements. Default is the
+      keyless Google Translate endpoint, which returns a plain MP3 that Cast/WiiM play directly.</p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-7">
+        <label class="form-label small fw-semibold">TTS Base URL</label>
+        <input type="text" class="form-control" id="cfg_media_tts_base"
+               value="${w_escape(tts.base_url || 'https://translate.google.com/translate_tts')}"
+               placeholder="https://translate.google.com/translate_tts">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Language</label>
+        <input type="text" class="form-control" id="cfg_media_tts_lang"
+               value="${w_escape(tts.lang || 'en')}" placeholder="en">
+      </div>
+    </div>
     `;
 }
 
@@ -629,10 +656,26 @@ function renderTidalSection(config) {
       </div>
     </div>
     <p class="text-muted small mb-2">
-      Stream your Tidal HiFi library (AAC quality in this version; lossless arrives with the
-      stream server later). Uses an unofficial client — personal use only.
+      Stream your Tidal HiFi library. Uses an unofficial client — personal use only.
       Enable, save &amp; restart, then log in.
     </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold">Quality</label>
+        <select class="form-select" id="cfg_media_tidal_quality">
+          <option value="high" ${(tidal.quality || 'high') === 'high' ? 'selected' : ''}>High (320k AAC — Cast + WiiM)</option>
+          <option value="lossless" ${tidal.quality === 'lossless' ? 'selected' : ''}>Lossless (FLAC/DASH — Cast only)</option>
+        </select>
+        <small class="text-muted">Lossless needs the Manifest URL below; WiiM auto-falls back to AAC.</small>
+      </div>
+      <div class="col-md-8">
+        <label class="form-label small fw-semibold">Manifest Base URL</label>
+        <input type="text" class="form-control" id="cfg_media_tidal_manifest"
+               value="${w_escape(tidal.manifest_base_url || '')}" placeholder="https://192.168.1.1:8000">
+        <small class="text-muted">Public URL of THIS app, reachable by Cast on the LAN (needs valid
+          TLS or http). Required for lossless so Cast can fetch the DASH manifest.</small>
+      </div>
+    </div>
     <div id="tidalStatusRow" class="mb-2"></div>
     <div class="d-flex gap-2">
       <button type="button" class="btn btn-outline-primary btn-sm" onclick="window.tidalLogin()">
@@ -1231,6 +1274,7 @@ function collectFormValues() {
             cast: {
                 enabled: document.getElementById('cfg_media_cast_enabled')?.checked ?? true,
                 app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',
+                lyrics_app_id: document.getElementById('cfg_media_cast_lyrics_appid')?.value?.trim() || '',
             },
             wiim: {
                 enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? true,
@@ -1240,8 +1284,15 @@ function collectFormValues() {
             radio_browser: {
                 enabled: document.getElementById('cfg_media_rb_enabled')?.checked ?? true,
             },
+            tts: {
+                base_url: document.getElementById('cfg_media_tts_base')?.value?.trim()
+                    || 'https://translate.google.com/translate_tts',
+                lang: document.getElementById('cfg_media_tts_lang')?.value?.trim() || 'en',
+            },
             tidal: {
                 enabled: document.getElementById('cfg_media_tidal_enabled')?.checked ?? false,
+                quality: document.getElementById('cfg_media_tidal_quality')?.value || 'high',
+                manifest_base_url: document.getElementById('cfg_media_tidal_manifest')?.value?.trim() || '',
             },
         },
         ota: {
