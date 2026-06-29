@@ -643,6 +643,24 @@ function showOverlay(title, innerHtml) {
 // position (interpolated between polls) + the Tidal lyrics API. No Cast needed.
 // ---------------------------------------------------------------------------
 let _lyr = null;
+// Manual sync offset (ms) — devices report a playback position that lags the
+// audio actually coming out of the speaker (output buffer + reporting delay),
+// so we lead the lyrics by this much. Positive = lyrics earlier. Calibratable
+// per-setup and persisted; also combined with any [offset:] tag in the LRC.
+let _lyrOffsetMs = (() => {
+    const v = parseInt(localStorage.getItem('mediaLyricsOffsetMs'), 10);
+    return Number.isFinite(v) ? v : 400;
+})();
+let _lyrLrcOffsetMs = 0;   // from an [offset:NNN] tag in the current LRC
+
+function _lyrSetOffset(ms) {
+    _lyrOffsetMs = Math.max(-5000, Math.min(5000, ms | 0));
+    localStorage.setItem('mediaLyricsOffsetMs', String(_lyrOffsetMs));
+    const lbl = document.getElementById('lyrOffLbl');
+    if (lbl) lbl.textContent = (_lyrOffsetMs >= 0 ? '+' : '') + (_lyrOffsetMs / 1000).toFixed(1) + 's';
+    if (_lyr) _lyr.activeIdx = -1;   // force re-highlight at the new offset
+}
+window.mediaLyricsNudge = d => _lyrSetOffset(_lyrOffsetMs + d);
 
 function openLyricsScreen(pid) {
     closeLyricsScreen();
@@ -670,6 +688,12 @@ function buildLyricsScreenDOM() {
       <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.25),rgba(0,0,0,.7))"></div>
       <button class="btn btn-outline-light btn-sm" style="position:absolute;top:1rem;right:1rem;z-index:2"
               onclick="window.mediaLyricsClose()" title="Close (Esc)"><i class="fas fa-times"></i></button>
+      <div style="position:absolute;top:1rem;left:1rem;z-index:2;display:flex;align-items:center;gap:.4rem"
+           title="Nudge lyric timing — devices report position behind the actual audio">
+        <button class="btn btn-outline-light btn-sm" onclick="window.mediaLyricsNudge(-100)"><i class="fas fa-minus"></i></button>
+        <span class="small" style="min-width:4.5rem;text-align:center"><i class="fas fa-stopwatch me-1"></i><span id="lyrOffLbl"></span></span>
+        <button class="btn btn-outline-light btn-sm" onclick="window.mediaLyricsNudge(100)"><i class="fas fa-plus"></i></button>
+      </div>
       <div style="position:absolute;inset:0;display:flex;align-items:center;gap:5vw;padding:6vh 6vw">
         <div style="flex:0 0 32vh;display:flex;flex-direction:column;align-items:center;text-align:center">
           <img id="lyrArt" alt="" style="width:32vh;height:32vh;border-radius:16px;object-fit:cover;box-shadow:0 20px 60px rgba(0,0,0,.6);background:#222">
@@ -685,6 +709,7 @@ function buildLyricsScreenDOM() {
         </div>
       </div>`;
     document.body.appendChild(el);
+    _lyrSetOffset(_lyrOffsetMs);      // populate the calibration label
     document.addEventListener('keydown', _lyrKey);
 }
 
@@ -714,6 +739,8 @@ async function _lyrTrackChange(p) {
     if (!_lyr || _lyr.trackId !== p.now_playing_id) return;   // track moved on while fetching
     const lyr = (data && data.success && data.lyrics) ? data.lyrics : null;
     if (lyr && lyr.synced) {
+        const om = /\[offset:\s*([+-]?\d+)\s*\]/i.exec(lyr.synced);
+        _lyrLrcOffsetMs = om ? parseInt(om[1], 10) : 0;
         _lyr.cues = _lrcCues(lyr.synced); _lyr.haveSynced = _lyr.cues.length > 0;
         if (inner) inner.innerHTML = _lyr.cues.map((c, i) =>
             `<div class="lyrln" data-i="${i}" style="font-size:3.2vh;line-height:1.5;font-weight:600;opacity:.32;padding:1vh 0;transition:opacity .3s,transform .3s;transform-origin:left center">${esc(c.text || '♪')}</div>`).join('');
@@ -745,8 +772,11 @@ function lyricsTick() {
         if (p.position_ms !== _lyr.lastPos) {
             _lyr.anchorMs = p.position_ms || 0; _lyr.anchorAt = performance.now(); _lyr.lastPos = p.position_ms;
         }
-        const estMs = (p.state === 'playing')
+        let estMs = (p.state === 'playing')
             ? _lyr.anchorMs + (performance.now() - _lyr.anchorAt) : _lyr.anchorMs;
+        // Lead by the manual offset + any LRC [offset:] tag. LRC convention:
+        // a positive [offset:] makes lyrics appear earlier — same sign as ours.
+        estMs += _lyrOffsetMs + _lyrLrcOffsetMs;
         if (_lyr.haveSynced) _lyrHighlight(estMs / 1000);
     }
     _lyr.raf = requestAnimationFrame(lyricsTick);
