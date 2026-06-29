@@ -10,19 +10,19 @@ weather:
   mqtt_publish: false
 
 media:
-  enabled: true
+  enabled: false
   poll_interval_seconds: 10
   cast:
-    enabled: true
+    enabled: false
     app_id: "CC1AD845"        # default media receiver; swap for a custom Web Receiver later
     lyrics_app_id: ""         # custom Cast receiver showing album art + synced lyrics on
                               # screened devices (Nest Hub). Host static/cast/receiver.html on
                               # HTTPS, register it at cast.google.com/publish, put the App ID
                               # here. Empty = use the default receiver (art only, no lyrics).
-    karaoke: true             # default for "karaoke mode" (cast synced lyrics). Runtime
+    karaoke: false             # default for "karaoke mode" (cast synced lyrics). Runtime
                               # toggle in the media tab overrides this; needs lyrics_app_id set.
   wiim:
-    enabled: true
+    enabled: false
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
   radio_browser:
     enabled: true
@@ -30,13 +30,12 @@ media:
     base_url: "https://translate.google.com/translate_tts"  # keyless; swap engine here
     lang: en
   tidal:
-    enabled: false            # turn on, then log in under Settings → APIs → Media
+    enabled: false             # log in under Settings → APIs → Media
     quality: high             # high = 320k AAC (plays on Cast + WiiM).
                               # lossless = FLAC via DASH — Cast only; WiiM auto-falls back to AAC.
                               # Requires manifest_base_url below (else AAC everywhere).
-    manifest_base_url: ""     # public URL of THIS app, reachable by Cast on the LAN,
-                              # e.g. "https://192.168.1.1:8000". Needed for lossless so
-                              # Cast can fetch the DASH manifest. Cast needs valid TLS or http.
+    manifest_base_url: ""  # public URL of THIS app, reachable by Cast
+                              # on the LAN (needs valid TLS or http). Needed for lossless DASH.
 
 heating:
   enabled: true
