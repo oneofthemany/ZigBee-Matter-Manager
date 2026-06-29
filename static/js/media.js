@@ -16,6 +16,39 @@ let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
 let _radioFavs = [];         // pinned radio stations (full dicts)
 let _radioSearchCache = [];  // last radio search results, for star-toggle by index
+let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth progress
+let _posTimer = null;        // 1s interpolation ticker for the progress bars
+
+function _fmtTime(ms) {
+    if (!isFinite(ms) || ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+    return m + ':' + String(s % 60).padStart(2, '0');
+}
+
+// Re-anchor each player's playhead from the latest snapshot; the ticker
+// interpolates between the (10s) updates so the bar advances smoothly.
+function _syncPosAnchors() {
+    const now = performance.now(), seen = new Set();
+    for (const p of _players) {
+        seen.add(p.player_id);
+        _posAnchors[p.player_id] = { pos: p.position_ms || 0, at: now,
+            dur: p.duration_ms || 0, playing: p.state === 'playing' };
+    }
+    for (const k of Object.keys(_posAnchors)) if (!seen.has(k)) delete _posAnchors[k];
+}
+
+function _tickPositions() {
+    const now = performance.now();
+    for (const [pid, a] of Object.entries(_posAnchors)) {
+        if (a.dur <= 0) continue;                         // radio/live: no bar
+        const bar = document.getElementById('prog-' + pid);
+        if (!bar) continue;
+        const cur = Math.min(a.playing ? a.pos + (now - a.at) : a.pos, a.dur);
+        bar.style.width = Math.max(0, Math.min(100, (cur / a.dur) * 100)).toFixed(2) + '%';
+        const lbl = document.getElementById('ptime-' + pid);
+        if (lbl) lbl.textContent = _fmtTime(cur) + ' / ' + _fmtTime(a.dur);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Init
@@ -51,6 +84,7 @@ export function initMedia() {
     window.mediaSetKaraoke = setKaraoke;
     window.mediaLyricsScreen = openLyricsScreen;
     window.mediaLyricsClose = closeLyricsScreen;
+    if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
 }
 
 // ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
@@ -111,6 +145,7 @@ async function loadPlayers() {
         return;
     }
     _players = data.players || [];
+    _syncPosAnchors();
     autoSelect();
     renderPlayers();
 }
@@ -126,6 +161,7 @@ function autoSelect() {
 function handleMediaState(payload) {
     if (!payload) return;
     _players = payload.players || [];
+    _syncPosAnchors();
     autoSelect();
     // Don't yank a volume slider out from under the user mid-drag.
     const active = document.activeElement;
@@ -189,6 +225,16 @@ function renderPlayers() {
         const nowPlaying = (p.title || p.artist)
             ? `<div class="small text-truncate">${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}${lyricsLink}</div>`
             : '<div class="small text-muted fst-italic">Nothing playing</div>';
+        const pidE = esc(p.player_id);
+        // Position bar for tracks with a known length (radio is live → no bar).
+        const prog = (p.duration_ms > 0) ? `
+          <div class="d-flex align-items-center gap-2 mt-1">
+            <div class="progress flex-grow-1" style="height:4px">
+              <div id="prog-${pidE}" class="progress-bar bg-info"
+                   style="width:${Math.min(100, (p.position_ms || 0) / p.duration_ms * 100).toFixed(2)}%"></div>
+            </div>
+            <small class="text-muted" id="ptime-${pidE}" style="font-variant-numeric:tabular-nums;white-space:nowrap">${_fmtTime(p.position_ms || 0)} / ${_fmtTime(p.duration_ms)}</small>
+          </div>` : '';
         const vol = Math.round((p.volume || 0) * 100);
         const disabled = p.available ? '' : 'disabled';
         const pid = esc(p.player_id);
@@ -206,6 +252,7 @@ function renderPlayers() {
             ${stateBadge(p)}
           </div>
           ${nowPlaying}
+          ${prog}
           ${q ? `<div class="small text-muted">Track ${q.index + 1} of ${q.length}</div>` : ''}
           <div class="d-flex align-items-center gap-2 mt-2" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-outline-secondary" ${disabled} ${hasQueue ? '' : 'disabled'}
