@@ -665,15 +665,31 @@ window.mediaLyricsNudge = d => _lyrSetOffset(_lyrOffsetMs + d);
 function openLyricsScreen(pid) {
     closeLyricsScreen();
     _lyr = { pid, trackId: null, cues: [], haveSynced: false, activeIdx: -1,
-             anchorMs: 0, anchorAt: performance.now(), lastPos: -1, art: null, raf: 0 };
+             anchorMs: 0, anchorAt: performance.now(), playing: false, art: null, raf: 0, poll: 0 };
     buildLyricsScreenDOM();
+    // Re-anchor from a FRESH device read every 1.5s (vs the 10s media poll) so
+    // the lyrics stay locked to the playhead; rAF interpolates in between.
+    _lyrFreshPoll();
+    _lyr.poll = setInterval(_lyrFreshPoll, 1500);
     _lyr.raf = requestAnimationFrame(lyricsTick);
 }
 
 function closeLyricsScreen() {
-    if (_lyr) { cancelAnimationFrame(_lyr.raf); _lyr = null; }
+    if (_lyr) { cancelAnimationFrame(_lyr.raf); clearInterval(_lyr.poll); _lyr = null; }
     document.getElementById('mediaLyricsScreen')?.remove();
     document.removeEventListener('keydown', _lyrKey);
+}
+
+async function _lyrFreshPoll() {
+    if (!_lyr) return;
+    const d = await apiGet('/api/media/position?player_id=' + encodeURIComponent(_lyr.pid));
+    if (!_lyr) return;
+    const p = (d && d.success && d.player) ? d.player : null;
+    if (!p) { _lyr.playing = false; return; }
+    _lyrTick_meta(p);                                   // art/title/artist + track change
+    _lyr.anchorMs = p.position_ms || 0;
+    _lyr.anchorAt = performance.now();
+    _lyr.playing = (p.state === 'playing');
 }
 
 function _lyrKey(e) { if (e.key === 'Escape') closeLyricsScreen(); }
@@ -765,19 +781,12 @@ function _lyrTick_meta(p) {
 
 function lyricsTick() {
     if (!_lyr) return;
-    const p = _players.find(x => x.player_id === _lyr.pid);
-    if (p) {
-        _lyrTick_meta(p);
-        // Re-anchor whenever a fresh position arrives (poll/WS); interpolate between.
-        if (p.position_ms !== _lyr.lastPos) {
-            _lyr.anchorMs = p.position_ms || 0; _lyr.anchorAt = performance.now(); _lyr.lastPos = p.position_ms;
-        }
-        let estMs = (p.state === 'playing')
-            ? _lyr.anchorMs + (performance.now() - _lyr.anchorAt) : _lyr.anchorMs;
-        // Lead by the manual offset + any LRC [offset:] tag. LRC convention:
-        // a positive [offset:] makes lyrics appear earlier — same sign as ours.
-        estMs += _lyrOffsetMs + _lyrLrcOffsetMs;
-        if (_lyr.haveSynced) _lyrHighlight(estMs / 1000);
+    if (_lyr.haveSynced) {
+        // Interpolate from the last fresh anchor (re-anchored every 1.5s by
+        // _lyrFreshPoll); lead by the manual offset + any LRC [offset:] tag.
+        const estMs = (_lyr.playing ? _lyr.anchorMs + (performance.now() - _lyr.anchorAt) : _lyr.anchorMs)
+            + _lyrOffsetMs + _lyrLrcOffsetMs;
+        _lyrHighlight(estMs / 1000);
     }
     _lyr.raf = requestAnimationFrame(lyricsTick);
 }

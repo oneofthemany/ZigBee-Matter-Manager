@@ -105,6 +105,28 @@ def register_media_routes(app: FastAPI, get_media_service):
             players = await svc.controller.refresh()
         return {"success": True, "players": [p.to_dict() for p in players]}
 
+    @app.get("/api/media/position")
+    async def media_position(player_id: str = None):
+        """Fresh, on-demand playhead for ONE player — for tight lyric sync.
+        Without player_id, auto-picks the currently-playing player (used by the
+        standalone /static/lyrics.html page). Returns the full player dict."""
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        pid = player_id
+        if not pid:
+            for s in svc.controller.snapshot():
+                st = getattr(s.state, "value", str(s.state))
+                if st == "playing" and getattr(s, "now_playing_id", ""):
+                    pid = s.player_id
+                    break
+        if not pid:
+            return {"success": False, "error": "No player is playing"}
+        s = await svc.controller.live_state(pid)
+        if not s:
+            return {"success": False, "error": "Player not found"}
+        return {"success": True, "player": s.to_dict()}
+
     @app.post("/api/media/play")
     async def play(body: PlayBody):
         svc = _svc()

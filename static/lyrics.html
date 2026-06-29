@@ -124,21 +124,22 @@
 
     async function poll() {
       try {
-        const r = await fetch('/api/media/players');
+        // /position (no id) auto-picks the playing device and forces a FRESH
+        // device read, so we re-anchor tightly every 1.5s.
+        const r = await fetch('/api/media/position');
         const d = await r.json();
-        const players = (d && d.players) || [];
-        // Prefer a playing Tidal track; fall back to any playing player.
-        let p = players.find(x => x.state === 'playing' && x.media_type === 'tidal' && x.now_playing_id)
-             || players.find(x => x.state === 'playing' && x.now_playing_id);
-        if (p) {
+        const p = (d && d.success && d.player) ? d.player : null;
+        if (p && p.now_playing_id) {
           showMeta(p);
           if (p.now_playing_id !== trackId) onTrack(p);
-          if (p.position_ms !== lastPos) { anchorMs = p.position_ms || 0; anchorAt = performance.now(); lastPos = p.position_ms; }
-          playing = true;
-        } else { playing = false; }
+          anchorMs = p.position_ms || 0; anchorAt = performance.now();
+          playing = (p.state === 'playing');
+        } else {
+          playing = false; $('stage').style.display = 'none'; $('idle').style.display = 'flex';
+        }
       } catch (e) { /* keep last state; try again */ }
     }
-    poll(); setInterval(poll, 3000);
+    poll(); setInterval(poll, 1500);
 
     function tick() {
       if (haveSynced && cues.length) {
