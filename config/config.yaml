@@ -12,6 +12,10 @@ weather:
 media:
   enabled: false
   poll_interval_seconds: 10
+  adopt_sessions: true        # persist play queues to data/media_sessions.json and
+                              # eagerly connect to casting devices on startup, so
+                              # control (next/prev, lyrics, artist) survives a
+                              # reboot/upgrade and the poll reports what's casting.
   cast:
     enabled: false
     app_id: "CC1AD845"        # default media receiver; swap for a custom Web Receiver later

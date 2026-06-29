@@ -48,6 +48,26 @@ class MediaController:
         self._fades: Dict[str, asyncio.Task] = {}
         # Recently-played history (most-recent first), for quick replay in the UI.
         self._recent: deque = deque(maxlen=30)
+        # Players whose restored queue still needs aligning to what the device
+        # actually reports now-playing (it may have advanced while we were down).
+        self._needs_reconcile: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Session persistence (survive restart/upgrade — keep controlling casts)
+    # ------------------------------------------------------------------
+    def sessions_snapshot(self) -> dict:
+        """Serialisable per-player queue state for persistence."""
+        return self._queue.snapshot()
+
+    def restore_sessions(self, data: dict) -> int:
+        """Restore queues saved before a restart so next/prev + the Tidal source
+        linkage (lyrics, artist, now_playing_id) keep working. The cursor is
+        reconciled to the device's actual now-playing on the next poll."""
+        n = self._queue.restore(data)
+        if n:
+            self._needs_reconcile = set((data or {}).keys())
+            logger.info(f"Restored {n} media session(s) from persistence")
+        return n
 
     # ------------------------------------------------------------------
     # Registration / lifecycle
@@ -134,6 +154,13 @@ class MediaController:
         q = self._queue.get(s.player_id)
         if not q or not q.items:
             return
+        # First poll after a restore: the device may have advanced while we were
+        # down — align the restored cursor to what it actually reports playing.
+        if s.player_id in self._needs_reconcile:
+            if s.state in _ACTIVE + (PlaybackState.PAUSED,) and s.title:
+                if q.align_to_title(s.title):
+                    logger.info(f"Reconciled {s.player_id} queue to '{s.title}'")
+                self._needs_reconcile.discard(s.player_id)
         s.queue = q.to_dict()
         cur = q.current()
         if cur and s.state in _ACTIVE + (PlaybackState.PAUSED,):

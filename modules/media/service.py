@@ -37,6 +37,12 @@ class MediaService:
         self._task: Optional[asyncio.Task] = None
         self.cast = None                       # set if Cast is enabled
 
+        # Session adoption: persist queues + eagerly connect to casting devices so
+        # control (next/prev, lyrics, artist) survives an app restart/upgrade.
+        self._adopt_sessions = bool(config.get("adopt_sessions", True))
+        self._sessions_file = config.get("sessions_file", "./data/media_sessions.json")
+        self._sessions_blob = None             # last-written JSON, to debounce saves
+
         # "Karaoke mode": cast synced lyrics (+ art) to the custom receiver.
         # Default from config, then overridden by the persisted runtime toggle.
         cast_cfg0 = config.get("cast", {}) or {}
@@ -236,6 +242,7 @@ class MediaService:
         logger.info(f"Media service started (poll={self.poll_interval}s)")
 
     def stop(self):
+        self._save_sessions()       # best-effort final persist before going down
         if self._task:
             self._task.cancel()
             self._task = None
@@ -245,7 +252,27 @@ class MediaService:
             await self.controller.start()
         except Exception as e:
             logger.error(f"Media controller start failed: {e}")
+        # Adopt anything already casting across a restart/upgrade: restore the
+        # saved queues (for next/prev + Tidal lyrics/artist linkage) and eagerly
+        # connect to discovered devices so the poll reports live now-playing.
+        if self._adopt_sessions:
+            try:
+                data = self._load_sessions()
+                if data:
+                    self.controller.restore_sessions(data)
+            except Exception as e:
+                logger.warning(f"Session restore failed: {e}")
+            asyncio.create_task(self._adopt_casts())
         await self._poll_loop()
+
+    async def _adopt_casts(self):
+        await asyncio.sleep(4)      # let mDNS discovery find the devices first
+        try:
+            if self.cast is not None:
+                n = await self.cast.connect_all()
+                logger.info(f"Adopted {n} cast device(s) for live control")
+        except Exception as e:
+            logger.debug(f"Cast adoption failed: {e}")
 
     async def _poll_loop(self):
         while True:
@@ -253,11 +280,46 @@ class MediaService:
                 snapshot = await self.controller.refresh()
                 await self.controller.tick()        # auto-advance finished tracks
                 await self._broadcast(snapshot)
+                self._save_sessions()               # debounced (writes only on change)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.debug(f"Media poll failed: {e}")
             await asyncio.sleep(self.poll_interval)
+
+    # ------------------------------------------------------------------
+    # Session persistence (data/media_sessions.json)
+    # ------------------------------------------------------------------
+    def _load_sessions(self) -> dict:
+        import json
+        try:
+            with open(self._sessions_file, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning(f"Could not read {self._sessions_file}: {e}")
+            return {}
+
+    def _save_sessions(self) -> None:
+        if not self._adopt_sessions:
+            return
+        import json, os, tempfile
+        try:
+            snap = self.controller.sessions_snapshot()
+            blob = json.dumps(snap, sort_keys=True)
+            if blob == self._sessions_blob:        # unchanged → skip the write
+                return
+            self._sessions_blob = blob
+            d = os.path.dirname(self._sessions_file) or "."
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(blob)
+            os.replace(tmp, self._sessions_file)
+        except Exception as e:
+            logger.debug(f"Could not write {self._sessions_file}: {e}")
 
     async def _broadcast(self, snapshot: List[PlayerState]):
         try:
