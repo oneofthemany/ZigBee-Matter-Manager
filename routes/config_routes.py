@@ -143,6 +143,18 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         cast_cfg["enabled"] = bool(cast_in["enabled"])
                     if cast_in.get("app_id"):
                         cast_cfg["app_id"] = str(cast_in["app_id"]).strip()
+                    # Custom lyrics receiver (blank = off). Allow clearing it.
+                    if "lyrics_app_id" in cast_in:
+                        cast_cfg["lyrics_app_id"] = str(cast_in.get("lyrics_app_id") or "").strip()
+                    if "karaoke" in cast_in:
+                        cast_cfg["karaoke"] = bool(cast_in["karaoke"])
+                if "tts" in m:
+                    tts_in = m["tts"] or {}
+                    tts_cfg = media_cfg.setdefault("tts", {})
+                    if tts_in.get("base_url"):
+                        tts_cfg["base_url"] = str(tts_in["base_url"]).strip()
+                    if tts_in.get("lang"):
+                        tts_cfg["lang"] = str(tts_in["lang"]).strip()
                 if "wiim" in m:
                     wiim_in = m["wiim"] or {}
                     wiim_cfg = media_cfg.setdefault("wiim", {})
@@ -166,6 +178,9 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         td_cfg["enabled"] = bool(td_in["enabled"])
                     if td_in.get("quality"):
                         td_cfg["quality"] = str(td_in["quality"]).strip()
+                    # Allow clearing the manifest URL (lossless off).
+                    if "manifest_base_url" in td_in:
+                        td_cfg["manifest_base_url"] = str(td_in.get("manifest_base_url") or "").strip()
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

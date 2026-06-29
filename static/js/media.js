@@ -49,6 +49,8 @@ export function initMedia() {
     window.mediaRadioFavAdd = radioFavAdd;
     window.mediaRadioFavRemove = radioFavRemove;
     window.mediaSetKaraoke = setKaraoke;
+    window.mediaLyricsScreen = openLyricsScreen;
+    window.mediaLyricsClose = closeLyricsScreen;
 }
 
 // ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
@@ -181,6 +183,8 @@ function renderPlayers() {
         const lyricsLink = (p.media_type === 'tidal' && p.now_playing_id)
             ? ` <button class="btn btn-link p-0 ms-1 align-baseline" title="Lyrics" style="font-size:.72rem"
                   onclick="event.stopPropagation();window.mediaTidalLyrics('${esc(p.now_playing_id)}', ${JSON.stringify(p.title || 'Lyrics').replace(/"/g, '&quot;')})"><i class="fas fa-align-left"></i></button>`
+              + ` <button class="btn btn-link p-0 ms-1 align-baseline" title="Full-screen synced lyrics" style="font-size:.72rem"
+                  onclick="event.stopPropagation();window.mediaLyricsScreen('${esc(p.player_id)}')"><i class="fas fa-closed-captioning"></i></button>`
             : '';
         const nowPlaying = (p.title || p.artist)
             ? `<div class="small text-truncate">${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}${lyricsLink}</div>`
@@ -631,6 +635,135 @@ function showOverlay(title, innerHtml) {
         </div>
         <div class="card-body overflow-auto">${innerHtml}</div>
       </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Full-screen synced lyrics ("now playing" karaoke screen) — free, in-app.
+// Reuses the LRC engine from the Cast receiver, driven by the player's reported
+// position (interpolated between polls) + the Tidal lyrics API. No Cast needed.
+// ---------------------------------------------------------------------------
+let _lyr = null;
+
+function openLyricsScreen(pid) {
+    closeLyricsScreen();
+    _lyr = { pid, trackId: null, cues: [], haveSynced: false, activeIdx: -1,
+             anchorMs: 0, anchorAt: performance.now(), lastPos: -1, art: null, raf: 0 };
+    buildLyricsScreenDOM();
+    _lyr.raf = requestAnimationFrame(lyricsTick);
+}
+
+function closeLyricsScreen() {
+    if (_lyr) { cancelAnimationFrame(_lyr.raf); _lyr = null; }
+    document.getElementById('mediaLyricsScreen')?.remove();
+    document.removeEventListener('keydown', _lyrKey);
+}
+
+function _lyrKey(e) { if (e.key === 'Escape') closeLyricsScreen(); }
+
+function buildLyricsScreenDOM() {
+    document.getElementById('mediaLyricsScreen')?.remove();
+    const el = document.createElement('div');
+    el.id = 'mediaLyricsScreen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:1090;background:#000;color:#fff;overflow:hidden';
+    el.innerHTML = `
+      <div id="lyrBg" style="position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(60px) brightness(.35);transform:scale(1.2)"></div>
+      <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.25),rgba(0,0,0,.7))"></div>
+      <button class="btn btn-outline-light btn-sm" style="position:absolute;top:1rem;right:1rem;z-index:2"
+              onclick="window.mediaLyricsClose()" title="Close (Esc)"><i class="fas fa-times"></i></button>
+      <div style="position:absolute;inset:0;display:flex;align-items:center;gap:5vw;padding:6vh 6vw">
+        <div style="flex:0 0 32vh;display:flex;flex-direction:column;align-items:center;text-align:center">
+          <img id="lyrArt" alt="" style="width:32vh;height:32vh;border-radius:16px;object-fit:cover;box-shadow:0 20px 60px rgba(0,0,0,.6);background:#222">
+          <div id="lyrTitle" style="font-size:3vh;font-weight:700;margin-top:2.5vh"></div>
+          <div id="lyrArtist" style="font-size:2vh;opacity:.75;margin-top:.5vh"></div>
+        </div>
+        <div id="lyrCol" style="flex:1 1 auto;height:100%;position:relative;overflow:hidden;
+             -webkit-mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent);
+             mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent)">
+          <div id="lyrInner" style="position:absolute;left:0;right:0;top:50%;transition:transform .45s cubic-bezier(.22,.61,.36,1)">
+            <div style="opacity:.5;font-size:2.4vh">Waiting for playback…</div>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(el);
+    document.addEventListener('keydown', _lyrKey);
+}
+
+function _lrcCues(lrc) {
+    const out = [], re = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
+    for (const raw of String(lrc || '').split('\n')) {
+        const text = raw.replace(re, '').trim();
+        re.lastIndex = 0; let m;
+        while ((m = re.exec(raw)) !== null) {
+            const frac = m[3] ? parseInt(m[3].padEnd(3, '0').slice(0, 3), 10) / 1000 : 0;
+            out.push({ t: (+m[1]) * 60 + (+m[2]) + frac, text });
+        }
+    }
+    return out.sort((a, b) => a.t - b.t);
+}
+
+async function _lyrTrackChange(p) {
+    _lyr.trackId = p.now_playing_id;
+    _lyr.cues = []; _lyr.haveSynced = false; _lyr.activeIdx = -1;
+    const inner = document.getElementById('lyrInner');
+    if (inner) { inner.style.transition = ''; inner.innerHTML = '<div style="opacity:.5;font-size:2.4vh">Loading lyrics…</div>'; }
+    if (p.media_type !== 'tidal' || !p.now_playing_id) {
+        if (inner) inner.innerHTML = '<div style="opacity:.5;font-size:2.4vh">No lyrics for this source</div>';
+        return;
+    }
+    const data = await apiGet(`/api/media/tidal/lyrics?track_id=${encodeURIComponent(p.now_playing_id)}`);
+    if (!_lyr || _lyr.trackId !== p.now_playing_id) return;   // track moved on while fetching
+    const lyr = (data && data.success && data.lyrics) ? data.lyrics : null;
+    if (lyr && lyr.synced) {
+        _lyr.cues = _lrcCues(lyr.synced); _lyr.haveSynced = _lyr.cues.length > 0;
+        if (inner) inner.innerHTML = _lyr.cues.map((c, i) =>
+            `<div class="lyrln" data-i="${i}" style="font-size:3.2vh;line-height:1.5;font-weight:600;opacity:.32;padding:1vh 0;transition:opacity .3s,transform .3s;transform-origin:left center">${esc(c.text || '♪')}</div>`).join('');
+    } else if (lyr && lyr.text) {
+        if (inner) { inner.style.transition = 'none'; inner.style.transform = 'translateY(-50%)';
+            inner.innerHTML = `<div style="font-size:2.8vh;line-height:1.6;white-space:pre-wrap;opacity:.9">${esc(lyr.text)}</div>`; }
+    } else if (inner) {
+        inner.innerHTML = '<div style="opacity:.5;font-size:2.4vh">No lyrics for this track</div>';
+    }
+}
+
+function _lyrTick_meta(p) {
+    if (p.now_playing_id !== _lyr.trackId) _lyrTrackChange(p);
+    if (p.artwork_url && _lyr.art !== p.artwork_url) {
+        _lyr.art = p.artwork_url;
+        const a = document.getElementById('lyrArt'); if (a) a.src = p.artwork_url;
+        const bg = document.getElementById('lyrBg'); if (bg) bg.style.backgroundImage = `url("${p.artwork_url}")`;
+    }
+    const t = document.getElementById('lyrTitle'); if (t) t.textContent = p.title || '';
+    const ar = document.getElementById('lyrArtist'); if (ar) ar.textContent = p.artist || '';
+}
+
+function lyricsTick() {
+    if (!_lyr) return;
+    const p = _players.find(x => x.player_id === _lyr.pid);
+    if (p) {
+        _lyrTick_meta(p);
+        // Re-anchor whenever a fresh position arrives (poll/WS); interpolate between.
+        if (p.position_ms !== _lyr.lastPos) {
+            _lyr.anchorMs = p.position_ms || 0; _lyr.anchorAt = performance.now(); _lyr.lastPos = p.position_ms;
+        }
+        const estMs = (p.state === 'playing')
+            ? _lyr.anchorMs + (performance.now() - _lyr.anchorAt) : _lyr.anchorMs;
+        if (_lyr.haveSynced) _lyrHighlight(estMs / 1000);
+    }
+    _lyr.raf = requestAnimationFrame(lyricsTick);
+}
+
+function _lyrHighlight(tSec) {
+    const inner = document.getElementById('lyrInner'); if (!inner) return;
+    let idx = -1; const cues = _lyr.cues;
+    for (let i = 0; i < cues.length; i++) { if (cues[i].t <= tSec + 0.15) idx = i; else break; }
+    if (idx === _lyr.activeIdx) return;
+    inner.querySelectorAll('.lyrln').forEach((el, i) => {
+        el.style.opacity = i === idx ? '1' : (i < idx ? '.3' : '.32');
+        el.style.transform = i === idx ? 'scale(1.04)' : 'scale(1)';
+    });
+    const active = inner.querySelector(`.lyrln[data-i="${idx}"]`);
+    if (active) inner.style.transform = `translateY(${-active.offsetTop}px)`;
+    _lyr.activeIdx = idx;
 }
 
 async function tidalPlay(kind, id, mode, name) {
