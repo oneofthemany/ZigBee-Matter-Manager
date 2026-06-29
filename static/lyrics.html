@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<!--
+  ZigBee Manager — standalone full-screen synced-lyrics page.
+
+  Purpose: a clean, app-chrome-free page you can open in Chrome and **Cast tab**
+  to a Nest Hub — giving album art + synced lyrics ON the Hub WITHOUT the paid
+  Google Cast developer registration (Chrome tab-mirroring needs no receiver app).
+
+  It auto-tracks whichever player is currently playing a Tidal track, pulls the
+  LRC lyrics from this app's own API (same origin → uses your login session),
+  and scrolls them against the device-reported position (interpolated between
+  polls). Tune the offset (bottom-left or [ / ] keys) to compensate for the
+  device buffer + the ~1s mirroring delay.
+
+  Reachable at:  https://<this-app>:8000/static/lyrics.html
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Lyrics — ZigBee Manager</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{width:100%;height:100%;overflow:hidden;background:#000;color:#fff;
+      font-family:"Roboto","Segoe UI",system-ui,sans-serif;cursor:none}
+    #bg{position:fixed;inset:0;background-size:cover;background-position:center;
+      filter:blur(60px) brightness(.35);transform:scale(1.2);transition:background-image .6s}
+    #scrim{position:fixed;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.25),rgba(0,0,0,.7))}
+    #stage{position:fixed;inset:0;display:flex;align-items:center;gap:5vw;padding:6vh 6vw}
+    #left{flex:0 0 34vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+    #art{width:34vh;height:34vh;border-radius:18px;object-fit:cover;box-shadow:0 20px 60px rgba(0,0,0,.6);background:#222}
+    #title{font-size:3.2vh;font-weight:700;margin-top:3vh;max-width:34vh}
+    #artist{font-size:2.2vh;opacity:.75;margin-top:.6vh;max-width:34vh}
+    #lyrics{flex:1 1 auto;height:100%;position:relative;overflow:hidden;
+      -webkit-mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent);
+      mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent)}
+    #inner{position:absolute;left:0;right:0;top:50%;transition:transform .45s cubic-bezier(.22,.61,.36,1)}
+    .ln{font-size:3.4vh;line-height:1.5;font-weight:600;opacity:.32;padding:1.1vh 0;
+      transition:opacity .3s,transform .3s;transform-origin:left center}
+    .ln.active{opacity:1;transform:scale(1.04)}
+    .ln.past{opacity:.3}
+    #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:3vh;opacity:.5}
+    #cal{position:fixed;bottom:1rem;left:1rem;font-size:1.8vh;opacity:.55;display:flex;gap:.6rem;align-items:center}
+    #cal button{background:transparent;border:1px solid #fff6;color:#fff;border-radius:6px;
+      width:2.4rem;height:2rem;font-size:1.6vh;cursor:pointer}
+    body:hover{cursor:default}
+  </style>
+</head>
+<body>
+  <div id="bg"></div><div id="scrim"></div>
+  <div id="stage" style="display:none">
+    <div id="left"><img id="art" alt=""><div id="title"></div><div id="artist"></div></div>
+    <div id="lyrics"><div id="inner"></div></div>
+  </div>
+  <div id="idle">Waiting for a Tidal track to play…</div>
+  <div id="cal">
+    <button onclick="nudge(-100)">−</button>
+    <span>sync <span id="off"></span></span>
+    <button onclick="nudge(100)">+</button>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let trackId = null, cues = [], haveSynced = false, activeIdx = -1, lrcOffset = 0;
+    let anchorMs = 0, anchorAt = performance.now(), lastPos = -1, playing = false, curArt = null;
+    let offsetMs = (() => { const v = parseInt(localStorage.getItem('zmmLyricsOffsetMs'), 10);
+      return Number.isFinite(v) ? v : 400; })();
+
+    function nudge(d) {
+      offsetMs = Math.max(-5000, Math.min(5000, offsetMs + d));
+      localStorage.setItem('zmmLyricsOffsetMs', String(offsetMs));
+      $('off').textContent = (offsetMs >= 0 ? '+' : '') + (offsetMs / 1000).toFixed(1) + 's';
+      activeIdx = -1;
+    }
+    document.addEventListener('keydown', e => {
+      if (e.key === ']' || e.key === '+' || e.key === '=') nudge(100);
+      else if (e.key === '[' || e.key === '-') nudge(-100);
+    });
+    nudge(0);
+
+    function parseLRC(lrc) {
+      const out = [], re = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
+      for (const raw of String(lrc || '').split('\n')) {
+        const text = raw.replace(re, '').trim();
+        re.lastIndex = 0; let m;
+        while ((m = re.exec(raw)) !== null) {
+          const frac = m[3] ? parseInt(m[3].padEnd(3, '0').slice(0, 3), 10) / 1000 : 0;
+          out.push({ t: (+m[1]) * 60 + (+m[2]) + frac, text });
+        }
+      }
+      return out.sort((a, b) => a.t - b.t);
+    }
+    const esc = s => String(s ?? '').replace(/[<>&]/g, '');
+
+    function showMeta(p) {
+      if (p.artwork_url && curArt !== p.artwork_url) {
+        curArt = p.artwork_url; $('art').src = p.artwork_url;
+        $('bg').style.backgroundImage = `url("${p.artwork_url}")`;
+      }
+      $('title').textContent = p.title || '';
+      $('artist').textContent = p.artist || '';
+      $('idle').style.display = 'none'; $('stage').style.display = 'flex';
+    }
+
+    async function onTrack(p) {
+      trackId = p.now_playing_id; cues = []; haveSynced = false; activeIdx = -1; lrcOffset = 0;
+      $('inner').style.transition = ''; $('inner').innerHTML = '<div style="opacity:.5">Loading lyrics…</div>';
+      try {
+        const r = await fetch('/api/media/tidal/lyrics?track_id=' + encodeURIComponent(p.now_playing_id));
+        const d = await r.json();
+        if (trackId !== p.now_playing_id) return;
+        const lyr = (d && d.success && d.lyrics) ? d.lyrics : null;
+        if (lyr && lyr.synced) {
+          const om = /\[offset:\s*([+-]?\d+)\s*\]/i.exec(lyr.synced);
+          lrcOffset = om ? parseInt(om[1], 10) : 0;
+          cues = parseLRC(lyr.synced); haveSynced = cues.length > 0;
+          $('inner').innerHTML = cues.map((c, i) => `<div class="ln" data-i="${i}">${esc(c.text || '♪')}</div>`).join('');
+        } else if (lyr && lyr.text) {
+          $('inner').style.transition = 'none'; $('inner').style.transform = 'translateY(-50%)';
+          $('inner').innerHTML = `<div style="font-size:3vh;line-height:1.6;white-space:pre-wrap;opacity:.9">${esc(lyr.text)}</div>`;
+        } else { $('inner').innerHTML = '<div style="opacity:.5">No lyrics for this track</div>'; }
+      } catch (e) { $('inner').innerHTML = '<div style="opacity:.5">Lyrics unavailable</div>'; }
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch('/api/media/players');
+        const d = await r.json();
+        const players = (d && d.players) || [];
+        // Prefer a playing Tidal track; fall back to any playing player.
+        let p = players.find(x => x.state === 'playing' && x.media_type === 'tidal' && x.now_playing_id)
+             || players.find(x => x.state === 'playing' && x.now_playing_id);
+        if (p) {
+          showMeta(p);
+          if (p.now_playing_id !== trackId) onTrack(p);
+          if (p.position_ms !== lastPos) { anchorMs = p.position_ms || 0; anchorAt = performance.now(); lastPos = p.position_ms; }
+          playing = true;
+        } else { playing = false; }
+      } catch (e) { /* keep last state; try again */ }
+    }
+    poll(); setInterval(poll, 3000);
+
+    function tick() {
+      if (haveSynced && cues.length) {
+        const est = (playing ? anchorMs + (performance.now() - anchorAt) : anchorMs) + offsetMs + lrcOffset;
+        const t = est / 1000;
+        let idx = -1;
+        for (let i = 0; i < cues.length; i++) { if (cues[i].t <= t + 0.15) idx = i; else break; }
+        if (idx !== activeIdx) {
+          const inner = $('inner');
+          inner.querySelectorAll('.ln').forEach((el, i) => {
+            el.classList.toggle('active', i === idx); el.classList.toggle('past', i < idx);
+          });
+          const a = inner.querySelector(`.ln[data-i="${idx}"]`);
+          if (a) inner.style.transform = `translateY(${-a.offsetTop}px)`;
+          activeIdx = idx;
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
