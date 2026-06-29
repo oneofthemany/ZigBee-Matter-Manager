@@ -136,6 +136,8 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     media_cfg["enabled"] = bool(m["enabled"])
                 if m.get("poll_interval_seconds"):
                     media_cfg["poll_interval_seconds"] = int(m["poll_interval_seconds"])
+                if "adopt_sessions" in m:
+                    media_cfg["adopt_sessions"] = bool(m["adopt_sessions"])
                 if "cast" in m:
                     cast_in = m["cast"] or {}
                     cast_cfg = media_cfg.setdefault("cast", {})

@@ -148,6 +148,44 @@ class PlayerQueue:
             "length": len(self.items),
         }
 
+    @classmethod
+    def from_dict(cls, player_id: str, d: dict) -> "PlayerQueue":
+        """Rebuild a queue from to_dict() output (used to restore sessions across
+        an app restart). Tolerant of partial/garbled data — bad items are skipped.
+        Stream URLs aren't trusted (Tidal's expire); source_id re-resolves at play."""
+        q = cls(player_id)
+        for it in (d.get("items") or []):
+            try:
+                q.items.append(QueueItem(id=it.get("id") or _new_id(),
+                                         item=MediaItem(**(it.get("item") or {}))))
+            except Exception:
+                continue
+        idx = d.get("index", -1)
+        q.index = idx if isinstance(idx, int) and -1 <= idx < len(q.items) \
+            else (0 if q.items else -1)
+        q.repeat = d.get("repeat") if d.get("repeat") in REPEAT_MODES else "off"
+        q.shuffle = bool(d.get("shuffle"))
+        q.auto_extend = bool(d.get("auto_extend"))
+        q._cycle_played = {q.index} if q.index >= 0 else set()
+        return q
+
+    def align_to_title(self, title: str) -> bool:
+        """Best-effort: move the cursor to the queue item whose title matches what
+        the device reports now playing (the device may have advanced while the app
+        was down). Returns True if it moved. Only acts on an exact title match."""
+        if not title:
+            return False
+        cur = self.current()
+        if cur and cur.item.title == title:
+            return False
+        for i, qi in enumerate(self.items):
+            if qi.item.title == title:
+                self.index = i
+                self._cycle_played = {i}
+                self._history.clear()
+                return True
+        return False
+
 
 class QueueController:
     """Owns one PlayerQueue per player_id."""
@@ -172,3 +210,19 @@ class QueueController:
         q = self._queues.get(player_id)
         if q:
             q.clear()
+
+    # ── Persistence (survive app restart / upgrade) ──────────────────────────
+    def snapshot(self) -> dict:
+        """Serialisable state of every non-empty queue, keyed by player_id."""
+        return {pid: q.to_dict() for pid, q in self._queues.items() if q.items}
+
+    def restore(self, data: dict) -> int:
+        """Rebuild queues from a snapshot(). Returns how many were restored."""
+        n = 0
+        for pid, d in (data or {}).items():
+            try:
+                self._queues[pid] = PlayerQueue.from_dict(pid, d)
+                n += 1
+            except Exception as e:
+                logger.debug(f"Queue restore failed for {pid}: {e}")
+        return n

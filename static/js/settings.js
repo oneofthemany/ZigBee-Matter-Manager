@@ -573,6 +573,13 @@ function renderMediaSection(config) {
         <label class="form-label small fw-semibold">Poll Interval (s)</label>
         <input type="number" class="form-control" id="cfg_media_poll" value="${m.poll_interval_seconds ?? 10}" min="3">
       </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Adopt casting sessions</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_adopt" ${m.adopt_sessions !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Keep controlling devices after a reboot/upgrade</label>
+        </div>
+      </div>
     </div>
 
     <div class="row g-3 mb-3">
@@ -1274,6 +1281,7 @@ function collectFormValues() {
         media: {
             enabled: document.getElementById('cfg_media_enabled')?.checked ?? false,
             poll_interval_seconds: Number(document.getElementById('cfg_media_poll')?.value) || 10,
+            adopt_sessions: document.getElementById('cfg_media_adopt')?.checked ?? true,
             cast: {
                 enabled: document.getElementById('cfg_media_cast_enabled')?.checked ?? true,
                 app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',

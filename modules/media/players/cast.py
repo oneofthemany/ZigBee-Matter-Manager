@@ -149,6 +149,22 @@ class CastPlayerProvider(PlayerProvider):
     # ------------------------------------------------------------------
     # Discovery / state
     # ------------------------------------------------------------------
+    async def connect_all(self) -> int:
+        """Eagerly connect to every discovered device so list_players reports
+        live now-playing state — lets us 'adopt' whatever is already casting
+        (e.g. after an app restart) and control it. Best-effort, errors ignored."""
+        connected = 0
+        for uuid_str in list(self._infos.keys()):
+            if uuid_str in self._casts:
+                connected += 1
+                continue
+            try:
+                if await self._get_cast(uuid_str):
+                    connected += 1
+            except Exception as e:
+                logger.debug(f"Eager connect failed for {uuid_str}: {e}")
+        return connected
+
     async def list_players(self) -> List[PlayerState]:
         out: List[PlayerState] = []
         for uuid_str, info in list(self._infos.items()):
