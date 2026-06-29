@@ -409,6 +409,22 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "No lyrics for this track"}
         return {"success": True, "lyrics": lyrics}
 
+    @app.get("/api/media/tidal/track/{track_id}/context")
+    async def tidal_track_context(track_id: str):
+        """Artist of the now-playing track + their other albums — powers the
+        'artist radio' and 'more from this artist' actions on the player card."""
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        artist = await src.track_artist(track_id)
+        if not artist:
+            return {"success": False, "error": "No artist info for this track"}
+        albums = await src.artist_albums(artist["id"]) if artist.get("id") else []
+        return {"success": True, "artist": artist, "albums": albums}
+
     @app.post("/api/media/tidal/favorite")
     async def tidal_favorite(body: TidalFavoriteBody):
         svc = _svc()

@@ -468,6 +468,35 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal track radio failed: {e}")
             return []
 
+    async def track_artist(self, track_id: str) -> Optional[dict]:
+        """The primary artist of a track (id/name/picture) — lets the now-playing
+        card offer artist radio + the artist's other albums."""
+        if not self._session:
+            return None
+        return await asyncio.to_thread(self._track_artist, track_id)
+
+    def _track_artist(self, track_id: str) -> Optional[dict]:
+        try:
+            artist = getattr(self._session.track(int(track_id)), "artist", None)
+            return self._artist_summary(artist) if artist else None
+        except Exception as e:
+            logger.debug(f"Tidal track artist lookup failed for {track_id}: {e}")
+            return None
+
+    async def artist_albums(self, artist_id: str) -> List[dict]:
+        """Summaries of an artist's albums (for 'more from this artist')."""
+        if not self._session:
+            return []
+        return await asyncio.to_thread(self._artist_albums, artist_id)
+
+    def _artist_albums(self, artist_id: str) -> List[dict]:
+        try:
+            albums = self._session.artist(int(artist_id)).get_albums() or []
+            return [self._album_summary(a) for a in albums]
+        except Exception as e:
+            logger.warning(f"Tidal artist albums failed for {artist_id}: {e}")
+            return []
+
     async def single_item(self, track_id: str) -> Optional[MediaItem]:
         if not self._session:
             return None

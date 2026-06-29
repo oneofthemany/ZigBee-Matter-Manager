@@ -84,6 +84,8 @@ export function initMedia() {
     window.mediaSetKaraoke = setKaraoke;
     window.mediaLyricsScreen = openLyricsScreen;
     window.mediaLyricsClose = closeLyricsScreen;
+    window.mediaArtistPanel = artistPanel;
+    window.mediaPlayTidalOn = playTidalOn;
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
 }
 
@@ -235,6 +237,14 @@ function renderPlayers() {
             </div>
             <small class="text-muted" id="ptime-${pidE}" style="font-variant-numeric:tabular-nums;white-space:nowrap">${_fmtTime(p.position_ms || 0)} / ${_fmtTime(p.duration_ms)}</small>
           </div>` : '';
+        // Album art thumbnail + an artist button (radio + other albums) for Tidal.
+        const art = (p.artwork_url && (p.title || p.artist))
+            ? `<img src="${esc(p.artwork_url)}" alt="" style="width:46px;height:46px;border-radius:6px;object-fit:cover;flex:0 0 auto">`
+            : '';
+        const artistBtn = (p.media_type === 'tidal' && p.now_playing_id)
+            ? `<button class="btn btn-link p-0 ms-1 align-self-center text-decoration-none" title="Artist: radio & other albums"
+                  onclick="event.stopPropagation();window.mediaArtistPanel('${esc(p.player_id)}','${esc(p.now_playing_id)}')"><i class="fas fa-record-vinyl"></i></button>`
+            : '';
         const vol = Math.round((p.volume || 0) * 100);
         const disabled = p.available ? '' : 'disabled';
         const pid = esc(p.player_id);
@@ -251,9 +261,16 @@ function renderPlayers() {
             </div>
             ${stateBadge(p)}
           </div>
-          ${nowPlaying}
-          ${prog}
+          <div class="d-flex gap-2 align-items-center mt-1">
+            ${art}
+            <div class="flex-grow-1" style="min-width:0">
+              ${nowPlaying}
+              ${prog}
+            </div>
+            ${artistBtn}
+          </div>
           ${q ? `<div class="small text-muted">Track ${q.index + 1} of ${q.length}</div>` : ''}
+          <div id="artist-${pidE}" class="mt-2"></div>
           <div class="d-flex align-items-center gap-2 mt-2" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-outline-secondary" ${disabled} ${hasQueue ? '' : 'disabled'}
                     onclick="window.mediaControl('${pid}','prev')" title="Previous">
@@ -850,6 +867,47 @@ function _lyrHighlight(tSec) {
     const active = inner.querySelector(`.lyrln[data-i="${idx}"]`);
     if (active) inner.style.transform = `translateY(${-active.offsetTop}px)`;
     _lyr.activeIdx = idx;
+}
+
+// Artist context panel on a player card: artist radio + the artist's other
+// albums, resolved from the now-playing track id. Toggles open/closed.
+async function artistPanel(playerId, trackId) {
+    const box = document.getElementById('artist-' + playerId);
+    if (!box) return;
+    if (box.innerHTML.trim()) { box.innerHTML = ''; return; }   // collapse
+    box.innerHTML = spinner();
+    const d = await apiGet(`/api/media/tidal/track/${encodeURIComponent(trackId)}/context`);
+    if (!d || !d.success) { box.innerHTML = `<div class="small text-muted">${esc((d && d.error) || 'No artist info')}</div>`; return; }
+    const a = d.artist || {}, albums = d.albums || [];
+    const nm = s => JSON.stringify(s || '').replace(/"/g, '&quot;');
+    const cards = albums.slice(0, 30).map(al => `
+        <div class="text-center" style="width:88px;flex:0 0 auto">
+          <img src="${esc(al.artwork || '')}" alt="" title="Play ${esc(al.name)}"
+               style="width:80px;height:80px;border-radius:6px;object-fit:cover;cursor:pointer;background:#e9ecef"
+               onclick="window.mediaPlayTidalOn('${esc(playerId)}','album','${esc(al.id)}','play',${nm(al.name)})">
+          <div class="text-truncate small" style="width:80px" title="${esc(al.name)}">${esc(al.name)}</div>
+        </div>`).join('');
+    box.innerHTML = `
+      <div class="border-top pt-2">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <span class="small fw-semibold text-truncate me-2"><i class="fas fa-user me-1"></i>${esc(a.name || 'Artist')}</span>
+          <button class="btn btn-sm btn-outline-primary flex-shrink-0"
+                  onclick="window.mediaPlayTidalOn('${esc(playerId)}','artist','${esc(a.id)}','radio',${nm(a.name)})">
+            <i class="fas fa-broadcast-tower me-1"></i>Artist radio
+          </button>
+        </div>
+        ${albums.length
+            ? `<div class="small text-muted mb-1">More from this artist</div>
+               <div class="d-flex gap-2 overflow-auto pb-1">${cards}</div>`
+            : '<div class="small text-muted">No other albums found.</div>'}
+      </div>`;
+}
+
+// Play a Tidal item on a SPECIFIC player (the card it was launched from),
+// without disturbing the current selection visually until playback refreshes.
+async function playTidalOn(playerId, kind, id, mode, name) {
+    _selectedId = playerId;
+    await tidalPlay(kind, id, mode, name);
 }
 
 async function tidalPlay(kind, id, mode, name) {
