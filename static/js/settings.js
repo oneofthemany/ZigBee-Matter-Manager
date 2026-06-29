@@ -595,7 +595,10 @@ function renderMediaSection(config) {
                value="${w_escape(cast.lyrics_app_id || '')}" placeholder="e.g. ABCD1234 (blank = off)">
         <small class="text-muted">Custom Cast receiver for album art + synced lyrics on screened
           devices (Nest Hub). Host <code>static/cast/receiver.html</code> on HTTPS, register it at
-          cast.google.com/publish. Karaoke on/off is a live toggle in the Media tab.</small>
+          cast.google.com/publish (one-time $5), put the App ID here. Karaoke on/off is a live
+          toggle in the Media tab.
+          <br><strong>No registration?</strong> Use the <em>Lyrics</em> button in the Media tab — it opens a
+          full-screen page you Chrome-Cast-tab to the Hub for free (leave this blank).</small>
       </div>
     </div>
 
