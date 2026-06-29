@@ -43,18 +43,28 @@ _cache = {"at": 0.0, "result": None}
 PROJECT_ROOT = Path("/app")
 BACKUP_DIR = PROJECT_ROOT / ".editor_backups"
 
-# Runtime state, never "code edits" — belt-and-suspenders on top of .gitignore.
-_IGNORE_PREFIXES = ("data/", "logs/", ".editor_backups/", "__pycache__/", ".git/")
+# Runtime state / volume-mounted dirs, never "code edits an upgrade discards" —
+# belt-and-suspenders on top of .gitignore. config/ is bind-mounted from the
+# data volume (build.sh: --volume DATA_DIR/config:/app/config), so its edits
+# PERSIST across an image swap — flagging them as "would be discarded" is wrong.
+_IGNORE_PREFIXES = ("data/", "logs/", "config/", ".editor_backups/",
+                    "__pycache__/", ".git/")
 _IGNORE_SUFFIXES = (".pyc", ".pyo", ".log")
+# Exact paths that aren't user edits to preserve: VERSION is replaced by the new
+# image by design; Containerfile/.dockerignore are build artifacts.
+_IGNORE_EXACT = {"VERSION", "Containerfile", ".dockerignore"}
 
 # backup name = "<safe>.<YYYYMMDD_HHMMSS>...bak"  →  capture <safe> for grouping.
 _BACKUP_TS_RE = re.compile(r"^(.*?)\.\d{8}_\d{6}")
 
 
 def _ignored(path: str) -> bool:
-    p = path.lstrip("./")
+    # Strip only a leading "./" — NOT lstrip("./"), which also eats the leading
+    # dot of dotpaths like ".editor_backups/" and defeats the prefix match.
+    p = path[2:] if path.startswith("./") else path
     return (
-        any(p.startswith(pre) for pre in _IGNORE_PREFIXES)
+        p in _IGNORE_EXACT
+        or any(p.startswith(pre) for pre in _IGNORE_PREFIXES)
         or any(p.endswith(suf) for suf in _IGNORE_SUFFIXES)
     )
 
