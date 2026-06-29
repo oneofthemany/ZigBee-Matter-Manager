@@ -182,6 +182,21 @@ class CastPlayerProvider(PlayerProvider):
             return self._state_from_info(uuid_str, info)
         return await asyncio.to_thread(self._read_state, uuid_str, info, cast)
 
+    async def live_state(self, player_id: str):
+        """Like get_state but forces a FRESH media status from the device first.
+        Cast caches the last-pushed status (current_time only advances on those
+        pushes), so for tight lyric sync we request an up-to-the-moment status."""
+        uuid_str = player_id.split(":", 1)[1]
+        cast = self._casts.get(uuid_str)
+        if cast is None:
+            return await self.get_state(player_id)
+        try:
+            await asyncio.to_thread(cast.media_controller.update_status)
+            await asyncio.sleep(0.25)   # let the status push arrive on the socket
+        except Exception as e:
+            logger.debug(f"Cast update_status failed for {player_id}: {e}")
+        return await self.get_state(player_id)
+
     def _read_state(self, uuid_str, info, cast) -> PlayerState:
         mc_status = cast.media_controller.status
         cast_status = cast.status

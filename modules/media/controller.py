@@ -109,6 +109,24 @@ class MediaController:
         self._cache = {s.player_id: s for s in snapshot}
         return snapshot
 
+    async def live_state(self, player_id: str) -> Optional[PlayerState]:
+        """Fresh, on-demand state for ONE player (forces a live device read where
+        the provider supports it), enriched with the queue's now-playing info.
+        Used by the lyrics views to re-anchor sync far tighter than the 10s poll."""
+        prov = self._provider_for(player_id)
+        if not prov:
+            return None
+        getter = getattr(prov, "live_state", None)
+        try:
+            s = await (getter(player_id) if getter else prov.get_state(player_id))
+        except Exception as e:
+            logger.debug(f"live_state failed for {player_id}: {e}")
+            return None
+        if s:
+            self._attach_queue(s)
+            self._cache[s.player_id] = s
+        return s
+
     def _attach_queue(self, s: PlayerState) -> None:
         """Attach queue summary + enrich now-playing from the known queue item.
         Devices often expose no metadata for a raw URL, so the queue item (which
