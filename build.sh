@@ -719,16 +719,17 @@ DBUS_POLICY
 # RUN CONTAINER
 # =============================================================================
 # Create the pod the app (and later the manager sidecar) join. Idempotent: a
-# pre-existing pod is reused. Reserves the manager port up front so CP2 can add
-# the sidecar without recreating the pod. Podman only.
+# pre-existing pod is reused. Podman only.
+#
+# Host networking — NOT bridge — is required: Cast (pychromecast/zeroconf),
+# Thread/OTBR, and Matter all rely on LAN multicast/mDNS, which podman's default
+# bridge NAT does not pass. On the host network the pod members bind ports
+# directly (no --publish), and the manager sidecar (CP2) reaches the app on
+# 127.0.0.1 because they share the host netns.
 ensure_pod() {
-    local host_port="$1" host_matter_port="$2"
     "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null && return 0
-    info "Creating pod '${POD_NAME}' (publishing ${host_port}, ${host_matter_port}, ${MANAGER_PORT})..."
-    "$RUNTIME" pod create --name "$POD_NAME" \
-        --publish "${host_port}:${INTERNAL_PORT}" \
-        --publish "${host_matter_port}:${MATTER_INTERNAL_PORT}" \
-        --publish "${MANAGER_PORT}:${MANAGER_PORT}"
+    info "Creating pod '${POD_NAME}' on the host network (mDNS/Cast/Thread/Matter)..."
+    "$RUNTIME" pod create --name "$POD_NAME" --network=host
 }
 
 run_container() {
