@@ -746,6 +746,9 @@ run_container() {
         "$RUNTIME" rm -f "$CONTAINER_NAME"
     fi
 
+    # Note: the net.* forwarding sysctls are NOT set here. They live in the network
+    # namespace, so podman rejects them on a --network=host container (and they
+    # must instead be applied to the host). They're added per-mode below.
     local run_args=(
         --detach
         --name "$CONTAINER_NAME"
@@ -753,9 +756,6 @@ run_container() {
         --cap-add=NET_ADMIN
         --cap-add=NET_RAW
         --cap-add=SYS_ADMIN
-        --sysctl net.ipv6.conf.all.disable_ipv6=0
-        --sysctl net.ipv6.conf.all.forwarding=1
-        --sysctl net.ipv4.conf.all.forwarding=1
         --device /dev/net/tun:/dev/net/tun
         --volume /dev/shm:/dev/shm
         --volume /run/dbus:/run/dbus
@@ -765,18 +765,31 @@ run_container() {
         --volume "${DATA_DIR}/logs:/app/logs"
     )
 
-    # ── Networking: pod (podman) vs standalone host net (docker) ──
-    # In a pod the infra container owns the ports, so the app joins with --pod and
-    # must NOT carry --network or --publish (podman rejects that combination).
+    # ── Networking: host-net pod (podman) vs standalone slirp4netns (docker) ──
     if [[ "$RUNTIME" == "podman" ]]; then
-        ensure_pod "$host_port" "$host_matter_port"
+        ensure_pod
         run_args+=(--pod "$POD_NAME")
-        ok "Networking: pod '${POD_NAME}' (ZMM: ${host_port}, Matter: ${host_matter_port}, Manager: ${MANAGER_PORT})"
+        # Host netns: per-container net.* sysctls are rejected by podman, so apply
+        # the Thread/OTBR forwarding sysctls to the HOST instead (live + persisted
+        # so they survive reboot). MQTT/Matter/Cast don't need these — only Thread
+        # border routing does — so failure here is non-fatal.
+        sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+        sysctl -w net.ipv6.conf.all.forwarding=1   >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.conf.all.forwarding=1   >/dev/null 2>&1 || true
+        sudo tee /etc/sysctl.d/99-zmm-thread.conf >/dev/null 2>&1 <<'SYSCTL' || true
+net.ipv6.conf.all.disable_ipv6 = 0
+net.ipv6.conf.all.forwarding = 1
+net.ipv4.conf.all.forwarding = 1
+SYSCTL
+        ok "Networking: pod '${POD_NAME}' on host net (forwarding sysctls applied to host)"
     else
         run_args+=(
             --network=slirp4netns
             --publish "${host_port}:${INTERNAL_PORT}"
             --publish "${host_matter_port}:${MATTER_INTERNAL_PORT}"
+            --sysctl net.ipv6.conf.all.disable_ipv6=0
+            --sysctl net.ipv6.conf.all.forwarding=1
+            --sysctl net.ipv4.conf.all.forwarding=1
         )
         ok "Networking: host (ZMM: ${host_port}, Matter: ${host_matter_port})"
     fi
