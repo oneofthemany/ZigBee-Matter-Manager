@@ -865,16 +865,17 @@ SYSCTL
 }
 
 # =============================================================================
-# MANAGER SIDECAR (CP2a)
+# MANAGER SIDECAR (decoupled)
 # =============================================================================
-# Run the always-on manager as a SECOND member of the pod. It reuses the app
-# image (which already contains the manager/ package + uvicorn/httpx) run as
-# `python -m manager`, mounts the runtime socket so it can inspect pod members,
-# and shares the pod's host netns so it reaches the app on 127.0.0.1:8000. The
-# pod's systemd unit (pod start/stop) brings it up on reboot alongside the app.
+# Run the always-on manager as a SEPARATE container — NOT a pod member. It reuses
+# the app image (which has the manager/ package + uvicorn/httpx) run as
+# `python -m manager`, mounts the runtime socket so it can inspect containers, and
+# sits on its OWN bridge network so the app (a Thread border router that churns
+# the host netns on every start) can't knock it offline. It reaches the app via
+# host.containers.internal:8000 instead of 127.0.0.1, publishes :8001 itself, and
+# has its own systemd unit for reboot (the pod unit no longer covers it).
 run_manager_container() {
-    [[ "$RUNTIME" == "podman" ]] || { info "Manager sidecar needs podman pods — skipping."; return 0; }
-    "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null || { warn "Pod '${POD_NAME}' absent — skipping manager sidecar."; return 0; }
+    [[ "$RUNTIME" == "podman" ]] || { info "Manager sidecar needs podman — skipping."; return 0; }
 
     local app_image="${1:-${IMAGE_NAME}:latest}"
 
@@ -888,17 +889,19 @@ run_manager_container() {
         "$RUNTIME" rm -f "$MANAGER_CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 
-    info "Starting manager sidecar '${MANAGER_CONTAINER_NAME}' on :${MANAGER_PORT}..."
+    info "Starting manager sidecar '${MANAGER_CONTAINER_NAME}' on :${MANAGER_PORT} (off-pod, own bridge)..."
     local margs=(
         --detach
-        --pod "$POD_NAME"
         --name "$MANAGER_CONTAINER_NAME"
         --security-opt label=disable
         --no-healthcheck
+        --publish "${MANAGER_PORT}:${MANAGER_PORT}"
+        --add-host "host.containers.internal:host-gateway"
         --volume "${DATA_DIR}:${DATA_DIR}"
         --env "ZMM_POD_NAME=${POD_NAME}"
         --env "ZMM_CONTAINER_NAME=${CONTAINER_NAME}"
         --env "ZMM_MANAGER_PORT=${MANAGER_PORT}"
+        --env "ZMM_APP_HEALTH_URL=https://host.containers.internal:${INTERNAL_PORT}/api/system/health"
     )
     if [[ -n "$sock" ]]; then
         margs+=(--volume "${sock}:${sock}" --env "ZMM_CONTAINER_SOCK=${sock}")
@@ -907,7 +910,37 @@ run_manager_container() {
         warn "Manager: no runtime socket found — container list will be unavailable"
     fi
     "$RUNTIME" run "${margs[@]}" "$app_image" python -m manager
-    ok "Manager sidecar started (http://<host>:${MANAGER_PORT})."
+    ok "Manager sidecar started off-pod (http://<host>:${MANAGER_PORT})."
+    install_manager_autostart
+}
+
+# Tiny systemd unit so the off-pod manager comes back on reboot (the pod unit
+# only covers pod members, which the manager no longer is). Podman-only; best-
+# effort. Mirrors the app unit's start/stop-a-named-container pattern.
+install_manager_autostart() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    [[ "$RUNTIME" == "podman" ]] || return 0
+    local runtime_bin; runtime_bin=$(command -v "$RUNTIME")
+    local unit_file="/etc/systemd/system/${MANAGER_CONTAINER_NAME}.service"
+    sudo tee "$unit_file" > /dev/null << UNIT
+[Unit]
+Description=ZMM Manager sidecar (${MANAGER_CONTAINER_NAME})
+After=network-online.target ${CONTAINER_NAME}.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Restart=always
+RestartSec=10
+ExecStart=${runtime_bin} start -a ${MANAGER_CONTAINER_NAME}
+ExecStop=${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload >/dev/null 2>&1 || true
+    sudo systemctl enable "${MANAGER_CONTAINER_NAME}.service" >/dev/null 2>&1 || true
+    ok "Manager autostart unit installed: ${unit_file}"
 }
 
 # =============================================================================

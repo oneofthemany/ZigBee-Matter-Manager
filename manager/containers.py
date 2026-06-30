@@ -73,6 +73,7 @@ async def list_containers() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("list_containers failed: %s", e)
         return {"available": False, "socket": sock, "error": str(e), "containers": []}
+    return {"available": True, "socket": sock, "error": None, "containers": out}
 
 
 async def inspect_container(name: str) -> Optional[Dict[str, Any]]:
@@ -108,5 +109,3 @@ async def restart_container(name: str, timeout: int = 10) -> bool:
     except Exception as e:
         logger.warning("restart_container(%s) failed: %s", name, e)
         return False
-
-    return {"available": True, "socket": sock, "error": None, "containers": out}
