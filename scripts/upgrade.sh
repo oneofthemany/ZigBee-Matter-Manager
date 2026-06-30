@@ -704,6 +704,15 @@ UNIT_WAS_MASKED=0
 UNIT_OVERRIDE_DIR=""
 
 detect_container_unit() {
+    # POD deployments: the systemd unit is a Type=oneshot `pod start/stop` unit,
+    # NOT a per-container Restart=always supervisor. There's no auto-restart to
+    # suppress during a swap, and `systemctl stop` on it would tear down the WHOLE
+    # pod — including the always-on manager sidecar (the :8001 outage on swap).
+    # Report "no unit" so the mask/stop/start helpers become no-ops; the swap
+    # manages the app container directly and leaves the pod + manager running.
+    if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null; then
+        return 1
+    fi
     if [[ -n "$ZMM_CONTAINER_UNIT" ]]; then
         echo "$ZMM_CONTAINER_UNIT"
         return 0
