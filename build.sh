@@ -901,6 +901,7 @@ run_manager_container() {
         --env "ZMM_POD_NAME=${POD_NAME}"
         --env "ZMM_CONTAINER_NAME=${CONTAINER_NAME}"
         --env "ZMM_MANAGER_PORT=${MANAGER_PORT}"
+        --env "ZMM_DATA_DIR=${DATA_DIR}"
         --env "ZMM_APP_HEALTH_URL=https://host.containers.internal:${INTERNAL_PORT}/api/system/health"
     )
     if [[ -n "$sock" ]]; then
@@ -910,7 +911,7 @@ run_manager_container() {
         warn "Manager: no runtime socket found — container list will be unavailable"
     fi
     "$RUNTIME" run "${margs[@]}" "$app_image" python -m manager
-    ok "Manager sidecar started off-pod (http://<host>:${MANAGER_PORT})."
+    ok "Manager sidecar started off-pod (matches app scheme on :${MANAGER_PORT})."
     install_manager_autostart
 }
 
