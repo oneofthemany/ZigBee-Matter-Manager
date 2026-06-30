@@ -1045,10 +1045,24 @@ do_swap() {
     fi
 
     # ── STEP 5: Success ──────────────────────────────────────────────────────
-    log "Swap: SUCCESS. New container healthy. Keeping $previous_name for rollback."
+    log "Swap: SUCCESS. New container healthy."
     update_version_state "$target_version" "$current_version" "$new_tag" "$current_image_tag"
     unmask_unit_if_needed
     container_unit_start
+
+    # POD-SPECIFIC: the stopped -previous container is still a pod member, so a
+    # reboot's `podman pod start ${POD_NAME}` would start it alongside the new app
+    # and the two would fight for the host ports (the dual-container bug). Remove
+    # it. Rollback re-runs the previous IMAGE instead — it's recorded in
+    # version.json (previous_image_tag, set above), protected from GC by do_gc,
+    # and restarted through the same pod-aware run_container.sh. Standalone keeps
+    # the container as before.
+    if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null; then
+        "$RUNTIME" rm -f "$previous_name" >/dev/null 2>&1 || true
+        log "Swap: removed pod member $previous_name (rollback uses the retained previous image)"
+    else
+        log "Swap: keeping $previous_name for rollback (standalone)"
+    fi
 
     # Self-heal host-side helpers if the new image bumped WATCHER_SCHEMA_VERSION.
     self_heal_helpers "$new_tag" || log "self_heal: returned non-zero (treated as non-fatal)"
