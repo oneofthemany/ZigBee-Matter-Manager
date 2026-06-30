@@ -1207,5 +1207,20 @@ echo
 # by run_container.sh) the function definitions are loaded but no orchestration
 # runs.
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
+    # CP4: refresh ONLY the manager sidecar to match the running app — no app or
+    # pod changes. Called by the host watcher (upgrade.sh:do_swap) after a
+    # successful swap so the manager ships manager-side changes through upgrades.
+    # The manager is the app image run as `python -m manager`, so we recreate it
+    # from whatever image the app container currently runs.
+    if [[ " $* " == *" --refresh-manager "* ]]; then
+        detect_runtime || { error "No container runtime"; exit 1; }
+        _base=$("$RUNTIME" inspect -f '{{.ImageName}}' "$CONTAINER_NAME" 2>/dev/null || echo "")
+        if [[ -z "$_base" || "$_base" == "<nil>" ]]; then
+            _cimg=$("$RUNTIME" inspect -f '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || echo "")
+            _base=$("$RUNTIME" image inspect --format '{{index .RepoTags 0}}' "$_cimg" 2>/dev/null || echo "${IMAGE_NAME}:latest")
+        fi
+        run_manager_container "$_base"
+        exit $?
+    fi
     main "$@"
 fi

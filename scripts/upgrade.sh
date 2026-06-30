@@ -1076,6 +1076,24 @@ do_swap() {
     # Self-heal host-side helpers if the new image bumped WATCHER_SCHEMA_VERSION.
     self_heal_helpers "$new_tag" || log "self_heal: returned non-zero (treated as non-fatal)"
 
+    # CP4: refresh the manager sidecar to the NEW image so manager-side changes
+    # ship through the upgrade. The manager IS the app image run as `python -m
+    # manager`, and the watcher runs on the host (not inside the manager), so it
+    # can recreate the sidecar directly via build.sh --refresh-manager. Done at
+    # the very end (app already healthy) — a brief :8001 blip, never fatal.
+    if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null \
+       && "$RUNTIME" inspect "${CONTAINER_NAME}-manager" >/dev/null 2>&1; then
+        _bsh=""
+        for _c in "${APP_DIR}/build.sh" "${DATA_DIR}/scripts/build.sh"; do
+            [[ -f "$_c" ]] && { _bsh="$_c"; break; }
+        done
+        if [[ -n "$_bsh" ]]; then
+            log "Swap: refreshing manager sidecar to the new image"
+            ZMM_DATA_DIR="$DATA_DIR" RUNTIME="$RUNTIME" bash "$_bsh" --refresh-manager >>"$WATCHER_LOG" 2>&1 \
+                || log "Swap: manager sidecar refresh failed (non-fatal)"
+        fi
+    fi
+
     # Clean up the build workspace to save disk space, but preserve the orchestration scripts
     # that run_container.sh requires for future swaps and rollbacks.
     log "Swap: Cleaning up clone directory..."
