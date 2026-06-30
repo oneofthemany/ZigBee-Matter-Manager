@@ -5,14 +5,16 @@ over the pod-shared loopback and lists the deployment's containers via the runti
 socket. No auth yet (CP2a is for proving the sidecar works); auth + recovery
 actions come in CP2b.
 """
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from manager import containers
+from manager import containers, watchdog
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -23,7 +25,18 @@ logger = logging.getLogger("manager.app")
 APP_HEALTH_URL = os.environ.get("ZMM_APP_HEALTH_URL",
                                 "https://127.0.0.1:8000/api/system/health")
 
-app = FastAPI(title="ZMM Manager", docs_url=None, redoc_url=None, openapi_url=None)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run the auto-recovery watchdog for the lifetime of the manager.
+    task = asyncio.create_task(watchdog.run_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="ZMM Manager", docs_url=None, redoc_url=None, openapi_url=None,
+              lifespan=lifespan)
 
 
 async def _app_health() -> dict:
@@ -43,7 +56,9 @@ async def _app_health() -> dict:
 
 @app.get("/status")
 async def status():
-    return {"app": await _app_health(), "containers": await containers.list_containers()}
+    return {"app": await _app_health(),
+            "containers": await containers.list_containers(),
+            "watchdog": watchdog.get_state()}
 
 
 @app.get("/healthz")
@@ -68,12 +83,16 @@ h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;mar
 </style></head><body>
 <h1>&#128296; ZMM Manager <span id="conn" class="badge b-mut">&hellip;</span></h1>
 <div class="card"><div class="muted">App (:8000)</div><div id="app">checking&hellip;</div></div>
+<div class="card"><div class="muted">Watchdog</div><div id="wd">&hellip;</div></div>
 <div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
 <script>
 const $=id=>document.getElementById(id);
 function badge(s){s=(s||'').toLowerCase();
  if(s==='running'||s===true||s==='ok')return'b-ok';
  if(s==='exited'||s==='dead'||s===false)return'b-bad';return'b-mut';}
+function wbadge(s){s=(s||'').toLowerCase();
+ if(s==='ok')return'b-ok';
+ if(s==='unhealthy'||s==='restarted'||s==='exhausted')return'b-bad';return'b-mut';}
 async function refresh(){
  try{const r=await fetch('/status');if(!r.ok)throw 0;const d=await r.json();
   $('conn').textContent='live';$('conn').className='badge b-ok';
@@ -81,6 +100,10 @@ async function refresh(){
   const av=(a.body&&a.body.version)?(' v'+a.body.version):'';
   $('app').innerHTML='<span class="badge '+badge(a.ok)+'">'+(a.ok?'healthy':'unhealthy')+'</span>'+av+
    (a.error?(' <span class="muted">'+a.error+'</span>'):'');
+  const w=d.watchdog||{};
+  $('wd').innerHTML='<span class="badge '+wbadge(w.status)+'">'+(w.status||'?')+'</span>'+
+   (w.restarts?(' <span class="muted">'+w.restarts+' restart(s)</span>'):'')+
+   (w.last_action?(' <span class="muted">'+w.last_action+'</span>'):'');
   const c=d.containers||{};
   if(!c.available){$('cont').innerHTML='<span class="muted">'+(c.error||'unavailable')+'</span>';}
   else{$('cont').innerHTML=(c.containers||[]).map(x=>

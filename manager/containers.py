@@ -74,4 +74,39 @@ async def list_containers() -> Dict[str, Any]:
         logger.warning("list_containers failed: %s", e)
         return {"available": False, "socket": sock, "error": str(e), "containers": []}
 
+
+async def inspect_container(name: str) -> Optional[Dict[str, Any]]:
+    """Return the raw /containers/{name}/json inspect dict, or None. Used by the
+    watchdog to read State.Running and State.StartedAt. Never raises."""
+    sock = detect_socket()
+    if not sock:
+        return None
+    try:
+        import httpx
+        transport = httpx.AsyncHTTPTransport(uds=sock)
+        async with httpx.AsyncClient(transport=transport, base_url="http://d",
+                                     timeout=10.0) as cx:
+            r = await cx.get(f"/containers/{name}/json")
+            return r.json() if r.status_code == 200 else None
+    except Exception as e:
+        logger.debug("inspect_container(%s) failed: %s", name, e)
+        return None
+
+
+async def restart_container(name: str, timeout: int = 10) -> bool:
+    """Restart a container via the socket. Returns True on success. Never raises."""
+    sock = detect_socket()
+    if not sock:
+        return False
+    try:
+        import httpx
+        transport = httpx.AsyncHTTPTransport(uds=sock)
+        async with httpx.AsyncClient(transport=transport, base_url="http://d",
+                                     timeout=float(timeout) + 30.0) as cx:
+            r = await cx.post(f"/containers/{name}/restart", params={"t": str(timeout)})
+            return r.status_code in (204, 304)
+    except Exception as e:
+        logger.warning("restart_container(%s) failed: %s", name, e)
+        return False
+
     return {"available": True, "socket": sock, "error": None, "containers": out}
