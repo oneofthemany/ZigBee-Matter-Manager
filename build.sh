@@ -183,6 +183,12 @@ CONTAINER_NAME="zigbee-matter-manager"
 INTERNAL_PORT=8000
 MATTER_INTERNAL_PORT=5580
 
+# Pod (podman only). The app — and, from CP2, the manager sidecar — run as members
+# of this pod. The pod's infra container owns the published ports for the whole
+# pod lifetime, so members join with --pod and never publish ports themselves.
+POD_NAME="${ZMM_POD_NAME:-zmm}"
+MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"   # reserved on the pod now; sidecar joins in CP2
+
 # =============================================================================
 # PRE-FLIGHT: dialout group membership
 # =============================================================================
@@ -712,6 +718,19 @@ DBUS_POLICY
 # =============================================================================
 # RUN CONTAINER
 # =============================================================================
+# Create the pod the app (and later the manager sidecar) join. Idempotent: a
+# pre-existing pod is reused. Reserves the manager port up front so CP2 can add
+# the sidecar without recreating the pod. Podman only.
+ensure_pod() {
+    local host_port="$1" host_matter_port="$2"
+    "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null && return 0
+    info "Creating pod '${POD_NAME}' (publishing ${host_port}, ${host_matter_port}, ${MANAGER_PORT})..."
+    "$RUNTIME" pod create --name "$POD_NAME" \
+        --publish "${host_port}:${INTERNAL_PORT}" \
+        --publish "${host_matter_port}:${MATTER_INTERNAL_PORT}" \
+        --publish "${MANAGER_PORT}:${MANAGER_PORT}"
+}
+
 run_container() {
     local host_port=$1
     local host_matter_port=$2
@@ -729,10 +748,7 @@ run_container() {
     local run_args=(
         --detach
         --name "$CONTAINER_NAME"
-        --network=slirp4netns
         --security-opt label=disable
-        --publish "${host_port}:${INTERNAL_PORT}"
-        --publish "${host_matter_port}:${MATTER_INTERNAL_PORT}"
         --cap-add=NET_ADMIN
         --cap-add=NET_RAW
         --cap-add=SYS_ADMIN
@@ -748,7 +764,21 @@ run_container() {
         --volume "${DATA_DIR}/logs:/app/logs"
     )
 
-    ok "Networking: host (ZMM: ${host_port}, Matter: ${host_matter_port})"
+    # ── Networking: pod (podman) vs standalone host net (docker) ──
+    # In a pod the infra container owns the ports, so the app joins with --pod and
+    # must NOT carry --network or --publish (podman rejects that combination).
+    if [[ "$RUNTIME" == "podman" ]]; then
+        ensure_pod "$host_port" "$host_matter_port"
+        run_args+=(--pod "$POD_NAME")
+        ok "Networking: pod '${POD_NAME}' (ZMM: ${host_port}, Matter: ${host_matter_port}, Manager: ${MANAGER_PORT})"
+    else
+        run_args+=(
+            --network=slirp4netns
+            --publish "${host_port}:${INTERNAL_PORT}"
+            --publish "${host_matter_port}:${MATTER_INTERNAL_PORT}"
+        )
+        ok "Networking: host (ZMM: ${host_port}, Matter: ${host_matter_port})"
+    fi
 
     # ── Bluetooth for Matter commissioning ──
     if [[ -e /dev/hci0 ]]; then
@@ -841,7 +871,31 @@ install_autostart() {
     fi
 
     local unit_file="/etc/systemd/system/${CONTAINER_NAME}.service"
-    sudo tee "$unit_file" > /dev/null << UNIT
+
+    if [[ "$RUNTIME" == "podman" ]] && "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null; then
+        # Pod deployment: start/stop the WHOLE pod (infra + members). `pod start`
+        # returns once members are up, so this is a oneshot + RemainAfterExit unit.
+        sudo tee "$unit_file" > /dev/null << UNIT
+[Unit]
+Description=Zigbee Matter Manager Pod (${POD_NAME})
+After=network-online.target time-sync.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+${device_pre}
+ExecStart=${runtime_bin} pod start ${POD_NAME}
+ExecStop=${runtime_bin} pod stop -t 15 ${POD_NAME}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    else
+        # Standalone (docker / non-pod): start/stop the single container.
+        sudo tee "$unit_file" > /dev/null << UNIT
 [Unit]
 Description=Zigbee Matter Manager Container
 # Order after the network AND the clock is set — TLS/token checks fail if the
@@ -864,6 +918,7 @@ ExecStop=${runtime_bin} stop -t 15 ${CONTAINER_NAME}
 [Install]
 WantedBy=multi-user.target
 UNIT
+    fi
 
     sudo systemctl daemon-reload
     sudo systemctl enable "${CONTAINER_NAME}.service"
