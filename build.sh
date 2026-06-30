@@ -187,7 +187,8 @@ MATTER_INTERNAL_PORT=5580
 # of this pod. The pod's infra container owns the published ports for the whole
 # pod lifetime, so members join with --pod and never publish ports themselves.
 POD_NAME="${ZMM_POD_NAME:-zmm}"
-MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"   # reserved on the pod now; sidecar joins in CP2
+MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"
+MANAGER_CONTAINER_NAME="${CONTAINER_NAME}-manager"   # sidecar; runs the app image as `python -m manager`
 
 # =============================================================================
 # PRE-FLIGHT: dialout group membership
@@ -864,6 +865,52 @@ SYSCTL
 }
 
 # =============================================================================
+# MANAGER SIDECAR (CP2a)
+# =============================================================================
+# Run the always-on manager as a SECOND member of the pod. It reuses the app
+# image (which already contains the manager/ package + uvicorn/httpx) run as
+# `python -m manager`, mounts the runtime socket so it can inspect pod members,
+# and shares the pod's host netns so it reaches the app on 127.0.0.1:8000. The
+# pod's systemd unit (pod start/stop) brings it up on reboot alongside the app.
+run_manager_container() {
+    [[ "$RUNTIME" == "podman" ]] || { info "Manager sidecar needs podman pods — skipping."; return 0; }
+    "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null || { warn "Pod '${POD_NAME}' absent — skipping manager sidecar."; return 0; }
+
+    local app_image="${1:-${IMAGE_NAME}:latest}"
+
+    # Resolve the runtime socket (enabled by run_container) for read-only inspection.
+    local sock=""
+    for s in "${ZMM_CONTAINER_SOCK:-}" /run/podman/podman.sock /var/run/podman/podman.sock; do
+        [[ -n "$s" && -S "$s" ]] && { sock="$s"; break; }
+    done
+
+    if "$RUNTIME" inspect "$MANAGER_CONTAINER_NAME" &>/dev/null 2>&1; then
+        "$RUNTIME" rm -f "$MANAGER_CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+
+    info "Starting manager sidecar '${MANAGER_CONTAINER_NAME}' on :${MANAGER_PORT}..."
+    local margs=(
+        --detach
+        --pod "$POD_NAME"
+        --name "$MANAGER_CONTAINER_NAME"
+        --security-opt label=disable
+        --no-healthcheck
+        --volume "${DATA_DIR}:${DATA_DIR}"
+        --env "ZMM_POD_NAME=${POD_NAME}"
+        --env "ZMM_CONTAINER_NAME=${CONTAINER_NAME}"
+        --env "ZMM_MANAGER_PORT=${MANAGER_PORT}"
+    )
+    if [[ -n "$sock" ]]; then
+        margs+=(--volume "${sock}:${sock}" --env "ZMM_CONTAINER_SOCK=${sock}")
+        ok "Manager: mounted runtime socket ${sock}"
+    else
+        warn "Manager: no runtime socket found — container list will be unavailable"
+    fi
+    "$RUNTIME" run "${margs[@]}" "$app_image" python -m manager
+    ok "Manager sidecar started (http://<host>:${MANAGER_PORT})."
+}
+
+# =============================================================================
 # SYSTEMD AUTO-START
 # =============================================================================
 install_autostart() {
@@ -1056,6 +1103,7 @@ prepare_otbr_dbus_policy
 
 step_announce "Start container"
 run_container "$HOST_PORT" "$HOST_MATTER_PORT"
+run_manager_container "${IMAGE_NAME}:latest"
 
 step_announce "Install systemd auto-start unit"
 if [[ "$INSTALL_AUTOSTART" == true ]]; then
