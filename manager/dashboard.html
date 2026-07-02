@@ -6,11 +6,19 @@ h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;mar
 .badge{display:inline-block;padding:.15rem .5rem;border-radius:6px;font-size:.8rem;font-weight:600}
 .b-ok{background:#16a34a}.b-bad{background:#dc2626}.b-mut{background:#475569}
 .muted{color:#94a3b8;font-size:.85rem}code{background:#020617;padding:.05rem .35rem;border-radius:4px}
+.lbtn{background:#334155;color:#e2e8f0;border:0;border-radius:6px;padding:.25rem .6rem;
+ margin:.15rem .25rem .15rem 0;font-size:.8rem;cursor:pointer}
+.lbtn.active{background:#2563eb}
+#logview{display:none;background:#020617;border-radius:6px;padding:.5rem;margin-top:.5rem;
+ max-height:45vh;overflow:auto;font-size:.72rem;line-height:1.35;white-space:pre-wrap;
+ word-break:break-all;font-family:ui-monospace,monospace}
 </style></head><body>
 <h1>&#128296; ZMM Manager <span id="conn" class="badge b-mut">&hellip;</span></h1>
 <div class="card"><div class="muted">App (:8000)</div><div id="app">checking&hellip;</div></div>
 <div class="card"><div class="muted">Watchdog</div><div id="wd">&hellip;</div></div>
 <div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
+<div class="card"><div class="muted">Live logs <span class="muted">(streams only while open)</span></div>
+ <div id="logbtns">&hellip;</div><pre id="logview"></pre></div>
 <script>
 const $=id=>document.getElementById(id);
 function badge(s){
@@ -40,4 +48,36 @@ async function refresh(){
  }catch(e){$('conn').textContent='offline';$('conn').className='badge b-bad';}
 }
 refresh();setInterval(refresh,2000);
+
+// ── Live logs: buttons per source, one EventSource at a time ────────────────
+let es=null,esBtn=null;
+const MAX_LOG_LINES=2000;
+function stopStream(){if(es){es.close();es=null;}
+ if(esBtn){esBtn.classList.remove('active');esBtn=null;}
+ $('logview').style.display='none';$('logview').textContent='';}
+function startStream(url,btn){
+ const again=(esBtn===btn);stopStream();if(again)return;
+ const v=$('logview');v.style.display='block';v.textContent='connecting…\n';
+ btn.classList.add('active');esBtn=btn;
+ es=new EventSource(url);
+ es.onmessage=e=>{
+  const stick=v.scrollTop+v.clientHeight>=v.scrollHeight-8;
+  v.textContent+=e.data+'\n';
+  let lines=v.textContent.split('\n');
+  if(lines.length>MAX_LOG_LINES)v.textContent=lines.slice(-MAX_LOG_LINES).join('\n');
+  if(stick)v.scrollTop=v.scrollHeight;};
+ es.onerror=()=>{v.textContent+='── connection lost ──\n';};}
+function mkbtn(label,url){const b=document.createElement('button');
+ b.className='lbtn';b.textContent=label;
+ b.onclick=()=>startStream(url,b);return b;}
+async function loadLogSources(){
+ try{const r=await fetch('/logs');if(!r.ok)throw 0;const d=await r.json();
+  const el=$('logbtns');el.textContent='';
+  (d.containers||[]).forEach(n=>el.appendChild(
+   mkbtn('\u{1F4E6} '+n,'/logs/container/'+encodeURIComponent(n))));
+  (d.files||[]).forEach(f=>el.appendChild(
+   mkbtn('\u{1F4C4} '+f.name,'/logs/file/'+encodeURIComponent(f.name))));
+  if(!el.childNodes.length)el.innerHTML='<span class="muted">no sources</span>';
+ }catch(e){$('logbtns').innerHTML='<span class="muted">unavailable</span>';}}
+loadLogSources();setInterval(()=>{if(!es)loadLogSources();},30000);
 </script></body></html>

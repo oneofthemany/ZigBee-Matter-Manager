@@ -13,9 +13,9 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from manager import containers, watchdog
+from manager import containers, logs, watchdog
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -66,6 +66,38 @@ async def status():
 async def healthz():
     # Liveness for the manager itself (unauthenticated, cheap).
     return JSONResponse({"manager": "ok"})
+
+
+# ── Live logs (CP2b, read-only, on request) ──────────────────────────────────
+# SSE so the dashboard can use a plain EventSource; the stream ends when the
+# client closes the connection, so nothing runs unless a user is watching.
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@app.get("/logs")
+async def log_sources():
+    """What can be streamed: this deployment's containers + DATA_DIR log files."""
+    c = await containers.list_containers()
+    return {"containers": [x["name"] for x in c.get("containers", [])],
+            "files": logs.list_log_files()}
+
+
+@app.get("/logs/file/{name}")
+async def log_file(name: str, tail: int = 200):
+    path = logs.resolve_log_file(name)
+    if path is None:
+        return JSONResponse({"error": "unknown log file"}, status_code=404)
+    return StreamingResponse(logs.stream_file(path, tail=max(1, min(tail, 2000))),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@app.get("/logs/container/{name}")
+async def log_container(name: str, tail: int = 200):
+    if not logs.allowed_container(name):
+        return JSONResponse({"error": "unknown container"}, status_code=404)
+    return StreamingResponse(logs.stream_container(name, tail=max(1, min(tail, 2000))),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # The dashboard is a static asset shipped alongside this module (manager/
