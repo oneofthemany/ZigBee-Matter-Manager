@@ -13,10 +13,12 @@ h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;mar
 <div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
 <script>
 const $=id=>document.getElementById(id);
-function badge(s){s=(s||'').toLowerCase();
- if(s==='running'||s===true||s==='ok')return'b-ok';
- if(s==='exited'||s==='dead'||s===false)return'b-bad';return'b-mut';}
-function wbadge(s){s=(s||'').toLowerCase();
+function badge(s){
+ if(s===true)return'b-ok';if(s===false)return'b-bad';
+ s=String(s||'').toLowerCase();
+ if(s==='running'||s==='ok')return'b-ok';
+ if(s==='exited'||s==='dead')return'b-bad';return'b-mut';}
+function wbadge(s){s=String(s||'').toLowerCase();
  if(s==='ok')return'b-ok';
  if(s==='unhealthy'||s==='restarted'||s==='exhausted')return'b-bad';return'b-mut';}
 async function refresh(){
