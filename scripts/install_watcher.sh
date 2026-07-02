@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=1
+WATCHER_SCHEMA_VERSION=2
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
@@ -202,6 +202,13 @@ StartLimitBurst=20
 
 [Service]
 Type=oneshot
+# CRITICAL: the watcher starts the app + manager containers as its children.
+# With the default KillMode=control-group, systemd kills every process left in
+# this service's cgroup — including the containers' conmon — the instant the
+# oneshot exits, so both containers die (exit 0) seconds after a successful
+# swap. KillMode=process makes systemd reap only the main upgrade.sh process on
+# exit and leave the containers (conmon reparented) running.
+KillMode=process
 ExecStart=${SCRIPTS_DIR}/upgrade.sh
 Environment=ZMM_DATA_DIR=${DATA_DIR}
 Environment=ZMM_APP_DIR=${APP_DIR}
@@ -265,6 +272,13 @@ StartLimitBurst=20
 [Service]
 Type=oneshot
 User=$USER
+# CRITICAL: the watcher starts the app + manager containers as its children.
+# With the default KillMode=control-group, systemd kills every process left in
+# this service's cgroup — including the containers' conmon — the instant the
+# oneshot exits, so both containers die (exit 0) seconds after a successful
+# swap. KillMode=process makes systemd reap only the main upgrade.sh process on
+# exit and leave the containers (conmon reparented) running.
+KillMode=process
 ExecStart=${SCRIPTS_DIR}/upgrade.sh
 Environment=ZMM_DATA_DIR=${DATA_DIR}
 Environment=ZMM_APP_DIR=${APP_DIR}
