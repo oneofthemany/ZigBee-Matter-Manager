@@ -26,7 +26,7 @@ import traceback
 
 # Exception types that indicate a code bug rather than a hardware/transient
 # failure. Retrying these wastes time and pushes the process past the
-# launcher's HEALTHY_SECONDS threshold, preventing recovery_server from
+# launcher's HEALTHY_SECONDS threshold, preventing recovery standby (repair via ZMM Manager) from
 # triggering.
 _CODE_BUG_EXCEPTIONS = (
     AttributeError, TypeError, NameError, ImportError,
@@ -444,7 +444,7 @@ class ZigbeeService(
                             self.devices[ieee_str].restore_state(self.state_cache[ieee_str])
                     except _CODE_BUG_EXCEPTIONS as dev_err:
                         # A code bug in device init — exit immediately so the
-                        # launcher sees a boot-crash and starts recovery_server.
+                        # launcher sees a boot-crash and enters recovery standby (ZMM Manager).
                         logger.error(
                             f"[{ieee_str}] Device init failed with code error "
                             f"({type(dev_err).__name__}: {dev_err}) — exiting for recovery"
@@ -514,7 +514,7 @@ class ZigbeeService(
             except _CODE_BUG_EXCEPTIONS as e:
                 # Code bug — retrying won't help and wastes enough time to push
                 # past the launcher's HEALTHY_SECONDS threshold, blocking recovery.
-                # Exit immediately so the launcher triggers recovery_server.
+                # Exit immediately so the launcher enters recovery standby (ZMM Manager).
                 logger.error(
                     f"Non-retryable code error during startup "
                     f"({type(e).__name__}: {e}) — exiting for recovery"

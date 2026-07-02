@@ -36,7 +36,10 @@ from typing import Optional, Callable, List, Dict, Any
 logger = logging.getLogger("editor.test_recovery")
 
 PROJECT_ROOT = Path("/app")
-BACKUP_DIR = PROJECT_ROOT / ".editor_backups"
+# Under data/ (host bind mount) so backups survive image swaps and are
+# visible to the ZMM Manager's recovery UI. boot_guard migrates the legacy
+# /app/.editor_backups contents on startup.
+BACKUP_DIR = PROJECT_ROOT / "data" / ".editor_backups"
 DATA_DIR = PROJECT_ROOT / "data"
 # Shared with boot_guard.py — must stay in sync
 PENDING_FILE = DATA_DIR / ".test_pending"

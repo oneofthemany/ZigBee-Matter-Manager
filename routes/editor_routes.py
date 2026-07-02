@@ -22,6 +22,7 @@ ALLOWED_DIRS = [
     "core",
     "device",
     "handlers",
+    "manager",
     "modules",
     "modules/media",
     "modules/media/players",
@@ -47,8 +48,10 @@ EDITABLE_EXTENSIONS = {
 # Max file size for editing (2MB)
 MAX_FILE_SIZE = 2 * 1024 * 1024
 
-# Backup directory
-BACKUP_DIR = PROJECT_ROOT / ".editor_backups"
+# Backup directory — under data/ (host bind mount) so backups survive image
+# swaps and the ZMM Manager's recovery UI can read them. Keep in sync with
+# modules/test_recovery.py and boot_guard.py.
+BACKUP_DIR = PROJECT_ROOT / "data" / ".editor_backups"
 
 
 class FileSaveRequest(BaseModel):

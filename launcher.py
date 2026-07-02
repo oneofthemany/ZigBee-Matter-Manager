@@ -3,25 +3,26 @@
 ZMM Launcher (stdlib-only)
 ==========================
 Supervises main.py. If main.py fails to stay up long enough to be
-considered healthy, capture its crash traceback and launch the
-disaster-recovery HTTP server instead — so the user can identify
-the broken file and fix it via the browser without podman exec.
+considered healthy, capture its crash traceback and enter RECOVERY
+STANDBY: a tiny stdlib page on :8000 that points at the ZMM Manager
+(:8001), which now owns the actual recovery UI (crash details, backup
+restore, file upload — see manager/recovery.py). Standby waits for the
+manager to write data/.recovery_resume, then retries main.py.
 
 Exit codes consumed from children:
   main.py         0 = clean shutdown (exit supervisor)
                   ≠0 = died
-  recovery_server 0 = user clicked "Restart service" (retry main.py)
-                  ≠0 = user gave up (exit supervisor)
 
 Sequence:
-  ┌────────────────────────────────────────────────┐
-  │ Boot guard          (stdlib, rolls back batch) │
-  │ main.py             (FastAPI app)              │
-  │   ├── clean exit   → stop                      │
-  │   ├── crash <HEALTHY_SECONDS → recovery_server │
-  │   └── crash >HEALTHY_SECONDS → restart main.py │
-  │ recovery_server.py  (fallback UI on :8000)     │
-  └────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────┐
+  │ Boot guard          (stdlib, rolls back batch)  │
+  │ main.py             (FastAPI app)               │
+  │   ├── clean exit   → stop                       │
+  │   ├── crash <HEALTHY_SECONDS → recovery standby │
+  │   └── crash >HEALTHY_SECONDS → restart main.py  │
+  │ recovery standby    (in-process, :8000)         │
+  │   └── manager writes .recovery_resume → retry   │
+  └─────────────────────────────────────────────────┘
 """
 
 import datetime
@@ -42,7 +43,10 @@ CRASH_FILE = os.path.join(DATA_DIR, "last_crash.json")
 LAUNCHER_LOG = os.path.join(LOG_DIR, "launcher.log")
 BOOT_GUARD = os.path.join(APP_DIR, "boot_guard.py")
 MAIN_PY = os.path.join(APP_DIR, "main.py")
-RECOVERY_PY = os.path.join(APP_DIR, "recovery_server.py")
+# Recovery standby contract with the ZMM Manager (data/ is host-shared):
+RECOVERY_MARKER = os.path.join(DATA_DIR, ".recovery_active")
+RESUME_MARKER = os.path.join(DATA_DIR, ".recovery_resume")
+MANAGER_PORT = int(os.environ.get("ZMM_MANAGER_PORT", "8001"))
 
 # If main.py dies in under this many seconds it's a "boot crash"
 HEALTHY_SECONDS = 25
@@ -121,8 +125,15 @@ def _wait_for_device():
          f"starting anyway (setup wizard / recovery will handle it)")
 
 
+import threading
+
+# Set on SIGTERM/SIGINT so the in-process recovery standby also shuts down.
+_stop_event = threading.Event()
+
+
 def _forward_signal(sig, frame):
     """Forward TERM/INT to the current child so shutdown is clean."""
+    _stop_event.set()
     child = _current_child
     if child and child.poll() is None:
         try:
@@ -257,6 +268,115 @@ def _main_wrote_crash_recently(elapsed_since_start: float) -> bool:
 
 
 # ----------------------------------------------------------------------------
+# RECOVERY STANDBY (stdlib-only — recovery UI itself lives in the ZMM Manager)
+# ----------------------------------------------------------------------------
+
+_STANDBY_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZMM — recovery mode</title><style>
+body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0a0f1c;color:#e2e8f0;font-family:system-ui,sans-serif;text-align:center}}
+.card{{max-width:26rem;padding:2.5rem;background:#111827;border:1px solid #1f2937;
+border-radius:16px}}h1{{font-size:1.15rem;margin:.8rem 0}}p{{color:#94a3b8;font-size:.9rem;
+line-height:1.5}}a{{display:inline-block;margin-top:1rem;background:#6366f1;color:#fff;
+text-decoration:none;padding:.6rem 1.4rem;border-radius:8px;font-weight:600}}
+.dot{{font-size:2rem}}</style></head><body><div class="card">
+<div class="dot">&#128736;&#65039;</div><h1>ZMM is in recovery mode</h1>
+<p>The application failed to start. Crash details, backup restore and file
+repair are available in the ZMM&nbsp;Manager.</p>
+<a href="{manager_url}">Open ZMM Manager</a></div></body></html>"""
+
+
+def _recovery_standby() -> str:
+    """Serve a redirect-to-manager page on :8000 and wait for the manager to
+    write RESUME_MARKER (retry main.py) or for SIGTERM (container stopping).
+    Returns "resume" or "shutdown"."""
+    import http.server
+    import json as _json
+    import socketserver
+
+    port = int(os.environ.get("ZMM_PORT", 8000))
+
+    # Advertise the manager on the same scheme/host the user came in on.
+    page = _STANDBY_HTML.format(manager_url=f"https://{{host}}:{MANAGER_PORT}")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_GET(self):
+            if self.path.startswith("/api/"):
+                body = _json.dumps({"status": "recovery",
+                                    "manager_port": MANAGER_PORT}).encode()
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+            else:
+                host = (self.headers.get("Host") or "").split(":")[0] or "localhost"
+                body = page.replace("{host}", host).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    server = Server(("0.0.0.0", port), Handler)
+
+    # The app serves HTTPS; with HSTS-style browser caching a plain-HTTP
+    # standby on the same port would be unreachable. Certs live on the
+    # data mount at the default path main.py uses.
+    cert = os.path.join(DATA_DIR, "certs", "cert.pem")
+    key = os.path.join(DATA_DIR, "certs", "key.pem")
+    if os.path.isfile(cert) and os.path.isfile(key):
+        try:
+            import ssl
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(certfile=cert, keyfile=key)
+            server.socket = ctx.wrap_socket(server.socket, server_side=True)
+            _log("Recovery standby: TLS enabled")
+        except Exception as e:
+            _log(f"Recovery standby: cert load failed ({e}) — serving HTTP")
+
+    # Signal recovery mode to the manager (and its watchdog, which stands
+    # down while this marker exists). Clear any stale resume marker first.
+    try:
+        if os.path.isfile(RESUME_MARKER):
+            os.remove(RESUME_MARKER)
+        with open(RECOVERY_MARKER, "w") as f:
+            _json.dump({"ts": time.time(), "pid": os.getpid(),
+                        "manager_port": MANAGER_PORT}, f)
+    except Exception as e:
+        _log(f"Recovery standby: marker write failed: {e}")
+
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _log(f"Recovery standby serving on :{port} — fix via the ZMM Manager "
+         f"(:{MANAGER_PORT}), then click Resume there")
+
+    result = "shutdown"
+    try:
+        while not _stop_event.is_set():
+            if os.path.isfile(RESUME_MARKER):
+                _log("Recovery standby: resume requested by manager")
+                result = "resume"
+                break
+            time.sleep(2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        for marker in (RESUME_MARKER, RECOVERY_MARKER):
+            try:
+                if os.path.isfile(marker):
+                    os.remove(marker)
+            except Exception:
+                pass
+    return result
+
+
+# ----------------------------------------------------------------------------
 # MAIN LOOP
 # ----------------------------------------------------------------------------
 
@@ -317,23 +437,13 @@ def main():
         if quick_retries > MAX_QUICK_RETRIES:
             _log(f"Too many quick boot failures ({quick_retries}) — entering recovery mode unconditionally")
 
-        if not os.path.isfile(RECOVERY_PY):
-            _log(f"FATAL: recovery server missing at {RECOVERY_PY} — sleeping and retrying main.py")
-            time.sleep(10)
-            continue
-
-        _log("Launching recovery server ...")
-        rc, _, _ = _run_child(RECOVERY_PY, capture_stderr=False)
-        _log(f"Recovery server exited code={rc}")
-
-        if rc == 0:
-            # User clicked "Restart service" — loop and retry main.py
-            _log("Recovery requested restart — retrying main.py")
+        _log("Entering recovery standby (repair via the ZMM Manager) ...")
+        outcome = _recovery_standby()
+        if outcome == "resume":
             quick_retries = 0
             continue
-        else:
-            _log("Recovery did not request restart — launcher exiting")
-            return rc
+        _log("Recovery standby shut down — launcher exiting")
+        return 0
 
 
 if __name__ == "__main__":

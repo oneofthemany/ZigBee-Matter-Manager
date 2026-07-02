@@ -36,6 +36,10 @@ APP_CONTAINER = os.environ.get("ZMM_CONTAINER_NAME", "zigbee-matter-manager")
 DATA_DIR = os.environ.get("ZMM_DATA_DIR") or os.environ.get("DATA_DIR") \
     or "/opt/.zigbee-matter-manager"
 STATUS_FILE = os.path.join(DATA_DIR, "data", "upgrade", "status.json")
+# Written by the launcher's recovery standby (see launcher.py). While present
+# the user is mid-repair via the manager's recovery UI — restarting the app
+# container out from under them would destroy the session.
+RECOVERY_MARKER = os.path.join(DATA_DIR, "data", ".recovery_active")
 
 INTERVAL = float(os.environ.get("ZMM_WATCHDOG_INTERVAL", "20"))
 STARTUP_GRACE = float(os.environ.get("ZMM_WATCHDOG_GRACE", "180"))
@@ -43,7 +47,7 @@ FAIL_THRESHOLD = int(os.environ.get("ZMM_WATCHDOG_THRESHOLD", "3"))
 MAX_RESTARTS = int(os.environ.get("ZMM_WATCHDOG_MAX_RESTARTS", "3"))
 
 _state: Dict[str, Any] = {
-    "status": "starting",   # starting|ok|unhealthy|restarted|exhausted|standby|disabled
+    "status": "starting",   # starting|ok|unhealthy|restarted|exhausted|standby|recovery|disabled
     "streak": 0,
     "restarts": 0,
     "last_action": None,
@@ -124,6 +128,7 @@ async def run_loop():
                     _set("standby", streak=streak, restarts=restarts)
                     continue
 
+
                 info = await containers.inspect_container(APP_CONTAINER)
                 if info is None:
                     # Container absent (mid-swap rename / removed) — nothing to do.
@@ -141,6 +146,17 @@ async def run_loop():
                     continue
 
                 healthy = running and await _healthy(http)
+
+                # Recovery mode: the launcher's standby serves :8000 (health
+                # WILL fail) while the user repairs files via the manager —
+                # restarting the container would destroy their session. Only
+                # honoured while the app is actually unhealthy, so a stale
+                # marker (uncleanly killed session) can't disable us forever.
+                if not healthy and os.path.isfile(RECOVERY_MARKER):
+                    streak = 0
+                    _set("recovery", streak=0, restarts=restarts)
+                    continue
+
                 if healthy:
                     if streak or restarts:
                         logger.info("Watchdog: app healthy again — incident cleared")

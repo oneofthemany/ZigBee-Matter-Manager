@@ -1,67 +1,308 @@
-<!doctype html><html><head><meta charset="utf-8">
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ZMM Manager</title><style>
-body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:1rem}
-h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;margin:.6rem 0}
-.badge{display:inline-block;padding:.15rem .5rem;border-radius:6px;font-size:.8rem;font-weight:600}
-.b-ok{background:#16a34a}.b-bad{background:#dc2626}.b-mut{background:#475569}
-.muted{color:#94a3b8;font-size:.85rem}code{background:#020617;padding:.05rem .35rem;border-radius:4px}
-.lbtn{background:#334155;color:#e2e8f0;border:0;border-radius:6px;padding:.25rem .6rem;
- margin:.15rem .25rem .15rem 0;font-size:.8rem;cursor:pointer}
-.lbtn.active{background:#2563eb}
-#logview{display:none;background:#020617;border-radius:6px;padding:.5rem;margin-top:.5rem;
- max-height:45vh;overflow:auto;font-size:.72rem;line-height:1.35;white-space:pre-wrap;
- word-break:break-all;font-family:ui-monospace,monospace}
-</style></head><body>
-<h1>&#128296; ZMM Manager <span id="conn" class="badge b-mut">&hellip;</span></h1>
-<div class="card"><div class="muted">App (:8000)</div><div id="app">checking&hellip;</div></div>
-<div class="card"><div class="muted">Watchdog</div><div id="wd">&hellip;</div></div>
-<div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
-<div class="card"><div class="muted">Upgrade &amp; rollback</div>
- <div id="upstate" class="muted" style="margin:.3rem 0"></div>
- <div id="upimgs">&hellip;</div>
- <div style="margin-top:.5rem">
-  <span class="muted">keep last</span>
-  <input type="number" id="upkeep" min="1" max="20" style="width:3.5rem;background:#334155;
-   color:#e2e8f0;border:0;border-radius:6px;padding:.2rem .3rem">
-  <button class="lbtn" onclick="saveRetention()">save</button>
-  <button class="lbtn" onclick="runGC()">prune old images</button>
- </div></div>
-<div class="card"><div class="muted">Live logs <span class="muted">(streams only while open)</span></div>
- <div id="logbtns">&hellip;</div><pre id="logview"></pre></div>
+<title>ZMM Manager</title>
+<style>
+:root{
+  --bg:#0a0f1a; --bg2:#0d1424; --card:#101725; --card2:#16203a; --line:#1e293b;
+  --fg:#e6edf7; --muted:#8b9bb4; --accent:#6366f1; --accent2:#818cf8;
+  --ok:#10b981; --bad:#f43f5e; --warn:#f59e0b; --info:#38bdf8;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:14px; --shadow:0 4px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+body{margin:0;background:
+  radial-gradient(1200px 500px at 80% -10%,rgba(99,102,241,.14),transparent 60%),
+  radial-gradient(900px 400px at -10% 110%,rgba(56,189,248,.08),transparent 60%),
+  var(--bg);
+  color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  min-height:100vh}
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:.8rem;
+  padding:.8rem 1.2rem;background:rgba(10,15,26,.85);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line)}
+.logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);font-size:15px;
+  box-shadow:0 0 18px rgba(99,102,241,.45)}
+.brand{font-weight:700;font-size:1.02rem;letter-spacing:.2px}
+.brand small{display:block;font-weight:500;font-size:.68rem;color:var(--muted);
+  letter-spacing:.12em;text-transform:uppercase}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:.4rem;padding:.22rem .7rem;
+  border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid var(--line);
+  background:var(--card);color:var(--muted)}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.pill.ok{color:#a7f3d0;border-color:rgba(16,185,129,.4)} .pill.ok .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.pill.bad{color:#fecdd3;border-color:rgba(244,63,94,.4)} .pill.bad .dot{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+main{max-width:1080px;margin:0 auto;padding:1.1rem 1.2rem 3rem}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:.8rem;margin:.2rem 0 1rem}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:.85rem 1rem;box-shadow:var(--shadow)}
+.tile .lbl{font-size:.68rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:.35rem}
+.tile .val{font-size:1.05rem;font-weight:700;display:flex;align-items:center;gap:.5rem}
+.tile .sub{font-size:.75rem;color:var(--muted);margin-top:.15rem;min-height:1.1em}
+.sdot{width:9px;height:9px;border-radius:50%;flex:none}
+.s-ok{background:var(--ok);box-shadow:0 0 9px var(--ok)}
+.s-bad{background:var(--bad);box-shadow:0 0 9px var(--bad)}
+.s-warn{background:var(--warn);box-shadow:0 0 9px var(--warn)}
+.s-mut{background:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
+@media (max-width:840px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:1rem 1.1rem;margin:0 0 .9rem;box-shadow:var(--shadow)}
+.card h2{margin:0 0 .7rem;font-size:.72rem;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:.5rem}
+.card h2 .hint{font-weight:500;letter-spacing:0;text-transform:none;opacity:.8}
+.badge{display:inline-block;padding:.13rem .55rem;border-radius:7px;
+  font-size:.72rem;font-weight:700}
+.b-ok{background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.35)}
+.b-bad{background:rgba(244,63,94,.15);color:#fda4af;border:1px solid rgba(244,63,94,.35)}
+.b-warn{background:rgba(245,158,11,.15);color:#fcd34d;border:1px solid rgba(245,158,11,.35)}
+.b-mut{background:rgba(139,155,180,.12);color:var(--muted);border:1px solid var(--line)}
+.muted{color:var(--muted);font-size:.8rem}
+code{background:var(--bg2);border:1px solid var(--line);padding:.06rem .4rem;
+  border-radius:6px;font-family:var(--mono);font-size:.82em}
+button{font:inherit;cursor:pointer;border:0;border-radius:9px;font-weight:600}
+.btn{background:var(--card2);color:var(--fg);border:1px solid var(--line);
+  padding:.38rem .8rem;font-size:.8rem;transition:border-color .15s,background .15s}
+.btn:hover{border-color:var(--accent);background:#182342}
+.btn.primary{background:linear-gradient(135deg,var(--accent),#7c3aed);border:0;color:#fff}
+.btn.primary:hover{filter:brightness(1.12)}
+.btn.danger{background:rgba(244,63,94,.14);border:1px solid rgba(244,63,94,.4);color:#fda4af}
+.btn.danger:hover{background:rgba(244,63,94,.25)}
+.btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.rowline{display:flex;align-items:center;gap:.55rem;padding:.4rem 0;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.rowline:last-child{border-bottom:0}
+input[type=text],input[type=number],textarea{background:var(--bg2);color:var(--fg);
+  border:1px solid var(--line);border-radius:9px;padding:.42rem .6rem;
+  font-family:var(--mono);font-size:.8rem;outline:none}
+input:focus,textarea:focus{border-color:var(--accent)}
+input[type=number]{width:4.2rem}
+textarea{width:100%;min-height:130px;resize:vertical;white-space:pre}
+.term{display:none;background:#070b14;border:1px solid var(--line);border-radius:10px;
+  padding:.6rem .75rem;margin-top:.6rem;max-height:46vh;overflow:auto;
+  font-family:var(--mono);font-size:.72rem;line-height:1.45;white-space:pre-wrap;
+  word-break:break-all;color:#c9d6ea}
+.chips{display:flex;flex-wrap:wrap;gap:.35rem}
+/* ── Recovery console ── */
+#recovery{border:1px solid rgba(244,63,94,.45);
+  background:linear-gradient(180deg,rgba(244,63,94,.07),transparent 40%),var(--card)}
+#recovery h2{color:#fda4af}
+.rec-flag{display:inline-block;background:var(--bad);color:#fff;padding:.15rem .6rem;
+  border-radius:7px;font-size:.7rem;font-weight:800;letter-spacing:.08em;
+  animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.55}}
+.suspect{background:rgba(244,63,94,.09);border-left:3px solid var(--bad);
+  border-radius:8px;padding:.6rem .8rem;margin:.6rem 0;font-size:.85rem}
+.suspect .file{font-family:var(--mono);color:#fda4af;font-weight:700}
+details.trace{margin:.5rem 0}
+details.trace summary{cursor:pointer;color:var(--muted);font-size:.78rem}
+details.trace pre{background:#070b14;border:1px solid var(--line);border-radius:10px;
+  padding:.6rem .8rem;font-family:var(--mono);font-size:.7rem;overflow:auto;
+  max-height:280px;white-space:pre;color:#c9d6ea}
+table.bk{width:100%;border-collapse:collapse;font-size:.76rem}
+table.bk th{color:var(--muted);text-align:left;font-weight:600;font-size:.66rem;
+  text-transform:uppercase;letter-spacing:.08em;padding:.3rem .45rem;
+  border-bottom:1px solid var(--line)}
+table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
+  font-family:var(--mono);word-break:break-all}
+table.bk tr:hover td{background:rgba(255,255,255,.025)}
+.scroll{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-top:.6rem}
+@media (max-width:840px){.formgrid{grid-template-columns:1fr}}
+label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
+  letter-spacing:.05em;text-transform:uppercase}
+.wide{width:100%}
+.toast{position:fixed;bottom:1.2rem;left:50%;transform:translateX(-50%);
+  background:var(--card2);border:1px solid var(--line);border-radius:10px;
+  padding:.55rem 1rem;font-size:.82rem;box-shadow:var(--shadow);z-index:50;
+  opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw}
+.toast.show{opacity:1}
+.toast.ok{border-color:rgba(16,185,129,.5)} .toast.err{border-color:rgba(244,63,94,.5)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">&#9889;</div>
+  <div class="brand">ZMM Manager<small>zigbee &middot; matter &middot; thread</small></div>
+  <div class="spacer"></div>
+  <span id="appver" class="muted"></span>
+  <span id="conn" class="pill"><span class="dot"></span>connecting&hellip;</span>
+</header>
+
+<main>
+
+<!-- ── Recovery console (only in recovery mode) ─────────────────────────── -->
+<section id="recovery" class="card" hidden>
+  <h2><span class="rec-flag">recovery mode</span>
+      <span class="hint">the app failed to boot — repair it from here</span></h2>
+  <div id="crashBox" class="muted">Loading crash details&hellip;</div>
+  <div class="formgrid">
+    <div>
+      <label>Backups <span id="bkCount"></span></label>
+      <div class="rowline" style="border:0;padding:.1rem 0 .4rem">
+        <input id="bkFilter" type="text" class="wide" placeholder="filter by path (e.g. modules/foo.py)">
+        <button class="btn" onclick="loadRecovery()">filter</button>
+      </div>
+      <div class="scroll"><table class="bk">
+        <thead><tr><th>backup</th><th>created</th><th></th></tr></thead>
+        <tbody id="bkRows"><tr><td colspan="3" class="muted">&hellip;</td></tr></tbody>
+      </table></div>
+    </div>
+    <div>
+      <label>Target file (project-relative)</label>
+      <input id="recTarget" type="text" class="wide" placeholder="modules/foo.py">
+      <label>Contents</label>
+      <textarea id="recContent" placeholder="# paste replacement contents, load the current file, or preview a backup"></textarea>
+      <div class="rowline" style="border:0">
+        <button class="btn" onclick="loadCurrent()">load current</button>
+        <button class="btn primary" onclick="uploadFix()">write file to app</button>
+        <input id="recFile" type="file" style="font-size:.72rem;color:var(--muted)">
+      </div>
+    </div>
+  </div>
+  <div class="rowline" style="border:0;margin-top:.4rem">
+    <button class="btn" onclick="clearPending()">clear pending test markers</button>
+    <span id="pendingInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <button class="btn primary" onclick="resumeApp()">&#9654;&nbsp; resume app</button>
+  </div>
+</section>
+
+<!-- ── Status tiles ─────────────────────────────────────────────────────── -->
+<div class="tiles">
+  <div class="tile"><div class="lbl">Application</div>
+    <div class="val" id="tApp"><span class="sdot s-mut"></span>&hellip;</div>
+    <div class="sub" id="tAppSub"></div></div>
+  <div class="tile"><div class="lbl">Watchdog</div>
+    <div class="val" id="tWd"><span class="sdot s-mut"></span>&hellip;</div>
+    <div class="sub" id="tWdSub"></div></div>
+  <div class="tile"><div class="lbl">Upgrade watcher</div>
+    <div class="val" id="tUp"><span class="sdot s-mut"></span>&hellip;</div>
+    <div class="sub" id="tUpSub"></div></div>
+</div>
+
+<div class="grid">
+  <!-- ── Containers ── -->
+  <section class="card"><h2>Containers</h2><div id="cont" class="muted">&hellip;</div></section>
+
+  <!-- ── Versions & rollback ── -->
+  <section class="card"><h2>Versions &amp; rollback</h2>
+    <div id="upimgs" class="muted">&hellip;</div>
+    <div class="rowline" style="border:0;margin-top:.5rem">
+      <span class="muted">keep last</span>
+      <input type="number" id="upkeep" min="1" max="20">
+      <button class="btn" onclick="saveRetention()">save</button>
+      <button class="btn" onclick="runGC()">prune old images</button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Live logs ── -->
+<section class="card"><h2>Live logs <span class="hint">streams only while open</span></h2>
+  <div id="logbtns" class="chips muted">&hellip;</div>
+  <pre id="logview" class="term"></pre>
+</section>
+
+</main>
+<div id="toast" class="toast"></div>
+
 <script>
 const $=id=>document.getElementById(id);
-function badge(s){
- if(s===true)return'b-ok';if(s===false)return'b-bad';
- s=String(s||'').toLowerCase();
- if(s==='running'||s==='ok')return'b-ok';
- if(s==='exited'||s==='dead')return'b-bad';return'b-mut';}
-function wbadge(s){s=String(s||'').toLowerCase();
- if(s==='ok')return'b-ok';
- if(s==='unhealthy'||s==='restarted'||s==='exhausted')return'b-bad';return'b-mut';}
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+let toastTimer=null;
+function toast(msg,cls){const t=$('toast');t.textContent=msg;
+ t.className='toast show '+(cls||'');clearTimeout(toastTimer);
+ toastTimer=setTimeout(()=>t.className='toast',4200);}
+
+/* ── auth token (actions only) ─────────────────────────────────────────── */
+function tok(){let t=localStorage.getItem('zmm_mgr_token');
+ if(!t){t=prompt('Manager action token\n(host: data/state/manager_token, or app Settings → Upgrade)');
+  if(t){t=t.trim();localStorage.setItem('zmm_mgr_token',t);}}
+ return t;}
+async function act(url,body,quiet){
+ const t=tok();if(!t)return null;
+ const r=await fetch(url,{method:'POST',
+  headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},
+  body:JSON.stringify(body||{})});
+ const d=await r.json().catch(()=>({}));
+ if(r.status===401){localStorage.removeItem('zmm_mgr_token');
+  toast('Token rejected — you will be asked again','err');return null;}
+ if(!quiet)toast(d.message||d.error||('HTTP '+r.status),d.success?'ok':'err');
+ return d;}
+async function authGet(url){
+ const t=tok();if(!t)return null;
+ const r=await fetch(url,{headers:{'Authorization':'Bearer '+t}});
+ if(r.status===401){localStorage.removeItem('zmm_mgr_token');
+  toast('Token rejected — you will be asked again','err');return null;}
+ return r.json().catch(()=>null);}
+
+/* ── status poll ───────────────────────────────────────────────────────── */
+function dot(cls){return '<span class="sdot '+cls+'"></span>';}
+function setTile(id,cls,text,sub){$(id).innerHTML=dot(cls)+esc(text);
+ $(id+'Sub').textContent=sub||'';}
+let recoveryShown=false;
 async function refresh(){
- try{const r=await fetch('/status');if(!r.ok)throw 0;const d=await r.json();
-  $('conn').textContent='live';$('conn').className='badge b-ok';
+ try{
+  const r=await fetch('/status');if(!r.ok)throw 0;const d=await r.json();
+  $('conn').className='pill ok';$('conn').innerHTML='<span class="dot"></span>live';
   const a=d.app||{};
-  const av=(a.body&&a.body.version)?(' v'+a.body.version):'';
-  $('app').innerHTML='<span class="badge '+badge(a.ok)+'">'+(a.ok?'healthy':'unhealthy')+'</span>'+av+
-   (a.error?(' <span class="muted">'+a.error+'</span>'):'');
-  const w=d.watchdog||{};
-  $('wd').innerHTML='<span class="badge '+wbadge(w.status)+'">'+(w.status||'?')+'</span>'+
-   (w.restarts?(' <span class="muted">'+w.restarts+' restart(s)</span>'):'')+
-   (w.last_action?(' <span class="muted">'+w.last_action+'</span>'):'');
+  const ver=a.body&&a.body.version;
+  $('appver').textContent=ver?('app v'+ver):'';
+  if(a.ok)setTile('tApp','s-ok','healthy',ver?('version '+ver):'');
+  else setTile('tApp','s-bad','unhealthy',a.error||('HTTP '+(a.status_code??'—')));
+  const w=d.watchdog||{};const ws=w.status||'?';
+  const wcls=ws==='ok'?'s-ok':(ws==='unhealthy'||ws==='exhausted'?'s-bad'
+   :(ws==='restarted'?'s-warn':'s-mut'));
+  setTile('tWd',wcls,ws,w.restarts?w.restarts+' restart(s)':(w.last_action||''));
   const c=d.containers||{};
-  if(!c.available){$('cont').innerHTML='<span class="muted">'+(c.error||'unavailable')+'</span>';}
-  else{$('cont').innerHTML=(c.containers||[]).map(x=>
-   '<div><code>'+x.name+'</code> <span class="badge '+badge(x.state)+'">'+(x.state||'?')+'</span> '+
-   '<span class="muted">'+(x.status||'')+'</span></div>').join('')||'<span class="muted">none</span>';}
- }catch(e){$('conn').textContent='offline';$('conn').className='badge b-bad';}
-}
+  $('cont').innerHTML=!c.available
+   ?'<span class="muted">'+esc(c.error||'unavailable')+'</span>'
+   :(c.containers||[]).map(x=>{
+     const s=(x.state||'').toLowerCase();
+     const cls=s==='running'?'s-ok':(s==='exited'||s==='dead'?'s-bad':'s-warn');
+     return '<div class="rowline">'+dot(cls)+'<code>'+esc(x.name)+'</code>'+
+      '<span class="muted">'+esc(x.status||x.state||'')+'</span></div>';
+    }).join('')||'<span class="muted">none found</span>';
+  /* recovery console visibility */
+  const rec=d.recovery||{};
+  if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
+  if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
+ }catch(e){
+  $('conn').className='pill bad';$('conn').innerHTML='<span class="dot"></span>offline';
+ }}
 refresh();setInterval(refresh,2000);
 
-// ── Live logs: buttons per source, one EventSource at a time ────────────────
-let es=null,esBtn=null;
-const MAX_LOG_LINES=2000;
+/* ── upgrade / rollback ────────────────────────────────────────────────── */
+function rollback(v){
+ if(confirm('Roll back the app to v'+v+'?\nThe current container will be replaced.'))
+  act('/upgrade/rollback',{version:v});}
+function saveRetention(){act('/upgrade/retention',{retention_count:parseInt($('upkeep').value,10)||2});}
+function runGC(){if(confirm('Delete images beyond the retention count?'))act('/upgrade/gc');}
+async function loadUpgrade(){
+ try{
+  const r=await fetch('/upgrade');if(!r.ok)throw 0;const d=await r.json();
+  const st=d.status||{};const s=st.state||'idle';
+  const cls=s==='idle'?'s-mut':(s==='failed'?'s-bad':'s-warn');
+  setTile('tUp',cls,s,st.current_step||st.error||'');
+  $('upimgs').innerHTML=(d.images||[]).map(i=>
+   '<div class="rowline"><code>v'+esc(i.version)+'</code>'+
+   '<span class="muted">'+esc(i.arch)+'</span><span class="spacer"></span>'+
+   (i.current?'<span class="badge b-ok">current</span>'
+    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\')">roll back</button>')+
+   '</div>').join('')||'<span class="muted">no local images found</span>';
+  if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
+ }catch(e){setTile('tUp','s-mut','unavailable','');}}
+loadUpgrade();setInterval(loadUpgrade,5000);
+
+/* ── live logs ─────────────────────────────────────────────────────────── */
+let es=null,esBtn=null;const MAX_LOG_LINES=2000;
 function stopStream(){if(es){es.close();es=null;}
  if(esBtn){esBtn.classList.remove('active');esBtn=null;}
  $('logview').style.display='none';$('logview').textContent='';}
@@ -78,11 +319,10 @@ function startStream(url,btn){
   if(stick)v.scrollTop=v.scrollHeight;};
  es.onerror=()=>{v.textContent+='── connection lost ──\n';};}
 function mkbtn(label,url){const b=document.createElement('button');
- b.className='lbtn';b.textContent=label;
- b.onclick=()=>startStream(url,b);return b;}
+ b.className='btn';b.textContent=label;b.onclick=()=>startStream(url,b);return b;}
 async function loadLogSources(){
  try{const r=await fetch('/logs');if(!r.ok)throw 0;const d=await r.json();
-  const el=$('logbtns');el.textContent='';
+  const el=$('logbtns');el.textContent='';el.classList.remove('muted');
   (d.containers||[]).forEach(n=>el.appendChild(
    mkbtn('\u{1F4E6} '+n,'/logs/container/'+encodeURIComponent(n))));
   (d.files||[]).forEach(f=>el.appendChild(
@@ -91,42 +331,82 @@ async function loadLogSources(){
  }catch(e){$('logbtns').innerHTML='<span class="muted">unavailable</span>';}}
 loadLogSources();setInterval(()=>{if(!es)loadLogSources();},30000);
 
-// ── Upgrade & rollback (actions need the token from data/state/manager_token) ─
-function tok(force){
- let t=localStorage.getItem('zmm_mgr_token');
- if(!t||force){t=prompt('Manager action token\n(host: data/state/manager_token, or app Settings → Upgrade)');
-  if(t){t=t.trim();localStorage.setItem('zmm_mgr_token',t);}}
- return t;}
-async function act(url,body){
- const t=tok(false);if(!t)return;
- const r=await fetch(url,{method:'POST',
-  headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},
-  body:JSON.stringify(body||{})});
- const d=await r.json().catch(()=>({}));
- if(r.status===401){localStorage.removeItem('zmm_mgr_token');
-  alert('Token rejected — you will be asked again.');return;}
- alert(d.message||d.error||('HTTP '+r.status));
- loadUpgrade();}
-function rollback(v){
- if(confirm('Roll back the app to v'+v+'?\nThe current container will be replaced.'))
-  act('/upgrade/rollback',{version:v});}
-function saveRetention(){
- act('/upgrade/retention',{retention_count:parseInt($('upkeep').value,10)||2});}
-function runGC(){
- if(confirm('Delete images beyond the retention count?'))act('/upgrade/gc');}
-async function loadUpgrade(){
- try{const r=await fetch('/upgrade');if(!r.ok)throw 0;const d=await r.json();
-  const st=d.status||{};const s=(st.state||'idle');
-  $('upstate').innerHTML='watcher: <span class="badge '+
-   (s==='idle'?'b-mut':(s==='failed'?'b-bad':'b-ok'))+'">'+s+'</span>'+
-   (st.current_step?(' <span class="muted">'+st.current_step+'</span>'):'')+
-   (st.error?(' <span class="muted">'+st.error+'</span>'):'');
-  $('upimgs').innerHTML=(d.images||[]).map(i=>
-   '<div><code>v'+i.version+'</code> <span class="muted">'+i.arch+'</span> '+
-   (i.current?'<span class="badge b-ok">current</span>'
-    :'<button class="lbtn" onclick="rollback(\''+i.version+'\')">roll back</button>')+
-   '</div>').join('')||'<span class="muted">no local images found</span>';
-  if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
- }catch(e){$('upstate').innerHTML='<span class="muted">unavailable</span>';$('upimgs').textContent='';}}
-loadUpgrade();setInterval(loadUpgrade,5000);
-</script></body></html>
+/* ── recovery console ──────────────────────────────────────────────────── */
+async function loadRecovery(){
+ try{
+  const f=$('bkFilter').value.trim();
+  const r=await fetch('/recovery'+(f?('?path='+encodeURIComponent(f)):''));
+  if(!r.ok)throw 0;const d=await r.json();
+  const c=d.crash||{};
+  const suspect=c.suspect_file_rel||c.suspect_file||'';
+  $('crashBox').innerHTML=(!c.exc_type&&!c.traceback)
+   ?'<span class="muted">No crash record found.</span>'
+   :('<div class="suspect"><div><span class="muted">exception</span> '+
+     '<strong>'+esc(c.exc_type||'?')+'</strong>'+
+     (c.exc_value?(': '+esc(c.exc_value)):'')+'</div>'+
+     (suspect?('<div><span class="muted">suspect</span> <span class="file">'+
+       esc(suspect)+(c.suspect_line?(':'+esc(c.suspect_line)):'')+'</span></div>'):'')+
+     '<div class="muted">'+esc(c.timestamp||'')+' &middot; exit '+esc(c.exit_code??'?')+'</div>'+
+     '</div>'+
+     '<details class="trace"><summary>traceback</summary><pre>'+
+     esc(c.traceback||'(none captured)')+'</pre></details>');
+  if(suspect&&!$('recTarget').value){$('recTarget').value=suspect;
+   if(!$('bkFilter').value)$('bkFilter').value=suspect;}
+  const rows=d.backups||[];
+  $('bkCount').textContent=rows.length?('('+rows.length+')'):'';
+  $('bkRows').innerHTML=rows.map(b=>
+   '<tr><td title="'+esc(b.name)+'">'+esc(b.name.length>38?b.name.slice(0,36)+'…':b.name)+'</td>'+
+   '<td class="muted">'+esc(b.created)+'</td>'+
+   '<td style="text-align:right;white-space:nowrap">'+
+   '<button class="btn" onclick="previewBackup(\''+esc(b.name)+'\')">view</button> '+
+   '<button class="btn primary" onclick="restoreBackup(\''+esc(b.name)+'\')">restore</button>'+
+   '</td></tr>').join('')||'<tr><td colspan="3" class="muted">no backups match</td></tr>';
+  const p=d.pending_markers||[];
+  $('pendingInfo').textContent=p.length?('pending: '+p.join(', ')):'no pending markers';
+ }catch(e){$('crashBox').innerHTML='<span class="muted">recovery state unavailable</span>';}}
+async function previewBackup(name){
+ const d=await authGet('/recovery/backup-content?name='+encodeURIComponent(name));
+ if(!d)return;
+ if(!d.success){toast(d.error||'read failed','err');return;}
+ $('recContent').value=d.content||'';
+ toast('Backup loaded into the editor — review, set the target, then write','ok');}
+async function loadCurrent(){
+ const p=$('recTarget').value.trim();
+ if(!p){toast('Set the target file first','err');return;}
+ const d=await authGet('/recovery/file-content?path='+encodeURIComponent(p));
+ if(!d)return;
+ if(!d.success){toast(d.error||'read failed','err');return;}
+ $('recContent').value=d.content||'';
+ toast('Loaded current contents of '+p,'ok');}
+async function restoreBackup(name){
+ const target=$('recTarget').value.trim();
+ if(!target){toast('Set the target file first','err');return;}
+ if(!confirm('Restore '+target+' from\n'+name+' ?'))return;
+ act('/recovery/restore',{backup:name,path:target});}
+async function uploadFix(){
+ const path=$('recTarget').value.trim();
+ if(!path){toast('Set the target file first','err');return;}
+ const file=$('recFile').files[0];
+ let payload;
+ if(file){
+  const buf=await file.arrayBuffer();const bin=new Uint8Array(buf);
+  let s='';for(let i=0;i<bin.length;i++)s+=String.fromCharCode(bin[i]);
+  payload={path,content_base64:btoa(s)};
+ }else{
+  const content=$('recContent').value;
+  if(!content){toast('Provide contents or pick a file','err');return;}
+  payload={path,content};
+ }
+ if(!confirm('Write /app/'+path+' inside the app container?\n(The existing file is snapshotted first.)'))return;
+ act('/recovery/upload',payload);}
+async function clearPending(){
+ if(!confirm('Remove .test_pending / .boot_failures markers?'))return;
+ const d=await act('/recovery/clear-pending',{},true);
+ if(d)toast('Cleared: '+((d.removed||[]).join(', ')||'(none present)'),'ok');
+ loadRecovery();}
+async function resumeApp(){
+ if(!confirm('Resume the app?\nThe launcher will retry main.py with the current files.'))return;
+ act('/recovery/resume');}
+</script>
+</body>
+</html>

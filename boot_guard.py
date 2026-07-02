@@ -40,7 +40,10 @@ import time
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
-BACKUP_DIR = os.path.join(APP_DIR, ".editor_backups")
+# Under data/ (host bind mount): survives image swaps, visible to the ZMM
+# Manager's recovery UI. _migrate_legacy_backups() moves old files across.
+BACKUP_DIR = os.path.join(DATA_DIR, ".editor_backups")
+LEGACY_BACKUP_DIR = os.path.join(APP_DIR, ".editor_backups")
 
 PENDING_FILE = os.path.join(DATA_DIR, ".test_pending")
 FAILURE_FILE = os.path.join(DATA_DIR, ".boot_failures")
@@ -88,6 +91,33 @@ def _remove(path: str):
         os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def _migrate_legacy_backups():
+    """One-time move of /app/.editor_backups → /app/data/.editor_backups.
+    The new location is on the host bind mount, so backups survive image
+    swaps and the ZMM Manager's recovery UI can serve them. Never raises."""
+    try:
+        if not os.path.isdir(LEGACY_BACKUP_DIR):
+            return
+        names = [f for f in os.listdir(LEGACY_BACKUP_DIR) if f.endswith(".bak")]
+        if not names:
+            return
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        moved = 0
+        for name in names:
+            dest = os.path.join(BACKUP_DIR, name)
+            if os.path.exists(dest):
+                continue
+            try:
+                shutil.move(os.path.join(LEGACY_BACKUP_DIR, name), dest)
+                moved += 1
+            except OSError as e:
+                log.warning(f"Backup migration: could not move {name}: {e}")
+        if moved:
+            log.info(f"Migrated {moved} legacy backup(s) to {BACKUP_DIR}")
+    except Exception as e:
+        log.warning(f"Backup migration failed (non-fatal): {e}")
 
 
 def _normalise_batch(pending: dict) -> list:
@@ -174,6 +204,8 @@ def _rollback_entry(entry: dict) -> bool:
 
 def main():
     log.info("Boot guard running...")
+
+    _migrate_legacy_backups()
 
     pending = _read_json(PENDING_FILE)
     failures = _read_json(FAILURE_FILE)

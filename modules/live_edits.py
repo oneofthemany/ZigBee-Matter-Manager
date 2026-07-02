@@ -41,7 +41,10 @@ _CACHE_TTL = 15.0
 _cache = {"at": 0.0, "result": None}
 
 PROJECT_ROOT = Path("/app")
-BACKUP_DIR = PROJECT_ROOT / ".editor_backups"
+# Under data/ (host bind mount) since the move to manager-side recovery —
+# keep in sync with modules/test_recovery.py and boot_guard.py. The old
+# ".editor_backups/" ignore prefix stays for pre-migration checkouts.
+BACKUP_DIR = PROJECT_ROOT / "data" / ".editor_backups"
 
 # Runtime state / volume-mounted dirs, never "code edits an upgrade discards" —
 # belt-and-suspenders on top of .gitignore. config/ is bind-mounted from the
