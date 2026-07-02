@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -67,49 +68,17 @@ async def healthz():
     return JSONResponse({"manager": "ok"})
 
 
+# The dashboard is a static asset shipped alongside this module (manager/
+# dashboard.html) — kept out of Python so its inline JS can't be mangled by
+# string escaping and can be linted/edited as real HTML.
+_DASHBOARD_PATH = Path(__file__).with_name("dashboard.html")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return _DASHBOARD_HTML
-
-
-_DASHBOARD_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ZMM Manager</title><style>
-body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:1rem}
-h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;margin:.6rem 0}
-.badge{display:inline-block;padding:.15rem .5rem;border-radius:6px;font-size:.8rem;font-weight:600}
-.b-ok{background:#16a34a}.b-bad{background:#dc2626}.b-mut{background:#475569}
-.muted{color:#94a3b8;font-size:.85rem}code{background:#020617;padding:.05rem .35rem;border-radius:4px}
-</style></head><body>
-<h1>&#128296; ZMM Manager <span id="conn" class="badge b-mut">&hellip;</span></h1>
-<div class="card"><div class="muted">App (:8000)</div><div id="app">checking&hellip;</div></div>
-<div class="card"><div class="muted">Watchdog</div><div id="wd">&hellip;</div></div>
-<div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
-<script>
-const $=id=>document.getElementById(id);
-function badge(s){s=(s||'').toLowerCase();
- if(s==='running'||s===true||s==='ok')return'b-ok';
- if(s==='exited'||s==='dead'||s===false)return'b-bad';return'b-mut';}
-function wbadge(s){s=(s||'').toLowerCase();
- if(s==='ok')return'b-ok';
- if(s==='unhealthy'||s==='restarted'||s==='exhausted')return'b-bad';return'b-mut';}
-async function refresh(){
- try{const r=await fetch('/status');if(!r.ok)throw 0;const d=await r.json();
-  $('conn').textContent='live';$('conn').className='badge b-ok';
-  const a=d.app||{};
-  const av=(a.body&&a.body.version)?(' v'+a.body.version):'';
-  $('app').innerHTML='<span class="badge '+badge(a.ok)+'">'+(a.ok?'healthy':'unhealthy')+'</span>'+av+
-   (a.error?(' <span class="muted">'+a.error+'</span>'):'');
-  const w=d.watchdog||{};
-  $('wd').innerHTML='<span class="badge '+wbadge(w.status)+'">'+(w.status||'?')+'</span>'+
-   (w.restarts?(' <span class="muted">'+w.restarts+' restart(s)</span>'):'')+
-   (w.last_action?(' <span class="muted">'+w.last_action+'</span>'):'');
-  const c=d.containers||{};
-  if(!c.available){$('cont').innerHTML='<span class="muted">'+(c.error||'unavailable')+'</span>';}
-  else{$('cont').innerHTML=(c.containers||[]).map(x=>
-   '<div><code>'+x.name+'</code> <span class="badge '+badge(x.state)+'">'+(x.state||'?')+'</span> '+
-   '<span class="muted">'+(x.status||'')+'</span></div>').join('')||'<span class="muted">none</span>';}
- }catch(e){$('conn').textContent='offline';$('conn').className='badge b-bad';}
-}
-refresh();setInterval(refresh,2000);
-</script></body></html>"""
+    try:
+        return _DASHBOARD_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.error("dashboard.html unreadable: %s", e)
+        return HTMLResponse("<h1>ZMM Manager</h1><p>dashboard asset missing</p>",
+                            status_code=500)
