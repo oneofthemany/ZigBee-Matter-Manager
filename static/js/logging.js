@@ -564,13 +564,13 @@ export async function exportDebugPackets() {
         const data = await res.json();
 
         if (!data.success) {
-            alert('Failed to fetch packets: ' + (data.error || 'unknown error'));
+            window.toast.error('Failed to fetch packets: ' + (data.error || 'unknown error'));
             return;
         }
 
         const packets = data.packets || [];
         if (packets.length === 0) {
-            alert('No packets to export.');
+            window.toast.warning('No packets to export.');
             return;
         }
 
@@ -652,7 +652,7 @@ export async function exportDebugPackets() {
 
     } catch (e) {
         console.error('Export error:', e);
-        alert('Export failed: ' + e.message);
+        window.toast.error('Export failed: ' + e.message);
     }
 }
 
@@ -858,7 +858,7 @@ export async function downloadDebugLog() {
 
     } catch (e) {
         console.error("Failed to generate debug report:", e);
-        alert("Failed to generate report. Opening raw log instead.");
+        window.toast.error("Failed to generate report. Opening raw log instead.");
         window.open('/api/debug/log_file?lines=5000', '_blank');
     }
 }

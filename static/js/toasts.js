@@ -15,6 +15,8 @@
         if (container && document.body.contains(container)) return container;
         container = document.createElement('div');
         container.id = 'zbm-toast-container';
+        container.setAttribute('role', 'region');
+        container.setAttribute('aria-label', 'Notifications');
         document.body.appendChild(container);
         return container;
     }
@@ -50,6 +52,8 @@
 
         var toast = document.createElement('div');
         toast.className = 'zbm-toast zbm-toast-' + type;
+        // Errors interrupt screen readers; everything else is polite
+        toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
 
         // Handle multi-line messages (from alert() calls that use \n)
         var formattedMessage = String(message).replace(/\n/g, '<br>');
@@ -125,31 +129,15 @@
     // 5. OVERRIDE window.alert()
     // ----------------------------------------------------------
     //
-    // Heuristic: detect the type from the message content.
-    // - Messages containing "error", "fail", "invalid" → error toast
-    // - Messages containing "success", "done", "✓", "saved" → success toast
-    // - Messages containing "warning", "caution", "banned" → warning toast
-    // - Everything else → info toast
+    // Safety net only: every first-party call site now uses explicit
+    // toast.* — anything landing here is unmigrated code, so surface it
+    // neutrally and flag it in the console.
     //
-
-    var _nativeAlert = window.alert.bind(window);
 
     window.alert = function (msg) {
         if (msg === undefined || msg === null) msg = '';
-        var text = String(msg).toLowerCase();
-
-        if (text.match(/error|fail|invalid|could not|unable|exception/)) {
-            window.toast.error(msg);
-        } else if (text.match(/success|done|✓|saved|complete|uploaded|applied|removed|enabled/)) {
-            window.toast.success(msg);
-        } else if (text.match(/warning|caution|banned|disconnect/)) {
-            window.toast.warning(msg);
-        } else {
-            window.toast.info(msg);
-        }
+        window.toast.info(msg);
+        console.warn('[toasts] window.alert() called — migrate this call site to toast.*:', msg);
     };
-
-    // Expose native alert in case it's ever needed
-    window.nativeAlert = _nativeAlert;
 
 })();

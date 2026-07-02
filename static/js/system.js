@@ -4,6 +4,7 @@
  */
 
 import { state } from './state.js';
+import { confirmDialog } from './dialogs.js';
 
 /**
  * Load configuration YAML into editor
@@ -26,21 +27,32 @@ export async function loadConfigYaml() {
  */
 export async function saveConfigYaml() {
     const editor = document.getElementById('configEditor');
-    if (!editor || !confirm("Save?")) return;
+    if (!editor) return;
+    if (!await confirmDialog({
+        title: 'Save configuration',
+        message: 'Save config.yaml?',
+        confirmText: 'Save'
+    })) return;
 
     await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editor.value })
     });
-    alert("Saved");
+    window.toast.success("Saved");
 }
 
 /**
  * Restart the Zigbee service
  */
 export async function restartSystem() {
-    if (!confirm("Restart?")) return;
+    if (!await confirmDialog({
+        title: 'Restart service',
+        message: 'Restart the service now?',
+        detail: 'The app will be unavailable for a short while.',
+        confirmText: 'Restart',
+        variant: 'danger'
+    })) return;
 
     state.isRestarting = true;
     await fetch('/api/system/restart', { method: 'POST' });
@@ -66,7 +78,7 @@ export async function toggleSSL(enabled) {
     const d = await r.json();
 
     if (!d.success) {
-        alert('SSL toggle failed: ' + d.error);
+        window.toast.error('SSL toggle failed: ' + d.error);
         // Revert toggle
         document.getElementById('sslToggle').checked = !enabled;
         return;
@@ -75,22 +87,23 @@ export async function toggleSSL(enabled) {
     // Tell the user what happened, with extra detail when a cert was generated.
     if (enabled) {
         if (d.cert_action === 'generated') {
-            alert(
+            window.toast.success(
                 `HTTPS enabled. A new self-signed certificate was generated at ` +
-                `${d.cert_path}.\n\n` +
+                `${d.cert_path}.\n` +
                 `You will need to re-trust it in your browser the next time you ` +
-                `connect.\n\n` +
-                `${d.message || 'Restart the service to apply.'}`
+                `connect.\n` +
+                `${d.message || 'Restart the service to apply.'}`,
+                { duration: 10000 }
             );
         } else if (d.cert_action === 'preserved') {
-            alert(
-                `HTTPS enabled using existing certificate at ${d.cert_path}.\n\n` +
+            window.toast.success(
+                `HTTPS enabled using existing certificate at ${d.cert_path}.\n` +
                 `${d.message || 'Restart the service to apply.'}`
             );
         } else {
-            alert(d.message || 'HTTPS enabled. Restart the service to apply.');
+            window.toast.success(d.message || 'HTTPS enabled. Restart the service to apply.');
         }
     } else {
-        alert(d.message || 'HTTPS disabled. Restart the service to apply.');
+        window.toast.success(d.message || 'HTTPS disabled. Restart the service to apply.');
     }
 }

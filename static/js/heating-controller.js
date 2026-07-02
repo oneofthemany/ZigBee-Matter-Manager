@@ -440,10 +440,10 @@ function bindControllerPanel() {
                 }
                 loadControllerStatus();
             } else {
-                alert(`Tick failed: ${json.error}`);
+                window.toast.error(`Tick failed: ${json.error}`);
             }
         } catch (e) {
-            alert(`Tick failed: ${e.message}`);
+            window.toast.error(`Tick failed: ${e.message}`);
         } finally {
             btn.disabled = false;
             btn.innerHTML = orig;
@@ -689,19 +689,24 @@ async function switchConfigMode(targetMode) {
     if (targetMode !== 'floor_plan' && targetMode !== 'manual') return;
     if (controllerConfigMode === targetMode) return;
 
-    const confirmMsg = targetMode === 'manual'
-        ? 'Switch to manual configuration?\n\n'
-          + 'Your floor plan stays saved as a backup, but the rooms will '
+    const confirmDetail = targetMode === 'manual'
+        ? 'Your floor plan stays saved as a backup, but the rooms will '
           + 'become freely editable in the manual UI. You can switch back '
           + 'later — the plan will be re-applied.'
-        : 'Switch to floor-plan configuration?\n\n'
-          + (await hasSavedFloorPlan()
-              ? 'Your saved floor plan will be re-applied to the rooms. '
-                + 'Geometry and device bindings will reflect the plan.'
-              : 'There is no floor plan saved yet. After switching, open '
-                + 'the floor-plan editor to draw one.');
+        : (await hasSavedFloorPlan()
+            ? 'Your saved floor plan will be re-applied to the rooms. '
+              + 'Geometry and device bindings will reflect the plan.'
+            : 'There is no floor plan saved yet. After switching, open '
+              + 'the floor-plan editor to draw one.');
 
-    if (!confirm(confirmMsg)) return;
+    if (!await window.zbmConfirm({
+        title: 'Switch configuration mode',
+        message: targetMode === 'manual'
+            ? 'Switch to manual configuration?'
+            : 'Switch to floor-plan configuration?',
+        detail: confirmDetail,
+        confirmText: 'Switch'
+    })) return;
 
     try {
         const r = await fetch('/api/heating/controller/config-mode', {
@@ -2048,9 +2053,15 @@ function bindCircuitCards() {
         });
     });
     document.querySelectorAll('.btn-delete-circuit').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const ci = +btn.dataset.ci;
-            if (confirm(`Delete circuit "${workingCircuits[ci]?.name}"? This will also remove its rooms.`)) {
+            if (await window.zbmConfirm({
+                title: 'Delete circuit',
+                message: `Delete circuit "${workingCircuits[ci]?.name}"?`,
+                detail: 'This will also remove its rooms.',
+                confirmText: 'Delete',
+                variant: 'danger'
+            })) {
                 workingCircuits.splice(ci, 1);
                 renderCircuitsList();
             }
@@ -2143,9 +2154,14 @@ function bindCircuitCards() {
         });
     });
     document.querySelectorAll('.btn-delete-room').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const ci = +btn.dataset.ci, ri = +btn.dataset.ri;
-            if (confirm(`Delete room "${workingCircuits[ci].rooms[ri]?.name}"?`)) {
+            if (await window.zbmConfirm({
+                title: 'Delete room',
+                message: `Delete room "${workingCircuits[ci].rooms[ri]?.name}"?`,
+                confirmText: 'Delete',
+                variant: 'danger'
+            })) {
                 workingCircuits[ci].rooms.splice(ri, 1);
                 renderCircuitsList();
             }
@@ -3251,7 +3267,13 @@ async function saveControllerSettings() {
 
     // Sanity: warn if enabling without dry-run on first save
     if (payload.enabled && !payload.dry_run && !controllerConfig.enabled) {
-        if (!confirm("You're enabling the controller for live operation. Are you sure? Consider enabling 'Dry-run' first to verify behaviour without sending commands.")) {
+        if (!await window.zbmConfirm({
+            title: 'Enable live operation',
+            message: "You're enabling the controller for live operation. Are you sure?",
+            detail: "Consider enabling 'Dry-run' first to verify behaviour without sending commands.",
+            confirmText: 'Enable live',
+            variant: 'danger'
+        })) {
             return;
         }
     }

@@ -10,6 +10,7 @@
 
  import { loadSSLStatus } from './system.js';
  import { createChart } from './chart-utils.js';
+ import { confirmDialog } from './dialogs.js';
 
 // ============================================================================
 // STATE
@@ -817,7 +818,13 @@ window.regenCredential = async function(type) {
         ? '\n\nWARNING: All devices will need to be re-paired!'
         : '';
 
-    if (!confirm(`Regenerate ${labels[type]}?${warn}`)) return;
+    if (!await confirmDialog({
+        title: 'Regenerate credentials',
+        message: `Regenerate ${labels[type]}?`,
+        detail: warn.trim() || undefined,
+        confirmText: 'Regenerate',
+        variant: 'danger'
+    })) return;
 
     try {
         const res = await fetch('/api/zigbee/credentials/regenerate', {
@@ -975,7 +982,12 @@ function renderSpectrumChart(data) {
 }
 
 window.autoSelectChannel = async function() {
-    if (!confirm('Run spectrum scan and automatically set the best channel in config?\nA service restart will be required to apply.')) return;
+    if (!await confirmDialog({
+        title: 'Auto-select channel',
+        message: 'Run spectrum scan and automatically set the best channel in config?',
+        detail: 'A service restart will be required to apply.',
+        confirmText: 'Scan & select'
+    })) return;
 
     const btn = document.getElementById('autoChannelBtn');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Selecting...'; }

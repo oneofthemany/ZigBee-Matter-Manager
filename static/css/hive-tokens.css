@@ -1,0 +1,167 @@
+/* ============================================================
+   ZigBee Matter Manager — Hive Design Tokens
+   ============================================================
+   DESIGN-TOKENS: canonical source of truth for the hive palette.
+   The manager dashboard (manager/dashboard.html) duplicates the
+   raw palette block below BY CONVENTION — it must stay a single
+   self-contained file (disaster-recovery UI). If you change a raw
+   palette value here, update the :root block in dashboard.html.
+
+   Load order matters: this file loads AFTER dark-mode.css and
+   re-points its semantic tokens (--bg-*, --text-*, --border-*)
+   at the hive palette. Components keep consuming the semantic
+   names; only the values change.
+   ============================================================ */
+
+
+/* ----------------------------------------------------------
+   RAW PALETTE — theme-agnostic (keep in sync with manager)
+   ---------------------------------------------------------- */
+:root {
+    --night: #0b1620;
+    --comb: #101e2b;
+    --comb2: #16283a;
+    --line: #1e3346;
+    --wax: #eaf2f4;
+    --muted: #7e97a8;
+    --honey: #f2a93b;
+    --honey-deep: #c97f1e;
+    --honey-soft: #f7bb5e;
+    --honey-ink: #14100a;      /* text on honey fills */
+    --ok: #34d399;
+    --bad: #f4536e;
+    --warn: #f2a93b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --hexclip: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+
+/* ----------------------------------------------------------
+   HIVE LIGHT — semantic token remap (warm paper + navy ink)
+   ---------------------------------------------------------- */
+:root {
+    --bg-body: #f2efe7;
+    --bg-surface: #ffffff;
+    --bg-surface-raised: #faf8f2;
+    --bg-surface-sunken: #ebe7db;
+    --bg-nav: #16283a;              /* navy header even in light — identity */
+    --bg-card-header: #f7f4ec;
+    --bg-input: #ffffff;
+    --bg-code: #101e2b;
+
+    --text-primary: #16283a;
+    --text-secondary: #53687a;
+    --text-muted: #7e8fa0;
+    --text-on-surface: #16283a;
+    --text-link: #b97a17;           /* darkened honey for AA on white */
+
+    --border-color: #ded7c6;
+    --border-light: #eae4d6;
+
+    --table-stripe: rgba(22, 40, 58, 0.025);
+    --table-hover: rgba(185, 122, 23, 0.06);
+
+    --shadow-sm: 0 1px 3px rgba(22, 40, 58, 0.08);
+    --shadow-md: 0 2px 8px rgba(22, 40, 58, 0.1);
+
+    --modal-backdrop: rgba(11, 22, 32, 0.5);
+    --scrollbar-thumb: #c9c1af;
+    --scrollbar-track: #eae6da;
+
+    --badge-light-bg: #f0ece0;
+    --badge-light-text: #16283a;
+
+    --alert-info-bg: #e8eef4;
+    --alert-info-border: #cfdde9;
+    --alert-info-text: #2c4257;
+
+    --success-subtle: rgba(21, 128, 87, 0.1);
+    --danger-subtle: rgba(202, 51, 78, 0.08);
+    --warning-subtle: rgba(201, 127, 30, 0.12);
+    --info-subtle: rgba(83, 104, 122, 0.1);
+
+    /* Accent aliases (theme-aware; prefer these over raw --honey for text) */
+    --accent: #b97a17;
+    --accent-strong: #9a6410;
+    --status-ok: #158057;
+    --status-bad: #ca334e;
+    --status-warn: #9a6410;
+}
+
+
+/* ----------------------------------------------------------
+   HIVE DARK — semantic token remap (the manager's night hive)
+   ---------------------------------------------------------- */
+[data-theme="dark"] {
+    --bg-body: var(--night);
+    --bg-surface: var(--comb);
+    --bg-surface-raised: var(--comb2);
+    --bg-surface-sunken: #071019;
+    --bg-nav: #0a141e;
+    --bg-card-header: #13202e;
+    --bg-input: var(--night);
+    --bg-code: #071019;
+
+    --text-primary: var(--wax);
+    --text-secondary: #9db2c0;
+    --text-muted: var(--muted);
+    --text-on-surface: var(--wax);
+    --text-link: var(--honey);
+
+    --border-color: var(--line);
+    --border-light: #182a3c;
+
+    --table-stripe: rgba(255, 255, 255, 0.02);
+    --table-hover: rgba(242, 169, 59, 0.06);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
+
+    --modal-backdrop: rgba(4, 9, 14, 0.7);
+    --scrollbar-thumb: #2a4258;
+    --scrollbar-track: #0d1b28;
+
+    --badge-light-bg: var(--comb2);
+    --badge-light-text: var(--wax);
+
+    --alert-info-bg: #0c2334;
+    --alert-info-border: #123147;
+    --alert-info-text: #9cc7e8;
+
+    --success-subtle: rgba(52, 211, 153, 0.1);
+    --danger-subtle: rgba(244, 83, 110, 0.12);
+    --warning-subtle: rgba(242, 169, 59, 0.12);
+    --info-subtle: rgba(126, 151, 168, 0.12);
+
+    --accent: var(--honey);
+    --accent-strong: var(--honey-soft);
+    --status-ok: var(--ok);
+    --status-bad: var(--bad);
+    --status-warn: var(--warn);
+}
+
+
+/* ----------------------------------------------------------
+   BOOTSTRAP 5.3 BRIDGE — feed the hive tokens into Bootstrap's
+   own variable system so its components theme themselves
+   without !important overrides. theme-toggle.js keeps
+   data-bs-theme in sync with data-theme.
+   ---------------------------------------------------------- */
+:root,
+[data-theme="dark"] {
+    --bs-body-bg: var(--bg-body);
+    --bs-body-color: var(--text-primary);
+    --bs-emphasis-color: var(--text-primary);
+    --bs-secondary-color: var(--text-secondary);
+    --bs-tertiary-color: var(--text-muted);
+    --bs-secondary-bg: var(--bg-surface-raised);
+    --bs-tertiary-bg: var(--bg-surface-sunken);
+    --bs-border-color: var(--border-color);
+    --bs-border-color-translucent: var(--border-color);
+    --bs-link-color: var(--text-link);
+    --bs-link-hover-color: var(--accent-strong);
+    --bs-code-color: var(--accent);
+    --bs-font-monospace: var(--mono);
+    --bs-border-radius: 8px;
+    --bs-border-radius-lg: 12px;
+}

@@ -9,6 +9,8 @@
  * search, backups, test deploy with rollback.
  */
 
+import { confirmDialog, promptDialog } from './dialogs.js';
+
 let monacoReady = false;
 let editorInstance = null;
 let currentFile = null;
@@ -470,13 +472,18 @@ function renderFileTree(tree) {
 // ============================================================================
 
 window.editorOpenFile = async function(path) {
-    if (unsavedChanges && !confirm('You have unsaved changes. Discard?')) return;
+    if (unsavedChanges && !await confirmDialog({
+        title: 'Unsaved changes',
+        message: 'You have unsaved changes. Discard?',
+        confirmText: 'Discard',
+        variant: 'danger'
+    })) return;
 
     try {
         const res = await fetch(`/api/editor/file?path=${encodeURIComponent(path)}`);
         const data = await res.json();
         if (!data.success) {
-            alert('Error: ' + data.error);
+            window.toast.error('Error: ' + data.error);
             return;
         }
 
@@ -512,7 +519,7 @@ window.editorOpenFile = async function(path) {
         setTimeout(() => validateCurrentFile(), 500);
 
     } catch (e) {
-        alert('Failed to open file: ' + e.message);
+        window.toast.error('Failed to open file: ' + e.message);
     }
 };
 
@@ -549,7 +556,7 @@ window.editorCreateConfirm = async function() {
     const content = document.getElementById('edCreateContent')?.value || '';
 
     if (!name) {
-        alert('Please enter a filename.');
+        window.toast.warning('Please enter a filename.');
         return;
     }
 
@@ -557,13 +564,13 @@ window.editorCreateConfirm = async function() {
     const ext = name.includes('.') ? '.' + name.split('.').pop().toLowerCase() : '';
     const allowed = new Set(['.py', '.js', '.css', '.html', '.yaml', '.yml', '.json', '.md', '.txt', '.conf', '.sh']);
     if (!allowed.has(ext)) {
-        alert(`File extension "${ext}" is not allowed.\nAllowed: ${[...allowed].join(', ')}`);
+        window.toast.warning(`File extension "${ext}" is not allowed.\nAllowed: ${[...allowed].join(', ')}`);
         return;
     }
 
     // Validate filename — no path separators or special chars
     if (/[\/\\<>:"|?*]/.test(name)) {
-        alert('Filename contains invalid characters.');
+        window.toast.warning('Filename contains invalid characters.');
         return;
     }
 
@@ -588,10 +595,10 @@ window.editorCreateConfirm = async function() {
             await loadFileTree();
             window.editorOpenFile(path);
         } else {
-            alert('Create failed: ' + data.error);
+            window.toast.error('Create failed: ' + data.error);
         }
     } catch (e) {
-        alert('Create error: ' + e.message);
+        window.toast.error('Create error: ' + e.message);
     }
 };
 
@@ -605,7 +612,7 @@ let pendingDeletePath = null;
 window.editorDeleteFile = function(path) {
     const fileName = path.split('/').pop();
     if (CRITICAL_FILES.has(fileName)) {
-        alert(`Cannot delete critical file: ${fileName}`);
+        window.toast.warning(`Cannot delete critical file: ${fileName}`);
         return;
     }
 
@@ -670,10 +677,10 @@ window.editorDeleteConfirm = async function() {
             // Refresh tree
             await loadFileTree();
         } else {
-            alert('Delete failed: ' + data.error);
+            window.toast.error('Delete failed: ' + data.error);
         }
     } catch (e) {
-        alert('Delete error: ' + e.message);
+        window.toast.error('Delete error: ' + e.message);
     }
 };
 
@@ -769,11 +776,13 @@ async function saveCurrentFile() {
     if (validation && !validation.valid) {
         const errorCount = validation.errors.filter(e => e.severity === 'error').length;
         if (errorCount > 0) {
-            const proceed = confirm(
-                `${errorCount} syntax error${errorCount > 1 ? 's' : ''} found.\n\n` +
-                `Saving broken code may cause the application to fail on restart.\n\n` +
-                `Save anyway?`
-            );
+            const proceed = await confirmDialog({
+                title: 'Syntax errors found',
+                message: `${errorCount} syntax error${errorCount > 1 ? 's' : ''} found.`,
+                detail: 'Saving broken code may cause the application to fail on restart.',
+                confirmText: 'Save anyway',
+                variant: 'danger'
+            });
             if (!proceed) return;
         }
     }
@@ -801,10 +810,10 @@ async function saveCurrentFile() {
                 setTimeout(() => statusBar.style.background = '#007acc', 1500);
             }
         } else {
-            alert('Save failed: ' + data.error);
+            window.toast.error('Save failed: ' + data.error);
         }
     } catch (e) {
-        alert('Save error: ' + e.message);
+        window.toast.error('Save error: ' + e.message);
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i>'; }
     }
@@ -824,7 +833,7 @@ window.editorTestDeploy = async function() {
     if (validation && !validation.valid) {
         const errorCount = validation.errors.filter(e => e.severity === 'error').length;
         if (errorCount > 0) {
-            alert(`Cannot test-deploy: ${errorCount} syntax error(s) found.\nFix errors before testing.`);
+            window.toast.error(`Cannot test-deploy: ${errorCount} syntax error(s) found.\nFix errors before testing.`);
             return;
         }
     }
@@ -832,16 +841,18 @@ window.editorTestDeploy = async function() {
     const ext = currentFile.split('.').pop().toLowerCase();
     const isPython = ['py', 'yaml', 'yml'].includes(ext);
 
-    if (!confirm(
-        `Test Deploy: ${currentFile}\n\n` +
-        `This will:\n` +
-        `• Create a backup of the current file\n` +
-        `• Save your changes\n` +
-        `• ${isPython ? 'Restart the service' : 'Reload frontend assets'}\n\n` +
-        `You will have 120 seconds to confirm the changes work.\n` +
-        `If you don\'t confirm (or the service fails), changes are automatically rolled back.\n\n` +
-        `Proceed?`
-    )) return;
+    if (!await confirmDialog({
+        title: 'Test deploy',
+        message: `Test Deploy: ${currentFile}`,
+        detail:
+            `This will:\n` +
+            `• Create a backup of the current file\n` +
+            `• Save your changes\n` +
+            `• ${isPython ? 'Restart the service' : 'Reload frontend assets'}\n\n` +
+            `You will have 120 seconds to confirm the changes work.\n` +
+            `If you don't confirm (or the service fails), changes are automatically rolled back.`,
+        confirmText: 'Deploy'
+    })) return;
 
     try {
         const content = editorInstance.getValue();
@@ -853,7 +864,7 @@ window.editorTestDeploy = async function() {
         const data = await res.json();
 
         if (!data.success) {
-            alert('Test deploy failed: ' + data.error);
+            window.toast.error('Test deploy failed: ' + data.error);
             return;
         }
 
@@ -868,7 +879,7 @@ window.editorTestDeploy = async function() {
         }
 
     } catch (e) {
-        alert('Test deploy error: ' + e.message);
+        window.toast.error('Test deploy error: ' + e.message);
     }
 };
 
@@ -892,32 +903,38 @@ window.editorTestConfirm = async function() {
                 setTimeout(() => banner.remove(), 3000);
             }
         } else {
-            alert('Confirm failed: ' + data.error);
+            window.toast.error('Confirm failed: ' + data.error);
         }
     } catch (e) {
-        alert('Confirm error: ' + e.message);
+        window.toast.error('Confirm error: ' + e.message);
     }
 };
 
 window.editorTestRollback = async function() {
-    if (!confirm('Rollback to the previous version?\n\nIf this was a Python file, the service will restart again.')) return;
+    if (!await confirmDialog({
+        title: 'Rollback',
+        message: 'Rollback to the previous version?',
+        detail: 'If this was a Python file, the service will restart again.',
+        confirmText: 'Rollback',
+        variant: 'danger'
+    })) return;
 
     try {
         const res = await fetch('/api/editor/test-rollback', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
             hideTestRecoveryBanner();
-            alert('Rolled back: ' + data.message);
+            window.toast.success('Rolled back: ' + data.message);
             if (data.message && data.message.includes('restart')) {
                 // Service restarting
             } else {
                 window.location.reload();
             }
         } else {
-            alert('Rollback failed: ' + data.error);
+            window.toast.error('Rollback failed: ' + data.error);
         }
     } catch (e) {
-        alert('Rollback error: ' + e.message);
+        window.toast.error('Rollback error: ' + e.message);
     }
 };
 
@@ -1047,12 +1064,16 @@ window.editorSearchFiles = async function(query) {
 
         new bootstrap.Modal(document.getElementById('editorSearchModal')).show();
     } catch (e) {
-        alert('Search failed: ' + e.message);
+        window.toast.error('Search failed: ' + e.message);
     }
 };
 
-window.editorGlobalSearch = function() {
-    const query = prompt('Search across all project files:');
+window.editorGlobalSearch = async function() {
+    const query = await promptDialog({
+        title: 'Global search',
+        label: 'Search across all project files:',
+        confirmText: 'Search'
+    });
     if (query) window.editorSearchFiles(query);
 };
 
@@ -1098,12 +1119,18 @@ window.editorShowBackups = async function() {
 
         new bootstrap.Modal(document.getElementById('editorBackupsModal')).show();
     } catch (e) {
-        alert('Failed to load backups: ' + e.message);
+        window.toast.error('Failed to load backups: ' + e.message);
     }
 };
 
 window.editorRestoreBackup = async function(backupName, targetPath) {
-    if (!confirm(`Restore ${targetPath} from backup?\nA new backup of the current version will be created first.`)) return;
+    if (!await confirmDialog({
+        title: 'Restore backup',
+        message: `Restore ${targetPath} from backup?`,
+        detail: 'A new backup of the current version will be created first.',
+        confirmText: 'Restore',
+        variant: 'danger'
+    })) return;
 
     if (editorInstance) {
         await fetch('/api/editor/save', {
@@ -1124,7 +1151,7 @@ window.editorRestoreBackup = async function(backupName, targetPath) {
         bootstrap.Modal.getInstance(document.getElementById('editorBackupsModal'))?.hide();
         await window.editorOpenFile(targetPath);
     } else {
-        alert('Restore failed: ' + data.error);
+        window.toast.error('Restore failed: ' + data.error);
     }
 };
 
@@ -1259,7 +1286,7 @@ function _updateBatchUI() {
 
 window.editorBatchAdd = function () {
     if (!currentFile || !editorInstance) {
-        alert('Open a file first.');
+        window.toast.warning('Open a file first.');
         return;
     }
     const content = editorInstance.getValue();
@@ -1276,9 +1303,14 @@ window.editorBatchRemove = function (path) {
     window.editorBatchShow();
 };
 
-window.editorBatchClear = function () {
+window.editorBatchClear = async function () {
     if (!testBatch.size) return;
-    if (!confirm(`Clear all ${testBatch.size} staged file(s)?`)) return;
+    if (!await confirmDialog({
+        title: 'Clear batch',
+        message: `Clear all ${testBatch.size} staged file(s)?`,
+        confirmText: 'Clear',
+        variant: 'danger'
+    })) return;
     testBatch.clear();
     _updateBatchUI();
     const modal = bootstrap.Modal.getInstance(document.getElementById('editorBatchModal'));
@@ -1344,15 +1376,17 @@ window.editorBatchDeploy = async function () {
     if (!testBatch.size) return;
     const files = Array.from(testBatch.entries()).map(([path, v]) => ({ path, content: v.content }));
     const hasPy = files.some(f => /\.(py|ya?ml)$/i.test(f.path));
-    if (!confirm(
-        `Test Deploy: ${files.length} file(s)\n\n` +
-        files.map(f => '  • ' + f.path).join('\n') + '\n\n' +
-        `• A backup of each existing file is created\n` +
-        `• All files written atomically\n` +
-        `• ${hasPy ? 'Service restarts' : 'Frontend reloads'}\n` +
-        `• Auto-rollback (as a group) after 120s if not confirmed\n\n` +
-        `Proceed?`
-    )) return;
+    if (!await confirmDialog({
+        title: 'Test deploy batch',
+        message: `Test Deploy: ${files.length} file(s)`,
+        detail:
+            files.map(f => '• ' + f.path).join('\n') + '\n\n' +
+            `• A backup of each existing file is created\n` +
+            `• All files written atomically\n` +
+            `• ${hasPy ? 'Service restarts' : 'Frontend reloads'}\n` +
+            `• Auto-rollback (as a group) after 120s if not confirmed`,
+        confirmText: 'Deploy'
+    })) return;
 
     try {
         const res = await fetch('/api/editor/test-deploy', {
@@ -1362,7 +1396,7 @@ window.editorBatchDeploy = async function () {
         });
         const data = await res.json();
         if (!data.success) {
-            alert('Test deploy failed: ' + (data.error || 'unknown'));
+            window.toast.error('Test deploy failed: ' + (data.error || 'unknown'));
             return;
         }
         testBatch.clear();
@@ -1379,7 +1413,7 @@ window.editorBatchDeploy = async function () {
             setTimeout(() => window.location.reload(), 1500);
         }
     } catch (e) {
-        alert('Batch deploy error: ' + e.message);
+        window.toast.error('Batch deploy error: ' + e.message);
     }
 };
 

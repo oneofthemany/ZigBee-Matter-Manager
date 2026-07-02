@@ -396,8 +396,12 @@ window.toggleScheduleEnabled = function(ieee, enabled) {
 /**
  * Copy Monday schedule to all other days
  */
-window.copyScheduleDay = function(ieee) {
-    if (!confirm('Copy Monday\'s schedule to all other days?')) return;
+window.copyScheduleDay = async function(ieee) {
+    if (!await window.zbmConfirm({
+        title: 'Copy schedule',
+        message: "Copy Monday's schedule to all other days?",
+        confirmText: 'Copy'
+    })) return;
     const schedule = loadSchedule(ieee);
     const mondayTransitions = JSON.parse(JSON.stringify(schedule.days[0] || []));
     for (let d = 1; d < 7; d++) {
@@ -410,8 +414,13 @@ window.copyScheduleDay = function(ieee) {
 /**
  * Reset schedule to defaults
  */
-window.resetSchedule = function(ieee) {
-    if (!confirm('Reset schedule to defaults?')) return;
+window.resetSchedule = async function(ieee) {
+    if (!await window.zbmConfirm({
+        title: 'Reset schedule',
+        message: 'Reset schedule to defaults?',
+        confirmText: 'Reset',
+        variant: 'danger'
+    })) return;
     const defaultSched = getDefaultSchedule();
     // Preserve enabled state
     const current = loadSchedule(ieee);
@@ -427,17 +436,21 @@ window.uploadFullSchedule = async function(ieee) {
     const schedule = loadSchedule(ieee);
 
     if (!schedule.enabled) {
-        alert('Schedule is disabled. Enable it first before uploading.');
+        window.toast.warning('Schedule is disabled. Enable it first before uploading.');
         return;
     }
 
     const hasTransitions = Object.values(schedule.days).some(d => d && d.length > 0);
     if (!hasTransitions) {
-        alert('No transitions defined. Add some schedule entries first.');
+        window.toast.warning('No transitions defined. Add some schedule entries first.');
         return;
     }
 
-    if (!confirm('This will overwrite the device\'s internal schedule. Continue?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Upload schedule',
+        message: "This will overwrite the device's internal schedule. Continue?",
+        confirmText: 'Upload'
+    })) return;
 
     const btn = document.querySelector(`#schedule-card-${ieee} .btn-primary`);
     if (btn) {
@@ -472,10 +485,10 @@ window.uploadFullSchedule = async function(ieee) {
             await new Promise(r => setTimeout(r, 300));
         }
 
-        alert('Schedule uploaded successfully!');
+        window.toast.success('Schedule uploaded successfully!');
     } catch (error) {
         console.error('Schedule upload failed:', error);
-        alert('Failed to upload schedule: ' + error.message);
+        window.toast.error('Failed to upload schedule: ' + error.message);
     } finally {
         if (btn) {
             btn.disabled = false;
@@ -539,7 +552,7 @@ window.addTransition = function(ieee, dayIndex) {
     const heat = parseFloat(tempInput.value);
 
     if (isNaN(heat) || heat < 5 || heat > 35) {
-        alert('Temperature must be between 5°C and 35°C');
+        window.toast.warning('Temperature must be between 5°C and 35°C');
         return;
     }
 

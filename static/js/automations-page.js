@@ -440,12 +440,17 @@ async function _apToggle(ruleId) {
 }
 
 async function _apDelete(ruleId) {
-    if (!confirm('Delete this automation rule?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Delete rule',
+        message: 'Delete this automation rule?',
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
     try {
         await fetch(`/api/automations/${ruleId}`, { method: 'DELETE' });
         await loadAutomationsPage();
     } catch (e) {
-        alert('Delete failed: ' + e.message);
+        window.toast.error('Delete failed: ' + e.message);
     }
 }
 

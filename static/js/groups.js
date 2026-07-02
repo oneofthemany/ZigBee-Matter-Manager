@@ -4,6 +4,7 @@
  */
 
 import { state } from './state.js';
+import { confirmDialog } from './dialogs.js';
 
 // Groups state
 const groupsState = {
@@ -366,12 +367,12 @@ window.createGroup = async function() {
     const name = document.getElementById('groupName').value.trim();
 
     if (!name) {
-        alert('Please enter a group name');
+        window.toast.warning('Please enter a group name');
         return;
     }
 
     if (groupsState.selectedDevices.size < 2) {
-        alert('Please select at least 2 devices');
+        window.toast.warning('Please select at least 2 devices');
         return;
     }
 
@@ -390,12 +391,12 @@ window.createGroup = async function() {
         const result = await response.json();
 
         if (result.error) {
-            alert(`Error: ${result.error}`);
+            window.toast.error(`Error: ${result.error}`);
             return;
         }
 
         if (result.success) {
-            alert(`Group "${name}" created successfully!`);
+            window.toast.success(`Group "${name}" created successfully!`);
 
             // Reset form
             resetGroupCreation();
@@ -406,7 +407,7 @@ window.createGroup = async function() {
 
     } catch (error) {
         console.error("Failed to create group:", error);
-        alert('Failed to create group. Check console for details.');
+        window.toast.error('Failed to create group. Check console for details.');
     }
 }
 
@@ -466,8 +467,8 @@ function renderGroupsList(groups) {
                         <button class="btn btn-sm btn-primary" onclick="openGroupControl(${group.id})">
                             <i class="fas fa-sliders-h"></i> Control
                         </button>
-                        <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteGroup(${group.id}, '${safeName}')" title="Delete Group">
-                            <i class="fas fa-trash"></i>
+                        <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteGroup(${group.id}, '${safeName}')" title="Delete Group" aria-label="Delete group ${safeName}">
+                            <i class="fas fa-trash" aria-hidden="true"></i>
                         </button>
                     </div>
                 </div>
@@ -495,7 +496,13 @@ function renderGroupMembers(devices) {
  * Quick Delete Group (No Modal)
  */
 window.deleteGroup = async function(groupId, groupName) {
-    if (!confirm(`Are you sure you want to delete group "${groupName}"?\n\nThis will remove it from Home Assistant and Zigbee devices.`)) {
+    if (!await confirmDialog({
+        title: 'Delete group',
+        message: `Are you sure you want to delete group "${groupName}"?`,
+        detail: 'This will remove it from Home Assistant and Zigbee devices.',
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) {
         return;
     }
 
@@ -506,15 +513,14 @@ window.deleteGroup = async function(groupId, groupName) {
 
         if (response.ok) {
             await loadGroups();
-            // Show toast or alert? Alert for now as per snippet pattern
-            // alert(`Group "${groupName}" deleted`);
+            window.toast.success(`Group "${groupName}" deleted`);
         } else {
             const data = await response.json();
-            alert(data.error || "Failed to delete group");
+            window.toast.error(data.error || "Failed to delete group");
         }
     } catch (error) {
         console.error("Failed to delete group:", error);
-        alert('Error deleting group');
+        window.toast.error('Error deleting group');
     }
 }
 
@@ -702,7 +708,7 @@ window.controlGroup = async function(groupId, command) {
 
         if (result.error) {
             console.error(`❌ Group control error:`, result.error);
-            alert(`Error: ${result.error}`);
+            window.toast.error(`Error: ${result.error}`);
             return;
         }
 
@@ -727,9 +733,9 @@ window.controlGroup = async function(groupId, command) {
                     });
                 }
 
-                // Only show alert if ALL devices failed
+                // Only toast if ALL devices failed
                 if (successCount === 0) {
-                    alert(`All devices failed to respond. Check console for details.`);
+                    window.toast.error(`All devices failed to respond. Check console for details.`);
                 }
             }
         }
@@ -745,7 +751,7 @@ window.controlGroup = async function(groupId, command) {
 
     } catch (error) {
         console.error("❌ Failed to control group:", error);
-        alert(`Failed to control group: ${error.message}`);
+        window.toast.error(`Failed to control group: ${error.message}`);
     }
 }
 
@@ -774,7 +780,12 @@ function renderGroupMembersModal(group) {
  * Remove device from group
  */
 window.removeDeviceFromGroup = async function(groupId, ieee) {
-    if (!confirm('Remove this device from the group?')) return;
+    if (!await confirmDialog({
+        title: 'Remove device',
+        message: 'Remove this device from the group?',
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
 
     try {
         const response = await fetch(`/api/groups/${groupId}/remove_device`, {
@@ -786,7 +797,7 @@ window.removeDeviceFromGroup = async function(groupId, ieee) {
         const result = await response.json();
 
         if (result.error) {
-            alert(`Error: ${result.error}`);
+            window.toast.error(`Error: ${result.error}`);
             return;
         }
 
@@ -796,7 +807,7 @@ window.removeDeviceFromGroup = async function(groupId, ieee) {
 
     } catch (error) {
         console.error("Failed to remove device:", error);
-        alert('Failed to remove device from group');
+        window.toast.error('Failed to remove device from group');
     }
 }
 
@@ -808,7 +819,13 @@ window.deleteCurrentGroup = async function() {
 
     const group = groupsState.currentGroup;
 
-    if (!confirm(`Delete group "${group.name}"? This cannot be undone.`)) return;
+    if (!await confirmDialog({
+        title: 'Delete group',
+        message: `Delete group "${group.name}"?`,
+        detail: 'This cannot be undone.',
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
 
     try {
         const response = await fetch(`/api/groups/${group.id}`, {
@@ -818,7 +835,7 @@ window.deleteCurrentGroup = async function() {
         const result = await response.json();
 
         if (result.error) {
-            alert(`Error: ${result.error}`);
+            window.toast.error(`Error: ${result.error}`);
             return;
         }
 
@@ -832,11 +849,11 @@ window.deleteCurrentGroup = async function() {
         // Reload groups
         await loadGroups();
 
-        alert(`Group "${group.name}" deleted`);
+        window.toast.success(`Group "${group.name}" deleted`);
 
     } catch (error) {
         console.error("Failed to delete group:", error);
-        alert('Failed to delete group');
+        window.toast.error('Failed to delete group');
     }
 }
 
@@ -852,7 +869,7 @@ window.addDeviceToGroup = async function() {
     const ieee = select.value;
 
     if (!ieee) {
-        alert('Please select a device');
+        window.toast.warning('Please select a device');
         return;
     }
 
@@ -866,7 +883,7 @@ window.addDeviceToGroup = async function() {
         const result = await response.json();
 
         if (result.error) {
-            alert(`Error: ${result.error}`);
+            window.toast.error(`Error: ${result.error}`);
             return;
         }
 
@@ -876,7 +893,7 @@ window.addDeviceToGroup = async function() {
 
     } catch (error) {
         console.error("Failed to add device:", error);
-        alert('Failed to add device to group');
+        window.toast.error('Failed to add device to group');
     }
 }
 

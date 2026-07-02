@@ -332,7 +332,13 @@
     }
 
     async function deleteUser(userId) {
-        if (!confirm('Delete user "' + userId + '"? This removes the virtual presence device and any rules using it become orphaned.')) return;
+        if (!await window.zbmConfirm({
+            title: 'Delete presence user',
+            message: 'Delete user "' + userId + '"?',
+            detail: 'This removes the virtual presence device and any rules using it become orphaned.',
+            confirmText: 'Delete',
+            variant: 'danger'
+        })) return;
         try {
             var r = await fetch('/api/presence/users/' + encodeURIComponent(userId), { method: 'DELETE' });
             if (!r.ok) throw new Error('HTTP ' + r.status);

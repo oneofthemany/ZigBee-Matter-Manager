@@ -648,7 +648,12 @@ async function _aiChatSend() {
 }
 
 async function _aiChatClear() {
-    if (!confirm('Clear chat history?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Clear chat',
+        message: 'Clear chat history?',
+        confirmText: 'Clear',
+        variant: 'danger'
+    })) return;
     try {
         await fetch('/api/ai/chat/history', { method: 'DELETE' });
         _aiRenderChat([]);
@@ -781,29 +786,38 @@ function _aiOllamaPoll() {
 }
 
 async function _aiOllamaInstall(exists) {
-    const msg = exists
-        ? 'Start the existing Ollama container on this host?'
-        : 'Start the Ollama container via podman/docker on this host? This downloads the Ollama image (~hundreds of MB) the first time.';
-    if (!confirm(msg)) return;
+    if (!await window.zbmConfirm({
+        title: 'Start Ollama',
+        message: exists
+            ? 'Start the existing Ollama container on this host?'
+            : 'Start the Ollama container via podman/docker on this host?',
+        detail: exists ? undefined : 'This downloads the Ollama image (~hundreds of MB) the first time.',
+        confirmText: 'Start'
+    })) return;
     try {
         const r = await fetch('/api/ai/ollama/install', { method: 'POST' });
         const d = await r.json();
-        if (!r.ok) { alert(d.detail || d.error || 'Install failed'); return; }
+        if (!r.ok) { window.toast.error(d.detail || d.error || 'Install failed'); return; }
         _aiOllamaPoll();
-    } catch (e) { alert(e.message); }
+    } catch (e) { window.toast.error(e.message); }
 }
 
 async function _aiOllamaPull(model) {
-    if (!confirm(`Download "${model}" into Ollama? This can be several GB and may take a while.`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Download model',
+        message: `Download "${model}" into Ollama?`,
+        detail: 'This can be several GB and may take a while.',
+        confirmText: 'Download'
+    })) return;
     try {
         const r = await fetch('/api/ai/ollama/pull', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model })
         });
         const d = await r.json();
-        if (!r.ok) { alert(d.detail || d.error || 'Pull failed'); return; }
+        if (!r.ok) { window.toast.error(d.detail || d.error || 'Pull failed'); return; }
         _aiOllamaPoll();
-    } catch (e) { alert(e.message); }
+    } catch (e) { window.toast.error(e.message); }
 }
 
 async function _aiOllamaUse(model) {
@@ -824,7 +838,7 @@ async function _aiOllamaUse(model) {
             badge.textContent = `AI: ${_aiConfigured ? 'connected' : 'optional'}`;
         }
         _aiOllamaRender();
-    } catch (e) { alert(e.message); }
+    } catch (e) { window.toast.error(e.message); }
 }
 
 // ============================================================================

@@ -7,8 +7,9 @@ import { state } from './state.js';
 import { getTypeIcon, getLqiBadge, timeAgo } from './utils.js';
 import { refreshModalState } from './device-modal.js';
 import { openDeviceModal } from './device-modal.js';
-import { initTableSort, sortDevices, applySortState } from './table-sort.js';
+import { reapplySort } from './table-utils.js';
 import { dismissKnownDevices } from './join-progress.js';
+import { confirmDialog } from './dialogs.js';
 
 
 
@@ -40,25 +41,11 @@ export async function fetchAllDevices() {
 
         try { dismissKnownDevices(state.devices); } catch(e) {}
 
-        // Initialise table sorting on first load
-        if (!state.tableSortInitialised) {
-            initTableSort(handleSort);
-            state.tableSortInitialised = true;
-        }
-
     } catch (e) {
         console.error("Failed to fetch devices:", e);
         const tbody = document.getElementById('deviceTableBody');
         if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${e.message}</td></tr>`;
     }
-}
-
-/**
- * Handle sort callback from table-sort module
- */
-function handleSort(column, type, direction) {
-    console.log(`Sort triggered: ${column} (${type}) ${direction}`);
-    renderDeviceTable(); // Re-render with sorted data
 }
 
 export function renderDeviceTable() {
@@ -68,6 +55,8 @@ export function renderDeviceTable() {
     if (!tbody) return;
 
     tbody.innerHTML = '';
+    tbody.removeAttribute('aria-busy');            // skeleton rows are gone now
+    coordContainer?.removeAttribute('aria-busy');
 
     // Find Coordinator
     const coordinator = state.devices.find(d => d.type === 'Coordinator');
@@ -77,9 +66,6 @@ export function renderDeviceTable() {
     if (state.deviceFilter) {
         otherDevices = otherDevices.filter(state.deviceFilter);
     }
-
-    // Apply current sort state to devices
-    otherDevices = applySortState(otherDevices);
 
     // Update device count badge
     const countBadge = document.getElementById('deviceCount');
@@ -157,10 +143,13 @@ export function renderDeviceTable() {
         }
 
         tr.innerHTML = `
-            <td class="text-center align-middle" style="font-size: 1.2rem;">${getTypeIcon(d.type)}</td>
+            <td class="text-center align-middle" style="font-size: 1.2rem;" data-sort-value="${d.type || ''}">${getTypeIcon(d.type)}</td>
             <td class="align-middle">
-                <div class="fw-bold text-primary" style="cursor:pointer" onclick="window.renamePrompt('${d.ieee}', '${d.friendly_name}')">
-                    ${d.friendly_name} <i class="fas fa-pen fa-xs text-muted ms-1"></i>
+                <div class="fw-bold text-primary" style="cursor:pointer" role="button" tabindex="0"
+                     aria-label="Rename ${d.friendly_name}"
+                     onclick="window.renamePrompt('${d.ieee}', '${d.friendly_name}')"
+                     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+                    ${d.friendly_name} <i class="fas fa-pen fa-xs text-muted ms-1" aria-hidden="true"></i>
                 </div>
             </td>
             <td class="align-middle">
@@ -170,16 +159,16 @@ export function renderDeviceTable() {
                         : d.ieee
                 }</div>
             </td>
-            <td class="align-middle small">
+            <td class="align-middle small" data-sort-value="${d.manufacturer || ''}">
                 <div>${d.manufacturer || '?'}</div>
                 ${quirkHtml} ${otaHtml}
             </td>
             <td class="align-middle small">
                 <div>${d.model || '?'}</div>
             </td>
-            <td class="device-lqi align-middle">${getLqiBadge(d.lqi)}</td>
-            <td class="last-seen align-middle" data-ts="${d.last_seen_ts}">${timeAgo(d.last_seen_ts)}</td>
-             <td class="align-middle device-status-badges">
+            <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${getLqiBadge(d.lqi)}</td>
+            <td class="last-seen align-middle" data-ts="${d.last_seen_ts}" data-sort-value="${d.last_seen_ts}">${timeAgo(d.last_seen_ts)}</td>
+             <td class="align-middle device-status-badges" data-sort-value="${d.available !== false ? 1 : 0}">
                  ${statusHtml}
              </td>
              <td class="align-middle">
@@ -210,6 +199,9 @@ export function renderDeviceTable() {
     } catch (e) {
         // Non-fatal
     }
+
+    // Restore the user's chosen column sort now the tbody is rebuilt
+    reapplySort(tbody.closest('table'));
 }
 
 /**
@@ -227,6 +219,7 @@ function updateDeviceRow(device) {
     const lastSeenCell = row.querySelector('.last-seen');
     if (lastSeenCell && device.last_seen_ts) {
         lastSeenCell.dataset.ts = device.last_seen_ts;
+        lastSeenCell.dataset.sortValue = device.last_seen_ts;
         lastSeenCell.innerText = timeAgo(device.last_seen_ts);
     }
 
@@ -360,7 +353,11 @@ function populateRouterList() {
  * Enable permit join on specific device
  */
 window.enablePermitJoinDevice = async function(ieee, name) {
-    if (!confirm(`Enable pairing on ${name} for 120 seconds?`)) return;
+    if (!await confirmDialog({
+        title: 'Enable pairing',
+        message: `Enable pairing on ${name} for 120 seconds?`,
+        confirmText: 'Enable'
+    })) return;
 
     try {
         const response = await fetch('/api/permit_join', {
@@ -375,14 +372,14 @@ window.enablePermitJoinDevice = async function(ieee, name) {
         const result = await response.json();
 
         if (result.success) {
-            alert(`Pairing enabled on ${name}. LED on device may flash.`);
+            window.toast.success(`Pairing enabled on ${name}. LED on device may flash.`);
         } else {
-            alert(`Failed: ${result.error}`);
+            window.toast.error(`Failed: ${result.error}`);
         }
 
     } catch (error) {
         console.error("Permit join error:", error);
-        alert("Failed to send request");
+        window.toast.error("Failed to send request");
     }
 };
 

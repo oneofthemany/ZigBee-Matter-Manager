@@ -2,12 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ZigBee & Matter Manager</title>
     <link rel="manifest" href="/static/manifest.json">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/styles.css">
     <link rel="stylesheet" href="/static/css/table.css">
     <link rel="stylesheet" href="/static/css/mesh.css">
     <link rel="stylesheet" href="/static/css/debug.css">
@@ -19,14 +18,20 @@
     <link rel="stylesheet" href="/static/css/toasts.css">
     <link rel="stylesheet" href="/static/css/device-status.css">
     <link rel="stylesheet" href="/static/css/upgrade.css">
-    <link rel="stylesheet" href="/static/css/api/api-docs.css">
     <link rel="stylesheet" href="/static/css/notifications.css">
     <link rel="stylesheet" href="/static/css/floor-plan.css">
+    <link rel="stylesheet" href="/static/css/hive-tokens.css">
+    <link rel="stylesheet" href="/static/css/hive-components.css">
 </head>
 <body>
-<nav class="navbar navbar-dark bg-dark mb-4">
+<nav class="navbar navbar-dark bg-dark mb-4 hive-header">
     <div class="container-fluid">
-        <span class="navbar-brand mb-0 h1"><img src="/static/images/zigbee-manager-logo.png" alt="ZigBee Manager" style="height: 32px; width: 32px; border-radius: 50%; margin-right: 8px; vertical-align: middle;">ZigBee Matter Manager</span>
+        <span class="navbar-brand mb-0 h1 d-flex align-items-center">
+            <img src="/static/images/zigbee-manager-logo.png" alt="" class="brand-logo">
+            <span class="brand-text">ZigBee Matter Manager
+                <small class="brand-sub">the hive &middot; zigbee / matter / thread</small>
+            </span>
+        </span>
 
         <!-- Connection Status Group -->
         <div class="d-flex align-items-center gap-3">
@@ -47,7 +52,7 @@
 
             <!-- Pairing Dropdown Group -->
            <div class="btn-group">
-               <button id="pairBtn" class="btn btn-success btn-sm" onclick="togglePairing()">
+               <button id="pairBtn" class="btn btn-success btn-sm" onclick="withBusy(this, () => togglePairing())">
                    <i class="fas fa-plus-circle"></i> Enable Pairing (All)
                </button>
                <button type="button" class="btn btn-success btn-sm dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
@@ -84,7 +89,7 @@
                 <button class="btn btn-sm btn-outline-info me-2" id="otaCheckAllBtn" onclick="window.otaCheckAll()">
                     <i class="fas fa-microchip"></i> Check OTA
                 </button>
-                <button class="btn btn-sm btn-warning me-2" onclick="cleanupOrphans()">
+                <button class="btn btn-sm btn-warning me-2" onclick="withBusy(this, () => cleanupOrphans())">
                     <i class="fas fa-broom"></i> Clean DB
                 </button>
             </div>
@@ -120,10 +125,16 @@
         <!-- COORDINATOR INFO CARD -->
         <div class="card shadow-sm mb-3 coordinator-card">
             <div class="card-body py-2">
-                <div class="row align-items-center" id="coordinator-info">
-                    <div class="col-md-12 text-center text-muted">
-                        <i class="fas fa-spinner fa-spin"></i> Loading Coordinator Info...
+                <div class="row align-items-center" id="coordinator-info" aria-busy="true">
+                    <div class="col-md-1 text-center"><span class="skel" style="width:2.2rem;height:2.2rem;border-radius:50%"></span></div>
+                    <div class="col-md-3">
+                        <span class="skel skel-block mb-1" style="max-width:9ch"></span>
+                        <span class="skel skel-block" style="max-width:20ch"></span>
                     </div>
+                    <div class="col-md-3"><span class="skel" style="width:12ch"></span></div>
+                    <div class="col-md-3"><span class="skel" style="width:12ch"></span></div>
+                    <div class="col-md-2 text-end"><span class="skel" style="width:6ch"></span></div>
+                    <span class="visually-hidden">Loading coordinator info…</span>
                 </div>
             </div>
         </div>
@@ -152,38 +163,28 @@
 
                 <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-hover align-middle mb-0 sortable tbl">
+                        <table class="table table-hover align-middle mb-0 tbl tbl-sortable">
                             <thead class="table-light">
                             <tr>
-                                <th class="sortable-header" data-column="type" data-type="string">
-                                    Type <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="friendly_name" data-type="string">
-                                    Friendly Name <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="ieee" data-type="string">
-                                    IEEE Address <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="manufacturer" data-type="string">
-                                    Vendor <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="model" data-type="string">
-                                    Model <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="lqi" data-type="number">
-                                    LQI <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="last_seen_ts" data-type="number">
-                                    Last Seen <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th class="sortable-header" data-column="available" data-type="boolean">
-                                    Status <i class="fas fa-sort sort-icon text-muted"></i>
-                                </th>
-                                <th>Protocol</th>
-                                <th>Action</th>
+                                <th data-sort-type="string">Type</th>
+                                <th data-sort-type="string">Friendly Name</th>
+                                <th data-sort-type="string">IEEE Address</th>
+                                <th data-sort-type="string">Vendor</th>
+                                <th data-sort-type="string">Model</th>
+                                <th data-sort-type="number">LQI</th>
+                                <th data-sort-type="number">Last Seen</th>
+                                <th data-sort-type="boolean">Status</th>
+                                <th data-sort-type="string">Protocol</th>
+                                <th data-no-sort>Action</th>
                             </tr>
                             </thead>
-                            <tbody id="deviceTableBody"></tbody>
+                            <tbody id="deviceTableBody" aria-busy="true">
+                            <!-- Skeleton rows shown until the first device fetch re-renders the tbody -->
+                            <tr><td colspan="10"><span class="skel skel-block"></span></td></tr>
+                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:80%"></span></td></tr>
+                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:90%"></span></td></tr>
+                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:70%"></span><span class="visually-hidden">Loading devices…</span></td></tr>
+                            </tbody>
                         </table>
                     </div>
                 </div>
@@ -194,7 +195,7 @@
         <div class="tab-pane fade" id="topology">
             <div class="card shadow-sm">
                 <div class="card-body p-0">
-                    <div class="mesh-topology-container" style="height: 75vh; background: #f8f9fa; overflow: hidden;"></div>
+                    <div class="mesh-topology-container" style="height: 75vh; background: var(--bg-surface-sunken); overflow: hidden;"></div>
                 </div>
             </div>
         </div>
@@ -457,8 +458,8 @@
                                             <option value="72">Last 3 days</option>
                                             <option value="168">Last 7 days</option>
                                         </select>
-                                        <button class="btn btn-outline-secondary btn-sm" onclick="loadSpectrumHistory()">
-                                            <i class="fas fa-sync-alt"></i>
+                                        <button class="btn btn-outline-secondary btn-sm" onclick="loadSpectrumHistory()" aria-label="Refresh spectrum history">
+                                            <i class="fas fa-sync-alt" aria-hidden="true"></i>
                                         </button>
                                     </div>
                                 </div>
@@ -543,9 +544,13 @@
 
         <!-- SYSTEM TAB -->
         <div class="tab-pane fade" id="system">
-            <div id="system-content">
-                <div class="text-center text-muted py-4">
-                    <i class="fas fa-spinner fa-spin"></i> Loading system telemetry...
+            <div id="system-content" aria-busy="true">
+                <div class="row g-3 py-2">
+                    <div class="col-6 col-lg-3"><div class="card p-3"><span class="skel skel-block mb-2" style="max-width:6ch"></span><span class="skel skel-block" style="max-width:80%;height:1.6em"></span></div></div>
+                    <div class="col-6 col-lg-3"><div class="card p-3"><span class="skel skel-block mb-2" style="max-width:8ch"></span><span class="skel skel-block" style="max-width:70%;height:1.6em"></span></div></div>
+                    <div class="col-6 col-lg-3"><div class="card p-3"><span class="skel skel-block mb-2" style="max-width:6ch"></span><span class="skel skel-block" style="max-width:85%;height:1.6em"></span></div></div>
+                    <div class="col-6 col-lg-3"><div class="card p-3"><span class="skel skel-block mb-2" style="max-width:7ch"></span><span class="skel skel-block" style="max-width:75%;height:1.6em"></span></div></div>
+                    <span class="visually-hidden">Loading system telemetry…</span>
                 </div>
             </div>
         </div>
@@ -567,8 +572,8 @@
                                     </label>
                                 </div>
                                 <div class="btn-group btn-group-sm">
-                                    <button class="btn btn-outline-secondary" onclick="window.mediaRefresh()" title="Rescan">
-                                        <i class="fas fa-sync-alt"></i>
+                                    <button class="btn btn-outline-secondary" onclick="window.mediaRefresh()" title="Rescan" aria-label="Rescan media players">
+                                        <i class="fas fa-sync-alt" aria-hidden="true"></i>
                                     </button>
                                     <button class="btn btn-outline-secondary" onclick="window.open('/static/lyrics.html','zmmLyrics')"
                                             title="Open the full-screen lyrics display (then in Chrome: ⋮ → Cast → your Nest Hub → Cast tab — free, no Cast developer account)">
@@ -613,8 +618,8 @@
                                 <input type="text" class="form-control" id="mediaSearchQuery"
                                        placeholder="Search stations (e.g. jazz, BBC, classical)"
                                        onkeydown="if(event.key==='Enter')window.mediaSearch()">
-                                <button class="btn btn-primary" onclick="window.mediaSearch()">
-                                    <i class="fas fa-search"></i>
+                                <button class="btn btn-primary" onclick="window.mediaSearch()" aria-label="Search">
+                                    <i class="fas fa-search" aria-hidden="true"></i>
                                 </button>
                             </div>
                             <div id="mediaRadioFav" class="mb-3"></div>
@@ -787,8 +792,8 @@
                         <small class="text-muted">Monitor RSSI fluctuations between mesh devices to detect room occupancy</small>
                     </div>
                     <div class="btn-group">
-                        <button class="btn btn-outline-secondary" id="btn-refresh-zones">
-                            <i class="bi bi-arrow-clockwise"></i>
+                        <button class="btn btn-outline-secondary" id="btn-refresh-zones" aria-label="Refresh zones">
+                            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                         </button>
                         <button class="btn btn-primary" id="btn-create-zone">
                             <i class="bi bi-plus-lg me-1"></i>Create Zone
@@ -1146,7 +1151,7 @@
                     </div>
                 </div>
                 <div class="card-body bg-dark p-0">
-                    <div id="logs" class="p-2 font-monospace small" style="height: 65vh; overflow-y: auto; color: #e0e0e0;"></div>
+                    <div id="logs" class="p-2 font-monospace small" style="height: 65vh;"></div>
                 </div>
             </div>
         </div>
@@ -1391,6 +1396,7 @@
 <script src="/static/js/vendor/echarts.min.js"></script>
 <script src="/static/js/auth.js"></script>
 <script src="/static/js/toasts.js"></script>
+<script type="module" src="/static/js/dialogs.js"></script>
 <script src="/static/js/auth-settings.js"></script>
 <script src="/static/js/my-account.js"></script>
 <script src="/static/js/presence.js"></script>

@@ -19,38 +19,64 @@
  */
 
 // Transparent backgrounds so charts blend into whatever card they sit in.
+// Colours track the hive palette in css/hive-tokens.css (keep in sync).
 echarts.registerTheme('zbm-light', {
     backgroundColor: 'transparent',
-    textStyle: { fontFamily: 'inherit' },
+    textStyle: { fontFamily: 'inherit', color: '#53687a' },
+    title: { textStyle: { color: '#16283a' } },
+    legend: { textStyle: { color: '#53687a' } },
+    tooltip: {
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#ded7c6',
+        textStyle: { color: '#16283a' },
+    },
+    categoryAxis: {
+        axisLine: { lineStyle: { color: '#ded7c6' } },
+        axisTick: { lineStyle: { color: '#ded7c6' } },
+        axisLabel: { color: '#53687a' },
+        splitLine: { lineStyle: { color: '#eae4d6' } },
+    },
+    valueAxis: {
+        axisLine: { lineStyle: { color: '#ded7c6' } },
+        axisTick: { lineStyle: { color: '#ded7c6' } },
+        axisLabel: { color: '#53687a' },
+        splitLine: { lineStyle: { color: '#eae4d6' } },
+    },
+    timeAxis: {
+        axisLine: { lineStyle: { color: '#ded7c6' } },
+        axisTick: { lineStyle: { color: '#ded7c6' } },
+        axisLabel: { color: '#53687a' },
+        splitLine: { lineStyle: { color: '#eae4d6' } },
+    },
 });
 
 echarts.registerTheme('zbm-dark', {
     backgroundColor: 'transparent',
-    textStyle: { fontFamily: 'inherit', color: '#adb5bd' },
-    title: { textStyle: { color: '#e9ecef' } },
-    legend: { textStyle: { color: '#adb5bd' } },
+    textStyle: { fontFamily: 'inherit', color: '#7e97a8' },
+    title: { textStyle: { color: '#eaf2f4' } },
+    legend: { textStyle: { color: '#7e97a8' } },
     tooltip: {
-        backgroundColor: 'rgba(33,37,41,0.95)',
-        borderColor: '#495057',
-        textStyle: { color: '#e9ecef' },
+        backgroundColor: 'rgba(22,40,58,0.95)',
+        borderColor: '#1e3346',
+        textStyle: { color: '#eaf2f4' },
     },
     categoryAxis: {
-        axisLine: { lineStyle: { color: '#495057' } },
-        axisTick: { lineStyle: { color: '#495057' } },
-        axisLabel: { color: '#adb5bd' },
-        splitLine: { lineStyle: { color: '#343a40' } },
+        axisLine: { lineStyle: { color: '#1e3346' } },
+        axisTick: { lineStyle: { color: '#1e3346' } },
+        axisLabel: { color: '#7e97a8' },
+        splitLine: { lineStyle: { color: '#16283a' } },
     },
     valueAxis: {
-        axisLine: { lineStyle: { color: '#495057' } },
-        axisTick: { lineStyle: { color: '#495057' } },
-        axisLabel: { color: '#adb5bd' },
-        splitLine: { lineStyle: { color: '#343a40' } },
+        axisLine: { lineStyle: { color: '#1e3346' } },
+        axisTick: { lineStyle: { color: '#1e3346' } },
+        axisLabel: { color: '#7e97a8' },
+        splitLine: { lineStyle: { color: '#16283a' } },
     },
     timeAxis: {
-        axisLine: { lineStyle: { color: '#495057' } },
-        axisTick: { lineStyle: { color: '#495057' } },
-        axisLabel: { color: '#adb5bd' },
-        splitLine: { lineStyle: { color: '#343a40' } },
+        axisLine: { lineStyle: { color: '#1e3346' } },
+        axisTick: { lineStyle: { color: '#1e3346' } },
+        axisLabel: { color: '#7e97a8' },
+        splitLine: { lineStyle: { color: '#16283a' } },
     },
 });
 

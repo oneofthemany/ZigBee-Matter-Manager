@@ -1,4 +1,6 @@
-/* Debug-specific styles */
+/* Debug-specific styles — scoped to the Debug Log tab.
+   Colours come from the hive tokens (css/hive-tokens.css). */
+
 #debugStatusBadge {
     font-size: 0.75rem;
     animation: pulse 2s infinite;
@@ -14,85 +16,74 @@
 }
 
 .debug-packet-critical {
-    border-left: 4px solid #dc3545 !important;
-    background-color: rgba(220, 53, 69, 0.1);
+    border-left: 4px solid var(--status-bad) !important;
+    background-color: var(--danger-subtle);
 }
 
 .debug-packet-high {
-    border-left: 4px solid #ffc107 !important;
-    background-color: rgba(255, 193, 7, 0.1);
+    border-left: 4px solid var(--status-warn) !important;
+    background-color: var(--warning-subtle);
 }
 
 .debug-packet-medium {
-    border-left: 4px solid #0dcaf0 !important;
+    border-left: 4px solid var(--text-secondary) !important;
 }
 
 /* Log entry highlighting */
 #logs .log-critical {
-    background-color: rgba(220, 53, 69, 0.2);
-    border-left: 3px solid #dc3545;
+    background-color: var(--danger-subtle);
+    border-left: 3px solid var(--status-bad);
     padding-left: 5px;
 }
 
 #logs .log-warning {
-    background-color: rgba(255, 193, 7, 0.2);
-    border-left: 3px solid #ffc107;
+    background-color: var(--warning-subtle);
+    border-left: 3px solid var(--status-warn);
     padding-left: 5px;
 }
 
 #logs .log-motion {
-    background-color: rgba(220, 53, 69, 0.3);
-    border-left: 3px solid #dc3545;
+    background-color: var(--danger-subtle);
+    border-left: 3px solid var(--status-bad);
     padding-left: 5px;
     font-weight: bold;
 }
 
-/* Scrollbar styling for dark logs */
+/* Scrollbar styling for the log terminal */
 #logs::-webkit-scrollbar {
     width: 8px;
 }
 
 #logs::-webkit-scrollbar-track {
-    background: #333;
+    background: var(--scrollbar-track);
 }
 
 #logs::-webkit-scrollbar-thumb {
-    background: #666;
+    background: var(--scrollbar-thumb);
     border-radius: 4px;
 }
 
-#logs::-webkit-scrollbar-thumb:hover {
-    background: #888;
-}
-
-
-
-body {
-    background: #1e1e1e;
-    color: #d4d4d4;
-    padding: 20px;
-}
+/* Packet analysis panels (rendered by packet-analysis.js) */
 .packet-analysis {
-    background: #252526;
+    background: var(--bg-surface-sunken);
     border-radius: 5px;
 }
+
 .tuya-details {
-    background: #2d2d30;
+    background: var(--bg-surface-raised);
 }
+
 .dp-item {
-    background: #1e1e1e;
+    background: var(--bg-surface-sunken);
     margin-bottom: 10px;
     padding: 10px;
     border-radius: 3px;
 }
-.table-warning {
-    background-color: rgba(255, 193, 7, 0.1) !important;
-}
-.table-info {
-    background-color: rgba(13, 202, 240, 0.1) !important;
-}
-pre {
-    background: #000;
+
+.packet-analysis pre,
+.tuya-details pre,
+.dp-item pre {
+    background: var(--bg-code);
     color: #9cdcfe;
     padding: 10px;
     border-radius: 3px;

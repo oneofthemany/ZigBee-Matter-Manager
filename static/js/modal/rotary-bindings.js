@@ -251,8 +251,8 @@ window._rbSave = async function (sourceIeee, rotaryKey, ep, maxPositions) {
     const max = parseFloat(document.getElementById(`rb-max-${rotaryKey}`)?.value || '254');
     const invert = document.getElementById(`rb-invert-${rotaryKey}`)?.checked || false;
 
-    if (!targetIeee) { alert('Select a target device.'); return; }
-    if (!command) { alert('Select a command.'); return; }
+    if (!targetIeee) { window.toast.warning('Select a target device.'); return; }
+    if (!command) { window.toast.warning('Select a command.'); return; }
 
     // Get CW/CCW EPs from the definition's rotary_bindings
     let mode = 'step', cwEp = ep, ccwEp = 0;
@@ -307,15 +307,20 @@ window._rbSave = async function (sourceIeee, rotaryKey, ep, maxPositions) {
                 if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'Bound'; }
             }
         } else {
-            alert('Save failed: ' + (data.error || 'Unknown error'));
+            window.toast.error('Save failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 
 window._rbRemove = async function (sourceIeee, rotaryKey) {
-    if (!confirm(`Unbind ${rotaryKey}?`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Unbind',
+        message: `Unbind ${rotaryKey}?`,
+        confirmText: 'Unbind',
+        variant: 'danger'
+    })) return;
 
     try {
         const res = await fetch(
@@ -336,6 +341,6 @@ window._rbRemove = async function (sourceIeee, rotaryKey) {
             }
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };

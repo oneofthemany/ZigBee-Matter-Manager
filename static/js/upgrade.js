@@ -10,6 +10,8 @@
  * (see index.html snippet).
  */
 
+import { confirmDialog } from './dialogs.js';
+
 let _pollTimer = null;
 let _logPollTimer = null;
 let _lastState = null;
@@ -452,13 +454,16 @@ async function confirmDiscardLiveEdits(verb) {
     const exactNote = info.exact
         ? ''
         : '\n\n(Exact paths unavailable — counts inferred from editor backups.)';
-    return confirm(
-        `${info.count} live-edited file(s) will be PERMANENTLY LOST if you ${verb}:\n\n` +
-        `${shown}${more}${exactNote}\n\n` +
-        `These in-app edits are not in any release. To keep them, cancel and use ` +
-        `"Export as .zip" on the upgrade card first.\n\n` +
-        `Continue and discard them?`
-    );
+    return confirmDialog({
+        title: 'Live edits will be lost',
+        message: `${info.count} live-edited file(s) will be PERMANENTLY LOST if you ${verb}.`,
+        detail:
+            `${shown}${more}${exactNote}\n\n` +
+            `These in-app edits are not in any release. To keep them, cancel and use ` +
+            `"Export as .zip" on the upgrade card first.`,
+        confirmText: 'Discard & continue',
+        variant: 'danger'
+    });
 }
 
 window.exportLiveEdits = async function () {
@@ -496,7 +501,7 @@ window.showLiveEdits = async function () {
             .map(f => `• ${f.path}${f.status && f.status !== 'edited' ? ` (${f.status})` : ''}`)
             .join('\n');
         const exactNote = info.exact ? '' : '\n\n(Paths inferred from editor backups.)';
-        alert(`${info.count} live-edited file(s) an upgrade would discard:\n\n${files}${exactNote}`);
+        window.toast.info(`${info.count} live-edited file(s) an upgrade would discard:\n\n${files}${exactNote}`);
     } catch (e) {
         toast('danger', 'Could not load live edits: ' + e.message);
     }
@@ -504,7 +509,12 @@ window.showLiveEdits = async function () {
 
 async function startBuild(version) {
     if (!version) return;
-    if (!confirm(`Build image for v${version}?\n\nThis takes a few moments. The current app stays running during the build.`)) return;
+    if (!await confirmDialog({
+        title: 'Build image',
+        message: `Build image for v${version}?`,
+        detail: 'This takes a few moments. The current app stays running during the build.',
+        confirmText: 'Build'
+    })) return;
     const res = await fetch('/api/upgrade/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -515,11 +525,13 @@ async function startBuild(version) {
         toast('success', data.message || 'Build started');
     } else if (res.status === 409 && (data.error || data.message || '').toLowerCase().includes('progress')) {
         // Stuck lock — offer to force-clear
-        if (confirm(
-            'The system says another upgrade is in progress, but if you believe nothing is actually running ' +
-            '(e.g. the watcher service crashed), you can force-clear the stale lock.\n\n' +
-            'Clear the lock now?'
-        )) {
+        if (await confirmDialog({
+            title: 'Upgrade already in progress?',
+            message: 'The system says another upgrade is in progress, but if you believe nothing is actually running ' +
+                '(e.g. the watcher service crashed), you can force-clear the stale lock.',
+            confirmText: 'Clear lock',
+            variant: 'danger'
+        })) {
             await clearLock();
         }
     } else {
@@ -564,7 +576,13 @@ async function dismissFailedUpgrade() {
 
 async function startSwap() {
     if (!(await confirmDiscardLiveEdits('swap to the new image'))) return;
-    if (!confirm('Swap to the new container?\n\nYou will be disconnected for a few minutes. The page will reload automatically.')) return;
+    if (!await confirmDialog({
+        title: 'Swap container',
+        message: 'Swap to the new container?',
+        detail: 'You will be disconnected for a few minutes. The page will reload automatically.',
+        confirmText: 'Swap',
+        variant: 'danger'
+    })) return;
     const res = await fetch('/api/upgrade/swap', { method: 'POST' });
     const data = await res.json();
     if (data.success) {
@@ -596,7 +614,13 @@ function waitForHealth() {
 }
 
 async function cancelUpgrade() {
-    if (!confirm('Cancel the in-progress operation?')) return;
+    if (!await confirmDialog({
+        title: 'Cancel operation',
+        message: 'Cancel the in-progress operation?',
+        confirmText: 'Cancel operation',
+        cancelText: 'Keep running',
+        variant: 'danger'
+    })) return;
     const res = await fetch('/api/upgrade/cancel', { method: 'POST' });
     const data = await res.json();
     if (data.success) toast('warning', 'Cancel requested');
@@ -686,17 +710,9 @@ function escapeAttr(s) {
 }
 
 function toast(type, msg) {
-    // Uses your toasts.js-overridden alert if present, otherwise vanilla alert.
-    try {
-        if (window.showToast) {
-            window.showToast(type, msg);
-            return;
-        }
-    } catch (_) {}
-    if (type === 'danger') console.error(msg);
+    const map = { danger: 'error', success: 'success', warning: 'warning', info: 'info' };
+    const fn = window.toast && window.toast[map[type] || 'info'];
+    if (fn) fn(msg);
+    else if (type === 'danger') console.error(msg);
     else console.log(msg);
-    // Fall back — no UI noise for mere info/success
-    if (type === 'danger' || type === 'warning') {
-        try { alert(msg); } catch (_) {}
-    }
 }

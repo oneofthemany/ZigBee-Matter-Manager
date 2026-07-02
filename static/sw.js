@@ -2,13 +2,14 @@
    ZigBee Matter Manager — Service Worker (PWA)
    ============================================================ */
 
-var CACHE_NAME = 'zbm-v1';
+var CACHE_NAME = 'zbm-v2';
 
 // App shell files to cache on install
 var APP_SHELL = [
     '/',
     '/static/index.html',
-    '/static/css/styles.css',
+    '/static/css/hive-tokens.css',
+    '/static/css/hive-components.css',
     '/static/css/mesh.css',
     '/static/css/debug.css',
     '/static/css/groups.css',

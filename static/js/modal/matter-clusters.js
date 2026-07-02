@@ -199,7 +199,13 @@ window._matterWriteAttr = async function (nodeId, epId, clusterId, attrId, pathI
     const currentEl = document.getElementById(`mattr-val-${pathId}`);
     const currentVal = currentEl ? currentEl.textContent.trim() : '';
 
-    const newVal = prompt(`Write attribute ${attrId} on cluster ${clusterId}:\n\nCurrent value: ${currentVal}\n\nEnter new value:`, currentVal);
+    const newVal = await window.zbmPrompt({
+        title: 'Write attribute',
+        message: `Write attribute ${attrId} on cluster ${clusterId}`,
+        label: `New value (current: ${currentVal})`,
+        value: currentVal,
+        confirmText: 'Write'
+    });
     if (newVal === null) return;
 
     // Try to parse as JSON (for numbers, bools, objects)
@@ -229,9 +235,9 @@ window._matterWriteAttr = async function (nodeId, epId, clusterId, attrId, pathI
             // Refresh after a short delay to get the confirmed value
             setTimeout(() => window._matterLoadClusters(nodeId), 2000);
         } else {
-            alert(`Write failed: ${data.error}`);
+            window.toast.error(`Write failed: ${data.error}`);
         }
     } catch (e) {
-        alert(`Error: ${e.message}`);
+        window.toast.error(`Error: ${e.message}`);
     }
 };

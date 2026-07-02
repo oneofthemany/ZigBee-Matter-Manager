@@ -130,7 +130,7 @@
             { method: 'POST', credentials: 'same-origin' });
         if (!r.ok) {
             var e = await r.json().catch(function () { return {}; });
-            alert('Enrolment failed: ' + (e.detail || r.status));
+            window.toast.error('Enrolment failed: ' + (e.detail || r.status));
             return;
         }
         var d = await r.json();
@@ -245,8 +245,12 @@
                 if (window.toast) window.toast.success('Codes copied to clipboard');
             });
         };
-        document.getElementById('mfa-rc-done').onclick = function () {
-            if (confirm('Have you really saved them? You will not see them again.')) {
+        document.getElementById('mfa-rc-done').onclick = async function () {
+            if (await window.zbmConfirm({
+                title: 'Recovery codes saved?',
+                message: 'Have you really saved them? You will not see them again.',
+                confirmText: "I've saved them"
+            })) {
                 modal.hide();
                 modalEl.remove();
             }
@@ -307,10 +311,16 @@
     }
 
     async function regenerateRecoveryCodes() {
-        if (!confirm('Generate new recovery codes? The current set will be invalidated.')) return;
+        if (!await window.zbmConfirm({
+            title: 'Regenerate recovery codes',
+            message: 'Generate new recovery codes?',
+            detail: 'The current set will be invalidated.',
+            confirmText: 'Regenerate',
+            variant: 'danger'
+        })) return;
         var r = await fetch('/api/auth/mfa/recovery-codes/regenerate',
             { method: 'POST', credentials: 'same-origin' });
-        if (!r.ok) { alert('Failed'); return; }
+        if (!r.ok) { window.toast.error('Failed'); return; }
         var d = await r.json();
         showRecoveryCodes(d.recovery_codes);
         await refresh();

@@ -408,7 +408,7 @@ export async function saveConfig(e) {
             throw new Error(data.error);
         }
     } catch (err) {
-        alert("Error: " + err.message);
+        window.toast.error("Error: " + err.message);
         btn.disabled = false;
         btn.innerHTML = originalText;
     }

@@ -238,30 +238,48 @@
     }
 
     async function deleteUser(username) {
-        if (!confirm('Delete user "' + username + '"? This revokes all their tokens.')) return;
+        if (!await window.zbmConfirm({
+            title: 'Delete user',
+            message: 'Delete user "' + username + '"?',
+            detail: 'This revokes all their tokens.',
+            confirmText: 'Delete',
+            variant: 'danger'
+        })) return;
         var r = await fetch('/api/auth/users/' + encodeURIComponent(username),
             { method: 'DELETE' });
         if (!r.ok) {
             var e = await r.json().catch(function () { return {}; });
-            alert('Delete failed: ' + (e.detail || r.status));
+            window.toast.error('Delete failed: ' + (e.detail || r.status));
             return;
         }
         await refresh();
     }
 
     async function deleteGroup(name) {
-        if (!confirm('Delete group "' + name + '"? Members will lose its scopes.')) return;
+        if (!await window.zbmConfirm({
+            title: 'Delete group',
+            message: 'Delete group "' + name + '"?',
+            detail: 'Members will lose its scopes.',
+            confirmText: 'Delete',
+            variant: 'danger'
+        })) return;
         var r = await fetch('/api/auth/groups/' + encodeURIComponent(name),
             { method: 'DELETE' });
-        if (!r.ok) { alert('Delete failed'); return; }
+        if (!r.ok) { window.toast.error('Delete failed'); return; }
         await refresh();
     }
 
     async function revokeToken(id) {
-        if (!confirm('Revoke this token? The device using it will lose access immediately.')) return;
+        if (!await window.zbmConfirm({
+            title: 'Revoke token',
+            message: 'Revoke this token?',
+            detail: 'The device using it will lose access immediately.',
+            confirmText: 'Revoke',
+            variant: 'danger'
+        })) return;
         var r = await fetch('/api/auth/tokens/' + encodeURIComponent(id),
             { method: 'DELETE' });
-        if (!r.ok) { alert('Revoke failed'); return; }
+        if (!r.ok) { window.toast.error('Revoke failed'); return; }
         await refresh();
     }
 
@@ -438,13 +456,13 @@
                 var r = await fetch('/api/auth/groups/' + encodeURIComponent(g.name),
                     { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify(body) });
-                if (!r.ok) { alert('Update failed'); return; }
+                if (!r.ok) { window.toast.error('Update failed'); return; }
             } else {
                 body.name = document.getElementById('gname').value.trim();
                 var r2 = await fetch('/api/auth/groups',
                     { method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify(body) });
-                if (!r2.ok) { alert('Create failed'); return; }
+                if (!r2.ok) { window.toast.error('Create failed'); return; }
             }
             modal.hide();
             await refresh();

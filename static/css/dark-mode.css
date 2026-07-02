@@ -226,15 +226,6 @@
     color: var(--text-secondary) !important;
 }
 
-/* Sortable header icons */
-[data-theme="dark"] .sortable-header {
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .sort-icon {
-    color: var(--text-muted) !important;
-}
-
 /* Table-responsive wrapper */
 [data-theme="dark"] .table-responsive {
     border-color: var(--border-color) !important;
@@ -255,9 +246,9 @@
 [data-theme="dark"] .form-control:focus,
 [data-theme="dark"] .form-select:focus {
     background-color: var(--bg-input) !important;
-    border-color: #4d8fea !important;
+    border-color: var(--accent) !important;
     color: var(--text-primary) !important;
-    box-shadow: 0 0 0 0.2rem rgba(77, 143, 234, 0.25) !important;
+    box-shadow: 0 0 0 0.2rem rgba(242, 169, 59, 0.2) !important;
 }
 
 [data-theme="dark"] .form-control::placeholder {
@@ -309,8 +300,8 @@
 }
 
 [data-theme="dark"] .btn-outline-info {
-    color: #67e8f9 !important;
-    border-color: #67e8f9 !important;
+    color: var(--text-secondary) !important;
+    border-color: var(--border-color) !important;
 }
 
 
@@ -328,7 +319,8 @@
 }
 
 [data-theme="dark"] .badge.bg-secondary {
-    background-color: #374151 !important;
+    background-color: var(--bg-surface-raised) !important;
+    color: var(--text-secondary) !important;
 }
 
 [data-theme="dark"] .badge.bg-info.text-dark {
@@ -368,27 +360,12 @@
    NAV TABS
    ---------------------------------------------------------- */
 
-[data-theme="dark"] .nav-tabs {
-    border-bottom-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .nav-tabs .nav-link {
-    color: var(--text-secondary) !important;
-}
-
-[data-theme="dark"] .nav-tabs .nav-link:hover {
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .nav-tabs .nav-link.active {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) var(--border-color) var(--bg-surface) !important;
-    color: var(--text-link) !important;
-}
+/* Nav-tab colours/underline live in hive-components.css (token-driven,
+   theme-aware) — no dark-specific overrides needed. */
 
 [data-theme="dark"] .nav-pills .nav-link.active {
-    background-color: #2563eb !important;
+    background-color: var(--honey) !important;
+    color: var(--honey-ink) !important;
 }
 
 /* Settings sub-nav */
@@ -411,19 +388,19 @@
 [data-theme="dark"] .alert-warning {
     background-color: rgba(234, 179, 8, 0.12) !important;
     border-color: rgba(234, 179, 8, 0.2) !important;
-    color: #fbbf24 !important;
+    color: var(--warn) !important;
 }
 
 [data-theme="dark"] .alert-success {
     background-color: rgba(34, 197, 94, 0.12) !important;
     border-color: rgba(34, 197, 94, 0.2) !important;
-    color: #4ade80 !important;
+    color: var(--ok) !important;
 }
 
 [data-theme="dark"] .alert-danger {
     background-color: rgba(239, 68, 68, 0.12) !important;
     border-color: rgba(239, 68, 68, 0.2) !important;
-    color: #f87171 !important;
+    color: var(--bad) !important;
 }
 
 [data-theme="dark"] .alert-light {
@@ -498,7 +475,7 @@
 }
 
 [data-theme="dark"] #tab-control .bg-primary.bg-opacity-10 {
-    background-color: rgba(37, 99, 235, 0.15) !important;
+    background-color: var(--warning-subtle) !important;
 }
 
 /* Debug log — already dark, ensure consistency */
@@ -593,7 +570,7 @@
 }
 
 [data-theme="dark"] .sched-today {
-    background-color: rgba(37, 99, 235, 0.08) !important;
+    background-color: var(--warning-subtle) !important;
 }
 
 [data-theme="dark"] .sched-timeline {
@@ -627,7 +604,7 @@
 
 /* Member device pills (hardcoded #e7f3ff in groups.css) */
 [data-theme="dark"] .member-device {
-    background: rgba(96, 165, 250, 0.15) !important;
+    background: var(--info-subtle) !important;
     color: var(--text-primary) !important;
 }
 
@@ -635,7 +612,7 @@
 [data-theme="dark"] .group-card {
     background-color: var(--bg-surface) !important;
     border-color: var(--border-color) !important;
-    border-left-color: #3b82f6 !important;
+    border-left-color: var(--accent) !important;
 }
 
 [data-theme="dark"] .group-card:hover {
@@ -706,7 +683,7 @@
 [data-theme="dark"] #commonCapabilitiesSection.alert-success {
     background-color: rgba(34, 197, 94, 0.12) !important;
     border-color: rgba(34, 197, 94, 0.2) !important;
-    color: #4ade80 !important;
+    color: var(--ok) !important;
 }
 
 /* Add device select in modal */
@@ -722,7 +699,7 @@
 }
 
 [data-theme="dark"] code {
-    color: #f0abfc;
+    color: var(--accent);
 }
 
 
@@ -841,9 +818,9 @@
 
 [data-theme="dark"] #connectionTable thead.table-dark th,
 [data-theme="dark"] #connectionTable thead.sticky-top th {
-    background-color: #111827 !important;
-    color: #e5e7eb !important;
-    border-color: #1f2937 !important;
+    background-color: var(--bg-card-header) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
 }
 
 /* Table-responsive wrapper inside connection table */
@@ -944,11 +921,11 @@
 }
 
 [data-theme="dark"] #packetStatsSummary .text-success {
-    color: #4ade80 !important;
+    color: var(--ok) !important;
 }
 
 [data-theme="dark"] #packetStatsSummary .text-danger {
-    color: #f87171 !important;
+    color: var(--bad) !important;
 }
 
 /* Stats table */
@@ -970,9 +947,9 @@
 
 [data-theme="dark"] #packetStatsTable thead.table-dark th,
 [data-theme="dark"] #packetStatsTable thead.sticky-top th {
-    background-color: #111827 !important;
-    color: #e5e7eb !important;
-    border-color: #1f2937 !important;
+    background-color: var(--bg-card-header) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
 }
 
 /* Table-responsive wrapper */
@@ -993,18 +970,18 @@
 
 /* Error text */
 [data-theme="dark"] #packetStatsTable .text-danger {
-    color: #f87171 !important;
+    color: var(--bad) !important;
 }
 
 /* Status badges inside table */
 [data-theme="dark"] #packetStatsTable .badge.bg-success {
-    background-color: #166534 !important;
-    color: #bbf7d0 !important;
+    background-color: var(--success-subtle) !important;
+    color: var(--ok) !important;
 }
 
 [data-theme="dark"] #packetStatsTable .badge.bg-danger {
-    background-color: #7f1d1d !important;
-    color: #fecaca !important;
+    background-color: var(--danger-subtle) !important;
+    color: var(--bad) !important;
 }
 
 /* Progress bars (load indicator) */
@@ -1032,7 +1009,7 @@
 }
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-    background: #4b5563;
+    background: #35516b;
 }
 
 
@@ -1053,6 +1030,24 @@ body,
 .dropdown-menu,
 .list-group-item {
     transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body,
+    .card,
+    .modal-content,
+    .table,
+    .form-control,
+    .form-select,
+    .btn,
+    .badge,
+    .alert,
+    .nav-tabs .nav-link,
+    .dropdown-menu,
+    .list-group-item,
+    .tab-pane.fade {
+        transition: none;
+    }
 }
 
 

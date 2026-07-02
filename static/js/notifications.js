@@ -454,8 +454,13 @@ function renderRulesList() {
             renderRulesList();
         });
         card.querySelector('[data-action="edit"]').addEventListener('click', () => openRuleEditor(id));
-        card.querySelector('[data-action="delete"]').addEventListener('click', () => {
-            if (!confirm('Delete this notification rule?')) return;
+        card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+            if (!await window.zbmConfirm({
+                title: 'Delete rule',
+                message: 'Delete this notification rule?',
+                confirmText: 'Delete',
+                variant: 'danger'
+            })) return;
             const rules = loadRules().filter(x => x.id !== id);
             saveRules(rules);
             renderRulesList();
@@ -692,15 +697,15 @@ function openRuleEditor(ruleId) {
 
         // Validation
         if (scope === 'devices' && updated.devices.length === 0) {
-            alert('Pick at least one device, or change the scope to "All devices".');
+            window.toast.warning('Pick at least one device, or change the scope to "All devices".');
             return;
         }
         if (scope === 'tab' && !updated.tab) {
-            alert('Pick a device tab.');
+            window.toast.warning('Pick a device tab.');
             return;
         }
         if (trigger?.needsThreshold && (updated.threshold === '' || updated.threshold === undefined)) {
-            alert('This trigger requires a threshold value.');
+            window.toast.warning('This trigger requires a threshold value.');
             return;
         }
 

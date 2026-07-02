@@ -273,7 +273,7 @@ window._openMapDialog = function(ieee, rawKey) {
 window._saveMapping = async function(ieee, rawKey) {
     const name = document.getElementById('mapName')?.value?.trim();
     if (!name) {
-        alert('Friendly name is required');
+        window.toast.warning('Friendly name is required');
         return;
     }
 
@@ -298,15 +298,20 @@ window._saveMapping = async function(ieee, rawKey) {
             // Refresh mappings tab
             await initMappingsTab(ieee);
         } else {
-            alert('Failed: ' + (data.error || 'Unknown error'));
+            window.toast.error('Failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 
 window._removeMappingClick = async function(ieee, rawKey) {
-    if (!confirm(`Remove mapping for ${rawKey}?`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Remove mapping',
+        message: `Remove mapping for ${rawKey}?`,
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
 
     try {
         const res = await fetch('/api/device_overrides/ieee_mapping', {
@@ -319,10 +324,10 @@ window._removeMappingClick = async function(ieee, rawKey) {
         if (data.success) {
             await initMappingsTab(ieee);
         } else {
-            alert('Failed: ' + (data.error || 'Unknown error'));
+            window.toast.error('Failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 
@@ -336,14 +341,16 @@ window._promoteToModelDef = async function(ieee) {
     const { model, manufacturer, ieee_mappings } = _mappingsData;
 
     if (!model) {
-        alert('Device has no model identifier — cannot create model definition.');
+        window.toast.warning('Device has no model identifier — cannot create model definition.');
         return;
     }
 
-    if (!confirm(
-        `This will create a model definition for "${model}" (${manufacturer}).\n\n` +
-        `All devices of this model will automatically use these mappings.\nContinue?`
-    )) return;
+    if (!await window.zbmConfirm({
+        title: 'Create model definition',
+        message: `This will create a model definition for "${model}" (${manufacturer}).`,
+        detail: 'All devices of this model will automatically use these mappings.',
+        confirmText: 'Create'
+    })) return;
 
     // Convert IEEE mappings to model definition format
     const clusters = {};
@@ -369,13 +376,13 @@ window._promoteToModelDef = async function(ieee) {
         const data = await res.json();
 
         if (data.success) {
-            alert(`Model definition created for "${model}". All matching devices will use these mappings.`);
+            window.toast.success(`Model definition created for "${model}". All matching devices will use these mappings.`);
             await initMappingsTab(ieee);
         } else {
-            alert('Failed: ' + (data.error || 'Unknown error'));
+            window.toast.error('Failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 

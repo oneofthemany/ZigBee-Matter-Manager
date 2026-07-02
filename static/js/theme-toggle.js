@@ -16,14 +16,18 @@
         if (stored) return stored;
 
         // Respect OS preference on first visit
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            return 'dark';
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            return 'light';
         }
-        return 'light';
+        // Dark hive is the house default
+        return 'dark';
     }
 
     function setTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
+        // Keep Bootstrap 5.3's native theming in lockstep so its components
+        // (tables, modals, dropdowns) theme themselves without overrides.
+        document.documentElement.setAttribute('data-bs-theme', theme);
         localStorage.setItem(STORAGE_KEY, theme);
         updateToggleButton(theme);
         // Notify listeners (charts, canvas widgets etc.) so they can redraw
@@ -37,6 +41,7 @@
 
     var initialTheme = getPreferredTheme();
     document.documentElement.setAttribute('data-theme', initialTheme);
+    document.documentElement.setAttribute('data-bs-theme', initialTheme);
 
     // ----------------------------------------------------------
     // 3. INJECT TOGGLE BUTTON INTO NAVBAR
@@ -53,6 +58,7 @@
         btn.id = 'themeToggleBtn';
         btn.className = 'btn btn-sm btn-outline-light border-0';
         btn.title = 'Toggle dark/light mode';
+        btn.setAttribute('aria-label', 'Toggle dark/light mode');
         btn.style.cssText = 'font-size: 1rem; padding: 0.25rem 0.5rem; opacity: 0.8; transition: opacity 0.2s;';
         btn.onmouseenter = function() { this.style.opacity = '1'; };
         btn.onmouseleave = function() { this.style.opacity = '0.8'; };

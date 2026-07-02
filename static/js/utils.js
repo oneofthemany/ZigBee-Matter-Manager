@@ -67,69 +67,55 @@ export function getTimestamp() {
 
 
 /**
- * Show a toast notification
+ * Run an async action with the triggering button in a "busy" state:
+ * disabled + spinner, restored in finally. Guards against double-submit
+ * while a dialog/request is in flight.
+ *
+ * @param {HTMLButtonElement|null} btn - button to disable (null = just run fn)
+ * @param {Function} fn - sync or async action
+ * @returns {Promise<*>} resolves with fn's result
+ */
+export function withBusy(btn, fn) {
+    if (!btn) return Promise.resolve().then(fn);
+    if (btn.dataset.zbmBusy) return Promise.resolve();  // already in flight
+    btn.dataset.zbmBusy = '1';
+    const saved = btn.innerHTML;
+    const wasDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    const busyHtml = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> '
+        + (btn.textContent.trim() || '…');
+    btn.innerHTML = busyHtml;
+    return Promise.resolve()
+        .then(fn)
+        .finally(() => {
+            delete btn.dataset.zbmBusy;
+            btn.disabled = wasDisabled;
+            btn.removeAttribute('aria-busy');
+            // Only restore if nothing else re-rendered the button meanwhile
+            if (btn.innerHTML === busyHtml) btn.innerHTML = saved;
+        });
+}
+
+// Classic (non-module) scripts and inline onclick handlers
+window.withBusy = withBusy;
+
+/**
+ * Show a toast notification — thin shim over the shared toast system
+ * (toasts.js). Kept for the many call sites that use the
+ * `showToast(message, type)` argument order.
  * @param {string} message - The message to display
- * @param {string} type - 'success', 'danger', 'info', 'warning' (default: info)
+ * @param {string} type - 'success', 'danger'/'error', 'info', 'warning' (default: info)
  */
 export function showToast(message, type = 'info') {
-    // Create toast container if it doesn't exist
-    let toastContainer = document.getElementById('toast-container');
-    if (!toastContainer) {
-        toastContainer = document.createElement('div');
-        toastContainer.id = 'toast-container';
-        toastContainer.className = 'toast-container position-fixed bottom-0 end-0 p-3';
-        toastContainer.style.zIndex = '1055';
-        document.body.appendChild(toastContainer);
-    }
-
-    // Map types to Bootstrap colors if needed (e.g. 'error' -> 'danger')
-    const typeMap = {
-        'error': 'danger',
-        'success': 'success',
-        'warning': 'warning',
-        'info': 'info'
-    };
-    const bsType = typeMap[type] || type;
-
-    // Create unique ID
-    const toastId = 'toast-' + Date.now();
-
-    // Create toast HTML
-    const toastHtml = `
-        <div id="${toastId}" class="toast align-items-center text-white bg-${bsType} border-0" role="alert" aria-live="assertive" aria-atomic="true">
-            <div class="d-flex">
-                <div class="toast-body">
-                    ${message}
-                </div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-            </div>
-        </div>
-    `;
-
-    // Append to container
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = toastHtml;
-    const toastEl = wrapper.firstElementChild;
-    toastContainer.appendChild(toastEl);
-
-    // Initialize and show using Bootstrap API
-    // (Assuming bootstrap is loaded globally via <script> tag)
-    if (window.bootstrap) {
-        const toast = new window.bootstrap.Toast(toastEl, { delay: 3000 });
-        toast.show();
-
-        // Remove from DOM after hidden
-        toastEl.addEventListener('hidden.bs.toast', () => {
-            toastEl.remove();
-        });
-    } else {
-        // Fallback if Bootstrap JS isn't loaded
-        toastEl.style.display = 'block';
-        setTimeout(() => {
-            toastEl.remove();
-        }, 3000);
-    }
+    const typeMap = { danger: 'error', error: 'error', success: 'success', warning: 'warning', info: 'info' };
+    const fn = window.toast && window.toast[typeMap[type] || 'info'];
+    if (fn) fn(message);
+    else console.log(`[toast:${type}]`, message);
 }
+
+// Several classic scripts and modules feature-detect window.showToast
+window.showToast = showToast;
 
 // Color mode toggle
 window.showColorMode = function(ieee, epId, mode) {

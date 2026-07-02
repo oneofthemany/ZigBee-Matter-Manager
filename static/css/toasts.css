@@ -213,3 +213,13 @@
         width: 100%;
     }
 }
+/* Reduced motion: show/hide toasts without the slide/scale sweep */
+@media (prefers-reduced-motion: reduce) {
+    .zbm-toast,
+    .zbm-toast.zbm-toast-out {
+        animation: none;
+    }
+    .zbm-toast.zbm-toast-out {
+        opacity: 0;
+    }
+}

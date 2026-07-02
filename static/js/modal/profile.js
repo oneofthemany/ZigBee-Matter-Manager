@@ -494,7 +494,7 @@ window._profileOpenMapDialog = function(ieee, rawKey, editing) {
             device_class:  modal.querySelector('#pmapClass').value.trim(),
             invert:        modal.querySelector('#pmapInvert').checked,
         };
-        if (!body.friendly_name) { alert('Friendly name required'); return; }
+        if (!body.friendly_name) { window.toast.warning('Friendly name required'); return; }
         try {
             const r = await fetch('/api/profiles/ieee_mapping', {
                 method: 'POST',
@@ -506,15 +506,20 @@ window._profileOpenMapDialog = function(ieee, rawKey, editing) {
                 bootstrap.Modal.getInstance(modal)?.hide();
                 await initProfileTab(ieee);
             } else {
-                alert(d.error || 'Save failed');
+                window.toast.error(d.error || 'Save failed');
             }
-        } catch (e) { alert(e.message); }
+        } catch (e) { window.toast.error(e.message); }
     };
     new bootstrap.Modal(modal).show();
 };
 
 window._profileRemoveMap = async function(ieee, rawKey) {
-    if (!confirm(`Remove mapping for ${rawKey}?`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Remove mapping',
+        message: `Remove mapping for ${rawKey}?`,
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
     const r = await fetch('/api/profiles/ieee_mapping', {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -522,7 +527,7 @@ window._profileRemoveMap = async function(ieee, rawKey) {
     });
     const d = await r.json();
     if (d.success) await initProfileTab(ieee);
-    else alert(d.error || 'Failed');
+    else window.toast.error(d.error || 'Failed');
 };
 
 // ── Promote IEEE mappings to a model profile ────────────────────────────────
@@ -530,13 +535,15 @@ window._profileRemoveMap = async function(ieee, rawKey) {
 window._profilePromoteToModel = async function(ieee) {
     const ident = _data.identity || {};
     if (!ident.model && !ident.product_id) {
-        alert('Device has no model identifier — cannot create a profile.');
+        window.toast.warning('Device has no model identifier — cannot create a profile.');
         return;
     }
-    if (!confirm(
-        `Create a model profile for "${ident.model || ident.product_id}"?\n\n`
-        + `All matching devices will automatically use these mappings.`
-    )) return;
+    if (!await window.zbmConfirm({
+        title: 'Create model profile',
+        message: `Create a model profile for "${ident.model || ident.product_id}"?`,
+        detail: 'All matching devices will automatically use these mappings.',
+        confirmText: 'Create'
+    })) return;
 
     // Build a fresh profile draft from the current IEEE mappings
     const ieee_mappings = _data.ieee_mappings || {};
@@ -570,14 +577,14 @@ window._profilePromoteToModel = async function(ieee) {
             body: JSON.stringify(profile),
         });
         const d = await r.json();
-        if (!d.success) { alert(d.error || 'Save failed'); return; }
+        if (!d.success) { window.toast.error(d.error || 'Save failed'); return; }
         // Apply immediately
         await fetch(`/api/profiles/apply/${encodeURIComponent(ieee)}`, { method: 'POST' });
         await initProfileTab(ieee);
         // Jump to Assemble so the user can refine the new profile
         _activeSubview = 'assemble';
         _render(document.getElementById('profileTabContent'), ieee);
-    } catch (e) { alert(e.message); }
+    } catch (e) { window.toast.error(e.message); }
 };
 
 // ===========================================================================
@@ -859,27 +866,33 @@ async function _saveAssemble(ieee, container) {
             body: JSON.stringify(_draft),
         });
         const d = await r.json();
-        if (!d.success) { alert(d.error || 'Save failed'); return; }
+        if (!d.success) { window.toast.error(d.error || 'Save failed'); return; }
         // Apply to this device immediately
         await fetch(`/api/profiles/apply/${encodeURIComponent(ieee)}`, { method: 'POST' });
         await initProfileTab(ieee);
-    } catch (e) { alert(e.message); }
+    } catch (e) { window.toast.error(e.message); }
 }
 
 async function _deleteProfile(ieee) {
     if (!_draft.id) return;
-    if (!confirm(`Delete profile "${_draft.id}"?\n\nDevices using it will fall back to built-in handlers.`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Delete profile',
+        message: `Delete profile "${_draft.id}"?`,
+        detail: 'Devices using it will fall back to built-in handlers.',
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
     const r = await fetch(`/api/profiles/${encodeURIComponent(_draft.id)}`, { method: 'DELETE' });
     const d = await r.json();
     if (d.success) await initProfileTab(ieee);
-    else alert(d.error || 'Delete failed');
+    else window.toast.error(d.error || 'Delete failed');
 }
 
 async function _exportProfile() {
-    if (!_draft?.id) { alert('Save the profile first.'); return; }
+    if (!_draft?.id) { window.toast.warning('Save the profile first.'); return; }
     const r = await fetch(`/api/profiles/export/${encodeURIComponent(_draft.id)}`);
     const d = await r.json();
-    if (!d.success) { alert(d.error || 'Export failed'); return; }
+    if (!d.success) { window.toast.error(d.error || 'Export failed'); return; }
     const blob = new Blob([JSON.stringify(d.profile, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -897,14 +910,14 @@ function _importProfile(ieee) {
         const f = inp.files?.[0]; if (!f) return;
         const text = await f.text();
         let profile;
-        try { profile = JSON.parse(text); } catch (e) { alert('Invalid JSON'); return; }
+        try { profile = JSON.parse(text); } catch (e) { window.toast.error('Invalid JSON'); return; }
         const r = await fetch('/api/profiles/import', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ profile }),
         });
         const d = await r.json();
-        if (!d.success) { alert(d.error || 'Import failed'); return; }
+        if (!d.success) { window.toast.error(d.error || 'Import failed'); return; }
         await initProfileTab(ieee);
     };
     inp.click();

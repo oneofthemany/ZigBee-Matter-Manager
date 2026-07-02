@@ -910,7 +910,7 @@ window._aShowForm=()=>_showForm(null);
 // Populate the builder from a generated (unsaved) rule object, treated as new.
 window._aShowFormWith=(rule)=>_showForm(rule, true);
 window._aHideForm=()=>{document.getElementById('a-form').style.display='none';editingRuleId=null;};
-window._aEdit=async id=>{try{const r=await(await fetch(`/api/automations/rule/${id}`)).json();_showForm(r);document.getElementById('a-form')?.scrollIntoView({behavior:'smooth'});}catch(e){alert(e.message);}};
+window._aEdit=async id=>{try{const r=await(await fetch(`/api/automations/rule/${id}`)).json();_showForm(r);document.getElementById('a-form')?.scrollIntoView({behavior:'smooth'});}catch(e){window.toast.error(e.message);}};
 
 // Trace
 window._aTrace=async()=>{document.getElementById('a-trace').style.display='block';
@@ -922,7 +922,7 @@ window._aTraceR=async id=>{await window._aTrace();const f=document.getElementByI
 
 // Toggle/Delete
 window._aToggle=async id=>{try{await fetch(`/api/automations/${id}/toggle`,{method:'PATCH'});await _ref();}catch(e){}};
-window._aDel=async id=>{if(!confirm('Delete?'))return;try{await fetch(`/api/automations/${id}`,{method:'DELETE'});await _ref();}catch(e){}};
+window._aDel=async id=>{if(!await window.zbmConfirm({title:'Delete automation',message:'Delete this automation?',confirmText:'Delete',variant:'danger'}))return;try{await fetch(`/api/automations/${id}`,{method:'DELETE'});await _ref();}catch(e){}};
 
 // ============================================================================
 // SAVE (recursive gather)
@@ -967,7 +967,7 @@ window._aSave=async()=>{
             const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);conditions.push(c);
         }
     });
-    if(!valid||!conditions.length)return alert('Fill all conditions.');
+    if(!valid||!conditions.length)return window.toast.warning('Fill all conditions.');
 
     const prerequisites = [];
     prereqRows.forEach(id => {
@@ -1008,7 +1008,7 @@ window._aSave=async()=>{
     _syncTreeFromDOM(elseTree);
     const then_sequence = _cleanTree(thenTree);
     const else_sequence = _cleanTree(elseTree);
-    if(!then_sequence.length&&!else_sequence.length)return alert('Add at least one step.');
+    if(!then_sequence.length&&!else_sequence.length)return window.toast.warning('Add at least one step.');
 
     const body={name:document.getElementById('a-name')?.value||'',source_ieee:currentSourceIeee,
         conditions,prerequisites,then_sequence,else_sequence,
@@ -1019,8 +1019,8 @@ window._aSave=async()=>{
             : await fetch('/api/automations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const d=await res.json();
         if(res.ok&&d.success){window._aHideForm();await _ref();}
-        else alert('Failed: '+(d.detail||d.error||'Unknown'));
-    }catch(e){alert(e.message);}
+        else window.toast.error('Failed: '+(d.detail||d.error||'Unknown'));
+    }catch(e){window.toast.error(e.message);}
 };
 
 function _syncTreeFromDOM(steps) {
@@ -1212,6 +1212,6 @@ window._aDownloadJson = async (id) => {
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
     } catch (e) {
-        alert('Failed to download: ' + e.message);
+        window.toast.error('Failed to download: ' + e.message);
     }
 };

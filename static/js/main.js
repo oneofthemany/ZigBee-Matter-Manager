@@ -215,12 +215,12 @@ window.otaCheckAll = async function() {
                 msg += `• ${name}: ${info.current_version} → ${info.new_version}\n`;
             }
             msg += '\nOpen each device\'s OTA tab to install.';
-            alert(msg);
+            window.toast.info(msg, { duration: 10000 });
         } else {
-            alert('All devices are up to date — no firmware updates available.');
+            window.toast.success('All devices are up to date — no firmware updates available.');
         }
     } catch (e) {
-        alert('OTA check failed: ' + e.message);
+        window.toast.error('OTA check failed: ' + e.message);
     } finally {
         if (btn) {
             btn.disabled = false;
@@ -247,6 +247,32 @@ window.toggleDeviceInTab = toggleDeviceInTab;
 // APPLICATION INITIALISATION
 // ============================================================================
 
+/**
+ * Tab accessibility enhancer — gives every Bootstrap tablist proper
+ * role/aria wiring (tab, tabpanel, aria-controls, aria-labelledby).
+ * Runs at init and again whenever a tab is shown, so dynamically
+ * rendered tablists (mesh sub-tabs, zone modal) get covered too.
+ */
+function enhanceTabA11y() {
+    document.querySelectorAll('.nav-tabs, .nav-pills').forEach(list => {
+        if (!list.getAttribute('role')) list.setAttribute('role', 'tablist');
+        list.querySelectorAll('[data-bs-toggle="tab"]').forEach(btn => {
+            const target = btn.getAttribute('data-bs-target');
+            if (!target || !target.startsWith('#')) return;
+            btn.setAttribute('role', 'tab');
+            if (!btn.id) btn.id = 'tab-' + target.slice(1);
+            btn.setAttribute('aria-controls', target.slice(1));
+            btn.setAttribute('aria-selected', btn.classList.contains('active') ? 'true' : 'false');
+            btn.closest('li')?.setAttribute('role', 'presentation');
+            const pane = document.querySelector(target);
+            if (pane) {
+                pane.setAttribute('role', 'tabpanel');
+                pane.setAttribute('aria-labelledby', btn.id);
+            }
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
 
     /**
@@ -265,6 +291,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // WebSocket
         if (!state.socket) initWS();
+
+        // ARIA roles for all tablists, refreshed as lazily-built ones appear
+        enhanceTabA11y();
+        document.addEventListener('shown.bs.tab', enhanceTabA11y);
 
         // Live "last seen" tick
         setInterval(updateLastSeenTimes, 1000);
@@ -351,10 +381,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span style="color:#ffc107;"><span id="testCountdown">${remaining}</span>s remaining</span>
                             </div>
                             <div class="d-flex gap-2">
-                                <button class="btn btn-sm btn-success px-3" onclick="fetch('/api/editor/test-confirm',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){document.getElementById('testRecoveryBanner').remove()}else{alert(d.error)}})">
+                                <button class="btn btn-sm btn-success px-3" onclick="fetch('/api/editor/test-confirm',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){document.getElementById('testRecoveryBanner').remove()}else{toast.error(d.error)}})">
                                     <i class="fas fa-check me-1"></i> Confirm
                                 </button>
-                                <button class="btn btn-sm btn-danger px-3" onclick="fetch('/api/editor/test-rollback',{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);document.getElementById('testRecoveryBanner').remove()})">
+                                <button class="btn btn-sm btn-danger px-3" onclick="fetch('/api/editor/test-rollback',{method:'POST'}).then(r=>r.json()).then(d=>{toast.info(d.message||d.error);document.getElementById('testRecoveryBanner').remove()})">
                                     <i class="fas fa-undo me-1"></i> Rollback
                                 </button>
                             </div>

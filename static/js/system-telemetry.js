@@ -43,6 +43,7 @@ function _startTab() {
     // Only build skeleton once
     if (!document.getElementById('sys-gauges')) {
         container.innerHTML = _renderSkeleton();
+        container.removeAttribute('aria-busy');   // shimmer placeholders replaced
     }
 
     // Initial fetch
@@ -356,7 +357,12 @@ async function _refreshDbStats() {
 // ============================================================================
 
 async function _sysPrune() {
-    if (!confirm('Prune telemetry data older than 7 days?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Prune telemetry',
+        message: 'Prune telemetry data older than 7 days?',
+        confirmText: 'Prune',
+        variant: 'danger'
+    })) return;
     try {
         const res = await fetch('/api/telemetry/db/prune', { method: 'POST' });
         const data = await res.json();
@@ -364,7 +370,7 @@ async function _sysPrune() {
             await _refreshDbStats();
         }
     } catch (e) {
-        alert('Prune failed: ' + e.message);
+        window.toast.error('Prune failed: ' + e.message);
     }
 }
 

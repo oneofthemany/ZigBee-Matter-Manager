@@ -846,3 +846,40 @@ body.controlling {
         font-size: 12px !important;
     }
 }
+
+/* ----------------------------------------------------------
+   19. TOUCH TARGETS — 44px minimum on phones (WCAG 2.5.8 AAA-ish)
+   ---------------------------------------------------------- */
+
+@media (max-width: 575.98px) {
+    /* Tab rail links */
+    .nav-tabs .nav-link {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    /* Small buttons — bump the hit area, keep the type size */
+    .btn-sm,
+    .btn-group-sm > .btn {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Toast close targets */
+    .zbm-toast-close {
+        min-width: 44px;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Form controls in filter bars */
+    .form-select-sm,
+    .form-control-sm {
+        min-height: 40px;
+    }
+}

@@ -620,13 +620,15 @@ window._settingsReconfigure = async function(ieee, aggressive) {
 // ---------------------------------------------------------------------------
 
 export async function startRetryInterview(ieee) {
-    const message =
-        'Wake the device NOW and keep it awake for the next 60 seconds.\n\n' +
-        '• Battery sensors: press the device button or open the cover\n' +
-        '• TRVs: press a button or rotate the dial\n' +
-        '• Relays/switches: usually already awake — just continue\n\n' +
-        'Click OK when the device is awake.';
-    if (!confirm(message)) return;
+    if (!await window.zbmConfirm({
+        title: 'Re-interview device',
+        message: 'Wake the device NOW and keep it awake for the next 60 seconds.',
+        detail:
+            '• Battery sensors: press the device button or open the cover\n' +
+            '• TRVs: press a button or rotate the dial\n' +
+            '• Relays/switches: usually already awake — just continue',
+        confirmText: 'Device is awake'
+    })) return;
 
     try {
         const res = await fetch('/api/device/retry_interview', {
@@ -644,7 +646,7 @@ export async function startRetryInterview(ieee) {
         });
     } catch (e) {
         console.error('retry_interview failed', e);
-        alert('Re-Interview failed: ' + e.message);
+        window.toast.error('Re-Interview failed: ' + e.message);
     }
 }
 
@@ -653,11 +655,13 @@ export async function startRetryInterview(ieee) {
 // ---------------------------------------------------------------------------
 
 export async function deleteAndRepair(ieee) {
-    const ok = confirm(
-        'This will permanently delete the device. After it is removed, you ' +
-        'will need to put it back into pairing mode and re-pair it.\n\n' +
-        'Continue?'
-    );
+    const ok = await window.zbmConfirm({
+        title: 'Delete & re-pair device',
+        message: 'This will permanently delete the device.',
+        detail: 'After it is removed, you will need to put it back into pairing mode and re-pair it.',
+        confirmText: 'Delete',
+        variant: 'danger'
+    });
     if (!ok) return;
     try {
         const res = await fetch('/api/device/remove', {
@@ -675,10 +679,10 @@ export async function deleteAndRepair(ieee) {
             const closer = document.querySelector('#deviceModal [data-bs-dismiss="modal"]');
             if (closer) closer.click();
         } else {
-            alert(`Error: ${data.error || 'unknown'}`);
+            window.toast.error(`Error: ${data.error || 'unknown'}`);
         }
     } catch (e) {
-        alert('Delete failed: ' + e.message);
+        window.toast.error('Delete failed: ' + e.message);
     }
 }
 

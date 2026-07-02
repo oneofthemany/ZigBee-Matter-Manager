@@ -7,6 +7,8 @@
  *   - Aggressiveness (σ multiplier) is only editable for mains-fed devices.
  */
 
+import { confirmDialog } from './dialogs.js';
+
 // ============================================================================
 // STATE
 // ============================================================================
@@ -146,8 +148,8 @@ function createZoneCard(zone) {
                     <i class="bi bi-graph-up"></i> Details
                 </button>
                 <button class="btn btn-sm btn-outline-danger"
-                        onclick="window.deleteZone('${zone.name}')" title="Delete">
-                    <i class="bi bi-trash"></i>
+                        onclick="window.deleteZone('${zone.name}')" title="Delete" aria-label="Delete zone ${zone.name}">
+                    <i class="bi bi-trash" aria-hidden="true"></i>
                 </button>
             </div>
         </div>`;
@@ -406,14 +408,19 @@ function handleCalibrationProgress(data) {
 // ACTIONS
 // ============================================================================
 export async function startZoneCalibration(zoneName) {
-    if (!confirm(`Start calibration for "${zoneName}"?\nLeave the room EMPTY until calibration completes.`)) return;
+    if (!await confirmDialog({
+        title: 'Start calibration',
+        message: `Start calibration for "${zoneName}"?`,
+        detail: 'Leave the room EMPTY until calibration completes.',
+        confirmText: 'Start'
+    })) return;
     try {
         const r = await fetch(`/api/zones/${zoneName}/calibrate/start`, { method: 'POST' });
         if (!r.ok) throw new Error((await r.json()).detail || 'Failed to start');
         const data = await r.json();
         if (data.zone) zonesData.set(zoneName, data.zone);
         fetchZones();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { window.toast.error("Error: " + e.message); }
 }
 
 export async function stopZoneCalibration(zoneName) {
@@ -421,16 +428,16 @@ export async function stopZoneCalibration(zoneName) {
         const r = await fetch(`/api/zones/${zoneName}/calibrate/stop`, { method: 'POST' });
         if (!r.ok) throw new Error((await r.json()).detail || 'Failed to stop');
         const data = await r.json();
-        alert(`Calibration complete: ${data.ready_devices} device baselines computed.`);
+        window.toast.success(`Calibration complete: ${data.ready_devices} device baselines computed.`);
         fetchZones();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { window.toast.error("Error: " + e.message); }
 }
 
 export async function cancelZoneCalibration(zoneName) {
     try {
         await fetch(`/api/zones/${zoneName}/calibrate/cancel`, { method: 'POST' });
         fetchZones();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { window.toast.error("Error: " + e.message); }
 }
 
 export async function setZoneAggressiveness(zoneName, ieee) {
@@ -438,7 +445,7 @@ export async function setZoneAggressiveness(zoneName, ieee) {
     if (!input) return;
     const value = parseFloat(input.value);
     if (isNaN(value) || value < 0.5 || value > 2.0) {
-        return alert("Aggressiveness must be between 0.5 and 2.0");
+        return window.toast.warning("Aggressiveness must be between 0.5 and 2.0");
     }
     try {
         const r = await fetch(`/api/zones/${zoneName}/devices/${ieee}/aggressiveness`, {
@@ -448,7 +455,7 @@ export async function setZoneAggressiveness(zoneName, ieee) {
         });
         if (!r.ok) throw new Error((await r.json()).detail || 'Failed');
         fetchZones();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { window.toast.error("Error: " + e.message); }
 }
 
 export async function addDeviceToZoneFromModal(zoneName) {
@@ -464,11 +471,17 @@ export async function addDeviceToZoneFromModal(zoneName) {
         if (!r.ok) throw new Error("Failed to add device");
         await fetchZones();
         viewZoneDetails(zoneName);
-    } catch (e) { alert("Error adding device: " + e.message); }
+    } catch (e) { window.toast.error("Error adding device: " + e.message); }
 }
 
 export async function removeDeviceFromZone(zoneName, ieee) {
-    if (!confirm(`Remove device ${ieee} from zone? Zone will need recalibration.`)) return;
+    if (!await confirmDialog({
+        title: 'Remove device from zone',
+        message: `Remove device ${ieee} from zone?`,
+        detail: 'The zone will need recalibration.',
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
     try {
         const r = await fetch(`/api/zones/${zoneName}/devices`, {
             method: 'POST',
@@ -478,25 +491,44 @@ export async function removeDeviceFromZone(zoneName, ieee) {
         if (!r.ok) throw new Error("Failed to remove device");
         await fetchZones();
         viewZoneDetails(zoneName);
-    } catch (e) { alert("Error removing device: " + e.message); }
+    } catch (e) { window.toast.error("Error removing device: " + e.message); }
 }
 
 export async function deleteZone(zoneName) {
-    if (!confirm(`Delete zone "${zoneName}"?`)) return;
+    if (!await confirmDialog({
+        title: 'Delete zone',
+        message: `Delete zone "${zoneName}"?`,
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
     try {
         await fetch(`/api/zones/${zoneName}`, { method: 'DELETE' });
         fetchZones();
-    } catch (e) { alert("Delete failed: " + e.message); }
+    } catch (e) { window.toast.error("Delete failed: " + e.message); }
 }
 
 // Legacy alias — some cards still call this
 export async function recalibrateZone(zoneName) {
-    if (!confirm(`Reset "${zoneName}" to UNCALIBRATED? You'll need to start a new calibration.`)) return;
+    if (!await confirmDialog({
+        title: 'Reset zone calibration',
+        message: `Reset "${zoneName}" to UNCALIBRATED?`,
+        detail: "You'll need to start a new calibration.",
+        confirmText: 'Reset',
+        variant: 'danger'
+    })) return;
     try {
         await fetch(`/api/zones/${zoneName}/recalibrate`, { method: 'POST' });
         fetchZones();
-    } catch (e) { alert("Reset failed: " + e.message); }
+    } catch (e) { window.toast.error("Reset failed: " + e.message); }
 }
+
+// Modal buttons are rendered as inline onclick="window.X(...)" — expose them.
+window.startZoneCalibration = startZoneCalibration;
+window.stopZoneCalibration = stopZoneCalibration;
+window.cancelZoneCalibration = cancelZoneCalibration;
+window.setZoneAggressiveness = setZoneAggressiveness;
+window.addDeviceToZoneFromModal = addDeviceToZoneFromModal;
+window.removeDeviceFromZone = removeDeviceFromZone;
 
 // ============================================================================
 // CREATE ZONE MODAL
@@ -554,8 +586,8 @@ function updateSelectedCount() {
 
 async function handleCreateZoneSubmit() {
     const name = document.getElementById('zone-name-input').value.trim();
-    if (!name) return alert("Please enter a zone name");
-    if (selectedDevices.size < 1) return alert("Select at least 1 device");
+    if (!name) return window.toast.warning("Please enter a zone name");
+    if (selectedDevices.size < 1) return window.toast.warning("Select at least 1 device");
 
     const payload = {
         name,
@@ -575,5 +607,5 @@ async function handleCreateZoneSubmit() {
         if (!r.ok) throw new Error((await r.json()).detail || "Failed to create zone");
         bootstrap.Modal.getInstance(document.getElementById('createZoneModal'))?.hide();
         fetchZones();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { window.toast.error("Error: " + e.message); }
 }

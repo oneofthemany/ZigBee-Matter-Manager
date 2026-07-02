@@ -1526,9 +1526,14 @@ function bindZoneControls() {
         });
     });
     document.querySelectorAll('.btn-delete-zone').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const idx = +btn.dataset.zoneIdx;
-            if (confirm(`Delete zone "${workingZones[idx]?.name}"?`)) {
+            if (await window.zbmConfirm({
+                title: 'Delete zone',
+                message: `Delete zone "${workingZones[idx]?.name}"?`,
+                confirmText: 'Delete',
+                variant: 'danger'
+            })) {
                 workingZones.splice(idx, 1);
                 renderZonesList();
             }

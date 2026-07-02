@@ -7,6 +7,7 @@ import { addLogEntry } from './logging.js';
 import { getTimestamp } from './utils.js';
 import { state } from './state.js';
 import { refreshModalState } from './device-modal.js';
+import { confirmDialog, promptDialog } from './dialogs.js';
 
 // We need to expose these functions if they are called from HTML onclick handlers
 // But generally main.js handles the window assignment.
@@ -195,11 +196,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
         } else {
             // --- FAILURE: toast the user ---
             const errMsg = data.error || 'Device did not respond';
-            if (window.toast) {
-                window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
-            } else {
-                alert(`Command failed: ${errMsg}`);
-            }
+            window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
             addLogEntry({
                 timestamp: getTimestamp(),
                 level: 'ERROR',
@@ -208,11 +205,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
         }
     } catch (e) {
         const errMsg = e?.message || 'Network error';
-        if (window.toast) {
-            window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
-        } else {
-            alert(`Command failed: ${errMsg}`);
-        }
+        window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
         addLogEntry({
             timestamp: getTimestamp(),
             level: 'ERROR',
@@ -328,14 +321,14 @@ export async function doAction(action, ieee) {
             });
 
             if (action === 'remove') {
-                alert(logMsg);
+                window.toast.success(logMsg);
             }
         } else {
-            alert(`Error: ${data.error}`);
+            window.toast.error(`Error: ${data.error}`);
         }
     } catch (e) {
         console.error(e);
-        alert("Action failed: " + e.message);
+        window.toast.error("Action failed: " + e.message);
     }
 }
 
@@ -391,7 +384,12 @@ export async function getBannedDevices() {
  * Prompt to rename device
  */
 export async function renamePrompt(ieee, oldName) {
-    const name = prompt("Rename Device:", oldName);
+    const name = await promptDialog({
+        title: 'Rename device',
+        label: 'Friendly name',
+        value: oldName,
+        confirmText: 'Rename'
+    });
     if (name && name !== oldName) {
         await fetch('/api/device/rename', {
             method: 'POST',
@@ -412,7 +410,7 @@ export function togglePairing() {
 
     const duration = isPairing ? 0 : 240; // 0 = disable
 
-    fetch("/api/permit_join", {
+    return fetch("/api/permit_join", {
         method: "POST",
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ duration: duration })
@@ -430,7 +428,7 @@ export function togglePairing() {
     })
     .catch(e => {
         console.error("Pairing toggle failed:", e);
-        alert("Failed to toggle pairing");
+        window.toast.error("Failed to toggle pairing");
     });
 }
 
@@ -438,7 +436,11 @@ export function togglePairing() {
  * Enable pairing on a specific device (Router)
  */
 export async function permitJoinVia(ieee) {
-    if (!confirm("Enable pairing via this device?")) return;
+    if (!await confirmDialog({
+        title: 'Enable pairing',
+        message: 'Enable pairing via this device?',
+        confirmText: 'Enable'
+    })) return;
 
     try {
         const res = await fetch("/api/permit_join", {
@@ -456,10 +458,10 @@ export async function permitJoinVia(ieee) {
             });
             updatePairingUI(240);
         } else {
-            alert("Failed: " + data.error);
+            window.toast.error("Failed: " + data.error);
         }
     } catch(e) {
-        alert("Error starting pairing: " + e);
+        window.toast.error("Error starting pairing: " + e);
     }
 }
 
@@ -758,7 +760,13 @@ window.touchlinkReset = async function(index) {
     const device = touchlinkDevices[index];
     if (!device) return;
 
-    if (!confirm(`Factory reset ${device.ieee}?\n\nThis will reset to factory defaults.`)) return;
+    if (!await confirmDialog({
+        title: 'Factory reset device',
+        message: `Factory reset ${device.ieee}?`,
+        detail: 'This will reset the device to factory defaults.',
+        confirmText: 'Factory Reset',
+        variant: 'danger'
+    })) return;
 
     const statusDiv = document.getElementById('touchlinkStatus');
     statusDiv.innerHTML = `<div class="alert alert-warning mb-0"><i class="fas fa-spinner fa-spin"></i> Resetting ${device.ieee}...</div>`;
@@ -810,7 +818,13 @@ window.touchlinkIdentifyAll = async function() {
  */
 window.touchlinkResetAll = async function() {
     if (!touchlinkDevices.length) return;
-    if (!confirm(`Factory reset ALL ${touchlinkDevices.length} devices?\n\nThis cannot be undone!`)) return;
+    if (!await confirmDialog({
+        title: 'Factory reset all devices',
+        message: `Factory reset ALL ${touchlinkDevices.length} devices?`,
+        detail: 'This cannot be undone!',
+        confirmText: 'Reset All',
+        variant: 'danger'
+    })) return;
 
     addLogEntry({ timestamp: getTimestamp(), level: 'WARN', message: `Touchlink reset ALL (${touchlinkDevices.length} devices)` });
 
@@ -840,7 +854,7 @@ window.touchlinkResetAll = async function() {
  */
 export async function bindDevices(sourceIeee, targetIeee, clusterId) {
     if (!targetIeee || !clusterId) {
-        alert("Please select a target device and a cluster.");
+        window.toast.warning("Please select a target device and a cluster.");
         return;
     }
 
@@ -877,12 +891,12 @@ export async function bindDevices(sourceIeee, targetIeee, clusterId) {
                 level: 'INFO',
                 message: `Bound ${sourceIeee} to ${targetIeee} (Cluster ${clusterId})`
             });
-            alert("Binding successful! The device should now control the target.");
+            window.toast.success("Binding successful! The device should now control the target.");
         } else {
-            alert("Binding failed: " + (data.error || "Unknown error"));
+            window.toast.error("Binding failed: " + (data.error || "Unknown error"));
         }
     } catch(e) {
-        alert("Error binding devices: " + e.message);
+        window.toast.error("Error binding devices: " + e.message);
     } finally {
         if (btn) {
             btn.disabled = false;
@@ -937,7 +951,11 @@ export async function refreshBannedList() {
  * Handle Unban Button Click
  */
 export async function handleUnbanClick(ieee) {
-    if (!confirm(`Are you sure you want to unban ${ieee}?`)) return;
+    if (!await confirmDialog({
+        title: 'Unban device',
+        message: `Are you sure you want to unban ${ieee}?`,
+        confirmText: 'Unban'
+    })) return;
 
     const res = await unbanDevice(ieee);
 
@@ -945,7 +963,7 @@ export async function handleUnbanClick(ieee) {
         // Refresh the list to show it's gone
         await refreshBannedList();
     } else {
-        alert("Failed to unban: " + (res.error || "Unknown error"));
+        window.toast.error("Failed to unban: " + (res.error || "Unknown error"));
     }
 }
 
@@ -953,7 +971,11 @@ export async function handleUnbanClick(ieee) {
  * Remove orphans
  */
 export async function cleanupOrphans() {
-    if (!confirm('This will find and remove devices that exist in the database but are not active on the network. Continue?')) {
+    if (!await confirmDialog({
+        title: 'Clean database',
+        message: 'This will find and remove devices that exist in the database but are not active on the network. Continue?',
+        confirmText: 'Scan'
+    })) {
         return;
     }
 
@@ -962,18 +984,18 @@ export async function cleanupOrphans() {
     try {
         const res = await fetch('/api/devices/orphaned');
         if (!res.ok) {
-            alert(`Failed to scan for orphaned devices: HTTP ${res.status} ${res.statusText}`);
+            window.toast.error(`Failed to scan for orphaned devices: HTTP ${res.status} ${res.statusText}`);
             return;
         }
         orphaned = await res.json();
     } catch (e) {
-        alert(`Failed to scan for orphaned devices: ${e.message || e}`);
+        window.toast.error(`Failed to scan for orphaned devices: ${e.message || e}`);
         return;
     }
 
     // Backend returns {"error": "..."} on failure (e.g. couldn't detect table version)
     if (orphaned && orphaned.error) {
-        alert(`Orphan scan failed: ${orphaned.error}`);
+        window.toast.error(`Orphan scan failed: ${orphaned.error}`);
         return;
     }
 
@@ -982,33 +1004,37 @@ export async function cleanupOrphans() {
     const count = typeof orphaned?.count === 'number' ? orphaned.count : list.length;
 
     if (count === 0) {
-        alert('No orphaned devices found. Database is clean!');
+        window.toast.success('No orphaned devices found. Database is clean!');
         return;
     }
 
-    const msg = `Found ${count} orphaned devices:\n\n${list.join('\n')}\n\nRemove these from database?`;
-
-    if (!confirm(msg)) return;
+    if (!await confirmDialog({
+        title: 'Remove orphaned devices',
+        message: `Found ${count} orphaned device${count === 1 ? '' : 's'}. Remove these from the database?`,
+        detail: list.join('\n'),
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
 
     let result;
     try {
         const res = await fetch('/api/devices/cleanup-orphaned', { method: 'POST' });
         if (!res.ok) {
-            alert(`Cleanup request failed: HTTP ${res.status} ${res.statusText}`);
+            window.toast.error(`Cleanup request failed: HTTP ${res.status} ${res.statusText}`);
             return;
         }
         result = await res.json();
     } catch (e) {
-        alert(`Cleanup request failed: ${e.message || e}`);
+        window.toast.error(`Cleanup request failed: ${e.message || e}`);
         return;
     }
 
     if (result && result.error) {
-        alert(`Cleanup failed: ${result.error}`);
+        window.toast.error(`Cleanup failed: ${result.error}`);
         return;
     }
 
-    alert(
+    window.toast.success(
         `Cleanup complete:\n` +
         `✓ Removed: ${result?.count_removed ?? 0}\n` +
         `♻ Recovered: ${result?.count_recovered ?? 0}\n` +
@@ -1042,16 +1068,19 @@ export async function matterCommission() {
         // Non-fatal — continue anyway
     }
 
-    const code = prompt(
-        "Enter Matter setup code:\n\n" +
-        "• Manual pairing code (e.g. 3476-610-1411)\n" +
-        "• QR code string (e.g. MT:Y3.13OTB00KA0648G00)\n\n" +
-        "Before commissioning, ensure:\n" +
-        "✓ Device is in pairing mode (hold its button)\n" +
-        "✓ No other BLE scans running on the host\n" +
-        "✓ Device is within Bluetooth range" +
-        bleWarning
-    );
+    const code = await promptDialog({
+        title: 'Commission Matter device',
+        message: 'Enter the Matter setup code:',
+        label: 'Manual pairing code (e.g. 3476-610-1411) or QR string (e.g. MT:Y3.13OTB00KA0648G00)',
+        placeholder: 'MT:… or 0000-000-0000',
+        detail:
+            "Before commissioning, ensure:\n" +
+            "✓ Device is in pairing mode (hold its button)\n" +
+            "✓ No other BLE scans running on the host\n" +
+            "✓ Device is within Bluetooth range" +
+            bleWarning,
+        confirmText: 'Commission'
+    });
     if (!code || !code.trim()) return;
 
     try {
@@ -1068,13 +1097,14 @@ export async function matterCommission() {
                 level: "INFO",
                 message: "Matter device commissioning started"
             });
-            alert(
-                "Matter commissioning started.\n\n" +
+            window.toast.success(
+                "Matter commissioning started.\n" +
                 "The device should appear shortly. If it doesn't:\n" +
                 "1. On the host, run: bluetoothctl scan off\n" +
                 "2. Then: bluetoothctl scan le\n" +
                 "3. Put the device back in pairing mode\n" +
-                "4. Try commissioning again"
+                "4. Try commissioning again",
+                { duration: 10000 }
             );
         } else {
             const error = data.error || 'Unknown error';
@@ -1088,11 +1118,11 @@ export async function matterCommission() {
                     '2. Put the device in pairing mode again\n' +
                     '3. Retry commissioning';
             }
-            alert("Commission failed: " + error + troubleshoot);
+            window.toast.error("Commission failed: " + error + troubleshoot, { duration: 12000 });
         }
     } catch (e) {
         console.error("Matter commission error:", e);
-        alert("Commission error: " + e.message);
+        window.toast.error("Commission error: " + e.message);
     }
 }
 
@@ -1159,7 +1189,7 @@ window.exportDeviceConfig = async function(ieee) {
         const data = await res.json();
 
         if (!data.success) {
-            alert('Failed to fetch config: ' + (data.error || 'unknown error'));
+            window.toast.error('Failed to fetch config: ' + (data.error || 'unknown error'));
             return;
         }
 
@@ -1188,6 +1218,6 @@ window.exportDeviceConfig = async function(ieee) {
 
     } catch (e) {
         console.error('Export device config error:', e);
-        alert('Export failed: ' + e.message);
+        window.toast.error('Export failed: ' + e.message);
     }
 };

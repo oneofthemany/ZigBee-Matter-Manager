@@ -1855,8 +1855,12 @@ function renderCircuitList() {
     });
 }
 
-function addCircuit() {
-    const name = prompt('Circuit name (e.g. "Living"):');
+async function addCircuit() {
+    const name = await window.zbmPrompt({
+        title: 'Add circuit',
+        label: 'Circuit name (e.g. "Living"):',
+        confirmText: 'Add'
+    });
     if (!name || !name.trim()) return;
     const id = 'circuit_' + Math.random().toString(36).slice(2, 8);
     _state.plan.circuits = _state.plan.circuits || [];
@@ -1943,15 +1947,18 @@ function editCircuit(circuitId) {
     propsDiv.querySelectorAll('input, select').forEach(el => el.addEventListener('change', update));
 }
 
-function deleteCircuit(circuitId) {
+async function deleteCircuit(circuitId) {
     const c = (_state.plan.circuits || []).find(x => x.id === circuitId);
     if (!c) return;
     const assigned = (_state.plan.levels || []).reduce((n, lvl) =>
         n + (lvl.rooms || []).filter(r => r.circuit_id === circuitId).length, 0);
-    const msg = assigned > 0
-        ? `Delete circuit "${c.name}"?\n\n${assigned} room(s) will become unassigned.`
-        : `Delete circuit "${c.name}"?`;
-    if (!confirm(msg)) return;
+    if (!await window.zbmConfirm({
+        title: 'Delete circuit',
+        message: `Delete circuit "${c.name}"?`,
+        detail: assigned > 0 ? `${assigned} room(s) will become unassigned.` : undefined,
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
     _state.plan.circuits = (_state.plan.circuits || []).filter(x => x.id !== circuitId);
     // Unassign rooms across all levels
     (_state.plan.levels || []).forEach(lvl => {
@@ -2507,8 +2514,14 @@ function bindLevelProps() {
             renderLevelList(); renderScene();
         });
     });
-    document.getElementById('fpDeleteLevel')?.addEventListener('click', () => {
-        if (!confirm(`Delete level "${currentLevel().name}"? This removes everything on it.`)) return;
+    document.getElementById('fpDeleteLevel')?.addEventListener('click', async () => {
+        if (!await window.zbmConfirm({
+            title: 'Delete level',
+            message: `Delete level "${currentLevel().name}"?`,
+            detail: 'This removes everything on it.',
+            confirmText: 'Delete',
+            variant: 'danger'
+        })) return;
         _state.plan.levels = _state.plan.levels.filter(l => l.id !== _state.currentLevelId);
         _state.currentLevelId = _state.plan.levels[0].id;
         renderAll();
@@ -2820,12 +2833,14 @@ async function save() {
  * backup; the user can switch back later and the plan will be re-applied.
  */
 async function switchToManual() {
-    const confirmed = confirm(
-        'Switch the heating controller to manual configuration?\n\n'
-        + 'Your floor plan stays saved as a backup. The rooms will become '
-        + 'freely editable in the manual UI. You can switch back later — '
-        + 'the plan will be re-applied to the rooms.'
-    );
+    const confirmed = await window.zbmConfirm({
+        title: 'Switch to manual configuration',
+        message: 'Switch the heating controller to manual configuration?',
+        detail: 'Your floor plan stays saved as a backup. The rooms will become '
+            + 'freely editable in the manual UI. You can switch back later — '
+            + 'the plan will be re-applied to the rooms.',
+        confirmText: 'Switch'
+    });
     if (!confirmed) return;
 
     const status = document.getElementById('fpSaveStatus');
@@ -2958,7 +2973,12 @@ function readImageDimensions(blob) {
 async function removeBackgroundImage() {
     const lvl = currentLevel();
     if (!lvl.background?.present) return;
-    if (!confirm('Remove background image for this level?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Remove background image',
+        message: 'Remove background image for this level?',
+        confirmText: 'Remove',
+        variant: 'danger'
+    })) return;
     try {
         await fetch(`/api/heating/floor-plan/image/${encodeURIComponent(lvl.id)}`, { method: 'DELETE' });
     } catch { /* swallow */ }
@@ -2967,7 +2987,7 @@ async function removeBackgroundImage() {
     renderScene();
 }
 
-function promptCalibrationDistance(p1, p2, drawnDist) {
+async function promptCalibrationDistance(p1, p2, drawnDist) {
     const lvl = currentLevel();
     if (!lvl.background?.present) {
         toast('warn', 'No image', 'Import a background image before calibrating.');
@@ -2977,11 +2997,14 @@ function promptCalibrationDistance(p1, p2, drawnDist) {
         toast('warn', 'Too short', 'Pick two distinct points.');
         return;
     }
-    const ans = prompt(
-        `You drew a line measuring ${drawnDist.toFixed(2)} m at the current scale.\n\n` +
-        `What is its real-world length (metres)?`,
-        drawnDist.toFixed(2),
-    );
+    const ans = await window.zbmPrompt({
+        title: 'Calibrate scale',
+        message: `You drew a line measuring ${drawnDist.toFixed(2)} m at the current scale.`,
+        label: 'What is its real-world length (metres)?',
+        value: drawnDist.toFixed(2),
+        type: 'number',
+        confirmText: 'Calibrate'
+    });
     if (ans == null) return;
     const realM = parseFloat(ans);
     if (!Number.isFinite(realM) || realM <= 0) {

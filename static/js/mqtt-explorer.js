@@ -164,7 +164,12 @@ async function stopMonitoring() {
  * Clear all messages
  */
 async function clearMessages() {
-    if (!confirm('Clear all MQTT messages?')) return;
+    if (!await window.zbmConfirm({
+        title: 'Clear messages',
+        message: 'Clear all MQTT messages?',
+        confirmText: 'Clear',
+        variant: 'danger'
+    })) return;
 
     try {
         const response = await fetch('/api/mqtt_explorer/clear', { method: 'POST' });

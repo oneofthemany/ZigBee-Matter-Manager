@@ -1391,7 +1391,7 @@ window.setThermostatTemp = async function(ieee) {
     }
     const temp = parseFloat(input.value);
     if (isNaN(temp) || temp < 5 || temp > 35) {
-        alert('Invalid temperature. Must be between 5°C and 35°C');
+        window.toast.warning('Invalid temperature. Must be between 5°C and 35°C');
         return;
     }
     try {
@@ -1402,7 +1402,7 @@ window.setThermostatTemp = async function(ieee) {
         console.log(`✓ Temperature set to ${temp}°C`);
     } catch (error) {
         console.error('Failed to set temperature:', error);
-        alert('Failed to set temperature: ' + error.message);
+        window.toast.error('Failed to set temperature: ' + error.message);
     }
 };
 
@@ -1412,7 +1412,7 @@ window.setHvacMode = async function(ieee, mode) {
         console.log(`✓ HVAC mode set to ${mode}`);
     } catch (error) {
         console.error('Failed to set HVAC mode:', error);
-        alert('Failed to set HVAC mode: ' + error.message);
+        window.toast.error('Failed to set HVAC mode: ' + error.message);
     }
 };
 
@@ -1450,19 +1450,24 @@ window.aqaraSetFeature = async function(ieee, feature, enabled) {
             });
             const data = await res.json();
             if (!data.success) {
-                alert('Failed to update ' + feature + ': ' + (data.error || 'unknown'));
+                window.toast.error('Failed to update ' + feature + ': ' + (data.error || 'unknown'));
             }
         } else {
             await window.sendCommand(ieee, feature, enabled ? 1 : 0);
         }
     } catch (e) {
         console.error('aqaraSetFeature failed:', e);
-        alert('Update failed: ' + (e.message || e));
+        window.toast.error('Update failed: ' + (e.message || e));
     }
 };
 
 window.aqaraCalibrate = async function(ieee) {
-    if (!confirm('Start motor calibration?\n\nThe valve will sweep through its full range — this takes roughly 2 minutes and the TRV may be noisy during that time.')) return;
+    if (!await window.zbmConfirm({
+        title: 'Motor calibration',
+        message: 'Start motor calibration?',
+        detail: 'The valve will sweep through its full range — this takes roughly 2 minutes and the TRV may be noisy during that time.',
+        confirmText: 'Calibrate'
+    })) return;
     const managed = isHeatingManaged(ieee);
     try {
         if (managed) {
@@ -1472,13 +1477,13 @@ window.aqaraCalibrate = async function(ieee) {
                 body: JSON.stringify({ ieee })
             });
             const data = await res.json();
-            if (!data.success) alert('Calibration failed: ' + (data.error || 'unknown'));
+            if (!data.success) window.toast.error('Calibration failed: ' + (data.error || 'unknown'));
         } else {
             await window.sendCommand(ieee, 'motor_calibration', 1);
         }
     } catch (e) {
         console.error('aqaraCalibrate failed:', e);
-        alert('Calibration failed: ' + (e.message || e));
+        window.toast.error('Calibration failed: ' + (e.message || e));
     }
 };
 
@@ -1488,7 +1493,7 @@ window.aqaraSetSensorType = async function(ieee, type) {
         await window.sendCommand(ieee, 'sensor_type', val);
     } catch (e) {
         console.error('aqaraSetSensorType failed:', e);
-        alert('Sensor-type change failed: ' + (e.message || e));
+        window.toast.error('Sensor-type change failed: ' + (e.message || e));
     }
 };
 
@@ -1528,7 +1533,7 @@ window.aqaraPushExternalTemp = async function(ieee) {
             if (!isNaN(f) && f !== 0 && f > -40 && f < 80) { val = f; break; }
         }
         if (val == null) {
-            alert('Selected source has no current temperature reading. Try again in a moment.');
+            window.toast.warning('Selected source has no current temperature reading. Try again in a moment.');
             return;
         }
         input.value = val.toFixed(1);
@@ -1536,7 +1541,7 @@ window.aqaraPushExternalTemp = async function(ieee) {
         val = parseFloat(input.value);
     }
     if (isNaN(val) || val < -40 || val > 80) {
-        alert('Enter a valid temperature between -40 and 80 °C');
+        window.toast.warning('Enter a valid temperature between -40 and 80 °C');
         return;
     }
 
@@ -1549,6 +1554,6 @@ window.aqaraPushExternalTemp = async function(ieee) {
         await window.sendCommand(ieee, 'external_temp', val);
     } catch (e) {
         console.error('aqaraPushExternalTemp failed:', e);
-        alert('Push external temp failed: ' + (e.message || e));
+        window.toast.error('Push external temp failed: ' + (e.message || e));
     }
 };

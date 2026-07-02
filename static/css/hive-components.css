@@ -1,0 +1,425 @@
+/* ============================================================
+   ZigBee Matter Manager — Hive Component Layer
+   ============================================================
+   Re-skins Bootstrap components through their own CSS variables
+   (--bs-btn-*, --bs-card-*, …) — no !important wars.
+   Loads after hive-tokens.css.
+   ============================================================ */
+
+
+/* ----------------------------------------------------------
+   PAGE LAYOUT (ported from the retired styles.css — the old
+   flex/100vh body hack is intentionally gone; the header is
+   now full-bleed sticky, so page gutters live on the container)
+   ---------------------------------------------------------- */
+body {
+    min-height: 100vh;
+    background-color: var(--bg-body);
+    color: var(--text-primary);
+}
+
+body > .container-fluid {
+    padding: 0 20px 20px;
+}
+
+/* Global keyboard focus — same treatment as the manager */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+
+/* ----------------------------------------------------------
+   TYPOGRAPHY UTILITIES
+   ---------------------------------------------------------- */
+/* Mono uppercase micro-label — the hive's signature label style */
+.micro {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+
+/* ----------------------------------------------------------
+   BUTTON HIERARCHY
+   Quiet outline is the default voice; honey is the one loud
+   primary per view; red is destructive only.
+   ---------------------------------------------------------- */
+
+/* Bare .btn (no variant) — quiet */
+.btn {
+    --bs-btn-color: var(--text-primary);
+    --bs-btn-hover-color: var(--accent);
+    --bs-btn-active-color: var(--accent-strong);
+}
+
+/* Primary — honey fill, dark ink */
+.btn-primary {
+    --bs-btn-bg: var(--honey);
+    --bs-btn-border-color: var(--honey);
+    --bs-btn-color: var(--honey-ink);
+    --bs-btn-hover-bg: var(--honey-soft);
+    --bs-btn-hover-border-color: var(--honey-soft);
+    --bs-btn-hover-color: var(--honey-ink);
+    --bs-btn-active-bg: var(--honey-deep);
+    --bs-btn-active-border-color: var(--honey-deep);
+    --bs-btn-active-color: var(--honey-ink);
+    --bs-btn-disabled-bg: var(--honey);
+    --bs-btn-disabled-border-color: var(--honey);
+    --bs-btn-disabled-color: var(--honey-ink);
+    --bs-btn-focus-shadow-rgb: 242, 169, 59;
+}
+
+/* Success — retired as a "go green" fill; now the quiet default.
+   (Kept as a class so the ~24 existing call sites need no JS edits.) */
+.btn-success,
+.btn-secondary,
+.btn-outline-secondary,
+.btn-outline-primary,
+.btn-outline-light,
+.btn-outline-info,
+.btn-outline-dark {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-color: var(--text-primary);
+    --bs-btn-hover-bg: transparent;
+    --bs-btn-hover-border-color: var(--accent);
+    --bs-btn-hover-color: var(--accent);
+    --bs-btn-active-bg: var(--honey);
+    --bs-btn-active-border-color: var(--honey);
+    --bs-btn-active-color: var(--honey-ink);
+    --bs-btn-disabled-bg: transparent;
+    --bs-btn-disabled-border-color: var(--border-color);
+    --bs-btn-disabled-color: var(--text-muted);
+    --bs-btn-focus-shadow-rgb: 242, 169, 59;
+}
+
+/* Quiet with a success-tinted voice (used for "online/confirm" affordances) */
+.btn-outline-success {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-color: var(--status-ok);
+    --bs-btn-hover-bg: var(--success-subtle);
+    --bs-btn-hover-border-color: var(--status-ok);
+    --bs-btn-hover-color: var(--status-ok);
+    --bs-btn-active-bg: var(--status-ok);
+    --bs-btn-active-border-color: var(--status-ok);
+    --bs-btn-active-color: #06281c;
+    --bs-btn-focus-shadow-rgb: 52, 211, 153;
+}
+
+/* Warning — honey-voiced quiet */
+.btn-warning,
+.btn-outline-warning {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-color: var(--status-warn);
+    --bs-btn-hover-bg: var(--warning-subtle);
+    --bs-btn-hover-border-color: var(--accent);
+    --bs-btn-hover-color: var(--accent);
+    --bs-btn-active-bg: var(--honey);
+    --bs-btn-active-border-color: var(--honey);
+    --bs-btn-active-color: var(--honey-ink);
+    --bs-btn-focus-shadow-rgb: 242, 169, 59;
+}
+
+/* Info — quiet with muted-blue voice */
+.btn-info {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-color: var(--text-secondary);
+    --bs-btn-hover-bg: var(--info-subtle);
+    --bs-btn-hover-border-color: var(--text-secondary);
+    --bs-btn-hover-color: var(--text-primary);
+    --bs-btn-active-bg: var(--bg-surface-raised);
+    --bs-btn-active-border-color: var(--text-secondary);
+    --bs-btn-active-color: var(--text-primary);
+    --bs-btn-focus-shadow-rgb: 126, 151, 168;
+}
+
+/* Danger — destructive only. Filled, dark ink like the honey primary. */
+.btn-danger {
+    --bs-btn-bg: var(--status-bad);
+    --bs-btn-border-color: var(--status-bad);
+    --bs-btn-color: #fff;
+    --bs-btn-hover-bg: var(--bad);
+    --bs-btn-hover-border-color: var(--bad);
+    --bs-btn-hover-color: #2b060d;
+    --bs-btn-active-bg: var(--bad);
+    --bs-btn-active-border-color: var(--bad);
+    --bs-btn-active-color: #2b060d;
+    --bs-btn-disabled-bg: var(--status-bad);
+    --bs-btn-disabled-border-color: var(--status-bad);
+    --bs-btn-disabled-color: #fff;
+    --bs-btn-focus-shadow-rgb: 244, 83, 110;
+}
+
+.btn-outline-danger {
+    --bs-btn-bg: transparent;
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-color: var(--status-bad);
+    --bs-btn-hover-bg: var(--danger-subtle);
+    --bs-btn-hover-border-color: var(--status-bad);
+    --bs-btn-hover-color: var(--status-bad);
+    --bs-btn-active-bg: var(--status-bad);
+    --bs-btn-active-border-color: var(--status-bad);
+    --bs-btn-active-color: #fff;
+    --bs-btn-focus-shadow-rgb: 244, 83, 110;
+}
+
+/* Pairing button — the one deliberately loud control in the navbar.
+   actions.js toggles btn-success (idle) ↔ btn-danger (armed/stop). */
+#pairBtn.btn-success,
+#pairBtn + .btn-success.dropdown-toggle {
+    --bs-btn-bg: var(--honey);
+    --bs-btn-border-color: var(--honey);
+    --bs-btn-color: var(--honey-ink);
+    --bs-btn-hover-bg: var(--honey-soft);
+    --bs-btn-hover-border-color: var(--honey-soft);
+    --bs-btn-hover-color: var(--honey-ink);
+    --bs-btn-active-bg: var(--honey-deep);
+    --bs-btn-active-border-color: var(--honey-deep);
+    --bs-btn-active-color: var(--honey-ink);
+}
+
+
+/* ----------------------------------------------------------
+   CARDS — hive surfaces
+   ---------------------------------------------------------- */
+.card {
+    --bs-card-bg: var(--bg-surface);
+    --bs-card-border-color: var(--border-color);
+    --bs-card-border-radius: 12px;
+    --bs-card-inner-border-radius: 11px;
+    --bs-card-cap-bg: var(--bg-card-header);
+    --bs-card-cap-color: var(--text-primary);
+    --bs-card-color: var(--text-primary);
+}
+
+
+/* ----------------------------------------------------------
+   HIVE HEADER — sticky, blurred, bee-ringed logo
+   ---------------------------------------------------------- */
+.hive-header {
+    position: sticky;
+    top: 0;
+    z-index: 1030;
+    background-color: var(--bg-nav) !important;   /* beats Bootstrap .bg-dark */
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border-color);
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+}
+
+[data-theme="dark"] .hive-header {
+    background-color: rgba(11, 22, 32, 0.92) !important;
+}
+
+.brand-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--honey-deep);
+    margin-right: 0.7rem;
+}
+
+.brand-text {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: 0.02em;
+    line-height: 1.2;
+}
+
+.brand-sub {
+    display: block;
+    font-weight: 400;
+    font-size: 0.6rem;
+    color: var(--muted);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+/* Status pills — the manager's .pill treatment, applied to the
+   badge classes the JS already toggles (no JS changes needed) */
+.navbar .badge.rounded-pill {
+    background-color: transparent !important;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.32rem 0.7rem;
+}
+
+.navbar .badge.rounded-pill.bg-success {
+    color: var(--ok);
+    border-color: rgba(52, 211, 153, 0.4);
+}
+
+.navbar .badge.rounded-pill.bg-danger {
+    color: var(--bad);
+    border-color: rgba(244, 83, 110, 0.4);
+}
+
+.navbar .badge.rounded-pill.bg-warning {
+    color: var(--warn);
+    border-color: rgba(242, 169, 59, 0.4);
+}
+
+.navbar .badge.rounded-pill.bg-info {
+    color: var(--wax);
+    border-color: var(--line);
+}
+
+.navbar .navbar-text {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+
+/* ----------------------------------------------------------
+   TAB RAIL — quiet mono-uppercase tabs, honey underline
+   ---------------------------------------------------------- */
+.nav-tabs {
+    border-bottom: 1px solid var(--border-color);
+    gap: 0.15rem;
+}
+
+.nav-tabs .nav-link {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.55rem 0.7rem;
+    margin-bottom: -1px;
+}
+
+.nav-tabs .nav-link:hover {
+    color: var(--text-primary);
+    border-color: transparent;
+    border-bottom-color: var(--border-color);
+    isolation: auto;
+}
+
+.nav-tabs .nav-link.active {
+    color: var(--accent);
+    background-color: transparent;
+    border-color: transparent;
+    border-bottom-color: var(--accent);
+}
+
+
+/* ----------------------------------------------------------
+   CARD HEADERS — hex-prefixed mono micro-labels (manager motif)
+   ---------------------------------------------------------- */
+.card-header .fw-bold {
+    font-family: var(--mono);
+    font-weight: 400 !important;   /* .fw-bold sets 700 !important */
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.card-header .fw-bold::before {
+    content: "\2B21  ";            /* ⬡ */
+    font-size: 0.9em;
+}
+
+
+/* ----------------------------------------------------------
+   MODALS, DROPDOWNS & FORMS
+   ---------------------------------------------------------- */
+.modal {
+    --bs-modal-border-radius: 12px;
+    --bs-modal-bg: var(--bg-surface);
+    --bs-modal-header-border-color: var(--border-color);
+    --bs-modal-footer-border-color: var(--border-color);
+}
+
+.dropdown-menu {
+    --bs-dropdown-border-radius: 10px;
+    --bs-dropdown-bg: var(--bg-surface-raised);
+    --bs-dropdown-color: var(--text-primary);
+    --bs-dropdown-link-color: var(--text-primary);
+    --bs-dropdown-link-hover-bg: var(--bg-surface-sunken);
+    --bs-dropdown-link-hover-color: var(--accent);
+    --bs-dropdown-border-color: var(--border-color);
+    --bs-dropdown-header-color: var(--text-muted);
+}
+
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 0.2rem rgba(242, 169, 59, 0.15);
+}
+
+.form-check-input:checked {
+    background-color: var(--honey);
+    border-color: var(--honey);
+}
+
+
+/* ----------------------------------------------------------
+   DEBUG-LOG TERMINAL BASE (was in styles.css as #logs)
+   ---------------------------------------------------------- */
+#logs {
+    background: var(--bg-code);
+    color: #bfd2dc;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    overflow-y: auto;
+}
+
+
+/* ----------------------------------------------------------
+   SKELETON SHIMMER (initial-load placeholders)
+   Usage: <span class="skel" style="width:8ch"></span>
+   Reduced-motion users get a static block (no sweep).
+   ---------------------------------------------------------- */
+.skel {
+    display: inline-block;
+    position: relative;
+    overflow: hidden;
+    vertical-align: middle;
+    min-height: 0.9em;
+    border-radius: 6px;
+    background: var(--bg-surface-sunken);
+}
+
+.skel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg,
+        transparent,
+        rgba(242, 169, 59, 0.10),
+        transparent);
+    transform: translateX(-100%);
+    animation: skel-shimmer 1.4s ease-in-out infinite;
+}
+
+.skel-block {
+    display: block;
+    width: 100%;
+}
+
+@keyframes skel-shimmer {
+    to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .skel::after { animation: none; }
+}

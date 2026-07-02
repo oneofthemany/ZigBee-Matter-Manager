@@ -92,7 +92,13 @@ window.otaCheckUpdate = async function(ieee) {
 };
 
 window.otaStartUpdate = async function(ieee, force = false) {
-    if (!confirm(`Start firmware update for ${ieee}?${force ? '\n\nFORCE mode — this may downgrade!' : ''}`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Start firmware update',
+        message: `Start firmware update for ${ieee}?`,
+        detail: force ? 'FORCE mode — this may downgrade!' : undefined,
+        confirmText: 'Update',
+        variant: force ? 'danger' : undefined
+    })) return;
 
     try {
         const resp = await fetch(`/api/ota/update/${ieee}`, {
@@ -104,10 +110,10 @@ window.otaStartUpdate = async function(ieee, force = false) {
         if (data.success) {
             _showProgress(true, 'Starting...', 0);
         } else {
-            alert('Update failed: ' + (data.error || 'Unknown error'));
+            window.toast.error('Update failed: ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 
@@ -122,7 +128,7 @@ window.otaNotifyDevice = async function(ieee) {
             </div>`;
         }
     } catch (e) {
-        alert('Notify failed: ' + e.message);
+        window.toast.error('Notify failed: ' + e.message);
     }
 };
 

@@ -94,7 +94,11 @@ function renderTabsList() {
 }
 
 export async function createNewTab() {
-    const name = prompt('Enter tab name:');
+    const name = await window.zbmPrompt({
+        title: 'New tab',
+        label: 'Enter tab name:',
+        confirmText: 'Create'
+    });
     if (!name) return;
 
     const res = await fetch('/api/tabs', {
@@ -108,7 +112,12 @@ export async function createNewTab() {
 }
 
 export async function deleteTab(tab) {
-    if (!confirm(`Delete tab "${tab}"?`)) return;
+    if (!await window.zbmConfirm({
+        title: 'Delete tab',
+        message: `Delete tab "${tab}"?`,
+        confirmText: 'Delete',
+        variant: 'danger'
+    })) return;
 
     await fetch(`/api/tabs/${tab}`, {method: 'DELETE'});
     await loadTabs();

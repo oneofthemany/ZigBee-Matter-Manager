@@ -13,9 +13,11 @@
     z-index: 2;
     background: var(--bg-surface-raised, #f8f9fa);
     color: var(--text-secondary, #495057);
-    font-weight: 600;
-    font-size: 0.8rem;
-    text-transform: none;
+    font-family: var(--mono, ui-monospace, monospace);
+    font-weight: 400;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
     white-space: nowrap;
     border-bottom: 2px solid var(--border-color, #dee2e6);
 }
@@ -53,12 +55,12 @@
 .tbl-sortable thead th.tbl-sort-asc::after {
     content: "\f0de";                /* fa-sort-up */
     opacity: 0.9;
-    color: var(--bs-primary, #0d6efd);
+    color: var(--accent, #b97a17);
 }
 .tbl-sortable thead th.tbl-sort-desc::after {
     content: "\f0dd";                /* fa-sort-down */
     opacity: 0.9;
-    color: var(--bs-primary, #0d6efd);
+    color: var(--accent, #b97a17);
 }
 
 /* --- Filter input -------------------------------------------------------- */

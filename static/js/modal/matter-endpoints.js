@@ -423,7 +423,7 @@ window._matterApplyJson = function () {
         const editor = document.getElementById('matterDefEditor');
         if (editor) _renderDefEditor(editor, defn, !!_existingDef);
     } catch (e) {
-        alert('Invalid JSON: ' + e.message);
+        window.toast.error('Invalid JSON: ' + e.message);
     }
 };
 
@@ -490,7 +490,7 @@ window._matterSaveDef = async function () {
     const defn = _collectDefFromForm();
 
     if (!defn.vendor_id || !defn.product_id) {
-        alert('Vendor ID and Product ID are required.');
+        window.toast.warning('Vendor ID and Product ID are required.');
         return;
     }
 
@@ -504,15 +504,15 @@ window._matterSaveDef = async function () {
 
         if (data.success) {
             _existingDef = defn;
-            alert(`Definition saved: ${data.filename}\n\nRestart the container or reload definitions for the parser to pick it up.`);
+            window.toast.success(`Definition saved: ${data.filename}\n\nRestart the container or reload definitions for the parser to pick it up.`);
 
             // Reload definitions on server
             await fetch('/api/matter/definitions/reload', { method: 'POST' });
         } else {
-            alert('Save failed: ' + (data.detail || data.error || 'Unknown error'));
+            window.toast.error('Save failed: ' + (data.detail || data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        window.toast.error('Error: ' + e.message);
     }
 };
 

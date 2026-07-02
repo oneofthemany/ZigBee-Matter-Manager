@@ -222,7 +222,7 @@ export function initWS() {
 
                 case 'test_recovery':
                     if (msg.payload && msg.payload.status === 'auto_rollback') {
-                        alert('Test deployment timed out — changes have been rolled back.');
+                        window.toast.warning('Test deployment timed out — changes have been rolled back.');
                         hideTestRecoveryBanner();
                         window.location.reload();
                     }

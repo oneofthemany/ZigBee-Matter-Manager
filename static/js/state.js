@@ -13,7 +13,6 @@ export const state = {
     verboseLogging: false,
     isRestarting: false,
     pairingInterval: null,
-    tableSortInitialised: false,
     deviceFilter: null,
     controlInteractionActive: false,  // Prevents modal refresh during slider/picker interaction
     heatingManaged: { enabled: false, ieees: new Set() }  // IEEEs managed by heating controller

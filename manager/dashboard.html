@@ -161,6 +161,25 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
   transition:opacity .25s;pointer-events:none;max-width:80vw}
 .toast.show{opacity:1}
 .toast.ok{border-color:var(--ok)} .toast.err{border-color:var(--bad)}
+@media (prefers-reduced-motion:reduce){.toast{transition:none}}
+
+/* ── native dialogs (token entry / confirm) ─────────────────────────────── */
+dialog{background:var(--comb);color:var(--wax);border:1px solid var(--line);
+  border-radius:12px;padding:1rem 1.1rem;max-width:26rem;width:calc(100vw - 2rem)}
+dialog::backdrop{background:rgba(7,16,25,.72)}
+dialog h3{margin:0 0 .6rem;font-family:var(--mono);font-weight:400;
+  font-size:.68rem;letter-spacing:.16em;text-transform:uppercase;color:var(--honey)}
+dialog h3::before{content:"\2b21  "}
+dialog p{margin:.2rem 0 .6rem;font-size:.85rem;white-space:pre-line}
+dialog .drow{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.8rem}
+dialog .remember{display:flex;align-items:center;gap:.4rem;margin-top:.5rem;
+  font-size:.76rem;color:var(--muted)}
+dialog .remember input{accent-color:var(--honey)}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.danger:hover{background:#f76f85;color:#fff}
+#fresh{font-family:var(--mono);color:var(--muted);font-size:.68rem}
+#recCount{font-family:var(--mono);color:var(--muted);font-size:.66rem;
+  text-align:right;margin-top:.2rem}
 </style>
 </head>
 <body>
@@ -174,6 +193,7 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
   <div class="brand">ZMM Manager<small>keeper of the hive &middot; zigbee / matter / thread</small></div>
   <div class="spacer"></div>
   <span id="appver"></span>
+  <span id="fresh"></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting&hellip;</span>
 </header>
 
@@ -200,7 +220,9 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
       <label>Target file (project-relative)</label>
       <input id="recTarget" type="text" class="wide" placeholder="modules/foo.py">
       <label>Contents</label>
-      <textarea id="recContent" placeholder="# paste replacement contents, load the current file, or view a backup"></textarea>
+      <textarea id="recContent" spellcheck="false"
+                placeholder="# paste replacement contents, load the current file, or view a backup"></textarea>
+      <div id="recCount"></div>
       <div class="rowline" style="border:0">
         <button class="btn" onclick="loadCurrent()">Load current</button>
         <button class="btn primary" onclick="uploadFix()">Write file to app</button>
@@ -250,7 +272,34 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
 </section>
 
 </main>
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- ── native dialogs: keep zero external deps (disaster-recovery UI) ────── -->
+<dialog id="dlgToken">
+  <form method="dialog">
+    <h3>Manager action token</h3>
+    <p class="muted" style="font-size:.76rem">host: <code>data/state/manager_token</code>, or app Settings &rarr; Upgrade</p>
+    <input id="tokInput" type="password" class="wide" autocomplete="off" placeholder="token">
+    <label class="remember" style="display:flex;text-transform:none;letter-spacing:0;font-size:.76rem">
+      <input id="tokRemember" type="checkbox"> remember on this device
+    </label>
+    <div class="drow">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="tokOk">Use token</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgConfirm">
+  <form method="dialog">
+    <h3 id="cfTitle">Confirm</h3>
+    <p id="cfMsg"></p>
+    <div class="drow">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="cfOk">Confirm</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 const $=id=>document.getElementById(id);
