@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=2
+WATCHER_SCHEMA_VERSION=3
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
@@ -107,6 +107,14 @@ ok "Prerequisites OK"
 # cloned repo under $APP_DIR/scripts, or from anywhere.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+install_file() {
+    local src="$1" dest="$2"
+    if [[ ! -e "$dest" ]] || [[ "$(realpath "$src")" != "$(realpath "$dest")" ]]; then
+        cp "$src" "$dest"
+    fi
+    chmod +x "$dest"
+}
+
 find_script() {
     local name="$1"
     for candidate in \
@@ -142,8 +150,7 @@ find_build_sh() {
 # after a podman cp from the new image.
 for script in upgrade.sh run_container.sh install_watcher.sh; do
     if src=$(find_script "$script"); then
-        cp "$src" "${SCRIPTS_DIR}/${script}"
-        chmod +x "${SCRIPTS_DIR}/${script}"
+        install_file "$src" "${SCRIPTS_DIR}/${script}"
         ok "Installed ${script} -> ${SCRIPTS_DIR}/${script}"
     else
         err "Could not locate ${script} — clone the repo first:"
@@ -158,9 +165,8 @@ done
 # ADDITION: Also copy it to SCRIPTS_DIR to act as a fallback during OTA updates.
 if build_src=$(find_build_sh); then
     mkdir -p "$APP_DIR"
-    cp "$build_src" "${APP_DIR}/build.sh"
-    cp "$build_src" "${SCRIPTS_DIR}/build.sh"
-    chmod +x "${APP_DIR}/build.sh" "${SCRIPTS_DIR}/build.sh"
+    install_file "$build_src" "${APP_DIR}/build.sh"
+    install_file "$build_src" "${SCRIPTS_DIR}/build.sh"
     ok "Installed build.sh -> ${APP_DIR}/build.sh and ${SCRIPTS_DIR}/build.sh"
 else
     warn "build.sh not found — run_container.sh sources it at runtime, upgrades may fail."

@@ -891,7 +891,6 @@ run_manager_container() {
 
     info "Starting manager sidecar '${MANAGER_CONTAINER_NAME}' on :${MANAGER_PORT} (off-pod, own bridge)..."
     local margs=(
-        --detach
         --name "$MANAGER_CONTAINER_NAME"
         --security-opt label=disable
         --no-healthcheck
@@ -910,9 +909,21 @@ run_manager_container() {
     else
         warn "Manager: no runtime socket found — container list will be unavailable"
     fi
-    "$RUNTIME" run "${margs[@]}" "$app_image" python -m manager
-    ok "Manager sidecar started off-pod (matches app scheme on :${MANAGER_PORT})."
-    install_manager_autostart
+
+    if command -v systemctl >/dev/null 2>&1; then
+        "$RUNTIME" create "${margs[@]}" "$app_image" python -m manager
+        install_manager_autostart
+        if sudo systemctl restart "${MANAGER_CONTAINER_NAME}.service"; then
+            ok "Manager sidecar running under ${MANAGER_CONTAINER_NAME}.service (off-pod, Restart=always)."
+        else
+            warn "systemctl start failed — starting manager container directly"
+            "$RUNTIME" start "$MANAGER_CONTAINER_NAME"
+        fi
+    else
+        "$RUNTIME" run --detach "${margs[@]}" "$app_image" python -m manager
+        ok "Manager sidecar started off-pod (matches app scheme on :${MANAGER_PORT})."
+        install_manager_autostart
+    fi
 }
 
 # Tiny systemd unit so the off-pod manager comes back on reboot (the pod unit
