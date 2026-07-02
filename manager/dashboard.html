@@ -6,132 +6,161 @@
 <title>ZMM Manager</title>
 <link rel="icon" type="image/png" href="/logo">
 <style>
+/* ── tokens: palette lifted from the app's bee-on-mesh logo ─────────────── */
 :root{
-  --bg:#0a0f1a; --bg2:#0d1424; --card:#101725; --card2:#16203a; --line:#1e293b;
-  --fg:#e6edf7; --muted:#8b9bb4; --accent:#6366f1; --accent2:#818cf8;
-  --ok:#10b981; --bad:#f43f5e; --warn:#f59e0b; --info:#38bdf8;
+  --night:#0b1620; --comb:#101e2b; --comb2:#16283a; --line:#1e3346;
+  --wax:#eaf2f4; --muted:#7e97a8;
+  --honey:#f2a93b; --honey-deep:#c97f1e;
+  --ok:#34d399; --bad:#f4536e; --warn:#f2a93b;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --radius:14px; --shadow:0 4px 24px rgba(0,0,0,.35);
+  --hexclip:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);
 }
 *{box-sizing:border-box}
-body{margin:0;background:
-  radial-gradient(1200px 500px at 80% -10%,rgba(99,102,241,.14),transparent 60%),
-  radial-gradient(900px 400px at -10% 110%,rgba(56,189,248,.08),transparent 60%),
-  var(--bg);
-  color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+body{margin:0;background:var(--night);color:var(--wax);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   min-height:100vh}
-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:.8rem;
-  padding:.8rem 1.2rem;background:rgba(10,15,26,.85);backdrop-filter:blur(8px);
-  border-bottom:1px solid var(--line)}
-.logo{position:relative;width:34px;height:34px;flex:none}
-.logo img{width:34px;height:34px;border-radius:50%;display:block;
-  box-shadow:0 0 16px rgba(245,158,11,.35);border:1px solid rgba(245,158,11,.45)}
-.logo .fallback{width:34px;height:34px;border-radius:9px;display:grid;
-  place-items:center;background:linear-gradient(135deg,var(--accent),#8b5cf6);
-  font-size:16px;box-shadow:0 0 18px rgba(99,102,241,.45)}
+:focus-visible{outline:2px solid var(--honey);outline-offset:2px}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;
+  gap:.8rem;padding:.7rem 1.2rem;background:rgba(11,22,32,.92);
+  backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.logo{position:relative;width:36px;height:36px;flex:none}
+.logo img{width:36px;height:36px;border-radius:50%;display:block;
+  border:1px solid var(--honey-deep)}
+.logo .fallback{width:36px;height:36px;border-radius:50%;display:grid;
+  place-items:center;background:var(--comb2);border:1px solid var(--honey-deep);
+  font-size:16px}
 .logo .cog{position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;
   border-radius:50%;display:grid;place-items:center;font-size:10px;
-  background:linear-gradient(135deg,var(--accent),#8b5cf6);
-  border:2px solid var(--bg);box-shadow:0 0 10px rgba(99,102,241,.6)}
-.brand{font-weight:700;font-size:1.02rem;letter-spacing:.2px}
-.brand small{display:block;font-weight:500;font-size:.68rem;color:var(--muted);
-  letter-spacing:.12em;text-transform:uppercase}
+  background:var(--honey);border:2px solid var(--night)}
+.brand{font-family:var(--mono);font-weight:700;font-size:1rem;letter-spacing:.02em}
+.brand small{display:block;font-weight:400;font-size:.64rem;color:var(--muted);
+  letter-spacing:.14em;text-transform:uppercase}
 .spacer{flex:1}
-.pill{display:inline-flex;align-items:center;gap:.4rem;padding:.22rem .7rem;
-  border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid var(--line);
-  background:var(--card);color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:.4rem;padding:.2rem .7rem;
+  border-radius:999px;font-family:var(--mono);font-size:.72rem;font-weight:600;
+  border:1px solid var(--line);color:var(--muted)}
 .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
-.pill.ok{color:#a7f3d0;border-color:rgba(16,185,129,.4)} .pill.ok .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
-.pill.bad{color:#fecdd3;border-color:rgba(244,63,94,.4)} .pill.bad .dot{background:var(--bad);box-shadow:0 0 8px var(--bad)}
-main{max-width:1080px;margin:0 auto;padding:1.1rem 1.2rem 3rem}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-  gap:.8rem;margin:.2rem 0 1rem}
-.tile{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
-  padding:.85rem 1rem;box-shadow:var(--shadow)}
-.tile .lbl{font-size:.68rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--muted);margin-bottom:.35rem}
-.tile .val{font-size:1.05rem;font-weight:700;display:flex;align-items:center;gap:.5rem}
-.tile .sub{font-size:.75rem;color:var(--muted);margin-top:.15rem;min-height:1.1em}
-.sdot{width:9px;height:9px;border-radius:50%;flex:none}
-.s-ok{background:var(--ok);box-shadow:0 0 9px var(--ok)}
-.s-bad{background:var(--bad);box-shadow:0 0 9px var(--bad)}
-.s-warn{background:var(--warn);box-shadow:0 0 9px var(--warn)}
-.s-mut{background:var(--muted)}
+.pill.ok{color:var(--ok);border-color:rgba(52,211,153,.4)} .pill.ok .dot{background:var(--ok)}
+.pill.bad{color:var(--bad);border-color:rgba(244,83,110,.4)} .pill.bad .dot{background:var(--bad)}
+main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
+#appver{font-family:var(--mono);color:var(--muted);font-size:.74rem}
+
+/* ── the honeycomb: one hex cell per thing that must be alive ───────────── */
+.comb{display:flex;flex-wrap:wrap;justify-content:center;
+  padding:.6rem 0 1.6rem;margin:0 0 .4rem}
+.cell{position:relative;width:138px;height:118px;flex:none;
+  margin:0 -8px;clip-path:var(--hexclip);background:var(--line)}
+.cell:nth-child(even){transform:translateY(16px)}
+.cell .in{position:absolute;inset:1px;clip-path:var(--hexclip);
+  background:var(--comb);display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:.1rem;text-align:center;padding:0 20px}
+.cell b{font-family:var(--mono);font-weight:400;font-size:.62rem;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.cell .v{font-family:var(--mono);font-weight:700;font-size:.86rem;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell .s{font-size:.62rem;color:var(--muted);max-width:100%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-height:.9em}
+.cell.ok{background:rgba(52,211,153,.6)}
+.cell.ok .in{background:linear-gradient(180deg,rgba(52,211,153,.08),rgba(52,211,153,0) 65%),var(--comb)}
+.cell.ok .v{color:var(--ok)}
+.cell.bad{background:var(--bad);animation:throb 1.5s ease-in-out infinite}
+.cell.bad .in{background:linear-gradient(180deg,rgba(244,83,110,.14),rgba(244,83,110,0) 65%),var(--comb)}
+.cell.bad .v{color:var(--bad)}
+.cell.warn{background:rgba(242,169,59,.65)}
+.cell.warn .in{background:linear-gradient(180deg,rgba(242,169,59,.1),rgba(242,169,59,0) 65%),var(--comb)}
+.cell.warn .v{color:var(--honey)}
+.cell.mut .v{color:var(--muted)}
+@keyframes throb{50%{opacity:.55}}
+.born{animation:settle .45s cubic-bezier(.2,.8,.3,1.2) backwards}
+.cell:nth-child(1){animation-delay:.02s}.cell:nth-child(2){animation-delay:.08s}
+.cell:nth-child(3){animation-delay:.14s}.cell:nth-child(4){animation-delay:.2s}
+.cell:nth-child(5){animation-delay:.26s}.cell:nth-child(6){animation-delay:.32s}
+@keyframes settle{from{opacity:0;scale:.85}}
+@media (prefers-reduced-motion:reduce){
+  .born,.cell.bad,.rec-flag{animation:none!important}}
+
+/* ── cards ──────────────────────────────────────────────────────────────── */
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
 @media (max-width:840px){.grid{grid-template-columns:1fr}}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
-  padding:1rem 1.1rem;margin:0 0 .9rem;box-shadow:var(--shadow)}
-.card h2{margin:0 0 .7rem;font-size:.72rem;font-weight:700;letter-spacing:.14em;
-  text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:.5rem}
-.card h2 .hint{font-weight:500;letter-spacing:0;text-transform:none;opacity:.8}
-.badge{display:inline-block;padding:.13rem .55rem;border-radius:7px;
-  font-size:.72rem;font-weight:700}
-.b-ok{background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.35)}
-.b-bad{background:rgba(244,63,94,.15);color:#fda4af;border:1px solid rgba(244,63,94,.35)}
-.b-warn{background:rgba(245,158,11,.15);color:#fcd34d;border:1px solid rgba(245,158,11,.35)}
-.b-mut{background:rgba(139,155,180,.12);color:var(--muted);border:1px solid var(--line)}
+.card{background:var(--comb);border:1px solid var(--line);border-radius:12px;
+  padding:1rem 1.1rem;margin:0 0 .9rem}
+.card h2{margin:0 0 .7rem;font-family:var(--mono);font-weight:400;
+  font-size:.68rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--honey)}
+.card h2::before{content:"\2b21  "}
+.card h2 .hint{color:var(--muted);letter-spacing:.02em;text-transform:none}
 .muted{color:var(--muted);font-size:.8rem}
-code{background:var(--bg2);border:1px solid var(--line);padding:.06rem .4rem;
-  border-radius:6px;font-family:var(--mono);font-size:.82em}
-button{font:inherit;cursor:pointer;border:0;border-radius:9px;font-weight:600}
-.btn{background:var(--card2);color:var(--fg);border:1px solid var(--line);
-  padding:.38rem .8rem;font-size:.8rem;transition:border-color .15s,background .15s}
-.btn:hover{border-color:var(--accent);background:#182342}
-.btn.primary{background:linear-gradient(135deg,var(--accent),#7c3aed);border:0;color:#fff}
-.btn.primary:hover{filter:brightness(1.12)}
-.btn.danger{background:rgba(244,63,94,.14);border:1px solid rgba(244,63,94,.4);color:#fda4af}
-.btn.danger:hover{background:rgba(244,63,94,.25)}
-.btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn:disabled{opacity:.45;cursor:not-allowed}
+code{background:var(--night);border:1px solid var(--line);padding:.06rem .4rem;
+  border-radius:5px;font-family:var(--mono);font-size:.82em}
 .rowline{display:flex;align-items:center;gap:.55rem;padding:.4rem 0;
   border-bottom:1px solid var(--line);flex-wrap:wrap}
 .rowline:last-child{border-bottom:0}
-input[type=text],input[type=number],textarea{background:var(--bg2);color:var(--fg);
-  border:1px solid var(--line);border-radius:9px;padding:.42rem .6rem;
-  font-family:var(--mono);font-size:.8rem;outline:none}
-input:focus,textarea:focus{border-color:var(--accent)}
+.sdot{width:8px;height:8px;flex:none;clip-path:var(--hexclip)}
+.s-ok{background:var(--ok)} .s-bad{background:var(--bad)}
+.s-warn{background:var(--warn)} .s-mut{background:var(--muted)}
+.badge{display:inline-block;padding:.1rem .5rem;border-radius:5px;
+  font-family:var(--mono);font-size:.7rem;font-weight:700}
+.b-ok{background:rgba(52,211,153,.12);color:var(--ok);border:1px solid rgba(52,211,153,.35)}
+
+/* ── controls ───────────────────────────────────────────────────────────── */
+button{font:inherit;cursor:pointer;border-radius:8px;font-weight:600}
+.btn{background:transparent;color:var(--wax);border:1px solid var(--line);
+  padding:.36rem .8rem;font-size:.78rem;transition:border-color .15s}
+.btn:hover{border-color:var(--honey);color:var(--honey)}
+.btn.primary{background:var(--honey);border:1px solid var(--honey);color:#14100a}
+.btn.primary:hover{background:#f7bb5e;color:#14100a}
+.btn.active{background:var(--honey);border-color:var(--honey);color:#14100a}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input[type=text],input[type=number],textarea{background:var(--night);
+  color:var(--wax);border:1px solid var(--line);border-radius:8px;
+  padding:.4rem .6rem;font-family:var(--mono);font-size:.78rem;outline:none}
+input:focus,textarea:focus{border-color:var(--honey)}
 input[type=number]{width:4.2rem}
 textarea{width:100%;min-height:130px;resize:vertical;white-space:pre}
-.term{display:none;background:#070b14;border:1px solid var(--line);border-radius:10px;
-  padding:.6rem .75rem;margin-top:.6rem;max-height:46vh;overflow:auto;
-  font-family:var(--mono);font-size:.72rem;line-height:1.45;white-space:pre-wrap;
-  word-break:break-all;color:#c9d6ea}
+.wide{width:100%}
+label{display:block;font-family:var(--mono);font-size:.64rem;color:var(--muted);
+  margin:.45rem 0 .2rem;letter-spacing:.1em;text-transform:uppercase}
+
+/* ── log terminal ───────────────────────────────────────────────────────── */
 .chips{display:flex;flex-wrap:wrap;gap:.35rem}
-/* ── Recovery console ── */
-#recovery{border:1px solid rgba(244,63,94,.45);
-  background:linear-gradient(180deg,rgba(244,63,94,.07),transparent 40%),var(--card)}
-#recovery h2{color:#fda4af}
-.rec-flag{display:inline-block;background:var(--bad);color:#fff;padding:.15rem .6rem;
-  border-radius:7px;font-size:.7rem;font-weight:800;letter-spacing:.08em;
-  animation:pulse 1.6s infinite}
-@keyframes pulse{50%{opacity:.55}}
-.suspect{background:rgba(244,63,94,.09);border-left:3px solid var(--bad);
-  border-radius:8px;padding:.6rem .8rem;margin:.6rem 0;font-size:.85rem}
-.suspect .file{font-family:var(--mono);color:#fda4af;font-weight:700}
+.term{display:none;background:#071019;border:1px solid var(--line);
+  border-radius:10px;padding:.6rem .75rem;margin-top:.6rem;max-height:46vh;
+  overflow:auto;font-family:var(--mono);font-size:.72rem;line-height:1.45;
+  white-space:pre-wrap;word-break:break-all;color:#bfd2dc}
+
+/* ── recovery console ───────────────────────────────────────────────────── */
+#recovery{border-color:rgba(244,83,110,.5)}
+#recovery h2{color:var(--bad)}
+.rec-flag{display:inline-block;background:var(--bad);color:#fff;
+  padding:.12rem .55rem;border-radius:5px;font-size:.66rem;font-weight:800;
+  letter-spacing:.1em;animation:throb 1.6s infinite}
+.suspect{background:rgba(244,83,110,.08);border-left:3px solid var(--bad);
+  border-radius:0 8px 8px 0;padding:.6rem .8rem;margin:.6rem 0;font-size:.85rem}
+.suspect .file{font-family:var(--mono);color:var(--bad);font-weight:700}
 details.trace{margin:.5rem 0}
 details.trace summary{cursor:pointer;color:var(--muted);font-size:.78rem}
-details.trace pre{background:#070b14;border:1px solid var(--line);border-radius:10px;
-  padding:.6rem .8rem;font-family:var(--mono);font-size:.7rem;overflow:auto;
-  max-height:280px;white-space:pre;color:#c9d6ea}
-table.bk{width:100%;border-collapse:collapse;font-size:.76rem}
-table.bk th{color:var(--muted);text-align:left;font-weight:600;font-size:.66rem;
-  text-transform:uppercase;letter-spacing:.08em;padding:.3rem .45rem;
-  border-bottom:1px solid var(--line)}
+details.trace pre{background:#071019;border:1px solid var(--line);
+  border-radius:10px;padding:.6rem .8rem;font-family:var(--mono);font-size:.7rem;
+  overflow:auto;max-height:280px;white-space:pre;color:#bfd2dc}
+table.bk{width:100%;border-collapse:collapse;font-size:.74rem}
+table.bk th{color:var(--muted);text-align:left;font-family:var(--mono);
+  font-weight:400;font-size:.62rem;text-transform:uppercase;
+  letter-spacing:.1em;padding:.3rem .45rem;border-bottom:1px solid var(--line)}
 table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
   font-family:var(--mono);word-break:break-all}
-table.bk tr:hover td{background:rgba(255,255,255,.025)}
 .scroll{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:10px}
 .formgrid{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-top:.6rem}
 @media (max-width:840px){.formgrid{grid-template-columns:1fr}}
-label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
-  letter-spacing:.05em;text-transform:uppercase}
-.wide{width:100%}
+
+/* ── toast ──────────────────────────────────────────────────────────────── */
 .toast{position:fixed;bottom:1.2rem;left:50%;transform:translateX(-50%);
-  background:var(--card2);border:1px solid var(--line);border-radius:10px;
-  padding:.55rem 1rem;font-size:.82rem;box-shadow:var(--shadow);z-index:50;
-  opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw}
+  background:var(--comb2);border:1px solid var(--line);border-radius:10px;
+  padding:.55rem 1rem;font-size:.82rem;z-index:50;opacity:0;
+  transition:opacity .25s;pointer-events:none;max-width:80vw}
 .toast.show{opacity:1}
-.toast.ok{border-color:rgba(16,185,129,.5)} .toast.err{border-color:rgba(244,63,94,.5)}
+.toast.ok{border-color:var(--ok)} .toast.err{border-color:var(--bad)}
 </style>
 </head>
 <body>
@@ -139,12 +168,12 @@ label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
 <header>
   <div class="logo">
     <img src="/logo" alt="ZMM"
-         onerror="this.outerHTML='<div class=&quot;fallback&quot;>&#9889;</div>'">
+         onerror="this.outerHTML='<div class=&quot;fallback&quot;>&#128029;</div>'">
     <span class="cog">&#9881;&#65039;</span>
   </div>
-  <div class="brand">ZMM Manager<small>zigbee &middot; matter &middot; thread</small></div>
+  <div class="brand">ZMM Manager<small>keeper of the hive &middot; zigbee / matter / thread</small></div>
   <div class="spacer"></div>
-  <span id="appver" class="muted"></span>
+  <span id="appver"></span>
   <span id="conn" class="pill"><span class="dot"></span>connecting&hellip;</span>
 </header>
 
@@ -153,14 +182,14 @@ label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
 <!-- ── Recovery console (only in recovery mode) ─────────────────────────── -->
 <section id="recovery" class="card" hidden>
   <h2><span class="rec-flag">recovery mode</span>
-      <span class="hint">the app failed to boot — repair it from here</span></h2>
+      <span class="hint"> the app failed to boot — repair it from here</span></h2>
   <div id="crashBox" class="muted">Loading crash details&hellip;</div>
   <div class="formgrid">
     <div>
       <label>Backups <span id="bkCount"></span></label>
       <div class="rowline" style="border:0;padding:.1rem 0 .4rem">
         <input id="bkFilter" type="text" class="wide" placeholder="filter by path (e.g. modules/foo.py)">
-        <button class="btn" onclick="loadRecovery()">filter</button>
+        <button class="btn" onclick="loadRecovery()">Filter</button>
       </div>
       <div class="scroll"><table class="bk">
         <thead><tr><th>backup</th><th>created</th><th></th></tr></thead>
@@ -171,33 +200,30 @@ label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
       <label>Target file (project-relative)</label>
       <input id="recTarget" type="text" class="wide" placeholder="modules/foo.py">
       <label>Contents</label>
-      <textarea id="recContent" placeholder="# paste replacement contents, load the current file, or preview a backup"></textarea>
+      <textarea id="recContent" placeholder="# paste replacement contents, load the current file, or view a backup"></textarea>
       <div class="rowline" style="border:0">
-        <button class="btn" onclick="loadCurrent()">load current</button>
-        <button class="btn primary" onclick="uploadFix()">write file to app</button>
+        <button class="btn" onclick="loadCurrent()">Load current</button>
+        <button class="btn primary" onclick="uploadFix()">Write file to app</button>
         <input id="recFile" type="file" style="font-size:.72rem;color:var(--muted)">
       </div>
     </div>
   </div>
   <div class="rowline" style="border:0;margin-top:.4rem">
-    <button class="btn" onclick="clearPending()">clear pending test markers</button>
+    <button class="btn" onclick="clearPending()">Clear pending test markers</button>
     <span id="pendingInfo" class="muted"></span>
     <span class="spacer"></span>
-    <button class="btn primary" onclick="resumeApp()">&#9654;&nbsp; resume app</button>
+    <button class="btn primary" onclick="resumeApp()">&#9654;&nbsp; Resume app</button>
   </div>
 </section>
 
-<!-- ── Status tiles ─────────────────────────────────────────────────────── -->
-<div class="tiles">
-  <div class="tile"><div class="lbl">Application</div>
-    <div class="val" id="tApp"><span class="sdot s-mut"></span>&hellip;</div>
-    <div class="sub" id="tAppSub"></div></div>
-  <div class="tile"><div class="lbl">Watchdog</div>
-    <div class="val" id="tWd"><span class="sdot s-mut"></span>&hellip;</div>
-    <div class="sub" id="tWdSub"></div></div>
-  <div class="tile"><div class="lbl">Upgrade watcher</div>
-    <div class="val" id="tUp"><span class="sdot s-mut"></span>&hellip;</div>
-    <div class="sub" id="tUpSub"></div></div>
+<!-- ── The honeycomb: hive health at a glance ───────────────────────────── -->
+<div class="comb" id="comb">
+  <div class="cell mut born" id="cApp"><div class="in">
+    <b>application</b><span class="v" id="cAppV">&hellip;</span><span class="s" id="cAppS"></span></div></div>
+  <div class="cell mut born" id="cWd"><div class="in">
+    <b>watchdog</b><span class="v" id="cWdV">&hellip;</span><span class="s" id="cWdS"></span></div></div>
+  <div class="cell mut born" id="cUp"><div class="in">
+    <b>upgrade</b><span class="v" id="cUpV">&hellip;</span><span class="s" id="cUpS"></span></div></div>
 </div>
 
 <div class="grid">
@@ -208,16 +234,17 @@ label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
   <section class="card"><h2>Versions &amp; rollback</h2>
     <div id="upimgs" class="muted">&hellip;</div>
     <div class="rowline" style="border:0;margin-top:.5rem">
-      <span class="muted">keep last</span>
+      <span class="muted">keep the last</span>
       <input type="number" id="upkeep" min="1" max="20">
-      <button class="btn" onclick="saveRetention()">save</button>
-      <button class="btn" onclick="runGC()">prune old images</button>
+      <span class="muted">images</span>
+      <button class="btn" onclick="saveRetention()">Save</button>
+      <button class="btn" onclick="runGC()">Prune old images</button>
     </div>
   </section>
 </div>
 
 <!-- ── Live logs ── -->
-<section class="card"><h2>Live logs <span class="hint">streams only while open</span></h2>
+<section class="card"><h2>Live logs <span class="hint">— streams only while open</span></h2>
   <div id="logbtns" class="chips muted">&hellip;</div>
   <pre id="logview" class="term"></pre>
 </section>
@@ -255,10 +282,26 @@ async function authGet(url){
   toast('Token rejected — you will be asked again','err');return null;}
  return r.json().catch(()=>null);}
 
+/* ── honeycomb cells ───────────────────────────────────────────────────── */
+function setCell(id,cls,val,sub){const c=$(id);if(!c)return;
+ c.className='cell '+cls+(c.className.includes('born')?' born':'');
+ $(id+'V').textContent=val;$(id+'S').textContent=sub||'';}
+let combKey='';
+function syncContainerCells(list){
+ const key=list.map(x=>x.name+':'+x.state).join('|');
+ if(key===combKey)return;combKey=key;
+ document.querySelectorAll('.cell.dyn').forEach(e=>e.remove());
+ list.forEach(x=>{
+  const s=(x.state||'').toLowerCase();
+  const cls=s==='running'?'ok':(s==='exited'||s==='dead'?'bad':'warn');
+  const short=x.name.replace('zigbee-matter-manager','zmm').replace('zmm-','');
+  const d=document.createElement('div');d.className='cell dyn '+cls;
+  d.innerHTML='<div class="in"><b>'+esc(short==='zmm'?'app cntr':short)+'</b>'+
+   '<span class="v">'+esc(s||'?')+'</span><span class="s">'+esc(x.status||'')+'</span></div>';
+  $('comb').appendChild(d);});}
+
 /* ── status poll ───────────────────────────────────────────────────────── */
 function dot(cls){return '<span class="sdot '+cls+'"></span>';}
-function setTile(id,cls,text,sub){$(id).innerHTML=dot(cls)+esc(text);
- $(id+'Sub').textContent=sub||'';}
 let recoveryShown=false;
 async function refresh(){
  try{
@@ -266,23 +309,24 @@ async function refresh(){
   $('conn').className='pill ok';$('conn').innerHTML='<span class="dot"></span>live';
   const a=d.app||{};
   const ver=a.body&&a.body.version;
-  $('appver').textContent=ver?('app v'+ver):'';
-  if(a.ok)setTile('tApp','s-ok','healthy',ver?('version '+ver):'');
-  else setTile('tApp','s-bad','unhealthy',a.error||('HTTP '+(a.status_code??'—')));
+  $('appver').textContent=ver?('v'+ver):'';
+  if(a.ok)setCell('cApp','ok','healthy',ver?('version '+ver):'');
+  else setCell('cApp','bad','unhealthy',a.error||('HTTP '+(a.status_code??'—')));
   const w=d.watchdog||{};const ws=w.status||'?';
-  const wcls=ws==='ok'?'s-ok':(ws==='unhealthy'||ws==='exhausted'?'s-bad'
-   :(ws==='restarted'?'s-warn':'s-mut'));
-  setTile('tWd',wcls,ws,w.restarts?w.restarts+' restart(s)':(w.last_action||''));
+  const wcls=ws==='ok'?'ok':(ws==='unhealthy'||ws==='exhausted'?'bad'
+   :(ws==='restarted'||ws==='recovery'?'warn':'mut'));
+  setCell('cWd',wcls,ws,w.restarts?w.restarts+' restart(s)':(w.last_action||''));
   const c=d.containers||{};
+  const list=c.containers||[];
+  syncContainerCells(c.available?list:[]);
   $('cont').innerHTML=!c.available
    ?'<span class="muted">'+esc(c.error||'unavailable')+'</span>'
-   :(c.containers||[]).map(x=>{
+   :list.map(x=>{
      const s=(x.state||'').toLowerCase();
      const cls=s==='running'?'s-ok':(s==='exited'||s==='dead'?'s-bad':'s-warn');
      return '<div class="rowline">'+dot(cls)+'<code>'+esc(x.name)+'</code>'+
       '<span class="muted">'+esc(x.status||x.state||'')+'</span></div>';
     }).join('')||'<span class="muted">none found</span>';
-  /* recovery console visibility */
   const rec=d.recovery||{};
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
@@ -301,16 +345,16 @@ async function loadUpgrade(){
  try{
   const r=await fetch('/upgrade');if(!r.ok)throw 0;const d=await r.json();
   const st=d.status||{};const s=st.state||'idle';
-  const cls=s==='idle'?'s-mut':(s==='failed'?'s-bad':'s-warn');
-  setTile('tUp',cls,s,st.current_step||st.error||'');
+  const cls=s==='idle'?'mut':(s==='failed'?'bad':'warn');
+  setCell('cUp',cls,s,st.current_step||st.error||'');
   $('upimgs').innerHTML=(d.images||[]).map(i=>
    '<div class="rowline"><code>v'+esc(i.version)+'</code>'+
    '<span class="muted">'+esc(i.arch)+'</span><span class="spacer"></span>'+
    (i.current?'<span class="badge b-ok">current</span>'
-    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\')">roll back</button>')+
+    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\')">Roll back</button>')+
    '</div>').join('')||'<span class="muted">no local images found</span>';
   if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
- }catch(e){setTile('tUp','s-mut','unavailable','');}}
+ }catch(e){setCell('cUp','mut','unavailable','');}}
 loadUpgrade();setInterval(loadUpgrade,5000);
 
 /* ── live logs ─────────────────────────────────────────────────────────── */
@@ -370,8 +414,8 @@ async function loadRecovery(){
    '<tr><td title="'+esc(b.name)+'">'+esc(b.name.length>38?b.name.slice(0,36)+'…':b.name)+'</td>'+
    '<td class="muted">'+esc(b.created)+'</td>'+
    '<td style="text-align:right;white-space:nowrap">'+
-   '<button class="btn" onclick="previewBackup(\''+esc(b.name)+'\')">view</button> '+
-   '<button class="btn primary" onclick="restoreBackup(\''+esc(b.name)+'\')">restore</button>'+
+   '<button class="btn" onclick="previewBackup(\''+esc(b.name)+'\')">View</button> '+
+   '<button class="btn primary" onclick="restoreBackup(\''+esc(b.name)+'\')">Restore</button>'+
    '</td></tr>').join('')||'<tr><td colspan="3" class="muted">no backups match</td></tr>';
   const p=d.pending_markers||[];
   $('pendingInfo').textContent=p.length?('pending: '+p.join(', ')):'no pending markers';

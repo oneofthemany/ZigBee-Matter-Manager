@@ -944,8 +944,14 @@ StartLimitIntervalSec=0
 [Service]
 Restart=always
 RestartSec=10
+# The container may already be running outside this unit (started by build.sh,
+# or left behind when a previous ExecStop timed out). `start -a` on a running
+# container fails with 125 and the unit flaps forever — always stop first so
+# this unit takes ownership. `-` prefix: ignore failure when nothing to stop.
+ExecStartPre=-${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
 ExecStart=${runtime_bin} start -a ${MANAGER_CONTAINER_NAME}
 ExecStop=${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
