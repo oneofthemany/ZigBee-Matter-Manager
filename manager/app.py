@@ -12,10 +12,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, Header
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from manager import containers, logs, watchdog
+from manager import containers, logs, upgrade, watchdog
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -28,6 +28,9 @@ APP_HEALTH_URL = os.environ.get("ZMM_APP_HEALTH_URL",
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure the action token exists from first boot (its path is what the
+    # dashboard tells users to look up when prompted).
+    upgrade.get_token()
     # Run the auto-recovery watchdog for the lifetime of the manager.
     task = asyncio.create_task(watchdog.run_loop())
     try:
@@ -98,6 +101,65 @@ async def log_container(name: str, tail: int = 200):
         return JSONResponse({"error": "unknown container"}, status_code=404)
     return StreamingResponse(logs.stream_container(name, tail=max(1, min(tail, 2000))),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# ── Upgrade: rollback + image retention (CP2b) ───────────────────────────────
+# Reads are open like the rest of the manager; ACTIONS require the bearer
+# token from data/state/manager_token (shown in the app's Upgrade tab).
+
+def _unauthorized() -> JSONResponse:
+    return JSONResponse({"success": False, "error": "valid bearer token required "
+                        "(data/state/manager_token on the host)"}, status_code=401)
+
+
+@app.get("/upgrade")
+async def upgrade_info():
+    state = upgrade.version_state()
+    return {
+        "status": upgrade.read_status(),
+        "current_version": state.get("current_version"),
+        "previous_version": state.get("previous_version"),
+        "retention_count": state.get("retention_count") or 2,
+        "images": await upgrade.list_images(),
+    }
+
+
+@app.post("/upgrade/rollback")
+async def upgrade_rollback(data: dict = Body(...),
+                           authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    version = str(data.get("version") or "").strip()
+    if not version:
+        return JSONResponse({"success": False, "error": "version required"},
+                            status_code=400)
+    ok, msg = await upgrade.rollback_to(version)
+    return JSONResponse({"success": ok, "message": msg},
+                        status_code=200 if ok else 409)
+
+
+@app.post("/upgrade/gc")
+async def upgrade_gc(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = upgrade.run_gc()
+    return JSONResponse({"success": ok, "message": msg},
+                        status_code=200 if ok else 409)
+
+
+@app.post("/upgrade/retention")
+async def upgrade_retention(data: dict = Body(...),
+                            authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    try:
+        count = int(data.get("retention_count"))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "error": "retention_count must be "
+                            "an integer"}, status_code=400)
+    ok, msg = upgrade.set_retention(count)
+    return JSONResponse({"success": ok, "message": msg},
+                        status_code=200 if ok else 400)
 
 
 # The dashboard is a static asset shipped alongside this module (manager/

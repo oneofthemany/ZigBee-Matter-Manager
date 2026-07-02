@@ -285,19 +285,17 @@ function renderBody(data) {
         `;
     }
 
-    let rollbackHtml = '';
-    if (previous_version && previous_image_tag) {
-        rollbackHtml = `
-          <div class="border-top pt-3 mt-3">
-            <div class="small text-muted mb-1">
-              Previous version: <code>${escapeHtml(previous_version)}</code>
-            </div>
-            <button class="btn btn-outline-warning btn-sm" onclick="window.startUpgradeRollback()">
-              <i class="fas fa-rotate-left me-1"></i> Rollback to v${escapeHtml(previous_version)}
-            </button>
-          </div>
-        `;
-    }
+    // Rollback moved to the ZMM Manager (:8001) so it works even when this
+    // app is down. Keep a pointer instead of a duplicate button.
+    const managerUrl = `${location.protocol}//${location.hostname}:8001`;
+    const rollbackHtml = `
+      <div class="border-top pt-3 mt-3 small text-muted">
+        <i class="fas fa-rotate-left me-1"></i>
+        Rollback (to any retained version) and image retention are managed from the
+        <a href="${managerUrl}" target="_blank" rel="noopener">ZMM Manager</a>${
+          previous_version ? ` — previous version: <code>${escapeHtml(previous_version)}</code>` : ''}.
+      </div>
+    `;
 
     body.innerHTML = `
       ${watcherBanner}
@@ -381,12 +379,6 @@ function renderSettings(data) {
         </div>
 
         <div class="col-md-6">
-          <label class="form-label small">Image retention (keep last N)</label>
-          <input type="number" min="1" max="20" class="form-control form-control-sm" id="upgRetention"
-                 value="${retention}">
-          <div class="form-text small">Older images auto-pruned. Minimum 1. Each image is ~1.5-2 GB.</div>
-        </div>
-        <div class="col-md-6">
           <label class="form-label small">GitHub repository</label>
           <input type="text" class="form-control form-control-sm" id="upgRepo"
                  value="${escapeAttr(repo)}" placeholder="owner/repo">
@@ -396,12 +388,30 @@ function renderSettings(data) {
         <button class="btn btn-primary btn-sm" onclick="window.saveUpgradeSettings()">
           <i class="fas fa-save me-1"></i> Save settings
         </button>
-        <button class="btn btn-outline-secondary btn-sm" onclick="window.runUpgradeGC()">
-          <i class="fas fa-broom me-1"></i> Clean up old images
-        </button>
+      </div>
+      <div class="mt-3 small text-muted border-top pt-2">
+        <i class="fas fa-broom me-1"></i>
+        Image retention (currently keep last <code>${retention}</code>) and pruning are
+        managed from the
+        <a href="${location.protocol}//${location.hostname}:8001" target="_blank" rel="noopener">ZMM Manager</a>.
+        Manager action token: <code id="upgMgrToken">&hellip;</code>
       </div>
       <div id="upgradeSettingsAlert" class="alert mt-3 small" style="display:none;"></div>
     `;
+    loadManagerToken();
+}
+
+async function loadManagerToken() {
+    const el = document.getElementById('upgMgrToken');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/upgrade/manager-token');
+        const data = await res.json();
+        el.textContent = (data.success && data.token) ? data.token
+            : 'available after next upgrade';
+    } catch (_) {
+        el.textContent = 'unavailable';
+    }
 }
 
 // ============================================================================
@@ -585,19 +595,6 @@ function waitForHealth() {
     }, 2000);
 }
 
-async function startRollback() {
-    if (!(await confirmDiscardLiveEdits('roll back'))) return;
-    if (!confirm('Roll back to the previous version?\n\nYou will be briefly disconnected.')) return;
-    const res = await fetch('/api/upgrade/rollback', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) {
-        toast('info', 'Rollback in progress — reloading when ready...');
-        waitForHealth();
-    } else {
-        toast('danger', data.error || data.message || 'Rollback failed');
-    }
-}
-
 async function cancelUpgrade() {
     if (!confirm('Cancel the in-progress operation?')) return;
     const res = await fetch('/api/upgrade/cancel', { method: 'POST' });
@@ -611,7 +608,6 @@ async function saveUpgradeSettings() {
     const body = {
         auto_update: document.getElementById('upgAutoUpdate').checked,
         channel: document.getElementById('upgChannel').value,
-        retention_count: parseInt(document.getElementById('upgRetention').value, 10) || 2,
         auto_update_window: {
             start: document.getElementById('upgWindowStart').value || '03:00',
             end:   document.getElementById('upgWindowEnd').value || '05:00',
@@ -634,14 +630,6 @@ async function saveUpgradeSettings() {
     }
     alert.style.display = 'block';
     setTimeout(() => { alert.style.display = 'none'; }, 5000);
-}
-
-async function runGC() {
-    if (!confirm('Delete old images beyond the retention count?')) return;
-    const res = await fetch('/api/upgrade/gc', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) toast('success', data.message);
-    else toast('danger', data.error || 'GC failed');
 }
 
 // ============================================================================
@@ -678,10 +666,8 @@ async function refreshBuildLog() {
 if (typeof window !== 'undefined') {
     window.startUpgradeBuild = startBuild;
     window.startUpgradeSwap = startSwap;
-    window.startUpgradeRollback = startRollback;
     window.cancelUpgrade = cancelUpgrade;
     window.saveUpgradeSettings = saveUpgradeSettings;
-    window.runUpgradeGC = runGC;
     window.showUpgradeLog = showLog;
     window.dismissFailedUpgrade = dismissFailedUpgrade;
 }

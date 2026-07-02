@@ -17,6 +17,16 @@ h1{font-size:1.1rem}.card{background:#1e293b;border-radius:10px;padding:1rem;mar
 <div class="card"><div class="muted">App (:8000)</div><div id="app">checking&hellip;</div></div>
 <div class="card"><div class="muted">Watchdog</div><div id="wd">&hellip;</div></div>
 <div class="card"><div class="muted">Containers</div><div id="cont">&hellip;</div></div>
+<div class="card"><div class="muted">Upgrade &amp; rollback</div>
+ <div id="upstate" class="muted" style="margin:.3rem 0"></div>
+ <div id="upimgs">&hellip;</div>
+ <div style="margin-top:.5rem">
+  <span class="muted">keep last</span>
+  <input type="number" id="upkeep" min="1" max="20" style="width:3.5rem;background:#334155;
+   color:#e2e8f0;border:0;border-radius:6px;padding:.2rem .3rem">
+  <button class="lbtn" onclick="saveRetention()">save</button>
+  <button class="lbtn" onclick="runGC()">prune old images</button>
+ </div></div>
 <div class="card"><div class="muted">Live logs <span class="muted">(streams only while open)</span></div>
  <div id="logbtns">&hellip;</div><pre id="logview"></pre></div>
 <script>
@@ -80,4 +90,43 @@ async function loadLogSources(){
   if(!el.childNodes.length)el.innerHTML='<span class="muted">no sources</span>';
  }catch(e){$('logbtns').innerHTML='<span class="muted">unavailable</span>';}}
 loadLogSources();setInterval(()=>{if(!es)loadLogSources();},30000);
+
+// ── Upgrade & rollback (actions need the token from data/state/manager_token) ─
+function tok(force){
+ let t=localStorage.getItem('zmm_mgr_token');
+ if(!t||force){t=prompt('Manager action token\n(host: data/state/manager_token, or app Settings → Upgrade)');
+  if(t){t=t.trim();localStorage.setItem('zmm_mgr_token',t);}}
+ return t;}
+async function act(url,body){
+ const t=tok(false);if(!t)return;
+ const r=await fetch(url,{method:'POST',
+  headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},
+  body:JSON.stringify(body||{})});
+ const d=await r.json().catch(()=>({}));
+ if(r.status===401){localStorage.removeItem('zmm_mgr_token');
+  alert('Token rejected — you will be asked again.');return;}
+ alert(d.message||d.error||('HTTP '+r.status));
+ loadUpgrade();}
+function rollback(v){
+ if(confirm('Roll back the app to v'+v+'?\nThe current container will be replaced.'))
+  act('/upgrade/rollback',{version:v});}
+function saveRetention(){
+ act('/upgrade/retention',{retention_count:parseInt($('upkeep').value,10)||2});}
+function runGC(){
+ if(confirm('Delete images beyond the retention count?'))act('/upgrade/gc');}
+async function loadUpgrade(){
+ try{const r=await fetch('/upgrade');if(!r.ok)throw 0;const d=await r.json();
+  const st=d.status||{};const s=(st.state||'idle');
+  $('upstate').innerHTML='watcher: <span class="badge '+
+   (s==='idle'?'b-mut':(s==='failed'?'b-bad':'b-ok'))+'">'+s+'</span>'+
+   (st.current_step?(' <span class="muted">'+st.current_step+'</span>'):'')+
+   (st.error?(' <span class="muted">'+st.error+'</span>'):'');
+  $('upimgs').innerHTML=(d.images||[]).map(i=>
+   '<div><code>v'+i.version+'</code> <span class="muted">'+i.arch+'</span> '+
+   (i.current?'<span class="badge b-ok">current</span>'
+    :'<button class="lbtn" onclick="rollback(\''+i.version+'\')">roll back</button>')+
+   '</div>').join('')||'<span class="muted">no local images found</span>';
+  if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
+ }catch(e){$('upstate').innerHTML='<span class="muted">unavailable</span>';$('upimgs').textContent='';}}
+loadUpgrade();setInterval(loadUpgrade,5000);
 </script></body></html>
