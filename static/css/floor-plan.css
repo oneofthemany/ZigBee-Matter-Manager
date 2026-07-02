@@ -9,8 +9,10 @@
 
 /* ─────────────────────── design tokens (light) ─────────────────────── */
 :root {
-    --fp-canvas-bg:        #f8fafc;
-    --fp-sidebar-bg:       var(--bs-body-bg, #ffffff);
+    /* Bases ride the hive semantic tokens (hive-tokens.css); fallbacks
+       keep the editor usable if that file ever fails to load. */
+    --fp-canvas-bg:        var(--bg-surface-sunken, #f8fafc);
+    --fp-sidebar-bg:       var(--bg-surface, #ffffff);
     --fp-border:           var(--border-color, #dee2e6);
     --fp-text:             var(--text-primary, #1f2937);
     --fp-text-muted:       var(--text-muted, #6b7280);
@@ -56,11 +58,11 @@
 
 /* ─────────────────────── design tokens (dark) ─────────────────────── */
 [data-theme="dark"] {
-    --fp-canvas-bg:        #0f172a;       /* slate-900 */
-    --fp-sidebar-bg:       #1e293b;       /* slate-800 */
-    --fp-border:           #334155;       /* slate-700 */
-    --fp-text:             #e5e7eb;
-    --fp-text-muted:       #94a3b8;
+    --fp-canvas-bg:        var(--night, #0b1620);
+    --fp-sidebar-bg:       var(--comb, #101e2b);
+    --fp-border:           var(--line, #1e3346);
+    --fp-text:             var(--wax, #eaf2f4);
+    --fp-text-muted:       var(--muted, #7e97a8);
 
     --fp-grid-minor:       rgba(148, 163, 184, 0.10);
     --fp-grid-major:       rgba(148, 163, 184, 0.22);
@@ -88,7 +90,7 @@
     --fp-contact-fill:     #c4b5fd;
     --fp-contact-stroke:   #ddd6fe;
 
-    --fp-selection:        #fbbf24;
+    --fp-selection:        var(--honey, #f2a93b);
     --fp-selection-stroke: #fde68a;
 
     --fp-compass-needle:   #f87171;

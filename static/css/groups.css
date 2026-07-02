@@ -1,13 +1,13 @@
-/* Groups Tab Specific Styles */
+/* Groups Tab Specific Styles — token-driven, themes via dark-mode/hive tokens */
 .device-checkbox-item {
     padding: 10px;
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid var(--border-color, #e0e0e0);
     cursor: pointer;
     transition: background-color 0.2s;
 }
 
 .device-checkbox-item:hover {
-    background-color: #f8f9fa;
+    background-color: var(--bg-surface-raised, #f8f9fa);
 }
 
 .device-checkbox-item:last-child {
@@ -23,26 +23,26 @@
 }
 
 .group-card {
-    border-left: 4px solid #0d6efd;
+    border-left: 4px solid var(--accent, #0d6efd);
     margin-bottom: 10px;
     transition: box-shadow 0.2s;
 }
 
 .group-card:hover {
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-md, 0 4px 8px rgba(0, 0, 0, 0.1));
 }
 
 .member-device {
     display: inline-block;
     margin: 4px;
     padding: 6px 12px;
-    background: #e7f3ff;
+    background: var(--info-subtle, #e7f3ff);
     border-radius: 16px;
     font-size: 0.85rem;
 }
 
 .member-device .remove-btn {
     margin-left: 8px;
-    color: #dc3545;
+    color: var(--bad, #dc3545);
     cursor: pointer;
 }

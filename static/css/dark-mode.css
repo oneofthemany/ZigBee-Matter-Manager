@@ -99,18 +99,13 @@
    DARK MODE — Global Application
    ---------------------------------------------------------- */
 
-[data-theme="dark"] body {
-    background-color: var(--bg-body) !important;
-    color: var(--text-primary) !important;
-}
-
 
 /* ----------------------------------------------------------
    NAVBAR
    ---------------------------------------------------------- */
 
 [data-theme="dark"] .navbar.navbar-dark.bg-dark {
-    background-color: var(--bg-nav) !important;
+    background-color: var(--bg-nav);
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -119,31 +114,11 @@
    CARDS
    ---------------------------------------------------------- */
 
-[data-theme="dark"] .card {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-    box-shadow: var(--shadow-sm);
-}
-
 [data-theme="dark"] .card-header,
 [data-theme="dark"] .card-header.bg-light {
     background-color: var(--bg-card-header) !important;
     border-bottom-color: var(--border-color) !important;
     color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .card-footer {
-    background-color: var(--bg-card-header) !important;
-    border-top-color: var(--border-color) !important;
-    color: var(--text-muted) !important;
-}
-
-[data-theme="dark"] .card-body {
-    color: var(--text-primary);
-}
-
-[data-theme="dark"] .shadow-sm {
-    box-shadow: var(--shadow-sm) !important;
 }
 
 
@@ -161,17 +136,11 @@
     --bs-table-hover-color: var(--text-primary);
     --bs-table-active-bg: var(--table-hover);
     --bs-table-active-color: var(--text-primary);
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
+    color: var(--text-primary);
+    border-color: var(--border-color);
 }
 
 /* Force background on every cell (Bootstrap applies --bs-table-bg per <td>) */
-[data-theme="dark"] .table > :not(caption) > * > * {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-    border-bottom-color: var(--border-color) !important;
-    box-shadow: none !important;
-}
 
 /* Table header */
 [data-theme="dark"] .table-light,
@@ -184,52 +153,15 @@
     border-color: var(--border-color) !important;
 }
 
-[data-theme="dark"] .table thead.table-light th {
-    background-color: var(--bg-card-header) !important;
-    color: var(--text-primary) !important;
-    border-bottom-color: var(--border-color) !important;
-}
-
 /* Hover state — must override the per-cell background */
-[data-theme="dark"] .table-hover > tbody > tr:hover > * {
-    background-color: var(--table-hover) !important;
-    color: var(--text-primary) !important;
-}
 
 /* Striped rows */
-[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > * {
-    background-color: var(--table-stripe) !important;
-    color: var(--text-primary) !important;
-}
 
 /* All cell borders */
-[data-theme="dark"] .table td,
-[data-theme="dark"] .table th {
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .table-sm td,
-[data-theme="dark"] .table-sm th {
-    border-color: var(--border-color) !important;
-}
 
 /* Device table specific — the text elements inside cells */
-[data-theme="dark"] #deviceTableBody .fw-bold.text-primary {
-    color: var(--text-link) !important;
-}
-
-[data-theme="dark"] #deviceTableBody .font-monospace.small.text-muted {
-    color: var(--text-muted) !important;
-}
-
-[data-theme="dark"] #deviceTableBody td.small {
-    color: var(--text-secondary) !important;
-}
 
 /* Table-responsive wrapper */
-[data-theme="dark"] .table-responsive {
-    border-color: var(--border-color) !important;
-}
 
 
 /* ----------------------------------------------------------
@@ -238,30 +170,9 @@
 
 [data-theme="dark"] .form-control,
 [data-theme="dark"] .form-select {
-    background-color: var(--bg-input) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .form-control:focus,
-[data-theme="dark"] .form-select:focus {
-    background-color: var(--bg-input) !important;
-    border-color: var(--accent) !important;
-    color: var(--text-primary) !important;
-    box-shadow: 0 0 0 0.2rem rgba(242, 169, 59, 0.2) !important;
-}
-
-[data-theme="dark"] .form-control::placeholder {
-    color: var(--text-muted) !important;
-}
-
-[data-theme="dark"] .form-label,
-[data-theme="dark"] label {
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .form-text {
-    color: var(--text-muted) !important;
+    background-color: var(--bg-input);
+    border-color: var(--border-color);
+    color: var(--text-primary);
 }
 
 [data-theme="dark"] .form-check-input {
@@ -273,35 +184,29 @@
     color: var(--text-primary);
 }
 
-[data-theme="dark"] .input-group-text {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-secondary) !important;
-}
-
 
 /* ----------------------------------------------------------
    BUTTONS
    ---------------------------------------------------------- */
 
 [data-theme="dark"] .btn-outline-secondary {
-    color: var(--text-secondary) !important;
-    border-color: var(--border-color) !important;
+    color: var(--text-secondary);
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] .btn-outline-secondary:hover {
-    background-color: var(--bg-surface-raised) !important;
-    color: var(--text-primary) !important;
+    background-color: var(--bg-surface-raised);
+    color: var(--text-primary);
 }
 
 [data-theme="dark"] .btn-outline-primary {
-    color: var(--text-link) !important;
-    border-color: var(--text-link) !important;
+    color: var(--text-link);
+    border-color: var(--text-link);
 }
 
 [data-theme="dark"] .btn-outline-info {
-    color: var(--text-secondary) !important;
-    border-color: var(--border-color) !important;
+    color: var(--text-secondary);
+    border-color: var(--border-color);
 }
 
 
@@ -332,29 +237,6 @@
    MODALS
    ---------------------------------------------------------- */
 
-[data-theme="dark"] .modal-content {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .modal-header {
-    border-bottom-color: var(--border-color) !important;
-    color: var(--text-primary);
-}
-
-[data-theme="dark"] .modal-footer {
-    border-top-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .modal-title {
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .btn-close {
-    filter: invert(1) grayscale(100%) brightness(200%);
-}
-
 
 /* ----------------------------------------------------------
    NAV TABS
@@ -369,10 +251,6 @@
 }
 
 /* Settings sub-nav */
-[data-theme="dark"] #settingsSubNav {
-    background-color: var(--bg-surface) !important;
-    border-bottom-color: var(--border-color) !important;
-}
 
 
 /* ----------------------------------------------------------
@@ -380,33 +258,33 @@
    ---------------------------------------------------------- */
 
 [data-theme="dark"] .alert-info {
-    background-color: var(--alert-info-bg) !important;
-    border-color: var(--alert-info-border) !important;
-    color: var(--alert-info-text) !important;
+    background-color: var(--alert-info-bg);
+    border-color: var(--alert-info-border);
+    color: var(--alert-info-text);
 }
 
 [data-theme="dark"] .alert-warning {
-    background-color: rgba(234, 179, 8, 0.12) !important;
-    border-color: rgba(234, 179, 8, 0.2) !important;
-    color: var(--warn) !important;
+    background-color: rgba(234, 179, 8, 0.12);
+    border-color: rgba(234, 179, 8, 0.2);
+    color: var(--warn);
 }
 
 [data-theme="dark"] .alert-success {
-    background-color: rgba(34, 197, 94, 0.12) !important;
-    border-color: rgba(34, 197, 94, 0.2) !important;
-    color: var(--ok) !important;
+    background-color: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.2);
+    color: var(--ok);
 }
 
 [data-theme="dark"] .alert-danger {
-    background-color: rgba(239, 68, 68, 0.12) !important;
-    border-color: rgba(239, 68, 68, 0.2) !important;
-    color: var(--bad) !important;
+    background-color: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: var(--bad);
 }
 
 [data-theme="dark"] .alert-light {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-secondary) !important;
+    background-color: var(--bg-surface-raised);
+    border-color: var(--border-color);
+    color: var(--text-secondary);
 }
 
 
@@ -454,20 +332,12 @@
     color: var(--text-link) !important;
 }
 
-[data-theme="dark"] .fw-bold,
-[data-theme="dark"] .fw-semibold {
-    color: inherit;
-}
-
 
 /* ----------------------------------------------------------
    SPECIFIC COMPONENTS
    ---------------------------------------------------------- */
 
 /* Coordinator card */
-[data-theme="dark"] .coordinator-card {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Thermostat — current temp display */
 [data-theme="dark"] #tab-control .bg-light {
@@ -480,18 +350,15 @@
 
 /* Debug log — already dark, ensure consistency */
 [data-theme="dark"] #logs {
-    background-color: var(--bg-code) !important;
+    background-color: var(--bg-code);
 }
 
 /* Config YAML editor — already dark */
 [data-theme="dark"] #configEditor {
-    background-color: var(--bg-code) !important;
+    background-color: var(--bg-code);
 }
 
 /* MQTT Explorer message container */
-[data-theme="dark"] #mqttMessagesContainer {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Sticky table headers in dark */
 [data-theme="dark"] .sticky-top.table-light {
@@ -499,60 +366,12 @@
 }
 
 /* Progress bars */
-[data-theme="dark"] .progress {
-    background-color: var(--bg-surface-sunken) !important;
-}
 
 /* List groups */
-[data-theme="dark"] .list-group-item {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
 
 /* Accordion */
-[data-theme="dark"] .accordion-item {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .accordion-button {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .accordion-button:not(.collapsed) {
-    background-color: var(--bg-surface-raised) !important;
-    color: var(--text-link) !important;
-}
-
-[data-theme="dark"] .accordion-body {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Dropdown menus */
-[data-theme="dark"] .dropdown-menu {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .dropdown-item {
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] .dropdown-item:hover,
-[data-theme="dark"] .dropdown-item:focus {
-    background-color: var(--bg-surface-sunken) !important;
-    color: var(--text-link) !important;
-}
-
-[data-theme="dark"] .dropdown-divider {
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .dropdown-header {
-    color: var(--text-muted) !important;
-}
 
 /* Spectrum chart */
 [data-theme="dark"] #spectrumChart,
@@ -562,38 +381,38 @@
 
 /* Schedule */
 [data-theme="dark"] .sched-day-row {
-    border-bottom-color: var(--border-color) !important;
+    border-bottom-color: var(--border-color);
 }
 
 [data-theme="dark"] .sched-day-row:hover {
-    background-color: var(--bg-surface-raised) !important;
+    background-color: var(--bg-surface-raised);
 }
 
 [data-theme="dark"] .sched-today {
-    background-color: var(--warning-subtle) !important;
+    background-color: var(--warning-subtle);
 }
 
 [data-theme="dark"] .sched-timeline {
-    background-color: var(--bg-surface-sunken) !important;
+    background-color: var(--bg-surface-sunken);
 }
 
 [data-theme="dark"] .sched-pill {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
+    background-color: var(--bg-surface-raised);
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] .sched-pill-time {
-    color: var(--text-primary) !important;
+    color: var(--text-primary);
 }
 
 [data-theme="dark"] .sched-pill-temp {
-    color: var(--text-secondary) !important;
+    color: var(--text-secondary);
 }
 
 [data-theme="dark"] .sched-add-popover {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-    box-shadow: var(--shadow-md) !important;
+    background-color: var(--bg-surface-raised);
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-md);
 }
 
 
@@ -603,68 +422,18 @@
    ---------------------------------------------------------- */
 
 /* Member device pills (hardcoded #e7f3ff in groups.css) */
-[data-theme="dark"] .member-device {
-    background: var(--info-subtle) !important;
-    color: var(--text-primary) !important;
-}
 
 /* Group cards (border-left: 4px solid #0d6efd already fine) */
-[data-theme="dark"] .group-card {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-    border-left-color: var(--accent) !important;
-}
-
-[data-theme="dark"] .group-card:hover {
-    box-shadow: var(--shadow-md) !important;
-}
-
-[data-theme="dark"] .group-card .card-body {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-}
 
 /* Device checkbox items in group creation (hardcoded #e0e0e0 border, #f8f9fa hover) */
-[data-theme="dark"] .device-checkbox-item {
-    border-bottom-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] .device-checkbox-item:hover {
-    background-color: var(--bg-surface-raised) !important;
-}
 
 /* Compatible devices list container */
-[data-theme="dark"] #compatibleDevicesList {
-    background-color: var(--bg-surface-sunken) !important;
-    border-color: var(--border-color) !important;
-}
 
 /* Group control modal — member list items (border rounded divs) */
-[data-theme="dark"] #groupMembersList .border.rounded,
-[data-theme="dark"] #groupMembersList .d-flex.border {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] #groupMembersList .text-muted {
-    color: var(--text-muted) !important;
-}
 
 /* Group control panel cards */
-[data-theme="dark"] #groupControlPanel .card {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] #groupControlPanel .card-body {
-    background-color: var(--bg-surface-raised) !important;
-}
 
 /* Group info display */
-[data-theme="dark"] #groupInfoDisplay {
-    color: var(--text-primary) !important;
-}
 
 /* Capability badges (bg-success, bg-info, bg-warning, bg-primary already have colour) */
 /* Just ensure text contrast in dark mode */
@@ -673,25 +442,10 @@
 }
 
 /* Base device info alert */
-[data-theme="dark"] #baseDeviceInfo.alert-info {
-    background-color: var(--alert-info-bg) !important;
-    border-color: var(--alert-info-border) !important;
-    color: var(--alert-info-text) !important;
-}
 
 /* Common capabilities alert */
-[data-theme="dark"] #commonCapabilitiesSection.alert-success {
-    background-color: rgba(34, 197, 94, 0.12) !important;
-    border-color: rgba(34, 197, 94, 0.2) !important;
-    color: var(--ok) !important;
-}
 
 /* Add device select in modal */
-[data-theme="dark"] #addDeviceSelect {
-    background-color: var(--bg-input) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-primary) !important;
-}
 
 /* font-monospace text */
 [data-theme="dark"] .font-monospace {
@@ -720,65 +474,19 @@
 }
 
 /* Mesh wrapper tabs */
-[data-theme="dark"] .mesh-wrapper .nav-tabs {
-    border-bottom-color: var(--border-color) !important;
-    background: var(--bg-card-header) !important;
-}
-
-[data-theme="dark"] .mesh-wrapper .nav-tabs .nav-link {
-    color: var(--text-secondary) !important;
-}
-
-[data-theme="dark"] .mesh-wrapper .nav-tabs .nav-link.active {
-    color: var(--text-link) !important;
-    border-bottom-color: var(--text-link) !important;
-}
 
 /* Mesh wrapper + tab-content — prevent white flash on tab switch */
-[data-theme="dark"] .mesh-wrapper {
-    background-color: var(--bg-surface) !important;
-}
-
-[data-theme="dark"] .mesh-wrapper .tab-content {
-    background-color: var(--bg-surface) !important;
-}
-
-[data-theme="dark"] .mesh-wrapper .tab-pane {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Each mesh sub-tab pane explicitly */
 [data-theme="dark"] #meshVisualisation {
     background-color: var(--bg-surface-sunken) !important;
 }
 
-[data-theme="dark"] #meshConnectionTable {
-    background-color: var(--bg-surface) !important;
-}
-
-[data-theme="dark"] #meshConnectionTable > .p-3 {
-    background-color: var(--bg-surface) !important;
-}
-
 /* Kill the Bootstrap fade transition white flash —
    the .fade class fades opacity 0→1, revealing whatever
    is behind (white body). Force bg on the fading element. */
-[data-theme="dark"] .mesh-wrapper .tab-pane.fade {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Also fix the main topology tab container */
-[data-theme="dark"] #topology {
-    background-color: var(--bg-surface) !important;
-}
-
-[data-theme="dark"] #topology .card {
-    background-color: var(--bg-surface) !important;
-}
-
-[data-theme="dark"] #topology .card-body {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Global fix: all tab-panes should have dark bg during fade transition */
 [data-theme="dark"] .tab-pane {
@@ -807,13 +515,7 @@
     --bs-table-striped-color: var(--text-primary);
     --bs-table-hover-bg: var(--table-hover);
     --bs-table-hover-color: var(--text-primary);
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] #connectionTable > :not(caption) > * > * {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-    border-bottom-color: var(--border-color) !important;
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] #connectionTable thead.table-dark th,
@@ -824,16 +526,8 @@
 }
 
 /* Table-responsive wrapper inside connection table */
-[data-theme="dark"] #meshConnectionTable .table-responsive {
-    background-color: var(--bg-surface) !important;
-    border-color: var(--border-color) !important;
-}
 
 /* Connection table hover — only on actual data rows, not collapse child rows */
-[data-theme="dark"] #connectionTable > tbody > tr:hover > td {
-    background-color: var(--table-hover) !important;
-    color: var(--text-primary) !important;
-}
 
 /* The child row that contains the collapse panel — no hover effect */
 [data-theme="dark"] #connectionTable > tbody > tr > td.child-row-cell {
@@ -843,35 +537,35 @@
 
 /* Nested connection table inside collapse — borders */
 [data-theme="dark"] .nested-connection-table {
-    background-color: var(--bg-surface-sunken) !important;
-    border-color: var(--border-color) !important;
+    background-color: var(--bg-surface-sunken);
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] .nested-connection-table th {
-    background-color: var(--bg-surface-raised) !important;
-    color: var(--text-secondary) !important;
-    border-color: var(--border-color) !important;
+    background-color: var(--bg-surface-raised);
+    color: var(--text-secondary);
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] .nested-connection-table td {
-    background-color: var(--bg-surface-sunken) !important;
-    color: var(--text-primary) !important;
-    border-color: var(--border-color) !important;
+    background-color: var(--bg-surface-sunken);
+    color: var(--text-primary);
+    border-color: var(--border-color);
 }
 
 /* table-bordered inside nested tables */
 [data-theme="dark"] .nested-connection-table.table-bordered,
 [data-theme="dark"] .nested-connection-table.table-bordered > :not(caption) > * {
-    border-color: var(--border-color) !important;
+    border-color: var(--border-color);
 }
 
 [data-theme="dark"] .nested-connection-table.table-bordered > :not(caption) > * > * {
-    border-color: var(--border-color) !important;
+    border-color: var(--border-color);
 }
 
 /* Nested table hover */
 [data-theme="dark"] .nested-connection-table > tbody > tr:hover > td {
-    background-color: var(--table-hover) !important;
+    background-color: var(--table-hover);
 }
 
 /* Collapse bg-light panel (the expanded content wrapper) */
@@ -892,41 +586,8 @@
    ---------------------------------------------------------- */
 
 /* Tab pane container */
-[data-theme="dark"] #meshPacketStats {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] #meshPacketStats > .p-3 {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Summary cards */
-[data-theme="dark"] #packetStatsSummary .card {
-    background-color: var(--bg-surface-raised) !important;
-    border-color: var(--border-color) !important;
-}
-
-[data-theme="dark"] #packetStatsSummary .card-body {
-    background-color: var(--bg-surface-raised) !important;
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] #packetStatsSummary .small.text-muted {
-    color: var(--text-muted) !important;
-}
-
-[data-theme="dark"] #packetStatsSummary .h5 {
-    color: var(--text-primary) !important;
-}
-
-[data-theme="dark"] #packetStatsSummary .text-success {
-    color: var(--ok) !important;
-}
-
-[data-theme="dark"] #packetStatsSummary .text-danger {
-    color: var(--bad) !important;
-}
 
 /* Stats table */
 [data-theme="dark"] #packetStatsTable {
@@ -939,12 +600,6 @@
     --bs-table-hover-color: var(--text-primary);
 }
 
-[data-theme="dark"] #packetStatsTable > :not(caption) > * > * {
-    background-color: var(--bg-surface) !important;
-    color: var(--text-primary) !important;
-    border-bottom-color: var(--border-color) !important;
-}
-
 [data-theme="dark"] #packetStatsTable thead.table-dark th,
 [data-theme="dark"] #packetStatsTable thead.sticky-top th {
     background-color: var(--bg-card-header) !important;
@@ -953,25 +608,12 @@
 }
 
 /* Table-responsive wrapper */
-[data-theme="dark"] #meshPacketStats .table-responsive {
-    background-color: var(--bg-surface) !important;
-}
 
 /* Hover on packet stats table rows */
-[data-theme="dark"] #packetStatsTable > tbody > tr:hover > * {
-    background-color: var(--table-hover) !important;
-}
 
 /* fw-medium and fw-bold text inside stats rows */
-[data-theme="dark"] #packetStatsTable .fw-medium,
-[data-theme="dark"] #packetStatsTable .fw-bold {
-    color: var(--text-primary) !important;
-}
 
 /* Error text */
-[data-theme="dark"] #packetStatsTable .text-danger {
-    color: var(--bad) !important;
-}
 
 /* Status badges inside table */
 [data-theme="dark"] #packetStatsTable .badge.bg-success {
@@ -985,9 +627,6 @@
 }
 
 /* Progress bars (load indicator) */
-[data-theme="dark"] #packetStatsTable .progress {
-    background-color: var(--bg-surface-sunken) !important;
-}
 
 
 /* ----------------------------------------------------------

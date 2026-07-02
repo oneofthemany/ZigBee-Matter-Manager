@@ -6,7 +6,10 @@
 <title>ZMM Manager</title>
 <link rel="icon" type="image/png" href="/logo">
 <style>
-/* ── tokens: palette lifted from the app's bee-on-mesh logo ─────────────── */
+/* ── tokens: palette lifted from the app's bee-on-mesh logo ──────────────
+   Duplicated BY CONVENTION from static/css/hive-tokens.css (DESIGN-TOKENS
+   source of truth) — this file must stay self-contained (disaster-recovery
+   UI, zero external deps). If a raw value changes there, mirror it here. */
 :root{
   --night:#0b1620; --comb:#101e2b; --comb2:#16283a; --line:#1e3346;
   --wax:#eaf2f4; --muted:#7e97a8;
@@ -48,11 +51,16 @@ main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 #appver{font-family:var(--mono);color:var(--muted);font-size:.74rem}
 
 /* ── the honeycomb: one hex cell per thing that must be alive ───────────── */
-.comb{display:flex;flex-wrap:wrap;justify-content:center;
-  padding:.6rem 0 1.6rem;margin:0 0 .4rem}
-.cell{position:relative;width:138px;height:118px;flex:none;
-  margin:0 -8px;clip-path:var(--hexclip);background:var(--line)}
-.cell:nth-child(even){transform:translateY(16px)}
+/* True tessellation: neighbours overlap by the slanted-face width (25% of
+   the hex width) and every even cell drops half the hex height, so the
+   diagonal faces sit parallel with a thin uniform seam between them. */
+.comb{--hexw:138px;--hexh:118px;display:flex;flex-wrap:wrap;justify-content:center;
+  row-gap:calc(var(--hexh)/2 + 10px);
+  padding:.6rem 0 calc(1rem + var(--hexh)/2);margin:0 0 .4rem}
+.cell{position:relative;width:var(--hexw);height:var(--hexh);flex:none;
+  margin:0 calc(var(--hexw)*-0.125 + 1.5px);
+  clip-path:var(--hexclip);background:var(--line)}
+.cell:nth-child(even){transform:translateY(calc(var(--hexh)/2))}
 .cell .in{position:absolute;inset:1px;clip-path:var(--hexclip);
   background:var(--comb);display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:.1rem;text-align:center;padding:0 20px}
@@ -225,16 +233,16 @@ dialog .remember input{accent-color:var(--honey)}
       <div id="recCount"></div>
       <div class="rowline" style="border:0">
         <button class="btn" onclick="loadCurrent()">Load current</button>
-        <button class="btn primary" onclick="uploadFix()">Write file to app</button>
+        <button class="btn primary" onclick="uploadFix(this)">Write file to app</button>
         <input id="recFile" type="file" style="font-size:.72rem;color:var(--muted)">
       </div>
     </div>
   </div>
   <div class="rowline" style="border:0;margin-top:.4rem">
-    <button class="btn" onclick="clearPending()">Clear pending test markers</button>
+    <button class="btn" onclick="clearPending(this)">Clear pending test markers</button>
     <span id="pendingInfo" class="muted"></span>
     <span class="spacer"></span>
-    <button class="btn primary" onclick="resumeApp()">&#9654;&nbsp; Resume app</button>
+    <button class="btn primary" onclick="resumeApp(this)">&#9654;&nbsp; Resume app</button>
   </div>
 </section>
 
@@ -259,8 +267,8 @@ dialog .remember input{accent-color:var(--honey)}
       <span class="muted">keep the last</span>
       <input type="number" id="upkeep" min="1" max="20">
       <span class="muted">images</span>
-      <button class="btn" onclick="saveRetention()">Save</button>
-      <button class="btn" onclick="runGC()">Prune old images</button>
+      <button class="btn" onclick="saveRetention(this)">Save</button>
+      <button class="btn" onclick="runGC(this)">Prune old images</button>
     </div>
   </section>
 </div>
@@ -306,35 +314,74 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 let toastTimer=null;
 function toast(msg,cls){const t=$('toast');t.textContent=msg;
+ t.setAttribute('role',cls==='err'?'alert':'status');
  t.className='toast show '+(cls||'');clearTimeout(toastTimer);
  toastTimer=setTimeout(()=>t.className='toast',4200);}
 
-/* ── auth token (actions only) ─────────────────────────────────────────── */
-function tok(){let t=localStorage.getItem('zmm_mgr_token');
- if(!t){t=prompt('Manager action token\n(host: data/state/manager_token, or app Settings → Upgrade)');
-  if(t){t=t.trim();localStorage.setItem('zmm_mgr_token',t);}}
- return t;}
-async function act(url,body,quiet){
- const t=tok();if(!t)return null;
- const r=await fetch(url,{method:'POST',
-  headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},
-  body:JSON.stringify(body||{})});
- const d=await r.json().catch(()=>({}));
- if(r.status===401){localStorage.removeItem('zmm_mgr_token');
-  toast('Token rejected — you will be asked again','err');return null;}
- if(!quiet)toast(d.message||d.error||('HTTP '+r.status),d.success?'ok':'err');
- return d;}
+/* ── native <dialog> confirm — replaces window.confirm ─────────────────── */
+function confirmM(msg,opts){opts=opts||{};
+ return new Promise(resolve=>{
+  const dlg=$('dlgConfirm'),ok=$('cfOk');
+  $('cfTitle').textContent=opts.title||'Confirm';
+  $('cfMsg').textContent=msg;
+  ok.className='btn '+(opts.danger?'danger':'primary');
+  ok.textContent=opts.confirmText||'Confirm';
+  const done=()=>{dlg.removeEventListener('close',done);
+   resolve(dlg.returnValue==='ok');};
+  dlg.addEventListener('close',done);
+  dlg.showModal();ok.focus();});}
+
+/* ── auth token (actions only) — native <dialog>, remember opt-in ──────── */
+/* unchecked → sessionStorage (this tab only); checked → localStorage      */
+function storedTok(){return sessionStorage.getItem('zmm_mgr_token')
+ ||localStorage.getItem('zmm_mgr_token');}
+function dropTok(){sessionStorage.removeItem('zmm_mgr_token');
+ localStorage.removeItem('zmm_mgr_token');}
+let tokDlgOpen=null;
+function tok(){
+ const t=storedTok();if(t)return Promise.resolve(t);
+ if(tokDlgOpen)return tokDlgOpen;   // one dialog serves concurrent callers
+ tokDlgOpen=new Promise(resolve=>{
+  const dlg=$('dlgToken'),inp=$('tokInput');
+  inp.value='';
+  const done=()=>{dlg.removeEventListener('close',done);tokDlgOpen=null;
+   if(dlg.returnValue!=='ok'){resolve(null);return;}
+   const v=inp.value.trim();
+   if(!v){resolve(null);return;}
+   ($('tokRemember').checked?localStorage:sessionStorage)
+    .setItem('zmm_mgr_token',v);
+   resolve(v);};
+  dlg.addEventListener('close',done);
+  dlg.showModal();inp.focus();});
+ return tokDlgOpen;}
+async function act(url,body,quiet,btn){
+ const t=await tok();if(!t)return null;
+ if(btn){btn.disabled=true;btn.setAttribute('aria-busy','true');}
+ try{
+  const r=await fetch(url,{method:'POST',
+   headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},
+   body:JSON.stringify(body||{})});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===401){dropTok();
+   toast('Token rejected — you will be asked again','err');return null;}
+  if(!quiet)toast(d.message||d.error||('HTTP '+r.status),d.success?'ok':'err');
+  return d;
+ }catch(e){if(!quiet)toast('Request failed: '+(e.message||e),'err');return null;
+ }finally{if(btn){btn.disabled=false;btn.removeAttribute('aria-busy');}}}
 async function authGet(url){
- const t=tok();if(!t)return null;
+ const t=await tok();if(!t)return null;
  const r=await fetch(url,{headers:{'Authorization':'Bearer '+t}});
- if(r.status===401){localStorage.removeItem('zmm_mgr_token');
+ if(r.status===401){dropTok();
   toast('Token rejected — you will be asked again','err');return null;}
  return r.json().catch(()=>null);}
 
 /* ── honeycomb cells ───────────────────────────────────────────────────── */
 function setCell(id,cls,val,sub){const c=$(id);if(!c)return;
  c.className='cell '+cls+(c.className.includes('born')?' born':'');
- $(id+'V').textContent=val;$(id+'S').textContent=sub||'';}
+ $(id+'V').textContent=val;$(id+'S').textContent=sub||'';
+ const name=c.querySelector('b');
+ c.setAttribute('role','group');
+ c.setAttribute('aria-label',(name?name.textContent+': ':'')+val+(sub?(' — '+sub):''));}
 let combKey='';
 function syncContainerCells(list){
  const key=list.map(x=>x.name+':'+x.state).join('|');
@@ -345,16 +392,26 @@ function syncContainerCells(list){
   const cls=s==='running'?'ok':(s==='exited'||s==='dead'?'bad':'warn');
   const short=x.name.replace('zigbee-matter-manager','zmm').replace('zmm-','');
   const d=document.createElement('div');d.className='cell dyn '+cls;
-  d.innerHTML='<div class="in"><b>'+esc(short==='zmm'?'app cntr':short)+'</b>'+
+  const label=short==='zmm'?'app cntr':short;
+  d.setAttribute('role','group');
+  d.setAttribute('aria-label',label+': '+(s||'?')+(x.status?(' — '+x.status):''));
+  d.innerHTML='<div class="in"><b>'+esc(label)+'</b>'+
    '<span class="v">'+esc(s||'?')+'</span><span class="s">'+esc(x.status||'')+'</span></div>';
   $('comb').appendChild(d);});}
 
-/* ── status poll ───────────────────────────────────────────────────────── */
+/* ── status poll — backs off 2s→5s→10s→30s while offline ───────────────── */
 function dot(cls){return '<span class="sdot '+cls+'"></span>';}
 let recoveryShown=false;
+const BACKOFF=[2000,5000,10000,30000];
+let refIdx=0,lastOk=0;
+setInterval(()=>{const f=$('fresh');if(!f)return;
+ if(!lastOk){f.textContent='';return;}
+ const s=Math.max(0,Math.round((Date.now()-lastOk)/1000));
+ f.textContent='updated '+s+'s ago';},1000);
 async function refresh(){
  try{
   const r=await fetch('/status');if(!r.ok)throw 0;const d=await r.json();
+  refIdx=0;lastOk=Date.now();
   $('conn').className='pill ok';$('conn').innerHTML='<span class="dot"></span>live';
   const a=d.app||{};
   const ver=a.body&&a.body.version;
@@ -380,19 +437,27 @@ async function refresh(){
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
  }catch(e){
+  refIdx=Math.min(refIdx+1,BACKOFF.length-1);
   $('conn').className='pill bad';$('conn').innerHTML='<span class="dot"></span>offline';
- }}
-refresh();setInterval(refresh,2000);
+ }finally{setTimeout(refresh,BACKOFF[refIdx]);}}
+refresh();
 
 /* ── upgrade / rollback ────────────────────────────────────────────────── */
-function rollback(v){
- if(confirm('Roll back the app to v'+v+'?\nThe current container will be replaced.'))
-  act('/upgrade/rollback',{version:v});}
-function saveRetention(){act('/upgrade/retention',{retention_count:parseInt($('upkeep').value,10)||2});}
-function runGC(){if(confirm('Delete images beyond the retention count?'))act('/upgrade/gc');}
+async function rollback(v,btn){
+ if(await confirmM('Roll back the app to v'+v+'?\nThe current container will be replaced.',
+   {title:'Roll back',confirmText:'Roll back',danger:true}))
+  act('/upgrade/rollback',{version:v},false,btn);}
+function saveRetention(btn){act('/upgrade/retention',
+ {retention_count:parseInt($('upkeep').value,10)||2},false,btn);}
+async function runGC(btn){
+ if(await confirmM('Delete images beyond the retention count?',
+   {title:'Prune images',confirmText:'Prune',danger:true}))
+  act('/upgrade/gc',null,false,btn);}
+let upIdx=0;
 async function loadUpgrade(){
  try{
   const r=await fetch('/upgrade');if(!r.ok)throw 0;const d=await r.json();
+  upIdx=0;
   const st=d.status||{};const s=st.state||'idle';
   const cls=s==='idle'?'mut':(s==='failed'?'bad':'warn');
   setCell('cUp',cls,s,st.current_step||st.error||'');
@@ -400,11 +465,14 @@ async function loadUpgrade(){
    '<div class="rowline"><code>v'+esc(i.version)+'</code>'+
    '<span class="muted">'+esc(i.arch)+'</span><span class="spacer"></span>'+
    (i.current?'<span class="badge b-ok">current</span>'
-    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\')">Roll back</button>')+
+    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\',this)">Roll back</button>')+
    '</div>').join('')||'<span class="muted">no local images found</span>';
   if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
- }catch(e){setCell('cUp','mut','unavailable','');}}
-loadUpgrade();setInterval(loadUpgrade,5000);
+ }catch(e){
+  upIdx=Math.min(upIdx+1,BACKOFF.length-1);
+  setCell('cUp','mut','unavailable','');
+ }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
+loadUpgrade();
 
 /* ── live logs ─────────────────────────────────────────────────────────── */
 let es=null,esBtn=null;const MAX_LOG_LINES=2000;
@@ -464,7 +532,7 @@ async function loadRecovery(){
    '<td class="muted">'+esc(b.created)+'</td>'+
    '<td style="text-align:right;white-space:nowrap">'+
    '<button class="btn" onclick="previewBackup(\''+esc(b.name)+'\')">View</button> '+
-   '<button class="btn primary" onclick="restoreBackup(\''+esc(b.name)+'\')">Restore</button>'+
+   '<button class="btn primary" onclick="restoreBackup(\''+esc(b.name)+'\',this)">Restore</button>'+
    '</td></tr>').join('')||'<tr><td colspan="3" class="muted">no backups match</td></tr>';
   const p=d.pending_markers||[];
   $('pendingInfo').textContent=p.length?('pending: '+p.join(', ')):'no pending markers';
@@ -483,12 +551,13 @@ async function loadCurrent(){
  if(!d.success){toast(d.error||'read failed','err');return;}
  $('recContent').value=d.content||'';
  toast('Loaded current contents of '+p,'ok');}
-async function restoreBackup(name){
+async function restoreBackup(name,btn){
  const target=$('recTarget').value.trim();
  if(!target){toast('Set the target file first','err');return;}
- if(!confirm('Restore '+target+' from\n'+name+' ?'))return;
- act('/recovery/restore',{backup:name,path:target});}
-async function uploadFix(){
+ if(!await confirmM('Restore '+target+' from\n'+name+' ?',
+   {title:'Restore backup',confirmText:'Restore',danger:true}))return;
+ act('/recovery/restore',{backup:name,path:target},false,btn);}
+async function uploadFix(btn){
  const path=$('recTarget').value.trim();
  if(!path){toast('Set the target file first','err');return;}
  const file=$('recFile').files[0];
@@ -502,16 +571,31 @@ async function uploadFix(){
   if(!content){toast('Provide contents or pick a file','err');return;}
   payload={path,content};
  }
- if(!confirm('Write /app/'+path+' inside the app container?\n(The existing file is snapshotted first.)'))return;
- act('/recovery/upload',payload);}
-async function clearPending(){
- if(!confirm('Remove .test_pending / .boot_failures markers?'))return;
- const d=await act('/recovery/clear-pending',{},true);
+ if(!await confirmM('Write /app/'+path+' inside the app container?\n(The existing file is snapshotted first.)',
+   {title:'Write file',confirmText:'Write',danger:true}))return;
+ act('/recovery/upload',payload,false,btn);}
+async function clearPending(btn){
+ if(!await confirmM('Remove .test_pending / .boot_failures markers?',
+   {title:'Clear markers',confirmText:'Clear'}))return;
+ const d=await act('/recovery/clear-pending',{},true,btn);
  if(d)toast('Cleared: '+((d.removed||[]).join(', ')||'(none present)'),'ok');
  loadRecovery();}
-async function resumeApp(){
- if(!confirm('Resume the app?\nThe launcher will retry main.py with the current files.'))return;
- act('/recovery/resume');}
+async function resumeApp(btn){
+ if(!await confirmM('Resume the app?\nThe launcher will retry main.py with the current files.',
+   {title:'Resume app',confirmText:'Resume'}))return;
+ act('/recovery/resume',null,false,btn);}
+
+/* ── recovery editor line/char counter ─────────────────────────────────── */
+(function(){
+ const ta=$('recContent'),out=$('recCount');
+ if(!ta||!out)return;
+ const upd=()=>{const v=ta.value;
+  out.textContent=(v?v.split('\n').length:0)+' lines · '+v.length+' chars';};
+ ta.addEventListener('input',upd);
+ upd();
+ // previewBackup/loadCurrent set .value programmatically — refresh then too
+ setInterval(()=>{if(document.activeElement!==ta)upd();},1500);
+})();
 </script>
 </body>
 </html>

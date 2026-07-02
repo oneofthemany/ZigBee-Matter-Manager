@@ -1,16 +1,17 @@
-/* api-docs.css - Dark Theme Edition */
+/* api-docs.css - Hive Dark Edition
+   Standalone page (no hive-tokens.css) — raw hive palette duplicated
+   here by convention. Keep in sync with static/css/hive-tokens.css. */
 
 :root {
-    /* Matches your main application theme */
-    --bg-app-gradient: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-    --bg-card-gradient: linear-gradient(145deg, #1f2937 0%, #111827 100%);
-    --bg-card-border: 1px solid rgba(75, 85, 99, 0.3);
-    --text-primary: #ffffff;
-    --text-secondary: #d1d5db;
-    --accent-primary: #3b82f6;
-    --accent-hover: #2563eb;
-    --input-bg: rgba(31, 41, 55, 0.5);
-    --input-border: #4b5563;
+    --bg-app-gradient: linear-gradient(135deg, #16283a 0%, #0b1620 100%);
+    --bg-card-gradient: linear-gradient(145deg, #101e2b 0%, #0b1620 100%);
+    --bg-card-border: 1px solid rgba(30, 51, 70, 0.9);
+    --text-primary: #eaf2f4;
+    --text-secondary: #7e97a8;
+    --accent-primary: #f2a93b;
+    --accent-hover: #c97f1e;
+    --input-bg: rgba(16, 30, 43, 0.6);
+    --input-border: #1e3346;
 }
 
 * {
@@ -41,7 +42,7 @@ body {
 }
 
 header {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgba(11, 22, 32, 0.6);
     border-bottom: var(--bg-card-border);
     color: var(--text-primary);
     padding: 20px;
@@ -92,7 +93,7 @@ header p {
 
 .search-box input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    box-shadow: 0 0 0 2px rgba(242, 169, 59, 0.2);
 }
 
 #routesList {
@@ -142,12 +143,12 @@ header p {
 }
 
 .route-item:hover {
-    background: rgba(59, 130, 246, 0.1);
+    background: rgba(242, 169, 59, 0.08);
     border-left-color: var(--accent-primary);
 }
 
 .route-item.active {
-    background: rgba(59, 130, 246, 0.15);
+    background: rgba(242, 169, 59, 0.14);
     border-left-color: var(--accent-primary);
     color: white;
 }
@@ -257,10 +258,10 @@ header p {
     transition: all 0.3s;
 }
 
-.btn-primary { background: var(--accent-primary); color: white; }
+.btn-primary { background: var(--accent-primary); color: #14100a; }
 .btn-primary:hover {
     background: var(--accent-hover);
-    box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+    box-shadow: 0 0 15px rgba(242, 169, 59, 0.35);
 }
 
 .btn-secondary {
@@ -294,7 +295,7 @@ header p {
 }
 
 .response-body {
-    background: #0f172a;
+    background: #071019;
     color: #f8f8f2;
     padding: 15px;
     overflow-x: auto;
