@@ -14,7 +14,8 @@ from pathlib import Path
 
 import httpx
 from fastapi import Body, FastAPI, Header
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               StreamingResponse)
 
 from manager import containers, logs, recovery, upgrade, watchdog
 
@@ -264,6 +265,20 @@ async def upgrade_retention(data: dict = Body(...),
 # dashboard.html) — kept out of Python so its inline JS can't be mangled by
 # string escaping and can be linted/edited as real HTML.
 _DASHBOARD_PATH = Path(__file__).with_name("dashboard.html")
+
+# The manager runs the app image, so the app's logo ships with it. The
+# dashboard overlays a gear badge on it (the "manager" twist) and falls back
+# to its built-in glyph if this 404s.
+_LOGO_PATH = Path(__file__).resolve().parent.parent / "static" / "images" \
+    / "zigbee-manager-logo.png"
+
+
+@app.get("/logo")
+async def logo():
+    if _LOGO_PATH.is_file():
+        return FileResponse(_LOGO_PATH, media_type="image/png",
+                            headers={"Cache-Control": "max-age=86400"})
+    return JSONResponse({"error": "logo not found"}, status_code=404)
 
 
 @app.get("/", response_class=HTMLResponse)

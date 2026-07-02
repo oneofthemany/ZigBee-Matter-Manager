@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ZMM Manager</title>
+<link rel="icon" type="image/png" href="/logo">
 <style>
 :root{
   --bg:#0a0f1a; --bg2:#0d1424; --card:#101725; --card2:#16203a; --line:#1e293b;
@@ -22,9 +23,16 @@ body{margin:0;background:
 header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:.8rem;
   padding:.8rem 1.2rem;background:rgba(10,15,26,.85);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line)}
-.logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
-  background:linear-gradient(135deg,var(--accent),#8b5cf6);font-size:15px;
-  box-shadow:0 0 18px rgba(99,102,241,.45)}
+.logo{position:relative;width:34px;height:34px;flex:none}
+.logo img{width:34px;height:34px;border-radius:50%;display:block;
+  box-shadow:0 0 16px rgba(245,158,11,.35);border:1px solid rgba(245,158,11,.45)}
+.logo .fallback{width:34px;height:34px;border-radius:9px;display:grid;
+  place-items:center;background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  font-size:16px;box-shadow:0 0 18px rgba(99,102,241,.45)}
+.logo .cog{position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;
+  border-radius:50%;display:grid;place-items:center;font-size:10px;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  border:2px solid var(--bg);box-shadow:0 0 10px rgba(99,102,241,.6)}
 .brand{font-weight:700;font-size:1.02rem;letter-spacing:.2px}
 .brand small{display:block;font-weight:500;font-size:.68rem;color:var(--muted);
   letter-spacing:.12em;text-transform:uppercase}
@@ -129,7 +137,11 @@ label{display:block;font-size:.7rem;color:var(--muted);margin:.45rem 0 .2rem;
 <body>
 
 <header>
-  <div class="logo">&#9889;</div>
+  <div class="logo">
+    <img src="/logo" alt="ZMM"
+         onerror="this.outerHTML='<div class=&quot;fallback&quot;>&#9889;</div>'">
+    <span class="cog">&#9881;&#65039;</span>
+  </div>
   <div class="brand">ZMM Manager<small>zigbee &middot; matter &middot; thread</small></div>
   <div class="spacer"></div>
   <span id="appver" class="muted"></span>

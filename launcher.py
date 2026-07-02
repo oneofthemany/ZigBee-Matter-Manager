@@ -280,8 +280,11 @@ background:#0a0f1c;color:#e2e8f0;font-family:system-ui,sans-serif;text-align:cen
 border-radius:16px}}h1{{font-size:1.15rem;margin:.8rem 0}}p{{color:#94a3b8;font-size:.9rem;
 line-height:1.5}}a{{display:inline-block;margin-top:1rem;background:#6366f1;color:#fff;
 text-decoration:none;padding:.6rem 1.4rem;border-radius:8px;font-weight:600}}
-.dot{{font-size:2rem}}</style></head><body><div class="card">
-<div class="dot">&#128736;&#65039;</div><h1>ZMM is in recovery mode</h1>
+.dot{{font-size:2rem}}img.logo{{width:64px;height:64px;border-radius:50%;
+border:2px solid #f59e0b}}</style></head><body><div class="card">
+<img class="logo" src="/logo" alt=""
+ onerror="this.outerHTML='<div class=\\'dot\\'>&#128736;&#65039;</div>'">
+<h1>ZMM is in recovery mode</h1>
 <p>The application failed to start. Crash details, backup restore and file
 repair are available in the ZMM&nbsp;Manager.</p>
 <a href="{manager_url}">Open ZMM Manager</a></div></body></html>"""
@@ -305,6 +308,22 @@ def _recovery_standby() -> str:
             pass
 
         def do_GET(self):
+            if self.path == "/logo":
+                logo = os.path.join(APP_DIR, "static", "images",
+                                    "zigbee-manager-logo.png")
+                try:
+                    with open(logo, "rb") as f:
+                        body = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                except OSError:
+                    body = b"not found"
+                    self.send_response(404)
+                    self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path.startswith("/api/"):
                 body = _json.dumps({"status": "recovery",
                                     "manager_port": MANAGER_PORT}).encode()
