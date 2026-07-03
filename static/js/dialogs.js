@@ -83,15 +83,18 @@ function runDialog({ title, message, detail, confirmText, cancelText, variant, i
             wrap.style.display = 'none';
         }
 
-        let settled = false;
-        const settle = (result) => {
-            if (settled) return;
-            settled = true;
-            resolve(result);
-        };
+        // Resolve ONLY after the modal has fully finished hiding. If we
+        // resolved on the OK click, the queue would advance and the next
+        // chained dialog's show() would collide with this one's close
+        // animation — Bootstrap drops it and the flow silently stalls
+        // (e.g. Upgrade's discard→swap double confirm). Record the outcome
+        // here, resolve in onHidden.
+        let confirmed = false;
+        let enteredValue = null;
 
         const onOk = () => {
-            settle(input ? field.value : true);
+            confirmed = true;
+            if (input) enteredValue = field.value;
             bsModal.hide();
         };
         const onKeydown = (e) => {
@@ -104,7 +107,8 @@ function runDialog({ title, message, detail, confirmText, cancelText, variant, i
             okBtn.removeEventListener('click', onOk);
             field.removeEventListener('keydown', onKeydown);
             modalEl.removeEventListener('hidden.bs.modal', onHidden);
-            settle(input ? null : false);   // dismissed via Esc/backdrop/Cancel
+            if (input) resolve(confirmed ? enteredValue : null);
+            else resolve(confirmed);
         };
 
         okBtn.addEventListener('click', onOk);
