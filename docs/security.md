@@ -93,8 +93,10 @@ their lockout from **Settings → Users → Admin → Locked accounts**.
 ## LAN-only accounts
 
 The `network:lan_only` scope can be added to any user. When set,
-that user's login is rejected from any IP outside the configured LAN
-ranges — even if their password and MFA were correct.
+every request from that user — login, API calls with a bearer token,
+even an already-issued session cookie or WebSocket connection — is
+rejected from any IP outside the configured LAN ranges. Tokens inherit
+the restriction from their owning user; a token can't opt out of it.
 
 ### When to use this
 
@@ -140,8 +142,10 @@ ZMM will then read the real client IP from `CF-Connecting-IP` headers
 (but only when they arrive from a Cloudflare IP or your localhost
 cloudflared process).
 
-A dedicated [Cloudflare Tunnel setup guide](cloudflare_tunnel.md) is
-shipped separately.
+ZMM can also run the tunnel for you — see the
+[Remote Access guide](remote_access.md) (Settings → Security →
+Remote Access in the UI). The managed tunnel enables the header trust
+above automatically.
 
 ### Other reverse proxies (nginx, Caddy, Traefik)
 

@@ -134,8 +134,12 @@ security:
       - "127.0.0.0/8"
       - "10.0.0.0/8"        # if you reverse-proxy from your home server
 
-    # Set to true if running behind Cloudflare Tunnel — the resolver
-    # will then trust CF-Connecting-IP when it arrives via cloudflared.
+    # Set to true if running behind a Cloudflare Tunnel that YOU manage
+    # (systemd/docker cloudflared) — the resolver will then trust
+    # CF-Connecting-IP when it arrives via cloudflared.
+    # NOTE: the built-in managed tunnel (Settings → Security → Remote
+    # Access, see docs/remote_access.md) sets this automatically at
+    # runtime; you don't need to touch it.
     cloudflare_tunnel_enabled: false
 
     # Override LAN classification. Defaults cover RFC1918, loopback,

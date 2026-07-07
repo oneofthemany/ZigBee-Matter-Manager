@@ -29,7 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from modules.auth import AuthManager, User, hash_password, verify_password
+from modules.auth import (
+    AuthManager, User, hash_password, verify_password, LAN_ONLY_SCOPE,
+)
 from modules.auth_mfa import (
     BruteForceTracker, MFARecord, MFAChallengeStore,
     constant_time_login, generate_recovery_codes, generate_totp_secret,
@@ -38,10 +40,6 @@ from modules.auth_mfa import (
 )
 
 logger = logging.getLogger("modules.auth_secure")
-
-
-# Special scope the middleware checks for LAN-only enforcement
-LAN_ONLY_SCOPE = "network:lan_only"
 
 
 @dataclass

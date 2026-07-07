@@ -183,6 +183,7 @@ try:
         register_heating_routes,
         register_heating_controller_routes,
         register_presence_routes,
+        register_remote_access_routes,
         register_sun_routes,
         register_floor_plan_routes,
         register_media_routes,
@@ -366,6 +367,22 @@ if matter_config.get('enabled', False):
 
 
 # ============================================================================
+# REMOTE ACCESS (managed Cloudflare Tunnel)
+# ============================================================================
+from modules.remote_access import (
+    RemoteAccessManager, set_remote_access_manager,
+)
+
+_web_cfg = CONFIG.get('web', {}) or {}
+remote_access_manager = RemoteAccessManager(
+    origin_port=int(_web_cfg.get('port', 8000)),
+    origin_https=bool((_web_cfg.get('ssl') or {}).get('enabled', False)),
+)
+remote_access_manager.load()
+set_remote_access_manager(remote_access_manager)
+
+
+# ============================================================================
 # LAZY GETTERS for route modules
 # ============================================================================
 def get_zigbee_service():
@@ -479,6 +496,15 @@ async def lifespan(app: FastAPI):
             logger.info("Matter bridge started")
         except Exception as e:
             logger.error(f"Failed to start Matter bridge: {e}")
+
+    # Start remote access tunnel if the user enabled it
+    if remote_access_manager.settings.enabled:
+        try:
+            started = await remote_access_manager.start()
+            if started:
+                logger.info("Remote access tunnel started")
+        except Exception as e:
+            logger.error(f"Failed to start remote access tunnel: {e}")
 
         # Wire Matter state changes into the automation engine
         matter_bridge._automation_evaluator = (
@@ -767,6 +793,7 @@ async def lifespan(app: FastAPI):
         await matter_bridge.stop()
     if matter_server:
         await matter_server.stop()
+    await remote_access_manager.stop()
     log_listener.stop()
     # Stop upgrade manager loops
     for task_name in ("upgrade_check_task", "upgrade_status_task", "flow_broadcast_task"):
@@ -891,6 +918,7 @@ register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_s
 register_floor_plan_routes(app, lambda: heating_controller)
 register_api_docs_routes(app)
 register_presence_routes(app, get_presence_manager)
+register_remote_access_routes(app)
 
 # ============================================================================
 # POST-SETUP ZIGBEE HOT-START SERVICES

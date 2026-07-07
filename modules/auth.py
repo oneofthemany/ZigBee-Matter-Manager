@@ -64,6 +64,12 @@ CONFIG_PATH = Path("./data/auth.yaml")
 
 # Built-in scopes shipped with ZMM. Custom scopes are allowed but these are
 # the ones the UI surfaces and the routes consult.
+# Special scope: principals holding it may only act from the LAN.
+# Checked by exact membership (never wildcard/admin-implied) — an admin
+# account can be LAN-restricted too. Enforced per-request by the auth
+# middleware and at login by SecureAuthManager.
+LAN_ONLY_SCOPE = "network:lan_only"
+
 KNOWN_SCOPES: Dict[str, str] = {
     "admin":                  "Full access (implies every other scope).",
     "device:read":            "Read device state, configs and lists.",

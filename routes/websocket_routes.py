@@ -8,8 +8,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from modules.json_helpers import prepare_for_json
 
 # Add the imports required for auth here
-from modules.auth import get_auth_manager
+from modules.auth import get_auth_manager, LAN_ONLY_SCOPE
 from modules.auth_middleware import _verify_session, _derive_session_secret
+from modules.auth_network import get_network_resolver
 
 logger = logging.getLogger("websocket")
 
@@ -69,6 +70,7 @@ def register_websocket_routes(app: FastAPI):
         # passed as a query param (?token=...)
         auth_mgr = get_auth_manager()
         authenticated = False
+        auth_username = None
 
         if auth_mgr:
             # Try cookie first
@@ -80,6 +82,7 @@ def register_websocket_routes(app: FastAPI):
                     user = auth_mgr.users[username]
                     if not user.disabled:
                         authenticated = True
+                        auth_username = username
 
             # Fallback: ?token=... for programmatic clients
             if not authenticated:
@@ -88,6 +91,25 @@ def register_websocket_routes(app: FastAPI):
                     verified = auth_mgr.verify_token(token)
                     if verified:
                         authenticated = True
+                        auth_username = verified[0].username
+
+        # LAN-only accounts may not connect from outside the LAN. The
+        # resolver duck-types over WebSocket (it only touches .headers
+        # and .client, both present on Starlette WebSockets).
+        if authenticated and auth_username:
+            resolver = get_network_resolver()
+            if resolver is not None:
+                client_ip = resolver.resolve(ws)
+                if (
+                        not resolver.is_lan(client_ip)
+                        and LAN_ONLY_SCOPE
+                        in auth_mgr.resolve_user_scopes(auth_username)
+                ):
+                    logger.warning(
+                        f"WebSocket rejected: {auth_username} is LAN-only "
+                        f"but connected from {client_ip}"
+                    )
+                    authenticated = False
 
         if not authenticated:
             await ws.close(code=1008)  # Policy Violation

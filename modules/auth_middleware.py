@@ -41,7 +41,10 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from modules.auth import AuthManager, User, TokenRecord, scope_matches
+from modules.auth import (
+    AuthManager, User, TokenRecord, scope_matches, LAN_ONLY_SCOPE,
+)
+from modules.auth_network import get_network_resolver
 
 logger = logging.getLogger("modules.auth_middleware")
 
@@ -131,12 +134,12 @@ class Principal:
 
 # --- middleware ------------------------------------------------------------
 
-# Paths that are accessible without authentication. Globs allowed.
+# Paths that are accessible without authentication from anywhere.
 ANONYMOUS_PATHS: Tuple[str, ...] = (
     "/api/auth/login",
+    "/api/auth/login/mfa",       # second factor — no principal exists yet
     "/api/auth/whoami",          # returns 200 anonymous if no creds
     "/api/system/health",        # health check used by container
-    "/api/system/status",        # very basic status — read-only
 )
 
 ANONYMOUS_PREFIXES: Tuple[str, ...] = (
@@ -144,13 +147,24 @@ ANONYMOUS_PREFIXES: Tuple[str, ...] = (
     "/favicon",
     "/manifest.json",
     "/sw.js",
+)
+
+# Paths that skip auth ONLY for LAN clients (or anyone authenticated).
+# These leak internals (API map, system info) we don't want to hand to
+# anonymous internet traffic when ZMM is exposed via a tunnel/proxy.
+LAN_ANONYMOUS_PATHS: Tuple[str, ...] = (
+    "/api/system/status",        # very basic status — read-only
+)
+
+LAN_ANONYMOUS_PREFIXES: Tuple[str, ...] = (
     "/api-docs",                 # docs viewer is read-only static html/js
     "/api/routes",
     "/routes",
 )
 
 
-def _is_anonymous_path(path: str, no_admin_yet: bool = False) -> bool:
+def _is_anonymous_path(path: str, no_admin_yet: bool = False,
+                       is_lan: bool = True) -> bool:
     if path in ANONYMOUS_PATHS:
         return True
     for p in ANONYMOUS_PREFIXES:
@@ -158,9 +172,17 @@ def _is_anonymous_path(path: str, no_admin_yet: bool = False) -> bool:
             return True
     if path == "/" or path == "/index.html":
         return True
-    # First-run gate: setup wizard endpoints are anonymous *only* while
-    # no admin user exists. Self-closes the moment one is created.
-    if no_admin_yet and path.startswith("/api/setup/"):
+    if is_lan:
+        if path in LAN_ANONYMOUS_PATHS:
+            return True
+        for p in LAN_ANONYMOUS_PREFIXES:
+            if path.startswith(p):
+                return True
+    # First-run gate: setup wizard endpoints are anonymous *only* while no
+    # admin user exists, and only for LAN clients — otherwise an internet
+    # visitor could win the race to create the first admin. Self-closes
+    # the moment an admin exists.
+    if no_admin_yet and is_lan and path.startswith("/api/setup/"):
         return True
     return False
 
@@ -203,6 +225,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Try to authenticate even on anonymous paths so /api/auth/whoami
         # can return useful info.
         principal = self._try_authenticate(request)
+
+        client_ip, is_lan = self._client_network(request)
+        request.state.client_ip = client_ip
+        request.state.is_lan = is_lan
+
+        # LAN-only principals may not act from outside the LAN. Strip the
+        # principal (so anonymous paths still work, e.g. the login page)
+        # and remember why, so protected paths get a clear 403 instead of
+        # a generic 401.
+        lan_only_blocked = False
+        if principal and not is_lan and self._principal_lan_only(principal):
+            logger.warning(
+                f"[auth] {principal.user.username} rejected: holds "
+                f"{LAN_ONLY_SCOPE} but request came from {client_ip} (non-LAN)"
+            )
+            principal = None
+            lan_only_blocked = True
+
         if principal:
             request.state.principal = principal
 
@@ -210,7 +250,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             (not u.disabled) and ("admins" in u.groups or "admin" in u.extra_scopes)
             for u in self.auth.users.values()
         )
-        if _is_anonymous_path(path, no_admin_yet=no_admin_yet):
+        if _is_anonymous_path(path, no_admin_yet=no_admin_yet, is_lan=is_lan):
             return await call_next(request)
 
         if not self.enforce:
@@ -220,6 +260,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not principal:
+            if lan_only_blocked:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "This account is restricted to the "
+                                  "local network",
+                        "lan_only_violation": True,
+                    },
+                )
             return JSONResponse(
                 status_code=401,
                 content={
@@ -229,6 +278,31 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return await call_next(request)
+
+    def _client_network(self, request: Request) -> Tuple[str, bool]:
+        """Resolve (real client IP, is_lan). If the resolver isn't wired
+        yet (early startup), fall back to the raw peer and treat it as
+        LAN so the container healthcheck and localhost don't break."""
+        resolver = get_network_resolver()
+        if resolver is None:
+            client = request.client
+            return (client.host if client else "", True)
+        ip = resolver.resolve(request)
+        return ip, resolver.is_lan(ip)
+
+    def _principal_lan_only(self, principal: "Principal") -> bool:
+        """True if this principal is restricted to the LAN.
+
+        Exact membership on purpose — `admin` / wildcards must NOT imply
+        this scope. A token inherits the restriction from its owning user:
+        LAN-only is a property of the account, not something a token can
+        opt out of by narrowing its scope list.
+        """
+        if LAN_ONLY_SCOPE in principal.scopes:
+            return True
+        return LAN_ONLY_SCOPE in self.auth.resolve_user_scopes(
+            principal.user.username
+        )
 
     def _try_authenticate(self, request: Request) -> Optional[Principal]:
         # 1. Bearer token

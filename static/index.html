@@ -352,27 +352,58 @@
                 <!-- SECURITY TAB                                                         -->
                 <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsSecurity">
-                    <div class="card shadow-sm">
-                        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-                            <span class="fw-bold"><i class="fas fa-shield-alt me-1"></i> Network Security</span>
-                            <div>
-                                <button class="btn btn-success btn-sm" onclick="saveSettingsConfig()">
-                                    <i class="fas fa-save me-1"></i> Save
-                                </button>
-                                <button class="btn btn-warning btn-sm ms-2" onclick="openBannedModal()">
-                                    <i class="fas fa-ban me-1"></i> Banned Devices
-                                </button>
+
+                    <!-- Security sub-nav -->
+                    <ul class="nav nav-pills mb-3" id="securitySubNav">
+                        <li class="nav-item">
+                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#securityNetwork">
+                                <i class="fas fa-key me-1"></i> Network Security
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#securityRemoteAccess">
+                                <i class="fas fa-globe me-1"></i> Remote Access
+                            </button>
+                        </li>
+                    </ul>
+
+                    <div class="tab-content">
+
+                        <!-- Network security sub-tab -->
+                        <div class="tab-pane fade show active" id="securityNetwork">
+                            <div class="card shadow-sm">
+                                <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                                    <span class="fw-bold"><i class="fas fa-shield-alt me-1"></i> Network Security</span>
+                                    <div>
+                                        <button class="btn btn-success btn-sm" onclick="saveSettingsConfig()">
+                                            <i class="fas fa-save me-1"></i> Save
+                                        </button>
+                                        <button class="btn btn-warning btn-sm ms-2" onclick="openBannedModal()">
+                                            <i class="fas fa-ban me-1"></i> Banned Devices
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body" id="securityFormBody">
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-spinner fa-spin"></i> Loading...
+                                    </div>
+                                </div>
+                                <div class="card-footer text-muted small">
+                                    <i class="fas fa-exclamation-triangle me-1 text-warning"></i>
+                                    Network key changes require re-pairing all devices. Always keep a backup.
+                                </div>
                             </div>
                         </div>
-                        <div class="card-body" id="securityFormBody">
-                            <div class="text-center text-muted py-4">
-                                <i class="fas fa-spinner fa-spin"></i> Loading...
+
+                        <!-- Remote access sub-tab -->
+                        <div class="tab-pane fade" id="securityRemoteAccess">
+                            <div id="remote-access-host">
+                                <div class="text-center text-muted py-4">
+                                    <i class="fas fa-spinner fa-spin"></i> Loading remote access status...
+                                </div>
                             </div>
                         </div>
-                        <div class="card-footer text-muted small">
-                            <i class="fas fa-exclamation-triangle me-1 text-warning"></i>
-                            Network key changes require re-pairing all devices. Always keep a backup.
-                        </div>
+
                     </div>
                 </div>
 
@@ -1398,6 +1429,7 @@
 <script src="/static/js/toasts.js"></script>
 <script type="module" src="/static/js/dialogs.js"></script>
 <script src="/static/js/auth-settings.js"></script>
+<script src="/static/js/remote-access.js"></script>
 <script src="/static/js/my-account.js"></script>
 <script src="/static/js/presence.js"></script>
 <script src="/static/js/presence-settings.js"></script>

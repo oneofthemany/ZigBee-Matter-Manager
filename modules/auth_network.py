@@ -198,6 +198,27 @@ class NetworkResolver:
 
         return peer
 
+    def request_is_https(self, request: Request) -> bool:
+        """
+        True if the client-facing connection is HTTPS.
+
+        Direct TLS is trivially detected from the URL scheme. Behind a
+        reverse proxy or Cloudflare Tunnel the origin connection is plain
+        HTTP, so we honour X-Forwarded-Proto — but only from a trusted
+        peer, same policy as the forwarded-for headers.
+        """
+        if request.url.scheme == "https":
+            return True
+        peer = self._peer_ip(request)
+        trusted = _ip_in_any(peer, self.trusted_proxies) or (
+            self.cloudflare_tunnel_enabled
+            and _ip_in_any(peer, self.cloudflare_ranges)
+        )
+        if not trusted:
+            return False
+        xfp = request.headers.get("x-forwarded-proto", "")
+        return xfp.split(",")[0].strip().lower() == "https"
+
     def _peer_ip(self, request: Request) -> str:
         """Immediate TCP peer per Starlette."""
         client = request.client

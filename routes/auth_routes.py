@@ -148,16 +148,21 @@ def register_auth_routes(
             raise HTTPException(503, "Network resolver not configured")
         return m
 
-    def _set_session(response: Response, username: str, remember: bool):
+    def _set_session(request: Request, response: Response,
+                     username: str, remember: bool):
         cookie = issue_session_cookie(username, secret_getter())
         max_age = 30 * 24 * 3600 if remember else None
+        # Mark the cookie Secure whenever the client-facing connection is
+        # HTTPS (direct TLS, or X-Forwarded-Proto from a trusted proxy /
+        # Cloudflare Tunnel). Plain-HTTP LAN logins still work: they get
+        # a non-Secure cookie scoped to their own host.
         response.set_cookie(
             key="zmm_session",
             value=cookie,
             max_age=max_age,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=_net().request_is_https(request),
             path="/",
         )
 
@@ -175,7 +180,7 @@ def register_auth_routes(
         )
 
         if outcome.success and outcome.user:
-            _set_session(response, outcome.user.username, req.remember)
+            _set_session(request, response, outcome.user.username, req.remember)
             return {
                 "success": True,
                 "username": outcome.user.username,
@@ -217,7 +222,7 @@ def register_auth_routes(
         outcome = await sec.complete_mfa(req.challenge, req.code, client_ip)
 
         if outcome.success and outcome.user:
-            _set_session(response, outcome.user.username, req.remember)
+            _set_session(request, response, outcome.user.username, req.remember)
             return {
                 "success": True,
                 "username": outcome.user.username,
