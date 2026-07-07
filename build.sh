@@ -979,9 +979,11 @@ StartLimitIntervalSec=0
 Restart=always
 RestartSec=10
 # The container may already be running outside this unit (started by build.sh,
-# or left behind when a previous ExecStop timed out). `start -a` on a running
+# or left behind when a previous ExecStop timed out). 'start -a' on a running
 # container fails with 125 and the unit flaps forever — always stop first so
-# this unit takes ownership. `-` prefix: ignore failure when nothing to stop.
+# this unit takes ownership. The '-' prefix means: ignore failure when
+# nothing to stop. (NB: no backticks in this heredoc — unquoted delimiter,
+# so backticks would execute as command substitution.)
 ExecStartPre=-${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
 ExecStart=${runtime_bin} start -a ${MANAGER_CONTAINER_NAME}
 ExecStop=${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
