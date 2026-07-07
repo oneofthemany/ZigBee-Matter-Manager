@@ -262,8 +262,8 @@ dialog .remember input{accent-color:var(--honey)}
   <!-- ── Containers ── -->
   <section class="card"><h2>Containers</h2><div id="cont" class="muted">&hellip;</div></section>
 
-  <!-- ── Versions & rollback ── -->
-  <section class="card"><h2>Versions &amp; rollback</h2>
+  <!-- ── Version control ── -->
+  <section class="card"><h2>Version Control</h2>
     <div id="upimgs" class="muted">&hellip;</div>
     <div class="rowline" style="border:0;margin-top:.5rem">
       <span class="muted">keep the last</span>
@@ -506,6 +506,11 @@ async function runGC(btn){
  if(await confirmM('Delete images beyond the retention count?',
    {title:'Prune images',confirmText:'Prune',danger:true}))
   act('/upgrade/gc',null,false,btn);}
+async function deleteImage(tag,v,btn){
+ if(await confirmM('Delete the v'+v+' image?\nYou will no longer be able to '+
+   'roll back to it.',
+   {title:'Delete image',confirmText:'Delete',danger:true}))
+  act('/upgrade/delete-image',{tag:tag},false,btn);}
 let upIdx=0;
 async function loadUpgrade(){
  try{
@@ -518,7 +523,8 @@ async function loadUpgrade(){
    '<div class="rowline"><code>v'+esc(i.version)+'</code>'+
    '<span class="muted">'+esc(i.arch)+'</span><span class="spacer"></span>'+
    (i.current?'<span class="badge b-ok">current</span>'
-    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\',this)">Roll back</button>')+
+    :'<button class="btn" onclick="rollback(\''+esc(i.version)+'\',this)">Roll back</button> '+
+     '<button class="btn" onclick="deleteImage(\''+esc(i.tag)+'\',\''+esc(i.version)+'\',this)">Delete</button>')+
    '</div>').join('')||'<span class="muted">no local images found</span>';
   if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
  }catch(e){

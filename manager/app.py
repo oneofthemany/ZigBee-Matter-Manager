@@ -144,6 +144,20 @@ async def upgrade_rollback(data: dict = Body(...),
                         status_code=200 if ok else 409)
 
 
+@app.post("/upgrade/delete-image")
+async def upgrade_delete_image(data: dict = Body(...),
+                               authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    tag = str(data.get("tag") or "").strip()
+    if not tag:
+        return JSONResponse({"success": False, "error": "tag required"},
+                            status_code=400)
+    ok, msg = await upgrade.delete_image(tag)
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 409)
+
+
 @app.post("/upgrade/gc")
 async def upgrade_gc(authorization: str = Header(default="")):
     if not upgrade.check_token(authorization):

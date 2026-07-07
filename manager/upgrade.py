@@ -193,6 +193,40 @@ async def rollback_to(version: str) -> Tuple[bool, str]:
     })
 
 
+async def delete_image(tag: str) -> Tuple[bool, str]:
+    """Delete a specific retained ZMM image by tag, directly via the runtime
+    socket (no host-watcher round-trip — GC stays trigger-based because it
+    applies retention policy; this is a targeted user action).
+
+    Guards: only version-tagged ZMM images (_TAG_RE), never the running
+    version, and no force — if a container still references the image (e.g.
+    the -previous container) the runtime's 409 is surfaced instead."""
+    m = _TAG_RE.search(tag or "")
+    if not m:
+        return False, "Not a ZMM version-tagged image"
+    if m.group("ver") == version_state().get("current_version"):
+        return False, f"v{m.group('ver')} is the running version — roll back first"
+    sock = detect_socket()
+    if not sock:
+        return False, "no container socket mounted"
+    try:
+        transport = httpx.AsyncHTTPTransport(uds=sock)
+        async with httpx.AsyncClient(transport=transport, base_url="http://d",
+                                     timeout=60.0) as cx:
+            r = await cx.delete(f"/images/{tag}")
+            if r.status_code == 200:
+                return True, f"Deleted image v{m.group('ver')}-{m.group('arch')}"
+            if r.status_code == 404:
+                return False, "Image not found (already deleted?)"
+            if r.status_code == 409:
+                return False, ("Image is in use by a container "
+                               "(likely the -previous container) — not deleted")
+            return False, f"delete failed: {r.status_code} {r.text[:200]}"
+    except Exception as e:
+        logger.warning("delete_image(%s) failed: %s", tag, e)
+        return False, str(e)
+
+
 def run_gc() -> Tuple[bool, str]:
     """Prune images beyond the configured retention (host do_gc)."""
     return write_trigger("gc", {})
