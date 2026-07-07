@@ -673,14 +673,49 @@ do_build() {
 
     write_status "building" "$target_version" 20 "Compiling image (varies by host hardware)" "" "$started_at"
 
-    # Run the build
-    if ! "$RUNTIME" build \
+    # Run the build in the BACKGROUND and watch for cancellation. The watcher
+    # is a single systemd oneshot: while this build runs, a cancel trigger
+    # can't start a second watcher instance, so this loop is the only thing
+    # that can act on it in time. (The polling fallback CAN run a second
+    # instance — that one handles cancel pre-lock and leaves CANCEL_MARKER.)
+    rm -f "$CANCEL_MARKER"
+    "$RUNTIME" build \
             --format docker \
             --build-arg BUILD_JOBS="$build_jobs" \
             --tag "$new_tag" \
             --file "$work_dir/Containerfile" \
-            "$work_dir" >>"$BUILD_LOG" 2>&1
-    then
+            "$work_dir" >>"$BUILD_LOG" 2>&1 &
+    local build_pid=$!
+    local cancelled=0
+    while kill -0 "$build_pid" 2>/dev/null; do
+        if [[ -f "$CANCEL_MARKER" ]]; then
+            cancelled=1
+        elif [[ -f "$TRIGGER_FILE" ]] && [[ "$(jq -r '.action // empty' \
+                "$TRIGGER_FILE" 2>/dev/null)" == "cancel" ]]; then
+            rm -f "$TRIGGER_FILE"
+            cancelled=1
+        fi
+        if (( cancelled )); then
+            log_to_build ""
+            log_to_build "Cancel requested — stopping build."
+            kill_build_tree "$build_pid"
+            cleanup_build_containers
+            break
+        fi
+        sleep 2
+    done
+    local build_rc=0
+    wait "$build_pid" 2>/dev/null || build_rc=$?
+    if [[ -f "$CANCEL_MARKER" ]]; then
+        cancelled=1
+    fi
+    rm -f "$CANCEL_MARKER"
+    if (( cancelled )); then
+        log_to_build "Build cancelled by user."
+        write_status "idle" "" 0 "Cancelled by user" ""
+        return 1
+    fi
+    if (( build_rc != 0 )); then
         log_to_build ""
         log_to_build "ERROR: Image build failed. See log above."
         write_status "failed" "$target_version" 50 "Build failed" "$RUNTIME build returned non-zero; see build.log" "$started_at"
@@ -1176,10 +1211,53 @@ do_rollback() {
 }
 
 # ── CANCEL: kill in-progress build ───────────────────────────────────────────
+# Runs WITHOUT the lock (see main) — cancel exists precisely to interrupt the
+# lock holder. Killing only the `podman build` client orphans the RUN step's
+# compile processes (crun + gcc/cmake keep burning CPU — same issue build.sh's
+# on_interrupt fixes for Ctrl+C), so: snapshot the client's whole descendant
+# tree first, kill it, then remove leftover buildah working containers.
+CANCEL_MARKER="${UPGRADE_DIR}/.cancel_requested"
+
+list_descendants() {
+    local kids k
+    kids=$(pgrep -P "$1" 2>/dev/null || true)
+    for k in $kids; do
+        echo "$k"
+        list_descendants "$k"
+    done
+}
+
+kill_build_tree() {
+    local all="" p
+    for p in $*; do
+        all+="$p $(list_descendants "$p" | tr '\n' ' ') "
+    done
+    [[ -z "${all// }" ]] && return 0
+    log "Killing build process tree: $all"
+    kill -TERM $all 2>/dev/null || true
+    sleep 3
+    kill -KILL $all 2>/dev/null || true
+}
+
+cleanup_build_containers() {
+    # Buildah working containers left by an interrupted RUN step (external to
+    # normal podman ps). Never matches the app/manager containers.
+    "$RUNTIME" ps -a --external --format '{{.ID}} {{.Names}}' 2>/dev/null \
+        | awk '/working-container|buildah/ {print $1}' \
+        | xargs -r "$RUNTIME" rm --force >/dev/null 2>&1 || true
+}
+
 do_cancel() {
     log "Cancel requested"
-    # Kill any running podman build for our image name
-    pkill -f "$RUNTIME build.*$IMAGE_NAME" 2>/dev/null || true
+    local pids
+    pids=$(pgrep -f "$RUNTIME build.*$IMAGE_NAME" 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+        # Tell the build instance this was a cancel, not a failure, BEFORE
+        # killing — its wait() returns immediately after.
+        touch "$CANCEL_MARKER"
+        kill_build_tree $pids
+        cleanup_build_containers
+    fi
     write_status "idle" "" 0 "Cancelled by user" ""
 }
 
@@ -1338,6 +1416,14 @@ main() {
 
     if ! consume_trigger; then
         # No trigger present
+        exit 0
+    fi
+
+    # Cancel must not need the lock — it exists to interrupt the lock holder
+    # (the polling fallback reaches here mid-build; systemd mode never does,
+    # so do_build's own watch loop handles the trigger there).
+    if [[ "$TRIGGER_ACTION" == "cancel" ]]; then
+        do_cancel
         exit 0
     fi
 

@@ -362,7 +362,9 @@ def write_trigger(action: str, payload: Optional[Dict[str, Any]] = None) -> bool
     if action not in VALID_ACTIONS:
         raise ValueError(f"Invalid action: {action}")
 
-    if os.path.exists(LOCK_FILE):
+    # "cancel" must bypass the live-lock refusal: it exists precisely to
+    # interrupt the lock holder (the in-progress build watches for it).
+    if os.path.exists(LOCK_FILE) and action != "cancel":
         # Auto-clear stale locks; only refuse if the lock is actually live
         if clear_stale_lock():
             pass  # cleared, fall through to write trigger

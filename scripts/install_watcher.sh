@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=4
+WATCHER_SCHEMA_VERSION=5
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
