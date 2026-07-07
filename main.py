@@ -867,7 +867,10 @@ async def service_worker():
     return FileResponse(
         'static/sw.js',
         media_type='application/javascript',
-        headers={'Service-Worker-Allowed': '/'}
+        # no-cache: browsers AND Cloudflare's edge must revalidate sw.js every
+        # time, otherwise a bumped CACHE_NAME never reaches clients and the
+        # PWA stays stuck on old cached assets.
+        headers={'Service-Worker-Allowed': '/', 'Cache-Control': 'no-cache'}
     )
 
 @app.get("/manifest.json")

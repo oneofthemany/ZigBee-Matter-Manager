@@ -2,7 +2,9 @@
    ZigBee Matter Manager — Service Worker (PWA)
    ============================================================ */
 
-var CACHE_NAME = 'zbm-v3';
+// Bump this on every frontend change — the `activate` handler purges any
+// cache whose name != CACHE_NAME, so a new version wipes stale cached assets.
+var CACHE_NAME = 'zbm-v4';
 
 // App shell files to cache on install
 var APP_SHELL = [
