@@ -233,6 +233,30 @@ detect_runtime() {
         die "Neither podman nor docker found. Please install one and re-run."
     fi
     ok "Container runtime: ${BOLD}$RUNTIME${NC} ($(${RUNTIME} --version 2>/dev/null | head -1))"
+    trap on_interrupt INT TERM
+}
+
+# Ctrl+C kills this script and the podman/docker build client, but the
+# in-flight RUN step (buildah/crun children compiling the SDK or OTBR)
+# survives as orphans and keeps burning CPU. Reap our descendants and
+# remove leftover build containers so cancellation actually cancels.
+on_interrupt() {
+    trap - INT TERM
+    echo
+    warn "Interrupted — stopping build processes..."
+    local kids
+    kids=$(pgrep -P $$ | tr '\n' ' ')
+    if [[ -n "$kids" ]]; then
+        kill -TERM $kids 2>/dev/null || true
+        sleep 2
+        kill -KILL $kids 2>/dev/null || true
+    fi
+    # Leftover working containers from the interrupted build (does NOT
+    # touch the running app container)
+    "$RUNTIME" ps -a --external --format '{{.ID}} {{.Names}}' 2>/dev/null \
+        | awk '/working-container|buildah/ {print $1}' \
+        | xargs -r "$RUNTIME" rm --force >/dev/null 2>&1 || true
+    exit 130
 }
 
 # =============================================================================
@@ -495,14 +519,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
     && rm -rf /var/lib/apt/lists/*
 
-# cloudflared — static Go binary for the managed remote-access tunnel
-# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
-RUN ARCH=$(dpkg --print-architecture) \
-    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
-         -o /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/cloudflared \
-    && /usr/local/bin/cloudflared --version
-
 # Fetch and install Silicon Labs packages matching Bookworm
 RUN DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SiliconLabs/simplicity_sdk/releases/latest | jq -r '.assets[] | select(.name=="debian-bookworm.zip") | .browser_download_url') \
     && wget "$DOWNLOAD_URL" -O debian-bookworm.zip \
@@ -608,6 +624,16 @@ DOCKERFILE_NOAPPENDER
 
     # Part 3 — application source and final image config (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_BOTTOM'
+
+# cloudflared — static Go binary for the managed remote-access tunnel
+# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
+# Deliberately placed late in the file: a tiny download layer here keeps
+# the heavy SDK/OTBR/pip layers above fully cached.
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+         -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared \
+    && /usr/local/bin/cloudflared --version
 
 # Application source
 COPY . .
