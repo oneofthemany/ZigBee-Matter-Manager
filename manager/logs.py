@@ -7,8 +7,8 @@ Two sources, both available even when the app container is down:
     readable regardless of app/container state. Streams tail + follow, and
     survives log rotation (reopens when the file shrinks or is replaced).
   - **Container logs**: ``/containers/{name}/logs`` over the runtime socket
-    (same mechanism as manager.containers). Only this deployment's containers
-    (ZMM_CONTAINER_NAME prefix) are allowed.
+    (same mechanism as manager.containers). Only containers visible to
+    manager.containers (deployment prefix + ZMM_EXTRA_CONTAINERS) are allowed.
 
 Streams are Server-Sent Events (one ``data:`` event per log line) so the
 dashboard can use a plain EventSource. Generators end when the client
@@ -23,7 +23,7 @@ from typing import AsyncIterator, Dict, List
 
 import httpx
 
-from manager.containers import APP_CONTAINER, detect_socket
+from manager.containers import detect_socket, visible_container
 
 logger = logging.getLogger("manager.logs")
 
@@ -59,7 +59,7 @@ def resolve_log_file(name: str) -> Path | None:
 
 def allowed_container(name: str) -> bool:
     """Same visibility rule as manager.containers.list_containers."""
-    return bool(name) and "/" not in name and name.startswith(APP_CONTAINER)
+    return visible_container(name)
 
 
 def _sse(line: str) -> str:

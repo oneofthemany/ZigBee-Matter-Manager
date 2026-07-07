@@ -273,6 +273,31 @@ dialog .remember input{accent-color:var(--honey)}
   </section>
 </div>
 
+<!-- ── AI models (Ollama) — hidden unless the ollama container/volume exists ── -->
+<section id="ollamaCard" class="card" hidden>
+  <h2>AI models <span class="hint">— ollama sibling container</span></h2>
+  <div class="rowline" style="border:0">
+    <span id="olInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn" id="olUpdateBtn" onclick="updateOllama(this)">Update Ollama</button>
+  </div>
+  <div id="olMissing" class="muted" hidden style="margin:.2rem 0 .5rem">
+    container missing &mdash; <strong>Update Ollama</strong> will recreate it
+    (models are safe in the <code>ollama-models</code> volume)</div>
+  <div class="scroll"><table class="bk">
+    <thead><tr><th>model</th><th>size</th><th>modified</th><th></th><th></th></tr></thead>
+    <tbody id="olRows"><tr><td colspan="5" class="muted">&hellip;</td></tr></tbody>
+  </table></div>
+  <div class="rowline" style="border:0;margin-top:.5rem">
+    <input id="olPull" type="text" style="width:16rem;max-width:100%"
+           placeholder="model to pull (e.g. qwen2.5:3b)">
+    <button class="btn primary" id="olPullBtn" onclick="pullModel(this)">Pull</button>
+    <span class="spacer"></span>
+    <span id="olTotals" class="muted"></span>
+  </div>
+  <pre id="olJob" class="term"></pre>
+</section>
+
 <!-- ── Live logs ── -->
 <section class="card"><h2>Live logs <span class="hint">— streams only while open</span></h2>
   <div id="logbtns" class="chips muted">&hellip;</div>
@@ -473,6 +498,82 @@ async function loadUpgrade(){
   setCell('cUp','mut','unavailable','');
  }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
 loadUpgrade();
+
+/* ── AI models (Ollama) — 5s poll, 2s while a pull/update job runs ─────── */
+function fmtB(n){n=Number(n)||0;if(!n)return '0 B';
+ const u=['B','KB','MB','GB','TB'];let i=0;
+ while(n>=1024&&i<u.length-1){n/=1024;i++;}
+ return (i&&n<10?n.toFixed(1):Math.round(n))+' '+u[i];}
+let olIdx=0,olPrevJob='';
+async function pullModel(btn){
+ const m=$('olPull').value.trim();
+ if(!m){toast('Enter a model name to pull','err');return;}
+ const d=await act('/ollama/models/pull',{model:m},false,btn);
+ if(d&&d.success)$('olPull').value='';}
+async function deleteModel(m,btn){
+ if(await confirmM('Delete model '+m+' from Ollama?\nThis frees its disk space.',
+   {title:'Delete model',confirmText:'Delete',danger:true}))
+  act('/ollama/models/delete',{model:m},false,btn);}
+async function updateOllama(btn){
+ if(await confirmM('Pull the latest Ollama image and recreate the container?\n'+
+   'Models are kept in the ollama-models volume. The watchdog stands down '+
+   'while this runs.',
+   {title:'Update Ollama',confirmText:'Update',danger:true}))
+  act('/ollama/update',null,false,btn);}
+async function loadOllama(){
+ let delay=5000;
+ try{
+  const r=await fetch('/ollama');if(!r.ok)throw 0;const d=await r.json();
+  olIdx=0;
+  const card=$('ollamaCard');
+  card.hidden=!d.installed;
+  if(!d.installed){olPrevJob='';return;}
+  $('olMissing').hidden=!!d.present;
+  const img=d.image||{};
+  $('olInfo').innerHTML=
+   (d.healthy?'<span class="badge b-ok">running</span> ':'')+
+   (d.version?('Ollama v'+esc(d.version)+' &middot; '):'')+
+   (d.present&&!d.running?'<strong>stopped</strong> &middot; ':'')+
+   (img.id?('image <code>'+esc(img.id)+'</code>'+
+    (img.created?(' ('+esc(img.created)+')'):'')):'');
+  const models=d.models||[];
+  $('olRows').innerHTML=models.map(m=>
+   '<tr><td>'+esc(m.name)+'</td>'+
+   '<td class="muted">'+fmtB(m.size)+'</td>'+
+   '<td class="muted">'+esc(m.modified||'')+'</td>'+
+   '<td>'+(m.loaded?'<span class="badge b-ok">loaded</span>':'')+'</td>'+
+   '<td style="text-align:right"><button class="btn ol-act" '+
+   'onclick="deleteModel(\''+esc(m.name)+'\',this)">Delete</button></td></tr>')
+   .join('')||('<tr><td colspan="5" class="muted">'+
+    (d.running?'no models pulled yet':'ollama is not running')+'</td></tr>');
+  $('olTotals').textContent=models.length
+   ?(models.length+' model'+(models.length>1?'s':'')+' · '+fmtB(d.disk_bytes)+
+     ' in ollama-models'):'';
+  const job=d.job;
+  const running=!!(job&&job.status==='running');
+  if(running)delay=2000;
+  $('olUpdateBtn').disabled=running;$('olPullBtn').disabled=running;
+  document.querySelectorAll('.ol-act').forEach(b=>b.disabled=running);
+  const jv=$('olJob');
+  if(job&&(running||Date.now()/1000-(job.finished||0)<120)){
+   jv.style.display='block';
+   const stick=jv.scrollTop+jv.clientHeight>=jv.scrollHeight-8;
+   jv.textContent='── '+job.action+(job.model?(' '+job.model):'')+' ['+job.status+'] ──\n'+
+    (job.log||[]).slice(-30).join('\n');
+   if(stick)jv.scrollTop=jv.scrollHeight;
+  }else jv.style.display='none';
+  // Toast once when a job we watched finishes.
+  const key=job?(job.started+':'+job.status):'';
+  if(olPrevJob&&olPrevJob.endsWith(':running')&&key&&!key.endsWith(':running')
+     &&key.split(':')[0]===olPrevJob.split(':')[0])
+   toast('Ollama '+job.action+' '+(job.status==='done'?'finished':'failed'),
+         job.status==='done'?'ok':'err');
+  olPrevJob=key;
+ }catch(e){
+  olIdx=Math.min(olIdx+1,BACKOFF.length-1);
+  delay=Math.max(5000,BACKOFF[olIdx]);
+ }finally{setTimeout(loadOllama,delay);}}
+loadOllama();
 
 /* ── live logs ─────────────────────────────────────────────────────────── */
 let es=null,esBtn=null;const MAX_LOG_LINES=2000;

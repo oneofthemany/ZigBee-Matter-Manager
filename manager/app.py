@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import containers, logs, recovery, upgrade, watchdog
+from manager import containers, logs, ollama, recovery, upgrade, watchdog
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -66,7 +66,8 @@ async def status():
     return {"app": app_health,
             "containers": await containers.list_containers(),
             "watchdog": watchdog.get_state(),
-            "recovery": recovery.state(app_ok=app_health.get("ok"))}
+            "recovery": recovery.state(app_ok=app_health.get("ok")),
+            "ollama": await ollama.summary()}
 
 
 @app.get("/healthz")
@@ -148,6 +149,45 @@ async def upgrade_gc(authorization: str = Header(default="")):
         return _unauthorized()
     ok, msg = upgrade.run_gc()
     return JSONResponse({"success": ok, "message": msg},
+                        status_code=200 if ok else 409)
+
+
+# ── Ollama: container status, model management, image update ─────────────────
+# Reads are open like the rest of the manager; pull/delete/update need the token.
+
+@app.get("/ollama")
+async def ollama_detail():
+    """Full card payload: models (+loaded set), disk usage, image, job log."""
+    return await ollama.detail()
+
+
+@app.post("/ollama/models/pull")
+async def ollama_pull(data: dict = Body(...),
+                      authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = ollama.pull_model(str(data.get("model") or "").strip())
+    status = 200 if ok else (409 if "already running" in msg else 400)
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=status)
+
+
+@app.post("/ollama/models/delete")
+async def ollama_delete(data: dict = Body(...),
+                        authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = await ollama.delete_model(str(data.get("model") or "").strip())
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 400)
+
+
+@app.post("/ollama/update")
+async def ollama_update(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = ollama.start_update()
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
                         status_code=200 if ok else 409)
 
 
