@@ -83,6 +83,13 @@ _QUICK_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 _CONN_UP_RE = re.compile(r"Registered tunnel connection|Connection .* registered")
 _CONN_DOWN_RE = re.compile(r"Unregistered tunnel connection|connection .* lost")
 
+# Force the TCP-based http2 transport instead of cloudflared's default QUIC.
+# Some networks (router/ISP) drop or mangle the QUIC datagrams on UDP 7844,
+# which makes edge connections register and then immediately die ("datagram
+# manager encountered a failure", "failed to accept QUIC stream: Application
+# error 0x0 (remote)"). http2 keeps the tunnel on the more forgiving TCP path.
+_TUNNEL_PROTOCOL = "http2"
+
 
 @dataclass
 class RemoteAccessSettings:
@@ -115,6 +122,7 @@ class RemoteAccessManager:
 
         self._process: Optional[asyncio.subprocess.Process] = None
         self._monitor_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
         self._running = False
         self._shutdown = False
         self._restart_count = 0
@@ -122,7 +130,13 @@ class RemoteAccessManager:
         self._started_at: Optional[float] = None
         self._quick_url: Optional[str] = None
         self._connections = 0
+        self._last_healthy: Optional[float] = None
         self._last_error: Optional[str] = None
+        # Watchdog tunables: restart a connector that never registers with the
+        # edge (alive but 0 connections), which _monitor alone cannot detect
+        # because it only reacts to the process exiting.
+        self._health_grace_s = 45         # allow this long to get connection #1
+        self._health_check_s = 15         # how often the watchdog polls
         self._lock = asyncio.Lock()
 
     # ---- settings persistence -------------------------------------------
@@ -201,7 +215,7 @@ class RemoteAccessManager:
         return f"{scheme}://127.0.0.1:{self.origin_port}"
 
     def _build_command(self, path: str) -> list:
-        base = [path, "tunnel", "--no-autoupdate"]
+        base = [path, "tunnel", "--no-autoupdate", "--protocol", _TUNNEL_PROTOCOL]
         if self.settings.mode == "quick":
             cmd = base + ["--url", self._origin_url()]
         else:
@@ -262,7 +276,9 @@ class RemoteAccessManager:
         self._started_at = time.time()
         self._quick_url = None
         self._connections = 0
+        self._last_healthy = None
         self._monitor_task = asyncio.create_task(self._monitor())
+        self._watchdog_task = asyncio.create_task(self._watchdog(self._process))
 
         # Make sure the live resolver trusts CF-Connecting-IP arriving via
         # the local cloudflared, so remote clients aren't classified as LAN.
@@ -301,6 +317,7 @@ class RemoteAccessManager:
                                 f"{self._quick_url}")
                 if _CONN_UP_RE.search(text):
                     self._connections += 1
+                    self._last_healthy = time.time()
                 elif _CONN_DOWN_RE.search(text):
                     self._connections = max(0, self._connections - 1)
 
@@ -345,6 +362,50 @@ class RemoteAccessManager:
             logger.error(f"[remote-access] monitor error: {e}")
             self._running = False
 
+    async def _watchdog(self, proc: asyncio.subprocess.Process):
+        """
+        Recover a connector that is alive but never reaches the edge.
+
+        ``_monitor`` only reacts when cloudflared *exits*; a connector that
+        hangs after a QUIC/transport failure (0 edge connections, no further
+        output) would otherwise sit dead forever and the public hostname
+        returns Cloudflare Error 1033. We watch the connection count and, if
+        nothing registers within the grace window, terminate the process so
+        the normal ``_monitor`` restart path runs. Restarts are bounded by
+        ``_max_restarts`` there, so a genuinely-down network still gives up.
+        """
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(self._health_check_s)
+                if proc is not self._process or proc.returncode is not None:
+                    return  # superseded by a new spawn, or already exited
+                if self._connections > 0:
+                    continue  # healthy: at least one edge connection is up
+                reference = self._last_healthy or self._started_at or time.time()
+                if time.time() - reference < self._health_grace_s:
+                    continue  # still inside the first-connection grace window
+                logger.warning(
+                    f"[remote-access] connector reached no edge connections "
+                    f"within {self._health_grace_s}s — restarting a stuck "
+                    f"tunnel (PID {proc.pid})"
+                )
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    return
+                # Escalate if it ignores SIGTERM (the very hang we're recovering).
+                await asyncio.sleep(10)
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                return  # _monitor observes the exit and respawns
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[remote-access] watchdog error: {e}")
+
     async def stop(self):
         async with self._lock:
             await self._stop_locked()
@@ -361,6 +422,14 @@ class RemoteAccessManager:
             except asyncio.CancelledError:
                 pass
             self._monitor_task = None
+
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
 
         if self._process and self._process.returncode is None:
             logger.info(f"[remote-access] stopping cloudflared "
