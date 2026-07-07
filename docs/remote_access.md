@@ -21,18 +21,40 @@ Configured entirely from the UI: **Settings → Security → Remote Access**.
 
 - A free [Cloudflare account](https://dash.cloudflare.com/) with a
   domain added to it.
-- The `cloudflared` binary installed on the ZMM host
+- The `cloudflared` binary visible to the ZMM **process** — where that
+  is depends on how you run ZMM:
+
+  **Container install (build.sh — the default).** Images built by a
+  current `build.sh` already include `cloudflared`; just upgrade or
+  rebuild ZMM. Installing cloudflared on the host does *not* help —
+  the container can't see it. To retrofit a running container without
+  a rebuild, run this on the host:
+
+  ```bash
+  sudo podman exec -u root zigbee-matter-manager bash -c \
+    "curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-\$(dpkg --print-architecture) \
+     -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared"
+  ```
+
+  (swap `podman` for `docker` if that's your runtime; this survives
+  restarts but not an image rebuild)
+
+  **Running from source.** Install on the machine itself
   ([downloads](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)):
 
   ```bash
+  # Fedora/RHEL — repo install, dnf keeps it updated
+  curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | sudo tee /etc/yum.repos.d/cloudflared.repo
+  sudo dnf install cloudflared
+
   # Debian/Ubuntu (amd64)
   curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
   sudo dpkg -i cloudflared.deb
-
-  # Fedora/RHEL
-  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm -o cloudflared.rpm
-  sudo rpm -i cloudflared.rpm
   ```
+
+  The Remote Access tab detects your OS and whether ZMM is
+  containerised, and shows the matching commands whenever the binary
+  is missing.
 
   Do **not** run `cloudflared service install` — ZMM manages the
   process itself.
@@ -115,8 +137,10 @@ model):
 
 ## Troubleshooting
 
-- **"cloudflared binary not found"** — install it (see above) or set
-  an explicit path in the Remote Access settings.
+- **"cloudflared binary not found"** — if ZMM runs in a container
+  (the default), the binary must be *inside the container*; a host
+  install is invisible to it. See the container instructions above,
+  or set an explicit path under Advanced in the Remote Access settings.
 - **Exits immediately / restart loop** — almost always a bad or revoked
   token. Re-copy it from the dashboard. Check `logs/zigbee.log` for
   `[cloudflared]` lines.

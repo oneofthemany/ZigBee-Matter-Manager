@@ -66,10 +66,84 @@
 
         host.innerHTML =
             renderStatusCard(st) +
+            (!st.binary_path ? renderInstallCard(st) : '') +
             (isAdmin ? renderSettingsCard(st) : '') +
             renderHelpCard(st);
 
         bindActions(isAdmin);
+    }
+
+    // ----------------------------------------------------------
+    // Install instructions — tailored to where ZMM actually runs
+    // ----------------------------------------------------------
+
+    function installCommands(st) {
+        var env = st.environment || {};
+        var arch = env.arch === 'aarch64' ? 'arm64'
+                 : env.arch === 'x86_64' ? 'amd64'
+                 : (env.arch || 'amd64');
+        var dlBase = 'https://github.com/cloudflare/cloudflared/releases/latest/download/';
+
+        if (env.in_container) {
+            return {
+                title: 'ZMM is running inside a container',
+                note: 'Installing cloudflared on the host does not help — the ' +
+                      'container cannot see it. Run this <strong>on the host</strong> to drop the ' +
+                      'binary into the running container:',
+                cmd: 'sudo podman exec -u root zigbee-matter-manager bash -c \\\n' +
+                     '  "curl -fsSL ' + dlBase + 'cloudflared-linux-$(dpkg --print-architecture) \\\n' +
+                     '   -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared"',
+                after: 'This survives restarts but not an image rebuild. Recent versions of ' +
+                       'build.sh bake cloudflared into the image, so it becomes permanent on your ' +
+                       'next ZMM upgrade/rebuild. (Using docker instead of podman? Swap the command name.)',
+            };
+        }
+        var id = (env.os_id || '') + ' ' + (env.os_like || '');
+        if (/fedora|rhel|centos/.test(id)) {
+            return {
+                title: 'Install cloudflared (' + (env.os_pretty || 'Fedora/RHEL') + ')',
+                note: 'Add Cloudflare’s RPM repo so dnf keeps it updated:',
+                cmd: 'curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo | sudo tee /etc/yum.repos.d/cloudflared.repo\n' +
+                     'sudo dnf install cloudflared',
+                after: 'Then click the refresh button above.',
+            };
+        }
+        if (/debian|ubuntu/.test(id)) {
+            return {
+                title: 'Install cloudflared (' + (env.os_pretty || 'Debian/Ubuntu') + ')',
+                note: 'Grab the .deb for this machine (' + escape(arch) + '):',
+                cmd: 'curl -fsSL ' + dlBase + 'cloudflared-linux-' + arch + '.deb -o cloudflared.deb\n' +
+                     'sudo dpkg -i cloudflared.deb',
+                after: 'Then click the refresh button above.',
+            };
+        }
+        return {
+            title: 'Install cloudflared',
+            note: 'Download the static binary for this machine (' + escape(arch) + '):',
+            cmd: 'sudo curl -fsSL ' + dlBase + 'cloudflared-linux-' + arch + ' -o /usr/local/bin/cloudflared\n' +
+                 'sudo chmod +x /usr/local/bin/cloudflared',
+            after: 'Then click the refresh button above.',
+        };
+    }
+
+    function renderInstallCard(st) {
+        var i = installCommands(st);
+        return '' +
+        '<div class="card shadow-sm mb-4 border-warning">' +
+          '<div class="card-header bg-warning-subtle py-2">' +
+            '<span class="fw-bold"><i class="fas fa-download me-1"></i> ' + i.title + '</span>' +
+          '</div>' +
+          '<div class="card-body small">' +
+            '<p>' + i.note + '</p>' +
+            '<div class="position-relative">' +
+              '<pre class="bg-dark text-light p-3 rounded" style="white-space:pre-wrap;" id="ra-install-cmd">' +
+                escape(i.cmd) + '</pre>' +
+              '<button class="btn btn-sm btn-outline-light position-absolute top-0 end-0 m-2" id="ra-copy-btn" ' +
+                'title="Copy to clipboard"><i class="fas fa-copy"></i></button>' +
+            '</div>' +
+            '<p class="text-muted mb-0">' + i.after + '</p>' +
+          '</div>' +
+        '</div>';
     }
 
     function renderStatusCard(st) {
@@ -97,7 +171,7 @@
                   : '') + '</td></tr>'
             : '<tr><th class="text-muted">cloudflared</th>' +
               '<td><span class="badge bg-danger">not installed</span> ' +
-              '<small class="text-muted">see setup guide below</small></td></tr>';
+              '<small class="text-muted">install instructions below</small></td></tr>';
 
         return '' +
         '<div class="card shadow-sm mb-4">' +
@@ -184,6 +258,18 @@
                 'Public Hostname settings. Used for the status link above.</div>' +
             '</div>' +
 
+            '<div class="mb-3">' +
+              '<a class="small text-decoration-none" data-bs-toggle="collapse" href="#ra-advanced">' +
+                '<i class="fas fa-caret-right me-1"></i>Advanced</a>' +
+              '<div class="collapse" id="ra-advanced">' +
+                '<label class="form-label fw-bold mt-2" for="ra-binpath">cloudflared binary path</label>' +
+                '<input type="text" class="form-control" id="ra-binpath" ' +
+                  'value="' + escape(st.cloudflared_path || '') + '" ' +
+                  'placeholder="leave blank to auto-detect from PATH">' +
+                '<div class="form-text">Only needed if the binary lives somewhere unusual.</div>' +
+              '</div>' +
+            '</div>' +
+
             '<div id="ra-save-error" class="alert alert-danger py-2 small" style="display:none;"></div>' +
 
             '<div class="d-flex gap-2">' +
@@ -259,6 +345,18 @@
         var rb = document.getElementById('ra-refresh-btn');
         if (rb) rb.onclick = refresh;
 
+        var cp = document.getElementById('ra-copy-btn');
+        if (cp) cp.onclick = function () {
+            var pre = document.getElementById('ra-install-cmd');
+            if (!pre) return;
+            navigator.clipboard.writeText(pre.textContent).then(function () {
+                cp.innerHTML = '<i class="fas fa-check"></i>';
+                setTimeout(function () {
+                    cp.innerHTML = '<i class="fas fa-copy"></i>';
+                }, 1500);
+            });
+        };
+
         if (!isAdmin) return;
 
         // Token/hostname inputs only make sense in token mode
@@ -278,6 +376,7 @@
                 enabled: document.getElementById('ra-enabled').checked,
                 mode: document.getElementById('ra-mode-quick').checked ? 'quick' : 'token',
                 hostname: document.getElementById('ra-hostname').value.trim(),
+                cloudflared_path: document.getElementById('ra-binpath').value.trim(),
             };
             var tok = document.getElementById('ra-token').value.trim();
             if (tok) body.tunnel_token = tok;   // blank = keep existing

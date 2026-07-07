@@ -495,6 +495,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
     && rm -rf /var/lib/apt/lists/*
 
+# cloudflared — static Go binary for the managed remote-access tunnel
+# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+         -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared \
+    && /usr/local/bin/cloudflared --version
+
 # Fetch and install Silicon Labs packages matching Bookworm
 RUN DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SiliconLabs/simplicity_sdk/releases/latest | jq -r '.assets[] | select(.name=="debian-bookworm.zip") | .browser_download_url') \
     && wget "$DOWNLOAD_URL" -O debian-bookworm.zip \

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import re
 import shutil
 import time
@@ -45,6 +46,37 @@ from modules.auth_network import get_network_resolver
 logger = logging.getLogger("modules.remote_access")
 
 SETTINGS_PATH = Path("./data/remote_access.yaml")
+
+
+def detect_environment() -> dict:
+    """
+    Where is ZMM running? The UI uses this to show the right cloudflared
+    install instructions — a host-installed binary is invisible when ZMM
+    runs in a container, which is the usual deployment (build.sh).
+    """
+    os_release = {}
+    try:
+        with open("/etc/os-release") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    os_release[k] = v.strip('"')
+    except OSError:
+        pass
+    return {
+        "in_container": (
+            os.path.exists("/run/.containerenv")     # podman
+            or os.path.exists("/.dockerenv")         # docker
+        ),
+        "os_id": os_release.get("ID", ""),           # e.g. "debian", "fedora"
+        "os_like": os_release.get("ID_LIKE", ""),    # e.g. "rhel fedora"
+        "os_pretty": os_release.get("PRETTY_NAME", ""),
+        "arch": platform.machine(),                  # e.g. "x86_64", "aarch64"
+    }
+
+
+_ENVIRONMENT = detect_environment()
 
 _QUICK_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 # cloudflared logs one of these per edge connection (4 when healthy)
@@ -393,6 +425,7 @@ class RemoteAccessManager:
             "last_error": self._last_error,
             "binary_path": self.cloudflared_path(),
             "origin_url": self._origin_url(),
+            "environment": _ENVIRONMENT,
         }
 
 
