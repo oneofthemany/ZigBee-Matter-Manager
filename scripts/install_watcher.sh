@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=3
+WATCHER_SCHEMA_VERSION=4
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
@@ -159,6 +159,21 @@ for script in upgrade.sh run_container.sh install_watcher.sh; do
     fi
 done
 
+# OS updates collector (schema 4) — non-fatal: an older source tree simply
+# won't get host OS update visibility, everything else still works.
+HAVE_OS_UPDATES=false
+if src=$(find_script "os_updates.sh"); then
+    install_file "$src" "${SCRIPTS_DIR}/os_updates.sh"
+    HAVE_OS_UPDATES=true
+    ok "Installed os_updates.sh -> ${SCRIPTS_DIR}/os_updates.sh"
+else
+    warn "os_updates.sh not found — host OS update checks will be unavailable."
+fi
+# The manager writes this file to request an immediate re-check; the path
+# unit below watches it. Must exist as a DIRECTORY parent before the path
+# unit starts, or systemd can't watch it.
+mkdir -p "${DATA_DIR}/data/os_updates"
+
 # build.sh is sourced by run_container.sh from $APP_DIR/build.sh. Keep it in
 # sync with the rest of the helpers — without this, a schema bump that
 # requires new run_container() behaviour would still pick up the OLD build.sh.
@@ -247,9 +262,57 @@ Unit=zmm-upgrade.service
 WantedBy=default.target
 PATHUNIT
 
+    if $HAVE_OS_UPDATES; then
+        cat > "$unit_dir/zmm-os-updates.service" <<SERVICE
+[Unit]
+Description=ZMM OS Updates Collector (oneshot, read-only)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/os_updates.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1 2 3
+# Metadata refresh can be slow on tiny boards; don't let a hang pile up.
+TimeoutStartSec=900
+SERVICE
+
+        cat > "$unit_dir/zmm-os-updates.timer" <<TIMER
+[Unit]
+Description=Periodic ZMM OS update check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+        cat > "$unit_dir/zmm-os-updates.path" <<PATHUNIT
+[Unit]
+Description=Watch for ZMM on-demand OS update checks
+
+[Path]
+# The :8001 manager writes this file when the user clicks "Check now".
+PathChanged=${DATA_DIR}/data/os_updates/refresh
+Unit=zmm-os-updates.service
+
+[Install]
+WantedBy=default.target
+PATHUNIT
+    fi
+
     systemctl --user daemon-reload
     systemctl --user enable --now zmm-upgrade.path
     ok "systemd user path unit enabled (event-driven)"
+    if $HAVE_OS_UPDATES; then
+        systemctl --user enable --now zmm-os-updates.timer zmm-os-updates.path
+        ok "OS updates collector enabled (6h timer + on-demand path unit)"
+    fi
 
     # Enable linger so it works without an active login session
     if command -v loginctl >/dev/null 2>&1; then
@@ -313,9 +376,58 @@ Unit=zmm-upgrade.service
 WantedBy=multi-user.target
 PATHUNIT
 
+    if $HAVE_OS_UPDATES; then
+        sudo tee "$unit_dir/zmm-os-updates.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM OS Updates Collector (oneshot, read-only)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=$USER
+ExecStart=${SCRIPTS_DIR}/os_updates.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1 2 3
+# Metadata refresh can be slow on tiny boards; don't let a hang pile up.
+TimeoutStartSec=900
+SERVICE
+
+        sudo tee "$unit_dir/zmm-os-updates.timer" >/dev/null <<TIMER
+[Unit]
+Description=Periodic ZMM OS update check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+        sudo tee "$unit_dir/zmm-os-updates.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM on-demand OS update checks
+
+[Path]
+# The :8001 manager writes this file when the user clicks "Check now".
+PathChanged=${DATA_DIR}/data/os_updates/refresh
+Unit=zmm-os-updates.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now zmm-upgrade.path
     ok "systemd system path unit enabled (event-driven)"
+    if $HAVE_OS_UPDATES; then
+        sudo systemctl enable --now zmm-os-updates.timer zmm-os-updates.path
+        ok "OS updates collector enabled (6h timer + on-demand path unit)"
+    fi
 }
 
 # ── Polling fallback: simple systemd-free watcher ────────────────────────────
@@ -329,11 +441,22 @@ DATA_DIR="${ZMM_DATA_DIR:-/opt/.zigbee-matter-manager}"
 APP_DIR="${ZMM_APP_DIR:-/opt/.zigbee-matter-manager/upgrade_build}"
 UPGRADE_SH="${DATA_DIR}/scripts/upgrade.sh"
 TRIGGER="${DATA_DIR}/data/upgrade/trigger"
+OS_UPDATES_SH="${DATA_DIR}/scripts/os_updates.sh"
+OS_JSON="${DATA_DIR}/data/os_updates.json"
+OS_TRIGGER="${DATA_DIR}/data/os_updates/refresh"
+OS_INTERVAL=21600   # re-check the OS for updates every 6h
 INTERVAL=5
 
 while true; do
     if [[ -f "$TRIGGER" ]]; then
         ZMM_DATA_DIR="$DATA_DIR" ZMM_APP_DIR="$APP_DIR" bash "$UPGRADE_SH" || true
+    fi
+    # OS updates: on demand (manager wrote the refresh trigger) or every 6h.
+    if [[ -x "$OS_UPDATES_SH" ]]; then
+        last=$(stat -c %Y "$OS_JSON" 2>/dev/null || echo 0)
+        if [[ -f "$OS_TRIGGER" ]] || (( $(date +%s) - last > OS_INTERVAL )); then
+            ZMM_DATA_DIR="$DATA_DIR" bash "$OS_UPDATES_SH" || true
+        fi
     fi
     sleep "$INTERVAL"
 done

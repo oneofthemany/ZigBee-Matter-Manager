@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import containers, logs, ollama, recovery, upgrade, watchdog
+from manager import containers, host, logs, ollama, recovery, upgrade, watchdog
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -67,7 +67,8 @@ async def status():
             "containers": await containers.list_containers(),
             "watchdog": watchdog.get_state(),
             "recovery": recovery.state(app_ok=app_health.get("ok")),
-            "ollama": await ollama.summary()}
+            "ollama": await ollama.summary(),
+            "host": host.summary()}
 
 
 @app.get("/healthz")
@@ -189,6 +190,24 @@ async def ollama_update(authorization: str = Header(default="")):
     ok, msg = ollama.start_update()
     return JSONResponse({"success": ok, "message" if ok else "error": msg},
                         status_code=200 if ok else 409)
+
+
+# ── Host OS: pending updates as collected by scripts/os_updates.sh ───────────
+# Read-only towards the host; "check now" just touches the collector's
+# path-unit trigger. Applying updates stays a manual host task by design.
+
+@app.get("/host/os-updates")
+async def host_os_updates():
+    return host.detail()
+
+
+@app.post("/host/os-updates/refresh")
+async def host_os_updates_refresh(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = host.request_refresh()
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 500)
 
 
 # ── Disaster recovery (CP2b) — replaces the in-app recovery_server ───────────

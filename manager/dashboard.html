@@ -254,6 +254,8 @@ dialog .remember input{accent-color:var(--honey)}
     <b>watchdog</b><span class="v" id="cWdV">&hellip;</span><span class="s" id="cWdS"></span></div></div>
   <div class="cell mut born" id="cUp"><div class="in">
     <b>upgrade</b><span class="v" id="cUpV">&hellip;</span><span class="s" id="cUpS"></span></div></div>
+  <div class="cell mut born" id="cHost"><div class="in">
+    <b>host os</b><span class="v" id="cHostV">&hellip;</span><span class="s" id="cHostS"></span></div></div>
 </div>
 
 <div class="grid">
@@ -272,6 +274,21 @@ dialog .remember input{accent-color:var(--honey)}
     </div>
   </section>
 </div>
+
+<!-- ── Host OS updates — data from the host-side collector ────────────────── -->
+<section class="card">
+  <h2>Host OS <span class="hint">— update check runs on the host every 6h</span></h2>
+  <div class="rowline" style="border:0">
+    <span id="hoInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn" id="hoCheckBtn" onclick="checkHostNow(this)">Check now</button>
+  </div>
+  <div class="scroll" id="hoScroll" hidden><table class="bk">
+    <thead><tr><th>package</th><th>installed</th><th>available</th></tr></thead>
+    <tbody id="hoRows"></tbody>
+  </table></div>
+  <div id="hoFoot" class="muted" style="margin-top:.4rem"></div>
+</section>
 
 <!-- ── AI models (Ollama) — hidden unless the ollama container/volume exists ── -->
 <section id="ollamaCard" class="card" hidden>
@@ -447,6 +464,17 @@ async function refresh(){
   const wcls=ws==='ok'?'ok':(ws==='unhealthy'||ws==='exhausted'?'bad'
    :(ws==='restarted'||ws==='recovery'?'warn':'mut'));
   setCell('cWd',wcls,ws,w.restarts?w.restarts+' restart(s)':(w.last_action||''));
+  const h=d.host||{};
+  if(h.status==='attention'){
+   const why=h.security_count?(h.security_count+' security'):
+    (h.reboot_required?'reboot required':'kernel pending');
+   setCell('cHost','bad',why,(h.update_count||0)+' update(s)'+(h.stale?' · stale':''));
+  }else if(h.status==='updates')
+   setCell('cHost','warn',h.update_count+' update'+(h.update_count>1?'s':''),
+    h.stale?'stale check':'available');
+  else if(h.status==='ok')setCell('cHost','ok','up to date',h.stale?'stale check':'');
+  else if(h.status==='unsupported')setCell('cHost','mut','unsupported',h.error||'');
+  else setCell('cHost','mut','no data','collector not installed?');
   const c=d.containers||{};
   const list=c.containers||[];
   syncContainerCells(c.available?list:[]);
@@ -498,6 +526,56 @@ async function loadUpgrade(){
   setCell('cUp','mut','unavailable','');
  }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
 loadUpgrade();
+
+/* ── Host OS updates — 60s poll, 5s after "Check now" until data changes ── */
+function ago(sec){if(sec==null)return '';
+ if(sec<90)return sec+'s ago';
+ if(sec<5400)return Math.round(sec/60)+'m ago';
+ if(sec<129600)return Math.round(sec/3600)+'h ago';
+ return Math.round(sec/86400)+'d ago';}
+let hoFast=0,hoLastChecked=null;
+async function checkHostNow(btn){
+ const d=await act('/host/os-updates/refresh',null,false,btn);
+ if(d&&d.success)hoFast=24;}
+async function loadHost(){
+ let delay=60000;
+ try{
+  const r=await fetch('/host/os-updates');if(!r.ok)throw 0;const d=await r.json();
+  if(!d.available){
+   $('hoInfo').innerHTML='no data yet &mdash; the collector installs with the '+
+    'upgrade watcher; re-run <code>install_watcher.sh</code> on the host (or upgrade)';
+   $('hoScroll').hidden=true;$('hoFoot').textContent='';
+  }else{
+   const bits=[];
+   if(d.os)bits.push(esc(d.os));
+   if(d.kernel_running)bits.push('kernel <code>'+esc(d.kernel_running)+'</code>'+
+    (d.kernel_pending?(' &rarr; <code>'+esc(d.kernel_latest||'?')+'</code> installed'):''));
+   if(d.reboot_required)bits.push('<strong style="color:var(--bad)">reboot required</strong>');
+   if(d.checked_at)bits.push('checked '+ago(d.age_seconds)+
+    (d.stale?' <strong style="color:var(--warn)">(stale)</strong>':''));
+   if(d.refresh_pending)bits.push('check requested&hellip;');
+   $('hoInfo').innerHTML=bits.join(' &middot; ')||'&hellip;';
+   const pk=d.packages||[];
+   $('hoScroll').hidden=!pk.length;
+   $('hoRows').innerHTML=pk.map(p=>
+    '<tr><td>'+esc(p.name)+'</td><td class="muted">'+esc(p.current||'—')+
+    '</td><td>'+esc(p.candidate||'')+'</td></tr>').join('');
+   $('hoFoot').innerHTML=d.status==='unsupported'
+    ?esc(d.error||'unsupported package manager')
+    :((d.update_count||0)+' update'+(d.update_count===1?'':'s')+' pending'+
+      (d.security_count?(' · <strong style="color:var(--bad)">'+d.security_count+
+       ' security</strong>'):'')+
+      (pk.length<(d.update_count||0)?(' · showing first '+pk.length):'')+
+      (d.error?(' · '+esc(d.error)):''));
+   // After "Check now": poll fast until a new checked_at lands.
+   if(hoFast>0){delay=5000;hoFast--;
+    if(hoLastChecked&&d.checked_at&&d.checked_at!==hoLastChecked){
+     toast('Host update check finished','ok');hoFast=0;}}
+   hoLastChecked=d.checked_at||hoLastChecked;
+  }
+ }catch(e){}
+ finally{setTimeout(loadHost,delay);}}
+loadHost();
 
 /* ── AI models (Ollama) — 5s poll, 2s while a pull/update job runs ─────── */
 function fmtB(n){n=Number(n)||0;if(!n)return '0 B';
