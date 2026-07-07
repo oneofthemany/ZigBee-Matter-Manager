@@ -289,6 +289,13 @@
     }
 
     function renderHelpCard(st) {
+        var origin = escape(st.origin_url);
+        var dash = 'https://dash.cloudflare.com/';
+        // A click-path breadcrumb (e.g. "Zero Trust → Networks → Connectors").
+        function crumb(path) {
+            return '<div class="mb-2 ms-1"><i class="fas fa-location-arrow text-primary me-1"></i>' +
+                   '<code>' + path + '</code></div>';
+        }
         return '' +
         '<div class="card shadow-sm">' +
           '<div class="card-header bg-light py-2">' +
@@ -296,26 +303,104 @@
               '<i class="fas fa-question-circle me-1"></i> Setup guide</a>' +
           '</div>' +
           '<div class="collapse" id="ra-help"><div class="card-body small">' +
-            '<p>The tunnel dials <em>out</em> to Cloudflare, so it works behind ' +
-            'NAT/CGNAT with no port-forwarding. Remote users just open the URL in a ' +
-            'browser and log in with their ZMM account.</p>' +
-            '<ol class="mb-2">' +
-              '<li>Install <code>cloudflared</code> on this host ' +
-                '(<a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/" ' +
-                'target="_blank" rel="noopener">download page</a>).</li>' +
-              '<li>In the Cloudflare dashboard: Zero Trust → Networks → Tunnels → ' +
-                'Create a tunnel (Cloudflared).</li>' +
-              '<li>Copy the connector token from the install command and paste it above.</li>' +
-              '<li>Add a Public Hostname pointing to <code>' + escape(st.origin_url) + '</code> ' +
-                'and enter the same hostname above.</li>' +
-              '<li>Save &amp; Apply.</li>' +
-            '</ol>' +
+
+            '<p>The tunnel dials <em>out</em> to Cloudflare, so it works behind NAT/CGNAT with ' +
+            'no port-forwarding. Remote users open your hostname in a browser and log in with ' +
+            'their ZMM account. Every step below is done at ' +
+            '<a href="' + dash + '" target="_blank" rel="noopener">dash.cloudflare.com</a>; ' +
+            'a first-time setup takes about 10 minutes.</p>' +
+
+            // 1. domain
+            '<p class="fw-bold mb-1">1. Add your domain to Cloudflare</p>' +
+            '<p class="mb-1">Skip if your domain is already on Cloudflare and showing ' +
+            '<em>Active</em>. Otherwise add it, then point your registrar’s nameservers at the two ' +
+            'Cloudflare gives you and wait for the zone to go Active.</p>' +
+            crumb('dash.cloudflare.com → Add a domain') +
+
+            // 2. cloudflared binary
+            '<p class="fw-bold mb-1">2. cloudflared binary</p>' +
+            '<p class="mb-2">' + (st.binary_path
+                ? '<code>cloudflared</code> already ships inside the ZMM image ' +
+                  '(<code>' + escape(st.binary_path) + '</code>) and ZMM runs it for you — nothing ' +
+                  'to install, and you do <em>not</em> need to run the install command Cloudflare ' +
+                  'shows in the next step.'
+                : 'Normally <code>cloudflared</code> ships inside the ZMM image, but this host is ' +
+                  'missing it — install it with the card above first.') + '</p>' +
+
+            // 3. tunnel + token
+            '<p class="fw-bold mb-1">3. Create the tunnel &amp; copy its token</p>' +
+            '<p class="mb-1">Create a <em>Cloudflared</em> connector and name it (e.g. ' +
+            '<code>zmm</code>). On the “install connector” screen, copy the long token — the value ' +
+            'after <code>--token</code> — and paste it into <strong>Tunnel token</strong> above.</p>' +
+            crumb('Zero Trust → Networks → Connectors → Create tunnel → Cloudflared') +
+
+            // 4. route + No TLS Verify (the critical step)
+            '<p class="fw-bold mb-1">4. Route the tunnel to ZMM ' +
+              '<span class="badge bg-danger">important</span></p>' +
+            '<p class="mb-1">Add a published-application route that sends your hostname to ZMM’s ' +
+            'local origin, and <strong>turn on No TLS Verify</strong>. ZMM serves the origin over ' +
+            'HTTPS with a <em>self-signed</em> certificate, so without this cloudflared refuses it ' +
+            'with <code>x509: certificate signed by unknown authority</code>. (The connector’s local ' +
+            '<code>--no-tls-verify</code> flag is ignored for token tunnels — it must be set here.)</p>' +
+            '<ul class="mb-1">' +
+              '<li>Set the <strong>Public hostname</strong> (e.g. <code>zmm.example.com</code>) — ' +
+                'this auto-creates the DNS record in step 5.</li>' +
+              '<li>Set the <strong>Service / URL</strong> to <code>' + origin + '</code>.</li>' +
+              '<li>Switch <strong>No TLS Verify</strong> on.</li>' +
+            '</ul>' +
+            crumb('Zero Trust → Networks → Connectors → your connector → ⋯ → Configure → ' +
+                  'Published application routes → ⋯ → Edit → Origin and request → ' +
+                  'Connection settings → TLS → No TLS Verify') +
+
+            // 5. DNS
+            '<p class="fw-bold mb-1">5. Check the DNS record</p>' +
+            '<p class="mb-1">Step 4 normally creates this automatically. Confirm there is a ' +
+            '<strong>CNAME</strong> for your hostname pointing at ' +
+            '<code>&lt;tunnel-id&gt;.cfargotunnel.com</code>, <strong>Proxied</strong> (orange ' +
+            'cloud). If adding the hostname said “<em>A DNS record with this name already ' +
+            'exists</em>,” a stale record from an old tunnel is in the way — delete it here, then ' +
+            're-add the hostname so it recreates the CNAME against the current tunnel.</p>' +
+            crumb('dash.cloudflare.com → your domain → DNS → Records') +
+
+            // 6. Access (optional)
+            '<p class="fw-bold mb-1">6. Cloudflare Access — optional login gate</p>' +
+            '<p class="mb-1">ZMM already enforces password + TOTP MFA, so Access is optional. If a ' +
+            'Cloudflare login page appears — or you see “<em>That account does not have access</em>” ' +
+            '— an Access application is gating the hostname and either needs a policy that includes ' +
+            'your users, <em>or</em> can be removed entirely.</p>' +
+            '<p class="mb-1"><strong>To allow specific users</strong> (add an Allow policy, then ' +
+            'enable a login method such as One-time PIN or Google):</p>' +
+            crumb('Zero Trust → Access controls → Applications → your app → Access policies → ' +
+                  'Add a policy → Action: Allow → Include → Emails → add each user → Save') +
+            '<p class="mb-1"><strong>Or remove Access</strong> to land straight on the ZMM login:</p>' +
+            crumb('Zero Trust → Access controls → Applications → your app → ⋯ → Delete') +
+
+            // 7. finish in ZMM
+            '<p class="fw-bold mb-1">7. Finish in ZMM</p>' +
+            '<p class="mb-2">Back on this page: paste the token, enter the same <strong>Public ' +
+            'hostname</strong>, tick <strong>Enable remote access</strong>, and <strong>Save &amp; ' +
+            'Apply</strong>. The status card should show <span class="badge bg-success">Running</span> ' +
+            'with edge connections above zero.</p>' +
+
             '<div class="alert alert-info py-2 mb-2">' +
               '<i class="fas fa-shield-alt me-1"></i> Accounts and API tokens carrying the ' +
-              '<code>network:lan_only</code> scope are blocked from connecting through the ' +
-              'tunnel. Enable <strong>MFA</strong> for every account allowed in remotely ' +
+              '<code>network:lan_only</code> scope are blocked from connecting through the tunnel. ' +
+              'Enable <strong>MFA</strong> for every account allowed in remotely ' +
               '(Settings → User Accounts).' +
             '</div>' +
+
+            '<p class="fw-bold mb-1"><i class="fas fa-stethoscope me-1"></i>Troubleshooting</p>' +
+            '<ul class="mb-2">' +
+              '<li><strong>Error 1033 / “tunnel not found”</strong> → the hostname’s CNAME points ' +
+                'at a tunnel with no live connector (see step 5).</li>' +
+              '<li><strong>Cloudflare login / “That account does not have access”</strong> → an ' +
+                'Access policy issue (see step 6).</li>' +
+              '<li><strong>502 / origin unreachable</strong>, or ' +
+                '<strong>x509: certificate signed by unknown authority</strong> in the logs → ' +
+                '<strong>No TLS Verify</strong> is off (step 4), or ZMM is not listening on ' +
+                '<code>' + origin + '</code>.</li>' +
+            '</ul>' +
+
             '<p class="mb-0 text-muted">Prefer a private overlay network instead of a public URL? ' +
             'Tailscale/WireGuard works out of the box — see <code>docs/remote_access.md</code>.</p>' +
           '</div></div>' +
