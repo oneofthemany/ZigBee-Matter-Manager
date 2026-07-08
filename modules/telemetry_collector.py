@@ -19,6 +19,7 @@ PRUNE_INTERVAL = 86400       # seconds between retention prune runs (24h)
 DEFAULT_RETENTION_DAYS = 30
 APPENDER_FLUSH_INTERVAL = 5  # seconds — keeps History tab queries near-realtime
 SNAPSHOT_INTERVAL = 3600     # seconds between keep-alive state snapshots
+LINK_SAMPLE_INTERVAL = 300   # seconds between LQI/RSSI samples
 
 # Attributes that are metadata, not telemetry — never recorded.
 SKIP_ATTRS = {"manufacturer", "model", "power_source", "last_seen", "available"}
@@ -51,6 +52,7 @@ class TelemetryCollector:
             self._prune_task = asyncio.create_task(self._prune_loop())
             self._appender_flush_task = asyncio.create_task(self._appender_flush_loop())
             self._snapshot_task = asyncio.create_task(self._snapshot_loop())
+            self._link_task = asyncio.create_task(self._link_sample_loop())
             logger.info("Telemetry collector started")
 
     def stop(self):
@@ -58,7 +60,8 @@ class TelemetryCollector:
         self._running = False
         for task in (self._flush_task, self._prune_task,
                      getattr(self, '_appender_flush_task', None),
-                     getattr(self, '_snapshot_task', None)):
+                     getattr(self, '_snapshot_task', None),
+                     getattr(self, '_link_task', None)):
             if task:
                 task.cancel()
 
@@ -152,6 +155,67 @@ class TelemetryCollector:
 
         if written:
             logger.debug(f"State snapshot: {written} keep-alive rows written")
+
+    async def _link_sample_loop(self):
+        """
+        Sample link quality (LQI/RSSI) from zigpy every LINK_SAMPLE_INTERVAL.
+
+        zigpy updates `zigpy_dev.lqi`/`rssi` on every received frame, but
+        those values never flow through update_state — the device list reads
+        them live at serialisation time, so History had no rows for them.
+        This loop copies the live values into device state (so the History
+        dropdown sees them) and writes a row when the value changed; the
+        hourly keep-alive covers the unchanged case, and query-time
+        carry-forward fills the gaps in between.
+        """
+        await asyncio.sleep(90)
+
+        while self._running:
+            try:
+                self._sample_link_quality()
+            except Exception as e:
+                logger.debug(f"Link quality sample error: {e}")
+
+            try:
+                await asyncio.sleep(LINK_SAMPLE_INTERVAL)
+            except asyncio.CancelledError:
+                break
+
+    def _sample_link_quality(self):
+        """Record changed LQI/RSSI values for online devices."""
+        from modules.telemetry_db import write_device_state
+
+        if not hasattr(self, '_dedup_state'):
+            self._dedup_state: Dict[tuple, tuple] = {}
+
+        now = time.time()
+        for ieee, dev in (self._get_devices() or {}).items():
+            try:
+                if not getattr(dev, '_available', False):
+                    continue
+                zigpy_dev = getattr(dev, 'zigpy_dev', None)
+                if zigpy_dev is None:
+                    continue
+
+                for attr in ('lqi', 'rssi'):
+                    value = getattr(zigpy_dev, attr, None)
+                    if value is None:
+                        continue
+                    value = int(value)
+
+                    dev_state = getattr(dev, 'state', None)
+                    if isinstance(dev_state, dict):
+                        dev_state[attr] = value
+
+                    prev = self._dedup_state.get((ieee, attr))
+                    if prev is not None and prev[0] == value \
+                            and (now - prev[1]) < SNAPSHOT_INTERVAL:
+                        continue  # unchanged — hourly keep-alive covers it
+
+                    write_device_state(ieee, attr, value)
+                    self._dedup_state[(ieee, attr)] = (value, now)
+            except Exception as e:
+                logger.debug(f"[{ieee}] link quality sample error: {e}")
 
     async def _prune_loop(self):
         """Daily retention pruning."""
