@@ -355,6 +355,18 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        // Network tab relay — Bootstrap only fires shown.bs.tab on the button
+        // that was activated, so the already-active nested sub-tab (Thread /
+        // Spectrum / Security) never gets its event when the parent Network
+        // tab is shown. Re-dispatch on the active sub-tab so its lazy-loader runs.
+        const networkTab = document.querySelector('[data-bs-target="#settingsNetwork"]');
+        if (networkTab) {
+            networkTab.addEventListener('shown.bs.tab', () => {
+                const active = document.querySelector('#networkSubNav .nav-link.active');
+                if (active) active.dispatchEvent(new Event('shown.bs.tab'));
+            });
+        }
+
         // MQTT Explorer tab listener
         const mqttTabTrigger = document.querySelector('button[data-bs-target="#mqtt-explorer"], a[data-bs-target="#mqtt-explorer"]');
         if (mqttTabTrigger) {
