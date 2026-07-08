@@ -108,9 +108,9 @@ async def device_state_history(ieee: str, attribute: str = "state", hours: int =
 
 
 @router.get("/device/{ieee}/attributes")
-async def device_attributes(ieee: str, hours: int = 168):
-    """Distinct attribute names recorded for a device."""
-    hours = min(max(hours, 1), 168)
+async def device_attributes(ieee: str, hours: int = 720):
+    """Distinct attribute names recorded for a device (default: full 30d retention)."""
+    hours = min(max(hours, 1), 720)
     try:
         from modules.telemetry_db import query_device_attributes
         data = query_device_attributes(ieee=ieee, hours=hours)

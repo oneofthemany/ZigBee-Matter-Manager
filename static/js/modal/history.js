@@ -7,6 +7,11 @@
  */
 
 import { createChart } from '../chart-utils.js';
+import { state } from '../state.js';
+
+// Metadata keys never recorded by the backend (mirrors telemetry_collector
+// SKIP_ATTRS) — excluded when merging current state keys into the dropdown.
+const SKIP_ATTRS = new Set(['manufacturer', 'model', 'power_source', 'last_seen', 'available']);
 
 // Live ECharts instance for the numeric view; disposed/recreated each refresh.
 let _histChart = null;
@@ -48,11 +53,16 @@ export async function initHistoryTab(ieee) {
     const refreshBtn = document.getElementById('hist-refresh');
     if (!attrSel || !hoursSel) return;
 
-    // Populate attribute list
+    // Populate attribute list: everything recorded within retention (30d),
+    // merged with the device's current state keys so attributes that only
+    // gain rows via the hourly keep-alive snapshot are selectable at once.
     try {
-        const res = await fetch(`/api/telemetry/device/${ieee}/attributes?hours=168`);
+        const res = await fetch(`/api/telemetry/device/${ieee}/attributes?hours=720`);
         const json = await res.json();
-        const attrs = (json.success && json.attributes) ? json.attributes : [];
+        const recorded = (json.success && json.attributes) ? json.attributes : [];
+        const stateAttrs = Object.keys(state.deviceCache?.[ieee]?.state || {})
+            .filter(k => !SKIP_ATTRS.has(k) && !k.endsWith('_raw') && !k.startsWith('attr_'));
+        const attrs = [...new Set([...recorded, ...stateAttrs])].sort();
         if (!attrs.length) {
             document.getElementById('hist-chart-wrap').innerHTML =
                 '<div class="text-muted small text-center py-4">' +
@@ -162,7 +172,8 @@ function _buildHistChart(data, attr) {
                 const n = samplesByTs[ts];
                 const avg = p.value[1];
                 return `${when}<br/><strong>${attr}: ${avg == null ? '—' : Number(avg).toFixed(2)}</strong>`
-                    + (n != null ? `<br/><span style="opacity:.7">${n} samples</span>` : '');
+                    + (n > 0 ? `<br/><span style="opacity:.7">${n} samples</span>`
+                             : `<br/><span style="opacity:.7">carried forward</span>`);
             },
         },
         xAxis: { type: 'time', axisLabel: { fontSize: 9, hideOverlap: true } },

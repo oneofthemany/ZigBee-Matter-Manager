@@ -18,6 +18,10 @@ FLUSH_INTERVAL = 60          # seconds between packet stats flushes
 PRUNE_INTERVAL = 86400       # seconds between retention prune runs (24h)
 DEFAULT_RETENTION_DAYS = 30
 APPENDER_FLUSH_INTERVAL = 5  # seconds — keeps History tab queries near-realtime
+SNAPSHOT_INTERVAL = 3600     # seconds between keep-alive state snapshots
+
+# Attributes that are metadata, not telemetry — never recorded.
+SKIP_ATTRS = {"manufacturer", "model", "power_source", "last_seen", "available"}
 
 
 class TelemetryCollector:
@@ -46,13 +50,15 @@ class TelemetryCollector:
             self._flush_task = asyncio.create_task(self._flush_loop())
             self._prune_task = asyncio.create_task(self._prune_loop())
             self._appender_flush_task = asyncio.create_task(self._appender_flush_loop())
+            self._snapshot_task = asyncio.create_task(self._snapshot_loop())
             logger.info("Telemetry collector started")
 
     def stop(self):
         """Stop background tasks."""
         self._running = False
         for task in (self._flush_task, self._prune_task,
-                     getattr(self, '_appender_flush_task', None)):
+                     getattr(self, '_appender_flush_task', None),
+                     getattr(self, '_snapshot_task', None)):
             if task:
                 task.cancel()
 
@@ -84,6 +90,68 @@ class TelemetryCollector:
                 await asyncio.sleep(FLUSH_INTERVAL)
             except asyncio.CancelledError:
                 break
+
+    async def _snapshot_loop(self):
+        """
+        Hourly keep-alive snapshot of device state.
+
+        Recording is change-driven, so a static attribute (child_lock,
+        sensitivity, startup_behaviour, ...) only gets a row when the app
+        restarts — the History tab then shows "No data in this range" for
+        any window that doesn't include a restart. This loop re-writes the
+        current value of every state attribute that hasn't been written in
+        the last SNAPSHOT_INTERVAL seconds, so each attribute always has
+        recent rows and survives retention pruning.
+        """
+        await asyncio.sleep(120)  # let devices restore cached state first
+
+        while self._running:
+            try:
+                self._snapshot_states()
+            except Exception as e:
+                logger.debug(f"State snapshot error: {e}")
+
+            try:
+                await asyncio.sleep(SNAPSHOT_INTERVAL)
+            except asyncio.CancelledError:
+                break
+
+    def _snapshot_states(self):
+        """Write keep-alive rows for attributes with no recent write."""
+        from modules.telemetry_db import write_device_state
+
+        if not hasattr(self, '_dedup_state'):
+            self._dedup_state: Dict[tuple, tuple] = {}
+
+        now = time.time()
+        written = 0
+
+        for ieee, dev in (self._get_devices() or {}).items():
+            try:
+                if not getattr(dev, '_available', False):
+                    continue  # offline devices have nothing new to say
+                dev_state = getattr(dev, 'state', None)
+                if not isinstance(dev_state, dict):
+                    continue
+
+                for attr, value in list(dev_state.items()):
+                    if attr in SKIP_ATTRS:
+                        continue
+                    if attr.endswith('_raw') or attr.startswith('attr_'):
+                        continue
+
+                    prev = self._dedup_state.get((ieee, attr))
+                    if prev is not None and (now - prev[1]) < SNAPSHOT_INTERVAL:
+                        continue  # written recently — no keep-alive needed
+
+                    write_device_state(ieee, attr, value)
+                    self._dedup_state[(ieee, attr)] = (value, now)
+                    written += 1
+            except Exception as e:
+                logger.debug(f"[{ieee}] state snapshot error: {e}")
+
+        if written:
+            logger.debug(f"State snapshot: {written} keep-alive rows written")
 
     async def _prune_loop(self):
         """Daily retention pruning."""
@@ -155,7 +223,11 @@ class TelemetryCollector:
 
     # Per-device dedup state. Keyed by (ieee, attribute), value is
     # (last_numeric_or_str_value, last_ts_epoch). Trimmed lazily.
-    _DEDUP_WINDOW_SECONDS = 0.25  # collapse writes for same (ieee,attr,value)
+    # 2s window: the duplicate writes from the double record path
+    # (update_state + handle_device_update) arrive 0.25–1s apart in
+    # practice, and a same-value re-report within 2s carries no
+    # information — real value changes always write regardless.
+    _DEDUP_WINDOW_SECONDS = 2.0  # collapse writes for same (ieee,attr,value)
     # arriving within this many seconds
 
     def record_state_change(self, ieee: str, changed_attrs: Dict[str, Any]):
@@ -177,13 +249,12 @@ class TelemetryCollector:
         if not hasattr(self, '_dedup_state'):
             self._dedup_state: Dict[tuple, tuple] = {}
 
-        skip = {"manufacturer", "model", "power_source", "last_seen", "available"}
         now = time.time()
 
         try:
             from modules.telemetry_db import write_device_state
             for attr, value in changed_attrs.items():
-                if attr in skip:
+                if attr in SKIP_ATTRS:
                     continue
                 if attr.endswith('_raw') or attr.startswith('attr_'):
                     continue

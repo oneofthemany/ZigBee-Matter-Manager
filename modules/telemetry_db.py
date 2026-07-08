@@ -501,8 +501,12 @@ def query_device_state_history(ieee: str, attribute: str, hours: int = 24) -> Li
     """, [ieee, attribute]).fetchall()
     return [{"ts": r[0], "value": r[1], "numeric_val": r[2]} for r in result]
 
-def query_device_attributes(ieee: str, hours: int = 168) -> List[str]:
-    """Distinct attribute names recorded for a device within lookback."""
+def query_device_attributes(ieee: str, hours: int = 720) -> List[str]:
+    """
+    Distinct attribute names recorded for a device within lookback.
+    Default lookback matches the retention window (30 days) so attributes
+    only written at rare events (e.g. app restarts) still appear.
+    """
     db = _get_db()
     hours = int(hours)
     result = db.execute(f"""
@@ -520,6 +524,13 @@ def query_device_state_bucketed(ieee: str, attribute: str,
     """
     Time-bucketed aggregation of a numeric attribute for chart rendering.
     Falls back to the last string value per bucket for non-numeric attrs.
+
+    Carry-forward anchoring: attributes are recorded on change, so a
+    slow-changing attribute can have no rows inside the window even though
+    its value is known. If any row exists before the window start, a
+    synthetic samples=0 row with the last-known value is prepended at the
+    window start, and the newest known value is repeated at `now`, so the
+    chart draws a continuous line instead of "No data in this range".
     """
     db = _get_db()
     hours = int(hours)
@@ -539,7 +550,37 @@ def query_device_state_bucketed(ieee: str, attribute: str,
         ORDER BY bucket ASC
     """, [ieee, attribute]).fetchall()
     cols = ["ts", "avg", "min", "max", "samples", "last_str"]
-    return [dict(zip(cols, row)) for row in result]
+    rows = [dict(zip(cols, row)) for row in result]
+
+    window_start = datetime.now() - timedelta(hours=hours)
+
+    # Anchor at window start with the last value recorded before it.
+    if not rows or rows[0]["ts"] > window_start:
+        anchor = db.execute(f"""
+            SELECT value, numeric_val
+            FROM device_states
+            WHERE ieee = ? AND attribute = ?
+              AND ts < now() - INTERVAL '{hours} hours'
+            ORDER BY ts DESC
+            LIMIT 1
+        """, [ieee, attribute]).fetchone()
+        if anchor:
+            rows.insert(0, {
+                "ts": window_start,
+                "avg": anchor[1], "min": anchor[1], "max": anchor[1],
+                "samples": 0, "last_str": anchor[0],
+            })
+
+    # Extend the newest known value to `now` so the line spans the window.
+    if rows:
+        last = rows[-1]
+        rows.append({
+            "ts": datetime.now(),
+            "avg": last["avg"], "min": last["avg"], "max": last["avg"],
+            "samples": 0, "last_str": last["last_str"],
+        })
+
+    return rows
 
 
 def query_spectrum_history(hours: int = 24) -> List[Dict]:
