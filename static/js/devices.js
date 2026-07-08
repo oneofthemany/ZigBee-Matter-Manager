@@ -67,6 +67,13 @@ export function renderDeviceTable() {
         otherDevices = otherDevices.filter(state.deviceFilter);
     }
 
+    // Apply online/offline status filter
+    if (state.statusFilter === 'online') {
+        otherDevices = otherDevices.filter(d => d.available !== false);
+    } else if (state.statusFilter === 'offline') {
+        otherDevices = otherDevices.filter(d => d.available === false);
+    }
+
     // Update device count badge
     const countBadge = document.getElementById('deviceCount');
     if (countBadge) {
@@ -103,7 +110,10 @@ export function renderDeviceTable() {
 
     // 2. Render Other Devices
     if (otherDevices.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No devices paired.</td></tr>';
+        const filtered = state.deviceFilter || (state.statusFilter && state.statusFilter !== 'all');
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center text-muted">${
+            filtered ? 'No devices match the current filter.' : 'No devices paired.'
+        }</td></tr>`;
         return;
     }
 
@@ -205,6 +215,15 @@ export function renderDeviceTable() {
 }
 
 /**
+ * Handle the online/offline status filter dropdown
+ */
+export function filterByStatus() {
+    const select = document.getElementById('statusFilter');
+    state.statusFilter = select ? select.value : 'all';
+    renderDeviceTable();
+}
+
+/**
  * update states on device row as opposed to whole table render
  */
 
@@ -260,8 +279,14 @@ export function handleDeviceUpdate(payload) {
 
         try { dismissKnownDevices(state.devices); } catch(e) {}
 
-        // Update only this device's row, not the entire table
-        updateDeviceRow(state.devices[devIndex]);
+        // If availability changed while an online/offline filter is active,
+        // the row may need to appear or disappear — re-render the whole table
+        if (payload.data.available !== undefined && state.statusFilter !== 'all') {
+            renderDeviceTable();
+        } else {
+            // Update only this device's row, not the entire table
+            updateDeviceRow(state.devices[devIndex]);
+        }
 
         // Update router list if device type changed or availability changed
         populateRouterList();

@@ -153,6 +153,13 @@
                             <!-- Populated dynamically -->
                         </select>
                     </div>
+                    <div class="col-auto">
+                        <select id="statusFilter" class="form-select form-select-sm" onchange="filterByStatus()" style="min-width: 130px;" aria-label="Filter by status">
+                            <option value="all">Online &amp; Offline</option>
+                            <option value="online">Online only</option>
+                            <option value="offline">Offline only</option>
+                        </select>
+                    </div>
                     <div class="col-auto ms-auto">
                         <button class="btn btn-sm btn-primary" onclick="openTabManager()">
                             <i class="fas fa-folder-plus"></i> Manage Tabs

@@ -8,7 +8,7 @@
 import { state } from './state.js';
 import { updateLastSeenTimes } from './utils.js';
 import { initWS } from './websocket.js';
-import { fetchAllDevices } from './devices.js';
+import { fetchAllDevices, filterByStatus } from './devices.js';
 import { initGroups } from './groups.js';
 import { initMQTTExplorer, handleMQTTMessage, startMQTTStats, stopMQTTStats } from './mqtt-explorer.js';
 import { initEditor, getEditorInstance } from './editor.js';
@@ -125,6 +125,7 @@ import {
 window.openDeviceModal = openDeviceModal;
 window.renamePrompt = renamePrompt;
 window.fetchAllDevices = fetchAllDevices;
+window.filterByStatus = filterByStatus;
 window.getDeviceStateHtml = getDeviceStateHtml;
 window.cleanupOrphans = cleanupOrphans;
 

@@ -14,6 +14,7 @@ export const state = {
     isRestarting: false,
     pairingInterval: null,
     deviceFilter: null,
+    statusFilter: 'all',  // 'all' | 'online' | 'offline'
     controlInteractionActive: false,  // Prevents modal refresh during slider/picker interaction
     heatingManaged: { enabled: false, ieees: new Set() }  // IEEEs managed by heating controller
 };
