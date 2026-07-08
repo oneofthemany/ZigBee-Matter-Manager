@@ -94,9 +94,9 @@ function buildEditorHTML() {
     return `
     <div class="editor-layout d-flex" style="height: calc(100vh - 180px); min-height: 500px; max-height: calc(100vh - 180px); overflow: hidden;">
         <!-- Sidebar -->
-        <div class="editor-sidebar border-end" style="width: 260px; min-width: 200px; overflow-y: auto; background: #1e1e1e;">
-            <!-- Search + Create -->
-            <div class="p-2 border-bottom" style="background: #252526;">
+        <div class="editor-sidebar border-end d-flex flex-column" style="width: 260px; min-width: 200px; overflow: hidden; background: #1e1e1e;">
+            <!-- Search + Create (fixed header) -->
+            <div class="p-2 border-bottom flex-shrink-0" style="background: #252526;">
                 <div class="input-group input-group-sm mb-1">
                     <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
                            id="editorSearch" placeholder="Search files..."
@@ -132,8 +132,8 @@ function buildEditorHTML() {
                     </button>
                 </div>
             </div>
-            <!-- File tree -->
-            <div id="editorFileTree" class="p-1" style="font-size: 12px;"></div>
+            <!-- File tree (scrolls independently) -->
+            <div id="editorFileTree" class="p-1 flex-grow-1" style="font-size: 12px; overflow-y: auto; min-height: 0;"></div>
         </div>
 
         <!-- Main editor area -->
