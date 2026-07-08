@@ -1891,6 +1891,7 @@ class ZigbeeService(
                     "model": str(d.model) if d.model else "Unknown",
                     "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",
                     "lqi": getattr(d, 'lqi', 0) or 0,
+                    "rssi": getattr(d, 'rssi', None),
                     "last_seen_ts": zdev.last_seen,
                     "state": zdev.state,
                     "type": zdev.get_role(),

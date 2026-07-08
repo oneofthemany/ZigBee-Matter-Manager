@@ -186,6 +186,8 @@ function buildMeshUI() {
                                 <thead class="sticky-top">
                                     <tr>
                                         <th>Device</th>
+                                        <th class="text-end" data-sort-type="number">LQI</th>
+                                        <th class="text-end" data-sort-type="number">RSSI</th>
                                         <th class="text-end" data-sort-type="number">RX Packets</th>
                                         <th class="text-end" data-sort-type="number">TX Packets</th>
                                         <th class="text-end" data-sort-type="number">Total</th>
@@ -305,6 +307,7 @@ function initialiseMeshGraph(data) {
                 return `<strong>${n.friendly_name || n.id}</strong><br/>`
                     + `Role: ${n.role}<br/>`
                     + `LQI: ${n.lqi}<br/>`
+                    + `RSSI: ${n.rssi != null ? n.rssi + ' dBm' : '—'}<br/>`
                     + `NWK: ${n.network_address}<br/>`
                     + `Online: ${n.online ? 'Yes' : 'No'}<br/>`
                     + `RX: ${s.rx_packets || 0} · TX: ${s.tx_packets || 0}<br/>`
@@ -344,9 +347,13 @@ function populateConnectionTable(connections, nodes) {
     const tbody = document.getElementById('connectionTableBody');
     if (!tbody) return;
 
-    // Build online status lookup from nodes
+    // Build online status + RSSI lookups from nodes
     const onlineMap = {};
-    (nodes || []).forEach(n => { onlineMap[n.id] = n.online; });
+    const rssiMap = {};
+    (nodes || []).forEach(n => {
+        onlineMap[n.id] = n.online;
+        rssiMap[n.id] = n.rssi;
+    });
 
     if (!connections || connections.length === 0) {
         tbody.innerHTML = `
@@ -450,6 +457,7 @@ function populateConnectionTable(connections, nodes) {
                                         <th>Status</th>
                                         <th>Relationship</th>
                                         <th>LQI</th>
+                                        <th title="Device RSSI as received by the coordinator">RSSI</th>
                                         <th>Signal</th>
                                     </tr>
                                 </thead>
@@ -467,6 +475,7 @@ function populateConnectionTable(connections, nodes) {
                                             <td>${getStatusBadge(t.target_ieee)}</td>
                                             <td><span class="badge bg-secondary">${t.relationship}</span></td>
                                             <td class="${getLqiClass(t.lqi)} fw-bold">${t.lqi}</td>
+                                            <td>${rssiMap[t.target_ieee] != null ? `${rssiMap[t.target_ieee]} dBm` : '—'}</td>
                                             <td>${getSignalBars(t.lqi)}</td>
                                         </tr>
                                     `}).join('')}
@@ -615,6 +624,8 @@ function populatePacketStats(nodes, summary) {
                     <span class="fw-medium">${escapeHtml(node.friendly_name)}</span>${statusBadge}
                     <small class="text-muted d-block">${node.ieee_address.slice(-8)}</small>
                 </td>
+                <td class="text-end" data-sort-value="${node.lqi || 0}">${node.lqi || 0}</td>
+                <td class="text-end" data-sort-value="${node.rssi ?? -999}">${node.rssi != null ? `${node.rssi} dBm` : '—'}</td>
                 <td class="text-end" data-sort-value="${stats.rx_packets || 0}">${formatNumber(stats.rx_packets || 0)}</td>
                 <td class="text-end" data-sort-value="${stats.tx_packets || 0}">${formatNumber(stats.tx_packets || 0)}</td>
                 <td class="text-end fw-bold" data-sort-value="${stats.total_packets || 0}">${formatNumber(stats.total_packets || 0)}</td>

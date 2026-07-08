@@ -374,6 +374,9 @@ class DeviceLifecycleMixin:
 
         safe_mqtt_payload['available'] = zha_device.is_available()
         safe_mqtt_payload['lqi'] = getattr(zigpy_dev, 'lqi', 0) if zigpy_dev else 0
+        rssi = getattr(zigpy_dev, 'rssi', None) if zigpy_dev else None
+        if rssi is not None:
+            safe_mqtt_payload['rssi'] = rssi
 
         # Contact sensor HA value transforms
         contact_keys = [k for k in safe_mqtt_payload.keys() if k.startswith('contact_') and k.split('_')[-1].isdigit()]
@@ -428,6 +431,8 @@ class DeviceLifecycleMixin:
         cache_update = changed_data.copy()
         cache_update['available'] = zha_device.is_available()
         cache_update['lqi'] = getattr(zigpy_dev, 'lqi', 0) if zigpy_dev else 0
+        if rssi is not None:
+            cache_update['rssi'] = rssi
         self.state_cache[ieee].update(sanitise_device_state(cache_update))
         self._cache_dirty = True
 

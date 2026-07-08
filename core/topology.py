@@ -77,6 +77,7 @@ class TopologyMixin:
                 "manufacturer": str(d.manufacturer) if d.manufacturer else "Unknown",
                 "model": str(d.model) if d.model else "Unknown",
                 "lqi": getattr(d, 'lqi', 0) or 0,
+                "rssi": getattr(d, 'rssi', None),
                 "online": zdev.is_available(),
                 "polling_interval": self.polling_scheduler._intervals.get(ieee, 0),
                 "packet_stats": {

@@ -176,7 +176,7 @@ export function renderDeviceTable() {
             <td class="align-middle small">
                 <div>${d.model || '?'}</div>
             </td>
-            <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${getLqiBadge(d.lqi)}</td>
+            <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${getLqiBadge(d.lqi)}${d.rssi != null ? `<small class="text-muted d-block">${d.rssi} dBm</small>` : ''}</td>
             <td class="last-seen align-middle" data-ts="${d.last_seen_ts}" data-sort-value="${d.last_seen_ts}">${timeAgo(d.last_seen_ts)}</td>
              <td class="align-middle device-status-badges" data-sort-value="${d.available !== false ? 1 : 0}">
                  ${statusHtml}
@@ -242,6 +242,14 @@ function updateDeviceRow(device) {
         lastSeenCell.innerText = timeAgo(device.last_seen_ts);
     }
 
+    // Update signal (LQI badge + RSSI sub-text)
+    const lqiCell = row.querySelector('.device-lqi');
+    if (lqiCell && device.lqi !== undefined) {
+        lqiCell.dataset.sortValue = device.lqi;
+        lqiCell.innerHTML = getLqiBadge(device.lqi)
+            + (device.rssi != null ? `<small class="text-muted d-block">${device.rssi} dBm</small>` : '');
+    }
+
     // Mark for re-enhancement
     row.dataset.enhanced = 'false';
 
@@ -273,6 +281,7 @@ export function handleDeviceUpdate(payload) {
         if (payload.data.last_seen) state.devices[devIndex].last_seen_ts = payload.data.last_seen;
         if (payload.data.available !== undefined) state.devices[devIndex].available = payload.data.available;
         if (payload.data.lqi !== undefined) state.devices[devIndex].lqi = payload.data.lqi;
+        if (payload.data.rssi !== undefined) state.devices[devIndex].rssi = payload.data.rssi;
 
         // Update the cache as well
         state.deviceCache[payload.ieee] = state.devices[devIndex];
