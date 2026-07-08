@@ -201,11 +201,11 @@ class OccupancySensingHandler(ClusterHandler):
 
             if attrid == self.ATTR_OCCUPANCY:
                 # ===== ADD DIAGNOSTIC =====
-                import traceback
-                caller = ''.join(traceback.format_stack()[-4:-1])  # Get calling function
-                logger.warning(f"[{self.device.ieee}] Occupancy attribute_updated called, "
-                               f"value={value}, is_occupied={bool(value & 0x01)}, "
-                               f"caller_snippet={caller[-200:]}")  # Last 200 chars of stack
+                #import traceback
+                #caller = ''.join(traceback.format_stack()[-4:-1])  # Get calling function
+                #logger.warning(f"[{self.device.ieee}] Occupancy attribute_updated called, "
+                #               f"value={value}, is_occupied={bool(value & 0x01)}, "
+                #               f"caller_snippet={caller[-200:]}")  # Last 200 chars of stack
 
                 # Occupancy is a bitmap, bit 0 = occupied
                 is_occupied = bool(value & 0x01) if isinstance(value, int) else bool(value)
