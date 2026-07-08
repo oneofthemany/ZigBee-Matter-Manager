@@ -507,7 +507,7 @@ function _renderStep(step, path, idx, total) {
         body = _mediaStepBody(step, sid);
     }
 
-    return `<div class="card card-body p-2 mb-1" style="background:#f8f9fa" id="step-${sid}">
+    return `<div class="card card-body bg-light p-2 mb-1" id="step-${sid}">
         <div class="d-flex justify-content-between align-items-center mb-1">
             <span class="badge bg-dark"><i class="fas ${ic}"></i> ${lb} <small>${idx+1}/${total}</small></span>
             <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="window._aRmStep(${sid},'${path}')"><i class="fas fa-times"></i></button>
