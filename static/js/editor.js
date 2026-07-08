@@ -54,6 +54,22 @@ export async function initEditor() {
         }
     });
 
+    // Drag-and-drop import: drop files anywhere on the editor layout.
+    // Capture phase so Monaco's own drag handling can't swallow file drops.
+    const layout = container.querySelector('.editor-layout');
+    if (layout) {
+        layout.addEventListener('dragover', e => {
+            if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+        }, true);
+        layout.addEventListener('drop', e => {
+            if (e.dataTransfer?.files?.length) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.editorImportFiles(e.dataTransfer.files);
+            }
+        }, true);
+    }
+
     // Check for pending test on init
     await checkPendingTest();
 }
@@ -93,6 +109,14 @@ function buildEditorHTML() {
                 <button class="btn btn-sm btn-outline-success w-100 mb-1" onclick="window.editorCreateFile()" style="font-size: 11px;">
                     <i class="fas fa-plus me-1"></i> New File
                 </button>
+                <button class="btn btn-sm btn-outline-info w-100 mb-1" style="font-size: 11px;"
+                        title="Load local file(s) directly into the editor - bypasses the clipboard, so encoding is never mangled"
+                        onclick="document.getElementById('editorImportInput').click()">
+                    <i class="fas fa-file-import me-1"></i> Import File(s)
+                </button>
+                <input type="file" id="editorImportInput" multiple style="display:none;"
+                       accept=".py,.js,.css,.html,.yaml,.yml,.json,.md,.txt,.conf,.sh"
+                       onchange="window.editorImportFiles(this.files); this.value='';">
                 <div class="d-flex gap-1">
                     <button class="btn btn-sm btn-outline-secondary flex-grow-1"
                             onclick="window.editorExpandAllFolders()"
@@ -589,6 +613,106 @@ window.editorOpenFile = async function(path) {
         window.toast.error('Failed to open file: ' + e.message);
     }
 };
+
+// ============================================================================
+// FILE IMPORT
+// Reads local files as raw bytes (decoded as UTF-8 in the browser), so the
+// clipboard - and any encoding-mangling hop in between - is never involved.
+// ============================================================================
+
+window.editorImportFiles = async function (fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    for (const file of files) {
+        let text;
+        try {
+            text = await file.text();
+        } catch (e) {
+            window.toast.error(`Could not read ${file.name}: ${e.message}`);
+            continue;
+        }
+
+        if (text.includes(String.fromCharCode(0xFFFD))) {
+            window.toast.error(
+                `${file.name} is not valid UTF-8 (replacement characters found after decoding). ` +
+                `Fix the source file's encoding first.`);
+            continue;
+        }
+
+        await importOneFile(file.name, text, files.length === 1);
+    }
+};
+
+async function importOneFile(name, text, allowCreate) {
+    // Destination: the open file if the name matches, else a unique match
+    // anywhere in the project tree.
+    let target = null;
+    if (currentFile && currentFile.split('/').pop() === name) {
+        target = currentFile;
+    } else {
+        const matches = [];
+        for (const dir of fileTree) {
+            for (const item of (dir.children || [])) {
+                if (!item.is_dir && item.name === name) matches.push(item.path);
+            }
+        }
+        if (matches.length === 1) {
+            target = matches[0];
+        } else if (matches.length > 1) {
+            window.toast.error(
+                `${name} matches ${matches.length} project files (${matches.join(', ')}). ` +
+                `Open the intended one first, then import again.`);
+            return;
+        }
+    }
+
+    if (target) {
+        if (target === currentFile && editorInstance) {
+            // setValue fires the change handler: marks dirty + revalidates
+            editorInstance.setValue(text);
+        } else {
+            unsavedBuffers.set(target, { content: text });
+        }
+        if (window.showToast) {
+            window.showToast(`Imported ${name} into ${target} (unsaved - Save or Test to apply)`, 'info');
+        }
+        return;
+    }
+
+    // Not in the project tree - offer to create it (single-file imports only,
+    // so a multi-select typo can't create a pile of misplaced files).
+    if (!allowCreate) {
+        window.toast.error(`${name} not found in the project tree - import it on its own to create it.`);
+        return;
+    }
+    const defaultDir = currentFile ? currentFile.split('/').slice(0, -1).join('/') : '';
+    const path = await promptDialog({
+        title: 'Import as new file',
+        label: `${name} is not in the project. Create it at:`,
+        value: defaultDir ? `${defaultDir}/${name}` : name,
+        confirmText: 'Create'
+    });
+    if (!path) return;
+
+    try {
+        const res = await fetch('/api/editor/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path, content: text })
+        });
+        const data = await res.json();
+        if (data.success) {
+            await loadFileTree();
+            await window.editorOpenFile(path);
+            if (window.showToast) window.showToast(`Created ${path}`, 'success');
+        } else {
+            window.toast.error('Create failed: ' + data.error);
+        }
+    } catch (e) {
+        window.toast.error('Import failed: ' + e.message);
+    }
+}
 
 // ============================================================================
 // FILE OPERATIONS — CREATE
