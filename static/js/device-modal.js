@@ -67,7 +67,7 @@ export async function openDeviceModal(d) {
             ${!isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-endpoints">Endpoints</button></li>' : ''}
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-automation">Automation</button></li>
             ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-profile">Profile</button></li>' : ''}
-            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-settings">Settings</button></li>' : ''}
+            ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-dev-settings">Settings</button></li>' : ''}
         </ul>
 
         <div class="tab-content">
@@ -106,7 +106,7 @@ export async function openDeviceModal(d) {
             </div>
             ` : ''}
             ${isZigbee ? `
-            <div class="tab-pane fade" id="tab-settings">
+            <div class="tab-pane fade" id="tab-dev-settings">
                 ${renderSettingsTab(cachedDev)}
             </div>
             ` : ''}
@@ -147,7 +147,7 @@ export async function openDeviceModal(d) {
     }
 
     // Hydrate settings tab when clicked, and on first show
-    const settingsTab = modalBody.querySelector('[data-bs-target="#tab-settings"]');
+    const settingsTab = modalBody.querySelector('[data-bs-target="#tab-dev-settings"]');
     if (settingsTab && cachedDev.ieee) {
         settingsTab.addEventListener('shown.bs.tab', () => {
             initSettingsTab(cachedDev.ieee);
