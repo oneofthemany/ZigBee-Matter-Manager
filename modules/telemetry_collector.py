@@ -21,6 +21,19 @@ APPENDER_FLUSH_INTERVAL = 5  # seconds — keeps History tab queries near-realti
 SNAPSHOT_INTERVAL = 3600     # seconds between keep-alive state snapshots
 LINK_SAMPLE_INTERVAL = 300   # seconds between LQI/RSSI samples
 
+# Keep-alive rows must only be written for devices that have actually
+# communicated recently. Cached state survives long after a device goes
+# silent, and consumers like the heating controller's freshness check treat
+# a DuckDB row as proof of a live report — writing stale cached values
+# would mask a dead sensor.
+KEEPALIVE_MAX_SILENCE = 2 * SNAPSHOT_INTERVAL  # seconds since last_seen
+
+
+def _seen_recently(dev, max_silence_sec: float) -> bool:
+    """True if the device communicated within max_silence_sec (last_seen is ms)."""
+    last_seen_ms = getattr(dev, 'last_seen', 0) or 0
+    return (time.time() - last_seen_ms / 1000.0) < max_silence_sec
+
 # Attributes that are metadata, not telemetry — never recorded.
 SKIP_ATTRS = {"manufacturer", "model", "power_source", "last_seen", "available"}
 
@@ -133,6 +146,8 @@ class TelemetryCollector:
             try:
                 if not getattr(dev, '_available', False):
                     continue  # offline devices have nothing new to say
+                if not _seen_recently(dev, KEEPALIVE_MAX_SILENCE):
+                    continue  # silent device — cached state is unverified
                 dev_state = getattr(dev, 'state', None)
                 if not isinstance(dev_state, dict):
                     continue
@@ -193,6 +208,8 @@ class TelemetryCollector:
             try:
                 if not getattr(dev, '_available', False):
                     continue
+                if not _seen_recently(dev, KEEPALIVE_MAX_SILENCE):
+                    continue  # silent device — zigpy's lqi/rssi are stale
                 zigpy_dev = getattr(dev, 'zigpy_dev', None)
                 if zigpy_dev is None:
                     continue

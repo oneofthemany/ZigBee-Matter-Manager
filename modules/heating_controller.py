@@ -276,6 +276,21 @@ def _primary_sensor_height_m(room: Dict[str, Any]) -> Optional[float]:
 _freshness_cache: Dict[str, Tuple[float, Optional[float]]] = {}
 _FRESHNESS_CACHE_TTL_SEC = 30.0  # well under tick interval; just a cheap dedupe
 
+# Look back well beyond the threshold so a sensor reporting every 20 min
+# isn't falsely flagged just because nothing landed in the last 15.
+FRESHNESS_LOOKBACK_HOURS = 6
+
+# Stale-sensor fallback warnings repeat every tick — rate-limit per sensor.
+_stale_warned: Dict[str, float] = {}
+_STALE_WARN_INTERVAL_SEC = 3600.0
+
+
+def _room_freshness_threshold_sec(room: dict) -> float:
+    """Per-room freshness threshold, falling back to the global default."""
+    threshold_min = _as_float(room.get("freshness_threshold_minutes"))
+    return float(threshold_min * 60) if threshold_min and threshold_min > 0 \
+        else float(DEFAULT_FRESHNESS_THRESHOLD_SEC)
+
 
 def _last_temperature_ts(ieee: str) -> Optional[float]:
     """
@@ -295,12 +310,9 @@ def _last_temperature_ts(ieee: str) -> Optional[float]:
         return cached[1]
 
     most_recent: Optional[float] = None
-    # Look back well beyond the threshold so a sensor reporting every 20 min
-    # isn't falsely flagged just because nothing landed in the last 15.
-    LOOKBACK_HOURS = 6
     for attr in ("local_temperature", "current_temperature", "temperature"):
         try:
-            rows = _query_state_history(ieee, attr, LOOKBACK_HOURS) or []
+            rows = _query_state_history(ieee, attr, FRESHNESS_LOOKBACK_HOURS) or []
         except Exception as e:
             logger.debug(f"freshness query failed for {ieee} attr={attr}: {e}")
             continue
@@ -340,9 +352,7 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
     """
     reasons: List[str] = []
     stale: List[Dict[str, Any]] = []
-    threshold_min = _as_float(room.get("freshness_threshold_minutes"))
-    threshold_sec = float(threshold_min * 60) if threshold_min and threshold_min > 0 \
-        else float(DEFAULT_FRESHNESS_THRESHOLD_SEC)
+    threshold_sec = _room_freshness_threshold_sec(room)
     now = time.time()
 
     sensor_ieee = room.get("temperature_sensor_ieee")
@@ -363,7 +373,8 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
             last_ts = _last_temperature_ts(sensor_ieee)
             if last_ts is None:
                 reasons.append(
-                    f"Sensor {sensor_ieee} has never recorded a temperature"
+                    f"Sensor {sensor_ieee} has no temperature reports in the "
+                    f"last {FRESHNESS_LOOKBACK_HOURS}h — check the sensor"
                 )
             else:
                 age = now - last_ts
@@ -444,7 +455,7 @@ class RoomDecision:
     __slots__ = (
         "room_id", "name", "target_temp", "current_temp", "temp_source",
         "status", "calling_for_heat", "trvs", "sensor_ieee", "sensor_online",
-        "health", "preheat", "overshoot", "contact",
+        "sensor_stale", "health", "preheat", "overshoot", "contact",
         "current_temp_raw", "sensor_height_m", "stratification_offset_c",
     )
 
@@ -459,6 +470,7 @@ class RoomDecision:
         self.temp_source: str = "none"
         self.sensor_ieee: Optional[str] = None
         self.sensor_online: Optional[bool] = None
+        self.sensor_stale: bool = False   # reading exists but is too old to steer on
         self.status: str = "unknown"
         self.calling_for_heat: bool = False
         self.trvs: List[Dict] = []
@@ -477,6 +489,7 @@ class RoomDecision:
             "temp_source": self.temp_source,
             "sensor_ieee": self.sensor_ieee,
             "sensor_online": self.sensor_online,
+            "sensor_stale": self.sensor_stale,
             "status": self.status,
             "calling_for_heat": self.calling_for_heat,
             "trvs": self.trvs,
@@ -1572,6 +1585,36 @@ class HeatingController:
                 decision.sensor_online = ext_temp is not None
             else:
                 decision.sensor_online = False
+
+        # ── Stale-sensor fallback ──────────────────────────────────────
+        # The cached state value survives long after a sensor stops
+        # reporting, so a dead sensor would otherwise steer the room on a
+        # reading that could be weeks old. If DuckDB shows no temperature
+        # report within the room's freshness threshold, discard the external
+        # reading — the normal source selection below then falls back to the
+        # TRV mean (or "none", which classifies the room as unknown).
+        if ext_temp is not None and _query_state_history is not None:
+            last_ts = _last_temperature_ts(sensor_ieee)
+            threshold_sec = _room_freshness_threshold_sec(room)
+            now_ts = time.time()
+            if last_ts is None or (now_ts - last_ts) > threshold_sec:
+                decision.sensor_stale = True
+                decision.sensor_online = False
+                ext_temp = None
+                last_warn = _stale_warned.get(sensor_ieee, 0.0)
+                if (now_ts - last_warn) > _STALE_WARN_INTERVAL_SEC:
+                    _stale_warned[sensor_ieee] = now_ts
+                    age_txt = (f"last report {int((now_ts - last_ts) / 60)} min ago"
+                               if last_ts is not None
+                               else f"no reports in the last {FRESHNESS_LOOKBACK_HOURS}h")
+                    logger.warning(
+                        f"Room '{room['name']}': external sensor {sensor_ieee} "
+                        f"reading is stale ({age_txt}) — ignoring it and "
+                        f"falling back to TRV temperature"
+                    )
+            elif decision.sensor_stale is False and sensor_ieee in _stale_warned:
+                # Sensor recovered — allow an immediate warning on next stall.
+                del _stale_warned[sensor_ieee]
 
         # ── Apply stratification correction to the chosen reading ─────
         # Only the external sensor path has a configurable mounting height

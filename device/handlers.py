@@ -142,10 +142,10 @@ class DeviceHandlerManagerMixin:
             return
 
         stats = {'configured': 0, 'skipped_not_configurable': 0, 'skipped_controller': 0, 'failed': 0}
-        configured = set()
 
-        for h in self.handlers.values():
-            if h in configured: continue
+        # handlers stores each handler under both its (ep, cluster) key and a
+        # bare cluster-id alias — dedupe so skip counts aren't doubled.
+        for h in dict.fromkeys(self.handlers.values()):
             ep_id = h.endpoint.endpoint_id
             cluster_id = h.cluster_id
 
@@ -161,14 +161,15 @@ class DeviceHandlerManagerMixin:
 
             try:
                 await h.configure()
-                configured.add(h)
                 stats['configured'] += 1
             except Exception as e:
                 stats['failed'] += 1
                 logger.warning(f"[{self.ieee}] Config failed EP{ep_id}:0x{cluster_id:04x}: {e}")
 
-        total_skipped = stats['skipped_not_configurable'] + stats['skipped_controller']
-        logger.info(f"[{self.ieee}] Config: {stats['configured']} configured, {total_skipped} skipped, {stats['failed']} failed")
+        logger.info(f"[{self.ieee}] Config: {stats['configured']} configured, "
+                    f"{stats['skipped_controller']} skipped (controller EP), "
+                    f"{stats['skipped_not_configurable']} skipped (not reportable), "
+                    f"{stats['failed']} failed")
 
     async def interview(self):
         logger.info(f"[{self.ieee}] Re-interviewing...")
