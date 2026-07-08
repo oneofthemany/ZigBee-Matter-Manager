@@ -7,6 +7,8 @@ import { state } from '../state.js';
 import { hasCluster } from './config.js';
 import { renderScheduleSection, bindScheduleEvents } from './schedule.js';
 
+const log = zmmLog('modal-control');
+
 // Interaction debounce timer
 let interactionTimeout = null;
 const INTERACTION_DEBOUNCE_MS = 2000;
@@ -64,7 +66,7 @@ export async function refreshHeatingManaged() {
             return state.heatingManaged;
         }
     } catch (e) {
-        console.debug('Heating managed fetch skipped:', e);
+        log.debug('Heating managed fetch skipped:', e);
     }
     state.heatingManaged = state.heatingManaged || { enabled: false, ieees: new Set() };
     return state.heatingManaged;
@@ -1386,7 +1388,7 @@ window.adjustThermostat = function(ieee, delta) {
 window.setThermostatTemp = async function(ieee) {
     const input = document.getElementById(`thermostat-setpoint-${ieee}`);
     if (!input) {
-        console.error('Thermostat input not found');
+        log.error('Thermostat input not found');
         return;
     }
     const temp = parseFloat(input.value);
@@ -1399,9 +1401,9 @@ window.setThermostatTemp = async function(ieee) {
         // Optimistic update — don't wait for WS round-trip
         const setpointEl = document.querySelector(`[data-thermostat-setpoint="${ieee}"]`);
         if (setpointEl) setpointEl.textContent = `${temp.toFixed(1)}°C`;
-        console.log(`✓ Temperature set to ${temp}°C`);
+        log.log(`✓ Temperature set to ${temp}°C`);
     } catch (error) {
-        console.error('Failed to set temperature:', error);
+        log.error('Failed to set temperature:', error);
         window.toast.error('Failed to set temperature: ' + error.message);
     }
 };
@@ -1409,9 +1411,9 @@ window.setThermostatTemp = async function(ieee) {
 window.setHvacMode = async function(ieee, mode) {
     try {
         await window.sendCommand(ieee, 'system_mode', mode);
-        console.log(`✓ HVAC mode set to ${mode}`);
+        log.log(`✓ HVAC mode set to ${mode}`);
     } catch (error) {
-        console.error('Failed to set HVAC mode:', error);
+        log.error('Failed to set HVAC mode:', error);
         window.toast.error('Failed to set HVAC mode: ' + error.message);
     }
 };
@@ -1456,7 +1458,7 @@ window.aqaraSetFeature = async function(ieee, feature, enabled) {
             await window.sendCommand(ieee, feature, enabled ? 1 : 0);
         }
     } catch (e) {
-        console.error('aqaraSetFeature failed:', e);
+        log.error('aqaraSetFeature failed:', e);
         window.toast.error('Update failed: ' + (e.message || e));
     }
 };
@@ -1482,7 +1484,7 @@ window.aqaraCalibrate = async function(ieee) {
             await window.sendCommand(ieee, 'motor_calibration', 1);
         }
     } catch (e) {
-        console.error('aqaraCalibrate failed:', e);
+        log.error('aqaraCalibrate failed:', e);
         window.toast.error('Calibration failed: ' + (e.message || e));
     }
 };
@@ -1492,7 +1494,7 @@ window.aqaraSetSensorType = async function(ieee, type) {
         const val = (type === 'external') ? 1 : 0;
         await window.sendCommand(ieee, 'sensor_type', val);
     } catch (e) {
-        console.error('aqaraSetSensorType failed:', e);
+        log.error('aqaraSetSensorType failed:', e);
         window.toast.error('Sensor-type change failed: ' + (e.message || e));
     }
 };
@@ -1553,7 +1555,7 @@ window.aqaraPushExternalTemp = async function(ieee) {
         }
         await window.sendCommand(ieee, 'external_temp', val);
     } catch (e) {
-        console.error('aqaraPushExternalTemp failed:', e);
+        log.error('aqaraPushExternalTemp failed:', e);
         window.toast.error('Push external temp failed: ' + (e.message || e));
     }
 };

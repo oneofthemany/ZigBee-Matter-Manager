@@ -46,7 +46,7 @@
 
     function notify() {
         listeners.forEach(function (fn) {
-            try { fn(state.principal); } catch (e) { console.error(e); }
+            try { fn(state.principal); } catch (e) { zmmLog('auth').error(e); }
         });
     }
 

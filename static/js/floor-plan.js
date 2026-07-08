@@ -23,6 +23,8 @@
 //   user's drawing matches reality.
 // ============================================================================
 
+const log = zmmLog('floor-plan');
+
 const FP_VERSION = 1;
 const DEFAULT_LEVEL_HEIGHT = 2.4;
 const SNAP_M = 0.1;                  // snap-to-grid distance, metres
@@ -2813,7 +2815,7 @@ async function save() {
         if (!r.success) throw new Error(r.error || 'Save failed');
         status.innerHTML = `<span class="text-success"><i class="fas fa-check me-1"></i>Saved.</span>`;
         if (typeof _onSaveCallback === 'function') {
-            try { await _onSaveCallback(r); } catch (e) { console.error(e); }
+            try { await _onSaveCallback(r); } catch (e) { log.error(e); }
         }
         setTimeout(() => {
             const modalEl = document.getElementById('floorPlanModal');
@@ -2856,7 +2858,7 @@ async function switchToManual() {
         status.innerHTML = `<span class="text-success">Switched to manual.</span>`;
         // Trigger the editor's onSave callback so the parent page refreshes.
         if (typeof _onSaveCallback === 'function') {
-            try { await _onSaveCallback(r); } catch (e) { console.error(e); }
+            try { await _onSaveCallback(r); } catch (e) { log.error(e); }
         }
         setTimeout(() => {
             const modalEl = document.getElementById('floorPlanModal');
@@ -3062,5 +3064,5 @@ function escapeAttr(s) { return escapeHtml(s); }
 function toast(level, title, body) {
     if (window.toast?.[level]) window.toast[level](title, body);
     else if (window.showToast) window.showToast(level, title, body);
-    else console.log(`[${level}] ${title}: ${body}`);
+    else log.log(`[${level}] ${title}: ${body}`);
 }

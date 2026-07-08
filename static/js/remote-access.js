@@ -38,7 +38,7 @@
             state.status = await r.json();
             state.loadFailed = false;
         } catch (e) {
-            console.error('[remote-access] status fetch failed', e);
+            zmmLog('remote-access').error('[remote-access] status fetch failed', e);
             state.loadFailed = true;
         }
         render();

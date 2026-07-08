@@ -12,9 +12,21 @@
 
 import { confirmDialog } from './dialogs.js';
 
+const log = zmmLog('upgrade');
+
 let _pollTimer = null;
+let _pollMs = 0;
 let _logPollTimer = null;
 let _lastState = null;
+let _lastPayload = null;   // last /status body — skip re-render when unchanged
+let _managerToken = null;  // fetched once; only changes when the sidecar regenerates it
+
+// Poll fast only while an upgrade is actually in flight; idle status
+// almost never changes, and WS 'upgrade_*' events trigger an immediate
+// refresh anyway.
+const POLL_ACTIVE_MS = 5000;
+const POLL_IDLE_MS = 30000;
+const ACTIVE_STATES = ['checking', 'building', 'swapping', 'rolling_back', 'ready_to_swap'];
 
 // ============================================================================
 // INIT
@@ -45,13 +57,15 @@ export function initUpgrade() {
     }
 }
 
-function startPolling() {
-    stopPolling();
-    _pollTimer = setInterval(refreshUpgradeStatus, 5000);
+function startPolling(ms = POLL_ACTIVE_MS) {
+    if (_pollTimer && _pollMs === ms) return;
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollMs = ms;
+    _pollTimer = setInterval(refreshUpgradeStatus, ms);
 }
 
 function stopPolling() {
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; _pollMs = 0; }
     if (_logPollTimer) { clearInterval(_logPollTimer); _logPollTimer = null; }
 }
 
@@ -123,6 +137,9 @@ function renderUpgradeCard() {
 // ============================================================================
 
 async function refreshUpgradeStatus() {
+    // Don't fetch while the page is in a background browser tab;
+    // the next visible poll (or WS event) catches up.
+    if (document.hidden) return;
     try {
         const res = await fetch('/api/upgrade/status');
 
@@ -133,8 +150,16 @@ async function refreshUpgradeStatus() {
 
         const data = await res.json();
         if (!data || !data.success) return;
-        renderBody(data);
-        renderSettings(data);
+
+        // Re-render (and re-resolve the manager token) only when the
+        // payload actually changed — keeps user edits in the settings
+        // form alive between polls.
+        const payload = JSON.stringify(data);
+        if (payload !== _lastPayload) {
+            _lastPayload = payload;
+            renderBody(data);
+            renderSettings(data);
+        }
 
         // Manage log polling based on state
         const state = data.upgrade_state;
@@ -156,6 +181,11 @@ async function refreshUpgradeStatus() {
             }
         }
         _lastState = state;
+
+        // Retier the poll: fast while an upgrade is in flight, slow at idle.
+        if (_pollTimer) {
+            startPolling(ACTIVE_STATES.includes(state) ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+        }
     } catch (e) {
         // Silent — the tab may not be visible
     }
@@ -406,11 +436,20 @@ function renderSettings(data) {
 async function loadManagerToken() {
     const el = document.getElementById('upgMgrToken');
     if (!el) return;
+    // The token is static for the life of the sidecar — one fetch is enough.
+    if (_managerToken) {
+        el.textContent = _managerToken;
+        return;
+    }
     try {
         const res = await fetch('/api/upgrade/manager-token');
         const data = await res.json();
-        el.textContent = (data.success && data.token) ? data.token
-            : 'available after next upgrade';
+        if (data.success && data.token) {
+            _managerToken = data.token;
+            el.textContent = data.token;
+        } else {
+            el.textContent = 'available after next upgrade';
+        }
     } catch (_) {
         el.textContent = 'unavailable';
     }
@@ -713,6 +752,6 @@ function toast(type, msg) {
     const map = { danger: 'error', success: 'success', warning: 'warning', info: 'info' };
     const fn = window.toast && window.toast[map[type] || 'info'];
     if (fn) fn(msg);
-    else if (type === 'danger') console.error(msg);
-    else console.log(msg);
+    else if (type === 'danger') log.error(msg);
+    else log.log(msg);
 }

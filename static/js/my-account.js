@@ -386,7 +386,7 @@
         }).catch(function (e) {
             host.innerHTML = '<div class="text-danger small">QR rendering failed. ' +
                 'Use the manual secret instead.</div>';
-            console.error(e);
+            zmmLog('my-account').error(e);
         });
     }
 

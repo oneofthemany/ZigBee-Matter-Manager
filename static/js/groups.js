@@ -6,6 +6,8 @@
 import { state } from './state.js';
 import { confirmDialog } from './dialogs.js';
 
+const log = zmmLog('groups');
+
 // Groups state
 const groupsState = {
     allGroups: [],
@@ -19,7 +21,7 @@ const groupsState = {
  * Initialize groups tab
  */
 export async function initGroups() {
-    console.log("Initialising groups management...");
+    log.log("Initialising groups management...");
 
     // Load existing groups
     await loadGroups();
@@ -43,7 +45,7 @@ export async function initGroups() {
         createBtn.onclick = createGroup;
     }
 
-    console.log("Groups management initialised");
+    log.log("Groups management initialised");
 }
 
 /**
@@ -63,10 +65,10 @@ async function loadGroups() {
             countBadge.textContent = groups.length;
         }
 
-        console.log(`Loaded ${groups.length} groups`);
+        log.log(`Loaded ${groups.length} groups`);
 
     } catch (error) {
-        console.error("Failed to load groups:", error);
+        log.error("Failed to load groups:", error);
     }
 }
 
@@ -81,13 +83,13 @@ function populateBaseDeviceDropdown() {
 
     // Use imported state from state.js
     if (!state.devices || state.devices.length === 0) {
-        console.log("No devices available for grouping yet");
+        log.log("No devices available for grouping yet");
         return;
     }
 
     const devices = state.devices.filter(d => d.type !== 'Coordinator');
 
-    console.log(`Populating dropdown with ${devices.length} devices`);
+    log.log(`Populating dropdown with ${devices.length} devices`);
 
     devices.forEach(device => {
         const option = document.createElement('option');
@@ -112,7 +114,7 @@ window.onBaseDeviceSelected = async function() {
     // Find device in imported state
     const device = state.devices.find(d => d.ieee === ieee);
     if (!device) {
-        console.error(`Device ${ieee} not found in state`);
+        log.error(`Device ${ieee} not found in state`);
         return;
     }
 
@@ -203,7 +205,7 @@ async function loadCompatibleDevices(ieee) {
         if (section) section.classList.remove('d-none');
 
     } catch (error) {
-        console.error("Failed to load compatible devices:", error);
+        log.error("Failed to load compatible devices:", error);
     }
 }
 
@@ -247,7 +249,7 @@ function renderCompatibleDevices(devices) {
     }
 
     container.innerHTML = '';
-    console.log(`Rendering ${devices.length} compatible devices`);
+    log.log(`Rendering ${devices.length} compatible devices`);
 
     devices.forEach(device => {
         const safeId = device.ieee.replace(/:/g, '_');
@@ -295,16 +297,16 @@ window.onDeviceCheckChanged = function(ieee) {
     const checkbox = document.getElementById(`dev_${safeId}`);
 
     if (!checkbox) {
-        console.error(`Checkbox not found for IEEE: ${ieee} (ID: dev_${safeId})`);
+        log.error(`Checkbox not found for IEEE: ${ieee} (ID: dev_${safeId})`);
         return;
     }
 
     if (checkbox.checked) {
         groupsState.selectedDevices.add(ieee);
-        console.log(`Added device ${ieee} to selection`);
+        log.log(`Added device ${ieee} to selection`);
     } else {
         groupsState.selectedDevices.delete(ieee);
-        console.log(`Removed device ${ieee} from selection`);
+        log.log(`Removed device ${ieee} from selection`);
     }
 
     // Update button state and common capabilities
@@ -379,7 +381,7 @@ window.createGroup = async function() {
     const devices = Array.from(groupsState.selectedDevices);
 
     // Debug logging
-    console.log(`Creating group "${name}" with devices:`, devices);
+    log.log(`Creating group "${name}" with devices:`, devices);
 
     try {
         const response = await fetch('/api/groups/create', {
@@ -406,7 +408,7 @@ window.createGroup = async function() {
         }
 
     } catch (error) {
-        console.error("Failed to create group:", error);
+        log.error("Failed to create group:", error);
         window.toast.error('Failed to create group. Check console for details.');
     }
 }
@@ -519,7 +521,7 @@ window.deleteGroup = async function(groupId, groupName) {
             window.toast.error(data.error || "Failed to delete group");
         }
     } catch (error) {
-        console.error("Failed to delete group:", error);
+        log.error("Failed to delete group:", error);
         window.toast.error('Error deleting group');
     }
 }
@@ -531,7 +533,7 @@ window.deleteGroup = async function(groupId, groupName) {
 window.openGroupControl = function(groupId) {
     const group = groupsState.allGroups.find(g => g.id === groupId);
     if (!group) {
-        console.error(`Group ${groupId} not found`);
+        log.error(`Group ${groupId} not found`);
         return;
     }
 
@@ -692,7 +694,7 @@ function renderGroupControls(group) {
  */
 window.controlGroup = async function(groupId, command) {
     try {
-        console.log(`🎮 Sending group ${groupId} command:`, command);
+        log.log(`🎮 Sending group ${groupId} command:`, command);
 
         const response = await fetch(`/api/groups/${groupId}/control`, {
             method: 'POST',
@@ -707,12 +709,12 @@ window.controlGroup = async function(groupId, command) {
         const result = await response.json();
 
         if (result.error) {
-            console.error(`❌ Group control error:`, result.error);
+            log.error(`❌ Group control error:`, result.error);
             window.toast.error(`Error: ${result.error}`);
             return;
         }
 
-        console.log(`✅ Group ${groupId} controlled:`, result);
+        log.log(`✅ Group ${groupId} controlled:`, result);
 
         // Show success feedback
         if (result.results) {
@@ -720,16 +722,16 @@ window.controlGroup = async function(groupId, command) {
             const totalCount = result.results.length;
 
             if (successCount === totalCount) {
-                console.log(`✅ All ${totalCount} devices controlled successfully`);
+                log.log(`✅ All ${totalCount} devices controlled successfully`);
             } else {
-                console.warn(`⚠️ ${successCount}/${totalCount} devices controlled`);
+                log.warn(`⚠️ ${successCount}/${totalCount} devices controlled`);
 
                 // Show which devices failed with detailed errors
                 const failed = result.results.filter(r => r.error);
                 if (failed.length > 0) {
-                    console.error('❌ Failed devices:', failed);
+                    log.error('❌ Failed devices:', failed);
                     failed.forEach(f => {
-                        console.error(`  - Device ${f.ieee}: ${f.error}`);
+                        log.error(`  - Device ${f.ieee}: ${f.error}`);
                     });
                 }
 
@@ -750,7 +752,7 @@ window.controlGroup = async function(groupId, command) {
         }
 
     } catch (error) {
-        console.error("❌ Failed to control group:", error);
+        log.error("❌ Failed to control group:", error);
         window.toast.error(`Failed to control group: ${error.message}`);
     }
 }
@@ -806,7 +808,7 @@ window.removeDeviceFromGroup = async function(groupId, ieee) {
         openGroupControl(groupId);
 
     } catch (error) {
-        console.error("Failed to remove device:", error);
+        log.error("Failed to remove device:", error);
         window.toast.error('Failed to remove device from group');
     }
 }
@@ -852,7 +854,7 @@ window.deleteCurrentGroup = async function() {
         window.toast.success(`Group "${group.name}" deleted`);
 
     } catch (error) {
-        console.error("Failed to delete group:", error);
+        log.error("Failed to delete group:", error);
         window.toast.error('Failed to delete group');
     }
 }
@@ -892,7 +894,7 @@ window.addDeviceToGroup = async function() {
         openGroupControl(groupsState.currentGroup.id);
 
     } catch (error) {
-        console.error("Failed to add device:", error);
+        log.error("Failed to add device:", error);
         window.toast.error('Failed to add device to group');
     }
 }

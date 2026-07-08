@@ -9,6 +9,8 @@
 
 import { confirmDialog } from './dialogs.js';
 
+const log = zmmLog('zones');
+
 // ============================================================================
 // STATE
 // ============================================================================
@@ -20,7 +22,7 @@ const selectedDevices = new Set();
 // INIT
 // ============================================================================
 export function initZones() {
-    console.log("Initializing Zones Module (v2)...");
+    log.log("Initializing Zones Module (v2)...");
 
     fetchZones();
 
@@ -56,7 +58,7 @@ export function initZones() {
         }
     });
 
-    console.log("✅ Zone listeners registered");
+    log.log("✅ Zone listeners registered");
 }
 
 // ============================================================================
@@ -71,7 +73,7 @@ async function fetchZones() {
         zones.forEach(z => zonesData.set(z.name, z));
         renderZonesGrid();
     } catch (e) {
-        console.error("Error fetching zones:", e);
+        log.error("Error fetching zones:", e);
         const c = document.getElementById('zones-container');
         if (c) c.innerHTML =
             `<div class="col-12 text-center text-danger">Failed to load zones: ${e.message}</div>`;
@@ -85,7 +87,7 @@ async function fetchDevicesForModal() {
         deviceListCache = await r.json();
         return deviceListCache;
     } catch (e) {
-        console.error("Error fetching devices:", e);
+        log.error("Error fetching devices:", e);
         return [];
     }
 }

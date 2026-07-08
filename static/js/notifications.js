@@ -22,6 +22,8 @@
 
 import { state } from './state.js';
 
+const log = zmmLog('notifications');
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -230,7 +232,7 @@ function loadRules() {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
     } catch (e) {
-        console.warn('[notifications] Failed to load rules', e);
+        log.warn('[notifications] Failed to load rules', e);
         return [];
     }
 }
@@ -331,7 +333,7 @@ function evaluateRules() {
             try {
                 matched = !!trigger.match(prev, curr, rule);
             } catch (e) {
-                console.warn('[notifications] match error', rule, e);
+                log.warn('[notifications] match error', rule, e);
             }
             if (!matched) return;
 

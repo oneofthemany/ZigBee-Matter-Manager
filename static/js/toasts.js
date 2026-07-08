@@ -137,7 +137,7 @@
     window.alert = function (msg) {
         if (msg === undefined || msg === null) msg = '';
         window.toast.info(msg);
-        console.warn('[toasts] window.alert() called — migrate this call site to toast.*:', msg);
+        zmmLog('toasts').warn('[toasts] window.alert() called — migrate this call site to toast.*:', msg);
     };
 
 })();

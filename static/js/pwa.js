@@ -26,26 +26,26 @@
 
     function registerServiceWorker() {
         if (!('serviceWorker' in navigator)) {
-            console.log('[PWA] Service workers not supported');
+            zmmLog('pwa').log('[PWA] Service workers not supported');
             return;
         }
 
         var host = window.location.hostname;
         var isLocalhost = (host === 'localhost' || host === '127.0.0.1' || host === '::1');
 if (window.location.protocol !== 'https:' && !isLocalhost) {
-    console.log('[PWA] Skipping SW registration — requires HTTPS or localhost');
+    zmmLog('pwa').log('[PWA] Skipping SW registration — requires HTTPS or localhost');
     return;
 }
 
         navigator.serviceWorker.register('/sw.js', { scope: '/' })
             .then(function (reg) {
-                console.log('[PWA] Service worker registered, scope:', reg.scope);
+                zmmLog('pwa').log('[PWA] Service worker registered, scope:', reg.scope);
                 setInterval(function () {
                     reg.update();
                 }, 60 * 60 * 1000);
             })
             .catch(function (err) {
-                console.warn('[PWA] Service worker registration failed:', err);
+                zmmLog('pwa').warn('[PWA] Service worker registration failed:', err);
             });
     }
 

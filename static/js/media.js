@@ -6,6 +6,8 @@
  * State is pushed live over the WebSocket as `media_state`; we also fetch on
  * tab-show. Control actions POST to /api/media/*.
  */
+const log = zmmLog('media');
+
 
 let _players = [];          // latest PlayerState snapshot
 let _selectedId = null;     // player targeted by search "play"
@@ -126,7 +128,7 @@ async function apiPost(url, body) {
 
 function toast(msg, kind = 'info') {
     if (typeof window.showToast === 'function') window.showToast(msg, kind);
-    else console.log(`[media:${kind}] ${msg}`);
+    else log.log(`[media:${kind}] ${msg}`);
 }
 
 function esc(s) {

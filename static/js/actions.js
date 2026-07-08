@@ -9,6 +9,8 @@ import { state } from './state.js';
 import { refreshModalState } from './device-modal.js';
 import { confirmDialog, promptDialog } from './dialogs.js';
 
+const log = zmmLog('actions');
+
 // We need to expose these functions if they are called from HTML onclick handlers
 // But generally main.js handles the window assignment.
 
@@ -124,7 +126,7 @@ function optimisticDeltaFor(command, value, endpoint) {
          try {
              refreshModalState(dev);
          } catch (e) {
-             console.error('[optimistic] refreshModalState failed:', e);
+             log.error('[optimistic] refreshModalState failed:', e);
          }
      }
  }
@@ -142,7 +144,7 @@ export async function checkPairingStatus() {
             resetPairingUI();
         }
     } catch (e) {
-        console.error("Failed to check pairing status", e);
+        log.error("Failed to check pairing status", e);
     }
 }
 
@@ -327,7 +329,7 @@ export async function doAction(action, ieee) {
             window.toast.error(`Error: ${data.error}`);
         }
     } catch (e) {
-        console.error(e);
+        log.error(e);
         window.toast.error("Action failed: " + e.message);
     }
 }
@@ -345,7 +347,7 @@ export async function banDevice(ieee, reason = null) {
         });
         return await res.json();
     } catch (e) {
-        console.error(e);
+        log.error(e);
         return { success: false, error: e.message };
     }
 }
@@ -362,7 +364,7 @@ export async function unbanDevice(ieee) {
         });
         return await res.json();
     } catch (e) {
-        console.error(e);
+        log.error(e);
         return { success: false, error: e.message };
     }
 }
@@ -375,7 +377,7 @@ export async function getBannedDevices() {
         const res = await fetch('/api/banned');
         return await res.json();
     } catch (e) {
-        console.error(e);
+        log.error(e);
         return { banned: [], count: 0 };
     }
 }
@@ -427,7 +429,7 @@ export function togglePairing() {
         }
     })
     .catch(e => {
-        console.error("Pairing toggle failed:", e);
+        log.error("Pairing toggle failed:", e);
         window.toast.error("Failed to toggle pairing");
     });
 }
@@ -1121,7 +1123,7 @@ export async function matterCommission() {
             window.toast.error("Commission failed: " + error + troubleshoot, { duration: 12000 });
         }
     } catch (e) {
-        console.error("Matter commission error:", e);
+        log.error("Matter commission error:", e);
         window.toast.error("Commission error: " + e.message);
     }
 }
@@ -1217,7 +1219,7 @@ window.exportDeviceConfig = async function(ieee) {
         }, 100);
 
     } catch (e) {
-        console.error('Export device config error:', e);
+        log.error('Export device config error:', e);
         window.toast.error('Export failed: ' + e.message);
     }
 };

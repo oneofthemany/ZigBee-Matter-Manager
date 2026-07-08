@@ -19,7 +19,7 @@
             var data = await r.json();
             users = data.users || [];
         } catch (e) {
-            console.error('[Presence] failed to fetch users', e);
+            zmmLog('presence-settings').error('[Presence] failed to fetch users', e);
             users = [];
         }
     }

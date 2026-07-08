@@ -27,6 +27,8 @@ import {
 import { createChart } from './chart-utils.js';
 
 
+const log = zmmLog('heating');
+
 // Chart palette tuned for both light and dark mode visibility.
 // Each colour has ~4:1 contrast against both #f0f2f5 (light body) and
 // #0f1117 (dark body). Verified with WebAIM contrast checker.
@@ -94,14 +96,14 @@ document.addEventListener('themechange', () => {
 // INITIALIZATION
 // ============================================================================
 export function initHeating() {
-    console.log("Initializing Heating Module…");
+    log.log("Initializing Heating Module…");
 
     ensureSettingsModal();
     initHeatingController();
 
     const heatingTabBtn = document.querySelector('button[data-bs-target="#heating"]');
     if (!heatingTabBtn) {
-        console.warn("Heating tab button not found");
+        log.warn("Heating tab button not found");
         return;
     }
 
@@ -208,7 +210,7 @@ export async function loadHeatingDashboard({ silent = false } = {}) {
                     json.data.heating.devices = (json.data.heating.devices || []).concat(extraDevices);
                 }
             }
-        } catch (e) { console.debug('Sensor-only injection skipped:', e); }
+        } catch (e) { log.debug('Sensor-only injection skipped:', e); }
         // Preserve heatingControllerPanel contents across re-renders when
         // possible so the user doesn't see a spinner-flash every 20s.
         const prevPanel = document.getElementById('heatingControllerPanel');
@@ -228,7 +230,7 @@ export async function loadHeatingDashboard({ silent = false } = {}) {
         // dashboard, not on its own interval. Matches the 20s cadence above.
         await loadControllerStatus();
     } catch (err) {
-        console.error('Heating dashboard fetch failed:', err);
+        log.error('Heating dashboard fetch failed:', err);
         if (!silent) {
             container.innerHTML = `<div class="alert alert-danger m-3">
                 Failed to load heating dashboard: ${escapeHtml(err.message || String(err))}
@@ -244,7 +246,7 @@ async function loadHeatingHistory(hours = 24) {
         const json = await res.json();
         if (json.success) renderHistoryChart(json.data);
     } catch (err) {
-        console.warn('Heating history fetch failed:', err);
+        log.warn('Heating history fetch failed:', err);
     }
 }
 
@@ -257,7 +259,7 @@ async function fetchPreheatRecommendation(targetTemp) {
         const json = await res.json();
         return json.success ? json.data : null;
     } catch (err) {
-        console.error('Preheat fetch failed:', err);
+        log.error('Preheat fetch failed:', err);
         return null;
     }
 }
@@ -724,7 +726,7 @@ async function loadControllerOverlay() {
             }
         }
     } catch (err) {
-        console.warn('Controller overlay fetch failed:', err);
+        log.warn('Controller overlay fetch failed:', err);
         controllerOverlay = {};
     }
 }
@@ -819,7 +821,7 @@ async function loadHeatingRuntime(hours = 24) {
             runtimeCache = json.devices || {};
         }
     } catch (err) {
-        console.warn('Heating runtime fetch failed:', err);
+        log.warn('Heating runtime fetch failed:', err);
     }
 }
 
@@ -1121,7 +1123,7 @@ function bindDashboardControls(data) {
                 // Fallback — try with a stub if cache miss (modal may handle gracefully)
                 window.openDeviceModal({ ieee, friendly_name: ieee, state: {} });
             } else {
-                console.warn('openDeviceModal not available on window');
+                log.warn('openDeviceModal not available on window');
             }
         });
     });

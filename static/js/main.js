@@ -71,7 +71,8 @@ import {
     refreshDebugPackets,
     exportDebugPackets,
     clearDebugFilters,
-    downloadDebugLog
+    downloadDebugLog,
+    showConsoleLogSettings
 } from './logging.js';
 import { initPacketFlow } from './packet-flow.js';
 import {
@@ -116,6 +117,8 @@ import {
     startRetryInterview,
     deleteAndRepair,
 } from './modal/device-settings.js';
+
+const log = zmmLog('main');
 
 // ============================================================================
 // EXPOSE FUNCTIONS GLOBALLY
@@ -162,6 +165,7 @@ window.refreshDebugPackets = refreshDebugPackets;
 window.exportDebugPackets = exportDebugPackets;
 window.clearDebugFilters = clearDebugFilters;
 window.downloadDebugLog = downloadDebugLog;
+window.showConsoleLogSettings = showConsoleLogSettings;
 
 // System & Config
 window.loadConfigYaml = loadConfigYaml;
@@ -435,7 +439,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }).catch(() => {});
 
-        console.log("Zigbee Matter Manager Frontend Initialised");
+        log.log("Zigbee Matter Manager Frontend Initialised");
     }
 
     // Gate the dashboard on authentication. zmmAuth.onChange fires

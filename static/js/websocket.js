@@ -16,6 +16,8 @@ import { applyPollResult } from './modal/device-settings.js';
 import { updateInterviewBadge } from './interview-status-badge.js';
 import { onDeviceJoined, onInterviewStatusUpdate, onJoinProgress } from './join-progress.js';
 
+const log = zmmLog('websocket');
+
 /**
  * Initialize WebSocket connection
  */
@@ -141,7 +143,7 @@ export function initWS() {
                     try {
                         applyPollResult(msg.payload || msg.data);
                     } catch (e) {
-                        console.debug('applyPollResult failed', e);
+                        log.debug('applyPollResult failed', e);
                     }
                     break;
 
@@ -251,7 +253,7 @@ export function initWS() {
                     break;
             }
         } catch (e) {
-            console.error("WS Error:", e);
+            log.error("WS Error:", e);
         }
     };
 }
@@ -290,7 +292,7 @@ async function checkHAStatus() {
             updateHAStatus(data.status);
         }
     } catch (e) {
-        console.error('Failed to check HA status:', e);
+        log.error('Failed to check HA status:', e);
     }
 }
 
@@ -399,11 +401,11 @@ function handleInterviewStatusUpdate(payload) {
     try {
         applyInterviewStatusUpdate(payload);
     } catch (e) {
-        console.debug('applyInterviewStatusUpdate failed', e);
+        log.debug('applyInterviewStatusUpdate failed', e);
     }
     try {
         updateInterviewBadge(payload);
     } catch (e) {
-        console.debug('updateInterviewBadge failed', e);
+        log.debug('updateInterviewBadge failed', e);
     }
 }

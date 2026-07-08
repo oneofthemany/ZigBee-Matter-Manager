@@ -7,6 +7,8 @@
 import { createChart } from './chart-utils.js';
 import { reapplySort } from './table-utils.js';
 
+const log = zmmLog('mesh');
+
 // Module-level state
 let dashboardMeshData = null;
 let _meshChart = null;          // managed ECharts graph instance
@@ -18,12 +20,12 @@ let statsInterval = null;
  * Initialise mesh module
  */
 export function initMesh() {
-    console.log('Mesh module initialised');
+    log.log('Mesh module initialised');
 
     const tabEl = document.querySelector('button[data-bs-target="#topology"]');
     if (tabEl) {
         tabEl.addEventListener('shown.bs.tab', function (event) {
-            console.log('Mesh tab activated');
+            log.log('Mesh tab activated');
             setTimeout(() => {
                 const container = document.querySelector('.mesh-topology-container');
                 if (container && (container.children.length === 0 || container.innerHTML.trim() === "")) {
@@ -41,7 +43,7 @@ export async function loadMeshTopology() {
     const meshContainer = document.querySelector('.mesh-topology-container');
     if (!meshContainer) return;
 
-    console.log('Loading mesh topology visualisation...');
+    log.log('Loading mesh topology visualisation...');
 
     meshContainer.innerHTML = `
         <div class="text-center py-4">
@@ -84,7 +86,7 @@ export async function loadMeshTopology() {
             }
 
     } catch (error) {
-        console.error('Failed to load mesh topology:', error);
+        log.error('Failed to load mesh topology:', error);
         meshContainer.innerHTML = `
             <div class="alert alert-danger m-3">
                 <i class="fas fa-exclamation-triangle"></i>
@@ -510,7 +512,7 @@ async function refreshPacketStats() {
         // Only update the stats table and summary
         populatePacketStats(data.nodes || [], data.stats_summary || {});
     } catch (error) {
-        console.error("Silent stats refresh failed:", error);
+        log.error("Silent stats refresh failed:", error);
     }
 }
 
@@ -714,7 +716,7 @@ export async function dashboardMeshRefresh() {
         const scanData = await scanRes.json();
 
         if (!scanData.success) {
-            console.error('Scan failed:', scanData.error);
+            log.error('Scan failed:', scanData.error);
             return;
         }
 
@@ -732,7 +734,7 @@ export async function dashboardMeshRefresh() {
         await loadMeshTopology();
 
     } catch (error) {
-        console.error('Mesh refresh failed:', error);
+        log.error('Mesh refresh failed:', error);
     } finally {
         if (scanBtn) {
             scanBtn.disabled = false;

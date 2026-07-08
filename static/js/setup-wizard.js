@@ -1254,7 +1254,7 @@
                 renderStep2Welcome(data.reason, data.current_port);
             }
         } catch (e) {
-            console.debug('Setup wizard: status check failed, skipping', e);
+            zmmLog('setup-wizard').debug('Setup wizard: status check failed, skipping', e);
         }
     }
 

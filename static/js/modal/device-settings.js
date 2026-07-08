@@ -31,6 +31,8 @@ import { state } from '../state.js';
 import { addLogEntry } from '../logging.js';
 import { getTimestamp } from '../utils.js';
 
+const log = zmmLog('modal-device-settings');
+
 // ---------------------------------------------------------------------------
 // Action result panel — updated by Poll / Reconfigure / Re-Interview
 // ---------------------------------------------------------------------------
@@ -189,7 +191,7 @@ export async function initSettingsTab(ieee) {
             });
         }
     } catch (e) {
-        console.error('initSettingsTab failed', e);
+        log.error('initSettingsTab failed', e);
     }
 }
 
@@ -645,7 +647,7 @@ export async function startRetryInterview(ieee) {
                 : `Re-Interview: ${data.error || 'one or more steps failed'}`,
         });
     } catch (e) {
-        console.error('retry_interview failed', e);
+        log.error('retry_interview failed', e);
         window.toast.error('Re-Interview failed: ' + e.message);
     }
 }

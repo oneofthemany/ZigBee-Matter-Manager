@@ -3,6 +3,8 @@
  * Rich Settings Panel - Config / Security / Spectrum tabs
  * Replaces the raw YAML textarea with a structured form UI.
  */
+const log = zmmLog('settings');
+
 
  // ============================================================================
  // IMPORTS
@@ -379,7 +381,7 @@ function collectOtaProviderRows() {
                 }
             } catch (e) {
                 // Surface the parse error inline rather than silently dropping
-                console.warn('OTA provider extras JSON parse failed:', extrasRaw, e);
+                log.warn('OTA provider extras JSON parse failed:', extrasRaw, e);
                 row.querySelector('.ota-prov-extras')?.classList.add('is-invalid');
             }
         }

@@ -16,6 +16,8 @@
 
 import { state } from './state.js';
 
+const log = zmmLog('interview-status-badge');
+
 // In-memory cache of the latest snapshot per ieee. Only contains devices
 // in non-interviewed state — interviewed devices are removed.
 const _pending = new Map();
@@ -30,7 +32,7 @@ export async function loadInterviewStatusPending() {
             applyAllBadges();
         }
     } catch (e) {
-        console.debug('loadInterviewStatusPending failed', e);
+        log.debug('loadInterviewStatusPending failed', e);
     }
 }
 

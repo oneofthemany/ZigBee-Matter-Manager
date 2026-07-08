@@ -11,6 +11,8 @@
 
 import { confirmDialog, promptDialog } from './dialogs.js';
 
+const log = zmmLog('editor');
+
 let monacoReady = false;
 let editorInstance = null;
 let currentFile = null;
@@ -423,7 +425,7 @@ async function loadFileTree() {
         fileTree = data.tree;
         renderFileTree(data.tree);
     } catch (e) {
-        console.error('Failed to load file tree:', e);
+        log.error('Failed to load file tree:', e);
     }
 }
 
@@ -926,7 +928,7 @@ async function validateCurrentFile() {
 
         return data;
     } catch (e) {
-        console.error('Validation failed:', e);
+        log.error('Validation failed:', e);
         return null;
     }
 }

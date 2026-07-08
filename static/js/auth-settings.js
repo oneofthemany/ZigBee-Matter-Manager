@@ -50,7 +50,7 @@
                 state.groups = [];
             }
         } catch (e) {
-            console.error('[auth-settings] refresh failed', e);
+            zmmLog('auth-settings').error('[auth-settings] refresh failed', e);
         }
         render();
     }

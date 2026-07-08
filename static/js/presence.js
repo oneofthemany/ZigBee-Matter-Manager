@@ -94,7 +94,7 @@
             });
 
             if (!resp.ok) {
-                console.warn('[Presence] fix rejected', resp.status);
+                zmmLog('presence').warn('fix rejected', resp.status);
                 return;
             }
             var data = await resp.json();
@@ -113,7 +113,7 @@
                 }
             }
         } catch (e) {
-            console.warn('[Presence] report failed', e);
+            zmmLog('presence').warn('report failed', e);
         }
     }
 
@@ -122,7 +122,7 @@
     // ----------------------------------------------------------
     function start() {
         if (!('geolocation' in navigator)) {
-            console.warn('[Presence] Geolocation not supported');
+            zmmLog('presence').warn('Geolocation not supported');
             return false;
         }
         if (watchId !== null) return true;
@@ -130,14 +130,14 @@
         var prefs = getPrefs();
         watchId = navigator.geolocation.watchPosition(
             function (pos) { reportFix(pos.coords); },
-            function (err) { console.warn('[Presence] geo error', err.code, err.message); },
+            function (err) { zmmLog('presence').warn('geo error', err.code, err.message); },
             {
                 enableHighAccuracy: !!prefs.highAccuracy,
                 maximumAge: 30 * 1000,
                 timeout: 30 * 1000
             }
         );
-        console.log('[Presence] watchPosition started, id=' + watchId);
+        zmmLog('presence').log('watchPosition started, id=' + watchId);
         return true;
     }
 
@@ -145,7 +145,7 @@
         if (watchId !== null) {
             try { navigator.geolocation.clearWatch(watchId); } catch (e) {}
             watchId = null;
-            console.log('[Presence] watchPosition stopped');
+            zmmLog('presence').log('watchPosition stopped');
         }
     }
 

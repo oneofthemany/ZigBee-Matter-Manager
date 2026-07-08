@@ -5,6 +5,8 @@
 
 import { state } from './state.js';
 
+const log = zmmLog('mqtt-explorer');
+
 let mqttExplorerState = {
     monitoring: false,
     messages: [],
@@ -26,7 +28,7 @@ let statsInterval = null;
  * Initialize MQTT Explorer
  */
 export function initMQTTExplorer() {
-    console.log('Initializing MQTT Explorer...');
+    log.log('Initializing MQTT Explorer...');
 
     // Set up event listeners
     setupEventListeners();
@@ -42,7 +44,7 @@ export function startMQTTStats() {
     if (!statsInterval) {
         updateStats(); // Fetch immediately on tab open
         statsInterval = setInterval(updateStats, 2000);
-        console.log('MQTT stats polling started.');
+        log.log('MQTT stats polling started.');
     }
 }
 
@@ -53,7 +55,7 @@ export function stopMQTTStats() {
     if (statsInterval) {
         clearInterval(statsInterval);
         statsInterval = null;
-        console.log('MQTT stats polling stopped.');
+        log.log('MQTT stats polling stopped.');
     }
 }
 
@@ -136,7 +138,7 @@ async function startMonitoring() {
             showToast(data.message || 'Failed to start monitoring', 'warning');
         }
     } catch (error) {
-        console.error('Failed to start MQTT Explorer:', error);
+        log.error('Failed to start MQTT Explorer:', error);
         showToast('Failed to start monitoring', 'danger');
     }
 }
@@ -155,7 +157,7 @@ async function stopMonitoring() {
             showToast('MQTT Explorer stopped', 'info');
         }
     } catch (error) {
-        console.error('Failed to stop MQTT Explorer:', error);
+        log.error('Failed to stop MQTT Explorer:', error);
         showToast('Failed to stop monitoring', 'danger');
     }
 }
@@ -181,7 +183,7 @@ async function clearMessages() {
             showToast('Messages cleared', 'success');
         }
     } catch (error) {
-        console.error('Failed to clear messages:', error);
+        log.error('Failed to clear messages:', error);
         showToast('Failed to clear messages', 'danger');
     }
 }
@@ -208,7 +210,7 @@ async function refreshMessages() {
             renderMessages();
         }
     } catch (error) {
-        console.error('Failed to refresh messages:', error);
+        log.error('Failed to refresh messages:', error);
     }
 }
 
@@ -226,7 +228,7 @@ async function updateStats() {
         updateStatsUI(stats);
         updateUI();
     } catch (error) {
-        console.error('Failed to update stats:', error);
+        log.error('Failed to update stats:', error);
     }
 }
 
@@ -480,7 +482,7 @@ async function publishMessage() {
             showToast(data.message || 'Publish failed', 'danger');
         }
     } catch (error) {
-        console.error('Failed to publish message:', error);
+        log.error('Failed to publish message:', error);
         showToast('Failed to publish message', 'danger');
     }
 }
@@ -529,7 +531,7 @@ function escapeHtml(text) {
  */
 function showToast(message, type = 'info') {
     // Simple console log fallback if no toast system
-    console.log(`[${type}] ${message}`);
+    log.log(`[${type}] ${message}`);
 }
 
 // Export for use in main.js

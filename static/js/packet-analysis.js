@@ -8,6 +8,8 @@
  * Attributes Response payloads into human-readable values (centidegree
  * temperatures, percentages, enums, etc.) for the side-by-side debug view.
  */
+const log = zmmLog('packet-analysis');
+
 
 // =============================================================================
 // 1. ZIGBEE CONSTANTS & REGISTRIES
@@ -866,7 +868,7 @@ export function renderPacketAnalysis(packet) {
     try {
         analysis = analysePacket(packet);
     } catch (e) {
-        console.error("Analysis failed", e);
+        log.error("Analysis failed", e);
         return `<div class="alert alert-danger">Analysis Error: ${e.message}</div>`;
     }
 

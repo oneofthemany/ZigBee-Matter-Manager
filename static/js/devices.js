@@ -13,6 +13,8 @@ import { confirmDialog } from './dialogs.js';
 
 
 
+const log = zmmLog('devices');
+
 /**
  * Check if a device has OTA cluster (0x0019) support
  */
@@ -29,12 +31,12 @@ function hasOTACluster(d) {
  */
 export async function fetchAllDevices() {
     try {
-        console.log("Fetching all devices...");
+        log.log("Fetching all devices...");
         const res = await fetch('/api/devices');
         if (!res.ok) throw new Error(`API Error: ${res.status}`);
         const devices = await res.json();
 
-        console.log(`Received ${devices.length} devices.`);
+        log.log(`Received ${devices.length} devices.`);
         state.devices = devices; // Update state
         renderDeviceTable();
         populateRouterList();
@@ -42,7 +44,7 @@ export async function fetchAllDevices() {
         try { dismissKnownDevices(state.devices); } catch(e) {}
 
     } catch (e) {
-        console.error("Failed to fetch devices:", e);
+        log.error("Failed to fetch devices:", e);
         const tbody = document.getElementById('deviceTableBody');
         if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${e.message}</td></tr>`;
     }
@@ -265,7 +267,7 @@ function updateDeviceRow(device) {
  */
 export function handleDeviceUpdate(payload) {
     // DEBUG LOGGING: Log the payload as JSON
-    //console.log("1. WebSocket Update Received:", payload.ieee, "\nPayload:", JSON.stringify(payload, null, 2));
+    //log.log("1. WebSocket Update Received:", payload.ieee, "\nPayload:", JSON.stringify(payload, null, 2));
 
     // 1. Find the device in the array
     const devIndex = state.devices.findIndex(d => d.ieee === payload.ieee);
@@ -275,7 +277,7 @@ export function handleDeviceUpdate(payload) {
         // We merge the new data into the existing state object to preserve existing keys
         state.devices[devIndex].state = { ...state.devices[devIndex].state, ...payload.data };
         // DEBUG LOGGING:
-        //console.log("2. Current Open Device:", state.currentDeviceIeee);
+        //log.log("2. Current Open Device:", state.currentDeviceIeee);
 
         // Update metadata if present
         if (payload.data.last_seen) state.devices[devIndex].last_seen_ts = payload.data.last_seen;
@@ -300,7 +302,7 @@ export function handleDeviceUpdate(payload) {
         // Update router list if device type changed or availability changed
         populateRouterList();
         // DEBUG LOGGING:
-        //console.log("3. MATCH! Attempting to refresh modal...");
+        //log.log("3. MATCH! Attempting to refresh modal...");
 
         // 4. Refresh the modal if it is open for THIS device
         //if (state.currentDeviceIeee === payload.ieee) {
@@ -309,20 +311,20 @@ export function handleDeviceUpdate(payload) {
 
         if (state.currentDeviceIeee === payload.ieee) {
             // DEBUG LOGGING:
-            //console.log("3b. About to call refreshModalState, fn is:", typeof refreshModalState);
+            //log.log("3b. About to call refreshModalState, fn is:", typeof refreshModalState);
             try {
                 refreshModalState(state.devices[devIndex]);
-                console.log("3c. refreshModalState returned successfully");
+                log.log("3c. refreshModalState returned successfully");
             } catch (err) {
-                console.error("3d. refreshModalState THREW:", err);
-                console.error("    Stack:", err.stack);
-                console.error("    Device:", state.devices[devIndex]);
+                log.error("3d. refreshModalState THREW:", err);
+                log.error("    Stack:", err.stack);
+                log.error("    Device:", state.devices[devIndex]);
             }
         }
 
     } else {
         // Device not found in list (maybe new join?), trigger full fetch
-        console.log("Device not found in local list, fetching all...");
+        log.log("Device not found in local list, fetching all...");
         fetchDevices();
     }
 }
@@ -412,7 +414,7 @@ window.enablePermitJoinDevice = async function(ieee, name) {
         }
 
     } catch (error) {
-        console.error("Permit join error:", error);
+        log.error("Permit join error:", error);
         window.toast.error("Failed to send request");
     }
 };

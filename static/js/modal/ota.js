@@ -4,6 +4,8 @@
  * Provides check/update/notify controls per-device.
  * Listens for WebSocket 'ota_progress' events for live progress.
  */
+const log = zmmLog('modal-ota');
+
 
 // ============================================================================
 // RENDER OTA TAB
@@ -137,7 +139,7 @@ window.otaCancelUpdate = async function(ieee) {
         await fetch(`/api/ota/cancel/${ieee}`, {method: 'POST'});
         _showProgress(false);
     } catch (e) {
-        console.error('Cancel failed:', e);
+        log.error('Cancel failed:', e);
     }
 };
 

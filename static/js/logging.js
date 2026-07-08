@@ -9,6 +9,8 @@ import { analysePacket, renderPacketAnalysis } from './packet-analysis.js';
 import { initPacketFlow } from './packet-flow.js';
 import { compareValues } from './table-utils.js';
 
+const log = zmmLog('logging');
+
 // Local utility: HTML-escape arbitrary values. Defined at the very top of
 // the module so it's unambiguously in scope for every function below,
 // avoiding any hoisting / TDZ surprises in bundled or transformed builds.
@@ -268,7 +270,7 @@ export async function checkDebugStatus() {
         const res = await fetch('/api/debug/status');
         const data = await res.json();
         updateDebugStatus(data);
-    } catch (e) { console.error(e); }
+    } catch (e) { log.error(e); }
 }
 
 export function updateDebugStatus(data) {
@@ -380,7 +382,7 @@ export function handleLivePacket(p) {
             analysis = analysePacket(p);
         }
     } catch (e) {
-        console.warn('Packet analyser not available:', e);
+        log.warn('Packet analyser not available:', e);
         analysis = {
             cluster_name: p.cluster_name || `0x${(p.cluster_id || 0).toString(16).padStart(4, '0')}`,
             command: p.decoded?.command_name || p.decoded?.command_id_hex || 'Unknown',
@@ -498,7 +500,7 @@ export async function viewDebugPackets() {
     // Kick off the packet-flow panel — pulls a one-shot snapshot so the
     // bar at the top of the modal is populated immediately, then live
     // updates take over via the `packet_flow` WS message handler.
-    try { initPacketFlow(); } catch (e) { console.debug('initPacketFlow failed', e); }
+    try { initPacketFlow(); } catch (e) { log.debug('initPacketFlow failed', e); }
     // Ensure refresh is called to fetch the full data history
     await refreshDebugPackets();
 }
@@ -535,7 +537,7 @@ export async function refreshDebugPackets() {
             renderDebugPacketTable();
         }
     } catch (e) {
-        console.error('Full error details:', e);
+        log.error('Full error details:', e);
         document.getElementById('debugPacketsContent').innerHTML =
             `<div class="alert alert-danger m-3">Error loading packets: ${e.message}<br><small>Check console for details</small></div>`;
     }
@@ -651,7 +653,7 @@ export async function exportDebugPackets() {
         }, 100);
 
     } catch (e) {
-        console.error('Export error:', e);
+        log.error('Export error:', e);
         window.toast.error('Export failed: ' + e.message);
     }
 }
@@ -779,7 +781,7 @@ function renderDebugPacketTable() {
                 </tr>`;
 
             } catch (rowError) {
-                console.error('Error rendering packet row:', rowError);
+                log.error('Error rendering packet row:', rowError);
                 html += `<tr><td colspan="8" class="text-danger small">Error rendering packet ${idx}: ${rowError.message}</td></tr>`;
             }
         });
@@ -857,7 +859,7 @@ export async function downloadDebugLog() {
         window.open(url, '_blank');
 
     } catch (e) {
-        console.error("Failed to generate debug report:", e);
+        log.error("Failed to generate debug report:", e);
         window.toast.error("Failed to generate report. Opening raw log instead.");
         window.open('/api/debug/log_file?lines=5000', '_blank');
     }
@@ -875,6 +877,74 @@ export function clearDebugFilters() {
     const limitEl = document.getElementById('packetLimitFilter');
     if (limitEl) limitEl.value = '100';
     refreshDebugPackets();
+}
+
+// ============================================================================
+// BROWSER CONSOLE LOGGING (zmmLog namespace toggles)
+// ============================================================================
+
+/**
+ * Modal for choosing which zmmLog namespaces may write to the browser
+ * dev console. Selection persists in localStorage ('zmm.debug').
+ * Errors always print regardless of these switches.
+ */
+export function showConsoleLogSettings() {
+    let modal = document.getElementById('consoleLogModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'consoleLogModal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-hidden', 'true');
+        modal.innerHTML = `
+          <div class="modal-dialog modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header py-2">
+                <h5 class="modal-title"><i class="fas fa-terminal me-1"></i> Browser Console Logging</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <p class="small text-muted mb-2">
+                  Enabled modules may write debug output to the browser dev console.
+                  Errors are always shown. Selection is saved in this browser.
+                </p>
+                <div class="mb-2">
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="consoleNsEnableAll">Enable all</button>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="consoleNsDisableAll">Disable all</button>
+                </div>
+                <div id="consoleNsList" style="columns: 2 11rem;"></div>
+              </div>
+            </div>
+          </div>`;
+        document.body.appendChild(modal);
+        modal.querySelector('#consoleNsEnableAll').addEventListener('click', () => {
+            zmmLog.enable('*');
+            renderConsoleNsList();
+        });
+        modal.querySelector('#consoleNsDisableAll').addEventListener('click', () => {
+            zmmLog.disable('*');
+            renderConsoleNsList();
+        });
+    }
+    renderConsoleNsList();
+    bootstrap.Modal.getOrCreateInstance(modal).show();
+}
+
+function renderConsoleNsList() {
+    const list = document.getElementById('consoleNsList');
+    if (!list) return;
+    list.innerHTML = zmmLog.namespaces().map(ns => `
+        <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="consoleNs-${ns}"
+                   data-ns="${ns}" ${zmmLog.isEnabled(ns) ? 'checked' : ''}>
+            <label class="form-check-label small" for="consoleNs-${ns}"><code>${ns}</code></label>
+        </div>`).join('');
+    list.querySelectorAll('input[data-ns]').forEach(inp => {
+        inp.addEventListener('change', () => {
+            if (inp.checked) zmmLog.enable(inp.dataset.ns);
+            else zmmLog.disable(inp.dataset.ns);
+        });
+    });
 }
 
 /**

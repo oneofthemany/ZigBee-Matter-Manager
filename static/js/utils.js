@@ -2,6 +2,8 @@
  * Utility Functions
  * General-purpose helpers used across the application
  */
+const log = zmmLog('utils');
+
 
 /**
  * Get icon for device type
@@ -111,7 +113,7 @@ export function showToast(message, type = 'info') {
     const typeMap = { danger: 'error', error: 'error', success: 'success', warning: 'warning', info: 'info' };
     const fn = window.toast && window.toast[typeMap[type] || 'info'];
     if (fn) fn(message);
-    else console.log(`[toast:${type}]`, message);
+    else log.log(`[toast:${type}]`, message);
 }
 
 // Several classic scripts and modules feature-detect window.showToast

@@ -2,6 +2,8 @@
  * HVAC Schedule Manager *
  * Calendar-based weekly schedule editor for thermostat devices.
  */
+const log = zmmLog('modal-schedule');
+
 
 // ============================================================================
 // STORAGE HELPERS
@@ -14,7 +16,7 @@ function loadSchedule(ieee) {
         const raw = localStorage.getItem(STORAGE_KEY_PREFIX + ieee);
         if (raw) return JSON.parse(raw);
     } catch (e) {
-        console.warn('Failed to load schedule:', e);
+        log.warn('Failed to load schedule:', e);
     }
     return getDefaultSchedule();
 }
@@ -23,7 +25,7 @@ function saveSchedule(ieee, schedule) {
     try {
         localStorage.setItem(STORAGE_KEY_PREFIX + ieee, JSON.stringify(schedule));
     } catch (e) {
-        console.warn('Failed to save schedule:', e);
+        log.warn('Failed to save schedule:', e);
     }
 }
 
@@ -487,7 +489,7 @@ window.uploadFullSchedule = async function(ieee) {
 
         window.toast.success('Schedule uploaded successfully!');
     } catch (error) {
-        console.error('Schedule upload failed:', error);
+        log.error('Schedule upload failed:', error);
         window.toast.error('Failed to upload schedule: ' + error.message);
     } finally {
         if (btn) {

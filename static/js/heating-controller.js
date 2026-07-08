@@ -16,6 +16,8 @@
  *   POST /api/heating/controller/config
  *   GET  /api/heating/controller/devices
  */
+const log = zmmLog('heating-controller');
+
 
 let controllerState = null;
 let controllerConfig = null;
@@ -39,7 +41,7 @@ const STATUS_REFRESH_MS = 30_000;
 // ============================================================================
 export function initHeatingController() {
     ensureControllerSettingsModal();
-    console.log("Heating Controller frontend initialised");
+    log.log("Heating Controller frontend initialised");
 }
 
 // ============================================================================
@@ -67,7 +69,7 @@ export async function loadControllerStatus(targetSelector = '#heatingControllerP
         // panel renders immediately without blocking on these calculations.
         fillRoomPreheatSlots();
     } catch (err) {
-        console.warn('Controller status fetch failed:', err);
+        log.warn('Controller status fetch failed:', err);
         container.innerHTML = `<div class="alert alert-warning small">Controller status unavailable</div>`;
     }
 }
@@ -366,7 +368,7 @@ function bindControllerPanel() {
                 : 'btn-controller-settings';
             document.getElementById(targetId)?.click();
         } catch (e) {
-            console.error('Configure dispatch failed:', e);
+            log.error('Configure dispatch failed:', e);
             fireToast('error', 'Failed', 'Could not open the configuration editor.');
         } finally {
             btn.disabled = false;
@@ -420,7 +422,7 @@ function bindControllerPanel() {
                 });
             }
         } catch (e) {
-            console.error('Failed to open floor-plan editor:', e);
+            log.error('Failed to open floor-plan editor:', e);
             fireToast('error', 'Failed to open',
                 'Could not load the floor-plan editor. Check the console for details.');
         }
@@ -738,7 +740,7 @@ async function switchConfigMode(targetMode) {
                     : 'Mode switched. Open the editor to draw your plan.')
                 : `Now in manual mode. Stripped ${r.stripped_floor_plan_refs || 0} floor-plan references.`);
     } catch (e) {
-        console.error('Mode switch failed:', e);
+        log.error('Mode switch failed:', e);
         fireToast('error', 'Switch failed', e.message);
     }
 }
@@ -2734,7 +2736,7 @@ function bindCircuitCards() {
                     });
                 }
             } catch (e) {
-                console.error('Failed to load floor-plan editor:', e);
+                log.error('Failed to load floor-plan editor:', e);
                 fireToast('warning', 'Unavailable',
                     'Floor-plan editor is not loaded on this page.');
             }
@@ -3310,7 +3312,7 @@ async function saveControllerSettings() {
             // with the current backend; if it does, the user needs to know
             // something's off so they can check the logs. Don't show a
             // green success toast — that would hide the issue.
-            console.warn('[heating] save returned applied=false without restart_required', json);
+            log.warn('[heating] save returned applied=false without restart_required', json);
             const msg = 'Saved to disk, but live reload didn\'t confirm. Check journalctl for [save_config] / [apply_config] entries.';
             status.innerHTML = `<span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(msg)}</span>`;
             fireToast('warning', 'Hot-reload didn\'t apply', msg, 8000);

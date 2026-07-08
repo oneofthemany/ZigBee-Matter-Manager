@@ -12,6 +12,8 @@ import { initAutomationTab } from './modal/automation.js';
 import { initAIAutomations, renderAIPanel } from './ai-automations.js';
 
 
+const log = zmmLog('automations-page');
+
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
 // Readable label for a dynamic sun condition (sunrise/sunset window).
@@ -435,7 +437,7 @@ async function _apToggle(ruleId) {
         await fetch(`/api/automations/${ruleId}/toggle`, { method: 'PATCH' });
         await loadAutomationsPage();
     } catch (e) {
-        console.error('Toggle failed:', e);
+        log.error('Toggle failed:', e);
     }
 }
 

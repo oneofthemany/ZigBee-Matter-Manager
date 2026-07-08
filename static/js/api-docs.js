@@ -8,7 +8,7 @@
 // they win over OpenAPI for description/returns. Mostly you should never
 // need to add entries: write a docstring on the route handler instead, and
 // FastAPI will surface it via OpenAPI automatically.
-console.log('ZMM API Docs JS loaded');
+zmmLog('api-docs').log('ZMM API Docs JS loaded');
 
 // ============================================================================
 // OPTIONAL HAND-CURATED OVERRIDES
@@ -52,14 +52,14 @@ async function loadRoutes() {
             const spec = await openapiRes.json();
             indexOpenApi(spec);
             openApiLoaded = true;
-            console.log(`OpenAPI loaded — ${Object.keys(openApiCache).length} operations indexed`);
+            zmmLog('api-docs').log(`OpenAPI loaded — ${Object.keys(openApiCache).length} operations indexed`);
         } else {
-            console.warn('OpenAPI spec not available — falling back to hand-curated metadata only');
+            zmmLog('api-docs').warn('OpenAPI spec not available — falling back to hand-curated metadata only');
         }
 
         renderRoutes(groups);
     } catch (error) {
-        console.error('Error loading routes:', error);
+        zmmLog('api-docs').error('Error loading routes:', error);
         const list = document.getElementById('routesList');
         if (list) {
             list.innerHTML = `
@@ -132,7 +132,7 @@ function renderRoutes(groups) {
         container.appendChild(groupDiv);
     });
 
-    console.log(`Rendered ${totalRoutes} total routes in ${Object.keys(groups).length} groups`);
+    zmmLog('api-docs').log(`Rendered ${totalRoutes} total routes in ${Object.keys(groups).length} groups`);
 }
 
 // ============================================================================
@@ -529,7 +529,7 @@ async function testEndpoint(event) {
             : data;
 
     } catch (error) {
-        console.error('Error testing endpoint:', error);
+        zmmLog('api-docs').error('Error testing endpoint:', error);
         responseContainer.style.display = 'block';
         statusBadge.textContent = 'Error';
         statusBadge.className = 'status-badge status-error';
