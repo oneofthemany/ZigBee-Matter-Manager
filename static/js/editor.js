@@ -329,6 +329,21 @@ function createEditor(container, content, language) {
         padding: { top: 8 },
     });
 
+    // Warn immediately if pasted text contains U+FFFD replacement chars —
+    // it means the clipboard content was already corrupted at the source
+    // (wrong-encoding viewer/terminal), before it reached the browser.
+    editorInstance.onDidPaste(e => {
+        const pasted = editorInstance.getModel()?.getValueInRange(e.range) || '';
+        const count = (pasted.match(/�/g) || []).length;
+        if (count > 0) {
+            window.toast.error(
+                `Pasted text contains ${count} corrupted character(s) (�) ` +
+                `starting at line ${e.range.startLineNumber}. The clipboard was ` +
+                `already damaged — copy from a UTF-8 source instead.`
+            );
+        }
+    });
+
     // Track cursor position
     editorInstance.onDidChangeCursorPosition(e => {
         const pos = e.position;
@@ -820,12 +835,30 @@ async function saveCurrentFile() {
     try {
         if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
 
-        const res = await fetch('/api/editor/save', {
+        let res = await fetch('/api/editor/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: currentFile, content, create_backup: true })
         });
-        const data = await res.json();
+        let data = await res.json();
+
+        // Server rejected corrupted content (U+FFFD chars) — offer override
+        if (!data.success && data.mojibake) {
+            const proceed = await confirmDialog({
+                title: 'Corrupted characters detected',
+                message: `${data.replacement_chars} replacement character(s) (�) on line(s) ${(data.lines || []).join(', ')}.`,
+                detail: 'The pasted text lost characters to an encoding error before it reached the editor. Saving will bake the damage into the file.',
+                confirmText: 'Save anyway',
+                variant: 'danger'
+            });
+            if (!proceed) return;
+            res = await fetch('/api/editor/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: currentFile, content, create_backup: true, allow_mojibake: true })
+            });
+            data = await res.json();
+        }
 
         if (data.success) {
             unsavedChanges = false;

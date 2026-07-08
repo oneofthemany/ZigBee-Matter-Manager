@@ -58,11 +58,46 @@ class FileSaveRequest(BaseModel):
     path: str
     content: str
     create_backup: bool = True
+    allow_mojibake: bool = False
 
 
 class FileCreateRequest(BaseModel):
     path: str
     content: str = ""
+    allow_mojibake: bool = False
+
+
+def mojibake_check(content: str, allow: bool = False):
+    """
+    Reject content containing U+FFFD replacement characters unless allowed.
+
+    U+FFFD never occurs in legitimate source. Its presence means the text
+    lost Unicode characters (·, —, …, °, …) before it reached the API —
+    typically a copy-paste from a viewer that decoded the file with the
+    wrong encoding. Writing it would bake the damage into the file.
+    Returns an error dict to send back, or None when the content is clean.
+    """
+    if allow:
+        return None
+    # U+FFFD written as an escape so this check survives even if this
+    # source file is itself transcoded by a broken pipeline.
+    count = content.count("\ufffd")
+    if count == 0:
+        return None
+    lines = [i + 1 for i, line in enumerate(content.splitlines()) if "\ufffd" in line]
+    line_list = ", ".join(map(str, lines[:20]))
+    return {
+        "success": False,
+        "mojibake": True,
+        "replacement_chars": count,
+        "lines": lines[:20],
+        "error": (
+            f"Content contains {count} Unicode replacement character(s) "
+            f"(U+FFFD) on line(s) {line_list}. The text was corrupted before "
+            "it reached the editor — check the encoding of whatever it was "
+            "copied from. Pass allow_mojibake=true to save anyway."
+        ),
+    }
 
 
 def _resolve_path(relative_path: str) -> Optional[Path]:
@@ -172,6 +207,9 @@ def register_editor_routes(app: FastAPI, get_zigbee_service):
             return {"success": False, "error": "Invalid path"}
         if not _is_editable(full):
             return {"success": False, "error": f"File type not editable: {full.suffix}"}
+        mojibake = mojibake_check(request.content, request.allow_mojibake)
+        if mojibake:
+            return mojibake
 
         # Backup existing file
         backup_path = None
@@ -212,6 +250,9 @@ def register_editor_routes(app: FastAPI, get_zigbee_service):
             return {"success": False, "error": "File already exists"}
         if not _is_editable(full):
             return {"success": False, "error": f"File type not allowed: {full.suffix}"}
+        mojibake = mojibake_check(request.content, request.allow_mojibake)
+        if mojibake:
+            return mojibake
 
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
