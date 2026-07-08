@@ -8,9 +8,9 @@
 
 
 /* ----------------------------------------------------------
-   PAGE LAYOUT (ported from the retired styles.css — the old
-   flex/100vh body hack is intentionally gone; the header is
-   now full-bleed sticky, so page gutters live on the container)
+   PAGE LAYOUT — flex/100vh body: header + tab rail are fixed
+   chrome and only .tab-content scrolls (see TAB RAIL section);
+   page gutters live on the container
    ---------------------------------------------------------- */
 body {
     min-height: 100vh;
@@ -288,6 +288,75 @@ body > .container-fluid {
 .nav-tabs {
     border-bottom: 1px solid var(--border-color);
     gap: 0.15rem;
+}
+
+/* App chrome (header + tab rail) is fixed; only the tab content
+   scrolls, so the scrollbar starts below the tab bar. The page itself
+   never scrolls. */
+html, body {
+    height: 100%;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.hive-header {
+    flex-shrink: 0;
+}
+
+.app-main {
+    flex: 1 1 auto;
+    min-height: 0;              /* let .tab-content shrink and scroll */
+    display: flex;
+    flex-direction: column;
+}
+
+#mainTabs {
+    flex-shrink: 0;
+    padding-top: 0.4rem;
+}
+
+.app-main > .tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* Devices tab: coordinator card, Devices card header and the column
+   header row all stay fixed — only the device rows scroll. The
+   .table-responsive becomes the scroll box, which activates the
+   sticky thead that table.css already gives every .tbl table. */
+.tab-content > #devices.active {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+#devices .device-list-card {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.device-list-card > .card-header {
+    flex-shrink: 0;
+}
+
+.device-list-card > .card-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.device-list-card .table-responsive {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .nav-tabs .nav-link {
