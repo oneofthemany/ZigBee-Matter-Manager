@@ -345,6 +345,16 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        // Spectrum tab listener — auto-load historical interference on first show
+        const spectrumTab = document.querySelector('[data-bs-target="#settingsSpectrum"]');
+        if (spectrumTab) {
+            spectrumTab.addEventListener('shown.bs.tab', () => {
+                if (typeof window.loadSpectrumHistory === 'function') {
+                    window.loadSpectrumHistory();
+                }
+            });
+        }
+
         // MQTT Explorer tab listener
         const mqttTabTrigger = document.querySelector('button[data-bs-target="#mqtt-explorer"], a[data-bs-target="#mqtt-explorer"]');
         if (mqttTabTrigger) {
