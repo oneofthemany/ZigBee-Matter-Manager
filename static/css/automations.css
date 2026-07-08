@@ -1,0 +1,134 @@
+/*
+ * Automations — humanized rules list (Track A redesign)
+ * Flow-card layout: device-identity rail + WHEN → ONLY IF → DO → ELSE flow.
+ * Uses the app's Hive tokens (hive-tokens.css) so it themes automatically.
+ * All selectors scoped under #ap-rules-list / .ap-* to avoid collisions.
+ */
+
+/* Local theme-aware accent for the ONLY-IF (condition) label — the app has no
+   info token, so define one that reads on both grounds. */
+#ap-rules-list { --ap-info: #2b6ea3; }
+[data-theme="dark"] #ap-rules-list { --ap-info: #6cb6e6; }
+
+#ap-rules-list .ap-devgroup { margin-top: 22px; }
+#ap-rules-list .ap-devgroup:first-child { margin-top: 0; }
+
+#ap-rules-list .ap-devgroup-head {
+    display: flex; align-items: center; gap: 9px;
+    margin: 0 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+#ap-rules-list .ap-devgroup-head .ap-gname { font-weight: 700; font-size: 15px; color: var(--text-primary); }
+#ap-rules-list .ap-devgroup-head .ap-gmeta {
+    font-size: 11.5px; color: var(--text-muted);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ── identity badge ── */
+#ap-rules-list .ap-idico {
+    flex-shrink: 0; display: grid; place-items: center; border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+}
+#ap-rules-list .ap-idico.sm { width: 28px; height: 28px; font-size: 13px; }
+
+/* ── flow card ── */
+#ap-rules-list .ap-flowcard {
+    background: var(--bg-surface); border: 1px solid var(--border-color);
+    border-radius: 12px; overflow: hidden; margin-bottom: 14px;
+    display: grid; grid-template-columns: 196px 1fr;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05), 0 6px 20px -14px rgba(0,0,0,.3);
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+#ap-rules-list .ap-flowcard.disabled { opacity: .58; }
+@media (max-width: 640px) { #ap-rules-list .ap-flowcard { grid-template-columns: 1fr; } }
+
+#ap-rules-list .ap-rail {
+    background: var(--bg-surface-raised); border-right: 1px solid var(--border-light);
+    padding: 15px; display: flex; flex-direction: column; gap: 10px;
+}
+@media (max-width: 640px) {
+    #ap-rules-list .ap-rail {
+        border-right: none; border-bottom: 1px solid var(--border-light);
+        flex-direction: row; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+}
+#ap-rules-list .ap-rail .ap-idico.lg { width: 40px; height: 40px; font-size: 18px; }
+#ap-rules-list .ap-rname { font-weight: 700; font-size: 15px; letter-spacing: -.01em; color: var(--text-primary); }
+#ap-rules-list .ap-rname.untitled { color: var(--text-muted); font-style: italic; font-weight: 600; }
+#ap-rules-list .ap-rmeta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+@media (max-width: 640px) { #ap-rules-list .ap-rmeta { margin-top: 0; } }
+
+/* ── chips ── */
+#ap-rules-list .ap-chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
+    padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+    background: var(--badge-light-bg); color: var(--badge-light-text);
+    border: 1px solid var(--border-light);
+}
+#ap-rules-list .ap-chip i { font-size: 10px; }
+#ap-rules-list .ap-chip.ok   { color: var(--status-ok);  background: color-mix(in srgb, var(--ok) 12%, transparent);   border-color: transparent; }
+#ap-rules-list .ap-chip.run  { color: var(--status-warn); background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: transparent; }
+#ap-rules-list .ap-chip.off  { color: var(--status-bad);  background: color-mix(in srgb, var(--bad) 12%, transparent);   border-color: transparent; }
+#ap-rules-list .ap-chip.mut  { color: var(--text-muted); }
+#ap-rules-list .ap-chip .num { font-variant-numeric: tabular-nums; }
+
+/* ── flow body ── */
+#ap-rules-list .ap-flow { padding: 13px 16px; display: flex; flex-direction: column; }
+#ap-rules-list .ap-step {
+    display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 6px 0; position: relative;
+}
+#ap-rules-list .ap-step + .ap-step::before {
+    content: ""; position: absolute; left: 30px; top: -6px; height: 6px; width: 2px;
+    background: var(--border-color);
+}
+#ap-rules-list .ap-lab {
+    font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+    padding-top: 2px; text-align: right; line-height: 1.5;
+}
+#ap-rules-list .ap-lab.when { color: var(--accent); }
+#ap-rules-list .ap-lab.if   { color: var(--ap-info); }
+#ap-rules-list .ap-lab.and  { color: var(--ap-info); opacity: .7; }
+#ap-rules-list .ap-lab.do   { color: var(--status-ok); }
+#ap-rules-list .ap-lab.else { color: var(--status-bad); }
+
+#ap-rules-list .ap-txt { color: var(--text-primary); font-size: 14px; }
+#ap-rules-list .ap-txt .dev { font-weight: 600; }
+#ap-rules-list .ap-txt .neg {
+    color: var(--status-bad); font-weight: 700; font-size: 10px;
+    border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-right: 3px;
+}
+#ap-rules-list .ap-raw {
+    display: block; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px; color: var(--text-muted); margin-top: 1px;
+}
+
+#ap-rules-list .ap-acts { display: flex; flex-direction: column; gap: 5px; }
+#ap-rules-list .ap-act { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#ap-rules-list .ap-act > i { font-size: 11px; color: var(--status-ok); flex-shrink: 0; width: 13px; text-align: center; }
+
+#ap-rules-list .ap-par {
+    border-left: 2px solid color-mix(in srgb, var(--honey) 55%, transparent);
+    padding: 2px 0 2px 11px; margin: 2px 0; display: flex; flex-direction: column; gap: 5px;
+}
+#ap-rules-list .ap-par-tag {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent);
+}
+#ap-rules-list .ap-delay {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
+    color: var(--status-warn); background: color-mix(in srgb, var(--warn) 12%, transparent);
+    padding: 1px 7px; border-radius: 6px; font-variant-numeric: tabular-nums;
+}
+#ap-rules-list .ap-sub {
+    margin-top: 4px; padding: 8px 10px; border: 1px dashed var(--border-color);
+    border-radius: 8px; background: var(--bg-surface-sunken);
+}
+#ap-rules-list .ap-sub-head { font-size: 11.5px; font-weight: 700; color: var(--text-secondary); margin-bottom: 5px; }
+
+/* ── footer actions ── */
+#ap-rules-list .ap-foot {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 7px;
+    padding: 8px 16px; border-top: 1px solid var(--border-light); background: var(--bg-card-header);
+}
+#ap-rules-list .ap-foot .spacer { flex: 1; }

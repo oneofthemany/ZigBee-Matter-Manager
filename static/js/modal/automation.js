@@ -9,6 +9,7 @@
  */
 
 import { state } from '../state.js';
+import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
@@ -61,6 +62,49 @@ function _devOpts(list, selectedIeee, extraAttrs='') {
 
 function _uid() { return stepIdC++; }
 
+// ── Device-aware helpers (Track B) ──────────────────────────────────────────
+
+// Device summary (name/model/state_keys) for heuristics; feeds deviceType().
+function _summary(ieee) { return (cachedAllDevices || []).find(d => d.ieee === ieee); }
+const _dtype = ieee => deviceType(ieee, _summary(ieee));
+
+// Merge canonical type triggers into a fetched attribute list, skipping dupes.
+function _mergeTypeAttrs(attrs, type) {
+    const have = new Set((attrs || []).map(a => a.attribute));
+    const extra = typeTriggerAttrs(type)
+        .filter(a => !have.has(a.attribute))
+        .map(a => ({ current_value: '—', ...a }));
+    return [...(attrs || []), ...extra];
+}
+
+// Friendly <option> text for an attribute descriptor: "Open / Closed · is_open — now true".
+function _attrOptLabel(a, type) {
+    const friendly = attrLabel(type, a.attribute);
+    const cur = (a.current_value !== undefined && a.current_value !== '—')
+        ? ` — now ${a.current_value}` : '';
+    return `${friendly}  ·  ${a.attribute}${cur}`;
+}
+
+// Build the <option> list for an attribute <select>, humanized for a device type.
+function _attrOptions(attrs, type) {
+    return (attrs || []).map(a =>
+        `<option value="${a.attribute}" data-type="${a.type}" data-operators='${JSON.stringify(a.operators || ['eq','neq'])}' data-current="${a.current_value}" data-vo='${JSON.stringify(a.value_options || [])}'>${_attrOptLabel(a, type)}</option>`
+    ).join('');
+}
+
+// Value input, preferring a labeled enum for the (type, attribute) pair.
+// Falls back to the raw value_options list (vo), then a free-text box.
+function _valueInput(cls, id, type, attribute, valType, cur, vo, idAttr = 'data-id') {
+    const en = attrEnum(type, attribute, valType);
+    if (en) {
+        const norm = cur !== undefined && cur !== '' ? String(cur).toLowerCase() : '';
+        return `<select class="form-select form-select-sm ${cls}" ${idAttr}="${id}">`
+            + en.map(o => `<option value="${o.value}" ${norm === String(o.value).toLowerCase() ? 'selected' : ''}>${o.label}</option>`).join('')
+            + '</select>';
+    }
+    return _vI(cls, id, vo || [], cur, idAttr);
+}
+
 // ============================================================================
 // RENDER
 // ============================================================================
@@ -103,7 +147,12 @@ export async function initAutomationTab(ieee) {
             fetch('/api/automations/actuators'), fetch('/api/automations/devices'),
         ]);
         cachedAttributes = isTime ? [] : await aR.json(); cachedActuators = await actR.json();
-        cachedAllDevices = await dR.json(); _renderRules(await rR.json());
+        cachedAllDevices = await dR.json();
+        // Device-aware: ensure canonical triggers for this device type are always
+        // offered (e.g. a button's transient `action`), even if the current state
+        // snapshot doesn't include them right now.
+        if (!isTime) cachedAttributes = _mergeTypeAttrs(cachedAttributes, _dtype(ieee));
+        _renderRules(await rR.json());
     } catch(e) { const el=document.getElementById('a-rules'); if(el)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`; }
     // Media players are optional — a failure here must not break the tab.
     try { const pj = await (await fetch('/api/media/players')).json(); cachedPlayers = pj.success ? (pj.players||[]) : []; }
@@ -292,7 +341,7 @@ function _vI(cls, id, opts, cur, idAttr = 'data-id') {
 function _renderCond(id, ctype) {
     // Default new conditions on the virtual time source to an alarm (no attrs exist).
     ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
-    const opts=cachedAttributes.map(a=>`<option value="${a.attribute}" data-type="${a.type}" data-operators='${JSON.stringify(a.operators)}' data-current="${a.current_value}" data-vo='${JSON.stringify(a.value_options||[])}'>${a.attribute} (${a.current_value})</option>`).join('');
+    const opts = _attrOptions(cachedAttributes, _dtype(currentSourceIeee));
     const idx=condRows.indexOf(id);
     const badge = `<span class="badge ${idx===0?'bg-primary':'bg-warning text-dark'} small">${idx===0?'IF':'AND'}</span>`;
     const rmBtn = idx>0 ? `<button class="btn btn-sm btn-outline-danger" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>` : '<div style="width:31px"></div>';
@@ -686,25 +735,24 @@ function _popCmds(sid,cmds,selCmd,selEp) {
 
 async function _loadAttrs(sid,ieee,selAttr,selVal) {
     const aS=document.querySelector(`.s-attr[data-sid="${sid}"]`);if(!aS)return;
+    const dtype=_dtype(ieee);
     try{const d=await(await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/state`)).json();
         aS.innerHTML='<option value="">Attr...</option>';
-        (d.attributes||[]).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.textContent=`${a.attribute} (${a.current_value})`;if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
+        _mergeTypeAttrs(d.attributes||[],dtype).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.dataset.type=a.type;o.textContent=_attrOptLabel(a,dtype);if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
 
         aS.onchange=()=>{
             const o=aS.options[aS.selectedIndex];
             if(!o)return;
             const vo=JSON.parse(o.dataset.vo||'[]');
             const w=document.getElementById(`sv-${sid}`);
-            // PASS 'data-sid' as the ID attribute name
-            if(w)w.innerHTML=_vI('s-vl', sid, vo, '', 'data-sid');
+            if(w)w.innerHTML=_valueInput('s-vl', sid, dtype, o.value, o.dataset.type, '', vo, 'data-sid');
         };
         if(selAttr){
             const o=aS.options[aS.selectedIndex];
             if(o){
                 const vo=JSON.parse(o.dataset.vo||'[]');
                 const w=document.getElementById(`sv-${sid}`);
-                // PASS 'data-sid' as the ID attribute name
-                if(w)w.innerHTML=_vI('s-vl', sid, vo, selVal!=null?selVal:'', 'data-sid');
+                if(w)w.innerHTML=_valueInput('s-vl', sid, dtype, o.value, o.dataset.type, selVal!=null?selVal:'', vo, 'data-sid');
             }
         }
     }catch(e){}
@@ -712,25 +760,24 @@ async function _loadAttrs(sid,ieee,selAttr,selVal) {
 
 async function _loadICAttrs(icId,ieee,selAttr,selVal) {
     const aS=document.querySelector(`.ic-attr[data-icid="${icId}"]`);if(!aS)return;
+    const dtype=_dtype(ieee);
     try{const d=await(await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/state`)).json();
         aS.innerHTML='<option value="">Attr...</option>';
-        (d.attributes||[]).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.textContent=`${a.attribute} (${a.current_value})`;if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
+        _mergeTypeAttrs(d.attributes||[],dtype).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.dataset.type=a.type;o.textContent=_attrOptLabel(a,dtype);if(selAttr===a.attribute)o.selected=true;aS.appendChild(o);});
 
         aS.onchange=()=>{
             const o=aS.options[aS.selectedIndex];
             if(!o)return;
             const vo=JSON.parse(o.dataset.vo||'[]');
             const w=document.getElementById(`icv-${icId}`);
-            // PASS 'data-icid' as the ID attribute name
-            if(w)w.innerHTML=_vI('ic-vl', icId, vo, '', 'data-icid');
+            if(w)w.innerHTML=_valueInput('ic-vl', icId, dtype, o.value, o.dataset.type, '', vo, 'data-icid');
         };
         if(selAttr){
             const o=aS.options[aS.selectedIndex];
             if(o){
                 const vo=JSON.parse(o.dataset.vo||'[]');
                 const w=document.getElementById(`icv-${icId}`);
-                // PASS 'data-icid' as the ID attribute name
-                if(w)w.innerHTML=_vI('ic-vl', icId, vo, selVal!=null?selVal:'', 'data-icid');
+                if(w)w.innerHTML=_valueInput('ic-vl', icId, dtype, o.value, o.dataset.type, selVal!=null?selVal:'', vo, 'data-icid');
             }
         }
     }catch(e){}
@@ -795,12 +842,14 @@ function _removeFromTree(steps, id) {
 // ============================================================================
 
 // Conditions
-window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;const ops=JSON.parse(o.dataset.operators||'["eq","neq"]'),vo=JSON.parse(o.dataset.vo||'[]'),cur=o.dataset.current,typ=o.dataset.type;
+window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;const ops=JSON.parse(o.dataset.operators||'["eq","neq"]'),vo=JSON.parse(o.dataset.vo||'[]'),cur=o.dataset.current,typ=o.dataset.type,attr=o.value;
+    const srcType=_dtype(currentSourceIeee);
+    const dflt=typ==='boolean'?String(cur).toLowerCase():'';
     const os=document.querySelector(`#c-${id} .co`);if(os){os.innerHTML=ops.map(op=>`<option value="${op}">${OP[op]} ${OPT[op]}</option>`).join('');
         os.onchange=()=>{const opV=os.value;const w=document.getElementById(`cv-${id}`);if(w){
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
-            else{w.innerHTML=_vI('cv',id,vo,typ==='boolean'?String(cur).toLowerCase():'');}}};}
-    const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_vI('cv',id,vo,typ==='boolean'?String(cur).toLowerCase():'');};
+            else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}};}
+    const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);};
 window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));};
 window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);const row=document.getElementById(`c-${id}`);if(row)row.remove();
     if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.className='badge bg-primary small';b.textContent='IF';}
@@ -819,12 +868,16 @@ window._aCType = (id, sel) => {
 };
 // Prerequisites
 window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector(`#p-${id} .pa`);if(!aS||!ieee)return;
+    const ptype=_dtype(ieee);
     aS.innerHTML='<option>Loading...</option>';
     try{const d=await(await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/state`)).json();
-        aS.innerHTML='<option value="">Attr...</option>';(d.attributes||[]).forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.dataset.type=a.type;o.textContent=`${a.attribute} (${a.current_value})`;aS.appendChild(o);});
+        const attrs=_mergeTypeAttrs(d.attributes||[],ptype);
+        aS.innerHTML='<option value="">Attr...</option>';attrs.forEach(a=>{const o=document.createElement('option');o.value=a.attribute;o.dataset.vo=JSON.stringify(a.value_options||[]);o.dataset.current=a.current_value;o.dataset.type=a.type;o.textContent=_attrOptLabel(a,ptype);aS.appendChild(o);});
         aS.onchange=()=>window._aPa(id,aS);
     }catch(e){}};
-window._aPa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset?.vo||'[]');const w=document.getElementById(`pv-${id}`);if(w)w.innerHTML=_vI('pv',id,vo,o.dataset?.type==='boolean'?String(o.dataset.current).toLowerCase():'');};
+window._aPa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset?.vo||'[]');const typ=o.dataset?.type;const cur=typ==='boolean'?String(o.dataset.current).toLowerCase():'';
+    const ieee=document.querySelector(`#p-${id} .pd`)?.value;const ptype=_dtype(ieee);
+    const w=document.getElementById(`pv-${id}`);if(w)w.innerHTML=_valueInput('pv',id,ptype,o.value,typ,cur,vo);};
 window._aAddPrereq=()=>{if(prereqRows.length>=8)return;const nid=prereqIdC++;prereqRows.push(nid);const el=document.getElementById('pb');if(el)el.insertAdjacentHTML('beforeend',_renderPrereq(nid));};
 window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);const row=document.getElementById(`p-${id}`);if(row)row.remove();};
 

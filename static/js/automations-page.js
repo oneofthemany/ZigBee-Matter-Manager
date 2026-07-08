@@ -10,17 +10,168 @@
 import { state } from './state.js';
 import { initAutomationTab } from './modal/automation.js';
 import { initAIAutomations, renderAIPanel } from './ai-automations.js';
+import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
 
 
 const log = zmmLog('automations-page');
 
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
-// Readable label for a dynamic sun condition (sunrise/sunset window).
-function _sunDesc(c) {
-    const off = x => x ? ` ${x > 0 ? '+' : ''}${x}m` : '';
-    const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span> ' : '';
-    return `${neg}🌅 <code>${c.from}${off(c.offset_from)} → ${c.to}${off(c.offset_to)}</code>`;
+// ============================================================================
+// HUMANIZATION — turn raw rule JSON into plain-English, device-aware phrasing.
+// Device type comes from capability_list on the main device list (state.devices);
+// falls back to name/model/state-key heuristics when capabilities are absent.
+// ============================================================================
+
+// DEVICE_ICON / DEVICE_LABEL / deviceType are imported from automation-humanize.js
+const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+function _esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, c => (
+        { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+}
+
+// Resolve a device/group name + semantic type for an ieee (or group:N).
+function _resolve(ieee) {
+    if (ieee === '__time__') return { name:'Time / Alarm', type:'time' };
+    if (typeof ieee === 'string' && ieee.startsWith('group:')) {
+        const g = devMapCache[ieee];
+        const model = (g && g.model || '').toLowerCase();
+        const type = model.includes('cover') ? 'cover'
+                   : model.includes('lock') ? 'unknown'
+                   : 'light';   // most groups are lights/switches
+        return { name: g ? String(g.friendly_name || ieee).replace(/^🔗\s*/, '') : ieee, type };
+    }
+    const dev = devMapCache[ieee];
+    return { name: dev ? dev.friendly_name : ieee, type: deviceType(ieee, dev) };
+}
+
+const _icon = t => `<i class="fas ${DEVICE_ICON[t] || DEVICE_ICON.unknown}"></i>`;
+const _devSpan = ieee => `<span class="dev">${_esc(_resolve(ieee).name)}</span>`;
+
+function _daySpan(days) {
+    if (!days || days.length === 7) return 'every day';
+    const s = [...days].sort((a,b) => a-b).join(',');
+    if (s === '0,1,2,3,4') return 'on weekdays';
+    if (s === '5,6') return 'at weekends';
+    return 'on ' + days.map(d => DAY_NAMES[d]).join(', ');
+}
+const _timePhrase = (a,b) => `between <b>${_esc(a)}</b> and <b>${_esc(b)}</b>`;
+
+// Core semantic map: attribute (+ device type hint) → verb phrase.
+// Outlet suffixes are only surfaced for endpoint 2+ — "outlet 1" is the default
+// (or only) endpoint on nearly every device, so annotating it is just noise.
+function _attrVerb(type, attr, op, val) {
+    const base = (attr || '').replace(/_\d+$/, '');   // strip endpoint suffix (_1, _2)
+    const epM = (attr || '').match(/_(\d+)$/);
+    const epTxt = (epM && +epM[1] >= 2) ? ` (outlet ${epM[1]})` : '';
+    const truthy = v => v === true || v === 'true' || String(v).toUpperCase() === 'ON';
+    if (type === 'contact') {
+        if (base === 'is_open')   return truthy(val) ? 'opens'   : 'is shut';
+        if (base === 'is_closed') return truthy(val) ? 'closes'  : 'is open';
+        if (base === 'contact')   return truthy(val) ? 'closes'  : 'opens';
+    }
+    if (base === 'action') {
+        const m = { single:'is single-pressed', double:'is double-pressed', triple:'is triple-pressed',
+                    hold:'is held', release:'is released', long:'is long-pressed' };
+        return m[val] || `sends “${_esc(val)}”`;
+    }
+    if (/^(on|state)$/.test(base)) return (truthy(val) ? 'is on' : 'is off') + epTxt;
+    const OPW = { eq:'is', neq:'is not', gt:'is above', lt:'is below', gte:'is at least',
+                  lte:'is at most', in:'is one of', nin:'is not one of' };
+    const dispVal = Array.isArray(val) ? val.join(', ') : val;
+    return `${OPW[op] || op} ${_esc(dispVal)}${epTxt}`;
+}
+
+// A trigger is the source device's first condition (or a schedule).
+// The text is a bare clause — the "When" label in the flow supplies the verb,
+// so we don't repeat it here ("When" + "Door opens", not "When When Door opens").
+function _triggerPhrase(rule) {
+    const src = _resolve(rule.source_ieee);
+    const c = (rule.conditions || [])[0];
+    if (!c) return { icon: src.type, text: `${_devSpan(rule.source_ieee)} changes`, raw:'' };
+    if (c.type === 'time_window')
+        return { icon:'time', text:`it's ${_timePhrase(c.time_from, c.time_to)}, ${_daySpan(c.days)}`,
+                 raw:`time_window ${c.time_from}–${c.time_to}` };
+    if (c.type === 'time')
+        return { icon:'time', text:`the time is <b>${_esc(c.at)}</b>, ${_daySpan(c.days)}`, raw:`time ${c.at}` };
+    if (c.type === 'sun')
+        return { icon:'time', text:`🌅 it's between ${_esc(c.from)} and ${_esc(c.to)}`, raw:`sun ${c.from}→${c.to}` };
+    return { icon: src.type,
+             text: `${_devSpan(rule.source_ieee)} ${_attrVerb(src.type, c.attribute, c.operator, c.value)}`,
+             raw: `${_esc(c.attribute)} ${c.operator} ${_esc(c.value)}` };
+}
+
+// A prerequisite / extra condition → "ONLY IF …" phrase.
+function _condPhrase(p) {
+    const neg = p.negate ? '<span class="neg">NOT</span>' : '';
+    if (p.type === 'time_window')
+        return { text:`${neg}${_timePhrase(p.time_from, p.time_to)}, ${_daySpan(p.days)}`,
+                 raw:`time_window ${p.time_from}–${p.time_to}` };
+    if (p.type === 'sun')
+        return { text:`${neg}🌅 between ${_esc(p.from)} and ${_esc(p.to)}`, raw:`sun ${p.from}→${p.to}` };
+    const dev = _resolve(p.ieee);
+    return { text:`${neg}${_devSpan(p.ieee)} ${_attrVerb(dev.type, p.attribute, p.operator, p.value)}`,
+             raw:`${p.ieee && p.ieee.startsWith('group:') ? p.ieee + ' ' : ''}${_esc(p.attribute)} ${p.operator} ${_esc(p.value)}` };
+}
+
+const _CMD_VERB = {
+    on:'Turn on', off:'Turn off', toggle:'Toggle', open:'Open', close:'Close', stop:'Stop',
+    lock:'Lock', unlock:'Unlock', brightness:'Set brightness of', color_temp:'Set colour of',
+    position:'Set position of',
+};
+
+function _cmdPhrase(s) {
+    const verb = _CMD_VERB[s.command] || _esc(s.command);
+    let tail = _resolve(s.target_ieee).name;
+    // Only annotate outlet 2+ on real (non-group) devices — outlet 1 is noise.
+    if (s.endpoint_id >= 2 && !String(s.target_ieee).startsWith('group:'))
+        tail += ` (outlet ${s.endpoint_id})`;
+    if (s.command === 'brightness' && s.value != null) tail += ` to ${Math.round(s.value / 255 * 100)}%`;
+    if (s.command === 'position' && s.value != null) tail += ` to ${_esc(s.value)}%`;
+    return `${verb} <span class="dev">${_esc(tail)}</span>`;
+}
+
+// Render a then/else sequence into action lines, expanding parallel + if_then_else.
+function _renderSeq(seq) {
+    if (!seq || !seq.length) return '<span class="ap-raw">— nothing —</span>';
+    let h = '';
+    seq.forEach(s => {
+        if (s.type === 'command')
+            h += `<div class="ap-act"><i class="fas fa-bolt"></i><span>${_cmdPhrase(s)}</span></div>`;
+        else if (s.type === 'delay')
+            h += `<div class="ap-act"><i class="fas fa-clock"></i><span>wait <span class="ap-delay">${_esc(s.seconds)}s</span></span></div>`;
+        else if (s.type === 'parallel') {
+            const cmds = (s.branches || []).flat().filter(Boolean);
+            h += `<div class="ap-par"><span class="ap-par-tag"><i class="fas fa-bolt"></i> at the same time</span>`
+               + cmds.map(c => c.type === 'command'
+                    ? `<div class="ap-act"><i class="fas fa-bolt"></i><span>${_cmdPhrase(c)}</span></div>`
+                    : _renderSeq([c])).join('')
+               + `</div>`;
+        }
+        else if (s.type === 'if_then_else') {
+            const conds = (s.inline_conditions || []).map(c => {
+                const d = _resolve(c.ieee);
+                return `${_devSpan(c.ieee)} ${_attrVerb(d.type, c.attribute, c.operator, c.value)}`;
+            });
+            const logic = ` ${s.condition_logic || 'and'} `;
+            h += `<div class="ap-sub"><div class="ap-sub-head">Otherwise, if ${conds.join(logic) || '…'}:</div>${_renderSeq(s.then_steps)}`;
+            if ((s.else_steps || []).length)
+                h += `<div class="ap-sub-head" style="margin-top:6px">…else:</div>${_renderSeq(s.else_steps)}`;
+            h += `</div>`;
+        }
+        else if (s.type === 'wait_for') {
+            const d = _resolve(s.ieee);
+            h += `<div class="ap-act"><i class="fas fa-hourglass-half"></i><span>wait for ${_devSpan(s.ieee)} ${_attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
+        }
+        else if (s.type === 'condition') {
+            const d = _resolve(s.ieee);
+            h += `<div class="ap-act"><i class="fas fa-filter"></i><span>only continue if ${_devSpan(s.ieee)} ${_attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
+        }
+        else if (s.type === 'media')
+            h += `<div class="ap-act"><i class="fas fa-music"></i><span>media: ${_esc(s.media_action || 'control')}</span></div>`;
+    });
+    return h;
 }
 
 let allRulesCache = [];
@@ -186,121 +337,83 @@ function _renderRulesList(devMap = devMapCache) {
         return;
     }
 
-    // Group by source device
+    // Group by source device (trigger).
     const grouped = {};
-    rules.forEach(r => {
-        const src = r.source_ieee;
-        if (!grouped[src]) grouped[src] = [];
-        grouped[src].push(r);
-    });
+    rules.forEach(r => { (grouped[r.source_ieee] = grouped[r.source_ieee] || []).push(r); });
 
     let html = '';
     for (const [ieee, deviceRules] of Object.entries(grouped)) {
-        const isTime = ieee === '__time__';
-        const dev = devMap ? devMap[ieee] : null;
-        const devName = isTime ? 'Time / Alarm' : (dev ? dev.friendly_name : ieee);
-        const devModel = dev ? `<span class="text-muted small ms-2">${dev.manufacturer || ''} ${dev.model || ''}</span>` : '';
-        const headIcon = isTime ? 'fa-clock' : 'fa-microchip';
-
-        html += `<div class="mb-3">
-            <h6 class="border-bottom pb-1 mb-2"><i class="fas ${headIcon} text-muted me-1"></i> ${devName}${devModel}</h6>`;
-
-        deviceRules.forEach(rule => {
-            const en = rule.enabled !== false;
-            const st = rule._state || 'unknown';
-            const stBadge = st === 'matched'
-                ? '<span class="badge bg-success ms-1">matched</span>'
-                : st === 'unmatched'
-                    ? '<span class="badge bg-secondary ms-1">unmatched</span>'
-                    : '<span class="badge bg-dark ms-1">init</span>';
-            const runBadge = rule._running ? '<span class="badge bg-warning text-dark ms-1">⏳ running</span>' : '';
-            const nm = rule.name ? `<strong>${rule.name}</strong> ` : `<span class="text-muted">${rule.id}</span> `;
-
-            // Conditions summary
-            let cH = '';
-            (rule.conditions || []).forEach((c, i) => {
-                const prefix = i === 0 ? '<strong class="text-primary">IF</strong>' : '<strong class="text-warning">AND</strong>';
-                let cDesc;
-                if (c.type === 'time_window') {
-                    const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                    const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
-                    const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
-                    cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
-                } else if (c.type === 'time') {
-                    const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                    const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
-                    cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
-                } else if (c.type === 'sun') {
-                    cDesc = _sunDesc(c);
-                } else {
-                    const sus = c.sustain ? `<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>` : '';
-                    const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
-                    cDesc = `<code>${c.attribute}</code> ${OP[c.operator] || c.operator} <code>${dispVal}</code>${sus}`;
-                }
-                cH += `<div class="small">${prefix} ${cDesc}</div>`;
-            });
-
-            // Prerequisites summary
-            (rule.prerequisites || []).forEach(p => {
-                const neg = p.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
-                let pDesc;
-                if (p.type === 'time_window') {
-                    const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                    const dayStr = (!p.days || p.days.length === 7) ? 'Every day' : p.days.map(d => DAY_NAMES[d]).join(', ');
-                    pDesc = `${neg} Time <code>${p.time_from} → ${p.time_to}</code> <span class="text-muted">${dayStr}</span>`;
-                } else if (p.type === 'sun') {
-                    pDesc = _sunDesc(p);
-                } else {
-                    pDesc = `${neg} <code>${p.device_name || p.ieee || '?'}</code> ${p.attribute} ${OP[p.operator] || p.operator} <code>${p.value}</code>`;
-                }
-                cH += `<div class="small"><strong class="text-info">CHECK</strong> ${pDesc}</div>`;
-            });
-
-            // Sequence summaries
-            const thenSummary = _seqSummary(rule.then_sequence, 'THEN', 'success');
-            const elseSummary = _seqSummary(rule.else_sequence, 'ELSE', 'danger');
-
-            html += `
-            <div class="card mb-2 ${!en ? 'opacity-50' : ''}" id="ap-rule-${rule.id}">
-                <div class="card-body py-2 px-3">
-                    <div class="d-flex justify-content-between align-items-start">
-                        <div class="flex-grow-1">
-                            <div>${nm}${stBadge}${runBadge}
-                                ${!en ? '<span class="badge bg-danger ms-1">disabled</span>' : ''}
-                                ${rule.cooldown ? `<span class="badge bg-light text-dark border ms-1">⏱${rule.cooldown}s cd</span>` : ''}
-                            </div>
-                            ${cH}
-                            ${thenSummary}
-                            ${elseSummary}
-                        </div>
-                        <div class="d-flex gap-1 ms-2 flex-shrink-0">
-                            <button class="btn btn-sm btn-outline-primary" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-                            <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'}" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="window._apDelete('${rule.id}')" title="Delete"><i class="fas fa-trash"></i></button>
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-        });
-
-        html += `</div>`;
+        const src = _resolve(ieee);
+        html += `<div class="ap-devgroup">
+            <div class="ap-devgroup-head">
+                <span class="ap-idico sm">${_icon(src.type)}</span>
+                <span class="ap-gname">${_esc(src.name)}</span>
+                <span class="ap-gmeta">${_esc(ieee)}</span>
+            </div>
+            ${deviceRules.map(rule => _ruleCard(rule, src)).join('')}
+        </div>`;
     }
 
     el.innerHTML = html;
 }
 
-function _seqSummary(seq, label, color) {
-    if (!seq || !seq.length) return '';
-    const parts = seq.map(s => {
-        if (s.type === 'command') return `<span class="badge bg-${color}">${s.command}${s.value != null ? '=' + s.value : ''}</span> <small class="text-muted">${s.target_name || s.target_ieee || '?'}</small>`;
-        if (s.type === 'delay') return `<span class="badge bg-warning text-dark">⏱${s.seconds}s</span>`;
-        if (s.type === 'wait_for') return `<span class="badge bg-secondary">⏳ ${s.device_name || s.ieee || '?'} ${s.attribute}</span>`;
-        if (s.type === 'condition') return `<span class="badge bg-dark">🔒 ${s.device_name || s.ieee || '?'} ${s.attribute}</span>`;
-        if (s.type === 'if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
-        if (s.type === 'parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches || []).length})</span>`;
-        return '';
-    }).join(' <i class="fas fa-arrow-right text-muted small"></i> ');
-    return `<div class="small mt-1"><strong class="text-${color}">${label}</strong> ${parts}</div>`;
+// Render one rule as a WHEN → ONLY IF → DO → ELSE flow card.
+function _ruleCard(rule, src) {
+    const en = rule.enabled !== false;
+    const st = rule._state || 'unknown';
+    const trig = _triggerPhrase(rule);
+
+    // status chip
+    let stateChip = '';
+    if (!en) stateChip = `<span class="ap-chip off"><i class="fas fa-pause"></i>disabled</span>`;
+    else if (rule._running) stateChip = `<span class="ap-chip run"><i class="fas fa-spinner fa-spin"></i>running</span>`;
+    else if (st === 'matched') stateChip = `<span class="ap-chip ok"><i class="fas fa-circle-check"></i>matched</span>`;
+    else stateChip = `<span class="ap-chip mut"><i class="fas fa-circle"></i>${st === 'unmatched' ? 'idle' : 'init'}</span>`;
+
+    const nameHtml = rule.name
+        ? `<span class="ap-rname">${_esc(rule.name)}</span>`
+        : `<span class="ap-rname untitled">Untitled rule</span>`;
+
+    // flow steps: WHEN (trigger) → extra source conditions (AND) → ONLY IF (prereqs) → DO → ELSE
+    const step = (lab, cls, inner) =>
+        `<div class="ap-step"><div class="ap-lab ${cls}">${lab}</div><div class="ap-txt">${inner}</div></div>`;
+
+    let flow = step('When', 'when', `${trig.text}${trig.raw ? `<span class="ap-raw">${_esc(trig.raw)}</span>` : ''}`);
+
+    // Additional source conditions beyond the first are ANDed onto the trigger.
+    (rule.conditions || []).slice(1).forEach(c => {
+        const cp = _condPhrase(c);
+        flow += step('and', 'and', `${cp.text}<span class="ap-raw">${_esc(cp.raw)}</span>`);
+    });
+
+    (rule.prerequisites || []).forEach((p, i) => {
+        const cp = _condPhrase(p);
+        flow += step(i === 0 ? 'Only if' : 'and', i === 0 ? 'if' : 'and',
+            `${cp.text}<span class="ap-raw">${_esc(cp.raw)}</span>`);
+    });
+
+    flow += step('Do', 'do', `<div class="ap-acts">${_renderSeq(rule.then_sequence)}</div>`);
+    if ((rule.else_sequence || []).length)
+        flow += step('Else', 'else', `<div class="ap-acts">${_renderSeq(rule.else_sequence)}</div>`);
+
+    return `<div class="ap-flowcard ${en ? '' : 'disabled'}" id="ap-rule-${rule.id}">
+        <div class="ap-rail">
+            <span class="ap-idico lg">${_icon(src.type)}</span>
+            <div>${nameHtml}</div>
+            <div class="ap-rmeta">
+                <span class="ap-chip"><i class="fas ${DEVICE_ICON[src.type]}"></i>${DEVICE_LABEL[src.type]}</span>
+                ${stateChip}
+                ${rule.cooldown ? `<span class="ap-chip mut"><span class="num">⏱ ${rule.cooldown}s</span></span>` : ''}
+            </div>
+        </div>
+        <div class="ap-flow">${flow}</div>
+        <div class="ap-foot">
+            <span class="spacer"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i> Edit</button>
+            <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'}" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
+            <button class="btn btn-sm btn-outline-danger" onclick="window._apDelete('${rule.id}')" title="Delete"><i class="fas fa-trash"></i></button>
+        </div>
+    </div>`;
 }
 
 // ============================================================================
