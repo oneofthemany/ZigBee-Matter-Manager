@@ -383,59 +383,56 @@ async function loadFileTree() {
     }
 }
 
+// Sections with at least this many files get A/B/C markers between letter groups
+const ALPHA_MARKER_MIN_FILES = 15;
+
 function renderFileTree(tree) {
     const container = document.getElementById('editorFileTree');
     if (!container) return;
 
-    // collapse improvement
-    const collapsedSections = new Set();
+    // Sections are collapsed by default; remember which ones the user has
+    // expanded so re-renders (open/create/delete) don't collapse them again.
+    const expandedSections = new Set();
     container.querySelectorAll('.tree-section').forEach(section => {
         const header = section.querySelector('.tree-section-header');
         const children = section.querySelector('.tree-section-children');
-        if (header && children && children.style.display === 'none') {
-            collapsedSections.add(header.textContent.trim());
+        if (header && children && children.style.display !== 'none') {
+            expandedSections.add(header.textContent.trim());
         }
     });
 
     container.innerHTML = tree.map(dir => {
-        const children = (dir.children || []).map(item => {
-            if (item.is_dir) {
-                return `<div class="tree-folder ms-2 mt-1">
-                    <div class="tree-label text-muted" style="cursor:pointer;" onclick="window.editorToggleFolder(this)">
-                        <i class="fas fa-folder fa-fw me-1" style="color:#dcb67a;"></i>${item.name}
-                    </div>
-                    <div class="tree-children ms-2" style="display:none;"></div>
-                </div>`;
-            }
-            const icon = getFileIcon(item.extension);
-            const active = currentFile === item.path ? 'background:#37373d;' : '';
-            const fileName = item.path.split('/').pop();
-            const isCritical = CRITICAL_FILES.has(fileName);
+        const items = [...(dir.children || [])].sort((a, b) => {
+            if (!!a.is_dir !== !!b.is_dir) return a.is_dir ? -1 : 1;
+            return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        });
+        const fileCount = items.filter(i => !i.is_dir).length;
+        const showAlpha = fileCount >= ALPHA_MARKER_MIN_FILES;
+        let lastLetter = '';
 
-            return `<div class="tree-file d-flex align-items-center py-1 px-2 rounded" style="cursor:pointer;${active}"
-                         onmouseover="this.style.background='#2a2d2e'"
-                         onmouseout="this.style.background='${currentFile === item.path ? '#37373d' : ''}'">
-                <div class="flex-grow-1" onclick="window.editorOpenFile('${item.path}')">
-                    <i class="${icon} fa-fw me-1"></i>
-                    <span class="text-light">${item.name}</span>
-                    <span class="text-muted ms-1" style="font-size:10px;">${formatSize(item.size)}</span>
-                </div>
-                ${!isCritical ? `<button class="btn btn-link btn-sm p-0 ms-1 editor-tree-del-btn"
-                         onclick="event.stopPropagation(); window.editorDeleteFile('${escapeAttr(item.path)}')"
-                         title="Delete ${escapeAttr(item.name)}"
-                         style="color:#666;font-size:10px;line-height:1;visibility:hidden;">
-                    <i class="fas fa-times"></i>
-                </button>` : ''}
-            </div>`;
+        const children = items.map(item => {
+            let marker = '';
+            if (showAlpha && !item.is_dir) {
+                const first = item.name.charAt(0).toUpperCase();
+                const letter = /[A-Z]/.test(first) ? first : '#';
+                if (letter !== lastLetter) {
+                    lastLetter = letter;
+                    marker = `<div class="tree-alpha-marker px-2 mt-1"
+                        style="font-size:9px;letter-spacing:1px;color:#666;border-bottom:1px solid #333;user-select:none;">${letter}</div>`;
+                }
+            }
+            return marker + renderTreeItem(item);
         }).join('');
 
         const dirLabel = dir.path === '.' ? 'PROJECT ROOT' : dir.name.toUpperCase();
+        // Keep the section holding the open file visible (e.g. after search or create)
+        const expanded = currentFile && items.some(i => !i.is_dir && i.path === currentFile);
         return `<div class="tree-section mb-2">
             <div class="tree-section-header text-uppercase px-2 py-1" style="font-size:10px;letter-spacing:1px;color:#888;cursor:pointer;"
                  onclick="window.editorToggleSection(this)">
-                <i class="fas fa-chevron-down fa-xs me-1 tree-section-chevron"></i>${dirLabel}
+                <i class="fas fa-chevron-${expanded ? 'down' : 'right'} fa-xs me-1 tree-section-chevron"></i>${dirLabel}
             </div>
-            <div class="tree-section-children">${children}</div>
+            <div class="tree-section-children"${expanded ? '' : ' style="display:none;"'}>${children}</div>
         </div>`;
     }).join('');
 
@@ -448,23 +445,53 @@ function renderFileTree(tree) {
         document.head.appendChild(style);
     }
 
-    // Restore previously collapsed sections so opening a file doesn't
-    // re-expand the tree.
-    if (collapsedSections.size) {
+    // Re-expand the sections the user had open before this re-render.
+    if (expandedSections.size) {
         container.querySelectorAll('.tree-section').forEach(section => {
             const header = section.querySelector('.tree-section-header');
             const children = section.querySelector('.tree-section-children');
             if (!header || !children) return;
-            if (collapsedSections.has(header.textContent.trim())) {
-                children.style.display = 'none';
+            if (expandedSections.has(header.textContent.trim())) {
+                children.style.display = '';
                 const chevron = header.querySelector('.tree-section-chevron');
                 if (chevron) {
-                    chevron.classList.remove('fa-chevron-down');
-                    chevron.classList.add('fa-chevron-right');
+                    chevron.classList.remove('fa-chevron-right');
+                    chevron.classList.add('fa-chevron-down');
                 }
             }
         });
     }
+}
+
+function renderTreeItem(item) {
+    if (item.is_dir) {
+        return `<div class="tree-folder ms-2 mt-1">
+            <div class="tree-label text-muted" style="cursor:pointer;" onclick="window.editorToggleFolder(this)">
+                <i class="fas fa-folder fa-fw me-1" style="color:#dcb67a;"></i>${item.name}
+            </div>
+            <div class="tree-children ms-2" style="display:none;"></div>
+        </div>`;
+    }
+    const icon = getFileIcon(item.extension);
+    const active = currentFile === item.path ? 'background:#37373d;' : '';
+    const fileName = item.path.split('/').pop();
+    const isCritical = CRITICAL_FILES.has(fileName);
+
+    return `<div class="tree-file d-flex align-items-center py-1 px-2 rounded" style="cursor:pointer;${active}"
+                 onmouseover="this.style.background='#2a2d2e'"
+                 onmouseout="this.style.background='${currentFile === item.path ? '#37373d' : ''}'">
+        <div class="flex-grow-1" onclick="window.editorOpenFile('${item.path}')">
+            <i class="${icon} fa-fw me-1"></i>
+            <span class="text-light">${item.name}</span>
+            <span class="text-muted ms-1" style="font-size:10px;">${formatSize(item.size)}</span>
+        </div>
+        ${!isCritical ? `<button class="btn btn-link btn-sm p-0 ms-1 editor-tree-del-btn"
+                 onclick="event.stopPropagation(); window.editorDeleteFile('${escapeAttr(item.path)}')"
+                 title="Delete ${escapeAttr(item.name)}"
+                 style="color:#666;font-size:10px;line-height:1;visibility:hidden;">
+            <i class="fas fa-times"></i>
+        </button>` : ''}
+    </div>`;
 }
 
 // ============================================================================
