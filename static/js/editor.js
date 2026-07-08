@@ -21,6 +21,11 @@ let fileTree = [];
 // Map<path, {content, addedAt}> — populated by "Add to test batch"
 const testBatch = new Map();
 
+// Unsaved editor buffers, kept across file switches so hopping between
+// files (e.g. while assembling a test batch) never forces a save or
+// discards work. Map<path, {content}> — cleared on save/delete.
+const unsavedBuffers = new Map();
+
 const MONACO_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min';
 
 // Critical files that cannot be deleted
@@ -334,10 +339,10 @@ function createEditor(container, content, language) {
     // (wrong-encoding viewer/terminal), before it reached the browser.
     editorInstance.onDidPaste(e => {
         const pasted = editorInstance.getModel()?.getValueInRange(e.range) || '';
-        const count = (pasted.match(/�/g) || []).length;
+        const count = (pasted.match(/\uFFFD/g) || []).length;
         if (count > 0) {
             window.toast.error(
-                `Pasted text contains ${count} corrupted character(s) (�) ` +
+                `Pasted text contains ${count} corrupted character(s) (\uFFFD) ` +
                 `starting at line ${e.range.startLineNumber}. The clipboard was ` +
                 `already damaged — copy from a UTF-8 source instead.`
             );
@@ -514,12 +519,14 @@ function renderTreeItem(item) {
 // ============================================================================
 
 window.editorOpenFile = async function(path) {
-    if (unsavedChanges && !await confirmDialog({
-        title: 'Unsaved changes',
-        message: 'You have unsaved changes. Discard?',
-        confirmText: 'Discard',
-        variant: 'danger'
-    })) return;
+    // Already open — don't reload from disk (would clobber the buffer)
+    if (path === currentFile && editorInstance) return;
+
+    // Stash the outgoing buffer instead of prompting to discard, so
+    // switching files never loses work or forces a premature save.
+    if (currentFile && unsavedChanges && editorInstance) {
+        unsavedBuffers.set(currentFile, { content: editorInstance.getValue() });
+    }
 
     try {
         const res = await fetch(`/api/editor/file?path=${encodeURIComponent(path)}`);
@@ -529,11 +536,29 @@ window.editorOpenFile = async function(path) {
             return;
         }
 
+        // Prefer a stashed unsaved buffer, then staged batch content,
+        // then the on-disk version.
+        let content = data.content;
+        let restored = null;
+        if (unsavedBuffers.has(path)) {
+            content = unsavedBuffers.get(path).content;
+            unsavedBuffers.delete(path);
+            restored = 'unsaved changes';
+        } else if (testBatch.has(path) && testBatch.get(path).content !== data.content) {
+            content = testBatch.get(path).content;
+            restored = 'staged test-batch content';
+        }
+
         currentFile = path;
         unsavedChanges = false;
 
         const container = document.getElementById('monacoContainer');
-        createEditor(container, data.content, data.language);
+        createEditor(container, content, data.language);
+
+        if (restored) {
+            unsavedChanges = true;
+            if (window.showToast) window.showToast(`Restored ${restored} for ${path}`, 'info');
+        }
 
         // Update status bar
         document.getElementById('editorFileName').textContent = path;
@@ -685,6 +710,10 @@ window.editorDeleteConfirm = async function() {
             if (window.showToast) {
                 window.showToast(`Deleted ${path} (backup created)`, 'info');
             }
+
+            unsavedBuffers.delete(path);
+            testBatch.delete(path);
+            _updateBatchUI();
 
             // If we deleted the currently open file, reset the editor
             if (currentFile === path) {
@@ -846,7 +875,7 @@ async function saveCurrentFile() {
         if (!data.success && data.mojibake) {
             const proceed = await confirmDialog({
                 title: 'Corrupted characters detected',
-                message: `${data.replacement_chars} replacement character(s) (�) on line(s) ${(data.lines || []).join(', ')}.`,
+                message: `${data.replacement_chars} replacement character(s) (\uFFFD) on line(s) ${(data.lines || []).join(', ')}.`,
                 detail: 'The pasted text lost characters to an encoding error before it reached the editor. Saving will bake the damage into the file.',
                 confirmText: 'Save anyway',
                 variant: 'danger'
@@ -862,6 +891,7 @@ async function saveCurrentFile() {
 
         if (data.success) {
             unsavedChanges = false;
+            unsavedBuffers.delete(currentFile);
             updateTabDirtyState();
             document.getElementById('editorFileSize').textContent = formatSize(data.size);
             const statusBar = document.querySelector('.editor-status');
@@ -906,11 +936,11 @@ window.editorTestDeploy = async function() {
         message: `Test Deploy: ${currentFile}`,
         detail:
             `This will:\n` +
-            `• Create a backup of the current file\n` +
-            `• Save your changes\n` +
+            `• Back up the current on-disk version (your rollback point)\n` +
+            `• Write your editor content to disk for the test — no need to save first\n` +
             `• ${isPython ? 'Restart the service' : 'Reload frontend assets'}\n\n` +
             `You will have 120 seconds to confirm the changes work.\n` +
-            `If you don't confirm (or the service fails), changes are automatically rolled back.`,
+            `If you don't confirm (or the service fails), the on-disk version is restored.`,
         confirmText: 'Deploy'
     })) return;
 
@@ -1295,7 +1325,7 @@ function updateTabBar() {
              style="background:#1e1e1e; color:#fff; font-size:12px;">
             <i class="${icon} fa-xs"></i>
             <span id="editorTabName">${name}</span>
-            <span id="editorTabDirty" style="display:none; color:#e8e8e8;">●</span>
+            <span id="editorTabDirty" style="display:${unsavedChanges ? 'inline' : 'none'}; color:#e8e8e8;">●</span>
         </div>
     `;
 }
