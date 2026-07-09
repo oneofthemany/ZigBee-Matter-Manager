@@ -142,8 +142,28 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
         uniformly covers ZCL attributes, Tuya datapoints and derived keys.
         """
         data = data or {}
-        state_key = (data.get("state_key") or "").strip()
         friendly = (data.get("friendly_name") or "").strip()
+
+        from modules.device_profiles import get_profile_store, _to_int
+
+        # --- command -> action mapping ---------------------------------
+        # A demonstrated button command becomes a named `action` (the z2m/ZHA
+        # convention automations trigger on). Keyed by ep/cluster/command.
+        if data.get("command"):
+            if not friendly:
+                return {"success": False, "error": "action name required"}
+            ep = _to_int(data.get("endpoint"))
+            cl = _to_int(data.get("cluster"))
+            cmd = _to_int(data.get("item"))
+            if ep is None or cl is None or cmd is None:
+                return {"success": False, "error": "endpoint, cluster and item required for a command"}
+            raw_key = f"cmd:{ep}/{cl}/{cmd}"
+            get_profile_store().set_ieee_mapping(ieee, raw_key, friendly)
+            logger.info(f"[{ieee}] Learned action {raw_key} -> {friendly!r}")
+            return {"success": True, "ieee": ieee, "raw_key": raw_key,
+                    "friendly_name": friendly, "kind": "action"}
+
+        state_key = (data.get("state_key") or "").strip()
         if not state_key:
             return {"success": False, "error": "state_key required (map a value signal, not a command)"}
         if not friendly:
@@ -157,7 +177,6 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
         device_class = str(data.get("device_class") or "")
         invert = bool(data.get("invert", False))
 
-        from modules.device_profiles import get_profile_store
         raw_key = f"state:{state_key}"
         get_profile_store().set_ieee_mapping(
             ieee, raw_key, friendly,
@@ -187,9 +206,12 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
     @app.post("/api/signals/{ieee}/learn/unmap")
     async def learn_unmap(ieee: str, data: Dict[str, Any] = None):
         data = data or {}
-        state_key = (data.get("state_key") or "").strip()
-        if not state_key:
-            return {"success": False, "error": "state_key required"}
         from modules.device_profiles import get_profile_store
-        ok = get_profile_store().remove_ieee_mapping(ieee, f"state:{state_key}")
-        return {"success": ok, "ieee": ieee, "state_key": state_key}
+        raw_key = (data.get("raw_key") or "").strip()
+        if not raw_key:
+            state_key = (data.get("state_key") or "").strip()
+            if not state_key:
+                return {"success": False, "error": "raw_key or state_key required"}
+            raw_key = f"state:{state_key}"
+        ok = get_profile_store().remove_ieee_mapping(ieee, raw_key)
+        return {"success": ok, "ieee": ieee, "raw_key": raw_key}

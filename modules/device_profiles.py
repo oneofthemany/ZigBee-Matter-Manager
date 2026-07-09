@@ -763,6 +763,12 @@ class ProfileStore:
         with self._lock:
             return bool(self._ieee_mappings.get(ieee, {}).get("cluster_mappings"))
 
+    def get_ieee_mapping(self, ieee: str, raw_key: str) -> Optional[Dict[str, Any]]:
+        """Return a single mapping by raw_key without copying the whole set."""
+        with self._lock:
+            m = self._ieee_mappings.get(ieee, {}).get("cluster_mappings", {}).get(raw_key)
+            return dict(m) if isinstance(m, dict) else ({"name": str(m)} if m else None)
+
     def list_ieee_state(self) -> Dict[str, Any]:
         with self._lock:
             return {

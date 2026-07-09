@@ -432,10 +432,16 @@ function _renderChanges(inst) {
 
     const badge = { changed: 'bg-success', new: 'bg-primary', repeated: 'bg-secondary' };
     wrap.innerHTML = changes.map((c, i) => {
-        const mappable = MAPPABLE_SOURCES.has(c.source);
-        const mapped = inst.learn.mapped.has(c.name);
+        const isCmd = c.source === 'zcl_cmd';
+        const mappable = MAPPABLE_SOURCES.has(c.source) || isCmd;
+        const mapped = inst.learn.mapped.has(_changeKey(c));
         const before = (c.baseline_value === null || c.baseline_value === undefined)
             ? '—' : _fmtVal(c.baseline_value);
+        let cta;
+        if (mapped) cta = '<span class="badge bg-success"><i class="fas fa-check"></i> mapped</span>';
+        else if (isCmd) cta = '<button class="btn btn-sm btn-outline-warning py-0 sig-map-btn">Name action</button>';
+        else if (mappable) cta = '<button class="btn btn-sm btn-outline-primary py-0 sig-map-btn">Name it</button>';
+        else cta = '';
         return `
             <div class="d-flex align-items-center gap-2 py-1 border-bottom sig-change-row"
                  data-idx="${i}" style="cursor:${mappable ? 'pointer' : 'default'}">
@@ -443,22 +449,79 @@ function _renderChanges(inst) {
                 <span class="font-monospace small">${_esc(c.name)}</span>
                 <span class="text-muted small">${_esc(c.address)}</span>
                 <span class="ms-auto font-monospace small">${before} → <strong>${_fmtVal(c.value)}</strong></span>
-                ${mapped
-                    ? '<span class="badge bg-success"><i class="fas fa-check"></i> mapped</span>'
-                    : mappable
-                        ? '<button class="btn btn-sm btn-outline-primary py-0 sig-map-btn">Name it</button>'
-                        : '<span class="badge bg-light text-muted" title="Command signals map to actions — coming next">command</span>'}
+                ${cta}
             </div>`;
     }).join('');
 
     wrap.querySelectorAll('.sig-change-row').forEach(row => {
         row.addEventListener('click', () => {
             const c = changes[parseInt(row.dataset.idx, 10)];
-            if (c && MAPPABLE_SOURCES.has(c.source) && !inst.learn.mapped.has(c.name)) {
-                _openLabelForm(inst, c);
-            }
+            if (!c || inst.learn.mapped.has(_changeKey(c))) return;
+            if (c.source === 'zcl_cmd') _openActionForm(inst, c);
+            else if (MAPPABLE_SOURCES.has(c.source)) _openLabelForm(inst, c);
         });
     });
+}
+
+function _changeKey(c) {
+    if (c.source === 'zcl_cmd') return `cmd:${c.endpoint}/${_hexToInt(c.cluster)}/${c.item}`;
+    return c.name;
+}
+
+function _hexToInt(v) {
+    if (typeof v === 'number') return v;
+    const s = String(v);
+    return s.startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
+}
+
+function _openActionForm(inst, change) {
+    const form = inst.container.querySelector('.sig-learn-form');
+    if (!form) return;
+    form.innerHTML = `
+        <div class="card card-body p-2 mt-2 bg-body-tertiary">
+            <div class="small mb-2">Name the action for <span class="font-monospace">${_esc(change.name)}</span>
+                <span class="text-muted">(${_esc(change.address)})</span></div>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <input type="text" class="form-control form-control-sm sig-a-name"
+                       placeholder="e.g. button_single" style="max-width:240px">
+                <span class="small text-muted">→ published as <span class="font-monospace">action</span></span>
+                <button class="btn btn-sm btn-outline-secondary ms-auto sig-a-cancel">Cancel</button>
+                <button class="btn btn-sm btn-primary sig-a-save">Save action</button>
+            </div>
+            <div class="small text-muted mt-1">
+                Automations can trigger on <span class="font-monospace">action = &lt;name&gt;</span>.
+                Press the button again afterwards to confirm it fires.
+            </div>
+        </div>`;
+    form.querySelector('.sig-a-name')?.focus();
+    form.querySelector('.sig-a-cancel')?.addEventListener('click', () => { form.innerHTML = ''; });
+    form.querySelector('.sig-a-save')?.addEventListener('click', () => _saveActionMapping(inst, change, form));
+}
+
+async function _saveActionMapping(inst, change, form) {
+    const nameEl = form.querySelector('.sig-a-name');
+    const name = nameEl.value.trim();
+    if (!name) { nameEl.classList.add('is-invalid'); return; }
+    const btn = form.querySelector('.sig-a-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/learn/map`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                command: true, endpoint: change.endpoint,
+                cluster: change.cluster, item: change.item, friendly_name: name,
+            }),
+        });
+        const json = await res.json();
+        if (!json.success) { _toast('error', json.error || 'Failed'); btn.disabled = false; btn.textContent = 'Save action'; return; }
+        inst.learn.mapped.add(_changeKey(change));
+        _toast('success', `Action “${name}” mapped`);
+        form.innerHTML = '';
+        _renderChanges(inst);
+    } catch (e) {
+        _toast('error', e.message);
+        btn.disabled = false; btn.textContent = 'Save action';
+    }
 }
 
 function _openLabelForm(inst, change) {
