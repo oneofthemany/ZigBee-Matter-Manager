@@ -212,11 +212,115 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
     async def learn_unmap(ieee: str, data: Dict[str, Any] = None):
         data = data or {}
         from modules.device_profiles import get_profile_store
+        store = get_profile_store()
         raw_key = (data.get("raw_key") or "").strip()
         if not raw_key:
             state_key = (data.get("state_key") or "").strip()
             if not state_key:
                 return {"success": False, "error": "raw_key or state_key required"}
             raw_key = f"state:{state_key}"
-        ok = get_profile_store().remove_ieee_mapping(ieee, raw_key)
+        # Remember the friendly key so we can strip it from live state.
+        m = store.get_ieee_mapping(ieee, raw_key)
+        ok = store.remove_ieee_mapping(ieee, raw_key)
+        if ok and m and m.get("name"):
+            dev = _device(ieee)
+            if dev is not None and isinstance(getattr(dev, "state", None), dict):
+                dev.state.pop(m["name"], None)
         return {"success": ok, "ieee": ieee, "raw_key": raw_key}
+
+    # ---- mapped-signals management ------------------------------------
+
+    def _safe(v):
+        if v is None or isinstance(v, (bool, int, float, str)):
+            return v
+        try:
+            return str(v)
+        except Exception:
+            return None
+
+    def _describe_mapping(raw_key: str, m: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(m, dict):
+            m = {"name": str(m)}
+        e = {
+            "raw_key":      raw_key,
+            "friendly_name": m.get("name", ""),
+            "scale":        m.get("scale", 1),
+            "unit":         m.get("unit", ""),
+            "device_class": m.get("device_class", ""),
+            "invert":       bool(m.get("invert", False)),
+        }
+        if raw_key.startswith("state:"):
+            src = raw_key[len("state:"):]
+            e.update(kind="value", source_key=src, label=src,
+                     current=_safe(state.get(m.get("name"))))
+        elif raw_key.startswith("cmd:"):
+            parts = raw_key[len("cmd:"):].split("/")
+            e["kind"] = "action"
+            if len(parts) >= 3:
+                try:
+                    ep, cl, cmd = int(parts[0]), int(parts[1]), int(parts[2])
+                    disc = "/".join(parts[3:]) if len(parts) > 3 else ""
+                    e.update(endpoint=ep,
+                             cluster=f"0x{cl:04X}", command=f"0x{cmd:02X}",
+                             payload=disc,
+                             label=(f"EP{ep} · 0x{cl:04X} cmd 0x{cmd:02X}"
+                                    + (f" · {disc}" if disc else " · any press")))
+                except ValueError:
+                    e["label"] = raw_key
+            else:
+                e["label"] = raw_key
+        else:
+            # Legacy cluster_XXXX_attr_XXXX profile mapping
+            e.update(kind="attribute", label=raw_key)
+        return e
+
+    @app.get("/api/signals/{ieee}/mappings")
+    async def list_mappings(ieee: str):
+        from modules.device_profiles import get_profile_store
+        raw = get_profile_store().get_ieee_mappings(ieee)
+        dev = _device(ieee)
+        state = getattr(dev, "state", {}) if dev is not None else {}
+        out = [_describe_mapping(k, m, state) for k, m in raw.items()]
+        out.sort(key=lambda e: (e.get("kind", ""), e.get("friendly_name", "")))
+        return {"success": True, "ieee": ieee, "count": len(out), "mappings": out}
+
+    @app.post("/api/signals/{ieee}/mappings/update")
+    async def update_mapping(ieee: str, data: Dict[str, Any] = None):
+        data = data or {}
+        from modules.device_profiles import get_profile_store
+        store = get_profile_store()
+        raw_key = (data.get("raw_key") or "").strip()
+        name = (data.get("friendly_name") or "").strip()
+        if not raw_key or not name:
+            return {"success": False, "error": "raw_key and friendly_name required"}
+        existing = store.get_ieee_mapping(ieee, raw_key)
+        if not existing:
+            return {"success": False, "error": "mapping not found"}
+
+        try:
+            scale = float(data.get("scale") or 1)
+        except (TypeError, ValueError):
+            scale = 1.0
+        unit = str(data.get("unit") or "")
+        device_class = str(data.get("device_class") or "")
+        invert = bool(data.get("invert", False))
+
+        store.set_ieee_mapping(ieee, raw_key, name, scale=scale, unit=unit,
+                               device_class=device_class, invert=invert)
+
+        # For value mappings, drop the old friendly key (if renamed) and
+        # re-surface the new one immediately.
+        dev = _device(ieee)
+        if dev is not None and raw_key.startswith("state:"):
+            old_name = existing.get("name")
+            if isinstance(getattr(dev, "state", None), dict) and old_name and old_name != name:
+                dev.state.pop(old_name, None)
+            try:
+                from modules.device_profiles_apply import transform_state_with_profile
+                new = transform_state_with_profile(dev, dev.state)
+                added = {k: v for k, v in new.items() if k not in dev.state}
+                if added and hasattr(dev, "update_state"):
+                    dev.update_state(added)
+            except Exception:
+                pass
+        return {"success": True, "ieee": ieee, "raw_key": raw_key}

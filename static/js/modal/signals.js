@@ -52,6 +52,7 @@ export function createSignalInspector(container, opts = {}) {
         lastPulse: null,
         streaming: null,               // ieee currently streamed server-side
         learn: { active: false, timer: null, changes: [], mapped: new Set() },
+        mappedView: { open: false, list: [] },
     };
 
     container.innerHTML = _template(inst);
@@ -101,6 +102,10 @@ function _template(inst) {
                     title="Demonstrate a control on the device and map what changed">
                 <i class="fas fa-graduation-cap"></i> Learn a control
             </button>
+            <button class="btn btn-sm btn-outline-secondary sig-mapped-btn" style="display:none"
+                    title="Review, rename and remove what you've mapped">
+                <i class="fas fa-list-check"></i> Mapped <span class="badge bg-secondary sig-mapped-count" style="display:none"></span>
+            </button>
             <input type="text" class="form-control form-control-sm sig-filter"
                    placeholder="Filter by name / address…" style="width:200px">
             <div class="form-check form-check-inline mb-0 ms-1">
@@ -114,6 +119,7 @@ function _template(inst) {
             <span class="small text-muted sig-meta"></span>
         </div>
         <div class="sig-learn card border-primary mb-2" style="display:none"></div>
+        <div class="sig-mapped card border-secondary mb-2" style="display:none"></div>
         <div class="small text-muted mb-2">
             Interact with the device — press a button, turn a knob, change a setting —
             and watch which signal reacts. That's the address you map.
@@ -179,6 +185,7 @@ function _wire(inst) {
         });
     }
     $('.sig-learn-btn')?.addEventListener('click', () => _learnStart(inst));
+    $('.sig-mapped-btn')?.addEventListener('click', () => _mappedToggle(inst));
 }
 
 // ---------------------------------------------------------------------------
@@ -195,9 +202,13 @@ async function _select(inst, ieee) {
     const isAll = ieee === ALL;
     inst.container.querySelector('.sig-col-device').style.display = isAll ? '' : 'none';
 
-    // Learn only makes sense for a single, specific device.
+    // Learn / Mapped only make sense for a single, specific device.
+    const specific = ieee && !isAll;
     const learnBtn = inst.container.querySelector('.sig-learn-btn');
-    if (learnBtn) learnBtn.style.display = (ieee && !isAll) ? '' : 'none';
+    if (learnBtn) learnBtn.style.display = specific ? '' : 'none';
+    const mappedBtn = inst.container.querySelector('.sig-mapped-btn');
+    if (mappedBtn) mappedBtn.style.display = specific ? '' : 'none';
+    _mappedClose(inst);
 
     if (!ieee) {
         _setLive(inst, false);
@@ -205,6 +216,7 @@ async function _select(inst, ieee) {
         return;
     }
     await _startStream(inst, ieee);
+    if (specific) _refreshMappedCount(inst);
 }
 
 async function _startStream(inst, ieee) {
@@ -540,6 +552,7 @@ async function _saveActionMapping(inst, change, form) {
         _toast('success', `Action “${name}” mapped`);
         form.innerHTML = '';
         _renderChanges(inst);
+        _refreshMappedCount(inst);
     } catch (e) {
         _toast('error', e.message);
         btn.disabled = false; btn.textContent = 'Save action';
@@ -624,6 +637,7 @@ async function _saveMapping(inst, change, form) {
         _toast('success', `Mapped “${friendly}”`);
         form.innerHTML = '';
         _renderChanges(inst);
+        _refreshMappedCount(inst);
     } catch (e) {
         _toast('error', e.message);
         saveBtn.disabled = false; saveBtn.textContent = 'Save mapping';
@@ -632,6 +646,184 @@ async function _saveMapping(inst, change, form) {
 
 function _toast(type, msg) {
     try { if (window.toast && window.toast[type]) window.toast[type](msg); } catch (_) { /* ignore */ }
+}
+
+// ---------------------------------------------------------------------------
+// Mapped-signals management
+// ---------------------------------------------------------------------------
+
+function _mappedPanel(inst) { return inst.container.querySelector('.sig-mapped'); }
+
+function _mappedClose(inst) {
+    if (inst.mappedView) inst.mappedView.open = false;
+    const p = _mappedPanel(inst);
+    if (p) { p.style.display = 'none'; p.innerHTML = ''; }
+}
+
+function _mappedToggle(inst) {
+    if (inst.mappedView.open) { _mappedClose(inst); return; }
+    _mappedLoad(inst);
+}
+
+function _updateMappedCount(inst, n) {
+    const b = inst.container.querySelector('.sig-mapped-count');
+    if (b) { b.textContent = n; b.style.display = n ? '' : 'none'; }
+}
+
+async function _refreshMappedCount(inst) {
+    if (!inst.ieee || inst.ieee === ALL) return;
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/mappings`);
+        const j = await res.json();
+        inst.mappedView.list = j.mappings || [];
+        _updateMappedCount(inst, j.count || 0);
+        if (inst.mappedView.open) _mappedRender(inst);
+    } catch (_) { /* ignore */ }
+}
+
+async function _mappedLoad(inst) {
+    const p = _mappedPanel(inst);
+    if (!p) return;
+    p.style.display = ''; inst.mappedView.open = true;
+    p.innerHTML = `<div class="card-body p-2 small text-muted"><i class="fas fa-spinner fa-spin"></i> Loading…</div>`;
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/mappings`);
+        const j = await res.json();
+        inst.mappedView.list = j.mappings || [];
+        _updateMappedCount(inst, j.count || 0);
+        _mappedRender(inst);
+    } catch (e) {
+        p.innerHTML = `<div class="card-body p-2 small text-danger">Failed: ${_esc(e.message)}</div>`;
+    }
+}
+
+function _mappedRender(inst) {
+    const p = _mappedPanel(inst);
+    if (!p) return;
+    const list = inst.mappedView.list;
+    const rows = list.length
+        ? list.map((e, i) => _mappedRow(e, i)).join('')
+        : `<div class="small text-muted fst-italic px-1 py-2">Nothing mapped yet — use “Learn a control”.</div>`;
+    p.innerHTML = `
+        <div class="card-body p-2">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <strong><i class="fas fa-list-check"></i> Mapped signals (${list.length})</strong>
+                <button class="btn btn-sm btn-outline-secondary sig-m-close">Close</button>
+            </div>
+            <div class="sig-m-rows">${rows}</div>
+        </div>`;
+    p.querySelector('.sig-m-close')?.addEventListener('click', () => _mappedClose(inst));
+    p.querySelectorAll('.sig-m-row').forEach(row => {
+        const i = parseInt(row.dataset.idx, 10);
+        row.querySelector('.sig-m-edit')?.addEventListener('click', () => _mappedEdit(inst, i));
+        row.querySelector('.sig-m-del')?.addEventListener('click', () => _mappedRemove(inst, i));
+    });
+}
+
+function _mappedRow(e, i) {
+    const kindBadge = { value: 'bg-primary', action: 'bg-warning text-dark', attribute: 'bg-info text-dark' }[e.kind] || 'bg-secondary';
+    const detail = e.kind === 'action'
+        ? `<span class="text-muted small">${_esc(e.label || '')}</span>`
+        : `<span class="text-muted small">from <span class="font-monospace">${_esc(e.source_key || e.label || '')}</span>`
+            + `${e.unit ? ` · ${_esc(e.unit)}` : ''}`
+            + `${(e.scale && e.scale != 1) ? ` · ÷${_esc(String(e.scale))}` : ''}`
+            + `${(e.current !== null && e.current !== undefined) ? ` · now <strong>${_esc(String(e.current))}</strong>` : ''}</span>`;
+    return `
+        <div class="d-flex align-items-center gap-2 py-1 border-bottom sig-m-row" data-idx="${i}">
+            <span class="badge ${kindBadge}">${_esc(e.kind)}</span>
+            <span class="font-monospace">${_esc(e.friendly_name)}</span>
+            ${detail}
+            <span class="ms-auto"></span>
+            <button class="btn btn-sm btn-outline-secondary py-0 sig-m-edit">Edit</button>
+            <button class="btn btn-sm btn-outline-danger py-0 sig-m-del">Remove</button>
+        </div>
+        <div class="sig-m-editrow" data-idx="${i}"></div>`;
+}
+
+function _mappedEdit(inst, i) {
+    const e = inst.mappedView.list[i];
+    const holder = _mappedPanel(inst).querySelector(`.sig-m-editrow[data-idx="${i}"]`);
+    if (!holder) return;
+    if (holder.innerHTML) { holder.innerHTML = ''; return; }   // toggle closed
+    const isValue = e.kind !== 'action';
+    holder.innerHTML = `
+        <div class="card card-body p-2 my-1 bg-body-tertiary">
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">Name</label>
+                    <input class="form-control form-control-sm sig-me-name" value="${_esc(e.friendly_name)}">
+                </div>
+                ${isValue ? `
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Unit</label>
+                    <input class="form-control form-control-sm sig-me-unit" value="${_esc(e.unit || '')}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Divide by</label>
+                    <input type="number" step="any" class="form-control form-control-sm sig-me-scale" value="${_esc(String(e.scale || 1))}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">Device class</label>
+                    <select class="form-select form-select-sm sig-me-class">
+                        ${DEVICE_CLASSES.map(d => `<option value="${d}" ${d === e.device_class ? 'selected' : ''}>${d || '(none)'}</option>`).join('')}
+                    </select>
+                </div>` : ''}
+            </div>
+            <div class="d-flex align-items-center gap-2 mt-2">
+                ${isValue ? `<div class="form-check mb-0">
+                    <input class="form-check-input sig-me-invert" type="checkbox" ${e.invert ? 'checked' : ''} id="sig-me-inv-${i}">
+                    <label class="form-check-label small" for="sig-me-inv-${i}">Invert</label>
+                </div>` : ''}
+                <button class="btn btn-sm btn-outline-secondary ms-auto sig-me-cancel">Cancel</button>
+                <button class="btn btn-sm btn-primary sig-me-save">Save</button>
+            </div>
+        </div>`;
+    holder.querySelector('.sig-me-cancel')?.addEventListener('click', () => { holder.innerHTML = ''; });
+    holder.querySelector('.sig-me-save')?.addEventListener('click', () => _mappedSaveEdit(inst, i, holder));
+}
+
+async function _mappedSaveEdit(inst, i, holder) {
+    const e = inst.mappedView.list[i];
+    const nameEl = holder.querySelector('.sig-me-name');
+    const name = nameEl.value.trim();
+    if (!name) { nameEl.classList.add('is-invalid'); return; }
+    const body = { raw_key: e.raw_key, friendly_name: name };
+    if (e.kind !== 'action') {
+        body.unit = holder.querySelector('.sig-me-unit')?.value.trim() || '';
+        body.scale = parseFloat(holder.querySelector('.sig-me-scale')?.value) || 1;
+        body.device_class = holder.querySelector('.sig-me-class')?.value || '';
+        body.invert = !!holder.querySelector('.sig-me-invert')?.checked;
+    }
+    const btn = holder.querySelector('.sig-me-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/mappings/update`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const j = await res.json();
+        if (!j.success) { _toast('error', j.error || 'Failed'); btn.disabled = false; btn.textContent = 'Save'; return; }
+        _toast('success', 'Mapping updated');
+        _mappedLoad(inst);
+    } catch (err) {
+        _toast('error', err.message); btn.disabled = false; btn.textContent = 'Save';
+    }
+}
+
+async function _mappedRemove(inst, i) {
+    const e = inst.mappedView.list[i];
+    if (!window.confirm(`Remove mapping “${e.friendly_name}”?`)) return;
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/learn/unmap`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ raw_key: e.raw_key }),
+        });
+        const j = await res.json();
+        if (!j.success) { _toast('error', j.error || 'Failed'); return; }
+        _toast('success', 'Mapping removed');
+        _mappedLoad(inst);
+    } catch (err) {
+        _toast('error', err.message);
+    }
 }
 
 // ---------------------------------------------------------------------------
