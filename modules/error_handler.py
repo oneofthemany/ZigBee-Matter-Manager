@@ -175,10 +175,10 @@ class ErrorHandler:
 
                 # Log the error
                 if attempt == 0:
-                    logger.warning(f"Operation failed: {e}" +
+                    logger.warning(f"Operation failed: {type(e).__name__}: {e}" +
                                    (f" ({context})" if context else ""))
                 else:
-                    logger.warning(f"Retry #{attempt} failed: {e}" +
+                    logger.warning(f"Retry #{attempt} failed: {type(e).__name__}: {e}" +
                                    (f" ({context})" if context else ""))
 
                 # Check if we should retry
