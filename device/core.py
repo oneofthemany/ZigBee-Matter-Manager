@@ -102,9 +102,16 @@ class ZigManDevice(
         # Command wrapper for resilient operations
         self._cmd_wrapper = None
 
-        # Check if quirk is applied
+        # Check if quirk is applied. Older zigpy exposed `quirk_class`;
+        # newer zigpy replaces the device object with an instance of the
+        # quirk class itself, so detect by the class's defining module.
         if hasattr(zigpy_dev, 'quirk_class'):
             self.quirk_name = zigpy_dev.quirk_class.__name__
+        else:
+            dev_cls = type(zigpy_dev)
+            dev_mod = dev_cls.__module__
+            if dev_mod.startswith('zhaquirks') or 'quirks' in dev_mod:
+                self.quirk_name = dev_cls.__name__
 
         # Identify and attach handlers (from DeviceHandlerManagerMixin)
         self._identify_handlers()
