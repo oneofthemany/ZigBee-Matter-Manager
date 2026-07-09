@@ -178,6 +178,9 @@ let allRulesCache = [];
 let devMapCache = {};
 let filterDevice = '';
 let filterState = '';
+// Rules the user has expanded — cards render collapsed (one line) by default
+// to keep the page compact. Survives list re-renders within the session.
+const expandedRules = new Set();
 let locationConfigured = true;   // false → sun/sunrise-sunset can't resolve
 
 // A rule "uses sun" if any condition OR prerequisite is a dynamic sun window.
@@ -273,6 +276,7 @@ function _renderPage(container, devices) {
                     <option value="unmatched" ${filterState === 'unmatched' ? 'selected' : ''}>Unmatched</option>
                     <option value="disabled" ${filterState === 'disabled' ? 'selected' : ''}>Disabled</option>
                 </select>
+                <button class="btn btn-sm btn-outline-secondary" id="ap-expand-btn" onclick="window._apExpandAll()" title="Expand all"><i class="fas fa-angles-down"></i></button>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._apRefresh()"><i class="fas fa-sync-alt"></i></button>
                 <button class="btn btn-sm btn-success" onclick="window._apCreate()"><i class="fas fa-plus"></i> New Rule</button>
             </div>
@@ -322,15 +326,21 @@ function _renderPage(container, devices) {
 // RULES LIST
 // ============================================================================
 
-function _renderRulesList(devMap = devMapCache) {
-    const el = document.getElementById('ap-rules-list');
-    if (!el) return;
-
+function _visibleRules() {
     let rules = allRulesCache;
     if (filterDevice) rules = rules.filter(r => r.source_ieee === filterDevice);
     if (filterState === 'disabled') rules = rules.filter(r => r.enabled === false);
     else if (filterState === 'matched') rules = rules.filter(r => r._state === 'matched' && r.enabled !== false);
     else if (filterState === 'unmatched') rules = rules.filter(r => r._state !== 'matched' && r.enabled !== false);
+    return rules;
+}
+
+function _renderRulesList(devMap = devMapCache) {
+    const el = document.getElementById('ap-rules-list');
+    if (!el) return;
+
+    const rules = _visibleRules();
+    _syncExpandBtn(rules);
 
     if (!rules.length) {
         el.innerHTML = `<div class="text-center text-muted py-4"><i class="fas fa-robot fa-2x mb-2 d-block opacity-50"></i>No automations found.</div>`;
@@ -396,7 +406,23 @@ function _ruleCard(rule, src) {
     if ((rule.else_sequence || []).length)
         flow += step('Else', 'else', `<div class="ap-acts">${_renderSeq(rule.else_sequence)}</div>`);
 
-    return `<div class="ap-flowcard ${en ? '' : 'disabled'}" id="ap-rule-${rule.id}">
+    // Collapsed one-line summary: "When <trigger> → n action(s)".
+    const nActs = (rule.then_sequence || []).length;
+    const isOpen = expandedRules.has(rule.id);
+
+    return `<div class="ap-flowcard ${en ? '' : 'disabled'} ${isOpen ? '' : 'collapsed'}" id="ap-rule-${rule.id}">
+        <div class="ap-crow" onclick="window._apToggleExpand('${rule.id}')" title="Expand">
+            <span class="ap-idico sm">${_icon(src.type)}</span>
+            ${nameHtml}
+            <span class="ap-csum">When ${trig.text} → ${nActs} action${nActs === 1 ? '' : 's'}</span>
+            ${stateChip}
+            <span class="ap-crow-btns" onclick="event.stopPropagation()">
+                <button class="btn btn-sm btn-outline-primary py-0" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i></button>
+                <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'} py-0" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
+                <button class="btn btn-sm btn-outline-danger py-0" onclick="window._apDelete('${rule.id}')" title="Delete"><i class="fas fa-trash"></i></button>
+            </span>
+            <i class="fas fa-chevron-down ap-chev"></i>
+        </div>
         <div class="ap-rail">
             <span class="ap-idico lg">${_icon(src.type)}</span>
             <div>${nameHtml}</div>
@@ -408,6 +434,7 @@ function _ruleCard(rule, src) {
         </div>
         <div class="ap-flow">${flow}</div>
         <div class="ap-foot">
+            <button class="btn btn-sm btn-outline-secondary" onclick="window._apToggleExpand('${rule.id}')" title="Collapse"><i class="fas fa-chevron-up"></i></button>
             <span class="spacer"></span>
             <button class="btn btn-sm btn-outline-primary" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i> Edit</button>
             <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'}" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
@@ -432,6 +459,31 @@ function _apFilterDev(val) {
 function _apFilterState(val) {
     filterState = val;
     _renderRulesList();
+}
+
+// --- Expand / collapse ---
+
+function _apToggleExpand(ruleId) {
+    if (expandedRules.has(ruleId)) expandedRules.delete(ruleId);
+    else expandedRules.add(ruleId);
+    _renderRulesList();
+}
+
+// Expand every visible rule; if they're all already open, collapse them all.
+function _apExpandAll() {
+    const visible = _visibleRules().map(r => r.id);
+    const allOpen = visible.length > 0 && visible.every(id => expandedRules.has(id));
+    if (allOpen) visible.forEach(id => expandedRules.delete(id));
+    else visible.forEach(id => expandedRules.add(id));
+    _renderRulesList();
+}
+
+function _syncExpandBtn(rules) {
+    const btn = document.getElementById('ap-expand-btn');
+    if (!btn) return;
+    const allOpen = rules.length > 0 && rules.every(r => expandedRules.has(r.id));
+    btn.innerHTML = `<i class="fas fa-angles-${allOpen ? 'up' : 'down'}"></i>`;
+    btn.title = allOpen ? 'Collapse all' : 'Expand all';
 }
 
 // --- Create ---
@@ -597,6 +649,8 @@ window._apGoToLocationSettings = _apGoToLocationSettings;
 window._apRefresh = _apRefresh;
 window._apFilterDev = _apFilterDev;
 window._apFilterState = _apFilterState;
+window._apToggleExpand = _apToggleExpand;
+window._apExpandAll = _apExpandAll;
 window._apCreate = _apCreate;
 window._apCloseCreate = _apCloseCreate;
 window._apSourceSelected = _apSourceSelected;
