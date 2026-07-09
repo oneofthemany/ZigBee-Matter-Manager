@@ -231,11 +231,19 @@ class ClusterHandler:
         # presses re-fire. Never break the handler path.
         try:
             from modules.device_profiles import get_profile_store
+            from modules.signal_inspector import arg_discriminator
             store = get_profile_store()
             ieee = str(self.device.ieee)
             if store.has_ieee_mappings(ieee):
-                raw_key = f"cmd:{self.endpoint.endpoint_id}/{self.cluster_id}/{command_id}"
-                m = store.get_ieee_mapping(ieee, raw_key)
+                base = f"cmd:{self.endpoint.endpoint_id}/{self.cluster_id}/{command_id}"
+                # Prefer a payload-specific mapping (e.g. this exact button /
+                # press-type), then fall back to an any-payload mapping.
+                m = None
+                disc = arg_discriminator(args)
+                if disc:
+                    m = store.get_ieee_mapping(ieee, f"{base}/{disc}")
+                if m is None:
+                    m = store.get_ieee_mapping(ieee, base)
                 if m and m.get("name"):
                     self.device.update_state({"action": m["name"]})
         except Exception:

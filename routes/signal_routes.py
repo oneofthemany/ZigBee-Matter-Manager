@@ -157,11 +157,16 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
             cmd = _to_int(data.get("item"))
             if ep is None or cl is None or cmd is None:
                 return {"success": False, "error": "endpoint, cluster and item required for a command"}
-            raw_key = f"cmd:{ep}/{cl}/{cmd}"
+            base = f"cmd:{ep}/{cl}/{cmd}"
+            # When match_args is set, bind the action to this exact payload
+            # (e.g. single vs double press on the same command id).
+            disc = (data.get("arg_disc") or "").strip()
+            raw_key = f"{base}/{disc}" if (data.get("match_args") and disc) else base
             get_profile_store().set_ieee_mapping(ieee, raw_key, friendly)
             logger.info(f"[{ieee}] Learned action {raw_key} -> {friendly!r}")
             return {"success": True, "ieee": ieee, "raw_key": raw_key,
-                    "friendly_name": friendly, "kind": "action"}
+                    "friendly_name": friendly, "kind": "action",
+                    "match_args": bool(data.get("match_args") and disc)}
 
         state_key = (data.get("state_key") or "").strip()
         if not state_key:

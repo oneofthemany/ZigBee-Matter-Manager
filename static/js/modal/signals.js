@@ -434,7 +434,7 @@ function _renderChanges(inst) {
     wrap.innerHTML = changes.map((c, i) => {
         const isCmd = c.source === 'zcl_cmd';
         const mappable = MAPPABLE_SOURCES.has(c.source) || isCmd;
-        const mapped = inst.learn.mapped.has(_changeKey(c));
+        const mapped = _isMapped(inst, c);
         const before = (c.baseline_value === null || c.baseline_value === undefined)
             ? '—' : _fmtVal(c.baseline_value);
         let cta;
@@ -456,16 +456,23 @@ function _renderChanges(inst) {
     wrap.querySelectorAll('.sig-change-row').forEach(row => {
         row.addEventListener('click', () => {
             const c = changes[parseInt(row.dataset.idx, 10)];
-            if (!c || inst.learn.mapped.has(_changeKey(c))) return;
+            if (!c || _isMapped(inst, c)) return;
             if (c.source === 'zcl_cmd') _openActionForm(inst, c);
             else if (MAPPABLE_SOURCES.has(c.source)) _openLabelForm(inst, c);
         });
     });
 }
 
-function _changeKey(c) {
-    if (c.source === 'zcl_cmd') return `cmd:${c.endpoint}/${_hexToInt(c.cluster)}/${c.item}`;
-    return c.name;
+// A command can carry several payload-specific mappings (single/double/hold),
+// so check both the exact-payload key and the any-payload (wildcard) key.
+function _isMapped(inst, c) {
+    const m = inst.learn.mapped;
+    if (c.source === 'zcl_cmd') {
+        const base = `cmd:${c.endpoint}/${_hexToInt(c.cluster)}/${c.item}`;
+        if (m.has(base)) return true;
+        return !!(c.arg_disc && m.has(`${base}/${c.arg_disc}`));
+    }
+    return m.has(c.name);
 }
 
 function _hexToInt(v) {
@@ -477,10 +484,22 @@ function _hexToInt(v) {
 function _openActionForm(inst, change) {
     const form = inst.container.querySelector('.sig-learn-form');
     if (!form) return;
+    const hasPayload = !!change.arg_disc;
+    const payloadHint = hasPayload
+        ? `<div class="form-check mb-1">
+               <input class="form-check-input sig-a-match" type="checkbox" id="sig-match" checked>
+               <label class="form-check-label small" for="sig-match">
+                   Only this exact press
+                   <span class="text-muted font-monospace">${_esc(change.arg_summary || change.arg_disc)}</span>
+               </label>
+           </div>
+           <div class="small text-muted mb-1">Distinguishes e.g. single / double / hold on the same command.</div>`
+        : '';
     form.innerHTML = `
         <div class="card card-body p-2 mt-2 bg-body-tertiary">
             <div class="small mb-2">Name the action for <span class="font-monospace">${_esc(change.name)}</span>
                 <span class="text-muted">(${_esc(change.address)})</span></div>
+            ${payloadHint}
             <div class="d-flex align-items-center gap-2 flex-wrap">
                 <input type="text" class="form-control form-control-sm sig-a-name"
                        placeholder="e.g. button_single" style="max-width:240px">
@@ -502,6 +521,7 @@ async function _saveActionMapping(inst, change, form) {
     const nameEl = form.querySelector('.sig-a-name');
     const name = nameEl.value.trim();
     if (!name) { nameEl.classList.add('is-invalid'); return; }
+    const matchArgs = !!form.querySelector('.sig-a-match')?.checked;
     const btn = form.querySelector('.sig-a-save');
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
@@ -510,11 +530,13 @@ async function _saveActionMapping(inst, change, form) {
             body: JSON.stringify({
                 command: true, endpoint: change.endpoint,
                 cluster: change.cluster, item: change.item, friendly_name: name,
+                match_args: matchArgs, arg_disc: change.arg_disc || '',
             }),
         });
         const json = await res.json();
         if (!json.success) { _toast('error', json.error || 'Failed'); btn.disabled = false; btn.textContent = 'Save action'; return; }
-        inst.learn.mapped.add(_changeKey(change));
+        // Track the exact key the backend stored so the row reflects it.
+        if (json.raw_key) inst.learn.mapped.add(json.raw_key);
         _toast('success', `Action “${name}” mapped`);
         form.innerHTML = '';
         _renderChanges(inst);

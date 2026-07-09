@@ -36,6 +36,8 @@ errors.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from collections import deque
@@ -83,6 +85,33 @@ def _jsonify(val: Any) -> Any:
         return repr(val)
 
 
+def arg_discriminator(value: Any) -> str:
+    """Stable, compact key for a command's args/payload.
+
+    Computed identically wherever it's needed (the capture tap, the handler's
+    action lookup) so that "this exact button press" can be matched. Empty
+    string means "no distinguishing payload" (a plain command).
+
+    Long payloads are hashed so the key stays bounded; short ones are kept
+    verbatim so they remain human-inspectable.
+    """
+    try:
+        j = _jsonify(value)
+    except Exception:
+        j = None
+    if j in (None, "", [], {}, ()):
+        return ""
+    try:
+        s = json.dumps(j, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        s = str(j)
+    if not s or s in ("null", "[]", "{}"):
+        return ""
+    if len(s) > 48:
+        return "h" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
+    return s
+
+
 def _value_type(val: Any) -> str:
     if isinstance(val, bool):
         return "bool"
@@ -107,7 +136,7 @@ class _Signal:
     __slots__ = (
         "key", "source", "endpoint", "cluster", "item", "name",
         "value", "value_type", "first_seen", "last_seen", "count",
-        "last_changed", "_samples",
+        "last_changed", "_samples", "arg_disc",
     )
 
     def __init__(self, key: str, source: str, endpoint: Optional[int],
@@ -126,6 +155,7 @@ class _Signal:
         self.count = 0
         self.last_changed = now
         self._samples: Deque[float] = deque(maxlen=_MAX_SAMPLES)
+        self.arg_disc = ""       # payload discriminator (commands only)
 
     def observe(self, value: Any) -> bool:
         """Record one observation. Returns True if the value changed."""
@@ -136,6 +166,9 @@ class _Signal:
             self.last_changed = now
         self.value = jv
         self.value_type = _value_type(value)
+        if self.source == SOURCE_ZCL_CMD:
+            # Compute from the raw value so it matches the handler's lookup.
+            self.arg_disc = arg_discriminator(value)
         self.last_seen = now
         self.count += 1
         self._samples.append(now)
@@ -162,7 +195,7 @@ class _Signal:
 
     def to_dict(self, now: Optional[float] = None) -> Dict[str, Any]:
         now = now or time.time()
-        return {
+        d = {
             "key": self.key,
             "source": self.source,
             "endpoint": self.endpoint,
@@ -179,6 +212,12 @@ class _Signal:
             "age_s": round(now - self.last_seen, 1),
             "since_change_s": round(now - self.last_changed, 1),
         }
+        if self.source == SOURCE_ZCL_CMD:
+            d["arg_disc"] = self.arg_disc
+            # Human-readable payload summary for the mapping UI.
+            summ = "" if self.value in (None, [], {}) else str(self.value)
+            d["arg_summary"] = summ[:60]
+        return d
 
 
 class SignalInspector:
