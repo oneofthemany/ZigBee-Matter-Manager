@@ -301,13 +301,24 @@ class DeviceLifecycleMixin:
         """Called by ZigManDevice when state changes."""
         try:
             from modules.device_profiles_apply import transform_state_with_profile
-            if isinstance(changed_data, dict) and any(k.startswith("cluster_") for k in changed_data):
+            from modules.device_profiles import get_profile_store
+            # Run the transform when raw cluster keys are present (profile
+            # attribute mappings) OR when the device has any learned IEEE
+            # mappings (state-key mappings cover Tuya DPs / derived keys).
+            if isinstance(changed_data, dict) and changed_data and (
+                    any(k.startswith("cluster_") for k in changed_data)
+                    or get_profile_store().has_ieee_mappings(zha_device.ieee)):
                 merged = {**zha_device.state, **changed_data}
                 transformed = transform_state_with_profile(zha_device, merged)
+                # Include any derived key whose value actually changed — not
+                # just brand-new keys — so a mapped value keeps updating live
+                # instead of freezing after its first appearance.
                 extras = {k: v for k, v in transformed.items()
-                          if k not in changed_data and k not in zha_device.state}
+                          if k not in changed_data and zha_device.state.get(k) != v}
                 if extras:
                     changed_data = {**changed_data, **extras}
+                    # Keep state authoritative so the next diff is correct.
+                    zha_device.state.update(extras)
         except Exception as e:
             logger.debug(f"[{zha_device.ieee}] Profile transform failed: {e}")
 

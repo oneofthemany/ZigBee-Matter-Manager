@@ -51,6 +51,7 @@ export function createSignalInspector(container, opts = {}) {
         tick: null,
         lastPulse: null,
         streaming: null,               // ieee currently streamed server-side
+        learn: { active: false, timer: null, changes: [], mapped: new Set() },
     };
 
     container.innerHTML = _template(inst);
@@ -96,8 +97,12 @@ function _template(inst) {
             <span class="badge bg-danger sig-live" style="display:none">
                 <i class="fas fa-circle fa-xs"></i> LIVE
             </span>
+            <button class="btn btn-sm btn-primary sig-learn-btn" style="display:none"
+                    title="Demonstrate a control on the device and map what changed">
+                <i class="fas fa-graduation-cap"></i> Learn a control
+            </button>
             <input type="text" class="form-control form-control-sm sig-filter"
-                   placeholder="Filter by name / address…" style="width:220px">
+                   placeholder="Filter by name / address…" style="width:200px">
             <div class="form-check form-check-inline mb-0 ms-1">
                 <input class="form-check-input sig-changed-only" type="checkbox">
                 <label class="form-check-label small text-muted">Recently changed</label>
@@ -108,6 +113,7 @@ function _template(inst) {
             </button>
             <span class="small text-muted sig-meta"></span>
         </div>
+        <div class="sig-learn card border-primary mb-2" style="display:none"></div>
         <div class="small text-muted mb-2">
             Interact with the device — press a button, turn a knob, change a setting —
             and watch which signal reacts. That's the address you map.
@@ -172,6 +178,7 @@ function _wire(inst) {
             }
         });
     }
+    $('.sig-learn-btn')?.addEventListener('click', () => _learnStart(inst));
 }
 
 // ---------------------------------------------------------------------------
@@ -179,13 +186,18 @@ function _wire(inst) {
 // ---------------------------------------------------------------------------
 
 async function _select(inst, ieee) {
-    // Tear down any current stream first.
+    // Tear down any current stream + learn session first.
+    _learnStop(inst);
     await _stopStream(inst);
     inst.ieee = ieee;
     inst.rows = new Map();
 
     const isAll = ieee === ALL;
     inst.container.querySelector('.sig-col-device').style.display = isAll ? '' : 'none';
+
+    // Learn only makes sense for a single, specific device.
+    const learnBtn = inst.container.querySelector('.sig-learn-btn');
+    if (learnBtn) learnBtn.style.display = (ieee && !isAll) ? '' : 'none';
 
     if (!ieee) {
         _setLive(inst, false);
@@ -224,6 +236,7 @@ async function _stopStream(inst) {
 }
 
 function _destroy(inst) {
+    _learnStop(inst);
     _stopStream(inst);
     _instances.delete(inst);
 }
@@ -305,6 +318,235 @@ function _repaint(inst) {
             </tr>`;
     }).join('');
     inst.lastPulse = null;
+}
+
+// ---------------------------------------------------------------------------
+// Learn-by-demonstration
+// ---------------------------------------------------------------------------
+
+// Value-bearing sources that resolve to a device state key we can map.
+const MAPPABLE_SOURCES = new Set(['state', 'dp', 'zcl_attr', 'matter_attr']);
+const DEVICE_CLASSES = [
+    '', 'temperature', 'humidity', 'battery', 'illuminance', 'power', 'energy',
+    'voltage', 'current', 'pressure', 'occupancy', 'motion', 'contact',
+    'door', 'window', 'signal_strength',
+];
+
+function _learnPanel(inst) { return inst.container.querySelector('.sig-learn'); }
+
+function _learnStart(inst) {
+    if (!inst.ieee || inst.ieee === ALL) return;
+    inst.learn.active = true;
+    inst.learn.changes = [];
+    _learnPanel(inst).style.display = '';
+    _renderLearnStep(inst, 'ready');
+}
+
+function _learnStop(inst) {
+    if (inst.learn) {
+        if (inst.learn.timer) { clearInterval(inst.learn.timer); inst.learn.timer = null; }
+        inst.learn.active = false;
+    }
+    const panel = _learnPanel(inst);
+    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
+async function _learnBaseline(inst) {
+    _renderLearnStep(inst, 'capturing');
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/learn/baseline`, { method: 'POST' });
+        const json = await res.json();
+        if (!json.success) { _renderLearnStep(inst, 'ready', json.error); return; }
+        _renderLearnStep(inst, 'demonstrate');
+        if (inst.learn.timer) clearInterval(inst.learn.timer);
+        inst.learn.timer = setInterval(() => _learnPoll(inst), 1500);
+        _learnPoll(inst);
+    } catch (e) {
+        _renderLearnStep(inst, 'ready', e.message);
+    }
+}
+
+async function _learnPoll(inst) {
+    if (!inst.learn.active) return;
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/learn/diff`);
+        const json = await res.json();
+        if (json.success) { inst.learn.changes = json.changes || []; _renderChanges(inst); }
+    } catch (_) { /* ignore */ }
+}
+
+function _renderLearnStep(inst, step, err) {
+    const panel = _learnPanel(inst);
+    if (!panel) return;
+    const errHtml = err ? `<div class="alert alert-warning py-1 px-2 small mb-2">${_esc(err)}</div>` : '';
+
+    if (step === 'ready') {
+        panel.innerHTML = `
+            <div class="card-body p-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong><i class="fas fa-graduation-cap"></i> Learn a control</strong>
+                    <button class="btn btn-sm btn-outline-secondary sig-learn-done">Cancel</button>
+                </div>
+                ${errHtml}
+                <div class="small text-muted mb-2">
+                    We'll snapshot the device now, then you operate it — press the button,
+                    turn the knob, change the setting. We'll show exactly what changed so you can name it.
+                </div>
+                <button class="btn btn-sm btn-primary sig-learn-baseline">
+                    <i class="fas fa-camera"></i> Start — capture baseline
+                </button>
+            </div>`;
+    } else if (step === 'capturing') {
+        panel.innerHTML = `<div class="card-body p-2 small text-muted">
+            <i class="fas fa-spinner fa-spin"></i> Capturing baseline…</div>`;
+    } else if (step === 'demonstrate') {
+        panel.innerHTML = `
+            <div class="card-body p-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong><i class="fas fa-hand-pointer"></i> Operate the device now</strong>
+                    <button class="btn btn-sm btn-outline-secondary sig-learn-done">Done</button>
+                </div>
+                <div class="small text-muted mb-2">
+                    Press the button / turn the knob / change the setting. Then click a
+                    changed signal below to give it a friendly name.
+                </div>
+                <div class="sig-learn-changes"></div>
+                <div class="sig-learn-form"></div>
+            </div>`;
+        _renderChanges(inst);
+    }
+
+    panel.querySelector('.sig-learn-done')?.addEventListener('click', () => _learnStop(inst));
+    panel.querySelector('.sig-learn-baseline')?.addEventListener('click', () => _learnBaseline(inst));
+}
+
+function _renderChanges(inst) {
+    const wrap = inst.container.querySelector('.sig-learn-changes');
+    if (!wrap) return;
+    const changes = inst.learn.changes;
+
+    if (!changes.length) {
+        wrap.innerHTML = `<div class="small text-muted fst-italic">Waiting for a reaction…</div>`;
+        return;
+    }
+
+    const badge = { changed: 'bg-success', new: 'bg-primary', repeated: 'bg-secondary' };
+    wrap.innerHTML = changes.map((c, i) => {
+        const mappable = MAPPABLE_SOURCES.has(c.source);
+        const mapped = inst.learn.mapped.has(c.name);
+        const before = (c.baseline_value === null || c.baseline_value === undefined)
+            ? '—' : _fmtVal(c.baseline_value);
+        return `
+            <div class="d-flex align-items-center gap-2 py-1 border-bottom sig-change-row"
+                 data-idx="${i}" style="cursor:${mappable ? 'pointer' : 'default'}">
+                <span class="badge ${badge[c.change] || 'bg-secondary'}" style="min-width:64px">${c.change}</span>
+                <span class="font-monospace small">${_esc(c.name)}</span>
+                <span class="text-muted small">${_esc(c.address)}</span>
+                <span class="ms-auto font-monospace small">${before} → <strong>${_fmtVal(c.value)}</strong></span>
+                ${mapped
+                    ? '<span class="badge bg-success"><i class="fas fa-check"></i> mapped</span>'
+                    : mappable
+                        ? '<button class="btn btn-sm btn-outline-primary py-0 sig-map-btn">Name it</button>'
+                        : '<span class="badge bg-light text-muted" title="Command signals map to actions — coming next">command</span>'}
+            </div>`;
+    }).join('');
+
+    wrap.querySelectorAll('.sig-change-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const c = changes[parseInt(row.dataset.idx, 10)];
+            if (c && MAPPABLE_SOURCES.has(c.source) && !inst.learn.mapped.has(c.name)) {
+                _openLabelForm(inst, c);
+            }
+        });
+    });
+}
+
+function _openLabelForm(inst, change) {
+    const form = inst.container.querySelector('.sig-learn-form');
+    if (!form) return;
+    const guessName = /^(dp_\d+|attr_[0-9a-f]|0x|cluster_)/i.test(change.name) ? '' : change.name;
+
+    form.innerHTML = `
+        <div class="card card-body p-2 mt-2 bg-body-tertiary">
+            <div class="small mb-2">Map <span class="font-monospace">${_esc(change.name)}</span>
+                <span class="text-muted">(${_esc(change.address)})</span></div>
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">Friendly name</label>
+                    <input type="text" class="form-control form-control-sm sig-f-name" value="${_esc(guessName)}" placeholder="e.g. heating_setpoint">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Unit</label>
+                    <input type="text" class="form-control form-control-sm sig-f-unit" placeholder="°C">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0" title="Raw value is divided by this">Divide by</label>
+                    <input type="number" step="any" class="form-control form-control-sm sig-f-scale" value="1">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">Device class</label>
+                    <select class="form-select form-select-sm sig-f-class">
+                        ${DEVICE_CLASSES.map(d => `<option value="${d}">${d || '(none)'}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 mt-2">
+                <div class="form-check mb-0">
+                    <input class="form-check-input sig-f-invert" type="checkbox" id="sig-invert">
+                    <label class="form-check-label small" for="sig-invert">Invert (0↔1 boolean)</label>
+                </div>
+                <div class="ms-auto small text-muted sig-f-preview"></div>
+                <button class="btn btn-sm btn-outline-secondary sig-f-cancel">Cancel</button>
+                <button class="btn btn-sm btn-primary sig-f-save">Save mapping</button>
+            </div>
+        </div>`;
+
+    const nameEl = form.querySelector('.sig-f-name');
+    nameEl?.focus();
+    const preview = () => {
+        const scale = parseFloat(form.querySelector('.sig-f-scale').value) || 1;
+        const raw = Number(change.value);
+        const el = form.querySelector('.sig-f-preview');
+        if (!isNaN(raw) && scale && scale !== 1) el.textContent = `preview: ${change.value} → ${(raw / scale)}`;
+        else el.textContent = '';
+    };
+    form.querySelector('.sig-f-scale')?.addEventListener('input', preview);
+
+    form.querySelector('.sig-f-cancel')?.addEventListener('click', () => { form.innerHTML = ''; });
+    form.querySelector('.sig-f-save')?.addEventListener('click', () => _saveMapping(inst, change, form));
+}
+
+async function _saveMapping(inst, change, form) {
+    const friendly = form.querySelector('.sig-f-name').value.trim();
+    if (!friendly) { form.querySelector('.sig-f-name').classList.add('is-invalid'); return; }
+    const body = {
+        state_key:    change.name,
+        friendly_name: friendly,
+        unit:         form.querySelector('.sig-f-unit').value.trim(),
+        scale:        parseFloat(form.querySelector('.sig-f-scale').value) || 1,
+        device_class: form.querySelector('.sig-f-class').value,
+        invert:       form.querySelector('.sig-f-invert').checked,
+    };
+    const saveBtn = form.querySelector('.sig-f-save');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/learn/map`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (!json.success) { _toast('error', json.error || 'Mapping failed'); saveBtn.disabled = false; saveBtn.textContent = 'Save mapping'; return; }
+        inst.learn.mapped.add(change.name);
+        _toast('success', `Mapped “${friendly}”`);
+        form.innerHTML = '';
+        _renderChanges(inst);
+    } catch (e) {
+        _toast('error', e.message);
+        saveBtn.disabled = false; saveBtn.textContent = 'Save mapping';
+    }
+}
+
+function _toast(type, msg) {
+    try { if (window.toast && window.toast[type]) window.toast[type](msg); } catch (_) { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------

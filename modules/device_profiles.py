@@ -758,6 +758,11 @@ class ProfileStore:
         with self._lock:
             return dict(self._ieee_mappings.get(ieee, {}).get("cluster_mappings", {}))
 
+    def has_ieee_mappings(self, ieee: str) -> bool:
+        """Cheap presence check (no copy) for the live-update hot path."""
+        with self._lock:
+            return bool(self._ieee_mappings.get(ieee, {}).get("cluster_mappings"))
+
     def list_ieee_state(self) -> Dict[str, Any]:
         with self._lock:
             return {

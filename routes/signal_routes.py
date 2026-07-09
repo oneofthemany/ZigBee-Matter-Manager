@@ -16,6 +16,7 @@ Endpoints
   e.g. before a learn-by-demonstration capture).
 """
 import logging
+from typing import Any, Dict
 
 from fastapi import FastAPI
 
@@ -99,3 +100,96 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
             return {"success": True, "ieee": "all", "signals": []}
         inspector.clear(ieee)
         return {"success": True, "ieee": ieee, "signals": []}
+
+    # ---- learn-by-demonstration ---------------------------------------
+
+    def _device(ieee: str):
+        try:
+            svc = get_zigbee_service()
+            if svc is not None and hasattr(svc, "devices"):
+                return svc.devices.get(ieee)
+        except Exception:
+            pass
+        return None
+
+    @app.post("/api/signals/{ieee}/learn/baseline")
+    async def learn_baseline(ieee: str):
+        """Snapshot current signal values, then the user operates the device."""
+        if ieee == "all":
+            return {"success": False, "error": "Pick a specific device to learn"}
+        if not _exists(ieee):
+            return {"success": False, "error": "Device not found"}
+        inspector = get_signal_inspector()
+        inspector.start(ieee)                 # ensure we're capturing
+        n = inspector.mark_baseline(ieee)
+        logger.info(f"[{ieee}] Learn baseline set ({n} signals)")
+        return {"success": True, "ieee": ieee, "baseline_signals": n}
+
+    @app.get("/api/signals/{ieee}/learn/diff")
+    async def learn_diff(ieee: str):
+        """Return the signals that moved since the baseline, ranked."""
+        inspector = get_signal_inspector()
+        if not inspector.has_baseline(ieee):
+            return {"success": False, "error": "No baseline — start learning first"}
+        return {"success": True, "ieee": ieee, "changes": inspector.diff(ieee)}
+
+    @app.post("/api/signals/{ieee}/learn/map")
+    async def learn_map(ieee: str, data: Dict[str, Any] = None):
+        """Persist a friendly mapping for a demonstrated signal.
+
+        Body: {state_key, friendly_name, scale?, unit?, device_class?, invert?}
+        Mappings are keyed by the literal state key (``state:<key>``), which
+        uniformly covers ZCL attributes, Tuya datapoints and derived keys.
+        """
+        data = data or {}
+        state_key = (data.get("state_key") or "").strip()
+        friendly = (data.get("friendly_name") or "").strip()
+        if not state_key:
+            return {"success": False, "error": "state_key required (map a value signal, not a command)"}
+        if not friendly:
+            return {"success": False, "error": "friendly_name required"}
+
+        try:
+            scale = float(data.get("scale") or 1)
+        except (TypeError, ValueError):
+            scale = 1.0
+        unit = str(data.get("unit") or "")
+        device_class = str(data.get("device_class") or "")
+        invert = bool(data.get("invert", False))
+
+        from modules.device_profiles import get_profile_store
+        raw_key = f"state:{state_key}"
+        get_profile_store().set_ieee_mapping(
+            ieee, raw_key, friendly,
+            scale=scale, unit=unit, device_class=device_class, invert=invert,
+        )
+        logger.info(f"[{ieee}] Learned mapping {state_key!r} -> {friendly!r}")
+
+        # Surface the friendly key immediately by re-transforming current state.
+        dev = _device(ieee)
+        applied = None
+        if dev is not None:
+            try:
+                from modules.device_profiles_apply import transform_state_with_profile
+                new = transform_state_with_profile(dev, dev.state)
+                added = {k: v for k, v in new.items() if k not in dev.state}
+                if added and hasattr(dev, "update_state"):
+                    dev.update_state(added)
+                applied = new.get(friendly)
+            except Exception as e:
+                logger.debug(f"[{ieee}] immediate re-transform failed: {e}")
+
+        return {
+            "success": True, "ieee": ieee,
+            "raw_key": raw_key, "friendly_name": friendly, "value": applied,
+        }
+
+    @app.post("/api/signals/{ieee}/learn/unmap")
+    async def learn_unmap(ieee: str, data: Dict[str, Any] = None):
+        data = data or {}
+        state_key = (data.get("state_key") or "").strip()
+        if not state_key:
+            return {"success": False, "error": "state_key required"}
+        from modules.device_profiles import get_profile_store
+        ok = get_profile_store().remove_ieee_mapping(ieee, f"state:{state_key}")
+        return {"success": ok, "ieee": ieee, "state_key": state_key}

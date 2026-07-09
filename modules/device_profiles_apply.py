@@ -179,6 +179,24 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
         if mapping["name"] not in out:
             out[mapping["name"]] = value
 
+    # --- state-key mappings (learn-by-demonstration) -------------------
+    # These rename/transform an arbitrary state key by its literal name, so
+    # they cover Tuya datapoints (dp_16), Matter attributes and any derived
+    # key — not just ZCL cluster attributes. raw_key form: "state:<key>".
+    for raw_key, mapping in mappings.items():
+        if not isinstance(raw_key, str) or not raw_key.startswith("state:"):
+            continue
+        src_key = raw_key[len("state:"):]
+        if not src_key or src_key not in out:
+            continue
+        name = mapping.get("name") if isinstance(mapping, dict) else None
+        if not name or name in out:
+            continue
+        try:
+            out[name] = _apply_attr_transform(out[src_key], mapping)
+        except Exception as e:
+            logger.debug(f"[{ieee}] state transform failed for {raw_key}: {e}")
+
     return out
 
 

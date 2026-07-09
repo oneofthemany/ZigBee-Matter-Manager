@@ -190,6 +190,9 @@ class SignalInspector:
         self._active: set[str] = set()
         self._watch_all = False
         self._emitter: Optional[Callable[[str, dict], None]] = None
+        # Learn-by-demonstration baselines: ieee -> {key: (value, count)} + ts
+        self._baselines: Dict[str, Dict[str, tuple]] = {}
+        self._baseline_ts: Dict[str, float] = {}
 
     # ---- wiring -------------------------------------------------------
 
@@ -283,8 +286,74 @@ class SignalInspector:
 
     def clear(self, ieee: Any) -> None:
         """Drop all recorded signals for a device (fresh learn baseline)."""
+        ieee = str(ieee)
         with self._lock:
-            self._signals.pop(str(ieee), None)
+            self._signals.pop(ieee, None)
+            self._baselines.pop(ieee, None)
+            self._baseline_ts.pop(ieee, None)
+
+    # ---- learn-by-demonstration --------------------------------------
+
+    def mark_baseline(self, ieee: Any) -> int:
+        """Stamp the current (value, count) of every signal as the baseline.
+
+        The user then physically operates the device; :meth:`diff` reports
+        which signals moved. Returns the number of signals baselined.
+        """
+        ieee = str(ieee)
+        with self._lock:
+            dev = self._signals.get(ieee, {})
+            self._baselines[ieee] = {
+                k: (s.value, s.count) for k, s in dev.items()
+            }
+            self._baseline_ts[ieee] = time.time()
+            return len(self._baselines[ieee])
+
+    def has_baseline(self, ieee: Any) -> bool:
+        with self._lock:
+            return str(ieee) in self._baselines
+
+    def diff(self, ieee: Any) -> List[Dict[str, Any]]:
+        """Return signals that moved since the baseline, ranked by relevance.
+
+        change kinds:
+          * ``changed``  — value differs from baseline (strongest signal)
+          * ``new``      — signal first seen after the baseline was taken
+          * ``repeated`` — same value but reported again (e.g. a button that
+            always emits the same command; count increased)
+        """
+        ieee = str(ieee)
+        now = time.time()
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            base = self._baselines.get(ieee)
+            if base is None:
+                return []
+            base_ts = self._baseline_ts.get(ieee, now)
+            dev = self._signals.get(ieee, {})
+            for key, s in dev.items():
+                prev = base.get(key)
+                if prev is None:
+                    # Appeared only after the baseline.
+                    if s.first_seen >= base_ts:
+                        entry = s.to_dict(now)
+                        entry.update(change="new", baseline_value=None, delta_count=s.count)
+                        out.append(entry)
+                    continue
+                prev_val, prev_count = prev
+                if s.count <= prev_count:
+                    continue  # no new observations
+                entry = s.to_dict(now)
+                if s.value != prev_val:
+                    entry.update(change="changed")
+                else:
+                    entry.update(change="repeated")
+                entry.update(baseline_value=prev_val, delta_count=s.count - prev_count)
+                out.append(entry)
+
+        rank = {"changed": 0, "new": 1, "repeated": 2}
+        out.sort(key=lambda e: (rank.get(e["change"], 3), -e.get("delta_count", 0)))
+        return out
 
     # ---- read ---------------------------------------------------------
 
