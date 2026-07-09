@@ -97,6 +97,21 @@ class DeviceStateManagerMixin:
             data = self.capabilities.filter_state_update(data)
         if not data: return
 
+        # Universal signal capture — the semantic/derived layer. Catches Tuya
+        # datapoints (dp_N), Matter attributes and any friendly key a handler
+        # computes. The raw ZCL address layer is captured separately in the
+        # base handler. Never break the state path.
+        try:
+            from modules.signal_inspector import get_signal_inspector, SOURCE_DP, SOURCE_STATE
+            _si = get_signal_inspector()
+            for _k, _v in data.items():
+                if isinstance(_k, str) and _k.startswith('dp_') and _k[3:].isdigit():
+                    _si.record(self.ieee, SOURCE_DP, item=int(_k[3:]), name=_k, value=_v)
+                else:
+                    _si.record(self.ieee, SOURCE_STATE, name=_k, value=_v)
+        except Exception:
+            pass
+
         TEMP_ALIASES = ('local_temperature', 'internal_temperature', 'current_temperature')
         if 'temperature' not in data:
             for alias in TEMP_ALIASES:

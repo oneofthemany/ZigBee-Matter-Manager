@@ -77,3 +77,12 @@
 [data-theme="dark"] .tbl-sortable thead th:not([data-no-sort]):hover {
     background: var(--bg-surface-sunken, #1a1d2b);
 }
+
+/* ---- Signal Inspector: highlight a row that just updated ---- */
+@keyframes sig-pulse-kf {
+    0%   { background-color: rgba(74, 144, 226, 0.35); }
+    100% { background-color: transparent; }
+}
+.sig-pulse > td {
+    animation: sig-pulse-kf 1.2s ease-out;
+}

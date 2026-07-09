@@ -113,7 +113,7 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> Zones</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#topology"><i class="fas fa-network-wired"></i> Topology</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mqtt-explorer"><i class="fas fa-broadcast-tower"></i> MQTT Explorer</button></li>
-       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#debug"><i class="fas fa-terminal"></i> Debug Log</button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#debug"><i class="fas fa-terminal"></i> Debug</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> System Overview</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cog"></i> Settings</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#editor-tab"><i class="fas fa-code"></i> <span class="d-none d-md-inline">Editor</span></button></li>
@@ -1143,64 +1143,201 @@
 
         <!-- DEBUG TAB -->
         <div class="tab-pane fade" id="debug">
-            <div class="card shadow-sm h-100">
-                <div class="card-header bg-light py-2">
-                    <div class="row g-2 align-items-center">
-                        <div class="col-auto">
-                            <span class="fw-bold">Live Logs</span>
-                            <span id="debugStatusBadge" class="badge bg-secondary ms-2">Disabled</span>
-                        </div>
-                        <div class="col-auto ms-auto">
-                            <div class="btn-group btn-group-sm" role="group">
-                                <button id="debugEnableBtn" class="btn btn-success" onclick="toggleDebug(true)">
-                                    <i class="fas fa-bug"></i> Enable Debug
-                                </button>
-                                <button id="debugDisableBtn" class="btn btn-danger d-none" onclick="toggleDebug(false)">
-                                    <i class="fas fa-stop"></i> Disable Debug
-                                </button>
+            <ul class="nav nav-tabs mb-2" id="debugSubNav">
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#debugLogs"><i class="fas fa-terminal"></i> Logs</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#debugSignals"><i class="fas fa-wave-square"></i> Signal Inspector</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#debugPackets"><i class="fas fa-network-wired"></i> Packets</button></li>
+            </ul>
+            <div class="tab-content">
+
+                <!-- LOGS SUB-TAB -->
+                <div class="tab-pane fade show active" id="debugLogs">
+                    <div class="card shadow-sm h-100">
+                        <div class="card-header bg-light py-2">
+                            <div class="row g-2 align-items-center">
+                                <div class="col-auto">
+                                    <span class="fw-bold">Live Logs</span>
+                                    <span id="debugStatusBadge" class="badge bg-secondary ms-2">Disabled</span>
+                                </div>
+                                <div class="col-auto ms-auto">
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button id="debugEnableBtn" class="btn btn-success" onclick="toggleDebug(true)">
+                                            <i class="fas fa-bug"></i> Enable Debug
+                                        </button>
+                                        <button id="debugDisableBtn" class="btn btn-danger d-none" onclick="toggleDebug(false)">
+                                            <i class="fas fa-stop"></i> Disable Debug
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-auto">
+                                    <button id="verboseLogBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleVerboseLogging()">
+                                        <i class="fas fa-eye-slash"></i> Standard
+                                    </button>
+                                </div>
+                                <div class="col-auto">
+                                    <select id="logLevelFilter" class="form-select form-select-sm" onchange="filterLogs()">
+                                        <option value="ALL">All Levels</option>
+                                        <option value="INFO">Info & Above</option>
+                                        <option value="WARNING">Warning & Error</option>
+                                        <option value="DEBUG">Debug (All)</option>
+                                    </select>
+                                </div>
+                                <div class="col-auto">
+                                    <input type="text" id="logIeeeFilter" class="form-control form-control-sm" placeholder="Filter IEEE..." onkeyup="filterLogs()">
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="clearLogs()">
+                                        <i class="fas fa-trash"></i> Clear
+                                    </button>
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-sm btn-outline-primary" onclick="downloadDebugLog()">
+                                        <i class="fas fa-download"></i> Download
+                                    </button>
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="showConsoleLogSettings()" title="Choose which modules may write to the browser dev console">
+                                        <i class="fas fa-terminal"></i> Console
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                        <div class="col-auto">
-                            <button id="verboseLogBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleVerboseLogging()">
-                                <i class="fas fa-eye-slash"></i> Standard
-                            </button>
-                        </div>
-                        <div class="col-auto">
-                            <select id="logLevelFilter" class="form-select form-select-sm" onchange="filterLogs()">
-                                <option value="ALL">All Levels</option>
-                                <option value="INFO">Info & Above</option>
-                                <option value="WARNING">Warning & Error</option>
-                                <option value="DEBUG">Debug (All)</option>
-                            </select>
-                        </div>
-                        <div class="col-auto">
-                            <input type="text" id="logIeeeFilter" class="form-control form-control-sm" placeholder="Filter IEEE..." onkeyup="filterLogs()">
-                        </div>
-                        <div class="col-auto">
-                            <button class="btn btn-sm btn-outline-secondary" onclick="clearLogs()">
-                                <i class="fas fa-trash"></i> Clear
-                            </button>
-                        </div>
-                        <div class="col-auto">
-                            <button class="btn btn-sm btn-outline-info" onclick="viewDebugPackets()">
-                                <i class="fas fa-network-wired"></i> Packets
-                            </button>
-                        </div>
-                        <div class="col-auto">
-                            <button class="btn btn-sm btn-outline-primary" onclick="downloadDebugLog()">
-                                <i class="fas fa-download"></i> Download
-                            </button>
-                        </div>
-                        <div class="col-auto">
-                            <button class="btn btn-sm btn-outline-secondary" onclick="showConsoleLogSettings()" title="Choose which modules may write to the browser dev console">
-                                <i class="fas fa-terminal"></i> Console
-                            </button>
+                        <div class="card-body bg-dark p-0">
+                            <div id="logs" class="p-2 font-monospace small" style="height: 65vh;"></div>
                         </div>
                     </div>
                 </div>
-                <div class="card-body bg-dark p-0">
-                    <div id="logs" class="p-2 font-monospace small" style="height: 65vh;"></div>
+
+                <!-- SIGNAL INSPECTOR SUB-TAB -->
+                <div class="tab-pane fade" id="debugSignals">
+                    <div class="card shadow-sm">
+                        <div class="card-body">
+                            <div id="debug-signals-mount"></div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- PACKETS SUB-TAB -->
+                <div class="tab-pane fade" id="debugPackets">
+                    <div class="card shadow-sm">
+                        <div class="card-body">
+                            <div class="row mb-3 g-2">
+                                <div class="col-md-2">
+                                    <select id="packetImportanceFilter" class="form-select form-select-sm">
+                                        <option value="">All Importance</option>
+                                        <option value="critical">Critical</option>
+                                        <option value="high">High</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="normal">Normal</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <select id="packetDirectionFilter" class="form-select form-select-sm">
+                                        <option value="">All Directions</option>
+                                        <option value="RX">RX (inbound)</option>
+                                        <option value="TX">TX (outbound)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <select id="packetIeeeFilter" class="form-select form-select-sm">
+                                        <option value="">All Devices</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="text" id="packetClusterFilter" class="form-control form-control-sm" placeholder="Cluster ID (e.g. 0x0406)">
+                                </div>
+                                <div class="col-md-1">
+                                    <select id="packetLimitFilter" class="form-select form-select-sm" title="Max packets to fetch (ring buffer holds last 1000)">
+                                        <option value="100">100</option>
+                                        <option value="250">250</option>
+                                        <option value="500">500</option>
+                                        <option value="1000">1000</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="btn-group w-100">
+                                        <button class="btn btn-sm btn-primary" onclick="refreshDebugPackets()">
+                                            <i class="fas fa-sync"></i> Refresh
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-success" onclick="exportDebugPackets()" title="Export filtered packets to JSON">
+                                            <i class="fas fa-download"></i> Export
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Packet Flow Live Panel -->
+                            <div class="card mb-2 bg-body-tertiary border-0">
+                                <div class="card-body py-2 px-3">
+                                    <div class="row g-2 align-items-center">
+                                        <div class="col-md-5">
+                                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                                <small class="text-muted text-uppercase fw-bold">Live Flow</small>
+                                                <span id="flowGlobalRate"><span class="text-muted small">—</span></span>
+                                                <span id="flowPeakLine" class="ms-2"></span>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div id="flowSparkline" style="min-height:30px;"></div>
+                                        </div>
+                                        <div class="col-md-4 text-end">
+                                            <div id="flowAnomalies"><span class="badge bg-secondary">—</span></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Statistical summary (last hour) -->
+                                    <hr class="my-2 opacity-25">
+                                    <div id="flowStatsSummary" class="small">
+                                        <span class="text-muted">Stats loading…</span>
+                                    </div>
+
+                                    <!-- Peak history (top 5 of the last hour) -->
+                                    <div class="row g-2 mt-1">
+                                        <div class="col-12">
+                                            <details>
+                                                <summary class="text-muted small text-uppercase fw-bold"
+                                                         style="cursor:pointer;">
+                                                    <i class="fas fa-history"></i>
+                                                    Peak history
+                                                </summary>
+                                                <div id="flowPeakHistory" class="mt-1"></div>
+                                            </details>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="accordion mb-2" id="flowDetailsAccordion">
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed py-1 px-2 small" type="button"
+                                                data-bs-toggle="collapse" data-bs-target="#flowDetailsCollapse">
+                                            Top Talkers &amp; Clusters
+                                        </button>
+                                    </h2>
+                                    <div id="flowDetailsCollapse" class="accordion-collapse collapse">
+                                        <div class="accordion-body p-2">
+                                            <div class="row g-3">
+                                                <div class="col-md-6">
+                                                    <div class="small fw-bold mb-1 text-muted">Top Talkers</div>
+                                                    <div id="flowTopTalkers"></div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="small fw-bold mb-1 text-muted">Clusters</div>
+                                                    <div id="flowClusters"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="debugPacketsContent" style="max-height: 60vh; overflow-y: auto;">
+                                <div class="text-center p-4"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -1270,134 +1407,6 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Debug Packets Modal -->
-<div class="modal fade" id="debugPacketsModal" tabindex="-1">
-    <div class="modal-dialog modal-xl">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title"><i class="fas fa-network-wired"></i> Debug Packets</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row mb-3 g-2">
-                    <div class="col-md-2">
-                        <select id="packetImportanceFilter" class="form-select form-select-sm">
-                            <option value="">All Importance</option>
-                            <option value="critical">Critical</option>
-                            <option value="high">High</option>
-                            <option value="medium">Medium</option>
-                            <option value="normal">Normal</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2">
-                        <select id="packetDirectionFilter" class="form-select form-select-sm">
-                            <option value="">All Directions</option>
-                            <option value="RX">RX (inbound)</option>
-                            <option value="TX">TX (outbound)</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2">
-                        <select id="packetIeeeFilter" class="form-select form-select-sm">
-                            <option value="">All Devices</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2">
-                        <input type="text" id="packetClusterFilter" class="form-control form-control-sm" placeholder="Cluster ID (e.g. 0x0406)">
-                    </div>
-                    <div class="col-md-1">
-                        <select id="packetLimitFilter" class="form-select form-select-sm" title="Max packets to fetch (ring buffer holds last 1000)">
-                            <option value="100">100</option>
-                            <option value="250">250</option>
-                            <option value="500">500</option>
-                            <option value="1000">1000</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="btn-group w-100">
-                            <button class="btn btn-sm btn-primary" onclick="refreshDebugPackets()">
-                                <i class="fas fa-sync"></i> Refresh
-                            </button>
-                            <button class="btn btn-sm btn-outline-success" onclick="exportDebugPackets()" title="Export filtered packets to JSON">
-                                <i class="fas fa-download"></i> Export
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                <!-- Packet Flow Live Panel -->
-                <div class="card mb-2 bg-body-tertiary border-0">
-                    <div class="card-body py-2 px-3">
-                        <div class="row g-2 align-items-center">
-                            <div class="col-md-5">
-                                <div class="d-flex align-items-center gap-2 flex-wrap">
-                                    <small class="text-muted text-uppercase fw-bold">Live Flow</small>
-                                    <span id="flowGlobalRate"><span class="text-muted small">—</span></span>
-                                    <span id="flowPeakLine" class="ms-2"></span>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div id="flowSparkline" style="min-height:30px;"></div>
-                            </div>
-                            <div class="col-md-4 text-end">
-                                <div id="flowAnomalies"><span class="badge bg-secondary">—</span></div>
-                            </div>
-                        </div>
-
-                        <!-- Statistical summary (last hour) -->
-                        <hr class="my-2 opacity-25">
-                        <div id="flowStatsSummary" class="small">
-                            <span class="text-muted">Stats loading…</span>
-                        </div>
-
-                        <!-- Peak history (top 5 of the last hour) -->
-                        <div class="row g-2 mt-1">
-                            <div class="col-12">
-                                <details>
-                                    <summary class="text-muted small text-uppercase fw-bold"
-                                             style="cursor:pointer;">
-                                        <i class="fas fa-history"></i>
-                                        Peak history
-                                    </summary>
-                                    <div id="flowPeakHistory" class="mt-1"></div>
-                                </details>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="accordion mb-2" id="flowDetailsAccordion">
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed py-1 px-2 small" type="button"
-                                    data-bs-toggle="collapse" data-bs-target="#flowDetailsCollapse">
-                                Top Talkers &amp; Clusters
-                            </button>
-                        </h2>
-                        <div id="flowDetailsCollapse" class="accordion-collapse collapse">
-                            <div class="accordion-body p-2">
-                                <div class="row g-3">
-                                    <div class="col-md-6">
-                                        <div class="small fw-bold mb-1 text-muted">Top Talkers</div>
-                                        <div id="flowTopTalkers"></div>
-                                    </div>
-                                    <div class="col-md-6">
-                                        <div class="small fw-bold mb-1 text-muted">Clusters</div>
-                                        <div id="flowClusters"></div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="debugPacketsContent" style="max-height: 60vh; overflow-y: auto;">
-                    <div class="text-center p-4"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
-                </div>
-
             </div>
         </div>
     </div>

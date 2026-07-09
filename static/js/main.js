@@ -78,6 +78,7 @@ import {
     showConsoleLogSettings
 } from './logging.js';
 import { initPacketFlow } from './packet-flow.js';
+import { createSignalInspector } from './modal/signals.js';
 import {
     loadConfigYaml,
     saveConfigYaml,
@@ -382,6 +383,40 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             mqttTabTrigger.addEventListener('hidden.bs.tab', () => {
                 stopMQTTStats();
+            });
+        }
+
+        // ── Debug tab: sub-tabs (Logs / Signal Inspector / Packets) ──
+        // Parent-tab relay: Bootstrap only fires shown.bs.tab on the button
+        // that was activated, so the already-active sub-tab never gets its
+        // event when the parent Debug tab is re-shown. Re-dispatch on it.
+        const debugTab = document.querySelector('[data-bs-target="#debug"]');
+        if (debugTab) {
+            debugTab.addEventListener('shown.bs.tab', () => {
+                const active = document.querySelector('#debugSubNav .nav-link.active');
+                if (active) active.dispatchEvent(new Event('shown.bs.tab'));
+            });
+        }
+
+        // Signal Inspector sub-tab — mount on show (device picker), destroy on hide.
+        const debugSignalsTab = document.querySelector('[data-bs-target="#debugSignals"]');
+        if (debugSignalsTab) {
+            debugSignalsTab.addEventListener('shown.bs.tab', () => {
+                const mount = document.getElementById('debug-signals-mount');
+                if (!mount) return;
+                if (window._debugInspector) window._debugInspector.destroy();
+                window._debugInspector = createSignalInspector(mount, { ieee: null, showPicker: true });
+            });
+            debugSignalsTab.addEventListener('hidden.bs.tab', () => {
+                if (window._debugInspector) { window._debugInspector.destroy(); window._debugInspector = null; }
+            });
+        }
+
+        // Packets sub-tab — populate + refresh the (now inline) packet view.
+        const debugPacketsTab = document.querySelector('[data-bs-target="#debugPackets"]');
+        if (debugPacketsTab) {
+            debugPacketsTab.addEventListener('shown.bs.tab', () => {
+                try { viewDebugPackets(); } catch (e) { /* ignore */ }
             });
         }
 

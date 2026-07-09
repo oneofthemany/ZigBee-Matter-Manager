@@ -34,29 +34,23 @@ function ensureDebugStyles() {
     _debugStylesInjected = true;
 
     const css = `
-        /* Widen the debug packets modal so the side-by-side decoded / raw view
-           has room to breathe on desktop. Falls back to default on small screens. */
-        @media (min-width: 992px) {
-            #debugPacketsModal .modal-dialog {
-                max-width: 95vw;
-            }
-        }
-        #debugPacketsModal .packet-detail-cell {
+        /* Packet detail styling for the Debug ▸ Packets sub-tab. */
+        #debugPackets .packet-detail-cell {
             background-color: #212529 !important;
             color: #f8f9fa !important;
         }
-        #debugPacketsModal .packet-detail-grid {
+        #debugPackets .packet-detail-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
             align-items: start;
         }
         @media (max-width: 991.98px) {
-            #debugPacketsModal .packet-detail-grid {
+            #debugPackets .packet-detail-grid {
                 grid-template-columns: 1fr;
             }
         }
-        #debugPacketsModal .packet-detail-grid .panel-title {
+        #debugPackets .packet-detail-grid .panel-title {
             font-weight: 600;
             color: #ffd966;
             margin-bottom: 0.5rem;
@@ -65,7 +59,7 @@ function ensureDebugStyles() {
             letter-spacing: 0.02em;
             text-transform: uppercase;
         }
-        #debugPacketsModal .packet-detail-grid pre.raw-json {
+        #debugPackets .packet-detail-grid pre.raw-json {
             background: #0d0d0d;
             color: #d4d4d4;
             padding: 0.5rem;
@@ -482,6 +476,8 @@ export function populateIeeeFilterDropdown() {
 // already open.
 window.populateIeeeFilterDropdown = populateIeeeFilterDropdown;
 
+// Initialise the Debug ▸ Packets sub-tab. Formerly opened a modal; the packet
+// UI now lives inline in the sub-tab, so this just populates + refreshes it.
 export async function viewDebugPackets() {
     ensureDebugStyles();
     populateIeeeFilterDropdown();
@@ -495,11 +491,9 @@ export async function viewDebugPackets() {
         sel.dataset.changeWired = '1';
     }
 
-    const modal = new bootstrap.Modal(document.getElementById('debugPacketsModal'));
-    modal.show();
     // Kick off the packet-flow panel — pulls a one-shot snapshot so the
-    // bar at the top of the modal is populated immediately, then live
-    // updates take over via the `packet_flow` WS message handler.
+    // live-flow bar is populated immediately, then live updates take over
+    // via the `packet_flow` WS message handler.
     try { initPacketFlow(); } catch (e) { log.debug('initPacketFlow failed', e); }
     // Ensure refresh is called to fetch the full data history
     await refreshDebugPackets();

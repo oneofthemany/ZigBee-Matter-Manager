@@ -11,7 +11,7 @@ import { updatePairingUI, checkPairingStatus } from './actions.js';
 import { handleMQTTMessage } from './mqtt-explorer.js';
 import { handleOTAProgress } from './modal/ota.js';
 import { hideTestRecoveryBanner } from './editor.js'
-import { applyInterviewStatusUpdate } from './device-modal.js';
+import { applyInterviewStatusUpdate, handleSignalUpdate } from './device-modal.js';
 import { applyPollResult } from './modal/device-settings.js';
 import { updateInterviewBadge } from './interview-status-badge.js';
 import { onDeviceJoined, onInterviewStatusUpdate, onJoinProgress } from './join-progress.js';
@@ -148,6 +148,10 @@ export function initWS() {
 
                 case "join_progress":
                     try { onJoinProgress(msg.payload || msg.data); } catch(e) {}
+                    break;
+
+                case "signal_inspector_update":
+                    try { handleSignalUpdate(msg.payload || msg.data); } catch(e) {}
                     break;
 
                 case "poll_result":

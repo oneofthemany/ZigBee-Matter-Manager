@@ -189,6 +189,7 @@ try:
         register_media_routes,
         register_api_docs_routes,
         register_alert_routes,
+        register_signal_routes,
         manager, broadcast_event,
     )
 
@@ -279,6 +280,14 @@ zigbee_service = ZigbeeService(
     config=CONFIG.get('zigbee', {}),
     event_callback=_zigbee_event_callback
 )
+
+# Wire the Signal Inspector's live stream to the service's sync emitter so
+# active inspections push `signal_inspector_update` events over the WebSocket.
+try:
+    from modules.signal_inspector import get_signal_inspector
+    get_signal_inspector().set_emitter(zigbee_service._emit_sync)
+except Exception as _e:
+    logging.getLogger("main").warning(f"Signal inspector emitter wiring failed: {_e}")
 
 weather_service = WeatherService(
     config=CONFIG.get("weather", {}),
@@ -897,6 +906,7 @@ async def manifest():
 
 register_config_routes(app, get_zigbee_service)
 register_device_routes(app, get_zigbee_service, get_matter_bridge)
+register_signal_routes(app, get_zigbee_service)
 register_profile_routes(app)
 register_editor_routes(app, get_zigbee_service)
 register_network_routes(app, get_zigbee_service)

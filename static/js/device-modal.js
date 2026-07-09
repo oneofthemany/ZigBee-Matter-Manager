@@ -14,6 +14,13 @@ import { renderProfileTab, initProfileTab, hasUnmappedKeys } from './modal/profi
 import { bindScheduleEvents } from './modal/schedule.js';
 import { renderOTATab, handleOTAProgress } from './modal/ota.js';
 import { renderHistoryTab, initHistoryTab } from './modal/history.js';
+import { createSignalInspector, handleSignalUpdate } from './modal/signals.js';
+
+// The Signal Inspector instance mounted in the currently-open device modal.
+let _modalInspector = null;
+function _destroyModalInspector() {
+    if (_modalInspector) { _modalInspector.destroy(); _modalInspector = null; }
+}
 import { renderMatterClustersTab, initMatterClustersTab } from './modal/matter-clusters.js';
 import { renderMatterEventsTab } from './modal/matter-events.js';
 import { renderMatterEndpointsTab, initMatterEndpointsTab } from './modal/matter-endpoints.js';
@@ -27,6 +34,7 @@ import {
 
 // Re-export these functions so main.js (and others) can still import them from here
 export { renderOverviewTab, renderControlTab, renderBindingTab, renderCapsTab, renderAutomationTab, renderProfileTab, saveConfig, handleOTAProgress, renderSettingsTab, applyInterviewStatusUpdate };
+export { handleSignalUpdate };
 export async function openDeviceModal(d) {
     // Refresh heating-controller managed set so the Control tab can disable
     // direct heating controls for managed devices. Non-blocking failure.
@@ -61,6 +69,7 @@ export async function openDeviceModal(d) {
             <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview">Overview</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-control">Control</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-history">History</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-signals">Signals</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ota"></i>OTA</button></li>
             ${isZigbee ? '<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-binding">Binding</button></li>' : ''}
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-caps">Clusters</button></li>
@@ -80,6 +89,9 @@ export async function openDeviceModal(d) {
             </div>
             <div class="tab-pane fade" id="tab-history">
                 ${renderHistoryTab(cachedDev)}
+            </div>
+            <div class="tab-pane fade" id="tab-signals">
+                <div id="modal-signals-mount"></div>
             </div>
             <div class="tab-pane fade" id="tab-ota">
                 ${renderOTATab(cachedDev)}
@@ -161,8 +173,26 @@ export async function openDeviceModal(d) {
             initHistoryTab(cachedDev.ieee);
         });
     }
+
+    // Signal inspector: mount (pinned to this device, no picker) when shown,
+    // tear down when leaving the tab or closing the modal so idle devices
+    // never stream.
+    const sigTab = modalBody.querySelector('[data-bs-target="#tab-signals"]');
+    if (sigTab) {
+        sigTab.addEventListener('shown.bs.tab', () => {
+            const mount = document.getElementById('modal-signals-mount');
+            if (!mount) return;
+            _destroyModalInspector();
+            _modalInspector = createSignalInspector(mount, { ieee: cachedDev.ieee, showPicker: false });
+        });
+        sigTab.addEventListener('hidden.bs.tab', () => _destroyModalInspector());
+    }
+
     const modalEl = document.getElementById('capModal');
-    if (modalEl) new bootstrap.Modal(modalEl).show();
+    if (modalEl) {
+        modalEl.addEventListener('hidden.bs.modal', () => _destroyModalInspector(), { once: true });
+        new bootstrap.Modal(modalEl).show();
+    }
 
     const profTab = modalBody.querySelector('[data-bs-target="#tab-profile"]');
     if (profTab) {

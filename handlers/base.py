@@ -145,6 +145,19 @@ class ClusterHandler:
                 f"[{self.device.ieee}] Parsed: 0x{attrid:04X} = {value} -> {attr_name}={formatted_value}"
             )
 
+            # Universal signal capture — raw ZCL address layer. Never break
+            # the handler path.
+            try:
+                from modules.signal_inspector import get_signal_inspector, SOURCE_ZCL_ATTR
+                get_signal_inspector().record(
+                    self.device.ieee, SOURCE_ZCL_ATTR,
+                    endpoint=self.endpoint.endpoint_id,
+                    cluster=self.cluster_id, item=attrid,
+                    name=attr_name, value=formatted_value,
+                )
+            except Exception:
+                pass
+
             # Update device state, passing endpoint_id for smart duplicate detection
             self.device.update_state(
                 {attr_name: formatted_value},
@@ -190,6 +203,27 @@ class ClusterHandler:
                 args=args,
                 handler_name=self.__class__.__name__
             )
+
+        # Universal signal capture — cluster commands (button presses, scene
+        # recalls, Tuya DP reports, …). Resolve a name from the cluster spec
+        # when zigpy knows it. Never break the handler path.
+        try:
+            from modules.signal_inspector import get_signal_inspector, SOURCE_ZCL_CMD
+            cmd_name = None
+            try:
+                cmd_def = (getattr(self.cluster, "server_commands", {}) or {}).get(command_id)
+                cmd_name = getattr(cmd_def, "name", None) if cmd_def is not None else None
+            except Exception:
+                cmd_name = None
+            get_signal_inspector().record(
+                self.device.ieee, SOURCE_ZCL_CMD,
+                endpoint=self.endpoint.endpoint_id,
+                cluster=self.cluster_id, item=command_id,
+                name=cmd_name or f"cmd_0x{command_id:02X}",
+                value=args,
+            )
+        except Exception:
+            pass
 
     def general_command(self, hdr, args):
         """Called by zigpy for general ZCL commands."""
