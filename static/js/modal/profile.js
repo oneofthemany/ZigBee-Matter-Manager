@@ -1,16 +1,16 @@
 /**
  * Device Profile Tab
  * ------------------
- * Replaces the old Mappings tab. Provides three sub-views:
+ * The single per-device mapping + profile surface. Three sub-views:
  *
  *   1. DISCOVER — full-spectrum live cluster introspection. Shows the
  *      device's endpoints / clusters / attributes / commands with
  *      readable/writable/reportable badges, and per-attribute live values.
  *
- *   2. MAP     — for each raw attribute the device is reporting, an inline
- *      editor: friendly name, scale, unit, device class, invert flag,
- *      value map. Mappings save to the IEEE override; "Promote" copies
- *      them into a model-level profile.
+ *   2. SIGNALS  — the Signal Inspector component (see modal/signals.js):
+ *      live raw signals, learn-by-demonstration mapping (values incl. Tuya
+ *      datapoints, command→action), the mapped-signals manager and
+ *      "promote to model profile". This replaced the old "Map" sub-view.
  *
  *   3. ASSEMBLE — pick a device type, capabilities, actions, reporting.
  *      Save as a profile that auto-applies to any device of this model.
@@ -22,15 +22,22 @@
  */
 
 import { state } from '../state.js';
+import { createSignalInspector } from './signals.js';
 
 // ---------------------------------------------------------------------------
 // Module-level cache for the currently-open device
 // ---------------------------------------------------------------------------
 
-let _data = null;          // last response from /api/profiles/device/{ieee}
-let _draft = null;         // profile draft being edited in Assemble view
-let _activeSubview = 'map'; // 'discover' | 'map' | 'assemble'
-let _deviceTypes = null;   // cached /api/profiles/device_types result
+let _data = null;               // last response from /api/profiles/device/{ieee}
+let _draft = null;              // profile draft being edited in Assemble view
+let _activeSubview = 'signals'; // 'discover' | 'signals' | 'assemble'
+let _deviceTypes = null;        // cached /api/profiles/device_types result
+let _inspector = null;          // Signal Inspector instance mounted in Signals subview
+
+/** Tear down the mounted Signal Inspector (stops its live stream). */
+export function cleanupProfileInspector() {
+    if (_inspector) { _inspector.destroy(); _inspector = null; }
+}
 
 // ---------------------------------------------------------------------------
 // Render entry points (called from device-modal.js)
@@ -68,15 +75,6 @@ export async function initProfileTab(ieee) {
     } catch (e) {
         root.innerHTML = `<div class="alert alert-danger">Error: ${_esc(e.message)}</div>`;
     }
-}
-
-/**
- * Are there any cluster_* keys in the device state that aren't mapped?
- * Used by device-modal to decide whether to show a "needs attention" dot.
- */
-export function hasUnmappedKeys(device) {
-    if (!device?.state) return false;
-    return Object.keys(device.state).some(k => k.startsWith('cluster_'));
 }
 
 // ---------------------------------------------------------------------------
@@ -134,12 +132,15 @@ function _render(root, ieee) {
 
         <ul class="nav nav-pills nav-justified mb-3" id="profileSubNav" role="tablist">
             <li class="nav-item"><button class="nav-link ${_activeSubview === 'discover' ? 'active' : ''}" data-sub="discover"><i class="fas fa-search"></i> Discover</button></li>
-            <li class="nav-item"><button class="nav-link ${_activeSubview === 'map' ? 'active' : ''}"      data-sub="map"><i class="fas fa-tags"></i> Map</button></li>
+            <li class="nav-item"><button class="nav-link ${_activeSubview === 'signals' ? 'active' : ''}"  data-sub="signals"><i class="fas fa-wave-square"></i> Signals</button></li>
             <li class="nav-item"><button class="nav-link ${_activeSubview === 'assemble' ? 'active' : ''}" data-sub="assemble"><i class="fas fa-cube"></i> Assemble</button></li>
         </ul>
 
         <div id="profileSubBody"></div>
     `;
+
+    // Any re-render rebuilds #profileSubBody, so drop a mounted inspector first.
+    cleanupProfileInspector();
 
     root.querySelectorAll('#profileSubNav button').forEach(btn => {
         btn.onclick = () => {
@@ -150,8 +151,21 @@ function _render(root, ieee) {
 
     const body = root.querySelector('#profileSubBody');
     if (_activeSubview === 'discover') _renderDiscover(body, ieee);
-    if (_activeSubview === 'map')      _renderMap(body, ieee);
+    if (_activeSubview === 'signals')  _renderSignals(body, ieee);
     if (_activeSubview === 'assemble') _renderAssemble(body, ieee);
+}
+
+// ===========================================================================
+// SUBVIEW: SIGNALS — the unified live-signal + learn + mapped surface.
+// Replaces the old "Map" subview; the Signal Inspector component does all
+// per-device mapping (values, Tuya DPs, command→action, promote to profile).
+// ===========================================================================
+
+function _renderSignals(container, ieee) {
+    container.innerHTML = '<div class="signal-inspector-mount"></div>';
+    const mount = container.querySelector('.signal-inspector-mount');
+    cleanupProfileInspector();
+    _inspector = createSignalInspector(mount, { ieee, showPicker: false });
 }
 
 // ===========================================================================
@@ -325,267 +339,6 @@ function _renderIntrospectErrors(errors) {
     `;
 }
 
-// ===========================================================================
-// SUBVIEW 2: MAP
-// ===========================================================================
-
-function _renderMap(container, ieee) {
-    const mappings = _data.ieee_mappings || {};
-    const unmapped = _data.unmapped_keys || [];
-    const rawState = _data.raw_state || {};
-
-    let html = `<div class="small text-muted mb-2">Map raw cluster attributes to friendly names. Changes save instantly and apply to this device only. Use "Promote to profile" below to make them apply to every device of this model.</div>`;
-
-    // ── Active mappings ──
-    const mapped = Object.keys(mappings);
-    if (mapped.length) {
-        html += `
-            <div class="card mb-3">
-                <div class="card-header bg-light d-flex justify-content-between">
-                    <span><i class="fas fa-tags"></i> <strong>Mapped (${mapped.length})</strong></span>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0 tbl">
-                        <thead><tr><th>Raw key</th><th>Name</th><th>Scale</th><th>Unit</th><th>Class</th><th>Inv</th><th></th></tr></thead>
-                        <tbody>
-                            ${mapped.map(k => _renderMappedRow(k, mappings[k], ieee)).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        `;
-    }
-
-    // ── Unmapped ──
-    if (unmapped.length) {
-        html += `
-            <div class="card mb-3">
-                <div class="card-header bg-light"><i class="fas fa-question-circle"></i> <strong>Unmapped raw keys (${unmapped.length})</strong></div>
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0 tbl">
-                        <thead><tr><th>Raw key</th><th>Name</th><th>Current value</th><th class="text-end"></th></tr></thead>
-                        <tbody>
-                            ${unmapped.map(k => {
-                                const friendly = (_data.friendly_labels || {})[k] || '';
-                                return `
-                                    <tr>
-                                        <td><code>${_esc(k)}</code></td>
-                                        <td><strong>${_esc(friendly)}</strong></td>
-                                        <td><small><code>${_esc(_fmtVal(rawState[k]))}</code></small></td>
-                                        <td class="text-end">
-                                            <button class="btn btn-sm btn-outline-primary"
-                                                    onclick="window._profileOpenMapDialog('${ieee}','${k}')">
-                                                <i class="fas fa-plus"></i> Map
-                                            </button>
-                                        </td>
-                                    </tr>
-                                `;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        `;
-    } else if (!mapped.length) {
-        html += `<div class="alert alert-info">Nothing to map — this device has no raw <code>cluster_*</code> keys yet. Trigger it (open a contact, press a button, etc.) and re-open this tab.</div>`;
-    }
-
-    // ── Promote button ──
-    if (mapped.length) {
-        html += `
-            <div class="d-grid gap-2 d-md-flex justify-content-md-end">
-                <button class="btn btn-success" onclick="window._profilePromoteToModel('${ieee}')">
-                    <i class="fas fa-cube"></i> Promote to model profile
-                </button>
-            </div>
-        `;
-    }
-
-    container.innerHTML = html;
-}
-
-function _renderMappedRow(rawKey, mapping, ieee) {
-    const m = typeof mapping === 'string' ? { name: mapping } : (mapping || {});
-    const friendly = (_data.friendly_labels || {})[rawKey] || '';
-    return `
-        <tr>
-            <td>
-                <code>${_esc(rawKey)}</code>
-                ${friendly ? `<br><small class="text-muted">${_esc(friendly)}</small>` : ''}
-            </td>
-            <td><strong>${_esc(m.name || '')}</strong></td>
-            <td>${m.scale || ''}</td>
-            <td>${_esc(m.unit || '')}</td>
-            <td>${_esc(m.device_class || '')}</td>
-            <td>${m.invert ? '<i class="fas fa-check text-success"></i>' : ''}</td>
-            <td class="text-end">
-                <button class="btn btn-sm btn-outline-secondary" onclick="window._profileOpenMapDialog('${ieee}','${rawKey}', true)">
-                    <i class="fas fa-pen"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-danger" onclick="window._profileRemoveMap('${ieee}','${rawKey}')">
-                    <i class="fas fa-times"></i>
-                </button>
-            </td>
-        </tr>
-    `;
-}
-
-// ── Map dialog (single attribute) ────────────────────────────────────────────
-
-window._profileOpenMapDialog = function(ieee, rawKey, editing) {
-    const existing = (_data.ieee_mappings || {})[rawKey] || {};
-    const m = typeof existing === 'string' ? { name: existing } : existing;
-
-    // Suggest a name based on raw key heuristics
-    const suggestion = _suggestName(rawKey);
-
-    let modal = document.getElementById('profileMapDialog');
-    if (!modal) {
-        const wrap = document.createElement('div');
-        wrap.innerHTML = `
-            <div class="modal fade" id="profileMapDialog" tabindex="-1">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <div class="modal-header"><h5 class="modal-title">Map attribute</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-                        <div class="modal-body"></div>
-                        <div class="modal-footer">
-                            <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                            <button class="btn btn-primary" id="profileMapSave">Save</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(wrap);
-        modal = document.getElementById('profileMapDialog');
-    }
-    modal.querySelector('.modal-body').innerHTML = `
-        <div class="mb-2"><small class="text-muted">Raw key:</small> <code>${_esc(rawKey)}</code></div>
-        <div class="mb-2">
-            <label class="form-label small">Friendly name</label>
-            <input type="text" class="form-control form-control-sm" id="pmapName" value="${_esc(m.name || suggestion)}" placeholder="e.g. temperature, contact, battery_remaining">
-        </div>
-        <div class="row g-2">
-            <div class="col-4">
-                <label class="form-label small">Scale (÷)</label>
-                <input type="number" step="any" class="form-control form-control-sm" id="pmapScale" value="${m.scale ?? ''}" placeholder="1">
-            </div>
-            <div class="col-4">
-                <label class="form-label small">Unit</label>
-                <input type="text" class="form-control form-control-sm" id="pmapUnit" value="${_esc(m.unit || '')}" placeholder="°C, %, V…">
-            </div>
-            <div class="col-4">
-                <label class="form-label small">Device class</label>
-                <input type="text" class="form-control form-control-sm" id="pmapClass" value="${_esc(m.device_class || '')}" placeholder="door, temperature…">
-            </div>
-        </div>
-        <div class="form-check form-switch mt-2">
-            <input class="form-check-input" type="checkbox" id="pmapInvert" ${m.invert ? 'checked' : ''}>
-            <label class="form-check-label small" for="pmapInvert">Invert value (for booleans that report "0 = open")</label>
-        </div>
-    `;
-    modal.querySelector('#profileMapSave').onclick = async () => {
-        const body = {
-            ieee,
-            raw_key:       rawKey,
-            friendly_name: modal.querySelector('#pmapName').value.trim(),
-            scale:         parseFloat(modal.querySelector('#pmapScale').value) || 1,
-            unit:          modal.querySelector('#pmapUnit').value.trim(),
-            device_class:  modal.querySelector('#pmapClass').value.trim(),
-            invert:        modal.querySelector('#pmapInvert').checked,
-        };
-        if (!body.friendly_name) { window.toast.warning('Friendly name required'); return; }
-        try {
-            const r = await fetch('/api/profiles/ieee_mapping', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            const d = await r.json();
-            if (d.success) {
-                bootstrap.Modal.getInstance(modal)?.hide();
-                await initProfileTab(ieee);
-            } else {
-                window.toast.error(d.error || 'Save failed');
-            }
-        } catch (e) { window.toast.error(e.message); }
-    };
-    new bootstrap.Modal(modal).show();
-};
-
-window._profileRemoveMap = async function(ieee, rawKey) {
-    if (!await window.zbmConfirm({
-        title: 'Remove mapping',
-        message: `Remove mapping for ${rawKey}?`,
-        confirmText: 'Remove',
-        variant: 'danger'
-    })) return;
-    const r = await fetch('/api/profiles/ieee_mapping', {
-        method:  'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ ieee, raw_key: rawKey }),
-    });
-    const d = await r.json();
-    if (d.success) await initProfileTab(ieee);
-    else window.toast.error(d.error || 'Failed');
-};
-
-// ── Promote IEEE mappings to a model profile ────────────────────────────────
-
-window._profilePromoteToModel = async function(ieee) {
-    const ident = _data.identity || {};
-    if (!ident.model && !ident.product_id) {
-        window.toast.warning('Device has no model identifier — cannot create a profile.');
-        return;
-    }
-    if (!await window.zbmConfirm({
-        title: 'Create model profile',
-        message: `Create a model profile for "${ident.model || ident.product_id}"?`,
-        detail: 'All matching devices will automatically use these mappings.',
-        confirmText: 'Create'
-    })) return;
-
-    // Build a fresh profile draft from the current IEEE mappings
-    const ieee_mappings = _data.ieee_mappings || {};
-    const endpoints = { '1': { clusters: {}, role: 'primary' } };
-    for (const [rawKey, mapping] of Object.entries(ieee_mappings)) {
-        const m = rawKey.match(/cluster_([0-9a-f]+)_attr_([0-9a-f]+)/);
-        if (!m) continue;
-        const clusterHex = `0x${m[1].toUpperCase()}`;
-        const attrHex    = `0x${m[2].toUpperCase()}`;
-        const cl = endpoints['1'].clusters[clusterHex] ||= { attributes: {} };
-        cl.attributes[attrHex] = (typeof mapping === 'string') ? { name: mapping } : mapping;
-    }
-
-    const profile = {
-        id:          _slug(ident.model || ident.product_id),
-        protocol:    ident.protocol || 'zigbee',
-        match: {
-            model:        ident.model || '',
-            manufacturer: ident.manufacturer || '',
-            vendor_id:    ident.vendor_id || null,
-            product_id:   ident.product_id || null,
-        },
-        device_type:  'generic',
-        endpoints,
-    };
-
-    try {
-        const r = await fetch('/api/profiles', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(profile),
-        });
-        const d = await r.json();
-        if (!d.success) { window.toast.error(d.error || 'Save failed'); return; }
-        // Apply immediately
-        await fetch(`/api/profiles/apply/${encodeURIComponent(ieee)}`, { method: 'POST' });
-        await initProfileTab(ieee);
-        // Jump to Assemble so the user can refine the new profile
-        _activeSubview = 'assemble';
-        _render(document.getElementById('profileTabContent'), ieee);
-    } catch (e) { window.toast.error(e.message); }
-};
 
 // ===========================================================================
 // SUBVIEW 3: ASSEMBLE
@@ -943,24 +696,3 @@ function _slug(s) {
     return String(s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-function _suggestName(rawKey) {
-    const friendly = (_data.friendly_labels || {})[rawKey] || '';
-    // Friendly is "Cluster Name · attribute_name" — slugify the attr part
-    const parts = friendly.split('·');
-    if (parts.length === 2) {
-        const slug = _slug(parts[1].trim());
-        if (slug) return slug;
-    }
-    // Legacy fallback
-    const m = rawKey.match(/cluster_([0-9a-f]+)_attr_([0-9a-f]+)/);
-    if (!m) return '';
-    const cid = parseInt(m[1], 16);
-    const aid = parseInt(m[2], 16);
-    const t = {
-        '1024_0': 'illuminance', '1026_0': 'temperature', '1029_0': 'humidity',
-        '1030_0': 'occupancy',   '1280_0': 'contact',
-        '1_32':   'battery_voltage', '1_33': 'battery_remaining',
-        '6_0':    'state',           '8_0':  'brightness',
-    };
-    return t[`${cid}_${aid}`] || '';
-}
