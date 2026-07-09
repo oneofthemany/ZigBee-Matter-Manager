@@ -464,7 +464,7 @@ function renderFileTree(tree) {
                 if (letter !== lastLetter) {
                     lastLetter = letter;
                     marker = `<div class="tree-alpha-marker px-2 mt-1"
-                        style="font-size:9px;letter-spacing:1px;color:#666;border-bottom:1px solid #333;user-select:none;">${letter}</div>`;
+                        style="font-size:9px;letter-spacing:1px;color:var(--accent);border-bottom:1px solid var(--accent);user-select:none;">${letter}</div>`;
                 }
             }
             return marker + renderTreeItem(item);
