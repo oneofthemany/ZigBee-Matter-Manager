@@ -197,6 +197,21 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
         except Exception as e:
             logger.debug(f"[{ieee}] state transform failed for {raw_key}: {e}")
 
+    # --- profile-level state mappings (shared across the model) ---------
+    # IEEE mappings above already ran, so per-device overrides win via the
+    # "name not in out" guard.
+    if profile:
+        for src_key, mapping in (profile.get("state_mappings") or {}).items():
+            if src_key not in out:
+                continue
+            name = mapping.get("name") if isinstance(mapping, dict) else None
+            if not name or name in out:
+                continue
+            try:
+                out[name] = _apply_attr_transform(out[src_key], mapping)
+            except Exception as e:
+                logger.debug(f"[{ieee}] profile state transform failed for {src_key}: {e}")
+
     return out
 
 
@@ -411,6 +426,20 @@ async def apply_profile(
         # Some device wrappers may forbid attribute assignment
         setattr(device, "_profile_actions", actions)
     summary["actions"] = [a["id"] for a in actions]
+
+    # 2b. Command actions + live-transform hint — read by the base cluster
+    #     handler (command -> action) and by the live-update gate so promoted
+    #     state mappings transform live without any per-device override.
+    try:
+        setattr(device, "_cmd_actions", dict(profile.get("command_actions") or {}))
+        has_transforms = bool(profile.get("state_mappings")) or any(
+            cl.get("attributes")
+            for ep in profile.get("endpoints", {}).values()
+            for cl in ep.get("clusters", {}).values()
+        )
+        setattr(device, "_profile_live_transform", has_transforms)
+    except Exception:
+        pass
 
     # 3. Reporting — opt-out via push_reporting=False
     if push_reporting and profile.get("reporting"):

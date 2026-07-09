@@ -274,6 +274,96 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
             e.update(kind="attribute", label=raw_key)
         return e
 
+    @app.post("/api/signals/{ieee}/promote")
+    async def promote_mappings(ieee: str, data: Dict[str, Any] = None):
+        """Promote this device's learned mappings into a shareable model
+        profile so every device of the same model inherits them."""
+        import copy
+        import re
+        dev = _device(ieee)
+        if dev is None:
+            return {"success": False, "error": "Device not found"}
+        from modules.device_profiles import get_profile_store
+        from modules.device_profiles_apply import _get_device_identity, apply_profile
+
+        ident = _get_device_identity(dev)
+        model = ident.get("model") or ""
+        manuf = ident.get("manufacturer") or ""
+        if not model:
+            return {"success": False,
+                    "error": "Device has no model identifier — cannot build a shareable profile"}
+
+        store = get_profile_store()
+        mappings = store.get_ieee_mappings(ieee)
+        if not mappings:
+            return {"success": False, "error": "No learned mappings to promote"}
+
+        # Merge into an existing profile for this model, if any.
+        existing = store.get_profile_for_device(
+            protocol="zigbee", model=model, manufacturer=manuf) or {}
+        state_mappings = dict(existing.get("state_mappings") or {})
+        command_actions = dict(existing.get("command_actions") or {})
+        endpoints = copy.deepcopy(existing.get("endpoints") or {})
+
+        n_state = n_cmd = n_attr = 0
+        for raw_key, m in mappings.items():
+            if not isinstance(m, dict):
+                m = {"name": str(m)}
+            if raw_key.startswith("state:"):
+                state_mappings[raw_key[len("state:"):]] = m
+                n_state += 1
+            elif raw_key.startswith("cmd:"):
+                command_actions[raw_key[len("cmd:"):]] = {"name": m.get("name")}
+                n_cmd += 1
+            elif raw_key.startswith("cluster_"):
+                mm = re.match(r"cluster_([0-9a-fA-F]+)_attr_([0-9a-fA-F]+)", raw_key)
+                if mm:
+                    clhex = f"0x{int(mm.group(1), 16):04X}"
+                    athex = f"0x{int(mm.group(2), 16):04X}"
+                    ep = endpoints.setdefault("1", {"role": "primary", "clusters": {}})
+                    cl = ep.setdefault("clusters", {}).setdefault(clhex, {"attributes": {}})
+                    cl.setdefault("attributes", {})[athex] = m
+                    n_attr += 1
+
+        profile_in = {
+            "id":            existing.get("id") or model,
+            "protocol":      "zigbee",
+            "match":         existing.get("match") or {"model": model, "manufacturer": manuf},
+            "device_type":   existing.get("device_type") or "generic",
+            "capabilities":  existing.get("capabilities") or [],
+            "endpoints":     endpoints,
+            "actions":       existing.get("actions") or [],
+            "reporting":     existing.get("reporting") or [],
+            "state_mappings":  state_mappings,
+            "command_actions": command_actions,
+            "meta":          {"source": "user"},
+        }
+        saved = store.upsert_profile(profile_in)
+
+        # Apply to every currently-loaded device of the same model so it takes
+        # effect immediately (esp. the command->action wiring).
+        applied = 0
+        try:
+            svc = get_zigbee_service()
+            for d in list(getattr(svc, "devices", {}).values()):
+                di = _get_device_identity(d)
+                if di.get("model") == model and (not manuf or di.get("manufacturer") == manuf):
+                    try:
+                        await apply_profile(d)
+                        applied += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        logger.info(f"[{ieee}] Promoted mappings to profile {saved['id']!r} "
+                    f"(values={n_state}, actions={n_cmd}, attrs={n_attr}; applied to {applied})")
+        return {
+            "success": True, "profile_id": saved["id"], "model": model,
+            "promoted": {"values": n_state, "actions": n_cmd, "attributes": n_attr},
+            "applied_to_devices": applied,
+        }
+
     @app.get("/api/signals/{ieee}/mappings")
     async def list_mappings(ieee: str):
         from modules.device_profiles import get_profile_store

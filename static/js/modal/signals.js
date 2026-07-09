@@ -708,11 +708,17 @@ function _mappedRender(inst) {
         <div class="card-body p-2">
             <div class="d-flex justify-content-between align-items-center mb-2">
                 <strong><i class="fas fa-list-check"></i> Mapped signals (${list.length})</strong>
-                <button class="btn btn-sm btn-outline-secondary sig-m-close">Close</button>
+                <div class="d-flex gap-2">
+                    ${list.length ? `<button class="btn btn-sm btn-success sig-m-promote"
+                        title="Copy these mappings to a model profile so every device of this model inherits them">
+                        <i class="fas fa-cube"></i> Promote to model profile</button>` : ''}
+                    <button class="btn btn-sm btn-outline-secondary sig-m-close">Close</button>
+                </div>
             </div>
             <div class="sig-m-rows">${rows}</div>
         </div>`;
     p.querySelector('.sig-m-close')?.addEventListener('click', () => _mappedClose(inst));
+    p.querySelector('.sig-m-promote')?.addEventListener('click', () => _mappedPromote(inst));
     p.querySelectorAll('.sig-m-row').forEach(row => {
         const i = parseInt(row.dataset.idx, 10);
         row.querySelector('.sig-m-edit')?.addEventListener('click', () => _mappedEdit(inst, i));
@@ -806,6 +812,32 @@ async function _mappedSaveEdit(inst, i, holder) {
         _mappedLoad(inst);
     } catch (err) {
         _toast('error', err.message); btn.disabled = false; btn.textContent = 'Save';
+    }
+}
+
+async function _mappedPromote(inst) {
+    const dev = (state.devices || []).find(d => d.ieee === inst.ieee) || state.deviceCache?.[inst.ieee];
+    const model = dev?.model || '';
+    const ok = window.confirm(
+        `Promote these mappings to a model profile${model ? ` for “${model}”` : ''}?\n\n` +
+        `Every device of the same model will inherit them automatically.`);
+    if (!ok) return;
+    const btn = inst.container.querySelector('.sig-m-promote');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Promoting…'; }
+    try {
+        const res = await fetch(`/api/signals/${encodeURIComponent(inst.ieee)}/promote`, { method: 'POST' });
+        const j = await res.json();
+        if (!j.success) { _toast('error', j.error || 'Promote failed'); }
+        else {
+            const p = j.promoted || {};
+            _toast('success',
+                `Promoted to “${j.profile_id}” — ${p.values || 0} value(s), ${p.actions || 0} action(s); ` +
+                `applied to ${j.applied_to_devices || 0} device(s).`);
+        }
+    } catch (e) {
+        _toast('error', e.message);
+    } finally {
+        _mappedLoad(inst);
     }
 }
 

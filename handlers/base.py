@@ -234,18 +234,31 @@ class ClusterHandler:
             from modules.signal_inspector import arg_discriminator
             store = get_profile_store()
             ieee = str(self.device.ieee)
+            ep_id = self.endpoint.endpoint_id
+            disc = arg_discriminator(args)
+            action_name = None
+
+            # 1. Per-device learned mapping. Prefer a payload-specific mapping
+            #    (this exact button / press-type), then any-payload.
             if store.has_ieee_mappings(ieee):
-                base = f"cmd:{self.endpoint.endpoint_id}/{self.cluster_id}/{command_id}"
-                # Prefer a payload-specific mapping (e.g. this exact button /
-                # press-type), then fall back to an any-payload mapping.
-                m = None
-                disc = arg_discriminator(args)
-                if disc:
-                    m = store.get_ieee_mapping(ieee, f"{base}/{disc}")
-                if m is None:
-                    m = store.get_ieee_mapping(ieee, base)
-                if m and m.get("name"):
-                    self.device.update_state({"action": m["name"]})
+                base = f"cmd:{ep_id}/{self.cluster_id}/{command_id}"
+                m = (store.get_ieee_mapping(ieee, f"{base}/{disc}") if disc else None) \
+                    or store.get_ieee_mapping(ieee, base)
+                if m:
+                    action_name = m.get("name")
+
+            # 2. Shared model-profile command action (same precedence).
+            if action_name is None:
+                ca = getattr(self.device, "_cmd_actions", None)
+                if ca:
+                    k = f"{ep_id}/{self.cluster_id}/{command_id}"
+                    v = (ca.get(f"{k}/{disc}") if disc else None) or ca.get(k)
+                    if isinstance(v, dict):
+                        v = v.get("name")
+                    action_name = v
+
+            if action_name:
+                self.device.update_state({"action": action_name})
         except Exception:
             pass
 

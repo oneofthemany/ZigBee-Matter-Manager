@@ -364,6 +364,28 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         })
     out["reporting"] = reporting_out
 
+    # state_mappings — friendly names for arbitrary device state keys (Tuya
+    # datapoints, derived keys), keyed by the literal state key. Mirrors the
+    # per-device "state:<key>" learn mappings so they can be promoted to the
+    # model level and shared across every device of this model.
+    sm_out: Dict[str, Any] = {}
+    for k, v in (p.get("state_mappings") or {}).items():
+        if isinstance(v, str):
+            v = {"name": v}
+        if isinstance(v, dict) and v.get("name"):
+            sm_out[str(k)] = _normalise_attr_mapping(v)
+    out["state_mappings"] = sm_out
+
+    # command_actions — map a received cluster command (optionally a specific
+    # payload) to a named `action`. Keyed by "<ep>/<cluster>/<cmd>[/<disc>]".
+    ca_out: Dict[str, Any] = {}
+    for k, v in (p.get("command_actions") or {}).items():
+        if isinstance(v, str):
+            v = {"name": v}
+        if isinstance(v, dict) and v.get("name"):
+            ca_out[str(k)] = {"name": str(v["name"])}
+    out["command_actions"] = ca_out
+
     # ieee_overrides — legacy per-device mappings carried inside the profile
     # are unusual but supported for migration paths. Most live in the separate
     # ieee_overrides.json file.
