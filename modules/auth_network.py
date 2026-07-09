@@ -33,7 +33,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from typing import Iterable, List, Optional, Sequence
+import time
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from fastapi import Request
 
@@ -140,6 +141,7 @@ class NetworkResolver:
             cloudflare_ranges if cloudflare_ranges is not None
             else DEFAULT_CLOUDFLARE_RANGES
         )
+        self._cf_warn_ts: Dict[str, float] = {}
 
     # ---- core: source IP resolution -----------------------------------
 
@@ -161,18 +163,28 @@ class NetworkResolver:
                 # locally produces a peer of 127.0.0.1, so we also trust
                 # if peer is in the trusted_proxies list (which
                 # typically includes 127.0.0.0/8).
+                cf_clean = cf.split(",")[0].strip()
                 if (
                         _ip_in_any(peer, self.cloudflare_ranges)
                         or _ip_in_any(peer, self.trusted_proxies)
                 ):
-                    cf_clean = cf.split(",")[0].strip()
                     if cf_clean:
                         return cf_clean
+                elif cf_clean == peer:
+                    # An upstream layer (e.g. uvicorn proxy-headers) already
+                    # resolved the client to the same address the header
+                    # claims — nothing to distrust, and nothing to gain.
+                    return peer
                 else:
-                    logger.warning(
-                        f"[network] CF-Connecting-IP from untrusted peer "
-                        f"{peer} — ignoring"
-                    )
+                    # Rate-limit: one warning per peer per 10 minutes instead
+                    # of one per request.
+                    now = time.time()
+                    if now - self._cf_warn_ts.get(peer, 0.0) > 600:
+                        self._cf_warn_ts[peer] = now
+                        logger.warning(
+                            f"[network] CF-Connecting-IP from untrusted peer "
+                            f"{peer} — ignoring (suppressing repeats for 10 min)"
+                        )
 
         # Generic reverse-proxy: trust X-Forwarded-For only if peer is in
         # trusted_proxies. The header is "client, proxy1, proxy2, ..." —
