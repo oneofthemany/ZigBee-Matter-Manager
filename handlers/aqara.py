@@ -300,6 +300,7 @@ class AqaraManufacturerCluster(ClusterHandler):
         0x00F0: t.uint8_t,   # Indicator Light
         0x0271: t.uint8_t,   # System Mode
         0x0272: t.uint8_t,   # Preset
+        0x0279: t.uint32_t,  # Away Preset Temperature (centidegrees)
         0x027B: t.uint8_t,   # Calibrated Status
         0x027E: t.uint8_t,   # Sensor Type
         0x0280: t.int16s,    # External Temperature (centidegrees, signed)
@@ -339,10 +340,9 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         # === TRV Preset (manual / away / auto) ===
         elif attrid == self.ATTR_PRESET:  # 0x0272
-            # Canonical mapping from the official zhaquirks AGL001 quirk.
+            # decodePreset(): {0: manual, 1: auto, 2: away}.
             # Value 3 = device firmware-internal "in setup / commissioning"
-            # (matches E11 indicator on the LED display).
-            PRESET_MAP = {0: "manual", 1: "away", 2: "auto", 3: "setup"}
+            PRESET_MAP = {0: "manual", 1: "auto", 2: "away", 3: "setup"}
             preset_name = PRESET_MAP.get(value, f"unknown({value})")
             updates["preset"] = preset_name
             logger.info(f"[{self.device.ieee}] Preset: {preset_name}")
@@ -371,14 +371,15 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         # === Sensor Type ===
         elif attrid == self.ATTR_SENSOR_TYPE:  # 0x027E
-            sensor_name = "external" if value == 1 else "internal"
+            sensor_name = "external" if value in (1, 2) else "internal"
             updates["sensor_type"] = sensor_name
             logger.info(f"[{self.device.ieee}] Sensor type: {sensor_name}")
 
-        # === External Temperature Input ===
+        # === 0x0280: status byte (0x00/0x01), NOT a temperature ===
+        # external temperature is pushed via 0xFFF2 and echoed by the device through
+        # the standard thermostat local_temperature.
         elif attrid == self.ATTR_EXTERNAL_TEMP:  # 0x0280
-            updates["external_temperature"] = round(value / 100, 2) if value else 0
-            logger.info(f"[{self.device.ieee}] External temperature: {updates['external_temperature']}°C")
+            logger.debug(f"[{self.device.ieee}] Ignoring 0x0280 report: {value!r}")
 
         # === Away Preset Temperature ===
         elif attrid == self.ATTR_AWAY_PRESET_TEMPERATURE:  # 0x0279
@@ -585,6 +586,18 @@ class AqaraManufacturerCluster(ClusterHandler):
         except Exception:
             return False
 
+    async def _zcl_with_mfg(self, func, *args):
+        """
+        Call a cluster ZCL method with the 0x115F manufacturer code across
+        zigpy versions
+        """
+        try:
+            return await func(*args, manufacturer=self.MANUFACTURER_CODE)
+        except TypeError as e:
+            if "manufacturer" not in str(e):
+                raise
+            return await func(*args, manufacturer_code=self.MANUFACTURER_CODE)
+
     async def poll(self) -> Dict[str, Any]:
         """
         Poll manufacturer-specific attributes.
@@ -641,9 +654,8 @@ class AqaraManufacturerCluster(ClusterHandler):
                 f"[{self.device.ieee}] Reading Aqara attrs: "
                 f"{[hex(a) for a in attrs_to_read]}"
             )
-            result = await self.cluster.read_attributes(
-                attrs_to_read,
-                manufacturer=self.MANUFACTURER_CODE,
+            result = await self._zcl_with_mfg(
+                self.cluster.read_attributes, attrs_to_read
             )
             if result and result[0]:
                 logger.info(
@@ -701,23 +713,32 @@ class AqaraManufacturerCluster(ClusterHandler):
                 return False
             target_cluster = opple
 
-        # Build the Attribute manually
+        return await self._send_attr_write(
+            target_cluster, attr_id, type_id, val_converted, target_type.__name__
+        )
+
+    async def _send_attr_write(self, target_cluster, attr_id: int, type_id: int,
+                               value: Any, type_name: str = "") -> bool:
+        """Send a single raw attribute write with the manufacturer code and
+        check the WriteAttributesResponse status."""
+        from zigpy.zcl import foundation
+
         tv = foundation.TypeValue()
         tv.type = type_id
-        tv.value = val_converted
+        tv.value = value
         attr = foundation.Attribute()
         attr.attrid = attr_id
         attr.value = tv
 
         logger.info(
-            f"[{self.device.ieee}] Writing 0x{attr_id:04X}={val_converted} "
+            f"[{self.device.ieee}] Writing 0x{attr_id:04X}={value!r} "
             f"to cluster 0x{target_cluster.cluster_id:04X} "
-            f"(type=0x{type_id:02X} {target_type.__name__})"
+            f"(type=0x{type_id:02X} {type_name})"
         )
 
         try:
-            result = await target_cluster.write_attributes_raw(
-                [attr], manufacturer=self.MANUFACTURER_CODE
+            result = await self._zcl_with_mfg(
+                target_cluster.write_attributes_raw, [attr]
             )
         except Exception as e:
             logger.error(
@@ -764,9 +785,8 @@ class AqaraManufacturerCluster(ClusterHandler):
     async def read_attribute(self, attr_id: int) -> Any:
         """Read a single attribute with manufacturer code."""
         try:
-            result = await self.cluster.read_attributes(
-                [attr_id],
-                manufacturer=self.MANUFACTURER_CODE
+            result = await self._zcl_with_mfg(
+                self.cluster.read_attributes, [attr_id]
             )
             if result and result[0]:
                 value = result[0].get(attr_id)
@@ -868,6 +888,69 @@ class AqaraManufacturerCluster(ClusterHandler):
             1
         )
 
+    # ------------------------------------------------------------------
+    # AGL001 external-sensor protocol (attribute 0xFFF2)
+    # ------------------------------------------------------------------
+
+    # pseudo-IEEE as the "virtual" external sensor
+    _VIRTUAL_SENSOR_IEEE = bytes.fromhex("00158d00019d1b98")
+
+    @staticmethod
+    def _lumi_blob_header(counter: int, params_len: int, action: int) -> bytes:
+        header = [0xAA, 0x71, params_len + 3, 0x44, counter]
+        integrity = 512 - sum(header)
+        return bytes(header + [integrity, action, 0x41, params_len])
+
+    async def _write_fff2(self, payload: bytes) -> bool:
+        from zigpy import types as t
+        return await self._send_attr_write(
+            self.cluster, 0xFFF2, 0x41, t.LVBytes(payload), "LVBytes"
+        )
+
+    async def set_sensor_mode(self, external: bool) -> bool:
+        """Switch the TRV between internal and external temperature sensor."""
+        import time as _time
+
+        dev_ieee = bytes.fromhex(str(self.device.ieee).replace(":", ""))
+        ts = int(_time.time()).to_bytes(4, "big")
+
+        if external:
+            p1 = (ts + bytes([0x3D, 0x04]) + dev_ieee + self._VIRTUAL_SENSOR_IEEE
+                  + bytes([0x00, 0x01, 0x00, 0x55, 0x13, 0x0A, 0x02, 0x00, 0x00,
+                           0x64, 0x04, 0xCE, 0xC2, 0xB6, 0xC8, 0x00, 0x00, 0x00,
+                           0x00, 0x00, 0x01, 0x3D, 0x64, 0x65]))
+            p2 = (ts + bytes([0x3D, 0x05]) + dev_ieee + self._VIRTUAL_SENSOR_IEEE
+                  + bytes([0x08, 0x00, 0x07, 0xFD, 0x16, 0x0A, 0x02, 0x0A, 0xC9,
+                           0xE8, 0xB1, 0xB8, 0xD4, 0xDA, 0xCF, 0xDF, 0xC0, 0xEB,
+                           0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x3D, 0x04, 0x65]))
+            action = 0x02
+        else:
+            p1 = ts + bytes([0x3D, 0x05]) + dev_ieee + bytes(12)
+            p2 = ts + bytes([0x3D, 0x04]) + dev_ieee + bytes(12)
+            action = 0x04
+
+        ok1 = await self._write_fff2(self._lumi_blob_header(0x12, len(p1), action) + p1)
+        ok2 = await self._write_fff2(self._lumi_blob_header(0x13, len(p2), action) + p2)
+        return ok1 and ok2
+
+    async def set_external_temperature(self, temp_c: float) -> bool:
+        """Push an external temperature reading (sensor must be 'external')."""
+        import struct
+
+        if self.device.state.get("sensor_type") != "external":
+            logger.debug(
+                f"[{self.device.ieee}] Skipping external temp push — "
+                "sensor is set to internal"
+            )
+            return True
+
+        # big-endian float32 of round(°C * 100)
+        buf = struct.pack(">f", round(float(temp_c) * 100))
+        params = self._VIRTUAL_SENSOR_IEEE + bytes([0x00, 0x01, 0x00, 0x55]) + buf
+        return await self._write_fff2(
+            self._lumi_blob_header(0x12, len(params), 0x05) + params
+        )
+
 
     async def process_command(self, command: str, value: Any) -> bool:
         """
@@ -912,7 +995,7 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         elif command == "preset":
             if isinstance(value, str):
-                p_map = {"manual": 0, "away": 1, "auto": 2}
+                p_map = {"manual": 0, "auto": 1, "away": 2}
                 p_int = p_map.get(value.strip().lower())
                 if p_int is None:
                     logger.error(
@@ -929,7 +1012,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             ok = await self.write_attribute(self.ATTR_PRESET, p_int)
             if ok:
                 self.device.update_state({
-                    "preset": {0: "manual", 1: "away", 2: "auto"}[p_int]
+                    "preset": {0: "manual", 1: "auto", 2: "away"}[p_int]
                 })
             return ok
 
@@ -959,7 +1042,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             return await self.write_attribute(self.ATTR_CHILD_LOCK, val_int)
 
         elif command == "external_temp":
-            # Float °C → signed int16 centidegrees, clamped to ±sane range.
+            # Pushed via the 0xFFF2 blob protocol — NOT an attribute write.
             try:
                 temp_c = float(value)
             except (TypeError, ValueError):
@@ -968,18 +1051,23 @@ class AqaraManufacturerCluster(ClusterHandler):
                 )
                 return False
             temp_c = max(-40.0, min(80.0, temp_c))
-            return await self.write_attribute(
-                self.ATTR_EXTERNAL_TEMP, int(round(temp_c * 100))
-            )
+            return await self.set_external_temperature(temp_c)
 
         elif command == "sensor_type":
-            # Accept 'internal'/'external' strings or 0/1/bool.
+            # Accept 'internal'/'external' strings or 0/1/bool. Switching is
+            # done via the 0xFFF2 blob protocol — attribute 0x027E is only
+            # the read-back state, writing it directly is rejected/ignored.
             if isinstance(value, str):
                 sv = value.strip().lower()
-                st_int = 1 if sv in ("external", "1", "true", "on", "yes") else 0
+                external = sv in ("external", "1", "true", "on", "yes")
             else:
-                st_int = 1 if value else 0
-            return await self.write_attribute(self.ATTR_SENSOR_TYPE, st_int)
+                external = bool(value)
+            ok = await self.set_sensor_mode(external)
+            if ok:
+                self.device.update_state({
+                    "sensor_type": "external" if external else "internal"
+                })
+            return ok
 
         logger.debug(f"[{self.device.ieee}] Unhandled Aqara command: {command}")
         return False
@@ -1183,9 +1271,8 @@ class AqaraManufacturerCluster(ClusterHandler):
             ]
             for attr_id, attr_name in attrs_to_check:
                 try:
-                    result = await self.cluster.read_attributes(
-                        [attr_id],
-                        manufacturer=self.MANUFACTURER_CODE
+                    result = await self._zcl_with_mfg(
+                        self.cluster.read_attributes, [attr_id]
                     )
                     logger.info(f"[{self.device.ieee}] Attr 0x{attr_id:04X} ({attr_name}): {result}")
                 except Exception as e:

@@ -12,6 +12,26 @@ logger = logging.getLogger("device.commands")
 
 class DeviceCommandExecutorMixin:
 
+    def _spawn_handler_command(self, handler, command: str, value):
+        """Run a handler's process_command. Async implementations (e.g. Aqara
+        0xFCC0) execute in a background task — sleepy TRVs can hold a write
+        until their next poll, which would otherwise trip the retry timeout."""
+        result = handler.process_command(command, value)
+        if asyncio.iscoroutine(result):
+            ieee = self.ieee
+            async def _run():
+                try:
+                    ok = await result
+                    if ok is False:
+                        logger.warning(f"[{ieee}] {command}: device write failed (see handler logs)")
+                        if command == 'motor_calibration':
+                            self.update_state({'calibration_status': 'failed'})
+                except Exception as e:
+                    logger.error(f"[{ieee}] {command}: background write error: {type(e).__name__}: {e}")
+                    if command == 'motor_calibration':
+                        self.update_state({'calibration_status': 'failed'})
+            asyncio.create_task(_run())
+
     def get_control_commands(self) -> List[Dict[str, Any]]:
         """Get available control commands."""
         commands = []
@@ -147,7 +167,7 @@ class DeviceCommandExecutorMixin:
             if not success and command in aqara_commands:
                 h = get_handler(0xFCC0)
                 if h and hasattr(h, 'process_command'):
-                    h.process_command(command, value)
+                    self._spawn_handler_command(h, command, value)
                     success = True
                     if command == 'motor_calibration': optimistic_state['calibration_status'] = 'in_progress'
                     elif command == 'system_mode':
@@ -172,7 +192,7 @@ class DeviceCommandExecutorMixin:
                 h = get_handler(0x0201)
                 if h:
                     if hasattr(h, 'process_command'):
-                        h.process_command(command, value)
+                        self._spawn_handler_command(h, command, value)
                         success = True
                         if command == 'temperature':
                             optimistic_state['temperature_setpoint'] = float(value)
