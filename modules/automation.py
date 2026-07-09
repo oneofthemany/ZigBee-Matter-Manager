@@ -354,6 +354,36 @@ class AutomationEngine:
             if src:
                 self._source_index.setdefault(src, []).append(rule["id"])
 
+    def _disable_broken_rule(self, rule_id: str, reason: str):
+        """
+        Disable a rule whose configuration is permanently broken (e.g. it
+        targets a group that no longer exists) and raise a user-visible
+        alert so it can be fixed instead of failing silently forever.
+        """
+        rule = next((r for r in self.rules if r.get("id") == rule_id), None)
+        if not rule or not rule.get("enabled", True):
+            return
+        rule["enabled"] = False
+        rule["disabled_reason"] = reason
+        self._save_rules()
+
+        name = rule.get("name") or rule_id
+        self._trace(rule_id, "engine", "DISABLED",
+                    f"Automation '{name}' disabled: {reason}", level="WARNING")
+        try:
+            from modules.app_alerts import raise_alert
+            raise_alert(
+                severity="warning",
+                source="automation",
+                title=f"Automation '{name}' disabled",
+                message=f"It was disabled because {reason}. "
+                        "Fix its target in the Automations page and re-enable it.",
+                dedupe_key=f"automation:disabled:{rule_id}",
+                data={"rule_id": rule_id},
+            )
+        except Exception as e:
+            logger.debug(f"Could not raise alert for disabled rule: {e}")
+
     # =========================================================================
     # TRACING
     # =========================================================================
@@ -1362,6 +1392,14 @@ class AutomationEngine:
             self._stats["execution_failures"] += 1
             self._trace(rule_id, "step", "TARGET_ERROR",
                         f"{tag} Group {group_id} not found", level="ERROR")
+            # A missing group is a config error, not a transient failure —
+            # the rule will fail identically on every trigger. Disable it
+            # and alert the user so they can retarget it. (Skip when the
+            # registry itself isn't up yet — that IS transient.)
+            if gm:
+                self._disable_broken_rule(
+                    rule_id, f"its target group {group_id} no longer exists"
+                )
             return
 
         group_name = gm.groups[group_id]["name"]

@@ -19,10 +19,14 @@ import asyncio
 import os
 
 logger = logging.getLogger(__name__)
-os.makedirs("groups", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
-# Groups storage file
-GROUPS_FILE = Path("./groups/groups.json")
+# Groups storage file — lives under ./data (the bind-mounted persistent
+# volume). The old ./groups location was inside the image layer, so every
+# image upgrade silently wiped the registry while the Zigbee groups kept
+# existing in the coordinator database.
+GROUPS_FILE = Path("./data/groups.json")
+LEGACY_GROUPS_FILE = Path("./groups/groups.json")
 
 
 class DeviceCapability:
@@ -111,6 +115,9 @@ class GroupManager:
     def load_groups(self):
         """Load groups from persistent storage"""
         try:
+            if not GROUPS_FILE.exists() and LEGACY_GROUPS_FILE.exists():
+                GROUPS_FILE.write_text(LEGACY_GROUPS_FILE.read_text())
+                logger.info("Migrated groups.json from legacy ./groups location to ./data")
             if GROUPS_FILE.exists():
                 with open(GROUPS_FILE, 'r') as f:
                     data = json.load(f)
@@ -122,6 +129,51 @@ class GroupManager:
             logger.error(f"Failed to load groups: {e}")
             self.groups = {}
             self.next_group_id = 1
+
+    def resync_from_zigbee(self) -> int:
+        """
+        Recover groups that exist in the coordinator database (zigpy) but are
+        missing from the registry — e.g. after groups.json was lost with the
+        old in-image storage location. Keeps automations that target
+        group:<id> working across upgrades.
+        """
+        app = getattr(self.service, 'app', None)
+        zigpy_groups = getattr(app, 'groups', None)
+        if not zigpy_groups:
+            return 0
+
+        added = 0
+        for group_id, zgroup in list(zigpy_groups.items()):
+            if group_id in self.groups:
+                continue
+            members = []
+            for ep in zgroup.values():
+                try:
+                    ieee = str(ep.device.ieee)
+                except Exception:
+                    continue
+                if ieee not in members:
+                    members.append(ieee)
+            self.groups[group_id] = {
+                "id": group_id,
+                "name": getattr(zgroup, 'name', None) or f"Group {group_id}",
+                "type": "switch",
+                "capabilities": [DeviceCapability.ON_OFF],
+                "members": members,
+                "created_at": None,
+                "recovered": True,
+            }
+            added += 1
+
+        if added:
+            self.next_group_id = max(self.groups) + 1
+            self.save_groups()
+            recovered_ids = sorted(g for g in self.groups if self.groups[g].get('recovered'))
+            logger.info(
+                f"Recovered {added} group(s) from the coordinator database: {recovered_ids} "
+                "— review their names/members in the Groups UI"
+            )
+        return added
 
     def save_groups(self):
         """Save groups to persistent storage"""
