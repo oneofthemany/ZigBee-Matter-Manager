@@ -29,10 +29,12 @@ from routes.remote_access_routes import register_remote_access_routes
 from routes.sun_routes import register_sun_routes
 from routes.floor_plan_routes import register_floor_plan_routes
 from routes.media_routes import register_media_routes
+from routes.alert_routes import register_alert_routes
 
 
 
 __all__ = [
+    'register_alert_routes',
     'register_backup_routes',
     'register_config_routes',
     'register_auth_routes',

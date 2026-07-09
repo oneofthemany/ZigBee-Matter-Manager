@@ -66,6 +66,17 @@ export function initWS() {
                 return;
             }
 
+        // Application alerts (backend-raised errors/warnings) — handled
+            // by app-alerts.js; also surfaced immediately as a toast.
+            if (msg.type === 'app_alert') {
+                window.dispatchEvent(new CustomEvent('zmm-app-alert', { detail: msg.payload }));
+                if (window.toast && msg.payload) {
+                    const sev = msg.payload.severity === 'warning' ? 'warning' : 'error';
+                    window.toast[sev](`${msg.payload.title}: ${msg.payload.message}`);
+                }
+                return;
+            }
+
             // Forward upgrade events to any listening modules
             if (msg.type === 'upgrade_available' || msg.type === 'upgrade_status') {
                 window.dispatchEvent(new CustomEvent('zmm-ws-message', { detail: msg }));

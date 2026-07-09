@@ -27,6 +27,9 @@ initAISettingsTab();
 import { initNotifications } from './notifications.js';
 initNotifications();
 
+import { initAppAlerts } from './app-alerts.js';
+initAppAlerts();
+
 import { initUpgrade } from './upgrade.js';
 initUpgrade();
 

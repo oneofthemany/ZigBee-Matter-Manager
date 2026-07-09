@@ -188,6 +188,7 @@ try:
         register_floor_plan_routes,
         register_media_routes,
         register_api_docs_routes,
+        register_alert_routes,
         manager, broadcast_event,
     )
 
@@ -411,6 +412,15 @@ async def lifespan(app: FastAPI):
     # Startup
     log_listener.start()
     logger.info("Starting Zigbee Gateway (Threaded Logging Enabled)...")
+
+    # Application alert center: capture ERROR-level logs as user-visible
+    # alerts and push them over the WebSocket hub
+    try:
+        from modules.app_alerts import get_alert_center, install_log_capture
+        get_alert_center().set_emitter(broadcast_event)
+        install_log_capture()
+    except Exception as e:
+        logger.warning(f"Alert center init failed: {e}")
 
     # Wire debugger to WebSocket
     async def debug_callback(packet_data):
@@ -920,6 +930,7 @@ register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)
 register_api_docs_routes(app)
+register_alert_routes(app)
 register_presence_routes(app, get_presence_manager)
 register_remote_access_routes(app)
 
