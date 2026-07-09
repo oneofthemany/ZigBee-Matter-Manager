@@ -1157,24 +1157,8 @@
                             <div class="row g-2 align-items-center">
                                 <div class="col-auto">
                                     <span class="fw-bold">Live Logs</span>
-                                    <span id="debugStatusBadge" class="badge bg-secondary ms-2">Disabled</span>
                                 </div>
                                 <div class="col-auto ms-auto">
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        <button id="debugEnableBtn" class="btn btn-success" onclick="toggleDebug(true)">
-                                            <i class="fas fa-bug"></i> Enable Debug
-                                        </button>
-                                        <button id="debugDisableBtn" class="btn btn-danger d-none" onclick="toggleDebug(false)">
-                                            <i class="fas fa-stop"></i> Disable Debug
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="col-auto">
-                                    <button id="verboseLogBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleVerboseLogging()">
-                                        <i class="fas fa-eye-slash"></i> Standard
-                                    </button>
-                                </div>
-                                <div class="col-auto">
                                     <select id="logLevelFilter" class="form-select form-select-sm" onchange="filterLogs()">
                                         <option value="ALL">All Levels</option>
                                         <option value="INFO">Info & Above</option>
@@ -1221,6 +1205,22 @@
                 <div class="tab-pane fade" id="debugPackets">
                     <div class="card shadow-sm">
                         <div class="card-body">
+                            <!-- Packet capture enablement — controls whether packets are recorded -->
+                            <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
+                                <span class="fw-bold">Packet Capture</span>
+                                <span id="debugStatusBadge" class="badge bg-secondary">Disabled</span>
+                                <div class="btn-group btn-group-sm ms-2" role="group">
+                                    <button id="debugEnableBtn" class="btn btn-success" onclick="toggleDebug(true)">
+                                        <i class="fas fa-bug"></i> Enable Debug
+                                    </button>
+                                    <button id="debugDisableBtn" class="btn btn-danger d-none" onclick="toggleDebug(false)">
+                                        <i class="fas fa-stop"></i> Disable Debug
+                                    </button>
+                                </div>
+                                <button id="verboseLogBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleVerboseLogging()">
+                                    <i class="fas fa-eye-slash"></i> Standard
+                                </button>
+                            </div>
                             <div class="row mb-3 g-2">
                                 <div class="col-md-2">
                                     <select id="packetImportanceFilter" class="form-select form-select-sm">
