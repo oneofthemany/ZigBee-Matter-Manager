@@ -267,7 +267,7 @@ class AqaraManufacturerCluster(ClusterHandler):
     ATTR_CHILD_LOCK = 0x0277            # 631 decimal - Child lock
     ATTR_AWAY_PRESET_TEMPERATURE = 0x0279  # uint32 - Away temp
     ATTR_WINDOW_OPEN = 0x027A           # uint8 - 1=Open, 0=Closed (status)
-    ATTR_CALIBRATED = 0x027B            # uint8 - Calibration status (READ-ONLY: 0=not_ready, 1=ready, 2=error, 3=in_progress)
+    ATTR_CALIBRATED = 0x027B            # bool "calibrated" flag (READ-ONLY): 1=valve calibrated, 0=needs calibration (mount on radiator valve + triple-press). NOT a 4-state enum — per Zigbee2MQTT this is binary on agl001/SRTS-A01.
     ATTR_SCHEDULE = 0x027D              # uint8 - Schedule enable/disable
     ATTR_SENSOR_TYPE = 0x027E           # uint8 - 0=Internal, 1=External sensor
     ATTR_EXTERNAL_TEMP = 0x0280         # int16 - External temp in centidegrees (signed)
@@ -347,12 +347,18 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["preset"] = preset_name
             logger.info(f"[{self.device.ieee}] Preset: {preset_name}")
 
-        # === Calibration Status ===
+        # === Calibrated flag (boolean) ===
+        # Per Zigbee2MQTT, 0x027B on agl001/SRTS-A01 is a binary "calibrated"
+        # flag, NOT a 4-state enum. true = valve calibrated; false = still
+        # needs calibrating (mount on the radiator valve, then triple-press the
+        # button — the on-device motor adaptation shows F1→F12 on the display).
+        # We map it onto the frontend's existing status strings: calibrated ->
+        # "ready" (badge clears), not calibrated -> "not_ready" (NEEDS CAL).
         elif attrid == self.ATTR_CALIBRATED:  # 0x027B
-            CAL_STATUS = {0: "not_ready", 1: "ready", 2: "error", 3: "in_progress"}
-            cal_name = CAL_STATUS.get(value, f"unknown({value})")
-            updates["calibration_status"] = cal_name
-            logger.info(f"[{self.device.ieee}] Calibration: {cal_name}")
+            is_cal = bool(value)
+            updates["calibrated"] = is_cal
+            updates["calibration_status"] = "ready" if is_cal else "not_ready"
+            logger.info(f"[{self.device.ieee}] Calibrated: {is_cal}")
 
         # === Setup / E11 commissioning flag ===
         elif attrid == self.ATTR_SETUP_MODE:  # 0x027C
@@ -842,7 +848,9 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_CHILD_LOCK: "child_lock",
                 self.ATTR_VALVE_DETECTION: "valve_detection",
                 # ATTR_MOTOR_CALIBRATION (0x0270) is write-only — use 0x027B.
-                self.ATTR_CALIBRATED: "calibration_status",
+                # Name it "calibrated" (raw) so a base-poll path can never
+                # overwrite the decoded "calibration_status" string with an int.
+                self.ATTR_CALIBRATED: "calibrated",
                 self.ATTR_WINDOW_OPEN: "window_open",
                 self.ATTR_VALVE_ALARM: "valve_alarm",
                 self.ATTR_SENSOR_TYPE: "sensor_type",
@@ -975,7 +983,24 @@ class AqaraManufacturerCluster(ClusterHandler):
             ok = await self.write_attribute(self.ATTR_MOTOR_CALIBRATION, 1)
             if not ok:
                 return False
-            self.device.update_state({"calibration_status": "in_progress"})
+            # Do NOT fake an "in_progress" status — there is no such device
+            # state on agl001 (0x027B is a boolean). The on-device adaptation
+            # takes ~10s and only completes when the head is mounted on the
+            # radiator valve. Re-read the real "calibrated" flag afterwards so
+            # the UI reflects the true result instead of stranding on a
+            # phantom status.
+            import asyncio
+
+            async def _recheck_calibration():
+                try:
+                    await asyncio.sleep(12)
+                    await self.read_attribute(self.ATTR_CALIBRATED)
+                except Exception as e:
+                    logger.debug(
+                        f"[{self.device.ieee}] calibration re-read failed: {e}"
+                    )
+
+            asyncio.create_task(_recheck_calibration())
             return True
 
         elif command == "system_mode":
