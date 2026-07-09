@@ -319,7 +319,8 @@ class ClusterHandler:
             result = await self.cluster.read_attributes(attr_ids)
         except Exception as e:
             logger.warning(
-                f"[{self.device.ieee}] Batched read on {cluster_name} failed: {e}"
+                f"[{self.device.ieee}] Batched read on {cluster_name} failed: "
+                f"{type(e).__name__}: {e}"
             )
             return results
 

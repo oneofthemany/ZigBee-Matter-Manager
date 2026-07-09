@@ -94,7 +94,7 @@ class BasicHandler(ClusterHandler):
                     results["power_source"] = self.POWER_SOURCES.get(data[self.ATTR_POWER_SOURCE], "Unknown")
                 if self.ATTR_SW_BUILD_ID in data: results["sw_version"] = str(data[self.ATTR_SW_BUILD_ID])
         except Exception as e:
-            logger.warning(f"[{self.device.ieee}] Failed to poll basic cluster: {e}")
+            logger.warning(f"[{self.device.ieee}] Failed to poll basic cluster: {type(e).__name__}: {e}")
         return results
 
 # ============================================================
