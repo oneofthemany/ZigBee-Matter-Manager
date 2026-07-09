@@ -458,6 +458,14 @@ class ZigbeeService(
 
                 self._rebuild_name_maps()
                 logger.info(f"Restored {len(self.devices)} devices from database")
+
+                # Recover group-registry entries that exist in the coordinator
+                # DB but were lost from groups.json (old in-image storage)
+                try:
+                    if getattr(self, 'group_manager', None):
+                        self.group_manager.resync_from_zigbee()
+                except Exception as e:
+                    logger.warning(f"Group registry resync failed: {e}")
                 # Purge cached topology/attrs/history
                 try:
                     from modules.zigbee_cache import purge_device
