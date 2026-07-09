@@ -22,7 +22,14 @@ let bsModal = null;
 let queue = Promise.resolve();
 
 function ensureModal() {
-    if (modalEl && document.body.contains(modalEl)) return modalEl;
+    if (modalEl && document.body.contains(modalEl)) {
+        // Re-append so the dialog is last in <body>: Bootstrap gives every
+        // modal the same z-index, so paint order follows DOM order. Without
+        // this, a dialog launched from inside a modal created later (e.g. the
+        // editor's batch-deploy confirm) renders *underneath* it.
+        document.body.appendChild(modalEl);
+        return modalEl;
+    }
 
     modalEl = document.createElement('div');
     modalEl.className = 'modal fade';
@@ -107,6 +114,13 @@ function runDialog({ title, message, detail, confirmText, cancelText, variant, i
             okBtn.removeEventListener('click', onOk);
             field.removeEventListener('keydown', onKeydown);
             modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            modalEl.style.zIndex = '';
+            // Bootstrap drops body.modal-open whenever ANY modal hides;
+            // restore it if an underlying modal is still open so its
+            // scrolling keeps working.
+            if (document.querySelector('.modal.show')) {
+                document.body.classList.add('modal-open');
+            }
             if (input) resolve(confirmed ? enteredValue : null);
             else resolve(confirmed);
         };
@@ -118,6 +132,18 @@ function runDialog({ title, message, detail, confirmText, cancelText, variant, i
             (input ? field : okBtn).focus();
             if (input) field.select();
         }, { once: true });
+
+        // If another modal is already open, lift this dialog above it (all
+        // Bootstrap modals share z-index 1055) and, once shown, raise its
+        // backdrop to sit just beneath so the underlying modal is dimmed.
+        if (document.querySelector('.modal.show')) {
+            modalEl.style.zIndex = '1080';
+            modalEl.addEventListener('shown.bs.modal', () => {
+                const bd = document.querySelectorAll('.modal-backdrop');
+                const last = bd[bd.length - 1];
+                if (last) last.style.zIndex = '1079';
+            }, { once: true });
+        }
 
         bsModal.show();
     });
