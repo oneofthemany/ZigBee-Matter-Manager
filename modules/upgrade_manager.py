@@ -115,6 +115,43 @@ def compare_versions(a: str, b: str) -> int:
     return 0
 
 
+def bump_significance(current: str, latest: str) -> Optional[str]:
+    """
+    Classify the jump from current to latest: "major", "minor", "patch",
+    or None if latest is not newer.
+
+    An unparseable current version (e.g. "unknown") with a parseable latest
+    counts as "major" so an update is always offered regardless of channel.
+    """
+    pc = parse_version(current)
+    pl = parse_version(latest)
+    if pl is None:
+        return None
+    if pc is None:
+        return "major"
+    if pl <= pc:
+        return None
+    if pl[0] > pc[0]:
+        return "major"
+    if pl[1] > pc[1]:
+        return "minor"
+    return "patch"
+
+
+# Minimum bump significance required before a channel reports an update.
+# "prerelease" and "patch" take every newer release; "minor" waits for a
+# minor/major bump; "major" only reports major bumps. The target installed
+# is always the latest release — the channel only gates the notification.
+_BUMP_RANK = {None: 0, "patch": 1, "minor": 2, "major": 3}
+_CHANNEL_MIN_BUMP = {"prerelease": 1, "patch": 1, "minor": 2, "major": 3}
+
+
+def meets_channel_threshold(current: str, latest: str, channel: str) -> bool:
+    """True if upgrading current→latest is significant enough for `channel`."""
+    sig = bump_significance(current, latest)
+    return _BUMP_RANK[sig] >= _CHANNEL_MIN_BUMP.get(channel, 1)
+
+
 # ---------------------------------------------------------------------------
 # ARCHITECTURE DETECTION
 # ---------------------------------------------------------------------------
@@ -145,7 +182,7 @@ DEFAULT_STATE = {
     "last_check": None,
     "auto_update": False,
     "auto_update_window": {"start": "03:00", "end": "05:00"},
-    "channel": "stable",
+    "channel": "patch",
     "retention_count": 2,
     "repo": DEFAULT_REPO,
     "upgrade_state": "idle",
@@ -197,6 +234,11 @@ def load_state() -> Dict[str, Any]:
                     pass
         except Exception as e:
             logger.warning(f"Failed to load version state ({VERSION_STATE_FILE}): {e}")
+
+    # Migrate legacy channel name: "stable" behaved like today's "patch"
+    # (every newer stable release is offered)
+    if state.get("channel") == "stable":
+        state["channel"] = "patch"
 
     # Always refresh architecture at load time
     state["architecture"] = detect_architecture()
@@ -421,13 +463,15 @@ def watcher_installed() -> bool:
 # ---------------------------------------------------------------------------
 # GITHUB POLLING
 # ---------------------------------------------------------------------------
-async def fetch_latest_release(repo: str, channel: str = "stable") -> Optional[Dict[str, Any]]:
+async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
     """
     Fetch latest release/tag info from GitHub.
 
-    channel: "stable" (releases/latest) or "prerelease" (top of tags list)
+    channel: "prerelease" scans the tags list; every other channel
+    (major/minor/patch) uses releases/latest — the channel threshold is
+    applied later, in check_for_updates().
     """
-    if channel == "stable":
+    if channel != "prerelease":
         url = f"{GITHUB_API_BASE}/repos/{repo}/releases/latest"
     else:
         url = f"{GITHUB_API_BASE}/repos/{repo}/tags"
@@ -450,7 +494,7 @@ async def fetch_latest_release(repo: str, channel: str = "stable") -> Optional[D
         logger.warning(f"GitHub API fetch failed: {e}")
         return None
 
-    if channel == "stable":
+    if channel != "prerelease":
         # Single release object
         if not isinstance(data, dict):
             return None
@@ -489,7 +533,7 @@ async def check_for_updates(force: bool = False) -> Dict[str, Any]:
     """
     state = load_state()
     repo = state.get("repo") or DEFAULT_REPO
-    channel = state.get("channel") or "stable"
+    channel = state.get("channel") or "patch"
 
     # Rate-limit: don't check more than once per hour unless forced
     if not force:
@@ -510,7 +554,7 @@ async def check_for_updates(force: bool = False) -> Dict[str, Any]:
 
     latest = release["version"]
     current = state.get("current_version") or "0.0.0"
-    is_newer = compare_versions(latest, current) > 0
+    is_newer = meets_channel_threshold(current, latest, channel)
 
     save_state({
         **state,
@@ -740,7 +784,7 @@ def request_install_watcher() -> Tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # SETTINGS
 # ---------------------------------------------------------------------------
-VALID_CHANNELS = {"stable", "prerelease"}
+VALID_CHANNELS = {"major", "minor", "patch", "prerelease"}
 
 
 def update_settings(
@@ -757,6 +801,8 @@ def update_settings(
     if auto_update is not None:
         state["auto_update"] = bool(auto_update)
     if channel is not None:
+        if channel == "stable":  # legacy name from older clients
+            channel = "patch"
         if channel not in VALID_CHANNELS:
             raise ValueError(f"Invalid channel: {channel}")
         state["channel"] = channel

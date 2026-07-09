@@ -544,7 +544,7 @@ if [[ ! -f "${STATE_DIR}/version.json" ]]; then
   "current_version": "${CUR_VER}",
   "upgrade_state": "idle",
   "auto_update": false,
-  "channel": "stable",
+  "channel": "patch",
   "retention_count": 2,
   "watcher_installed": true
 }

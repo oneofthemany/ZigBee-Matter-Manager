@@ -376,7 +376,9 @@ function renderSettings(data) {
 
     const auto = !!data.auto_update;
     const win = data.auto_update_window || {};
-    const channel = data.channel || 'stable';
+    // Legacy "stable" behaved like today's "patch" (every release offered)
+    const rawChannel = data.channel || 'patch';
+    const channel = rawChannel === 'stable' ? 'patch' : rawChannel;
     const retention = data.retention_count || 2;
     const repo = data.repo || 'oneofthemany/ZigBee-Matter-Manager';
 
@@ -394,9 +396,12 @@ function renderSettings(data) {
         <div class="col-md-6">
           <label class="form-label small">Release channel</label>
           <select class="form-select form-select-sm" id="upgChannel">
-            <option value="stable" ${channel === 'stable' ? 'selected' : ''}>Stable (releases only)</option>
+            <option value="major" ${channel === 'major' ? 'selected' : ''}>Stable &mdash; major releases only (3.x &rarr; 4.0)</option>
+            <option value="minor" ${channel === 'minor' ? 'selected' : ''}>Stable &mdash; minor &amp; major (3.1 &rarr; 3.2)</option>
+            <option value="patch" ${channel === 'patch' ? 'selected' : ''}>Stable &mdash; every release (bleeding edge)</option>
             <option value="prerelease" ${channel === 'prerelease' ? 'selected' : ''}>Pre-release (all tags)</option>
           </select>
+          <div class="small text-muted mt-1">Updates always install the latest release &mdash; this only sets how big a version jump has to be before you're notified.</div>
         </div>
 
         <div class="col-md-6">
