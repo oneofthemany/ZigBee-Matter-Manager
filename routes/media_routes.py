@@ -70,6 +70,11 @@ class FadeBody(BaseModel):
     stop_at_end: bool = False
 
 
+class VolumeAdjustBody(BaseModel):
+    player_id: str
+    delta: float              # signed change, -1.0–1.0 (e.g. 0.1 = +10%)
+
+
 class KaraokeBody(BaseModel):
     enabled: bool
 
@@ -166,6 +171,17 @@ def register_media_routes(app: FastAPI, get_media_service):
                 await svc.controller.set_muted(body.player_id, body.muted)
             await svc.controller.set_volume(body.player_id, body.level)
             return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/media/volume/adjust")
+    async def volume_adjust(body: VolumeAdjustBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            level = await svc.controller.adjust_volume(body.player_id, body.delta)
+            return {"success": True, "level": level}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

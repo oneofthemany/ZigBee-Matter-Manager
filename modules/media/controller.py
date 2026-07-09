@@ -355,7 +355,34 @@ class MediaController:
         return False
 
     async def set_volume(self, player_id: str, level: float) -> None:
-        await self._dispatch(player_id, "set_volume", max(0.0, min(1.0, level)))
+        level = max(0.0, min(1.0, level))
+        await self._dispatch(player_id, "set_volume", level)
+        cached = self._cache.get(player_id)
+        if cached:
+            # Keep the cache current so back-to-back relative adjusts stack
+            # correctly between polls.
+            cached.volume = level
+            # WiiM/LinkPlay slaves don't follow their master's volume (Cast
+            # groups do, and list no members here) — push the level to each.
+            for member_id in cached.group_members:
+                if member_id == player_id:
+                    continue
+                try:
+                    await self._dispatch(member_id, "set_volume", level)
+                    m = self._cache.get(member_id)
+                    if m:
+                        m.volume = level
+                except Exception as e:
+                    logger.warning(f"Group volume {player_id} → {member_id} failed: {e}")
+
+    async def adjust_volume(self, player_id: str, delta: float) -> float:
+        """Relative volume change: current level + ``delta`` (both 0.0–1.0
+        scale), clamped. Returns the level actually set."""
+        cached = self._cache.get(player_id) or await self.live_state(player_id)
+        current = cached.volume if cached else 0.3
+        target = round(max(0.0, min(1.0, current + delta)), 4)
+        await self.set_volume(player_id, target)
+        return target
 
     def fade_volume(self, player_id: str, target: float, duration_s: int,
                     stop_at_end: bool = False) -> None:

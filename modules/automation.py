@@ -516,8 +516,10 @@ class AutomationEngine:
                     return f"{label}[{i+1}]: media needs player_id"
                 ma = step.get("media_action")
                 if ma not in ("play_radio", "play_tidal", "control", "volume",
-                              "announce", "volume_fade"):
+                              "announce", "volume_fade", "volume_adjust"):
                     return f"{label}[{i+1}]: invalid media_action"
+                if ma == "volume_adjust" and not isinstance(step.get("delta"), (int, float)):
+                    return f"{label}[{i+1}]: volume_adjust needs a numeric delta"
                 if ma == "play_radio" and not step.get("station_uuid"):
                     return f"{label}[{i+1}]: play_radio needs station_uuid"
                 if ma == "play_tidal" and not (step.get("tidal_kind") and step.get("tidal_id")):
@@ -1344,6 +1346,10 @@ class AutomationEngine:
                 await svc.controller.control(player_id, step.get("control_action", "stop"))
             elif action == "volume":
                 await svc.controller.set_volume(player_id, float(step.get("volume", 0.3)))
+            elif action == "volume_adjust":
+                delta = float(step.get("delta", 0.1))
+                new = await svc.controller.adjust_volume(player_id, delta)
+                detail = f"{'+' if delta >= 0 else ''}{int(delta * 100)}% → {int(new * 100)}%"
             elif action == "announce":
                 res = await svc.announce(player_id, step.get("text", ""),
                                          volume=step.get("volume"))

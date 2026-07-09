@@ -169,13 +169,33 @@ function _renderSeq(seq) {
             h += `<div class="ap-act"><i class="fas fa-filter"></i><span>only continue if ${_devSpan(s.ieee)} ${_attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
         }
         else if (s.type === 'media')
-            h += `<div class="ap-act"><i class="fas fa-music"></i><span>media: ${_esc(s.media_action || 'control')}</span></div>`;
+            h += `<div class="ap-act"><i class="fas fa-music"></i><span>${_esc(_mediaStepText(s))}</span></div>`;
     });
     return h;
 }
 
+// Human phrasing for a media step in the rules list. Player names come from
+// /api/media/players; the raw player_id is the fallback when the media
+// service is off or the player has vanished.
+function _mediaStepText(s) {
+    const who = playerNameCache[s.player_id] || s.player_id || 'player';
+    const a = s.media_action || 'control';
+    if (a === 'volume') return `set ${who} volume to ${Math.round((s.volume ?? 0) * 100)}%`;
+    if (a === 'volume_adjust') {
+        const d = s.delta || 0;
+        return `turn ${who} volume ${d >= 0 ? 'up' : 'down'} ${Math.abs(Math.round(d * 100))}%`;
+    }
+    if (a === 'volume_fade') return `fade ${who} volume to ${Math.round((s.volume ?? 0) * 100)}% over ${s.fade_seconds || 300}s${s.stop_at_end ? ', then stop' : ''}`;
+    if (a === 'announce') return `announce on ${who}: “${String(s.text || '').slice(0, 40)}”`;
+    if (a === 'control') return `${s.control_action || 'control'} ${who}`;
+    if (a === 'play_radio') return `play ${s.label || 'radio'} on ${who}`;
+    if (a === 'play_tidal') return `play ${s.label || s.tidal_kind || 'Tidal'} on ${who}`;
+    return `media: ${a}`;
+}
+
 let allRulesCache = [];
 let devMapCache = {};
+let playerNameCache = {};  // player_id -> friendly name, for media steps
 let filterDevice = '';
 let filterState = '';
 // Rules the user has expanded — cards render collapsed (one line) by default
@@ -214,6 +234,13 @@ export async function loadAutomationsPage() {
         ]);
         allRulesCache = await rulesRes.json();
         const devices = await devsRes.json();
+
+        // Player names for humanizing media steps (player_ids are uuids/ips).
+        try {
+            const pj = await (await fetch('/api/media/players')).json();
+            playerNameCache = {};
+            (pj.players || []).forEach(p => { playerNameCache[p.player_id] = p.name + (p.is_group ? ' (group)' : ''); });
+        } catch { /* media service off — fall back to raw ids */ }
 
         // Is a location configured? Sun (sunrise/sunset) rules can't fire without
         // one. /api/sun/sunrise-sunset returns success:false when lat/lon are unset.

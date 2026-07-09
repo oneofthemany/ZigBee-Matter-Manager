@@ -32,7 +32,7 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media'};
 
 // Media action picker options (label, value).
-const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_fade','Volume Fade']];
+const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
 const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
@@ -582,7 +582,7 @@ function _renderInlineCond(ic, idx, parentSid, total) {
 
 // ── Media step rendering ──
 function _mediaStepBody(step, sid) {
-    const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}</option>`).join('');
+    const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}${p.is_group?' (group)':''}</option>`).join('');
     const playerSel = `<select class="form-select form-select-sm s-mplayer" data-sid="${sid}"><option value="">Player…</option>${players}</select>`;
     const actSel = `<select class="form-select form-select-sm s-maction" data-sid="${sid}" onchange="window._aMAction(${sid},this)">${MEDIA_ACTIONS.map(([v,l])=>`<option value="${v}" ${(step.media_action||'play_tidal')===v?'selected':''}>${l}</option>`).join('')}</select>`;
     const hint = cachedPlayers.length ? '' : `<div class="small text-warning mt-1">No media players found — is the media service enabled?</div>`;
@@ -597,6 +597,13 @@ function _mediaSubHtml(step, sid) {
     if (a === 'volume') {
         const pct = step.volume!=null ? Math.round(step.volume*100) : 30;
         return `<div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="0" max="100" style="width:80px"><span class="small">% volume</span></div>`;
+    }
+    if (a === 'volume_adjust') {
+        const up = step.delta==null || step.delta>=0;
+        const pct = step.delta!=null ? Math.abs(Math.round(step.delta*100)) : 10;
+        return `<div class="d-flex gap-1 align-items-center">
+            <select class="form-select form-select-sm s-mdir" data-sid="${sid}" style="width:auto"><option value="up" ${up?'selected':''}>Up</option><option value="down" ${!up?'selected':''}>Down</option></select>
+            <input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="1" max="100" style="width:80px"><span class="small">% step</span></div>`;
     }
     if (a === 'announce') {
         const vol = step.volume!=null ? Math.round(step.volume*100) : '';
@@ -637,6 +644,7 @@ function _mediaSavedOpt(step) {
 function _mediaDesc(s) {
     if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
     if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
+    if (s.media_action==='volume_adjust') return `VOL ${(s.delta||0)>=0?'+':'-'}${Math.abs(Math.round((s.delta||0)*100))}%`;
     if (s.media_action==='announce') return `Say: ${String(s.text||'').slice(0,28)}${(s.text||'').length>28?'…':''}`;
     if (s.media_action==='volume_fade') return `Fade→${s.volume!=null?Math.round(s.volume*100):0}% /${s.fade_seconds||300}s${s.stop_at_end?' ⏹':''}`;
     if (s.media_action==='play_radio') return `Radio: ${s.label||s.station_uuid||'?'}`;
@@ -1136,6 +1144,11 @@ function _syncTreeFromDOM(steps) {
             }
             else if(s.media_action==='control'){ s.control_action=document.querySelector(`.s-mctrl[data-sid="${sid}"]`)?.value||'stop'; }
             else if(s.media_action==='volume'){ const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value); s.volume=isNaN(v)?0.3:Math.max(0,Math.min(1,v/100)); }
+            else if(s.media_action==='volume_adjust'){
+                const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value);
+                const mag=isNaN(v)?0.1:Math.max(0.01,Math.min(1,v/100));
+                s.delta=(document.querySelector(`.s-mdir[data-sid="${sid}"]`)?.value==='down')?-mag:mag;
+            }
             else if(s.media_action==='announce'){
                 s.text=document.querySelector(`.s-mtext[data-sid="${sid}"]`)?.value||'';
                 const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value);
@@ -1165,6 +1178,7 @@ function _cleanTree(steps) {
             else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
             else if(s.media_action==='control'){d.control_action=s.control_action;}
             else if(s.media_action==='volume'){d.volume=s.volume;}
+            else if(s.media_action==='volume_adjust'){d.delta=s.delta;}
             else if(s.media_action==='announce'){d.text=s.text;if(s.volume!=null)d.volume=s.volume;}
             else if(s.media_action==='volume_fade'){d.volume=s.volume;d.fade_seconds=s.fade_seconds||300;if(s.stop_at_end)d.stop_at_end=true;}
         }
@@ -1181,6 +1195,7 @@ function _cleanTree(steps) {
             if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
             if(d.media_action==='control')return !!d.control_action;
             if(d.media_action==='volume')return d.volume!=null;
+            if(d.media_action==='volume_adjust')return typeof d.delta==='number'&&d.delta!==0;
             if(d.media_action==='announce')return !!(d.text&&d.text.trim());
             if(d.media_action==='volume_fade')return d.volume!=null;
             return false;
