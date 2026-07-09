@@ -8,12 +8,13 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
 
 class ConditionItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     type: str = "attribute"
     attribute: Optional[str] = None
     operator: Optional[str] = None
@@ -23,8 +24,16 @@ class ConditionItem(BaseModel):
     time_from: Optional[str] = None
     time_to: Optional[str] = None
     days: Optional[List[int]] = None
+    # time (alarm) field
+    at: Optional[str] = None
+    # sun fields — wire names are "from"/"to" ("from" is a Python keyword)
+    sun_from: Optional[str] = Field(default=None, alias="from")
+    sun_to: Optional[str] = Field(default=None, alias="to")
+    offset_from: Optional[float] = None
+    offset_to: Optional[float] = None
 
 class PrerequisiteItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     type: str = "device"
     # device fields
     ieee: Optional[str] = None
@@ -36,6 +45,11 @@ class PrerequisiteItem(BaseModel):
     time_from: Optional[str] = None
     time_to: Optional[str] = None
     days: Optional[List[int]] = None
+    # sun fields — wire names are "from"/"to"
+    sun_from: Optional[str] = Field(default=None, alias="from")
+    sun_to: Optional[str] = Field(default=None, alias="to")
+    offset_from: Optional[float] = None
+    offset_to: Optional[float] = None
 
 class AutomationCreateRequest(BaseModel):
     name: Optional[str] = ""
@@ -60,6 +74,13 @@ class AutomationUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
+def _sun_dict(item):
+    d = {"type": "sun", "from": item.sun_from, "to": item.sun_to, "negate": item.negate}
+    if item.days is not None: d["days"] = item.days
+    if item.offset_from is not None: d["offset_from"] = item.offset_from
+    if item.offset_to is not None: d["offset_to"] = item.offset_to
+    return d
+
 def _conds_to_dicts(items):
     if not items: return []
     r = []
@@ -67,6 +88,11 @@ def _conds_to_dicts(items):
         if c.type == "time_window":
             r.append({"type": "time_window", "time_from": c.time_from, "time_to": c.time_to,
                       "days": c.days if c.days is not None else list(range(7)), "negate": c.negate})
+        elif c.type == "time":
+            r.append({"type": "time", "at": c.at,
+                      "days": c.days if c.days is not None else list(range(7))})
+        elif c.type == "sun":
+            r.append(_sun_dict(c))
         else:
             d = {"type": "attribute", "attribute": c.attribute, "operator": c.operator, "value": c.value}
             if c.sustain and c.sustain > 0: d["sustain"] = c.sustain
@@ -85,6 +111,8 @@ def _prereqs_to_dicts(items):
                 "days": p.days if p.days is not None else list(range(7)),
                 "negate": p.negate,
             })
+        elif p.type == "sun":
+            result.append(_sun_dict(p))
         else:
             result.append({
                 "type": "device",
