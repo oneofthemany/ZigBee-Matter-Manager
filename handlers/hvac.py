@@ -161,7 +161,20 @@ class ThermostatHandler(ClusterHandler):
     # ============================================================
     # CONFIGURE
     # ============================================================
+    def _is_aqara_trv(self) -> bool:
+        return "agl001" in str(self.device.zigpy_dev.model or "").lower()
+
     async def configure(self):
+        # Aqara AGL001 TRVs never answer 0x0201 binds/reads (state arrives
+        # via 0xFCC0 reports mapped by the quirk) — skip the standard config
+        # and init reads to avoid ~15s of guaranteed timeouts per join.
+        # Setpoint writes still go through 0x0201 as normal.
+        if self._is_aqara_trv():
+            logger.info(
+                f"[{self.device.ieee}] AGL001 TRV — skipping 0x0201 "
+                "configuration (state comes via 0xFCC0 reports)"
+            )
+            return
         # Build report config based on device role.
         # Receivers carry the active heating state; thermostats are remote
         # controls in the Hive model and don't populate local_temperature,
@@ -241,9 +254,16 @@ class ThermostatHandler(ClusterHandler):
                     self.attribute_updated(attr_id, value)
 
         except Exception as e:
-            logger.warning(f"[{self.device.ieee}] Failed to read init attributes: {e}")
+            logger.warning(f"[{self.device.ieee}] Failed to read init attributes: {type(e).__name__}: {e}")
 
         return True
+
+    async def poll(self):
+        # See configure() — 0x0201 reads on AGL001 always time out; the TRV
+        # reports through 0xFCC0 instead.
+        if self._is_aqara_trv():
+            return {}
+        return await super().poll()
 
     # ============================================================
     # ATTRIBUTE HANDLING
@@ -338,15 +358,15 @@ class ThermostatHandler(ClusterHandler):
             return True
         except Exception as e:
             logger.warning(
-                f"[{self.device.ieee}] Named atomic write failed ({e}), "
-                f"retrying with attribute IDs"
+                f"[{self.device.ieee}] Named atomic write failed "
+                f"({type(e).__name__}: {e}), retrying with attribute IDs"
             )
         try:
             result = await self.cluster.write_attributes(attrs_by_id)
             logger.info(f"[{self.device.ieee}] Atomic write (by ID) result: {result}")
             return True
         except Exception as e:
-            logger.error(f"[{self.device.ieee}] Atomic write failed: {e}")
+            logger.error(f"[{self.device.ieee}] Atomic write failed: {type(e).__name__}: {e}")
             return False
 
     async def set_target_temperature(self, temperature: float):
