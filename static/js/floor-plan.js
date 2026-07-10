@@ -800,12 +800,15 @@ function renderScene() {
         // (i.e. top edge in model = origin_y + hM; bottom = origin_y).
         // Top-left in SVG = modelToSvg({x: origin_x, y: origin_y + hM}) = (origin_x, -(origin_y + hM))
         const tlSvg = modelToSvg({ x: bg.origin_x_m, y: bg.origin_y_m + hM });
+        const bgTransform = `rotate(${-(bg.rotation_deg || 0)} ${tlSvg.x + wM/2} ${tlSvg.y + hM/2})`;
         parts.push(`
           <image href="/api/heating/floor-plan/image/${escapeAttr(lvl.id)}?t=${bg._cb || 0}"
                  x="${tlSvg.x}" y="${tlSvg.y}" width="${wM}" height="${hM}"
                  opacity="${bg.opacity}" preserveAspectRatio="none"
-                 transform="rotate(${-(bg.rotation_deg || 0)} ${tlSvg.x + wM/2} ${tlSvg.y + hM/2})"
-                 pointer-events="none"/>`);
+                 transform="${bgTransform}"
+                 pointer-events="none"/>
+          <rect class="fp-bg-frame" x="${tlSvg.x}" y="${tlSvg.y}" width="${wM}" height="${hM}"
+                transform="${bgTransform}" pointer-events="none"/>`);
     }
 
     // Thermal overlay — a per-room heat-coverage field (see the thermal field
@@ -1283,10 +1286,47 @@ function renderOverlay() {
                 }
                 if (closest) {
                     const sp = sunPtToSvg(closest);
-                    // Animated light ray from the sun toward the house
-                    html += `<line class="fp-sun-ray" x1="${sp.x}" y1="${sp.y}"
-                                   x2="${originSvg.x}" y2="${originSvg.y}"
-                                   stroke-width="0.05" stroke-dasharray="0.22 0.14"/>`;
+                    // Light beam — a tapered cone of sunlight widening from the
+                    // sun toward the house, fading out along its length.
+                    const bdx = originSvg.x - sp.x, bdy = originSvg.y - sp.y;
+                    const blen = Math.hypot(bdx, bdy) || 1;
+                    const bx = bdx / blen, by = bdy / blen;   // unit vector sun → house
+                    const pxv = -by, pyv = bx;                // perpendicular
+                    const wSun = 0.16, wHouse = Math.min(1.6, blen * 0.22);
+                    const beamPts = [
+                        `${sp.x + pxv * wSun},${sp.y + pyv * wSun}`,
+                        `${sp.x - pxv * wSun},${sp.y - pyv * wSun}`,
+                        `${originSvg.x - pxv * wHouse},${originSvg.y - pyv * wHouse}`,
+                        `${originSvg.x + pxv * wHouse},${originSvg.y + pyv * wHouse}`,
+                    ].join(' ');
+                    html += `<defs>
+                      <linearGradient id="fpSunBeamGrad" gradientUnits="userSpaceOnUse"
+                                      x1="${sp.x}" y1="${sp.y}" x2="${originSvg.x}" y2="${originSvg.y}">
+                        <stop offset="0%"   stop-color="rgba(251,191,36,0.50)"/>
+                        <stop offset="45%"  stop-color="rgba(251,191,36,0.16)"/>
+                        <stop offset="100%" stop-color="rgba(251,191,36,0)"/>
+                      </linearGradient>
+                    </defs>`;
+                    html += `<polygon class="fp-sun-beam" points="${beamPts}"
+                                      fill="url(#fpSunBeamGrad)" filter="url(#fpSunGlow)"/>`;
+                    // Sun-ray particles — glowing motes drifting down the beam.
+                    // Each particle animates translate(--fp-d, --fp-cy) in a
+                    // group rotated to the beam direction, so the CSS keyframes
+                    // stay direction-agnostic. Negative delays start the stream
+                    // mid-flight instead of all bunched at the sun.
+                    const angDeg = Math.atan2(bdy, bdx) * 180 / Math.PI;
+                    let motes = '';
+                    for (let i = 0; i < 14; i++) {
+                        const dur = (2.4 + Math.random() * 2.4).toFixed(2);
+                        const delay = (-Math.random() * 5).toFixed(2);
+                        const r = (0.03 + Math.random() * 0.05).toFixed(3);
+                        const dist = (blen * (0.72 + Math.random() * 0.33)).toFixed(2);
+                        const drift = ((Math.random() - 0.5) * wHouse * 1.5).toFixed(3);
+                        motes += `<circle class="fp-sun-particle" r="${r}"
+                            style="--fp-d:${dist}px; --fp-cy:${drift}px;
+                                   animation-duration:${dur}s; animation-delay:${delay}s;"/>`;
+                    }
+                    html += `<g transform="translate(${sp.x} ${sp.y}) rotate(${angDeg.toFixed(2)})">${motes}</g>`;
                     // Glowing pulsing sun
                     html += `<circle cx="${sp.x}" cy="${sp.y}" r="0.42"
                                      fill="rgba(251,191,36,0.35)" filter="url(#fpSunGlow)"/>`;

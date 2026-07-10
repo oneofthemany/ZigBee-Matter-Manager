@@ -445,9 +445,15 @@
     stroke-width: 0.04;
 }
 .fp-north-mark     { fill: var(--fp-compass-needle); }
-.fp-sun-ray {
-    stroke: rgba(251, 191, 36, 0.5);
-    animation: fpRayFlow 1.6s linear infinite;
+.fp-sun-beam {
+    animation: fpBeamBreathe 3.4s ease-in-out infinite alternate;
+}
+.fp-sun-particle {
+    fill: #fcd34d;
+    opacity: 0;
+    animation-name: fpParticleFlow;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
 }
 .fp-sun-pulse {
     fill: none;
@@ -462,8 +468,15 @@
     from { transform: scale(0.55); opacity: 0.9; }
     to   { transform: scale(1.7);  opacity: 0; }
 }
-@keyframes fpRayFlow {
-    to { stroke-dashoffset: -0.72; }
+@keyframes fpBeamBreathe {
+    from { opacity: 0.65; }
+    to   { opacity: 1; }
+}
+@keyframes fpParticleFlow {
+    0%   { transform: translate(0.25px, 0) scale(0.8); opacity: 0; }
+    12%  { opacity: 0.9; }
+    75%  { opacity: 0.45; }
+    100% { transform: translate(var(--fp-d), var(--fp-cy)) scale(1.6); opacity: 0; }
 }
 @keyframes fpRingSpin {
     to { transform: rotate(360deg); }
