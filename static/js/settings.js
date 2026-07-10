@@ -489,16 +489,23 @@ function renderApisTab(config) {
           <i class="fas fa-music me-1"></i> Tidal
         </button>
       </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneAc" type="button">
+          <i class="fas fa-snowflake me-1"></i> Air Con
+        </button>
+      </li>
     </ul>
     <div class="tab-content">
       <div class="tab-pane fade show active" id="apiPaneWeather">${renderWeatherSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneMedia">${renderMediaSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
+      <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
     </div>
     `;
 
     loadWeatherStatus();
     loadTidalStatus();
+    loadAcUnits();
 }
 
 function renderWeatherSection(config) {
@@ -657,6 +664,223 @@ function renderMediaSection(config) {
     </div>
     `;
 }
+
+// ============================================================================
+// AIR CON SECTION (Gree / Midea local LAN) — lives in the External APIs tab
+// ============================================================================
+// Unlike the other panes, AC units are managed live through /api/ac/* and
+// persist immediately — no Save / restart cycle.
+
+function _acEsc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderAcSection() {
+    return `
+    <p class="text-muted small mb-3">
+      Local-LAN air conditioning — <strong>Gree</strong> protocol (EcoAir) and
+      <strong>Midea</strong> protocol (Comfee). Units are controlled directly on your
+      network; changes apply immediately, no restart needed. Midea units need a one-time
+      <em>Bind</em> to fetch their token/key (uses the library's anonymous preset
+      account — after that everything stays local).
+    </p>
+    <div class="d-flex gap-2 mb-3">
+      <button class="btn btn-primary btn-sm" id="acDiscoverBtn" onclick="window.acDiscover()">
+        <i class="fas fa-search me-1"></i> Discover on LAN
+      </button>
+      <button class="btn btn-outline-secondary btn-sm" onclick="window.loadAcUnits()">
+        <i class="fas fa-sync-alt me-1"></i> Refresh
+      </button>
+    </div>
+    <div id="acDiscoverResults" class="mb-3"></div>
+    <div id="acUnitsList">
+      <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading units…</div>
+    </div>
+    `;
+}
+
+window.loadAcUnits = async function () {
+    const el = document.getElementById('acUnitsList');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/ac/units').then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'failed');
+        const units = res.units || [];
+        if (!units.length) {
+            el.innerHTML = `<div class="text-muted small fst-italic">
+                No AC units configured yet — run <strong>Discover on LAN</strong> above.</div>`;
+            return;
+        }
+        const rows = units.map(u => {
+            const online = u.online;
+            const status = online
+                ? `<span class="badge bg-success">online</span>
+                   <span class="ms-1 small">${u.power ? '⏻ on' : '⏻ off'}${u.mode ? ' · ' + _acEsc(u.mode) : ''}
+                   ${u.current_c != null ? ' · ' + Number(u.current_c).toFixed(1) + '°C' : ''}
+                   ${u.target_c != null ? ' → ' + Number(u.target_c).toFixed(1) + '°C' : ''}</span>`
+                : `<span class="badge bg-secondary" title="${_acEsc(u.error || '')}">offline</span>
+                   <span class="ms-1 small text-muted">${_acEsc((u.error || '').slice(0, 60))}</span>`;
+            const controls = online ? `
+                <button class="btn btn-sm btn-outline-${u.power ? 'danger' : 'success'} py-0"
+                        onclick="window.acPower('${_acEsc(u.id)}', ${u.power ? 'false' : 'true'})">
+                  ${u.power ? 'Off' : 'On'}</button>
+                <select class="form-select form-select-sm d-inline-block py-0 ms-1" style="width:auto;font-size:0.78rem"
+                        onchange="window.acSetMode('${_acEsc(u.id)}', this.value)">
+                  ${['', 'auto', 'cool', 'dry', 'fan', 'heat'].map(m =>
+                    `<option value="${m}" ${m === (u.mode || '') ? 'selected' : ''}>${m || 'mode…'}</option>`).join('')}
+                </select>
+                <input type="number" step="0.5" min="16" max="31" class="form-control form-control-sm d-inline-block ms-1 py-0"
+                       style="width:70px;font-size:0.78rem" value="${u.target_c ?? 22}"
+                       id="acTemp_${_acEsc(u.id)}">
+                <button class="btn btn-sm btn-outline-primary py-0 ms-1"
+                        onclick="window.acSetTemp('${_acEsc(u.id)}')">Set</button>` : `
+                <button class="btn btn-sm btn-outline-warning py-0"
+                        onclick="window.acBind('${_acEsc(u.id)}')" title="Fetch key/token and reconnect">
+                  <i class="fas fa-key me-1"></i>Bind</button>`;
+            return `
+              <tr>
+                <td class="fw-semibold">${_acEsc(u.name || u.id)}
+                    <div class="small text-muted">${_acEsc(u.brand)}${u.room_id ? ' · room: ' + _acEsc(u.room_id) : ''}</div></td>
+                <td>${status}</td>
+                <td class="text-nowrap">${controls}</td>
+                <td class="text-end">
+                  ${online ? `<button class="btn btn-sm btn-link text-warning py-0" title="Re-bind"
+                        onclick="window.acBind('${_acEsc(u.id)}')"><i class="fas fa-key"></i></button>` : ''}
+                  <button class="btn btn-sm btn-link text-danger py-0" title="Remove"
+                        onclick="window.acDelete('${_acEsc(u.id)}')"><i class="fas fa-trash"></i></button>
+                </td>
+              </tr>`;
+        }).join('');
+        el.innerHTML = `
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr class="small text-muted">
+              <th>Unit</th><th>Status</th><th>Control</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+    } catch (e) {
+        el.innerHTML = `<div class="text-danger small">Failed to load AC units: ${_acEsc(e.message)}</div>`;
+    }
+};
+
+window.acDiscover = async function () {
+    const btn = document.getElementById('acDiscoverBtn');
+    const out = document.getElementById('acDiscoverResults');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Scanning…'; }
+    try {
+        const res = await fetch('/api/ac/discover', { method: 'POST' }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'discovery failed');
+        const f = res.found || {};
+        const cands = [...(f.gree || []), ...(f.midea || [])];
+        const errs = [...(f.gree_error || []).map(e => 'Gree: ' + e),
+                      ...(f.midea_error || []).map(e => 'Midea: ' + e)];
+        if (!cands.length) {
+            out.innerHTML = `<div class="alert alert-warning py-2 small mb-0">
+                No units answered the scan. Check they're powered on and on this network.
+                ${errs.length ? '<br>' + _acEsc(errs.join(' · ')) : ''}</div>`;
+            return;
+        }
+        out.innerHTML = `
+          <div class="border rounded p-2">
+            <div class="small fw-semibold mb-1">Found on the network:</div>
+            ${cands.map((c, i) => `
+              <div class="d-flex align-items-center gap-2 py-1 small">
+                <span class="badge bg-${c.brand === 'gree' ? 'info' : 'primary'}">${_acEsc(c.brand)}</span>
+                <span class="font-monospace">${_acEsc(c.host)}</span>
+                <span class="text-muted">${_acEsc(c.name || c.model || c.sn || '')}</span>
+                ${c.already_configured
+                    ? '<span class="badge bg-secondary">configured</span>'
+                    : `<button class="btn btn-sm btn-outline-success py-0 ms-auto"
+                         onclick='window.acAddCandidate(${JSON.stringify(JSON.stringify(c))})'>
+                         <i class="fas fa-plus me-1"></i>Add</button>`}
+              </div>`).join('')}
+          </div>`;
+    } catch (e) {
+        out.innerHTML = `<div class="text-danger small">${_acEsc(e.message)}</div>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-search me-1"></i> Discover on LAN'; }
+    }
+};
+
+window.acAddCandidate = async function (candJson) {
+    try {
+        const c = JSON.parse(candJson);
+        const suggested = c.name || (c.brand === 'gree' ? 'EcoAir' : 'Comfee');
+        const name = window.zbmPrompt
+            ? await window.zbmPrompt({ title: 'Add AC unit', label: 'Name for this unit:',
+                                       value: suggested, confirmText: 'Add' })
+            : prompt('Name for this unit:', suggested);
+        if (name === null) return;
+        const body = {
+            name: name || c.brand, brand: c.brand, host: c.host, port: c.port,
+            mac: c.mac, device_id: c.device_id, protocol: c.protocol,
+            model: c.model,
+        };
+        const res = await fetch('/api/ac/units', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'add failed');
+        window.toast?.success?.('AC added', `${name} saved${c.brand === 'midea' ? ' — now click Bind to fetch its key' : ''}`);
+        document.getElementById('acDiscoverResults').innerHTML = '';
+        await window.loadAcUnits();
+        if (c.brand === 'midea' && res.unit?.id) await window.acBind(res.unit.id);
+    } catch (e) {
+        window.toast?.error?.('Add failed', e.message);
+    }
+};
+
+window.acBind = async function (unitId) {
+    try {
+        window.toast?.info?.('Binding…', 'Fetching device key — a few seconds.');
+        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}/bind`,
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+            .then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'bind failed');
+        window.toast?.success?.('Bound', 'Unit is ready.');
+    } catch (e) {
+        window.toast?.error?.('Bind failed', e.message);
+    }
+    await window.loadAcUnits();
+};
+
+window.acDelete = async function (unitId) {
+    const ok = window.zbmConfirm
+        ? await window.zbmConfirm({ title: 'Remove AC unit',
+                                    message: `Remove AC unit "${unitId}"?`,
+                                    confirmText: 'Remove', variant: 'danger' })
+        : confirm(`Remove AC unit "${unitId}"?`);
+    if (!ok) return;
+    try {
+        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}`,
+            { method: 'DELETE' }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'delete failed');
+    } catch (e) {
+        window.toast?.error?.('Remove failed', e.message);
+    }
+    await window.loadAcUnits();
+};
+
+async function _acControl(unitId, changes) {
+    try {
+        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}/control`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(changes),
+        }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'control failed');
+    } catch (e) {
+        window.toast?.error?.('AC control failed', e.message);
+    }
+    await window.loadAcUnits();
+}
+
+window.acPower = (id, on) => _acControl(id, { power: on === true || on === 'true' });
+window.acSetMode = (id, mode) => mode ? _acControl(id, { mode }) : null;
+window.acSetTemp = (id) => {
+    const inp = document.getElementById(`acTemp_${id}`);
+    const v = parseFloat(inp?.value);
+    if (Number.isFinite(v)) return _acControl(id, { target_c: v });
+};
 
 function renderTidalSection(config) {
     const tidal = (config.media || {}).tidal || {};
