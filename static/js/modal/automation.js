@@ -1229,10 +1229,13 @@ async function _loadTr() {
             h+=e.message||'';
             if(e.conditions?.length){h+='<div class="ms-3">';e.conditions.forEach(c=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
                 let cLine;
+                const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 if(c.type==='time_window'){
-                    const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                     const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
                     cLine=`#${c.index} Time${c.negate?' NOT':''} ${c.time_from}→${c.time_to} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
+                }else if(c.type==='time'){
+                    const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
+                    cLine=`#${c.index} Alarm${c.negate?' NOT':''} ${c.at} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
                 }else if(c.type==='sun'){
                     cLine=`#${c.index} Sun ${c.from}→${c.to}${c.resolved?` (${c.resolved})`:''} now=${c.now_time||''}`;
                 }else{

@@ -174,35 +174,47 @@ class AutomationEngine:
                 for rule in self.rules:
                     if not rule.get("enabled", True):
                         continue
-                    for c in rule.get("conditions", []) + rule.get("prerequisites", []):
-                        ct = c.get("type")
-                        if ct == "time_window":
-                            boundaries.add(c.get("time_from"))
-                            boundaries.add(c.get("time_to"))
-                        elif ct == "time":
-                            # Alarm: evaluate at the fire minute and the minute after
-                            # (so the rule resets unmatched and can fire again).
-                            at = c.get("at")
-                            if at:
-                                boundaries.add(at)
-                                boundaries.add(self._plus_one_minute(at))
-                        elif ct == "sun":
-                            boundaries.update(self._sun_boundary_hhmm(c))
+                    boundaries.update(self._rule_temporal_boundaries(rule))
 
                 if now_hhmm in boundaries:
                     logger.info(f"[AUTO] Time boundary hit {now_hhmm} — evaluating timed rules")
-                    await self._evaluate_timed_rules()
+                    await self._evaluate_timed_rules(boundary_hhmm=now_hhmm)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[AUTO] Time boundary loop error: {e}")
 
-    async def _evaluate_timed_rules(self):
+    def _rule_temporal_boundaries(self, rule) -> set:
+        """HH:MM strings at which this rule's temporal conditions can change state."""
+        b: set = set()
+        for c in rule.get("conditions", []) + rule.get("prerequisites", []):
+            ct = c.get("type")
+            if ct == "time_window":
+                b.add(c.get("time_from"))
+                b.add(c.get("time_to"))
+            elif ct == "time":
+                # Alarm: evaluate at the fire minute and the minute after
+                # (so the rule resets unmatched and can fire again).
+                at = c.get("at")
+                if at:
+                    b.add(at)
+                    b.add(self._plus_one_minute(at))
+            elif ct == "sun":
+                b.update(self._sun_boundary_hhmm(c))
+        b.discard(None)
+        return b
+
+    async def _evaluate_timed_rules(self, boundary_hhmm: str = None):
         """
         Evaluate all enabled rules that have at least one time_window condition.
         Uses empty changed_data since time_window conditions don't need attribute data.
         Runs the same state-machine transition logic as evaluate().
+
+        boundary_hhmm: when set (called from the boundary loop), only rules whose
+        own temporal boundaries include that minute are evaluated — otherwise every
+        timed rule gets re-evaluated (and traces NO_MATCH) at every other rule's
+        boundary. None (startup) evaluates all timed rules.
         """
         now = time.time()
         devices = self._get_all_devices()
@@ -220,6 +232,9 @@ class AutomationEngine:
                 p.get("type") in _TEMPORAL for p in rule.get("prerequisites", [])
             )
             if not (has_tw_cond or has_tw_prereq):
+                continue
+
+            if boundary_hhmm and boundary_hhmm not in self._rule_temporal_boundaries(rule):
                 continue
 
             rule_id = rule["id"]
