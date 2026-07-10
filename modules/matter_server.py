@@ -121,6 +121,35 @@ class MatterServerManager:
 
         return await self._spawn()
 
+    async def wait_ready(self, timeout: float = 90.0,
+                         poll_interval: float = 1.0) -> bool:
+        """
+        Wait until the server's WebSocket port accepts TCP connections.
+
+        The CHIP SDK needs 10-30s of initialisation after spawn before the
+        WS API starts listening — connecting earlier just fails.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if not self._running:
+                return False
+            try:
+                _, writer = await asyncio.open_connection("127.0.0.1", self.port)
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                logger.info(f"Matter server accepting connections on port {self.port}")
+                return True
+            except OSError:
+                await asyncio.sleep(poll_interval)
+        logger.warning(
+            f"Matter server not accepting connections after {timeout:.0f}s"
+        )
+        return False
+
 
     async def _kill_orphans(self):
         """Kill any leftover matter-server processes from previous runs."""

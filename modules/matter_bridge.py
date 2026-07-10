@@ -206,7 +206,13 @@ class MatterBridge:
             self._listen_task = asyncio.create_task(self._listen_loop())
 
         except Exception as e:
-            logger.error(f"Failed to connect to Matter server ({self.server_url}): {e}")
+            # WARNING, not ERROR: at boot the Matter server is usually still
+            # initialising and the reconnect loop below picks it up within
+            # seconds. _reconnect_loop escalates to ERROR if it stays down.
+            logger.warning(
+                f"Matter server not reachable yet ({self.server_url}): {e} "
+                f"— retrying in background"
+            )
             self._connected = False
 
             # Clean up the leaked session
@@ -246,9 +252,15 @@ class MatterBridge:
 
         logger.info("Matter bridge stopped")
 
+    # Consecutive reconnect failures before we raise a single ERROR (and
+    # therefore a user-visible alert). Below this it's WARNING only, so a
+    # normal boot race never alerts but a genuinely dead server still does.
+    _ERROR_AFTER_ATTEMPTS = 5
+
     async def _reconnect_loop(self):
         """Attempt to reconnect to matter-server with backoff."""
         delay = 5
+        attempts = 0
         while not self._shutdown:
             logger.info(f"Matter bridge reconnecting in {delay}s...")
             await asyncio.sleep(delay)
@@ -268,7 +280,14 @@ class MatterBridge:
                 return  # Success — exit loop
 
             except Exception as e:
-                logger.warning(f"Matter reconnect failed: {e}")
+                attempts += 1
+                if attempts == self._ERROR_AFTER_ATTEMPTS:
+                    logger.error(
+                        f"Failed to connect to Matter server ({self.server_url}) "
+                        f"after {attempts} attempts: {e}"
+                    )
+                else:
+                    logger.warning(f"Matter reconnect failed: {e}")
                 self._connected = False
                 # Clean up leaked session
                 if self._session and not self._session.closed:

@@ -456,342 +456,388 @@ async def lifespan(app: FastAPI):
     from modules.dongle_jedi import DongleJedi
     setup_status = DongleJedi.needs_setup()
 
-    mqtt_enabled = get_conf('mqtt', 'enabled', True)
-
-    if setup_status["needs_setup"]:
-        logger.warning(f"Setup needed: {setup_status['reason']}")
-        logger.info("Web UI is up — setup wizard will guide the user")
-        await manager.broadcast({
-            "type": "log",
-            "payload": {
-                "level": "WARN",
-                "message": f"Setup needed ({setup_status['reason']}). Open the web UI.",
-                "timestamp": None,
-            }
-        })
-    else:
-        mqtt_enabled = get_conf('mqtt', 'enabled', True)
-
-        if mqtt_enabled:
-            try:
-                await mqtt_service.start()
-                logger.info("MQTT connected")
-            except Exception as e:
-                logger.warning(f"MQTT connection failed: {e}")
-
-            mqtt_service.mqtt_explorer = MQTTExplorer(mqtt_service, max_messages=1000)
-            async def mqtt_explorer_callback(message_record):
-                await manager.broadcast({"type": "mqtt_message", "payload": message_record})
-            mqtt_service.mqtt_explorer.add_callback(mqtt_explorer_callback)
-            logger.info("MQTT Explorer initialized")
+    # ── Deferred bring-up ───────────────────────────────────────────────
+    # Everything below is slow (Zigbee radio takes 40-70s on MultiPAN, the
+    # Matter server 10-30s). Run it as a background task so uvicorn starts
+    # serving the web UI immediately; the UI streams progress over the
+    # websocket and the remaining endpoints appear as each service
+    # registers during bring-up.
+    async def _background_bringup():
+        if setup_status["needs_setup"]:
+            logger.warning(f"Setup needed: {setup_status['reason']}")
+            logger.info("Web UI is up — setup wizard will guide the user")
+            await manager.broadcast({
+                "type": "log",
+                "payload": {
+                    "level": "WARN",
+                    "message": f"Setup needed ({setup_status['reason']}). Open the web UI.",
+                    "timestamp": None,
+                }
+            })
         else:
-            logger.info("MQTT disabled (standalone mode)")
+            mqtt_enabled = get_conf('mqtt', 'enabled', True)
 
-        # Start Zigbee
-        ensure_network_credentials("./config/config.yaml")
-        network_key = get_conf('zigbee', 'network_key', None)
-        await zigbee_service.start(network_key=network_key)
-        logger.info("Zigbee network started")
+            if mqtt_enabled:
+                try:
+                    await mqtt_service.start()
+                    logger.info("MQTT connected")
+                except Exception as e:
+                    logger.warning(f"MQTT connection failed: {e}")
 
-        heating_controller._resilience_manager = getattr(zigbee_service.app, "_resilience_manager", None)
+                mqtt_service.mqtt_explorer = MQTTExplorer(mqtt_service, max_messages=1000)
+                async def mqtt_explorer_callback(message_record):
+                    await manager.broadcast({"type": "mqtt_message", "payload": message_record})
+                mqtt_service.mqtt_explorer.add_callback(mqtt_explorer_callback)
+                logger.info("MQTT Explorer initialized")
+            else:
+                logger.info("MQTT disabled (standalone mode)")
 
-        # Wire group callback
-        if mqtt_enabled:
-            mqtt_service.group_command_callback = zigbee_service.group_manager.handle_mqtt_group_command
-            logger.info("Wired GroupManager callback to MQTT Service")
+            # Start Zigbee
+            ensure_network_credentials("./config/config.yaml")
+            network_key = get_conf('zigbee', 'network_key', None)
+            await zigbee_service.start(network_key=network_key)
+            logger.info("Zigbee network started")
 
-    # Start Matter
-    if matter_server:
-        try:
-            started = await matter_server.start()
-            if started:
-                logger.info("Embedded Matter server started")
-        except Exception as e:
-            logger.error(f"Failed to start Matter server: {e}")
+            heating_controller._resilience_manager = getattr(zigbee_service.app, "_resilience_manager", None)
 
-    if matter_bridge:
-        try:
-            await matter_bridge.start()
-            logger.info("Matter bridge started")
-        except Exception as e:
-            logger.error(f"Failed to start Matter bridge: {e}")
+            # Wire group callback
+            if mqtt_enabled:
+                mqtt_service.group_command_callback = zigbee_service.group_manager.handle_mqtt_group_command
+                logger.info("Wired GroupManager callback to MQTT Service")
 
-    # Start remote access tunnel if the user enabled it
-    if remote_access_manager.settings.enabled:
-        try:
-            started = await remote_access_manager.start()
-            if started:
-                logger.info("Remote access tunnel started")
-        except Exception as e:
-            logger.error(f"Failed to start remote access tunnel: {e}")
+        # Start Matter
+        if matter_server:
+            try:
+                started = await matter_server.start()
+                if started:
+                    logger.info("Embedded Matter server started")
+                    # CHIP SDK needs 10-30s before its WS API listens; wait so
+                    # the bridge's first connect doesn't fail and raise an alert.
+                    await matter_server.wait_ready(timeout=90)
+            except Exception as e:
+                logger.error(f"Failed to start Matter server: {e}")
+
+        if matter_bridge:
+            try:
+                await matter_bridge.start()
+                logger.info("Matter bridge started")
+            except Exception as e:
+                logger.error(f"Failed to start Matter bridge: {e}")
+
+        # Start remote access tunnel if the user enabled it
+        if remote_access_manager.settings.enabled:
+            try:
+                started = await remote_access_manager.start()
+                if started:
+                    logger.info("Remote access tunnel started")
+            except Exception as e:
+                logger.error(f"Failed to start remote access tunnel: {e}")
 
         # Wire Matter state changes into the automation engine
-        matter_bridge._automation_evaluator = (
-            lambda ieee, data: zigbee_service.automation.evaluate(ieee, data)
-        )
-        logger.info("Wired Matter bridge → automation evaluator")
+        # (was indented inside the remote-access block above, which both skipped
+        # the wiring when the tunnel was disabled and crashed on matter_bridge
+        # being None when Matter was disabled)
+        if matter_bridge:
+            matter_bridge._automation_evaluator = (
+                lambda ieee, data: zigbee_service.automation.evaluate(ieee, data)
+            )
+            logger.info("Wired Matter bridge → automation evaluator")
 
 
-    if matter_bridge and hasattr(zigbee_service, 'resilience') and zigbee_service.resilience:
-        matter_bridge._app_resilience = zigbee_service.resilience
-        logger.info("Wired resilience manager → Matter bridge")
+        if matter_bridge and hasattr(zigbee_service, 'resilience') and zigbee_service.resilience:
+            matter_bridge._app_resilience = zigbee_service.resilience
+            logger.info("Wired resilience manager → Matter bridge")
 
-    # Spectrum monitor — wait for radio to be ready, detect support
-    spectrum_interval = get_conf('zigbee', 'spectrum_scan_interval', 3600)
-    if spectrum_interval > 0:
-        zigbee_service.spectrum_monitor = SpectrumMonitor(
-            app_getter=lambda: zigbee_service.app,
-            interval=spectrum_interval
-        )
-
-        async def _start_spectrum_monitor(svc):
-            """Wait for radio, probe energy_scan support, then start."""
-            # MultiPAN startup takes longer — CPC stack adds 40-70s
-            # before bellows can connect. Extend patience accordingly.
-            is_multipan = getattr(svc, 'multipan', None) is not None
-            max_wait = 300 if is_multipan else 150  # 5min vs 2.5min
-            poll_interval = 5
-            max_polls = max_wait // poll_interval
-
-            if is_multipan:
-                logger.info(
-                    f"Spectrum monitor: MultiPAN detected, "
-                    f"extending radio wait to {max_wait}s"
-                )
-
-            for i in range(max_polls):
-                if svc.app:
-                    try:
-                        result = await svc.app.energy_scan(
-                            channels=range(11, 12), count=1, duration_exp=2
-                        )
-                        if result:
-                            svc.spectrum_monitor.start()
-                            logger.info(
-                                f"Spectrum monitor started "
-                                f"(interval={spectrum_interval}s, "
-                                f"waited {i * poll_interval}s for radio)"
-                            )
-                        else:
-                            logger.warning(
-                                "Spectrum monitor: energy_scan returned empty — disabled"
-                            )
-                    except NotImplementedError:
-                        logger.warning(
-                            "Spectrum monitor: energy_scan not supported "
-                            "by this coordinator — disabled"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Spectrum monitor: energy_scan probe failed "
-                            f"({e}) — disabled"
-                        )
-                    return
-                await asyncio.sleep(poll_interval)
-
-            logger.warning(
-                f"Spectrum monitor: radio never ready after {max_wait}s — disabled"
+        # Spectrum monitor — wait for radio to be ready, detect support
+        spectrum_interval = get_conf('zigbee', 'spectrum_scan_interval', 3600)
+        if spectrum_interval > 0:
+            zigbee_service.spectrum_monitor = SpectrumMonitor(
+                app_getter=lambda: zigbee_service.app,
+                interval=spectrum_interval
             )
 
-        asyncio.create_task(_start_spectrum_monitor(zigbee_service))
+            async def _start_spectrum_monitor(svc):
+                """Wait for radio, probe energy_scan support, then start."""
+                # MultiPAN startup takes longer — CPC stack adds 40-70s
+                # before bellows can connect. Extend patience accordingly.
+                is_multipan = getattr(svc, 'multipan', None) is not None
+                max_wait = 300 if is_multipan else 150  # 5min vs 2.5min
+                poll_interval = 5
+                max_polls = max_wait // poll_interval
 
-    # Groups - callback is already wired in ZigbeeService.__init__
-    # Just log that it's ready
-    if hasattr(zigbee_service, 'group_manager'):
-        logger.info("Group manager initialized")
+                if is_multipan:
+                    logger.info(
+                        f"Spectrum monitor: MultiPAN detected, "
+                        f"extending radio wait to {max_wait}s"
+                    )
 
-    # ── System Monitor & Telemetry ──
-    system_monitor = SystemMonitor(
-        interval=30,
-        event_callback=broadcast_event,
-    )
-    system_monitor.start()
-    logger.info("System monitor started")
+                for i in range(max_polls):
+                    if svc.app:
+                        try:
+                            result = await svc.app.energy_scan(
+                                channels=range(11, 12), count=1, duration_exp=2
+                            )
+                            if result:
+                                svc.spectrum_monitor.start()
+                                logger.info(
+                                    f"Spectrum monitor started "
+                                    f"(interval={spectrum_interval}s, "
+                                    f"waited {i * poll_interval}s for radio)"
+                                )
+                            else:
+                                logger.warning(
+                                    "Spectrum monitor: energy_scan returned empty — disabled"
+                                )
+                        except NotImplementedError:
+                            logger.warning(
+                                "Spectrum monitor: energy_scan not supported "
+                                "by this coordinator — disabled"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Spectrum monitor: energy_scan probe failed "
+                                f"({e}) — disabled"
+                            )
+                        return
+                    await asyncio.sleep(poll_interval)
 
-    telemetry_collector = TelemetryCollector(
-        device_registry_getter=lambda: zigbee_service.devices,
-        retention_days=30,
-    )
-    telemetry_collector.start()
-    logger.info("Telemetry collector started")
+                logger.warning(
+                    f"Spectrum monitor: radio never ready after {max_wait}s — disabled"
+                )
 
-    register_telemetry_routes(app, lambda: system_monitor)
-    zigbee_service.telemetry_collector = telemetry_collector
+            asyncio.create_task(_start_spectrum_monitor(zigbee_service))
 
-    # weather
-    weather_service.start()
-    logger.info("Weather service initialised")
+        # Groups - callback is already wired in ZigbeeService.__init__
+        # Just log that it's ready
+        if hasattr(zigbee_service, 'group_manager'):
+            logger.info("Group manager initialized")
 
-    # media (multi-room audio: Cast / WiiM / radio)
-    media_service.start()
-    logger.info("Media service initialised")
+        # ── System Monitor & Telemetry ──
+        system_monitor = SystemMonitor(
+            interval=30,
+            event_callback=broadcast_event,
+        )
+        system_monitor.start()
+        app.state.system_monitor = system_monitor
+        logger.info("System monitor started")
 
-    # heating
-    heating_advisor.start()
-    logger.info("Heating Advisor initialised")
+        telemetry_collector = TelemetryCollector(
+            device_registry_getter=lambda: zigbee_service.devices,
+            retention_days=30,
+        )
+        telemetry_collector.start()
+        app.state.telemetry_collector = telemetry_collector
+        logger.info("Telemetry collector started")
 
-    heating_controller.start()
-    logger.info("Heating Controller initialised")
+        register_telemetry_routes(app, lambda: system_monitor)
+        zigbee_service.telemetry_collector = telemetry_collector
 
-    heating_anomaly_watcher.start()
-    logger.info("Heating Anomaly Detection initialised")
+        # weather
+        weather_service.start()
+        logger.info("Weather service initialised")
 
-    # Merge Matter devices into automation engine's device registry
-    if matter_bridge:
-        original_getter = zigbee_service.automation._get_devices
-        original_names = zigbee_service.automation._get_names
-        def merged_devices():
-            devs = dict(original_getter())
-            devs.update(matter_bridge.devices)
-            return devs
-        def merged_names():
-            names = dict(original_names())
-            for ieee, dev in matter_bridge.devices.items():
+        # media (multi-room audio: Cast / WiiM / radio)
+        media_service.start()
+        logger.info("Media service initialised")
+
+        # heating
+        heating_advisor.start()
+        logger.info("Heating Advisor initialised")
+
+        heating_controller.start()
+        logger.info("Heating Controller initialised")
+
+        heating_anomaly_watcher.start()
+        logger.info("Heating Anomaly Detection initialised")
+
+        # Merge Matter devices into automation engine's device registry
+        if matter_bridge:
+            original_getter = zigbee_service.automation._get_devices
+            original_names = zigbee_service.automation._get_names
+            def merged_devices():
+                devs = dict(original_getter())
+                devs.update(matter_bridge.devices)
+                return devs
+            def merged_names():
+                names = dict(original_names())
+                for ieee, dev in matter_bridge.devices.items():
+                    names[ieee] = dev.friendly_name
+                return names
+            zigbee_service.automation._get_devices = merged_devices
+            zigbee_service.automation._get_names = merged_names
+            logger.info("Wired Matter devices into automation engine")
+
+        # Rotary binding manager
+        if matter_bridge:
+            from modules.matter_definitions import get_definition_store
+            rbm = get_rotary_binding_manager()
+            rbm.set_dispatchers(
+                zigbee_send=zigbee_service.send_command,
+                matter_send=matter_bridge.send_command,
+            )
+            rbm.load_from_definitions(get_definition_store())
+            logger.info(f"Rotary binding manager: {len(rbm._all_bindings)} binding(s)")
+
+        # ── Presence Users ──
+        presence_manager = PresenceUserManager(
+            mqtt_handler=mqtt_service,
+            event_emitter=broadcast_event,                    # same one used by zones
+            automation_evaluator=zigbee_service.automation.evaluate,
+        )
+        await presence_manager.start()
+        set_presence_manager(presence_manager)
+        app.state.presence_manager = presence_manager
+
+        # Wire presence virtual devices into the automation engine, the same
+        # way Matter devices are wired in above.
+        _orig_dev_getter = zigbee_service.automation._get_devices
+        _orig_name_getter = zigbee_service.automation._get_names
+
+        def _devs_with_presence():
+            merged = dict(_orig_dev_getter())
+            merged.update(presence_manager.devices)
+            return merged
+
+        def _names_with_presence():
+            names = dict(_orig_name_getter())
+            for ieee, dev in presence_manager.devices.items():
                 names[ieee] = dev.friendly_name
             return names
-        zigbee_service.automation._get_devices = merged_devices
-        zigbee_service.automation._get_names = merged_names
-        logger.info("Wired Matter devices into automation engine")
 
-    # Rotary binding manager
-    if matter_bridge:
-        from modules.matter_definitions import get_definition_store
-        rbm = get_rotary_binding_manager()
-        rbm.set_dispatchers(
-            zigbee_send=zigbee_service.send_command,
-            matter_send=matter_bridge.send_command,
-        )
-        rbm.load_from_definitions(get_definition_store())
-        logger.info(f"Rotary binding manager: {len(rbm._all_bindings)} binding(s)")
-
-    # ── Presence Users ──
-    presence_manager = PresenceUserManager(
-        mqtt_handler=mqtt_service,
-        event_emitter=broadcast_event,                    # same one used by zones
-        automation_evaluator=zigbee_service.automation.evaluate,
-    )
-    await presence_manager.start()
-    set_presence_manager(presence_manager)
-
-    # Wire presence virtual devices into the automation engine, the same
-    # way Matter devices are wired in above.
-    _orig_dev_getter = zigbee_service.automation._get_devices
-    _orig_name_getter = zigbee_service.automation._get_names
-
-    def _devs_with_presence():
-        merged = dict(_orig_dev_getter())
-        merged.update(presence_manager.devices)
-        return merged
-
-    def _names_with_presence():
-        names = dict(_orig_name_getter())
-        for ieee, dev in presence_manager.devices.items():
-            names[ieee] = dev.friendly_name
-        return names
-
-    zigbee_service.automation._get_devices = _devs_with_presence
-    zigbee_service.automation._get_names = _names_with_presence
-    logger.info("Wired presence users into automation engine")
+        zigbee_service.automation._get_devices = _devs_with_presence
+        zigbee_service.automation._get_names = _names_with_presence
+        logger.info("Wired presence users into automation engine")
 
 
-    # ──  Recovery ──
-    from modules.test_recovery import get_test_recovery_manager
-    trm = get_test_recovery_manager(broadcast_event)
-    startup_result = trm.check_pending_on_startup()
-    if startup_result:
-        if startup_result.get("rolled_back"):
-            logger.warning(f"Auto-rolled back test deployment: {startup_result.get('path')}")
-        elif startup_result.get("pending"):
-            logger.info(f"Pending test: {startup_result.get('path')} — {startup_result.get('remaining')}s to confirm")
+        # ──  Recovery ──
+        from modules.test_recovery import get_test_recovery_manager
+        trm = get_test_recovery_manager(broadcast_event)
+        startup_result = trm.check_pending_on_startup()
+        if startup_result:
+            if startup_result.get("rolled_back"):
+                logger.warning(f"Auto-rolled back test deployment: {startup_result.get('path')}")
+            elif startup_result.get("pending"):
+                logger.info(f"Pending test: {startup_result.get('path')} — {startup_result.get('remaining')}s to confirm")
 
-    # Initialise AI Assistant
-    ai_config = CONFIG.get("ai", {})
-    ai_assistant = AIAssistant(ai_config)
-    ai_automations = AIAutomations(ai_assistant, zigbee_service.automation)
-    from modules.ai_chat import AIChat
-    ai_chat = AIChat(ai_assistant, ai_automations)
-    logger.info(f"AI Assistant initialised: {ai_assistant.provider}/{ai_assistant.model} "
-                f"configured={ai_assistant.is_configured()}")
+        # Initialise AI Assistant
+        ai_config = CONFIG.get("ai", {})
+        ai_assistant = AIAssistant(ai_config)
+        ai_automations = AIAutomations(ai_assistant, zigbee_service.automation)
+        from modules.ai_chat import AIChat
+        ai_chat = AIChat(ai_assistant, ai_automations)
+        logger.info(f"AI Assistant initialised: {ai_assistant.provider}/{ai_assistant.model} "
+                    f"configured={ai_assistant.is_configured()}")
 
-    # AI config persistence helper
-    def _save_ai_config(ai_cfg):
-        try:
-            with open("./config/config.yaml", "r") as f:
-                cfg = yaml.safe_load(f) or {}
-            cfg["ai"] = ai_cfg
-            with open("./config/config.yaml", "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-            logger.info("AI config saved to config.yaml")
-        except Exception as e:
-            logger.error(f"Failed to save AI config: {e}")
-
-    register_ai_routes(
-        app,
-        ai_assistant_getter=lambda: ai_assistant,
-        ai_automations_getter=lambda: ai_automations,
-        config_saver=_save_ai_config,
-        ai_chat_getter=lambda: ai_chat,
-    )
-
-
-    # Safe Deploy
-    register_deploy_routes(app, service_name="zigbee_matter_manager")
-    logger.info("Safe deploy routes registered")
-
-    # Check if we're recovering from a deploy
-    asyncio.create_task(check_deploy_on_startup())
-
-    # Upgrade manager background loops
-    try:
-        from modules.upgrade_manager import periodic_check_loop, status_watcher_loop
-
-        async def _broadcast_upgrade(payload):
+        # AI config persistence helper
+        def _save_ai_config(ai_cfg):
             try:
-                await manager.broadcast(payload)
+                with open("./config/config.yaml", "r") as f:
+                    cfg = yaml.safe_load(f) or {}
+                cfg["ai"] = ai_cfg
+                with open("./config/config.yaml", "w") as f:
+                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+                logger.info("AI config saved to config.yaml")
             except Exception as e:
-                logger.debug(f"Upgrade broadcast failed: {e}")
+                logger.error(f"Failed to save AI config: {e}")
 
-        app.state.upgrade_check_task = asyncio.create_task(
-            periodic_check_loop(interval_hours=6, broadcast_fn=_broadcast_upgrade)
+        register_ai_routes(
+            app,
+            ai_assistant_getter=lambda: ai_assistant,
+            ai_automations_getter=lambda: ai_automations,
+            config_saver=_save_ai_config,
+            ai_chat_getter=lambda: ai_chat,
         )
-        app.state.upgrade_status_task = asyncio.create_task(
-            status_watcher_loop(broadcast_fn=_broadcast_upgrade, poll_seconds=2.0)
-        )
-        logger.info("Upgrade manager background loops started")
-    except Exception as e:
-        logger.warning(f"Failed to start upgrade manager loops: {e}")
 
-    # Packet flow broadcaster — pushes a 2s snapshot of rates / top talkers /
-    # anomalies / sparkline history to all connected clients. Independent of
-    # debug capture; counters in modules/packet_flow run always-on.
-    try:
-        from modules.packet_flow import get_flow_analyzer
 
-        async def _packet_flow_loop(interval: float = 2.0):
-            analyzer = get_flow_analyzer()
-            while True:
+        # Safe Deploy
+        register_deploy_routes(app, service_name="zigbee_matter_manager")
+        logger.info("Safe deploy routes registered")
+
+        # Check if we're recovering from a deploy
+        asyncio.create_task(check_deploy_on_startup())
+
+        # Upgrade manager background loops
+        try:
+            from modules.upgrade_manager import periodic_check_loop, status_watcher_loop
+
+            async def _broadcast_upgrade(payload):
                 try:
-                    snap = analyzer.get_snapshot(top_n=10, history_seconds=60)
-                    await manager.broadcast({"type": "packet_flow", "payload": snap})
-                except asyncio.CancelledError:
-                    raise
+                    await manager.broadcast(payload)
                 except Exception as e:
-                    logger.debug(f"packet_flow broadcast failed: {e}")
-                await asyncio.sleep(interval)
+                    logger.debug(f"Upgrade broadcast failed: {e}")
 
-        app.state.flow_broadcast_task = asyncio.create_task(_packet_flow_loop(2.0))
-        logger.info("Packet flow broadcaster started (2s interval)")
-    except Exception as e:
-        logger.warning(f"Failed to start packet flow broadcaster: {e}")
+            app.state.upgrade_check_task = asyncio.create_task(
+                periodic_check_loop(interval_hours=6, broadcast_fn=_broadcast_upgrade)
+            )
+            app.state.upgrade_status_task = asyncio.create_task(
+                status_watcher_loop(broadcast_fn=_broadcast_upgrade, poll_seconds=2.0)
+            )
+            logger.info("Upgrade manager background loops started")
+        except Exception as e:
+            logger.warning(f"Failed to start upgrade manager loops: {e}")
+
+        # Packet flow broadcaster — pushes a 2s snapshot of rates / top talkers /
+        # anomalies / sparkline history to all connected clients. Independent of
+        # debug capture; counters in modules/packet_flow run always-on.
+        try:
+            from modules.packet_flow import get_flow_analyzer
+
+            async def _packet_flow_loop(interval: float = 2.0):
+                analyzer = get_flow_analyzer()
+                while True:
+                    try:
+                        snap = analyzer.get_snapshot(top_n=10, history_seconds=60)
+                        await manager.broadcast({"type": "packet_flow", "payload": snap})
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.debug(f"packet_flow broadcast failed: {e}")
+                    await asyncio.sleep(interval)
+
+            app.state.flow_broadcast_task = asyncio.create_task(_packet_flow_loop(2.0))
+            logger.info("Packet flow broadcaster started (2s interval)")
+        except Exception as e:
+            logger.warning(f"Failed to start packet flow broadcaster: {e}")
+
+        logger.info("✅ Background bring-up complete — all services started")
+        await manager.broadcast({
+            "type": "log",
+            "payload": {"level": "INFO", "message": "All services started",
+                        "timestamp": None}
+        })
+
+    def _bringup_done(task: asyncio.Task):
+        # Retrieve the exception so a failed bring-up is a logged error,
+        # not an unretrieved task exception.
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(f"Background bring-up failed: {task.exception()!r}")
+
+    app.state.bringup_task = asyncio.create_task(_background_bringup())
+    app.state.bringup_task.add_done_callback(_bringup_done)
+    logger.info("Web UI starting — service bring-up continues in background")
 
     yield  # Application runs here
 
     # Shutdown
     logger.info("Shutting down Zigbee Matter Manager...")
 
-    # 1. monitors and telemetry first
-    system_monitor.stop()
-    telemetry_collector.stop()
+    # 0. stop the background bring-up if it's still in flight
+    bringup_task = getattr(app.state, "bringup_task", None)
+    if bringup_task and not bringup_task.done():
+        bringup_task.cancel()
+        try:
+            await bringup_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # 1. monitors and telemetry first (may be absent if bring-up was
+    #    interrupted, hence the guards)
+    system_monitor = getattr(app.state, "system_monitor", None)
+    if system_monitor:
+        system_monitor.stop()
+    telemetry_collector = getattr(app.state, "telemetry_collector", None)
+    if telemetry_collector:
+        telemetry_collector.stop()
     weather_service.stop()
     media_service.stop()
     heating_advisor.stop()
@@ -799,7 +845,9 @@ async def lifespan(app: FastAPI):
     heating_anomaly_watcher.stop()
     from modules.telemetry_db import close as close_telemetry_db
     close_telemetry_db()
-    await presence_manager.stop()
+    presence_manager = getattr(app.state, "presence_manager", None)
+    if presence_manager:
+        await presence_manager.stop()
 
     # 2. services
     if zigbee_service.multipan and zigbee_service.multipan.is_running:
