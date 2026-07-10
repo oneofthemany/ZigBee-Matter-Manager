@@ -694,6 +694,61 @@
   };
 
   /* ------------------------------------------------------------------ */
+  /*  Fork lightning (time-travel overlay)                                */
+  /*                                                                      */
+  /*  makeForkBolt() generates the geometry once — a jagged main channel  */
+  /*  with recursive thinner branches. The overlay keeps each bolt alive  */
+  /*  for ~150-280ms and redraws it with a flicker envelope, which is     */
+  /*  what makes it read as lightning instead of a one-frame scribble.    */
+  /* ------------------------------------------------------------------ */
+  function makeForkBolt(x, y, angle, len, width, depth) {
+    var paths = [];
+    (function walk(x0, y0, ang, l, w, d) {
+      var steps = Math.max(4, Math.floor(l / 16));
+      var seg = l / steps;
+      var pts = [[x0, y0]];
+      var px = x0, py = y0;
+      for (var i = 0; i < steps; i++) {
+        // Mostly small jitter with the occasional hard kink
+        ang += (Math.random() - 0.5) * (Math.random() < 0.2 ? 1.4 : 0.35);
+        px += Math.cos(ang) * seg;
+        py += Math.sin(ang) * seg;
+        pts.push([px, py]);
+        if (d > 0 && i > 0 && Math.random() < 0.3) {
+          walk(px, py,
+            ang + (Math.random() < 0.5 ? -0.7 : 0.7) + (Math.random() - 0.5) * 0.4,
+            l * (0.3 + Math.random() * 0.3), w * 0.5, d - 1);
+        }
+      }
+      paths.push({ pts: pts, width: w });
+    })(x, y, angle, len, width, depth);
+    return paths;
+  }
+
+  function drawBoltPaths(ctx, paths, alpha) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    paths.forEach(function (p) {
+      ctx.beginPath();
+      ctx.moveTo(p.pts[0][0], p.pts[0][1]);
+      for (var j = 1; j < p.pts.length; j++) ctx.lineTo(p.pts[j][0], p.pts[j][1]);
+      // Halo pass — wide, dim, blue
+      ctx.lineWidth = p.width * 3.5;
+      ctx.strokeStyle = 'rgba(110,170,255,' + (0.22 * alpha).toFixed(3) + ')';
+      ctx.shadowColor = '#5af';
+      ctx.shadowBlur = 18;
+      ctx.stroke();
+      // Core pass — thin, white-hot (same path, restroked)
+      ctx.lineWidth = Math.max(0.6, p.width * 0.9);
+      ctx.strokeStyle = 'rgba(240,248,255,' + (0.95 * alpha).toFixed(3) + ')';
+      ctx.shadowBlur = 6;
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ */
   /*  Time-travel wait overlay (image swap / upgrade)                     */
   /*                                                                      */
   /*  Unlike showDeloreanAnimation (a 4s one-shot), this runs for as      */
@@ -774,10 +829,19 @@
     window.addEventListener('resize', onResize);
 
     particles.length = 0;
+    var bolts = [];   // live lightning: {paths, born, life}
 
     var start = performance.now();
-    var mode = 'wait';         // wait → accel → done
-    var accelStart = 0;
+    // Timeline:
+    //   enter  — bee flies in from the left with small cruise particles
+    //   strike — a giant fork bolt hits it dead-centre
+    //   blast  — it accelerates off-screen right in a storm of particles
+    //   storm  — black sky with lightning only, for as long as the swap
+    //            takes; complete() then fires the barrage + white flash.
+    var T_ENTER = 2800, T_STRIKE = 420, T_BLAST = 1300;
+    var strikeSpawned = false;
+    var completing = false;
+    var barrageStart = 0;
     var onFlashCb = null;
     var flashFired = false;
     var done = false;
@@ -789,85 +853,127 @@
       ctx.clearRect(0, 0, W, H);
 
       var cy = H * 0.34;
-      var beeX;
+      var cx = W * 0.5;
+      var beeX = null, beeY = null;   // null → bee has left the timeline
 
-      if (mode === 'wait') {
-        // Cruise: bob around the left third until the new timeline answers
-        beeX = W * 0.3 + Math.sin(elapsed * 0.0004) * W * 0.05;
-      } else {
-        // Acceleration to 88 and the jump
-        var af = Math.min((ts - accelStart) / 1500, 1);
-        var eased = af * af * af;
-        beeX = W * 0.3 + eased * (W * 0.45);
-        if (af >= 1 && !flashFired) {
-          flashFired = true;
-          spawnFlashBurst(beeX, cy);
-          flash.style.transition = 'opacity .18s ease';
-          flash.style.opacity = '1';
-          setTimeout(function () {
-            if (onFlashCb) onFlashCb();
-          }, 260);
+      var phase;
+      if (elapsed < T_ENTER) phase = 'enter';
+      else if (elapsed < T_ENTER + T_STRIKE) phase = 'strike';
+      else if (elapsed < T_ENTER + T_STRIKE + T_BLAST) phase = 'blast';
+      else phase = 'storm';
+
+      if (phase === 'enter') {
+        var ep = elapsed / T_ENTER;
+        var easeOut = 1 - Math.pow(1 - ep, 3);
+        beeX = -100 + easeOut * (cx + 100);
+        beeY = cy + Math.sin(elapsed * 0.003) * 8;
+      } else if (phase === 'strike') {
+        beeX = cx;
+        beeY = cy + Math.sin(elapsed * 0.003) * 3;
+        if (!strikeSpawned) {
+          strikeSpawned = true;
+          if (!reduced) {
+            bolts.push({ paths: makeForkBolt(cx + (Math.random() - 0.5) * 30, 0,
+              Math.PI / 2, cy * 1.15, 6, 3), born: ts, life: 460 });
+            bolts.push({ paths: makeForkBolt(cx - 70, 0,
+              Math.PI / 2 + 0.15, cy * 1.05, 3, 2), born: ts, life: 400 });
+            bolts.push({ paths: makeForkBolt(cx + 70, 0,
+              Math.PI / 2 - 0.15, cy * 1.05, 3, 2), born: ts, life: 400 });
+          }
         }
+      } else if (phase === 'blast') {
+        var bp = (elapsed - T_ENTER - T_STRIKE) / T_BLAST;
+        var easeIn = bp * bp * bp;
+        beeX = cx + easeIn * (W - cx + 160);
+        beeY = cy + Math.sin(elapsed * 0.003) * 4;
       }
+      // storm: no bee — black sky, lightning only
 
-      var beeY = cy + Math.sin(elapsed * 0.003) * 8;
-
-      // Screen shake while accelerating
-      var shaking = mode === 'accel' && !flashFired && !reduced;
+      // Screen shake while struck and blasting off
+      var shaking = !reduced && !flashFired
+        && (phase === 'strike' || phase === 'blast');
       if (shaking) {
-        var sh = Math.min((ts - accelStart) / 1500, 1) * 5;
+        var sh = phase === 'strike' ? 6 : 4;
         ctx.save();
         ctx.translate((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh);
       }
 
-      // Temporal streaks behind the bee
-      var streakAlpha = mode === 'accel' ? 0.6 : 0.3;
-      for (var si = 0; si < 6; si++) {
-        var sy = cy + si * 7 - 18;
-        var gr = ctx.createLinearGradient(0, sy, beeX - 40, sy);
-        gr.addColorStop(0, 'rgba(100,180,255,0)');
-        gr.addColorStop(1, 'rgba(100,180,255,' + streakAlpha + ')');
-        ctx.beginPath();
-        ctx.strokeStyle = gr;
-        ctx.lineWidth = si < 2 ? 1.5 : 0.8;
-        ctx.moveTo(0, sy);
-        ctx.lineTo(beeX - 40, sy);
-        ctx.stroke();
-      }
-
-      // Occasional temporal lightning across the sky
-      if (!reduced && Math.random() < (mode === 'accel' ? 0.10 : 0.03)) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(150,200,255,' + (0.25 + Math.random() * 0.4) + ')';
-        ctx.lineWidth = 1 + Math.random() * 1.5;
-        ctx.shadowColor = '#8cf';
-        ctx.shadowBlur = 12;
-        ctx.beginPath();
-        var lx = Math.random() * W, ly = 0;
-        ctx.moveTo(lx, ly);
-        while (ly < H * 0.25) {
-          lx += (Math.random() - 0.5) * 70;
-          ly += 20 + Math.random() * 30;
-          ctx.lineTo(lx, ly);
+      // Temporal streaks behind the bee while it's on screen
+      if (beeX !== null && beeX > 60) {
+        var streakAlpha = phase === 'blast' ? 0.6 : 0.3;
+        for (var si = 0; si < 6; si++) {
+          var sy = cy + si * 7 - 18;
+          var gr = ctx.createLinearGradient(0, sy, beeX - 40, sy);
+          gr.addColorStop(0, 'rgba(100,180,255,0)');
+          gr.addColorStop(1, 'rgba(100,180,255,' + streakAlpha + ')');
+          ctx.beginPath();
+          ctx.strokeStyle = gr;
+          ctx.lineWidth = si < 2 ? 1.5 : 0.8;
+          ctx.moveTo(0, sy);
+          ctx.lineTo(beeX - 40, sy);
+          ctx.stroke();
         }
-        ctx.stroke();
-        ctx.restore();
       }
 
-      var visible = !flashFired;
-      if (visible) {
-        var intensity = mode === 'accel'
-          ? Math.min((ts - accelStart) / 1500, 1)
+      // Sky lightning from the top edge — sparse while the bee enters,
+      // heavier as it blasts off, constant through the storm.
+      var boltChance = phase === 'storm' ? 0.08
+        : phase === 'blast' ? 0.10 : 0.03;
+      if (!reduced && Math.random() < boltChance) {
+        bolts.push({
+          paths: makeForkBolt(Math.random() * W, 0,
+            Math.PI / 2 + (Math.random() - 0.5) * 0.6,
+            H * (0.25 + Math.random() * 0.35), 2 + Math.random(), 2),
+          born: ts,
+          life: 150 + Math.random() * 130,
+        });
+      }
+
+      // Swap finished: one last giant barrage, then the white flash
+      if (completing && phase === 'storm' && !barrageStart) {
+        barrageStart = ts;
+        if (!reduced) {
+          for (var k = 0; k < 3; k++) {
+            bolts.push({ paths: makeForkBolt(W * (0.25 + Math.random() * 0.5), 0,
+              Math.PI / 2 + (Math.random() - 0.5) * 0.3,
+              H * (0.5 + Math.random() * 0.3), 4 + Math.random() * 3, 3),
+              born: ts, life: 420 });
+          }
+        }
+      }
+      if (barrageStart && !flashFired && (reduced || ts - barrageStart >= 320)) {
+        flashFired = true;
+        flash.style.transition = 'opacity .18s ease';
+        flash.style.opacity = '1';
+        setTimeout(function () {
+          if (onFlashCb) onFlashCb();
+        }, 260);
+      }
+
+      for (var bi = bolts.length - 1; bi >= 0; bi--) {
+        var bolt = bolts[bi];
+        var age = (ts - bolt.born) / bolt.life;
+        if (age >= 1) { bolts.splice(bi, 1); continue; }
+        // Fast attack, slow decay, plus per-frame flicker
+        var env = age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.85;
+        drawBoltPaths(ctx, bolt.paths, env * (0.7 + Math.random() * 0.3));
+      }
+
+      if (beeX !== null && !flashFired) {
+        var intensity = phase === 'blast' ? 1
+          : phase === 'strike' ? 0.6
           : 0.35 + 0.1 * Math.sin(elapsed * 0.002);
         drawExhaust(ctx, beeX, beeY, elapsed, intensity);
         if (!reduced) {
-          if (mode === 'accel') spawnAccelParticles(beeX, beeY, 6);
-          else if (Math.random() < 0.7) spawnCruiseParticles(beeX, beeY, 2);
+          if (phase === 'blast') spawnAccelParticles(beeX, beeY, 12);
+          else if (phase === 'enter' && Math.random() < 0.7) {
+            spawnCruiseParticles(beeX, beeY, 2);
+          }
         }
       }
 
       updateAndDrawParticles(ctx);
-      if (visible) drawBee(ctx, beeX, beeY, elapsed, 1);
+      if (beeX !== null && !flashFired) drawBee(ctx, beeX, beeY, elapsed, 1);
 
       if (shaking) ctx.restore();
 
@@ -888,12 +994,13 @@
       // Kept for API compatibility — the pared-down overlay has no text row.
       setStatus: function () {},
       complete: function (onFlash) {
-        if (mode !== 'wait') return;
-        mode = 'accel';
-        accelStart = performance.now();
+        if (completing) return;
+        completing = true;
         onFlashCb = onFlash;
-        // Safety net: if the callback doesn't navigate away, clean up.
-        setTimeout(teardown, 6000);
+        // The barrage fires once the intro reaches the storm phase (at most
+        // ~4.5s after the overlay opened). Safety net: if the callback
+        // doesn't navigate away, clean up.
+        setTimeout(teardown, 10000);
       },
       abort: teardown,
     };
