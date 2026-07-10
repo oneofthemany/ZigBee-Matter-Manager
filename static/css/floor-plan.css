@@ -445,6 +445,18 @@
     stroke-width: 0.04;
 }
 .fp-north-mark     { fill: var(--fp-compass-needle); }
+.fp-solar-badge {
+    fill: var(--fp-sun-stroke);
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: var(--fp-canvas-bg);
+    stroke-width: 0.045;
+}
+.fp-solar-row {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--fp-border);
+}
+.fp-solar-row:last-child { border-bottom: none; }
 .fp-sun-beam {
     animation: fpBeamBreathe 3.4s ease-in-out infinite alternate;
 }

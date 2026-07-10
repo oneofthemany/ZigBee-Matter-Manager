@@ -61,6 +61,7 @@ function resetState(plan) {
         showThermal: false,
         showContours: false,
         showColdZones: false,
+        thermalMode: 'rad',        // 'rad' | 'rad+sun' | 'sun' — heat sources in the field
         heatFluxWm2: 50,
         sunData: null,
         calibration: null,         // { p1: {x,y} } during 2-click calibrate
@@ -274,6 +275,13 @@ function ensureModal() {
                   <input class="form-check-input" type="checkbox" id="fpToggleThermal">
                   <label class="form-check-label" for="fpToggleThermal">Thermal overlay</label>
                 </div>
+                <div class="ms-3 mb-1">
+                  <select class="form-select form-select-sm py-0" id="fpThermalMode" style="font-size:0.78rem" disabled>
+                    <option value="rad" selected>Radiators only</option>
+                    <option value="rad+sun">Radiators + solar</option>
+                    <option value="sun">Solar gain only</option>
+                  </select>
+                </div>
                 <div class="form-check form-switch small ms-3">
                   <input class="form-check-input" type="checkbox" id="fpToggleContours" disabled>
                   <label class="form-check-label text-muted" for="fpToggleContours">Contour lines</label>
@@ -382,14 +390,22 @@ function bindModalEvents() {
         _state.showThermal = e.target.checked;
         const contoursEl = document.getElementById('fpToggleContours');
         const coldEl = document.getElementById('fpToggleColdZones');
+        const modeEl = document.getElementById('fpThermalMode');
         contoursEl.disabled = !_state.showThermal;
         coldEl.disabled = !_state.showThermal;
+        modeEl.disabled = !_state.showThermal;
         if (!_state.showThermal) {
             _state.showContours = false; contoursEl.checked = false;
             _state.showColdZones = false; coldEl.checked = false;
             document.getElementById('fpColdZoneControls').style.display = 'none';
         }
         renderScene();
+    });
+    document.getElementById('fpThermalMode').addEventListener('change', async e => {
+        _state.thermalMode = e.target.value;
+        // Solar modes need the day's sun curve
+        if (_state.thermalMode !== 'rad' && !_state.sunData) await loadSunData();
+        renderScene(); renderProps();
     });
     document.getElementById('fpToggleContours').addEventListener('change', e => {
         _state.showContours = e.target.checked;
@@ -539,6 +555,9 @@ function syncViewToggles() {
     set('fpToggleThermal',    _state.showThermal);
     set('fpToggleContours',   _state.showContours,  !_state.showThermal);
     set('fpToggleColdZones',  _state.showColdZones, !_state.showThermal);
+
+    const modeEl = document.getElementById('fpThermalMode');
+    if (modeEl) { modeEl.value = _state.thermalMode; modeEl.disabled = !_state.showThermal; }
 
     // Cold zone sub-controls
     const czCtrl = document.getElementById('fpColdZoneControls');
@@ -1872,7 +1891,12 @@ function renderLegend() {
     if (!el) return;
     const rows = [];
     if (_state.showThermal) {
-        rows.push(`<div class="fp-legend-row"><span class="fp-legend-ramp"></span>Heat coverage</div>`);
+        const modeLabel = {
+            'rad': 'Radiator heat coverage',
+            'rad+sun': 'Radiator + solar coverage',
+            'sun': 'Solar gain coverage',
+        }[_state.thermalMode || 'rad'];
+        rows.push(`<div class="fp-legend-row"><span class="fp-legend-ramp"></span>${modeLabel}</div>`);
         if (_state.showContours) {
             rows.push(`<div class="fp-legend-row"><span class="fp-legend-line fp-legend-line-contour"></span>Isotherm contours</div>`);
         }
@@ -1958,19 +1982,75 @@ function openingsOnRoomBoundary(room, lvl) {
     return res;
 }
 
+// ── solar gain model (clear-sky heuristic, for insight not engineering) ──
+//
+// Average solar power admitted through a window over the daylight hours:
+//   W ≈ 500 W/m² (effective clear-sky irradiance on vertical glazing when
+//   the facade faces the sun) × SHGC(glazing) × area × (sun-minutes / daylight)
+// Sun-minutes come from today's sun curve (same data as the sun-path arc).
+
+const SOLAR_SHGC = { single: 0.85, double: 0.72, triple: 0.55 };
+const SOLAR_IRRADIANCE_WM2 = 500;
+
+/** Minutes today with direct sun on this window's EXTERIOR face. */
+function windowSunMinutes(opening, wall, roomCentroid) {
+    const sd = _state.sunData;
+    if (!sd?.points) return 0;
+    const stepMin = sd.step_minutes || 20;
+    const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+    const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+    const nx = -uy, ny = ux;
+    const wmx = wall.x1 + ux * ((opening.offset_m || 0) + (opening.width_m || 0) / 2);
+    const wmy = wall.y1 + uy * ((opening.offset_m || 0) + (opening.width_m || 0) / 2);
+    // Exterior normal points AWAY from the room's centroid
+    const dot = (roomCentroid.x - wmx) * nx + (roomCentroid.y - wmy) * ny;
+    const ex = dot > 0 ? -nx : nx, ey = dot > 0 ? -ny : ny;
+    let mins = 0;
+    for (const pt of sd.points) {
+        if (pt.el <= 0) continue;
+        const planAz = ((pt.az + _state.plan.north_offset_deg) % 360 + 360) % 360;
+        const sx = Math.sin(planAz * Math.PI / 180), sy = Math.cos(planAz * Math.PI / 180);
+        if (sx * ex + sy * ey > 0.15) mins += stepMin;
+    }
+    return mins;
+}
+
+/** Daylight minutes in today's sun curve. */
+function daylightMinutes() {
+    const sd = _state.sunData;
+    if (!sd?.points) return 0;
+    return sd.points.filter(p => p.el > 0).length * (sd.step_minutes || 20);
+}
+
+/** Daylight-averaged solar watts admitted through a window. */
+function windowSolarWatts(opening, wall, roomCentroid) {
+    if (opening.kind !== 'window') return 0;
+    const daylight = daylightMinutes();
+    if (!daylight) return 0;
+    const mins = windowSunMinutes(opening, wall, roomCentroid);
+    if (!mins) return 0;
+    const area = (opening.width_m || 1) * (opening.height_m || 1.2);
+    const g = SOLAR_SHGC[opening.glazing] ?? SOLAR_SHGC.double;
+    return SOLAR_IRRADIANCE_WM2 * g * area * (mins / daylight);
+}
+
 /**
  * Compute (or fetch from cache) the heat-coverage field for a room. The
  * cache key covers every input that shapes the field, so edits invalidate
- * naturally and pan/zoom re-renders are free.
+ * naturally and pan/zoom re-renders are free. `_state.thermalMode` decides
+ * which sources drive the field: radiators, radiators + solar, or solar
+ * gain alone (for judging what the sun does to the house by itself).
  */
 function roomHeatField(room, lvl, heatFlux) {
+    const mode = _state.thermalMode || 'rad';
     const rads = lvl.radiators.filter(r => r.room_id === room.id);
     const bops = openingsOnRoomBoundary(room, lvl);
     const key = JSON.stringify([
-        room.polygon, heatFlux,
+        room.polygon, heatFlux, mode,
+        mode !== 'rad' ? [_state.plan.north_offset_deg, _state.sunData?.sunrise || null] : null,
         rads.map(r => [r.wall_id, r.offset_m, r.x, r.y, r.length_m, r.watts_at_dt50]),
-        bops.map(b => [b.opening.id, b.opening.kind, b.opening.width_m, b.opening.glazing,
-                       b.opening.door_type, openingContactState(b.opening, lvl)]),
+        bops.map(b => [b.opening.id, b.opening.kind, b.opening.width_m, b.opening.height_m,
+                       b.opening.glazing, b.opening.door_type, openingContactState(b.opening, lvl)]),
     ]);
     const hit = _fieldCache.get(room.id);
     if (hit && hit.key === key) return hit;
@@ -1983,11 +2063,23 @@ function roomHeatField(room, lvl, heatFlux) {
     const ny = Math.max(2, Math.ceil((maxY - minY) / h) + 2);
     const x0 = minX - h, y0 = minY - h;   // one cell of padding
 
-    const srcs = rads.map(r => {
+    const srcs = mode === 'sun' ? [] : rads.map(r => {
         const c = radiatorCenter(r, lvl);
         const r0 = Math.sqrt(Math.max(50, r.watts_at_dt50 || 0) / (heatFlux * Math.PI));
         return { x: c.x, y: c.y, r0 };
     });
+    // Solar sources: each sun-facing window becomes a heat source at its
+    // midpoint, sized by the daylight-averaged watts it admits.
+    if (mode !== 'rad') {
+        const centroid = polygonCentroid(room.polygon);
+        for (const { opening, mid } of bops) {
+            const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+            if (!wall) continue;
+            const sw = windowSolarWatts(opening, wall, centroid);
+            if (sw < 15) continue;
+            srcs.push({ x: mid.x, y: mid.y, r0: Math.sqrt(sw / (heatFlux * Math.PI)) });
+        }
+    }
     const drafts = bops.map(({ opening, mid }) => {
         const isOpen = openingContactState(opening, lvl);
         const glazing = { single: 1.45, double: 1.0, triple: 0.60 }[opening.glazing] ?? 1.0;
@@ -2211,14 +2303,16 @@ function fieldColdSpot(f) {
 function renderThermalParts(lvl) {
     const defs = [];
     const out = [];
+    const mode = _state.thermalMode || 'rad';
     const maxWatts = Math.max(...lvl.radiators.map(r => r.watts_at_dt50 || 0), 100);
 
     for (const room of lvl.rooms) {
         if (!room.polygon || room.polygon.length < 3) continue;
         const rads = lvl.radiators.filter(r => r.room_id === room.id);
-        if (rads.length === 0) continue;
+        // In solar modes, rooms without radiators still heat via their windows
+        if (rads.length === 0 && mode === 'rad') continue;
         const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
-        const intensity = Math.min(1, totalWatts / maxWatts);
+        const intensity = rads.length ? Math.min(1, totalWatts / maxWatts) : 0.8;
 
         const f = roomHeatField(room, lvl, _state.heatFluxWm2 || 50);
         const uid = room.id.replace(/[^a-z0-9]/gi, '_');
@@ -2243,6 +2337,32 @@ function renderThermalParts(lvl) {
                                 style="opacity:${(opacity * (0.6 + 0.4 * intensity)).toFixed(2)}"
                                 pointer-events="none"/>`);
             }
+        }
+    }
+
+    // Per-window solar-gain badges — the numbers that justify reflective
+    // film or shading: daylight-averaged watts admitted through each window.
+    if (mode !== 'rad' && _state.sunData) {
+        for (const opening of (lvl.openings || [])) {
+            if (opening.kind !== 'window') continue;
+            const wall = lvl.walls.find(w => w.id === opening.wall_id);
+            if (!wall) continue;
+            const room = (lvl.rooms || []).find(r =>
+                r.polygon?.length >= 3 && openingsOnRoomBoundary(r, lvl).some(b => b.opening.id === opening.id));
+            if (!room) continue;
+            const centroid = polygonCentroid(room.polygon);
+            const watts = windowSolarWatts(opening, wall, centroid);
+            if (watts < 15) continue;
+            const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+            const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+            const wmx = wall.x1 + ux * (opening.offset_m + opening.width_m / 2);
+            const wmy = wall.y1 + uy * (opening.offset_m + opening.width_m / 2);
+            // Label offset toward the exterior side
+            let nx = -uy, ny = ux;
+            if ((centroid.x - wmx) * nx + (centroid.y - wmy) * ny > 0) { nx = -nx; ny = -ny; }
+            const lp = modelToSvg({ x: wmx + nx * 0.42, y: wmy + ny * 0.42 });
+            out.push(`<text class="fp-solar-badge" x="${lp.x}" y="${lp.y + 0.06}" font-size="0.15"
+                            text-anchor="middle" pointer-events="none">☀ ${Math.round(watts)}W</text>`);
         }
     }
 
@@ -2272,8 +2392,10 @@ function renderColdParts(lvl) {
         const roomPath = polygonToPath(room.polygon);
         const rads = lvl.radiators.filter(r => r.room_id === room.id);
 
-        if (rads.length === 0) {
-            // No radiator → entire room is below threshold
+        // In radiators-only mode an unheated room is trivially all-cold; in
+        // solar modes its windows may still heat it, so fall through to the
+        // field-based tint instead.
+        if (rads.length === 0 && (_state.thermalMode || 'rad') === 'rad') {
             const c = modelToSvg(polygonCentroid(room.polygon));
             out.push(`<path d="${roomPath}" class="fp-cold-noheat" pointer-events="none"/>`);
             out.push(`<text class="fp-cold-label" x="${c.x}" y="${c.y + 0.60}" font-size="0.17"
@@ -2654,6 +2776,61 @@ function renderProps() {
     bindPropsHandlers();
 }
 
+/**
+ * Solar insights: rank this level's rooms by estimated daily solar energy
+ * admitted through their windows, with plain-language mitigation hints
+ * (reflective film, shading, glazing, loft insulation). Clear-sky estimate —
+ * meant to show WHERE the sun loads the house, not exact numbers.
+ */
+function renderSolarInsights(lvl) {
+    if (!_state.sunData || (!_state.showSun && (_state.thermalMode || 'rad') === 'rad')) return '';
+    const daylightH = daylightMinutes() / 60;
+    if (!daylightH) return '';
+    const topIndex = Math.max(...(_state.plan.levels || []).map(l => l.index));
+    const rows = [];
+    for (const room of (lvl.rooms || [])) {
+        if (!room.polygon || room.polygon.length < 3) continue;
+        const centroid = polygonCentroid(room.polygon);
+        let watts = 0, sunMin = 0, worstGlazing = null;
+        for (const { opening } of openingsOnRoomBoundary(room, lvl)) {
+            if (opening.kind !== 'window') continue;
+            const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+            if (!wall) continue;
+            const w = windowSolarWatts(opening, wall, centroid);
+            if (w <= 0) continue;
+            watts += w;
+            sunMin = Math.max(sunMin, windowSunMinutes(opening, wall, centroid));
+            const rank = { single: 3, double: 2, triple: 1 };
+            if (!worstGlazing || (rank[opening.glazing] || 2) > (rank[worstGlazing] || 2)) {
+                worstGlazing = opening.glazing || 'double';
+            }
+        }
+        if (watts < 15) continue;
+        const kwh = watts * daylightH / 1000;
+        const hints = [];
+        if (worstGlazing === 'single') hints.push('upgrade glazing or fit reflective film');
+        else if (kwh >= 1.5) hints.push('reflective film / external shading');
+        if (lvl.index === topIndex && kwh >= 1.0) hints.push('check loft insulation');
+        rows.push({ name: room.name || room.id, kwh, sunH: sunMin / 60, hints });
+    }
+    if (!rows.length) return '';
+    rows.sort((a, b) => b.kwh - a.kwh);
+    const items = rows.map(r => `
+        <div class="fp-solar-row">
+          <div class="d-flex justify-content-between">
+            <strong>${escapeHtml(r.name)}</strong>
+            <span>~${r.kwh.toFixed(1)} kWh/day</span>
+          </div>
+          <div class="text-muted">${r.sunH.toFixed(1)} h direct sun${r.hints.length ? ' — ' + escapeHtml(r.hints.join('; ')) : ''}</div>
+        </div>`).join('');
+    return `
+      <hr/>
+      <div class="text-muted small text-uppercase mb-1">Solar insights (today)</div>
+      <div class="small">${items}</div>
+      <div class="form-text small mt-1">Clear-sky estimate from window size, glazing and sun exposure.
+        Use the <em>Solar gain only</em> thermal mode to see where it lands.</div>`;
+}
+
 function renderLevelProps(lvl) {
     if (!lvl) return '<div class="text-muted small">No level selected.</div>';
     return `
@@ -2669,6 +2846,7 @@ function renderLevelProps(lvl) {
       <div class="mb-2"><label class="form-label small">Floor above ground (m)</label>
         <input type="number" step="0.1" class="form-control form-control-sm" data-prop="level.floor_above_ground_m" value="${lvl.floor_above_ground_m || 0}"/></div>
       ${_state.plan.levels.length > 1 ? `<button class="btn btn-sm btn-outline-danger w-100 mt-2" id="fpDeleteLevel"><i class="fas fa-trash me-1"></i>Delete level</button>` : ''}
+      ${renderSolarInsights(lvl)}
       <hr/>
       <div class="text-muted small">
         <div><strong>Pan/zoom:</strong> Shift+drag (or middle-mouse) to pan, wheel to zoom.</div>
