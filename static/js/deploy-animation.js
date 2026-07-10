@@ -735,10 +735,6 @@
         padding:14px 22px 12px;min-width:min(420px,86vw);
         box-shadow:0 0 40px rgba(80,140,255,.25), inset 0 0 25px rgba(0,0,0,.6);
       }
-      #tt-circuits h6 {
-        margin:0 0 10px;text-align:center;font-size:.7rem;letter-spacing:6px;
-        color:#8fa8d8;font-weight:bold;
-      }
       .tt-row {
         display:flex;justify-content:space-between;align-items:baseline;
         gap:18px;padding:3px 0;
@@ -749,18 +745,6 @@
       }
       .tt-red   .val { color:#ff5030;text-shadow:0 0 12px #ff3000,0 0 30px #a00; }
       .tt-green .val { color:#3aff70;text-shadow:0 0 12px #0f8,0 0 30px #063; }
-      .tt-amber .val { color:#ffb020;text-shadow:0 0 12px #f80,0 0 30px #840;
-                       font-size:.8rem;letter-spacing:2px; }
-      #tt-speed {
-        position:absolute;left:50%;top:calc(64% - 52px);transform:translateX(-50%);
-        font-family:'Courier New',monospace;font-size:1.5rem;font-weight:bold;
-        color:#9fd0ff;letter-spacing:4px;text-shadow:0 0 18px #4af;
-      }
-      #tt-elapsed {
-        position:absolute;left:50%;bottom:5%;transform:translateX(-50%);
-        font-family:'Courier New',monospace;font-size:.7rem;letter-spacing:3px;
-        color:#5a6a8a;
-      }
     `;
     document.head.appendChild(style);
 
@@ -769,23 +753,16 @@
     div.innerHTML = `
       <canvas id="tt-canvas"></canvas>
       <div id="tt-flash"></div>
-      <div id="tt-speed">0 MPH</div>
       <div id="tt-circuits">
-        <h6>TIME CIRCUITS ON</h6>
         <div class="tt-row tt-red"><span class="lbl">DESTINATION VERSION</span><span class="val">v${destination}</span></div>
         <div class="tt-row tt-green"><span class="lbl">PRESENT VERSION</span><span class="val">v${present}</span></div>
-        <div class="tt-row tt-amber"><span class="lbl">STATUS</span><span class="val" id="tt-status">CHARGING FLUX CAPACITOR…</span></div>
       </div>
-      <div id="tt-elapsed"></div>
     `;
     document.body.appendChild(div);
     requestAnimationFrame(function () { div.classList.add('tt-in'); });
 
     var canvas = div.querySelector('#tt-canvas');
     var flash = div.querySelector('#tt-flash');
-    var speedEl = div.querySelector('#tt-speed');
-    var statusEl = div.querySelector('#tt-status');
-    var elapsedEl = div.querySelector('#tt-elapsed');
     var ctx = canvas.getContext('2d');
 
     var W = canvas.width = window.innerWidth;
@@ -798,22 +775,6 @@
 
     particles.length = 0;
 
-    // Rotating flavour text until setStatus() or complete() takes over
-    var STATUSES = [
-      'CHARGING FLUX CAPACITOR…',
-      'GENERATING 1.21 GIGAWATTS…',
-      'SWAPPING CONTAINER TIMELINE…',
-      'ROUTING TEMPORAL TRAFFIC…',
-      'REBUILDING THE MESH IN 1955…',
-      'WAITING FOR TEMPORAL RE-ENTRY…',
-    ];
-    var statusIdx = 0, customStatus = null;
-    var statusTimer = setInterval(function () {
-      if (customStatus || done) return;
-      statusIdx = (statusIdx + 1) % STATUSES.length;
-      statusEl.textContent = STATUSES[statusIdx];
-    }, 4000);
-
     var start = performance.now();
     var mode = 'wait';         // wait → accel → done
     var accelStart = 0;
@@ -822,36 +783,27 @@
     var done = false;
     var raf = null;
 
-    function fmtElapsed(ms) {
-      var s = Math.floor(ms / 1000);
-      return ('0' + Math.floor(s / 60)).slice(-2) + ':' + ('0' + (s % 60)).slice(-2);
-    }
-
     function frame(ts) {
       if (done) return;
       var elapsed = ts - start;
       ctx.clearRect(0, 0, W, H);
 
       var cy = H * 0.34;
-      var beeX, speed;
+      var beeX;
 
       if (mode === 'wait') {
-        // Cruise: bob around the left third, speed creeps toward 60 MPH
+        // Cruise: bob around the left third until the new timeline answers
         beeX = W * 0.3 + Math.sin(elapsed * 0.0004) * W * 0.05;
-        speed = 25 + 35 * (1 - Math.exp(-elapsed / 25000));
-        elapsedEl.textContent = 'TEMPORAL DISPLACEMENT IN PROGRESS — ' + fmtElapsed(elapsed);
       } else {
         // Acceleration to 88 and the jump
         var af = Math.min((ts - accelStart) / 1500, 1);
         var eased = af * af * af;
         beeX = W * 0.3 + eased * (W * 0.45);
-        speed = 60 + eased * 28;
         if (af >= 1 && !flashFired) {
           flashFired = true;
           spawnFlashBurst(beeX, cy);
           flash.style.transition = 'opacity .18s ease';
           flash.style.opacity = '1';
-          statusEl.textContent = 'TEMPORAL DISPLACEMENT SUCCESSFUL';
           setTimeout(function () {
             if (onFlashCb) onFlashCb();
           }, 260);
@@ -884,7 +836,7 @@
       }
 
       // Occasional temporal lightning across the sky
-      if (!reduced && Math.random() < (mode === 'accel' ? 0.10 : 0.012)) {
+      if (!reduced && Math.random() < (mode === 'accel' ? 0.10 : 0.03)) {
         ctx.save();
         ctx.strokeStyle = 'rgba(150,200,255,' + (0.25 + Math.random() * 0.4) + ')';
         ctx.lineWidth = 1 + Math.random() * 1.5;
@@ -919,11 +871,6 @@
 
       if (shaking) ctx.restore();
 
-      speedEl.textContent = Math.floor(speed) + ' MPH';
-      speedEl.style.color = speed >= 85 ? '#ff5030' : '#9fd0ff';
-      speedEl.style.textShadow = speed >= 85
-        ? '0 0 22px #f30, 0 0 40px #a00' : '0 0 18px #4af';
-
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
@@ -931,7 +878,6 @@
     function teardown() {
       done = true;
       if (raf) cancelAnimationFrame(raf);
-      clearInterval(statusTimer);
       window.removeEventListener('resize', onResize);
       particles.length = 0;
       div.classList.remove('tt-in');
@@ -939,16 +885,13 @@
     }
 
     return {
-      setStatus: function (text) {
-        customStatus = text;
-        statusEl.textContent = text;
-      },
+      // Kept for API compatibility — the pared-down overlay has no text row.
+      setStatus: function () {},
       complete: function (onFlash) {
         if (mode !== 'wait') return;
         mode = 'accel';
         accelStart = performance.now();
         onFlashCb = onFlash;
-        statusEl.textContent = 'RE-ENTRY CONFIRMED — PUNCH IT';
         // Safety net: if the callback doesn't navigate away, clean up.
         setTimeout(teardown, 6000);
       },
