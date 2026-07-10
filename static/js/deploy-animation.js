@@ -480,6 +480,155 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /*  Bee skeleton — the electrocution X-ray gag                          */
+  /*                                                                      */
+  /*  Same geometry as drawBee (abdomen/thorax/head/wings/legs in the     */
+  /*  same places) but rendered as a dark translucent silhouette with     */
+  /*  glowing bones: spine + ribs where the stripes were, a skull with    */
+  /*  an empty eye socket, jointed leg bones and wing veins.              */
+  /* ------------------------------------------------------------------ */
+  function drawBeeSkeleton(ctx, cx, cy, t, alpha) {
+    if (alpha <= 0) return;
+    var wingBeat = Math.sin(t * 0.25) * 0.3;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy);
+
+    var BODY = 'rgba(8,12,24,0.88)';
+    var RIM = 'rgba(160,220,255,0.7)';
+    var BONE = 'rgba(230,250,255,0.95)';
+
+    // Top wing — faint membrane, veins as glowing wing bones
+    ctx.save();
+    ctx.rotate(-0.2 + wingBeat);
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.bezierCurveTo(-10, -55, -65, -60, -80, -25);
+    ctx.bezierCurveTo(-75, -5, -30, 0, 0, -10);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(140,200,255,0.10)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-5, -12);
+    ctx.bezierCurveTo(-25, -40, -55, -48, -75, -28);
+    ctx.moveTo(-5, -14);
+    ctx.bezierCurveTo(-20, -30, -45, -32, -70, -20);
+    ctx.moveTo(-15, -22);
+    ctx.lineTo(-55, -38);
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 1.2;
+    ctx.shadowColor = '#aef';
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.shadowColor = '#aef';
+    ctx.shadowBlur = 10;
+
+    // Abdomen silhouette + spine + ribs (where the stripes were)
+    ctx.beginPath();
+    ctx.ellipse(-28, 14, 38, 20, -0.15, 0, Math.PI * 2);
+    ctx.fillStyle = BODY;
+    ctx.fill();
+    ctx.strokeStyle = RIM;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-64, 17);
+    ctx.quadraticCurveTo(-28, 6, 6, 8);
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    [[-58, 15], [-44, 14], [-30, 13], [-16, 12], [-3, 11]].forEach(function (r, i) {
+      var rl = 14 - Math.abs(i - 2) * 2.5;
+      ctx.beginPath();
+      ctx.moveTo(r[0], r[1] - rl);
+      ctx.quadraticCurveTo(r[0] - 5, r[1], r[0], r[1] + rl);
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    });
+
+    // Stinger bone
+    ctx.beginPath();
+    ctx.moveTo(-64, 14);
+    ctx.lineTo(-76, 12);
+    ctx.lineTo(-66, 20);
+    ctx.closePath();
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Thorax silhouette + crossed strut bones
+    ctx.beginPath();
+    ctx.ellipse(8, 4, 22, 18, 0, 0, Math.PI * 2);
+    ctx.fillStyle = BODY;
+    ctx.fill();
+    ctx.strokeStyle = RIM;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-4, -8);
+    ctx.lineTo(20, 14);
+    ctx.moveTo(20, -8);
+    ctx.lineTo(-4, 14);
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // Skull: head silhouette, empty eye socket, mandible line
+    ctx.beginPath();
+    ctx.ellipse(28, -2, 17, 15, 0, 0, Math.PI * 2);
+    ctx.fillStyle = BODY;
+    ctx.fill();
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(36, -4, 9, 11, 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.92)';
+    ctx.fill();
+    ctx.strokeStyle = RIM;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(16, 8);
+    ctx.quadraticCurveTo(28, 13, 40, 8);
+    ctx.strokeStyle = BONE;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    // Antenna bones with joint knobs
+    [[34, -14, 38, -30, 50, -35, 52, -28], [30, -16, 32, -28, 40, -30, 38, -22]]
+      .forEach(function (a) {
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        ctx.bezierCurveTo(a[2], a[3], a[4], a[5], a[6], a[7]);
+        ctx.strokeStyle = BONE;
+        ctx.lineWidth = 1.3;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(a[6], a[7] + 1, 2.2, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+    // Leg bones with joints
+    [[10, 16, 20, 30], [0, 18, 8, 32], [-10, 16, -4, 28]].forEach(function (leg) {
+      ctx.beginPath();
+      ctx.moveTo(leg[0], leg[1]);
+      ctx.lineTo(leg[2], leg[3]);
+      ctx.strokeStyle = BONE;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(leg[2], leg[3], 1.8, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ */
   /*  Speedometer HUD                                                     */
   /* ------------------------------------------------------------------ */
   function drawSpeedometer(ctx, speed, W, H) {
@@ -725,6 +874,32 @@
     return paths;
   }
 
+  // Return-stroke envelope — real strikes re-flash 2-3 times as the channel
+  // discharges again (peaks at 0 / 130 / 280 ms, each with a sharp attack
+  // and exponential decay). dt in milliseconds.
+  function restrikeEnv(dt) {
+    var pulses = [[0, 1], [130, 0.6], [280, 0.45]];
+    var v = 0;
+    for (var i = 0; i < pulses.length; i++) {
+      var d = dt - pulses[i][0];
+      if (d >= 0) {
+        var a = d < 25 ? d / 25 : Math.exp(-(d - 25) / 90);
+        v = Math.max(v, pulses[i][1] * a);
+      }
+    }
+    return v;
+  }
+
+  // Brightness of a live bolt at time ts — restrike bolts pulse, ordinary
+  // bolts get the simple fast-attack/slow-decay envelope.
+  function boltAlpha(bolt, ts) {
+    var dt = ts - bolt.born;
+    var age = dt / bolt.life;
+    if (age >= 1) return 0;
+    if (bolt.restrike) return restrikeEnv(dt);
+    return age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.85;
+  }
+
   function drawBoltPaths(ctx, paths, alpha) {
     ctx.save();
     ctx.lineCap = 'round';
@@ -820,6 +995,26 @@
     var flash = div.querySelector('#tt-flash');
     var ctx = canvas.getContext('2d');
 
+    // Offscreen scratch for the struck-bee whiteout: draw the bee there,
+    // tint it in place with source-atop, then blit — so the flash follows
+    // the bee's exact silhouette without touching drawBee itself.
+    var beeScratch = document.createElement('canvas');
+    beeScratch.width = 220;
+    beeScratch.height = 160;
+    var beeSctx = beeScratch.getContext('2d');
+
+    function drawBeeTinted(x, y, t, tint) {
+      if (tint <= 0.02) { drawBee(ctx, x, y, t, 1); return; }
+      beeSctx.clearRect(0, 0, 220, 160);
+      drawBee(beeSctx, 110, 80, t, 1);
+      beeSctx.save();
+      beeSctx.globalCompositeOperation = 'source-atop';
+      beeSctx.fillStyle = 'rgba(235,245,255,' + Math.min(tint, 0.92).toFixed(3) + ')';
+      beeSctx.fillRect(0, 0, 220, 160);
+      beeSctx.restore();
+      ctx.drawImage(beeScratch, x - 110, y - 80);
+    }
+
     var W = canvas.width = window.innerWidth;
     var H = canvas.height = window.innerHeight;
     function onResize() {
@@ -852,6 +1047,17 @@
       var elapsed = ts - start;
       ctx.clearRect(0, 0, W, H);
 
+      // Ambient flash: live bolts light up the whole sky for their duration,
+      // pulsing with the return strokes — the big realism cue.
+      var wash = 0;
+      for (var wi = 0; wi < bolts.length; wi++) {
+        wash += boltAlpha(bolts[wi], ts) * (bolts[wi].big ? 0.14 : 0.035);
+      }
+      if (wash > 0.005) {
+        ctx.fillStyle = 'rgba(140,180,255,' + Math.min(wash, 0.20).toFixed(3) + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+
       var cy = H * 0.34;
       var cx = W * 0.5;
       var beeX = null, beeY = null;   // null → bee has left the timeline
@@ -873,12 +1079,16 @@
         if (!strikeSpawned) {
           strikeSpawned = true;
           if (!reduced) {
+            // Return strokes: the main channel re-flashes as it discharges
             bolts.push({ paths: makeForkBolt(cx + (Math.random() - 0.5) * 30, 0,
-              Math.PI / 2, cy * 1.15, 6, 3), born: ts, life: 460 });
+              Math.PI / 2, cy * 1.15, 6, 3),
+              born: ts, life: 620, restrike: true, big: true });
             bolts.push({ paths: makeForkBolt(cx - 70, 0,
-              Math.PI / 2 + 0.15, cy * 1.05, 3, 2), born: ts, life: 400 });
+              Math.PI / 2 + 0.15, cy * 1.05, 3, 2),
+              born: ts, life: 620, restrike: true });
             bolts.push({ paths: makeForkBolt(cx + 70, 0,
-              Math.PI / 2 - 0.15, cy * 1.05, 3, 2), born: ts, life: 400 });
+              Math.PI / 2 - 0.15, cy * 1.05, 3, 2),
+              born: ts, life: 620, restrike: true });
           }
         }
       } else if (phase === 'blast') {
@@ -920,12 +1130,15 @@
       var boltChance = phase === 'storm' ? 0.08
         : phase === 'blast' ? 0.10 : 0.03;
       if (!reduced && Math.random() < boltChance) {
+        // Roughly a third of storm strikes get return strokes too
+        var doubles = Math.random() < 0.35;
         bolts.push({
           paths: makeForkBolt(Math.random() * W, 0,
             Math.PI / 2 + (Math.random() - 0.5) * 0.6,
             H * (0.25 + Math.random() * 0.35), 2 + Math.random(), 2),
           born: ts,
-          life: 150 + Math.random() * 130,
+          life: doubles ? 620 : 150 + Math.random() * 130,
+          restrike: doubles,
         });
       }
 
@@ -937,7 +1150,7 @@
             bolts.push({ paths: makeForkBolt(W * (0.25 + Math.random() * 0.5), 0,
               Math.PI / 2 + (Math.random() - 0.5) * 0.3,
               H * (0.5 + Math.random() * 0.3), 4 + Math.random() * 3, 3),
-              born: ts, life: 420 });
+              born: ts, life: 620, restrike: true, big: true });
           }
         }
       }
@@ -952,14 +1165,39 @@
 
       for (var bi = bolts.length - 1; bi >= 0; bi--) {
         var bolt = bolts[bi];
-        var age = (ts - bolt.born) / bolt.life;
-        if (age >= 1) { bolts.splice(bi, 1); continue; }
-        // Fast attack, slow decay, plus per-frame flicker
-        var env = age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.85;
-        drawBoltPaths(ctx, bolt.paths, env * (0.7 + Math.random() * 0.3));
+        if (ts - bolt.born >= bolt.life) { bolts.splice(bi, 1); continue; }
+        var env = boltAlpha(bolt, ts);
+        if (env > 0.01) {
+          drawBoltPaths(ctx, bolt.paths, env * (0.8 + Math.random() * 0.2));
+        }
       }
 
+      // Charge level: ramps up as the strike lands, stays lit through blast
+      var charge = phase === 'strike'
+        ? Math.min((elapsed - T_ENTER) / 200, 1)
+        : phase === 'blast' ? 1 : 0;
+
+      // Struck-bee whiteout: the bee's body flashes white-hot in sync with
+      // the strike's return strokes, fading as the channel dies (~600ms).
+      var beeTint = (phase === 'strike' || phase === 'blast')
+        ? 0.9 * restrikeEnv(elapsed - T_ENTER)
+        : 0;
+
       if (beeX !== null && !flashFired) {
+        // Electric halo around the struck bee — flickers like held charge
+        if (charge > 0) {
+          var flick = 0.75 + Math.random() * 0.25;
+          var gR = 70 + 25 * charge;
+          var glow = ctx.createRadialGradient(beeX, beeY, 0, beeX, beeY, gR);
+          glow.addColorStop(0, 'rgba(210,235,255,' + (0.5 * charge * flick).toFixed(3) + ')');
+          glow.addColorStop(0.4, 'rgba(130,190,255,' + (0.28 * charge * flick).toFixed(3) + ')');
+          glow.addColorStop(1, 'rgba(100,180,255,0)');
+          ctx.beginPath();
+          ctx.arc(beeX, beeY, gR, 0, Math.PI * 2);
+          ctx.fillStyle = glow;
+          ctx.fill();
+        }
+
         var intensity = phase === 'blast' ? 1
           : phase === 'strike' ? 0.6
           : 0.35 + 0.1 * Math.sin(elapsed * 0.002);
@@ -973,7 +1211,21 @@
       }
 
       updateAndDrawParticles(ctx);
-      if (beeX !== null && !flashFired) drawBee(ctx, beeX, beeY, elapsed, 1);
+      if (beeX !== null && !flashFired) {
+        // X-ray gag: at each return-stroke peak the bee strobes to its
+        // skeleton, dropping back to the (whitening) bee between pulses.
+        var skel = beeTint > 0.4 ? Math.min(1, (beeTint - 0.4) / 0.25) : 0;
+        drawBeeTinted(beeX, beeY, elapsed, beeTint * (1 - skel * 0.7));
+        if (skel > 0) drawBeeSkeleton(ctx, beeX, beeY, elapsed, skel);
+        // Residual arcs crackling over the charged bee
+        if (charge > 0.3 && !reduced && Math.random() < 0.5) {
+          var arcA = Math.random() * Math.PI * 2;
+          drawBoltPaths(ctx,
+            makeForkBolt(beeX + Math.cos(arcA) * 20, beeY + Math.sin(arcA) * 14,
+              arcA, 22 + Math.random() * 26, 0.8, 1),
+            0.5 + Math.random() * 0.4);
+        }
+      }
 
       if (shaking) ctx.restore();
 
