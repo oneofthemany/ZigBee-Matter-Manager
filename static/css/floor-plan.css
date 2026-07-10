@@ -17,8 +17,15 @@
     --fp-text:             var(--text-primary, #1f2937);
     --fp-text-muted:       var(--text-muted, #6b7280);
 
+    --fp-grid-fine:        rgba(148, 163, 184, 0.10);
     --fp-grid-minor:       rgba(148, 163, 184, 0.18);
     --fp-grid-major:       rgba(148, 163, 184, 0.40);
+    --fp-axis:             rgba(99, 102, 241, 0.28);
+
+    --fp-contour:          #ef4444;
+    --fp-cold:             #3b82f6;
+    --fp-cold-label:       rgba(37, 99, 235, 0.85);
+    --fp-thermo:           #16a34a;
 
     --fp-room-fill:        rgba(99, 102, 241, 0.08);
     --fp-room-stroke:      #6366f1;
@@ -64,8 +71,15 @@
     --fp-text:             var(--wax, #eaf2f4);
     --fp-text-muted:       var(--muted, #7e97a8);
 
+    --fp-grid-fine:        rgba(148, 163, 184, 0.06);
     --fp-grid-minor:       rgba(148, 163, 184, 0.10);
     --fp-grid-major:       rgba(148, 163, 184, 0.22);
+    --fp-axis:             rgba(129, 140, 248, 0.35);
+
+    --fp-contour:          #f87171;
+    --fp-cold:             #60a5fa;
+    --fp-cold-label:       rgba(147, 197, 253, 0.95);
+    --fp-thermo:           #4ade80;
 
     --fp-room-fill:        rgba(129, 140, 248, 0.10);
     --fp-room-stroke:      #818cf8;
@@ -210,10 +224,66 @@
     border-color: #6366f1;
 }
 
+/* ─────────────────────── canvas HUD ─────────────────────── */
+
+#fpScaleBar,
+#fpLegend {
+    position: absolute;
+    bottom: 12px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--fp-sidebar-bg) 84%, transparent);
+    backdrop-filter: blur(4px);
+    border: 1px solid var(--fp-border);
+    font-size: 0.74rem;
+    color: var(--fp-text-muted);
+    pointer-events: none;
+    user-select: none;
+    z-index: 2;
+}
+#fpScaleBar {
+    left: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+#fpScaleBarRule {
+    display: inline-block;
+    height: 6px;
+    border: 1.5px solid currentColor;
+    border-top: none;
+    transition: width 80ms linear;
+}
+#fpLegend {
+    right: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    color: var(--fp-text);
+}
+.fp-legend-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.fp-legend-ramp {
+    width: 44px; height: 10px; border-radius: 3px;
+    background: linear-gradient(90deg,
+        rgba(251, 191, 36, 0.15), rgba(249, 115, 22, 0.55), rgba(239, 68, 68, 0.85));
+}
+.fp-legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+.fp-legend-swatch-cold { background: rgba(59, 130, 246, 0.45); }
+.fp-legend-line { width: 26px; height: 0; }
+.fp-legend-line-contour { border-top: 2px solid var(--fp-contour); opacity: 0.75; }
+.fp-legend-line-cold { border-top: 2px dashed var(--fp-cold); }
+.fp-legend-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fffbe8, #f59e0b);
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.8);
+}
+
 /* ─────────────────────── SVG features ─────────────────────── */
 
+.fp-grid-line-fine  { stroke: var(--fp-grid-fine); }
 .fp-grid-line-minor { stroke: var(--fp-grid-minor); }
 .fp-grid-line-major { stroke: var(--fp-grid-major); }
+.fp-axis            { stroke: var(--fp-axis); stroke-width: 1px; }
 
 .fp-compass-ring   { stroke: var(--fp-compass-ring); }
 .fp-compass-label  { fill: var(--fp-compass-text); }
@@ -262,6 +332,13 @@
 
 /* Drawing previews */
 .fp-preview { fill: none; stroke: var(--fp-preview-stroke); }
+.fp-ortho-guide {
+    stroke: var(--fp-axis);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+    stroke-dasharray: 0.30 0.20;
+    opacity: 0.9;
+}
 .fp-preview-wall   { stroke: var(--fp-preview-stroke); }
 .fp-preview-window { stroke: var(--fp-window); }
 .fp-preview-door   { stroke: var(--fp-door); }
@@ -302,17 +379,107 @@
     stroke: var(--fp-selection-stroke);
 }
 
+/* Thermal overlay — isotherm contours (crisp hairlines at any zoom) and
+   thermostat rings with live readings */
+.fp-contour {
+    fill: none;
+    stroke: var(--fp-contour);
+    stroke-width: 1.2px;
+    vector-effect: non-scaling-stroke;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.fp-thermo-ring {
+    fill: none;
+    stroke: rgba(34, 197, 94, 0.55);
+    stroke-width: 0.045;
+    stroke-dasharray: 0.12 0.08;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: fpRingSpin 16s linear infinite;
+}
+.fp-thermo-core {
+    fill: rgba(34, 197, 94, 0.14);
+    stroke: rgba(34, 197, 94, 0.40);
+    stroke-width: 0.03;
+}
+.fp-thermo-temp {
+    fill: var(--fp-thermo);
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: var(--fp-canvas-bg);
+    stroke-width: 0.05;
+}
+
+/* Cold zones */
+.fp-cold-noheat { fill: rgba(59, 130, 246, 0.20); }
+.fp-cold-boundary {
+    fill: none;
+    stroke: var(--fp-cold);
+    stroke-width: 1.4px;
+    vector-effect: non-scaling-stroke;
+    stroke-dasharray: 0.22 0.12;
+    stroke-linejoin: round;
+    opacity: 0.85;
+}
+.fp-cold-label {
+    fill: var(--fp-cold-label);
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: var(--fp-canvas-bg);
+    stroke-width: 0.04;
+}
+
 /* Sun path */
 .fp-sun-path       { stroke: var(--fp-sun-stroke); fill: none; }
-.fp-sun-path-glow  { stroke: var(--fp-sun-stroke); fill: none; opacity: 0.22; }
+.fp-sun-path-glow  { stroke: var(--fp-sun-stroke); fill: none; opacity: 0.45; }
 .fp-sun-endpoint   { fill: var(--fp-sun-stroke); }
 .fp-sun-marker     { fill: var(--fp-sun-stroke); stroke: var(--fp-canvas-bg); }
 .fp-sun-marker-ring { stroke: var(--fp-sun-stroke); }
 .fp-sun-label      { fill: var(--fp-sun-stroke); font-family: inherit; }
+.fp-sun-tick       { stroke: var(--fp-sun-stroke); }
+.fp-sun-hour {
+    fill: var(--fp-sun-stroke);
+    paint-order: stroke;
+    stroke: var(--fp-canvas-bg);
+    stroke-width: 0.04;
+}
+.fp-north-mark     { fill: var(--fp-compass-needle); }
+.fp-sun-ray {
+    stroke: rgba(251, 191, 36, 0.5);
+    animation: fpRayFlow 1.6s linear infinite;
+}
+.fp-sun-pulse {
+    fill: none;
+    stroke: rgba(251, 191, 36, 0.8);
+    stroke-width: 0.03;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: fpSunPulse 2.4s ease-out infinite;
+}
 
-/* Background image: faint frame in dark mode so a fully-white plan
-   doesn't read as a hole in the canvas. */
-[data-theme="dark"] #fpScene image {
-    outline: 1px dashed var(--fp-border);
-    outline-offset: 0;
+@keyframes fpSunPulse {
+    from { transform: scale(0.55); opacity: 0.9; }
+    to   { transform: scale(1.7);  opacity: 0; }
+}
+@keyframes fpRayFlow {
+    to { stroke-dashoffset: -0.72; }
+}
+@keyframes fpRingSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* Background image: faint frame in dark mode so a fully-white plan doesn't
+   read as a hole in the canvas. Drawn as a real SVG rect with a non-scaling
+   stroke — a CSS outline here would be scaled by the scene transform and
+   render as giant dashes (metre-wide "black squares") around every image. */
+.fp-bg-frame {
+    fill: none;
+    stroke: none;
+}
+[data-theme="dark"] .fp-bg-frame {
+    stroke: var(--fp-border);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+    stroke-dasharray: 0.12 0.08;
 }

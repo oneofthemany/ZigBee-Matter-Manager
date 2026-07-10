@@ -27,7 +27,7 @@ const log = zmmLog('floor-plan');
 
 const FP_VERSION = 1;
 const DEFAULT_LEVEL_HEIGHT = 2.4;
-const SNAP_M = 0.1;                  // snap-to-grid distance, metres
+const DEFAULT_SNAP_M = 0.1;          // default snap-to-grid step, metres (user-adjustable)
 const PIXELS_PER_METRE_DEFAULT = 80;
 
 // ─────────────────── module state (per-modal-open) ───────────────────
@@ -39,8 +39,12 @@ let _availableDevices = { trvs: [], sensors: [], contacts: [] };
 // for display: showing which circuit a radiator's bound room belongs to,
 // in the radiator props panel. Schema: [{ id, name, rooms: [{id, name}] }, ...]
 let _availableCircuits = [];
+// True while the Alt key is held — suppresses grid snap and endpoint merging
+// so points can be placed exactly where the cursor is.
+let _altDown = false;
 
 function resetState(plan) {
+    _fieldCache = new Map();
     _state = {
         plan: plan || newEmptyPlan(),
         currentLevelId: null,
@@ -49,6 +53,8 @@ function resetState(plan) {
         drawBuffer: null,          // tool-specific scratchpad
         zoom: PIXELS_PER_METRE_DEFAULT,
         pan: { x: 0, y: 0 },       // pixel offset
+        snapStep: DEFAULT_SNAP_M,  // grid-snap step in metres; 0 = off
+        angleStep: 1,              // Ctrl angle-lock increment in degrees
         showGrid: true,
         showBackground: true,
         showSun: false,
@@ -217,6 +223,28 @@ function ensureModal() {
                   <button class="btn btn-sm btn-outline-primary" data-tool="contact"><i class="fas fa-link me-1"></i>Contact</button>
                   <button class="btn btn-sm btn-outline-warning" data-tool="calibrate"><i class="fas fa-ruler me-1"></i>Calibrate</button>
                 </div>
+                <div class="d-flex align-items-center gap-2 mt-2">
+                  <label class="small text-muted mb-0" for="fpSnapStep">Snap</label>
+                  <select class="form-select form-select-sm py-0" id="fpSnapStep" style="font-size:0.78rem">
+                    <option value="0">Off</option>
+                    <option value="0.01">1 cm</option>
+                    <option value="0.05">5 cm</option>
+                    <option value="0.1" selected>10 cm</option>
+                    <option value="0.25">25 cm</option>
+                    <option value="0.5">50 cm</option>
+                  </select>
+                </div>
+                <div class="d-flex align-items-center gap-2 mt-1">
+                  <label class="small text-muted mb-0" for="fpAngleStep">Angle</label>
+                  <select class="form-select form-select-sm py-0" id="fpAngleStep" style="font-size:0.78rem">
+                    <option value="1" selected>1°</option>
+                    <option value="2">2°</option>
+                    <option value="5">5°</option>
+                    <option value="15">15°</option>
+                    <option value="45">45°</option>
+                  </select>
+                </div>
+                <div class="form-text small mt-1">Hold <kbd>Alt</kbd>: snap off · <kbd>Ctrl</kbd>: angle lock</div>
               </div>
               <div class="mb-3">
                 <div class="small text-muted text-uppercase mb-1">Background image</div>
@@ -281,18 +309,28 @@ function ensureModal() {
             <div id="fpCanvasWrap" class="flex-grow-1 position-relative" style="overflow:hidden">
               <svg id="fpCanvas" style="width:100%;height:100%;display:block;cursor:crosshair">
                 <defs>
+                  <pattern id="fpGridFine" width="8" height="8" patternUnits="userSpaceOnUse">
+                    <path class="fp-grid-line-fine" d="M 8 0 L 0 0 0 8" fill="none" stroke-width="0.5"/>
+                  </pattern>
                   <pattern id="fpGridMinor" width="40" height="40" patternUnits="userSpaceOnUse">
+                    <rect id="fpGridMinorFill" width="40" height="40" fill="url(#fpGridFine)"/>
                     <path class="fp-grid-line-minor" d="M 40 0 L 0 0 0 40" fill="none" stroke-width="0.5"/>
                   </pattern>
                   <pattern id="fpGridMajor" width="200" height="200" patternUnits="userSpaceOnUse">
-                    <rect width="200" height="200" fill="url(#fpGridMinor)"/>
+                    <rect id="fpGridMajorFill" width="200" height="200" fill="url(#fpGridMinor)"/>
                     <path class="fp-grid-line-major" d="M 200 0 L 0 0 0 200" fill="none" stroke-width="1"/>
                   </pattern>
                 </defs>
-                <g id="fpGrid"><rect id="fpGridRect" width="10000" height="10000" x="-5000" y="-5000" fill="url(#fpGridMajor)"/></g>
+                <g id="fpGrid">
+                  <rect id="fpGridRect" width="100%" height="100%" fill="url(#fpGridMajor)"/>
+                  <line id="fpAxisX" class="fp-axis" x1="-100000" x2="100000" y1="0" y2="0"/>
+                  <line id="fpAxisY" class="fp-axis" x1="0" x2="0" y1="-100000" y2="100000"/>
+                </g>
                 <g id="fpScene"></g>
                 <g id="fpOverlay"></g>
               </svg>
+              <div id="fpScaleBar"><span id="fpScaleBarRule"></span><span id="fpScaleBarLabel"></span></div>
+              <div id="fpLegend" style="display:none"></div>
             </div>
 
             <!-- Right: properties pane -->
@@ -327,6 +365,13 @@ function bindModalEvents() {
     document.getElementById('fpToggleGrid').addEventListener('change', e => {
         _state.showGrid = e.target.checked;
         document.getElementById('fpGrid').style.display = _state.showGrid ? '' : 'none';
+    });
+    document.getElementById('fpSnapStep').addEventListener('change', e => {
+        _state.snapStep = parseFloat(e.target.value) || 0;
+        renderGrid();
+    });
+    document.getElementById('fpAngleStep').addEventListener('change', e => {
+        _state.angleStep = parseFloat(e.target.value) || 1;
     });
     document.getElementById('fpToggleSun').addEventListener('change', async e => {
         _state.showSun = e.target.checked;
@@ -419,6 +464,9 @@ function bindModalEvents() {
     // so the user doesn't have to keep focus on the canvas.
     const onKey = (e) => {
         if (!_state) return;
+        // Alt suppresses snapping while held (tracked before the form-field
+        // guard so it works regardless of focus).
+        if (e.key === 'Alt') _altDown = true;
         // Ignore when typing in a form field
         const tag = (e.target?.tagName || '').toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -443,10 +491,19 @@ function bindModalEvents() {
         }
     };
     document.addEventListener('keydown', onKey);
+    // Alt release / window blur ends snap suppression. preventDefault on the
+    // keyup stops Firefox focusing its menu bar on a bare Alt press.
+    const onKeyUp = (e) => { if (e.key === 'Alt') { _altDown = false; e.preventDefault(); } };
+    const onBlur = () => { _altDown = false; };
+    document.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
 
     // Cleanup on hide
     document.getElementById('floorPlanModal').addEventListener('hidden.bs.modal', () => {
         document.removeEventListener('keydown', onKey);
+        document.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('blur', onBlur);
+        _altDown = false;
         _state = null;
     });
 }
@@ -492,6 +549,11 @@ function syncViewToggles() {
     // Keep grid visibility in sync with state
     const grid = document.getElementById('fpGrid');
     if (grid) grid.style.display = _state.showGrid ? '' : 'none';
+
+    const snapEl = document.getElementById('fpSnapStep');
+    if (snapEl) snapEl.value = String(_state.snapStep);
+    const angleEl = document.getElementById('fpAngleStep');
+    if (angleEl) angleEl.value = String(_state.angleStep);
 }
 
 function syncBackgroundControls() {
@@ -694,14 +756,30 @@ function clientToSvg(evt) {
     return { x: m.x, y: m.y };
 }
 
-function snap(v) { return Math.round(v / SNAP_M) * SNAP_M; }
+function snap(v) {
+    const s = _altDown ? 0 : (_state?.snapStep ?? DEFAULT_SNAP_M);
+    return s > 0 ? Math.round(v / s) * s : v;
+}
 function snapPt(p) { return { x: snap(p.x), y: snap(p.y) }; }
+
+// Endpoint-merge radius in model metres: a fixed ~14 px on screen, so zooming
+// in shrinks it and lets the user place vertices close together without them
+// being merged. This is what makes small gaps drawable.
+function snapRadiusM() {
+    return _altDown ? 0 : Math.min(0.3, 14 / (_state?.zoom || PIXELS_PER_METRE_DEFAULT));
+}
+
+// Chain-close click radius — slightly larger than the merge radius.
+function closeRadiusM() {
+    return Math.max(0.12, 18 / (_state?.zoom || PIXELS_PER_METRE_DEFAULT));
+}
 
 // ──────────────────────────── scene render ────────────────────────────
 
 function renderScene() {
     const lvl = currentLevel();
     if (!lvl) return;
+    renderGrid();
     const scene = document.getElementById('fpScene');
     const m2px = _state.zoom;
     scene.setAttribute('transform',
@@ -730,81 +808,11 @@ function renderScene() {
                  pointer-events="none"/>`);
     }
 
-    // Thermal overlay — radial heat gradients projected from radiator positions,
-    // clipped to each room polygon, with thermostat rings on sensors.
+    // Thermal overlay — a per-room heat-coverage field (see the thermal field
+    // engine section) rendered as a smooth bitmap heat-map, with true marching-
+    // squares isotherm contours and live thermostat readings on sensors.
     if (_state.showThermal) {
-        const allWatts = lvl.radiators.map(r => r.watts_at_dt50 || 0);
-        const maxWatts = Math.max(...allWatts, 100);
-        const thermalDefs = [];
-        const thermalPaths = [];
-
-        for (const room of lvl.rooms) {
-            if (!room.polygon || room.polygon.length < 3) continue;
-            const rads = lvl.radiators.filter(r => r.room_id === room.id);
-            if (rads.length === 0) continue;
-
-            const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
-            const intensity = Math.min(1, totalWatts / maxWatts);
-
-            let heatX = 0, heatY = 0;
-            for (const r of rads) {
-                const c = radiatorCenter(r, lvl);
-                heatX += c.x; heatY += c.y;
-            }
-            heatX /= rads.length; heatY /= rads.length;
-            const hsvg = modelToSvg({ x: heatX, y: heatY });
-
-            const xs = room.polygon.map(p => p[0]);
-            const ys = room.polygon.map(p => p[1]);
-            const diag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-            const gradR = Math.max(diag * 0.9, 1.5);
-
-            const uid = room.id.replace(/[^a-z0-9]/gi, '_');
-            const roomPath = polygonToPath(room.polygon);
-
-            thermalDefs.push(`
-              <radialGradient id="tg_${uid}" cx="${hsvg.x}" cy="${hsvg.y}" r="${gradR}" gradientUnits="userSpaceOnUse">
-                <stop offset="0%"   stop-color="rgba(239,68,68,${(0.42 * intensity).toFixed(2)})"/>
-                <stop offset="40%"  stop-color="rgba(251,146,60,${(0.17 * intensity).toFixed(2)})"/>
-                <stop offset="100%" stop-color="rgba(239,68,68,0)"/>
-              </radialGradient>
-              <clipPath id="tc_${uid}"><path d="${roomPath}"/></clipPath>`);
-
-            thermalPaths.push(`<path d="${roomPath}" fill="url(#tg_${uid})" clip-path="url(#tc_${uid})" pointer-events="none"/>`);
-
-            // Temperature contour rings — clipped isotherms at 30 / 55 / 75 % of the gradient radius
-            if (_state.showContours) {
-                const contours = [
-                    { frac: 0.30, opacity: 0.55 },
-                    { frac: 0.55, opacity: 0.38 },
-                    { frac: 0.75, opacity: 0.22 },
-                ];
-                for (const { frac, opacity } of contours) {
-                    thermalPaths.push(`<circle cx="${hsvg.x}" cy="${hsvg.y}" r="${(gradR * frac).toFixed(3)}"
-                      clip-path="url(#tc_${uid})" fill="none"
-                      stroke="rgba(239,68,68,${(opacity * intensity).toFixed(2)})"
-                      stroke-width="0.035" stroke-dasharray="0.16 0.09"
-                      pointer-events="none"/>`);
-                }
-            }
-        }
-
-        // Thermostat rings on sensors
-        for (const s of lvl.sensors) {
-            const sp = modelToSvg({ x: s.x ?? 0, y: s.y ?? 0 });
-            thermalPaths.push(`
-              <circle cx="${sp.x}" cy="${sp.y}" r="0.40"
-                      fill="none" stroke="rgba(34,197,94,0.55)" stroke-width="0.045"
-                      stroke-dasharray="0.12 0.08" pointer-events="none"/>
-              <circle cx="${sp.x}" cy="${sp.y}" r="0.19"
-                      fill="rgba(34,197,94,0.14)" stroke="rgba(34,197,94,0.4)" stroke-width="0.03"
-                      pointer-events="none"/>`);
-        }
-
-        if (thermalDefs.length > 0 || thermalPaths.length > 0) {
-            parts.push(`<defs>${thermalDefs.join('')}</defs>`);
-            parts.push(...thermalPaths);
-        }
+        parts.push(...renderThermalParts(lvl));
     }
 
     // Rooms (under shapes but over the image)
@@ -871,152 +879,11 @@ function renderScene() {
         }
     }
 
-    // Cold zones — threshold demarcation + window/door draft overlay.
-    // Requires thermal to be on (shares the radiator heat data).
+    // Cold zones — everywhere the shared heat-coverage field falls below the
+    // comfort threshold (window/door drafts are baked into the field, so the
+    // cold pools visibly gather around leaky openings). Requires thermal on.
     if (_state.showColdZones && _state.showThermal) {
-        const heatFlux = _state.heatFluxWm2 || 50; // W/m²
-        const coldDefs = [];
-        const coldPaths = [];
-        const definedClips = new Set();
-
-        const ensureRoomClip = (uid, roomPath) => {
-            if (definedClips.has(uid)) return;
-            coldDefs.push(`<clipPath id="cz_${uid}"><path d="${roomPath}"/></clipPath>`);
-            definedClips.add(uid);
-        };
-
-        // ── Heated-radius cold zone per room ──
-        for (const room of lvl.rooms) {
-            if (!room.polygon || room.polygon.length < 3) continue;
-            const rads = lvl.radiators.filter(r => r.room_id === room.id);
-            const uid = room.id.replace(/[^a-z0-9]/gi, '_');
-            const roomPath = polygonToPath(room.polygon);
-            ensureRoomClip(uid, roomPath);
-
-            if (rads.length === 0) {
-                // No radiator → entire room is below threshold
-                coldPaths.push(`<path d="${roomPath}" fill="rgba(59,130,246,0.20)" pointer-events="none"/>`);
-                const c = polygonCentroid(room.polygon);
-                const sc = modelToSvg(c);
-                coldPaths.push(`<text x="${sc.x}" y="${sc.y + 0.60}" font-size="0.17" text-anchor="middle"
-                                       fill="rgba(37,99,235,0.8)" pointer-events="none">no heating</text>`);
-                continue;
-            }
-
-            const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
-            if (totalWatts === 0) continue;
-
-            let heatX = 0, heatY = 0;
-            for (const r of rads) { const c = radiatorCenter(r, lvl); heatX += c.x; heatY += c.y; }
-            heatX /= rads.length; heatY /= rads.length;
-            const hsvg = modelToSvg({ x: heatX, y: heatY });
-
-            // Heated radius: area that the radiator can maintain above threshold
-            const heatedR = Math.sqrt(totalWatts / (heatFlux * Math.PI));
-
-            // If radiator covers the whole room, no cold zone to show
-            const xs = room.polygon.map(p => p[0]);
-            const ys = room.polygon.map(p => p[1]);
-            const roomDiag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-            if (heatedR >= roomDiag * 0.62) continue;
-
-            // Mask punches out the heated circle; clip-path hard-bounds to room polygon.
-            const maskId = `czm_${uid}`;
-            coldDefs.push(`
-              <mask id="${maskId}" maskUnits="userSpaceOnUse">
-                <rect x="-5000" y="-5000" width="10000" height="10000" fill="white"/>
-                <circle cx="${hsvg.x}" cy="${hsvg.y}" r="${heatedR}" fill="black"/>
-              </mask>`);
-            coldPaths.push(`<path d="${roomPath}" fill="rgba(59,130,246,0.17)"
-                                  mask="url(#${maskId})" clip-path="url(#cz_${uid})"
-                                  pointer-events="none"/>`);
-
-            // Demarcation line at the threshold boundary
-            coldPaths.push(`<circle cx="${hsvg.x}" cy="${hsvg.y}" r="${heatedR}"
-                                   clip-path="url(#cz_${uid})" fill="none"
-                                   stroke="rgba(59,130,246,0.75)" stroke-width="0.045"
-                                   stroke-dasharray="0.20 0.10" pointer-events="none"/>`);
-
-            // Target temp label anchored in the cold zone (toward farthest corner)
-            const targetT = room.target_temp;
-            if (targetT) {
-                const fxs = xs.reduce((f, x) => Math.abs(x - heatX) > Math.abs(f - heatX) ? x : f, xs[0]);
-                const fys = ys.reduce((f, y) => Math.abs(y - heatY) > Math.abs(f - heatY) ? y : f, ys[0]);
-                const lp = modelToSvg({ x: heatX + (fxs - heatX) * 0.65, y: heatY + (fys - heatY) * 0.65 });
-                coldPaths.push(`<text x="${lp.x}" y="${lp.y}" font-size="0.17" text-anchor="middle"
-                                       fill="rgba(37,99,235,0.80)" pointer-events="none">&lt;${targetT}°C</text>`);
-            }
-        }
-
-        // ── Window / door draft zones ──
-        for (const opening of (lvl.openings || [])) {
-            const wall = lvl.walls.find(w => w.id === opening.wall_id);
-            if (!wall) continue;
-
-            const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
-            const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
-            const wmx = wall.x1 + ux * (opening.offset_m + opening.width_m / 2);
-            const wmy = wall.y1 + uy * (opening.offset_m + opening.width_m / 2);
-            const wsvg = modelToSvg({ x: wmx, y: wmy });
-
-            const isOpen = openingContactState(opening, lvl);
-
-            // Draft intensity: state × glazing × door-type
-            const glazingFactor = { single: 1.45, double: 1.0, triple: 0.60 }[opening.glazing] ?? 1.0;
-            const doorFactor    = opening.kind === 'door'
-                ? ({ external: 1.15, internal: 0.55 }[opening.door_type] ?? 0.8)
-                : 1.0;
-            const stateBase = isOpen === true ? 0.40 : isOpen === false ? 0.07 : 0.18;
-            const draftOpacity = Math.min(0.55, stateBase * glazingFactor * doorFactor);
-            if (draftOpacity < 0.04) continue;
-
-            // Draft reach scales with opening width and state
-            const draftR = Math.max(1.0, opening.width_m * 1.4) * (isOpen === true ? 1.5 : 1.0);
-
-            // Apply to every room whose polygon edge contains this opening
-            for (const room of lvl.rooms) {
-                if (!room.polygon || room.polygon.length < 3) continue;
-                let onBoundary = false;
-                for (let i = 0; i < room.polygon.length; i++) {
-                    const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
-                    const ex = b[0] - a[0], ey = b[1] - a[1];
-                    const elen2 = ex * ex + ey * ey || 1;
-                    const t = Math.max(0, Math.min(1, ((wmx - a[0]) * ex + (wmy - a[1]) * ey) / elen2));
-                    if (Math.hypot(wmx - (a[0] + t * ex), wmy - (a[1] + t * ey)) < 0.3) {
-                        onBoundary = true; break;
-                    }
-                }
-                if (!onBoundary) continue;
-
-                const uid  = room.id.replace(/[^a-z0-9]/gi, '_');
-                const oid  = opening.id.replace(/[^a-z0-9]/gi, '_');
-                const gid  = `dg_${uid}_${oid}`;
-                ensureRoomClip(uid, polygonToPath(room.polygon));
-
-                coldDefs.push(`
-                  <radialGradient id="${gid}" cx="${wsvg.x}" cy="${wsvg.y}" r="${draftR}"
-                                  gradientUnits="userSpaceOnUse">
-                    <stop offset="0%"   stop-color="rgba(96,165,250,${draftOpacity.toFixed(2)})"/>
-                    <stop offset="55%"  stop-color="rgba(96,165,250,${(draftOpacity * 0.35).toFixed(2)})"/>
-                    <stop offset="100%" stop-color="rgba(96,165,250,0)"/>
-                  </radialGradient>`);
-
-                coldPaths.push(`<path d="${polygonToPath(room.polygon)}"
-                                      fill="url(#${gid})" clip-path="url(#cz_${uid})"
-                                      pointer-events="none"/>`);
-
-                // State label when known, coloured red/green
-                if (isOpen !== null) {
-                    const lc = isOpen ? 'rgba(220,38,38,0.90)' : 'rgba(22,163,74,0.85)';
-                    coldPaths.push(`<text x="${wsvg.x}" y="${wsvg.y - 0.28}" font-size="0.15"
-                                          text-anchor="middle" fill="${lc}"
-                                          pointer-events="none">${isOpen ? 'open' : 'closed'}</text>`);
-                }
-            }
-        }
-
-        if (coldDefs.length) parts.push(`<defs>${coldDefs.join('')}</defs>`);
-        parts.push(...coldPaths);
+        parts.push(...renderColdParts(lvl));
     }
 
     // Walls
@@ -1219,6 +1086,8 @@ function renderScene() {
             renderScene(); renderProps();
         });
     });
+
+    renderLegend();
 }
 
 function renderOverlay() {
@@ -1267,14 +1136,27 @@ function renderOverlay() {
                 const r = (i === 0 && _state.tool === 'wall' && db.points.length >= 2) ? 0.12 : 0.07;
                 html += `<circle class="fp-preview-vertex" cx="${sp.x}" cy="${sp.y}" r="${r}"/>`;
             }
-            // Live length label on the rubber-band segment for walls
+            // Live length + bearing label on the rubber-band segment for walls
             if (_state.tool === 'wall' && mouseSvg && db.points.length > 0) {
                 const last = db.points[db.points.length - 1];
                 const dx = db.cur.x - last.x, dy = db.cur.y - last.y;
                 const len = Math.hypot(dx, dy);
+                const rad = Math.atan2(dy, dx);
+                const deg = ((rad * 180 / Math.PI) + 360) % 360;
+                // Sticky-ortho feedback: when the segment sits exactly on a
+                // 45° axis, extend a construction guide through the vertex.
+                const spokeIdx = Math.round(rad / (Math.PI / 4));
+                if (len > 0.01 && Math.abs(rad - spokeIdx * Math.PI / 4) < 1e-4) {
+                    const gx = Math.cos(spokeIdx * Math.PI / 4);
+                    const gy = Math.sin(spokeIdx * Math.PI / 4);
+                    const g1 = modelToSvg({ x: last.x - gx * 200, y: last.y - gy * 200 });
+                    const g2 = modelToSvg({ x: last.x + gx * 200, y: last.y + gy * 200 });
+                    html += `<line class="fp-ortho-guide" x1="${g1.x}" y1="${g1.y}"
+                                   x2="${g2.x}" y2="${g2.y}"/>`;
+                }
                 const mid = modelToSvg({ x: (last.x + db.cur.x) / 2, y: (last.y + db.cur.y) / 2 });
                 html += `<text class="fp-preview-label" x="${mid.x}" y="${mid.y - 0.15}"
-                               font-size="0.18" text-anchor="middle">${len.toFixed(2)} m</text>`;
+                               font-size="0.18" text-anchor="middle">${len.toFixed(2)} m · ${deg.toFixed(1)}°</text>`;
             }
         }
     }
@@ -1336,13 +1218,50 @@ function renderOverlay() {
 
             const daytime = (sd.points || []).filter(pt => pt.el > 0);
             if (daytime.length > 1) {
+                const originSvg = modelToSvg(origin);
+                const maxEl = Math.max(...daytime.map(p => p.el), 1);
                 const arcPts = daytime.map(sunPtToSvg);
-                const dStr = arcPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+                const dStr = arcPts.map((p, i) =>
+                    `${i === 0 ? 'M' : 'L'}${p.x.toFixed(3)},${p.y.toFixed(3)}`).join(' ');
 
-                // Outer glow — thick, low opacity
-                html += `<path class="fp-sun-path-glow" d="${dStr}" stroke-width="0.35" stroke-linecap="round"/>`;
-                // Inner solid arc
-                html += `<path class="fp-sun-path" d="${dStr}" stroke-width="0.08" stroke-linecap="round"/>`;
+                html += `<defs>
+                  <filter id="fpSunGlow" x="-80%" y="-80%" width="260%" height="260%">
+                    <feGaussianBlur stdDeviation="0.14"/>
+                  </filter>
+                  <radialGradient id="fpSunBall">
+                    <stop offset="0%" stop-color="#fffbe8"/>
+                    <stop offset="55%" stop-color="#fcd34d"/>
+                    <stop offset="100%" stop-color="#f59e0b"/>
+                  </radialGradient>
+                </defs>`;
+
+                // Soft halo under the arc, then elevation-coloured segments:
+                // deep amber at the horizon → bright gold at solar noon.
+                html += `<path class="fp-sun-path-glow" d="${dStr}" stroke-width="0.30"
+                               stroke-linecap="round" filter="url(#fpSunGlow)"/>`;
+                for (let i = 0; i < arcPts.length - 1; i++) {
+                    const t = ((daytime[i].el + daytime[i + 1].el) / 2) / maxEl;
+                    const col = `hsl(${(24 + 26 * t).toFixed(0)} 96% ${(52 + 12 * t).toFixed(0)}%)`;
+                    html += `<line x1="${arcPts[i].x}" y1="${arcPts[i].y}"
+                                   x2="${arcPts[i + 1].x}" y2="${arcPts[i + 1].y}"
+                                   stroke="${col}" stroke-width="0.085" stroke-linecap="round"/>`;
+                }
+
+                // Hour ticks along the arc, labelled every 3 hours
+                for (let i = 0; i < daytime.length; i++) {
+                    const dte = new Date(daytime[i].ts);
+                    if (dte.getMinutes() !== 0) continue;
+                    const p = arcPts[i];
+                    const dx = p.x - originSvg.x, dy = p.y - originSvg.y;
+                    const dl = Math.hypot(dx, dy) || 1;
+                    const rx = dx / dl, ry = dy / dl;
+                    html += `<line class="fp-sun-tick" x1="${p.x - rx * 0.09}" y1="${p.y - ry * 0.09}"
+                                   x2="${p.x + rx * 0.09}" y2="${p.y + ry * 0.09}" stroke-width="0.035"/>`;
+                    if (dte.getHours() % 3 === 0) {
+                        html += `<text class="fp-sun-hour" x="${p.x + rx * 0.38}" y="${p.y + ry * 0.38 + 0.06}"
+                                       font-size="0.17" text-anchor="middle">${String(dte.getHours()).padStart(2, '0')}</text>`;
+                    }
+                }
 
                 // Endpoint dots at sunrise / sunset
                 const srPt = arcPts[0], ssPt = arcPts[arcPts.length - 1];
@@ -1364,9 +1283,27 @@ function renderOverlay() {
                 }
                 if (closest) {
                     const sp = sunPtToSvg(closest);
-                    html += `<circle class="fp-sun-marker" cx="${sp.x}" cy="${sp.y}" r="0.22" stroke-width="0.05"/>`;
-                    html += `<circle class="fp-sun-marker-ring" cx="${sp.x}" cy="${sp.y}" r="0.36" stroke-width="0.045" fill="none"/>`;
+                    // Animated light ray from the sun toward the house
+                    html += `<line class="fp-sun-ray" x1="${sp.x}" y1="${sp.y}"
+                                   x2="${originSvg.x}" y2="${originSvg.y}"
+                                   stroke-width="0.05" stroke-dasharray="0.22 0.14"/>`;
+                    // Glowing pulsing sun
+                    html += `<circle cx="${sp.x}" cy="${sp.y}" r="0.42"
+                                     fill="rgba(251,191,36,0.35)" filter="url(#fpSunGlow)"/>`;
+                    html += `<circle class="fp-sun-pulse" cx="${sp.x}" cy="${sp.y}" r="0.34"/>`;
+                    html += `<circle cx="${sp.x}" cy="${sp.y}" r="0.20" fill="url(#fpSunBall)"/>`;
+                    html += `<text class="fp-sun-hour" x="${sp.x}" y="${sp.y + 0.55}" font-size="0.16"
+                                   text-anchor="middle">${Math.round(closest.el)}° elev</text>`;
                 }
+
+                // North marker just outside the arc, honouring the compass offset
+                const nRad = (_state.plan.north_offset_deg * Math.PI) / 180;
+                const np = modelToSvg({
+                    x: origin.x + Math.sin(nRad) * (ARC_R + 0.9),
+                    y: origin.y + Math.cos(nRad) * (ARC_R + 0.9),
+                });
+                html += `<text class="fp-north-mark" x="${np.x}" y="${np.y + 0.09}" font-size="0.28"
+                               text-anchor="middle" font-weight="bold">N</text>`;
             }
         }
     }
@@ -1412,8 +1349,9 @@ function onCanvasMouseDown(e) {
     if (_state.tool === 'wall') {
         // Chain mode: each click drops a vertex; consecutive vertices form a
         // wall. Click the first vertex again (or press Enter / Esc / right-
-        // click) to finish the chain.
-        const snapped = snapToExistingEndpoint(lvl, m) || m;
+        // click) to finish the chain. Ctrl locks the segment angle to 15°
+        // increments; Alt disables all snapping for the click.
+        const snapped = wallDrawPoint(e, lvl);
         if (!_state.drawBuffer || !_state.drawBuffer.points) {
             _state.drawBuffer = { points: [snapped], cur: snapped };
         } else {
@@ -1421,13 +1359,13 @@ function onCanvasMouseDown(e) {
             const first = pts[0];
             const last = pts[pts.length - 1];
             // Click on first point closes the chain
-            if (pts.length >= 2 && Math.hypot(snapped.x - first.x, snapped.y - first.y) < 0.2) {
+            if (pts.length >= 2 && Math.hypot(snapped.x - first.x, snapped.y - first.y) < closeRadiusM()) {
                 pts.push(first);
                 finishWallChain();
                 return;
             }
             // Reject zero-length segment
-            if (Math.hypot(snapped.x - last.x, snapped.y - last.y) < 0.2) {
+            if (Math.hypot(snapped.x - last.x, snapped.y - last.y) < 0.04) {
                 toast('warn', 'Too short', 'Move further before clicking.');
                 return;
             }
@@ -1446,7 +1384,7 @@ function onCanvasMouseDown(e) {
         } else {
             // Click near the first point closes the polygon
             const first = _state.drawBuffer.points[0];
-            if (Math.hypot(m.x - first.x, m.y - first.y) < 0.3 && _state.drawBuffer.points.length >= 3) {
+            if (Math.hypot(m.x - first.x, m.y - first.y) < closeRadiusM() && _state.drawBuffer.points.length >= 3) {
                 finishRoom();
             } else {
                 _state.drawBuffer.points.push(m);
@@ -1550,9 +1488,9 @@ function onCanvasMouseMove(e) {
     if (!_state.drawBuffer) return;
     const m = snapPt(clientToSvgModel(e));
     if (_state.tool === 'wall') {
-        // Snap to nearby existing endpoints during chain drawing
+        // Endpoint snap / Ctrl angle lock, same as the click handler
         const lvl = currentLevel();
-        _state.drawBuffer.cur = snapToExistingEndpoint(lvl, m) || m;
+        _state.drawBuffer.cur = wallDrawPoint(e, lvl);
     } else if (_state.tool === 'window' || _state.tool === 'door') {
         const proj = projectPointOntoSegment(m, _state.drawBuffer.wall);
         _state.drawBuffer.cur = proj.point;
@@ -1581,7 +1519,7 @@ function onCanvasMouseUp(e) {
         const t2 = _state.drawBuffer.curT;
         const offset_m = Math.min(t1, t2);
         const width_m  = Math.abs(t2 - t1);
-        if (width_m >= 0.2) {
+        if (width_m >= 0.1) {
             const id = genId(_state.tool === 'window' ? 'win' : 'dr');
             const op = {
                 id, wall_id: wall.id, kind: _state.tool,
@@ -1748,12 +1686,14 @@ function nearestOpening(lvl, p) {
 }
 
 /**
- * If `p` is within ~0.25 m of an existing wall endpoint (or an in-progress
- * chain vertex), return that endpoint snapped exactly. Otherwise null. This
- * makes chains close cleanly and adjacent walls share endpoints exactly.
+ * If `p` is within the zoom-aware merge radius of an existing wall endpoint
+ * (or an in-progress chain vertex), return that endpoint snapped exactly.
+ * Otherwise null. This makes chains close cleanly and adjacent walls share
+ * endpoints exactly, while still allowing tight gaps when zoomed in.
  */
 function snapToExistingEndpoint(lvl, p) {
-    const SNAP_R = 0.25;
+    const SNAP_R = snapRadiusM();
+    if (SNAP_R <= 0) return null;
     let best = null, bestD = SNAP_R;
     for (const w of (lvl.walls || [])) {
         for (const ep of [{ x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }]) {
@@ -1777,7 +1717,8 @@ function snapToExistingEndpoint(lvl, p) {
  * or to its other end on the same wall).
  */
 function snapToOtherWallEndpoint(lvl, excludeWallId, p) {
-    const SNAP_R = 0.25;
+    const SNAP_R = snapRadiusM();
+    if (SNAP_R <= 0) return null;
     let best = null, bestD = SNAP_R;
     for (const w of (lvl.walls || [])) {
         if (w.id === excludeWallId) continue;
@@ -1815,6 +1756,535 @@ function polygonToPath(poly) {
         const sp = modelToSvg({ x: p[0], y: p[1] });
         return `${i === 0 ? 'M' : 'L'} ${sp.x} ${sp.y}`;
     }).join(' ') + ' Z';
+}
+
+// ──────────────────────── adaptive grid & HUD ────────────────────────
+
+// Nice step ladders (metres) for the grid tiers and the scale bar.
+const GRID_STEPS = [0.5, 1, 2, 5, 10, 20, 50];
+const SCALE_BAR_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20];
+
+/**
+ * Model-aligned adaptive grid. Unlike the old fixed 40 px screen pattern,
+ * the three tiers pick real-world steps (e.g. 1 m / 20 cm / 4 cm) from the
+ * current zoom, and the pattern phase follows the pan so lines sit exactly
+ * on round metre values — with the model origin axes highlighted. Also
+ * drives the scale bar and the header status readout.
+ */
+function renderGrid() {
+    const z = _state.zoom;
+    const M = GRID_STEPS.find(s => s * z >= 64) ?? GRID_STEPS[GRID_STEPS.length - 1];
+    const minor = M / 5;
+    const fine = M / 25;
+    const ox = _state.pan.x, oy = _state.pan.y;
+
+    const setPattern = (id, stepPx) => {
+        const p = document.getElementById(id);
+        if (!p) return;
+        p.setAttribute('width', stepPx);
+        p.setAttribute('height', stepPx);
+        p.setAttribute('x', ox);
+        p.setAttribute('y', oy);
+        p.querySelector('path')?.setAttribute('d', `M ${stepPx} 0 L 0 0 0 ${stepPx}`);
+        const fill = p.querySelector('rect');
+        if (fill) { fill.setAttribute('width', stepPx); fill.setAttribute('height', stepPx); }
+    };
+    setPattern('fpGridMajor', M * z);
+    setPattern('fpGridMinor', minor * z);
+    setPattern('fpGridFine', fine * z);
+    // Fine tier only when its lines are ≥ 8 px apart (else it's visual noise)
+    document.getElementById('fpGridMinorFill')
+        ?.setAttribute('fill', fine * z >= 8 ? 'url(#fpGridFine)' : 'none');
+
+    // Origin axes (screen space — the grid group carries no transform)
+    const ax = document.getElementById('fpAxisX');
+    const ay = document.getElementById('fpAxisY');
+    if (ax) { ax.setAttribute('y1', oy); ax.setAttribute('y2', oy); }
+    if (ay) { ay.setAttribute('x1', ox); ay.setAttribute('x2', ox); }
+
+    // Scale bar — the step whose screen length lands closest to ~100 px
+    const rule = document.getElementById('fpScaleBarRule');
+    const lab = document.getElementById('fpScaleBarLabel');
+    if (rule && lab) {
+        let bestL = SCALE_BAR_STEPS[0];
+        for (const s of SCALE_BAR_STEPS) {
+            if (Math.abs(s * z - 100) < Math.abs(bestL * z - 100)) bestL = s;
+        }
+        rule.style.width = `${Math.round(bestL * z)}px`;
+        lab.textContent = bestL < 1 ? `${Math.round(bestL * 100)} cm` : `${bestL} m`;
+    }
+
+    // Header status: zoom, effective grid resolution, snap step
+    const st = document.getElementById('fpStatus');
+    if (st) {
+        const fmtM = v => v < 1 ? `${Math.round(v * 100)} cm` : `${v} m`;
+        const snapLbl = _state.snapStep > 0 ? fmtM(_state.snapStep) : 'off';
+        st.textContent = `${Math.round(z)} px/m · grid ${fmtM(minor)} · snap ${snapLbl}`;
+    }
+}
+
+/**
+ * Legend for whichever overlays are active, rendered as a small HUD card in
+ * the canvas corner. Hidden when no overlay needs explaining.
+ */
+function renderLegend() {
+    const el = document.getElementById('fpLegend');
+    if (!el) return;
+    const rows = [];
+    if (_state.showThermal) {
+        rows.push(`<div class="fp-legend-row"><span class="fp-legend-ramp"></span>Heat coverage</div>`);
+        if (_state.showContours) {
+            rows.push(`<div class="fp-legend-row"><span class="fp-legend-line fp-legend-line-contour"></span>Isotherm contours</div>`);
+        }
+        if (_state.showColdZones) {
+            rows.push(`<div class="fp-legend-row"><span class="fp-legend-swatch fp-legend-swatch-cold"></span>Below comfort @ ${_state.heatFluxWm2} W/m²</div>`);
+            rows.push(`<div class="fp-legend-row"><span class="fp-legend-line fp-legend-line-cold"></span>Comfort boundary</div>`);
+        }
+    }
+    if (_state.showSun) {
+        rows.push(`<div class="fp-legend-row"><span class="fp-legend-dot"></span>Sun path (today)</div>`);
+    }
+    el.style.display = rows.length ? '' : 'none';
+    el.innerHTML = rows.join('');
+}
+
+/**
+ * Resolve the next wall-chain vertex from a pointer event: Ctrl locks the
+ * segment angle to the configured increment (default 1°) from the last
+ * vertex, with the distance still grid-snapped; otherwise grid-snap then
+ * endpoint-merge. Alt bypasses all of it.
+ *
+ * Sticky ortho: while angle-locked, bearings within ±3° of a cardinal
+ * (0/90/180/270) or ±2° of a diagonal (45/135/…) snap hard to that axis,
+ * so square rooms stay square even at a 1° angle step.
+ */
+function wallDrawPoint(e, lvl) {
+    const raw = clientToSvgModel(e);
+    const pts = _state.drawBuffer?.points;
+    if (e.ctrlKey && pts && pts.length > 0) {
+        const last = pts[pts.length - 1];
+        const dist = snap(Math.hypot(raw.x - last.x, raw.y - last.y));
+        const rawA = Math.atan2(raw.y - last.y, raw.x - last.x);
+        const step = (_state.angleStep || 1) * Math.PI / 180;
+        let a = Math.round(rawA / step) * step;
+        const spokeIdx = Math.round(rawA / (Math.PI / 4));
+        const spoke = spokeIdx * Math.PI / 4;
+        const stickyTol = (spokeIdx % 2 === 0 ? 3 : 2) * Math.PI / 180;
+        if (Math.abs(rawA - spoke) < stickyTol) a = spoke;
+        return { x: last.x + Math.cos(a) * dist, y: last.y + Math.sin(a) * dist };
+    }
+    const m = snapPt(raw);
+    return snapToExistingEndpoint(lvl, m) || m;
+}
+
+// ─────────────────────── thermal field engine ───────────────────────
+//
+// A per-room scalar "heat coverage" field sampled on a coarse grid:
+//
+//   C(p) = Σ_radiators exp(−(d/r₀)²) − Σ_drafts amp·exp(−(d/r_D)²·k)
+//
+// where r₀ = √(watts / (heatFlux·π)) is the radius each radiator can keep
+// above the comfort threshold at the configured building heat loss. C ≈ 1
+// right next to a radiator and crosses COLD_THRESH = e⁻¹ at d ≈ r₀, so the
+// cold-zone boundary lands where the old heated-radius circle used to —
+// but now it bends around drafts and merges between multiple radiators.
+// One field drives the heat-map, the isotherm contours AND the cold-zone
+// tint, so all three overlays agree with each other by construction.
+
+const COLD_THRESH = Math.exp(-1);   // coverage value at d = r₀
+let _fieldCache = new Map();        // room.id → field entry (reset per open)
+
+/** Openings whose midpoint lies on this room's polygon boundary (±0.3 m). */
+function openingsOnRoomBoundary(room, lvl) {
+    const res = [];
+    for (const opening of (lvl.openings || [])) {
+        const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+        if (!wall) continue;
+        const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+        const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+        const mx = wall.x1 + ux * ((opening.offset_m || 0) + (opening.width_m || 0) / 2);
+        const my = wall.y1 + uy * ((opening.offset_m || 0) + (opening.width_m || 0) / 2);
+        for (let i = 0; i < room.polygon.length; i++) {
+            const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
+            const ex = b[0] - a[0], ey = b[1] - a[1];
+            const el2 = ex * ex + ey * ey || 1;
+            const t = Math.max(0, Math.min(1, ((mx - a[0]) * ex + (my - a[1]) * ey) / el2));
+            if (Math.hypot(mx - (a[0] + t * ex), my - (a[1] + t * ey)) < 0.3) {
+                res.push({ opening, mid: { x: mx, y: my } });
+                break;
+            }
+        }
+    }
+    return res;
+}
+
+/**
+ * Compute (or fetch from cache) the heat-coverage field for a room. The
+ * cache key covers every input that shapes the field, so edits invalidate
+ * naturally and pan/zoom re-renders are free.
+ */
+function roomHeatField(room, lvl, heatFlux) {
+    const rads = lvl.radiators.filter(r => r.room_id === room.id);
+    const bops = openingsOnRoomBoundary(room, lvl);
+    const key = JSON.stringify([
+        room.polygon, heatFlux,
+        rads.map(r => [r.wall_id, r.offset_m, r.x, r.y, r.length_m, r.watts_at_dt50]),
+        bops.map(b => [b.opening.id, b.opening.kind, b.opening.width_m, b.opening.glazing,
+                       b.opening.door_type, openingContactState(b.opening, lvl)]),
+    ]);
+    const hit = _fieldCache.get(room.id);
+    if (hit && hit.key === key) return hit;
+
+    const xs = room.polygon.map(p => p[0]), ys = room.polygon.map(p => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const h = Math.max(0.08, Math.min(0.30, Math.max(maxX - minX, maxY - minY) / 56));
+    const nx = Math.max(2, Math.ceil((maxX - minX) / h) + 2);
+    const ny = Math.max(2, Math.ceil((maxY - minY) / h) + 2);
+    const x0 = minX - h, y0 = minY - h;   // one cell of padding
+
+    const srcs = rads.map(r => {
+        const c = radiatorCenter(r, lvl);
+        const r0 = Math.sqrt(Math.max(50, r.watts_at_dt50 || 0) / (heatFlux * Math.PI));
+        return { x: c.x, y: c.y, r0 };
+    });
+    const drafts = bops.map(({ opening, mid }) => {
+        const isOpen = openingContactState(opening, lvl);
+        const glazing = { single: 1.45, double: 1.0, triple: 0.60 }[opening.glazing] ?? 1.0;
+        const doorF = opening.kind === 'door'
+            ? ({ external: 1.15, internal: 0.55 }[opening.door_type] ?? 0.8)
+            : 1.0;
+        const base = isOpen === true ? 0.85 : isOpen === false ? 0.12 : 0.35;
+        const amp = Math.min(1.1, base * glazing * doorF);
+        const rD = Math.max(0.9, (opening.width_m || 1) * 1.3) * (isOpen === true ? 1.5 : 1.0);
+        return { x: mid.x, y: mid.y, amp, rD };
+    });
+
+    const data = new Float32Array(nx * ny);
+    const inside = new Uint8Array(nx * ny);
+    for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+            const px = x0 + (i + 0.5) * h, py = y0 + (j + 0.5) * h;
+            if (!pointInPolygon({ x: px, y: py }, room.polygon)) continue;
+            const k = j * nx + i;
+            inside[k] = 1;
+            let v = 0;
+            for (const s of srcs) {
+                const d2 = (px - s.x) ** 2 + (py - s.y) ** 2;
+                v += Math.exp(-d2 / (s.r0 * s.r0));
+            }
+            for (const d of drafts) {
+                const d2 = (px - d.x) ** 2 + (py - d.y) ** 2;
+                v -= d.amp * Math.exp(-d2 / (d.rD * d.rD * 0.35));
+            }
+            data[k] = v;
+        }
+    }
+
+    const entry = { key, nx, ny, x0, y0, h, data, inside, urls: {} };
+    _fieldCache.set(room.id, entry);
+    return entry;
+}
+
+/** Warm colour ramp: amber → orange → red → deep red. Returns [r,g,b]. */
+function heatRgb(t) {
+    const stops = [
+        [0.00, 251, 191, 36],
+        [0.45, 249, 115, 22],
+        [0.90, 239, 68, 68],
+        [1.35, 153, 27, 27],
+    ];
+    if (t <= stops[0][0]) return [stops[0][1], stops[0][2], stops[0][3]];
+    for (let i = 1; i < stops.length; i++) {
+        if (t <= stops[i][0]) {
+            const [t0, r0, g0, b0] = stops[i - 1];
+            const [t1, r1, g1, b1] = stops[i];
+            const f = (t - t0) / (t1 - t0);
+            return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f].map(Math.round);
+        }
+    }
+    const last = stops[stops.length - 1];
+    return [last[1], last[2], last[3]];
+}
+
+/**
+ * Rasterise a field to a smooth PNG data-URI (bilinear-upscaled ×6). Cached
+ * per (mode, intensity) on the field entry, so pan/zoom re-renders reuse the
+ * exact same string. Placed as an SVG <image> in model coordinates and
+ * clipped to the room polygon.
+ */
+function fieldToImage(f, mode, intensity) {
+    const cacheKey = `${mode}:${intensity.toFixed(2)}`;
+    if (f.urls[cacheKey]) return f.urls[cacheKey];
+    const { nx, ny, data, inside } = f;
+    const cnv = document.createElement('canvas');
+    cnv.width = nx; cnv.height = ny;
+    const ctx = cnv.getContext('2d');
+    const img = ctx.createImageData(nx, ny);
+    for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+            const k = j * nx + i;
+            if (!inside[k]) continue;              // transparent outside the room
+            const px = (((ny - 1 - j) * nx) + i) * 4;  // canvas row 0 = max model y
+            const v = data[k];
+            let r, g, b, a;
+            if (mode === 'heat') {
+                const t = Math.max(0, Math.min(1.35, v));
+                a = Math.max(0, Math.min(0.60, (t - 0.05) * 0.55)) * (0.55 + 0.45 * intensity);
+                [r, g, b] = heatRgb(t);
+            } else { // 'cold'
+                a = Math.max(0, Math.min(0.45, (COLD_THRESH - v) * 1.5));
+                r = 59; g = 130; b = 246;
+            }
+            img.data[px] = r; img.data[px + 1] = g; img.data[px + 2] = b;
+            img.data[px + 3] = Math.round(a * 255);
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    const up = document.createElement('canvas');
+    up.width = nx * 6; up.height = ny * 6;
+    const uctx = up.getContext('2d');
+    uctx.imageSmoothingEnabled = true;
+    uctx.imageSmoothingQuality = 'high';
+    uctx.drawImage(cnv, 0, 0, up.width, up.height);
+    f.urls[cacheKey] = up.toDataURL('image/png');
+    return f.urls[cacheKey];
+}
+
+/** Marching squares: iso-line segments of the field at `level`, model coords. */
+function marchingSquares(f, level) {
+    const { nx, ny, data, x0, y0, h } = f;
+    const segs = [];
+    const V = (i, j) => data[j * nx + i] - level;
+    for (let j = 0; j < ny - 1; j++) {
+        for (let i = 0; i < nx - 1; i++) {
+            const c = [V(i, j), V(i + 1, j), V(i + 1, j + 1), V(i, j + 1)];
+            const cx = [x0 + (i + 0.5) * h, x0 + (i + 1.5) * h, x0 + (i + 1.5) * h, x0 + (i + 0.5) * h];
+            const cy = [y0 + (j + 0.5) * h, y0 + (j + 0.5) * h, y0 + (j + 1.5) * h, y0 + (j + 1.5) * h];
+            const pts = [];
+            for (let e = 0; e < 4; e++) {
+                const u = c[e], w = c[(e + 1) % 4];
+                if ((u < 0) !== (w < 0)) {
+                    const t = u / (u - w);
+                    pts.push({
+                        x: cx[e] + (cx[(e + 1) % 4] - cx[e]) * t,
+                        y: cy[e] + (cy[(e + 1) % 4] - cy[e]) * t,
+                    });
+                }
+            }
+            if (pts.length === 2) segs.push([pts[0], pts[1]]);
+            else if (pts.length === 4) { segs.push([pts[0], pts[1]]); segs.push([pts[2], pts[3]]); }
+        }
+    }
+    return segs;
+}
+
+/** Join marching-squares segments into polylines so they can be smoothed. */
+function chainSegments(segs) {
+    const keyOf = p => `${Math.round(p.x * 2000)}:${Math.round(p.y * 2000)}`;
+    const adj = new Map();
+    segs.forEach((s, i) => {
+        for (const end of [0, 1]) {
+            const k = keyOf(s[end]);
+            if (!adj.has(k)) adj.set(k, []);
+            adj.get(k).push({ i, end });
+        }
+    });
+    const used = new Array(segs.length).fill(false);
+    const chains = [];
+    for (let start = 0; start < segs.length; start++) {
+        if (used[start]) continue;
+        used[start] = true;
+        const pts = [segs[start][0], segs[start][1]];
+        for (const dir of [1, 0]) {          // extend the tail, then the head
+            let guard = segs.length;
+            while (guard-- > 0) {
+                const tip = dir === 1 ? pts[pts.length - 1] : pts[0];
+                const next = (adj.get(keyOf(tip)) || []).find(c => !used[c.i]);
+                if (!next) break;
+                used[next.i] = true;
+                const np = segs[next.i][next.end === 0 ? 1 : 0];
+                if (dir === 1) pts.push(np); else pts.unshift(np);
+            }
+        }
+        const closed = pts.length > 2 && keyOf(pts[0]) === keyOf(pts[pts.length - 1]);
+        if (closed) pts.pop();
+        chains.push({ points: pts, closed });
+    }
+    return chains;
+}
+
+/** Model-space polyline → smoothed SVG path (quadratic through midpoints). */
+function smoothPathSvg(pts, closed) {
+    const sv = pts.map(p => modelToSvg(p));
+    if (sv.length < 2) return '';
+    const fx = n => n.toFixed(3);
+    if (sv.length === 2) return `M ${fx(sv[0].x)} ${fx(sv[0].y)} L ${fx(sv[1].x)} ${fx(sv[1].y)}`;
+    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    let d;
+    if (closed) {
+        const n = sv.length;
+        const m0 = mid(sv[n - 1], sv[0]);
+        d = `M ${fx(m0.x)} ${fx(m0.y)}`;
+        for (let k = 0; k < n; k++) {
+            const v = sv[k], m = mid(sv[k], sv[(k + 1) % n]);
+            d += ` Q ${fx(v.x)} ${fx(v.y)} ${fx(m.x)} ${fx(m.y)}`;
+        }
+        d += ' Z';
+    } else {
+        d = `M ${fx(sv[0].x)} ${fx(sv[0].y)}`;
+        for (let k = 1; k < sv.length - 1; k++) {
+            const m = mid(sv[k], sv[k + 1]);
+            d += ` Q ${fx(sv[k].x)} ${fx(sv[k].y)} ${fx(m.x)} ${fx(m.y)}`;
+        }
+        d += ` L ${fx(sv[sv.length - 1].x)} ${fx(sv[sv.length - 1].y)}`;
+    }
+    return d;
+}
+
+/** Cached smoothed contour path of the field at `level` (SVG d string). */
+function fieldContourPath(f, level) {
+    const cacheKey = `ct:${level.toFixed(3)}`;
+    if (f.urls[cacheKey] !== undefined) return f.urls[cacheKey];
+    const chains = chainSegments(marchingSquares(f, level));
+    f.urls[cacheKey] = chains.map(ch => smoothPathSvg(ch.points, ch.closed)).join(' ');
+    return f.urls[cacheKey];
+}
+
+/** Coldest in-room cell centre, or null if the whole room is above threshold. */
+function fieldColdSpot(f) {
+    if (f.coldSpot !== undefined) return f.coldSpot;
+    let minV = Infinity, at = null;
+    for (let j = 0; j < f.ny; j++) {
+        for (let i = 0; i < f.nx; i++) {
+            const k = j * f.nx + i;
+            if (!f.inside[k] || f.data[k] >= minV) continue;
+            minV = f.data[k];
+            at = { x: f.x0 + (i + 0.5) * f.h, y: f.y0 + (j + 0.5) * f.h };
+        }
+    }
+    f.coldSpot = (at && minV < COLD_THRESH) ? at : null;
+    return f.coldSpot;
+}
+
+/** Thermal overlay parts: heat-map images, isotherm contours, sensor rings. */
+function renderThermalParts(lvl) {
+    const defs = [];
+    const out = [];
+    const maxWatts = Math.max(...lvl.radiators.map(r => r.watts_at_dt50 || 0), 100);
+
+    for (const room of lvl.rooms) {
+        if (!room.polygon || room.polygon.length < 3) continue;
+        const rads = lvl.radiators.filter(r => r.room_id === room.id);
+        if (rads.length === 0) continue;
+        const totalWatts = rads.reduce((s, r) => s + (r.watts_at_dt50 || 0), 0);
+        const intensity = Math.min(1, totalWatts / maxWatts);
+
+        const f = roomHeatField(room, lvl, _state.heatFluxWm2 || 50);
+        const uid = room.id.replace(/[^a-z0-9]/gi, '_');
+        defs.push(`<clipPath id="tc_${uid}"><path d="${polygonToPath(room.polygon)}"/></clipPath>`);
+
+        out.push(`<image href="${fieldToImage(f, 'heat', intensity)}"
+                        x="${f.x0}" y="${-(f.y0 + f.ny * f.h)}"
+                        width="${f.nx * f.h}" height="${f.ny * f.h}"
+                        clip-path="url(#tc_${uid})" preserveAspectRatio="none"
+                        pointer-events="none"/>`);
+
+        if (_state.showContours) {
+            const CONTOUR_LEVELS = [
+                { level: 1.05, opacity: 0.60 },
+                { level: 0.75, opacity: 0.42 },
+                { level: 0.50, opacity: 0.28 },
+            ];
+            for (const { level, opacity } of CONTOUR_LEVELS) {
+                const d = fieldContourPath(f, level);
+                if (!d) continue;
+                out.push(`<path class="fp-contour" d="${d}" clip-path="url(#tc_${uid})"
+                                style="opacity:${(opacity * (0.6 + 0.4 * intensity)).toFixed(2)}"
+                                pointer-events="none"/>`);
+            }
+        }
+    }
+
+    // Thermostat rings on sensors, with the live reading when a device is bound
+    for (const s of lvl.sensors) {
+        const sp = modelToSvg({ x: s.x ?? 0, y: s.y ?? 0 });
+        const dev = s.ieee ? (_availableDevices.sensors || []).find(d => d.ieee === s.ieee) : null;
+        const temp = dev && dev.temperature != null ? Number(dev.temperature) : null;
+        out.push(`
+          <circle class="fp-thermo-ring" cx="${sp.x}" cy="${sp.y}" r="0.40" pointer-events="none"/>
+          <circle class="fp-thermo-core" cx="${sp.x}" cy="${sp.y}" r="0.19" pointer-events="none"/>
+          ${temp != null ? `<text class="fp-thermo-temp" x="${sp.x}" y="${sp.y - 0.52}"
+                font-size="0.17" text-anchor="middle"
+                pointer-events="none">${temp.toFixed(1)}°</text>` : ''}`);
+    }
+
+    return (defs.length || out.length) ? [`<defs>${defs.join('')}</defs>`, ...out] : [];
+}
+
+/** Cold-zone parts: below-threshold tint, comfort boundary, labels, badges. */
+function renderColdParts(lvl) {
+    const out = [];
+    const heatFlux = _state.heatFluxWm2 || 50;
+
+    for (const room of lvl.rooms) {
+        if (!room.polygon || room.polygon.length < 3) continue;
+        const roomPath = polygonToPath(room.polygon);
+        const rads = lvl.radiators.filter(r => r.room_id === room.id);
+
+        if (rads.length === 0) {
+            // No radiator → entire room is below threshold
+            const c = modelToSvg(polygonCentroid(room.polygon));
+            out.push(`<path d="${roomPath}" class="fp-cold-noheat" pointer-events="none"/>`);
+            out.push(`<text class="fp-cold-label" x="${c.x}" y="${c.y + 0.60}" font-size="0.17"
+                            text-anchor="middle" pointer-events="none">no heating</text>`);
+            continue;
+        }
+
+        const f = roomHeatField(room, lvl, heatFlux);
+        const uid = room.id.replace(/[^a-z0-9]/gi, '_');   // clip defined by thermal pass
+
+        // Cold tint — everywhere coverage is below the comfort threshold
+        out.push(`<image href="${fieldToImage(f, 'cold', 1)}"
+                        x="${f.x0}" y="${-(f.y0 + f.ny * f.h)}"
+                        width="${f.nx * f.h}" height="${f.ny * f.h}"
+                        clip-path="url(#tc_${uid})" preserveAspectRatio="none"
+                        pointer-events="none"/>`);
+
+        // Comfort boundary — the C = e⁻¹ isoline (≈ heated radius, bent by drafts)
+        const d = fieldContourPath(f, COLD_THRESH);
+        if (d) {
+            out.push(`<path class="fp-cold-boundary" d="${d}" clip-path="url(#tc_${uid})"
+                            pointer-events="none"/>`);
+        }
+
+        // Target-temp label anchored at the coldest spot of the room
+        const spot = fieldColdSpot(f);
+        if (spot && room.target_temp) {
+            const lp = modelToSvg(spot);
+            out.push(`<text class="fp-cold-label" x="${lp.x}" y="${lp.y}" font-size="0.17"
+                            text-anchor="middle" pointer-events="none">&lt;${room.target_temp}°C</text>`);
+        }
+    }
+
+    // Open/closed badges on openings with a bound contact sensor
+    for (const opening of (lvl.openings || [])) {
+        const wall = lvl.walls.find(w => w.id === opening.wall_id);
+        if (!wall) continue;
+        const isOpen = openingContactState(opening, lvl);
+        if (isOpen === null) continue;
+        const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+        const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+        const wsvg = modelToSvg({
+            x: wall.x1 + ux * (opening.offset_m + opening.width_m / 2),
+            y: wall.y1 + uy * (opening.offset_m + opening.width_m / 2),
+        });
+        out.push(`<text x="${wsvg.x}" y="${wsvg.y - 0.28}" font-size="0.15" text-anchor="middle"
+                        fill="${isOpen ? 'rgba(220,38,38,0.90)' : 'rgba(22,163,74,0.85)'}"
+                        pointer-events="none">${isOpen ? 'open' : 'closed'}</text>`);
+    }
+
+    return out;
 }
 
 // ─────────────────────── circuit management ───────────────────────────
@@ -2005,7 +2475,7 @@ function finishWallChain() {
     const newIds = [];
     for (let i = 0; i < pts.length - 1; i++) {
         const a = pts[i], b = pts[i + 1];
-        if (Math.hypot(b.x - a.x, b.y - a.y) < 0.2) continue;
+        if (Math.hypot(b.x - a.x, b.y - a.y) < 0.04) continue;
         const id = genId('w');
         lvl.walls.push({ id, x1: a.x, y1: a.y, x2: b.x, y2: b.y, type: 'unknown' });
         newIds.push(id);
@@ -2164,6 +2634,7 @@ function renderLevelProps(lvl) {
         <div><strong>Pan/zoom:</strong> Shift+drag (or middle-mouse) to pan, wheel to zoom.</div>
         <div class="mt-1"><strong>Walls:</strong> click to start a chain, click again to add each vertex. Press <kbd>Enter</kbd> or right-click or double-click to finish, <kbd>Esc</kbd> to cancel, <kbd>Backspace</kbd> to undo last vertex. Click on the first vertex to close back into it.</div>
         <div class="mt-1"><strong>Rooms:</strong> click to drop polygon vertices; close by clicking the first one (need 3+).</div>
+        <div class="mt-1"><strong>Precision:</strong> set the Snap and Angle steps in the sidebar; hold <kbd>Alt</kbd> to disable snapping entirely, or <kbd>Ctrl</kbd> while drawing walls to lock the bearing to the Angle step. Endpoint merging follows the zoom — zoom in to place points close together without them joining.</div>
         <div class="mt-1"><strong>Radiator/Sensor:</strong> place anywhere; pick the room from the panel. <strong>Contact:</strong> place near a window/door (or anywhere) and pick the opening from the panel.</div>
       </div>`;
 }
