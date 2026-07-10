@@ -189,6 +189,10 @@ class ThermostatHandler(ClusterHandler):
                 ("pi_heating_demand", 60, 300, 10),
                 ("running_state", 10, 300, 1),
                 ("running_mode", 10, 300, 1),
+                # Hold state changed outside the app (Hive boost button,
+                # schedule) would otherwise only surface on the next poll.
+                ("temp_setpoint_hold", 10, 300, 1),
+                ("temp_setpoint_hold_duration", 10, 300, 1),
             ]
 
             # Cooling extras for mains-powered multi-mode receivers
@@ -393,8 +397,7 @@ class ThermostatHandler(ClusterHandler):
         """
         Set target heating setpoint in °C.
 
-        For Hive receivers this sends a single atomic multi-attribute write
-        per z2m's documented protocol:
+        For Hive receivers this sends a single atomic multi-attribute write:
 
             system_mode = heat
             temperature_setpoint_hold = 1
