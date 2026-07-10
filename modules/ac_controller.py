@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,11 @@ logger = logging.getLogger("zbm.ac")
 GREE_DEFAULT_PORT = 7000
 MIDEA_DEFAULT_PORT = 6444
 STATUS_CACHE_SEC = 5.0
+# Midea dongles lock up and refuse TCP for a while if they see rapid
+# connect churn (verified against a Comfee 00000Q1D: ~3 reconnects in a few
+# seconds and port 6444 goes dead). After a failed connect, wait this long
+# before trying again rather than hammering it back into lockup.
+MIDEA_CONNECT_BACKOFF_SEC = 20.0
 
 # Midea AC mode values as used by midealocal.devices.ac
 _MIDEA_MODES = {1: "auto", 2: "cool", 3: "dry", 4: "heat", 5: "fan"}
@@ -89,6 +95,9 @@ class GreeAdapter:
         self.cfg = cfg
         self._device = None
         self._on_key_learned = on_key_learned
+
+    def close(self) -> None:
+        self._device = None
 
     async def _ensure(self):
         if self._device is not None:
@@ -185,6 +194,16 @@ class MideaAdapter:
     def __init__(self, cfg: Dict[str, Any]):
         self.cfg = cfg
         self._device = None
+        self._lock = threading.Lock()      # one protocol exchange at a time
+        self._last_connect_fail = 0.0
+
+    def close(self) -> None:
+        device, self._device = self._device, None
+        if device is not None:
+            try:
+                device.close_socket()
+            except Exception as e:
+                logger.debug(f"midea close_socket: {e}")
 
     def _ensure_sync(self):
         if self._device is not None:
@@ -202,6 +221,10 @@ class MideaAdapter:
             raise ACError("Midea V3 unit needs token+key — run "
                           "POST /api/ac/units/{id}/bind first (fetches them "
                           "via the library's preset cloud account)")
+        remaining = MIDEA_CONNECT_BACKOFF_SEC - (time.monotonic() - self._last_connect_fail)
+        if remaining > 0:
+            raise ACError(f"Midea unit refused a connection recently — "
+                          f"retrying in {remaining:.0f}s")
         device = MideaACDevice(
             name=self.cfg.get("name") or self.cfg.get("id") or "midea_ac",
             device_id=int(self.cfg["device_id"]),
@@ -215,17 +238,30 @@ class MideaAdapter:
             customize="",
         )
         if not device.connect():
+            self._last_connect_fail = time.monotonic()
             raise ACError(f"could not connect to Midea unit at "
                           f"{self.cfg['host']}:{self.cfg.get('port') or MIDEA_DEFAULT_PORT}")
+        self._last_connect_fail = 0.0
         self._device = device
         return device
 
+    def _with_reconnect(self, op):
+        """Run op(device); on a socket-level failure, reconnect once and retry."""
+        with self._lock:
+            try:
+                return op(self._ensure_sync())
+            except ACError:
+                raise
+            except Exception as e:
+                logger.info(f"midea op failed ({e}) — reconnecting once")
+                self.close()
+                return op(self._ensure_sync())
+
     def _status_sync(self) -> Dict[str, Any]:
-        d = self._ensure_sync()
-        try:
+        def _refresh(d):
             d.refresh_status()
-        except Exception as e:
-            logger.debug(f"midea refresh_status: {e}")
+            return d
+        d = self._with_reconnect(_refresh)
         attrs = dict(d.attributes or {})
         mode_val = attrs.get("mode")
         power = bool(attrs.get("power"))
@@ -242,26 +278,34 @@ class MideaAdapter:
         }
 
     def _control_sync(self, changes: Dict[str, Any]) -> None:
-        d = self._ensure_sync()
-        if "power" in changes:
-            d.set_attribute("power", bool(changes["power"]))
+        # Validate before touching the device so bad input can't leave a
+        # half-applied change after a reconnect retry.
+        mode = None
         if changes.get("mode"):
             mode = _MIDEA_MODES_REV.get(str(changes["mode"]).lower())
             if mode is None:
                 raise ACError(f"unknown mode '{changes['mode']}' "
                               f"(use auto/cool/dry/fan/heat)")
-            d.set_attribute("mode", mode)
-        if changes.get("target_c") is not None:
-            d.set_target_temperature(float(changes["target_c"]), None)
+        speed = None
         if changes.get("fan"):
             speed = _MIDEA_FAN.get(str(changes["fan"]).lower())
             if speed is None:
                 raise ACError(f"unknown fan '{changes['fan']}'")
-            d.set_attribute("fan_speed", speed)
-        for extra in ("eco_mode", "sleep_mode", "swing_vertical",
-                      "swing_horizontal", "screen_display"):
-            if extra in changes:
-                d.set_attribute(extra, changes[extra])
+
+        def _apply(d):
+            if "power" in changes:
+                d.set_attribute("power", bool(changes["power"]))
+            if mode is not None:
+                d.set_attribute("mode", mode)
+            if changes.get("target_c") is not None:
+                d.set_target_temperature(float(changes["target_c"]), None)
+            if speed is not None:
+                d.set_attribute("fan_speed", speed)
+            for extra in ("eco_mode", "sleep_mode", "swing_vertical",
+                          "swing_horizontal", "screen_display"):
+                if extra in changes:
+                    d.set_attribute(extra, changes[extra])
+        self._with_reconnect(_apply)
 
     async def status(self) -> Dict[str, Any]:
         return await asyncio.get_event_loop().run_in_executor(None, self._status_sync)
@@ -288,9 +332,29 @@ class ACController:
         self.reload(ac_config or {})
 
     def reload(self, ac_config: Dict[str, Any]) -> None:
-        self.units: List[Dict[str, Any]] = list(ac_config.get("units") or [])
-        self._adapters.clear()
-        self._status_cache.clear()
+        """
+        Apply (possibly unchanged) config. Adapters for units whose config
+        is identical are KEPT — routes call this on every request, and
+        rebuilding adapters each time meant a fresh TCP connection per
+        request, which Midea dongles punish by refusing connections.
+        """
+        new_units: List[Dict[str, Any]] = list(ac_config.get("units") or [])
+        old_by_id = {str(u.get("id")): u for u in getattr(self, "units", [])}
+        keep = {}
+        for u in new_units:
+            uid = str(u.get("id"))
+            if uid in self._adapters and old_by_id.get(uid) == u:
+                keep[uid] = self._adapters[uid]
+        for uid, adapter in self._adapters.items():
+            if uid not in keep:
+                try:
+                    adapter.close()
+                except Exception as e:
+                    logger.debug(f"adapter close for {uid}: {e}")
+        self._adapters = keep
+        self._status_cache = {uid: v for uid, v in self._status_cache.items()
+                              if uid in keep}
+        self.units = new_units
 
     def unit_config(self, unit_id: str) -> Optional[Dict[str, Any]]:
         return next((u for u in self.units if str(u.get("id")) == str(unit_id)), None)

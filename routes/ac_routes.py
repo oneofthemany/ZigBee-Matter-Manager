@@ -102,6 +102,36 @@ def register_ac_routes(app: FastAPI):
             for lst in (found.get("gree") or []), (found.get("midea") or []):
                 for cand in lst:
                     cand["already_configured"] = cand.get("host") in configured_hosts
+
+            # Midea units are identified by device_id, not IP. If a configured
+            # unit shows up at a different address (DHCP moved it), heal the
+            # stored host — a stale host is exactly how control "stops working".
+            by_devid = {str(u.get("device_id")): u for u in ctl.units
+                        if u.get("device_id") is not None}
+            moved = []
+            for cand in (found.get("midea") or []):
+                unit = by_devid.get(str(cand.get("device_id")))
+                if not unit:
+                    continue
+                cand["already_configured"] = True
+                cand["configured_id"] = unit.get("id")
+                if cand.get("host") and unit.get("host") != cand["host"]:
+                    moved.append((unit.get("id"), unit.get("host"), cand["host"]))
+            if moved:
+                cfg = _load_config()
+                units = ((cfg.get("ac") or {}).get("units")) or []
+                for uid, old, new in moved:
+                    for u in units:
+                        if str(u.get("id")) == str(uid):
+                            u["host"] = new
+                            logger.info(f"AC: unit {uid} moved {old} → {new}; "
+                                        f"updated stored host")
+                cfg.setdefault("ac", {})["units"] = units
+                _save_config(cfg)
+                state["controller"] = None
+                found["host_updates"] = [
+                    {"id": uid, "old_host": old, "new_host": new}
+                    for uid, old, new in moved]
             return {"success": True, "found": found}
         except Exception as e:
             logger.error(f"AC discovery failed: {e}", exc_info=True)
