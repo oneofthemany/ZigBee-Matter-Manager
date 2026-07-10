@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional, List
 from enum import IntEnum
 import asyncio
 
+from zigpy.zcl.foundation import Status as ZCLStatus
+
 from .base import ClusterHandler, register_handler
 
 logger = logging.getLogger("handlers.hvac")
@@ -219,7 +221,6 @@ class ThermostatHandler(ClusterHandler):
         ]
 
         if self.is_receiver:
-            init_attrs.append(self.ATTR_INTERNAL_TEMP)
             init_attrs.append(self.ATTR_TEMP_SETPOINT_HOLD)
             init_attrs.append(self.ATTR_TEMP_SETPOINT_HOLD_DURATION)
         else:
@@ -255,6 +256,25 @@ class ThermostatHandler(ClusterHandler):
 
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Failed to read init attributes: {type(e).__name__}: {e}")
+
+        # Hive internal temperature (0x4000) is manufacturer-specific and not
+        # defined on the stock zigpy Thermostat cluster, so batching it above
+        # makes read_attributes() raise KeyError before anything hits the air,
+        # discarding the whole batch. Read it raw, in its own guard.
+        if self.is_receiver:
+            try:
+                async with asyncio.timeout(10.0):
+                    result = await self.cluster.read_attributes_raw(
+                        [self.ATTR_INTERNAL_TEMP]
+                    )
+                for record in (result[0] if result else []):
+                    if record.status == ZCLStatus.SUCCESS and record.value is not None:
+                        self.attribute_updated(record.attrid, record.value.value)
+            except Exception as e:
+                logger.debug(
+                    f"[{self.device.ieee}] Internal temp (0x4000) read skipped: "
+                    f"{type(e).__name__}: {e}"
+                )
 
         return True
 

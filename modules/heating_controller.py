@@ -98,9 +98,9 @@ except Exception:
 # in a while (the "frozen attribute" failure mode that last_seen can't
 # distinguish from a healthy device that's just reporting battery).
 try:
-    from modules.telemetry_db import query_device_state_history as _query_state_history
+    from modules.telemetry_db import query_last_report_age_sec as _query_last_report_age
 except Exception:
-    _query_state_history = None
+    _query_last_report_age = None
 
 logger = logging.getLogger("modules.heating_controller")
 
@@ -309,11 +309,15 @@ def _last_temperature_ts(ieee: str) -> Optional[float]:
     IEEE in DuckDB, or None if no row exists or the query layer isn't loaded.
 
     Looks at the three temperature attribute names devices commonly use,
-    matching the keys _pick_temperature considers. Returns the *most recent*
-    across all three so e.g. a thermostat reporting both `local_temperature`
-    and `temperature` is treated as fresh as long as either is recent.
+    matching the keys _pick_temperature considers — fresh if *any* is recent.
+
+    The age is computed inside DuckDB and converted to an epoch here, rather
+    than interpreting the stored naive `ts` with .timestamp(): DuckDB's
+    session timezone (typically UTC) differs from Python's local time, and
+    mixing the two skewed every report's age by the UTC↔local offset,
+    flagging actively-reporting sensors as stale.
     """
-    if _query_state_history is None:
+    if _query_last_report_age is None:
         return None
     cached = _freshness_cache.get(ieee)
     now = time.time()
@@ -321,26 +325,17 @@ def _last_temperature_ts(ieee: str) -> Optional[float]:
         return cached[1]
 
     most_recent: Optional[float] = None
-    for attr in ("local_temperature", "current_temperature", "temperature"):
-        try:
-            rows = _query_state_history(ieee, attr, FRESHNESS_LOOKBACK_HOURS) or []
-        except Exception as e:
-            logger.debug(f"freshness query failed for {ieee} attr={attr}: {e}")
-            continue
-        if not rows:
-            continue
-        # query_device_state_history orders ASC, so the last row is newest.
-        last = rows[-1]
-        ts_raw = last.get("ts")
-        if ts_raw is None:
-            continue
-        # ts may be a datetime or float depending on backend
-        try:
-            ts_val = ts_raw.timestamp() if hasattr(ts_raw, "timestamp") else float(ts_raw)
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if most_recent is None or ts_val > most_recent:
-            most_recent = ts_val
+    try:
+        age = _query_last_report_age(
+            ieee,
+            ["local_temperature", "current_temperature", "temperature"],
+            FRESHNESS_LOOKBACK_HOURS,
+        )
+    except Exception as e:
+        logger.debug(f"freshness query failed for {ieee}: {e}")
+        age = None
+    if age is not None:
+        most_recent = now - age
 
     _freshness_cache[ieee] = (now, most_recent)
     return most_recent
@@ -1608,7 +1603,7 @@ class HeatingController:
         # report within the room's freshness threshold, discard the external
         # reading — the normal source selection below then falls back to the
         # TRV mean (or "none", which classifies the room as unknown).
-        if ext_temp is not None and _query_state_history is not None:
+        if ext_temp is not None and _query_last_report_age is not None:
             last_ts = _last_temperature_ts(sensor_ieee)
             threshold_sec = _room_freshness_threshold_sec(room)
             now_ts = time.time()
@@ -3004,7 +2999,7 @@ class HeatingController:
                 # Never forward a stale reading: a TRV in external mode
                 # regulates on whatever was pushed last, so a dead sensor
                 # would pin the TRV's view of the room at that value.
-                if _query_state_history is not None:
+                if _query_last_report_age is not None:
                     last_report_ts = _last_temperature_ts(sensor_ieee)
                     threshold_sec = _room_freshness_threshold_sec(room)
                     if last_report_ts is None or (now_ts - last_report_ts) > threshold_sec:

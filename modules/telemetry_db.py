@@ -501,6 +501,36 @@ def query_device_state_history(ieee: str, attribute: str, hours: int = 24) -> Li
     """, [ieee, attribute]).fetchall()
     return [{"ts": r[0], "value": r[1], "numeric_val": r[2]} for r in result]
 
+def query_last_report_age_sec(ieee: str, attributes: List[str],
+                              hours: int = 6) -> Optional[float]:
+    """
+    Seconds since the most recent report of any of `attributes` for this
+    IEEE, or None if nothing landed in the lookback window.
+
+    Computed entirely inside DuckDB: `ts` is written by DEFAULT now() in
+    DuckDB's session timezone, which is independent of Python's local time
+    (the container mounts host /etc/localtime for Python, but DuckDB takes
+    its TimeZone from the TZ env / ICU and typically lands on UTC). Naive
+    `ts` values must therefore never be interpreted with Python-local
+    .timestamp() — comparing ts against now() in SQL makes the session
+    timezone cancel out.
+    """
+    if not attributes:
+        return None
+    db = _get_db()
+    hours = int(hours)
+    placeholders = ", ".join("?" for _ in attributes)
+    row = db.execute(f"""
+        SELECT date_diff('second', max(ts), now()::TIMESTAMP)
+        FROM device_states
+        WHERE ieee = ? AND attribute IN ({placeholders})
+          AND ts >= now() - INTERVAL '{hours} hours'
+    """, [ieee, *attributes]).fetchone()
+    if not row or row[0] is None:
+        return None
+    return float(row[0])
+
+
 def query_device_attributes(ieee: str, hours: int = 720) -> List[str]:
     """
     Distinct attribute names recorded for a device within lookback.
