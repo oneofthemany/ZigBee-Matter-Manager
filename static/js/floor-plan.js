@@ -64,6 +64,8 @@ function resetState(plan) {
         thermalMode: 'rad',        // 'rad' | 'rad+sun' | 'sun' — heat sources in the field
         heatFluxWm2: 50,
         sunData: null,
+        solarImpact: null,         // Map roomKey → measured entry, once fetched
+        solarImpactLoaded: false,  // true after fetch attempt (even if empty)
         calibration: null,         // { p1: {x,y} } during 2-click calibrate
     };
     _state.currentLevelId = (_state.plan.levels[0] || {}).id || null;
@@ -383,8 +385,8 @@ function bindModalEvents() {
     });
     document.getElementById('fpToggleSun').addEventListener('change', async e => {
         _state.showSun = e.target.checked;
-        if (_state.showSun) await loadSunData();
-        renderScene(); renderOverlay();
+        if (_state.showSun) { await loadSunData(); await loadSolarImpact(); }
+        renderScene(); renderOverlay(); renderProps();
     });
     document.getElementById('fpToggleThermal').addEventListener('change', e => {
         _state.showThermal = e.target.checked;
@@ -403,8 +405,11 @@ function bindModalEvents() {
     });
     document.getElementById('fpThermalMode').addEventListener('change', async e => {
         _state.thermalMode = e.target.value;
-        // Solar modes need the day's sun curve
-        if (_state.thermalMode !== 'rad' && !_state.sunData) await loadSunData();
+        // Solar modes need the day's sun curve + any measured solar impact
+        if (_state.thermalMode !== 'rad') {
+            if (!_state.sunData) await loadSunData();
+            await loadSolarImpact();
+        }
         renderScene(); renderProps();
     });
     document.getElementById('fpToggleContours').addEventListener('change', e => {
@@ -1941,6 +1946,84 @@ function wallDrawPoint(e, lvl) {
     return snapToExistingEndpoint(lvl, m) || m;
 }
 
+// ───────────────────── measured solar impact ─────────────────────
+//
+// The backend's /api/heating/solar-impact endpoint measures each room's
+// REAL solar gain from heating-off telemetry (see modules/solar_impact.py).
+// When a room has a trustworthy measurement, the floor plan prefers it:
+// its calibration_ratio (measured / clear-sky-modelled) scales the solar
+// sources in the field and the per-window ☀ badges, and the insights panel
+// reports measured watts instead of the estimate.
+
+/** Fetch measured solar impact once per modal session (heavy endpoint). */
+async function loadSolarImpact() {
+    if (_state.solarImpactLoaded) return;
+    _state.solarImpactLoaded = true;      // one attempt per open
+    try {
+        const r = await fetch('/api/heating/solar-impact?days=14').then(r => r.json());
+        if (!r || !r.success || !Array.isArray(r.rooms)) return;
+        const map = new Map();
+        for (const room of r.rooms) {
+            if (room.room_id) map.set(String(room.room_id), room);
+            // Fallback key: room name (plan ids and controller ids can differ
+            // in manual mode)
+            if (room.room_name && !map.has(room.room_name)) {
+                map.set(String(room.room_name), room);
+            }
+        }
+        _state.solarImpact = map;
+        _fieldCache = new Map();          // ratios change the field
+    } catch (e) {
+        log.warn('solar-impact fetch failed', e);
+    }
+}
+
+/** Measured entry for a plan room, or null. */
+function roomSolarImpact(room) {
+    const m = _state.solarImpact;
+    if (!m) return null;
+    return m.get(String(room.id)) || (room.name ? m.get(String(room.name)) : null) || null;
+}
+
+/**
+ * Calibration ratio to apply to this room's modelled solar watts: the
+ * measured/modelled ratio when confidence is medium+; 1.0 otherwise.
+ */
+function roomSolarRatio(room) {
+    const e = roomSolarImpact(room);
+    if (!e || !['medium', 'high'].includes(e.confidence)) return 1.0;
+    const ratio = (e.solar || {}).calibration_ratio;
+    if (!Number.isFinite(ratio) || ratio <= 0) return 1.0;
+    return Math.min(3.0, ratio);
+}
+
+/** True when direct sun is on any of the room's windows right now. */
+function roomSunlitNow(room, lvl) {
+    const sd = _state.sunData;
+    if (!sd?.points || !room.polygon || room.polygon.length < 3) return false;
+    const nowMs = Date.now();
+    let cur = null, best = Infinity;
+    for (const pt of sd.points) {
+        const d = Math.abs(new Date(pt.ts).getTime() - nowMs);
+        if (d < best) { best = d; cur = pt; }
+    }
+    if (!cur || cur.el <= 0) return false;
+    const planAz = ((cur.az + _state.plan.north_offset_deg) % 360 + 360) % 360;
+    const sx = Math.sin(planAz * Math.PI / 180), sy = Math.cos(planAz * Math.PI / 180);
+    const centroid = polygonCentroid(room.polygon);
+    for (const { opening, mid } of openingsOnRoomBoundary(room, lvl)) {
+        if (opening.kind !== 'window') continue;
+        const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+        if (!wall) continue;
+        const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+        const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+        let nx = -uy, ny = ux;
+        if ((centroid.x - mid.x) * nx + (centroid.y - mid.y) * ny > 0) { nx = -nx; ny = -ny; }
+        if (sx * nx + sy * ny > 0.15) return true;
+    }
+    return false;
+}
+
 // ─────────────────────── thermal field engine ───────────────────────
 //
 // A per-room scalar "heat coverage" field sampled on a coarse grid:
@@ -2047,7 +2130,8 @@ function roomHeatField(room, lvl, heatFlux) {
     const bops = openingsOnRoomBoundary(room, lvl);
     const key = JSON.stringify([
         room.polygon, heatFlux, mode,
-        mode !== 'rad' ? [_state.plan.north_offset_deg, _state.sunData?.sunrise || null] : null,
+        mode !== 'rad' ? [_state.plan.north_offset_deg, _state.sunData?.sunrise || null,
+                          roomSolarRatio(room)] : null,
         rads.map(r => [r.wall_id, r.offset_m, r.x, r.y, r.length_m, r.watts_at_dt50]),
         bops.map(b => [b.opening.id, b.opening.kind, b.opening.width_m, b.opening.height_m,
                        b.opening.glazing, b.opening.door_type, openingContactState(b.opening, lvl)]),
@@ -2069,13 +2153,15 @@ function roomHeatField(room, lvl, heatFlux) {
         return { x: c.x, y: c.y, r0 };
     });
     // Solar sources: each sun-facing window becomes a heat source at its
-    // midpoint, sized by the daylight-averaged watts it admits.
+    // midpoint, sized by the daylight-averaged watts it admits — scaled by
+    // the room's measured calibration ratio when telemetry has one.
     if (mode !== 'rad') {
         const centroid = polygonCentroid(room.polygon);
+        const ratio = roomSolarRatio(room);
         for (const { opening, mid } of bops) {
             const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
             if (!wall) continue;
-            const sw = windowSolarWatts(opening, wall, centroid);
+            const sw = windowSolarWatts(opening, wall, centroid) * ratio;
             if (sw < 15) continue;
             srcs.push({ x: mid.x, y: mid.y, r0: Math.sqrt(sw / (heatFlux * Math.PI)) });
         }
@@ -2351,7 +2437,9 @@ function renderThermalParts(lvl) {
                 r.polygon?.length >= 3 && openingsOnRoomBoundary(r, lvl).some(b => b.opening.id === opening.id));
             if (!room) continue;
             const centroid = polygonCentroid(room.polygon);
-            const watts = windowSolarWatts(opening, wall, centroid);
+            const ratio = roomSolarRatio(room);
+            const measured = ratio !== 1.0;
+            const watts = windowSolarWatts(opening, wall, centroid) * ratio;
             if (watts < 15) continue;
             const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
             const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
@@ -2361,8 +2449,25 @@ function renderThermalParts(lvl) {
             let nx = -uy, ny = ux;
             if ((centroid.x - wmx) * nx + (centroid.y - wmy) * ny > 0) { nx = -nx; ny = -ny; }
             const lp = modelToSvg({ x: wmx + nx * 0.42, y: wmy + ny * 0.42 });
-            out.push(`<text class="fp-solar-badge" x="${lp.x}" y="${lp.y + 0.06}" font-size="0.15"
-                            text-anchor="middle" pointer-events="none">☀ ${Math.round(watts)}W</text>`);
+            out.push(`<text class="fp-solar-badge ${measured ? 'fp-solar-badge-measured' : ''}"
+                            x="${lp.x}" y="${lp.y + 0.06}" font-size="0.15"
+                            text-anchor="middle" pointer-events="none">☀ ${Math.round(watts)}W${measured ? ' ✓' : ''}</text>`);
+        }
+    }
+
+    // "Solar overheat now" — the live model-vs-measurement cross-check: the
+    // room's sensor reads above target while the sun is on its windows.
+    if ((mode !== 'rad' || _state.showSun) && _state.sunData) {
+        for (const room of lvl.rooms) {
+            if (!room.target_temp || !room.polygon || room.polygon.length < 3) continue;
+            const sensor = lvl.sensors.find(s => s.room_id === room.id && s.ieee);
+            const dev = sensor ? (_availableDevices.sensors || []).find(d => d.ieee === sensor.ieee) : null;
+            const temp = dev && dev.temperature != null ? Number(dev.temperature) : null;
+            if (temp === null || temp <= room.target_temp + 0.5) continue;
+            if (!roomSunlitNow(room, lvl)) continue;
+            const sc = modelToSvg(polygonCentroid(room.polygon));
+            out.push(`<text class="fp-overheat-badge" x="${sc.x}" y="${sc.y - 0.42}" font-size="0.16"
+                            text-anchor="middle" pointer-events="none">☀ +${(temp - room.target_temp).toFixed(1)}° solar overheat</text>`);
         }
     }
 
@@ -2806,28 +2911,54 @@ function renderSolarInsights(lvl) {
             }
         }
         if (watts < 15) continue;
-        const kwh = watts * daylightH / 1000;
+        // Measured telemetry, when the backend has enough heating-off data
+        const impact = roomSolarImpact(room);
+        const ratio = roomSolarRatio(room);
+        const kwh = watts * ratio * daylightH / 1000;
         const hints = [];
         if (worstGlazing === 'single') hints.push('upgrade glazing or fit reflective film');
         else if (kwh >= 1.5) hints.push('reflective film / external shading');
         if (lvl.index === topIndex && kwh >= 1.0) hints.push('check loft insulation');
-        rows.push({ name: room.name || room.id, kwh, sunH: sunMin / 60, hints });
+        rows.push({ name: room.name || room.id, kwh, sunH: sunMin / 60, hints, impact, ratio });
     }
     if (!rows.length) return '';
     rows.sort((a, b) => b.kwh - a.kwh);
-    const items = rows.map(r => `
+    const anyMeasured = rows.some(r => r.ratio !== 1.0);
+    const items = rows.map(r => {
+        const measured = r.ratio !== 1.0;
+        let meta = '';
+        if (measured) {
+            const mw = (r.impact.solar || {}).measured_w_median;
+            meta = `<div class="fp-solar-measured">✓ measured: ${mw != null ? '~' + Math.round(mw) + ' W in sun, ' : ''}`
+                 + `×${r.ratio.toFixed(2)} vs clear-sky (${escapeHtml(r.impact.confidence)} confidence)</div>`;
+        } else if (r.impact && r.impact.status && r.impact.status !== 'ok') {
+            const why = {
+                no_sensor: 'no temperature sensor bound',
+                no_telemetry: 'no sensor history yet',
+                no_cooldown_windows: 'no heating-off periods recorded yet',
+                insufficient_baseline: 'still collecting night-time baseline',
+                no_sunlit_windows: 'no sunny heating-off periods yet',
+                location_missing: 'set latitude/longitude in weather settings',
+            }[r.impact.status] || r.impact.status;
+            meta = `<div class="text-muted fst-italic">measuring — ${escapeHtml(why)}</div>`;
+        }
+        return `
         <div class="fp-solar-row">
           <div class="d-flex justify-content-between">
             <strong>${escapeHtml(r.name)}</strong>
-            <span>~${r.kwh.toFixed(1)} kWh/day</span>
+            <span>~${r.kwh.toFixed(1)} kWh/day${measured ? ' ✓' : ''}</span>
           </div>
           <div class="text-muted">${r.sunH.toFixed(1)} h direct sun${r.hints.length ? ' — ' + escapeHtml(r.hints.join('; ')) : ''}</div>
-        </div>`).join('');
+          ${meta}
+        </div>`;
+    }).join('');
     return `
       <hr/>
       <div class="text-muted small text-uppercase mb-1">Solar insights (today)</div>
       <div class="small">${items}</div>
-      <div class="form-text small mt-1">Clear-sky estimate from window size, glazing and sun exposure.
+      <div class="form-text small mt-1">${anyMeasured
+          ? '✓ = calibrated with measured heating-off telemetry; others are clear-sky estimates.'
+          : 'Clear-sky estimate from window size, glazing and sun exposure. Values calibrate automatically once enough heating-off telemetry accumulates.'}
         Use the <em>Solar gain only</em> thermal mode to see where it lands.</div>`;
 }
 

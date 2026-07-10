@@ -452,11 +452,28 @@
     stroke: var(--fp-canvas-bg);
     stroke-width: 0.045;
 }
+.fp-solar-badge-measured { fill: #16a34a; }
+[data-theme="dark"] .fp-solar-badge-measured { fill: #4ade80; }
+.fp-overheat-badge {
+    fill: #dc2626;
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: var(--fp-canvas-bg);
+    stroke-width: 0.05;
+    animation: fpOverheatBlink 1.8s ease-in-out infinite alternate;
+}
+[data-theme="dark"] .fp-overheat-badge { fill: #f87171; }
+@keyframes fpOverheatBlink {
+    from { opacity: 1; }
+    to   { opacity: 0.45; }
+}
 .fp-solar-row {
     padding: 4px 0;
     border-bottom: 1px solid var(--fp-border);
 }
 .fp-solar-row:last-child { border-bottom: none; }
+.fp-solar-measured { color: #16a34a; }
+[data-theme="dark"] .fp-solar-measured { color: #4ade80; }
 .fp-sun-beam {
     animation: fpBeamBreathe 3.4s ease-in-out infinite alternate;
 }
