@@ -1590,6 +1590,8 @@ window.editorBatchShow = function () {
 
 window.editorBatchDeploy = async function () {
     if (!testBatch.size) return;
+    // Same 88 MPH send-off as the single-file test deploy
+    if (typeof window.showDeloreanAnimation === 'function') window.showDeloreanAnimation();
     const files = Array.from(testBatch.entries()).map(([path, v]) => ({ path, content: v.content }));
     const hasPy = files.some(f => /\.(py|ya?ml)$/i.test(f.path));
     if (!await confirmDialog({
