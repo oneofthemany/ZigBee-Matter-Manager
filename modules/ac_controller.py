@@ -97,7 +97,12 @@ class GreeAdapter:
         self._on_key_learned = on_key_learned
 
     def close(self) -> None:
-        self._device = None
+        device, self._device = self._device, None
+        if device is not None:
+            try:
+                device.close()          # closes the UDP transport if open
+            except Exception as e:
+                logger.debug(f"gree close: {e}")
 
     async def _ensure(self):
         if self._device is not None:
@@ -107,6 +112,7 @@ class GreeAdapter:
         except ImportError as e:
             raise ACError("greeclimate library not installed — "
                           "add 'greeclimate' to requirements") from e
+        from greeclimate.cipher import CipherV1, CipherV2
         info = DeviceInfo(
             ip=self.cfg["host"],
             port=int(self.cfg.get("port") or GREE_DEFAULT_PORT),
@@ -115,13 +121,36 @@ class GreeAdapter:
         )
         device = Device(info)
         key = self.cfg.get("key")
-        await device.bind(key=key or None)
-        if not key and device.device_key and self._on_key_learned:
-            # First contact — persist the derived key so future binds are instant
+        bound = False
+        if key:
+            # greeclimate quirks on a keyed bind: it raises "cipher must be
+            # provided when key is provided" unless the cipher negotiated on
+            # first contact is passed back in (persisted as cfg["cipher"]),
+            # and it skips opening the UDP transport entirely — replicate
+            # the endpoint setup its negotiation path performs.
             try:
-                self._on_key_learned(self.cfg.get("id"), device.device_key)
+                cipher_ver = int(self.cfg.get("cipher") or 1)
+                cipher = CipherV2() if cipher_ver == 2 else CipherV1()
+                await device.bind(key=key, cipher=cipher)
+                if getattr(device, "_transport", None) is None:
+                    loop = asyncio.get_event_loop()
+                    device._transport, _ = await loop.create_datagram_endpoint(
+                        lambda: device, remote_addr=(info.ip, info.port))
+                bound = True
             except Exception as e:
-                logger.warning(f"gree key persist failed: {e}")
+                logger.warning(f"gree keyed bind failed ({e}) — "
+                               f"renegotiating a fresh key")
+        if not bound:
+            await device.bind()
+            if device.device_key and self._on_key_learned:
+                # First contact — persist key + cipher version so future
+                # binds are instant and use the right encryption.
+                learned_ver = 2 if isinstance(device.device_cipher, CipherV2) else 1
+                try:
+                    self._on_key_learned(self.cfg.get("id"),
+                                         device.device_key, learned_ver)
+                except Exception as e:
+                    logger.warning(f"gree key persist failed: {e}")
         self._device = device
         return device
 
@@ -259,7 +288,11 @@ class MideaAdapter:
 
     def _status_sync(self) -> Dict[str, Any]:
         def _refresh(d):
-            d.refresh_status()
+            # check_protocol=True is load-bearing: without it midea-local
+            # only SENDS the queries — responses are consumed by the
+            # library's background run() loop, which we don't run, so
+            # attributes would stay at their defaults forever.
+            d.refresh_status(True)
             return d
         d = self._with_reconnect(_refresh)
         attrs = dict(d.attributes or {})
@@ -293,12 +326,37 @@ class MideaAdapter:
                 raise ACError(f"unknown fan '{changes['fan']}'")
 
         def _apply(d):
+            # Sync the library's view of the unit first — set messages are
+            # built from cached attributes, and stale power/mode makes the
+            # unit silently ignore them. check_protocol=True is required to
+            # actually read the responses (see _status_sync).
+            d.refresh_status(True)
+            attrs = dict(d.attributes or {})
+            target = changes.get("target_c")
+            # A mode change implies power-on (that's also what the midea
+            # protocol message does), otherwise honour an explicit power
+            # change, otherwise keep the current state.
             if "power" in changes:
-                d.set_attribute("power", bool(changes["power"]))
-            if mode is not None:
-                d.set_attribute("mode", mode)
-            if changes.get("target_c") is not None:
-                d.set_target_temperature(float(changes["target_c"]), None)
+                want_power = bool(changes["power"])
+            else:
+                want_power = True if mode is not None else bool(attrs.get("power"))
+
+            if target is not None:
+                # The unit only honours a setpoint sent together with
+                # power+mode — send all three in one message.
+                eff_mode = mode if mode is not None else attrs.get("mode")
+                if want_power and eff_mode in _MIDEA_MODES:
+                    d.set_target_temperature(float(target), eff_mode)
+                else:
+                    # off (or no usable mode): best-effort bare setpoint
+                    d.set_target_temperature(float(target), None)
+                if "power" in changes and not changes["power"]:
+                    d.set_attribute("power", False)
+            else:
+                if "power" in changes:
+                    d.set_attribute("power", bool(changes["power"]))
+                if mode is not None:
+                    d.set_attribute("mode", mode)
             if speed is not None:
                 d.set_attribute("fan_speed", speed)
             for extra in ("eco_mode", "sleep_mode", "swing_vertical",

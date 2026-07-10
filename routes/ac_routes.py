@@ -57,17 +57,21 @@ def register_ac_routes(app: FastAPI):
     # Lazily (re)built so config edits take effect without a restart.
     state: Dict[str, Any] = {"controller": None}
 
-    def _persist_key(unit_id: str, key: str) -> None:
-        """Gree bind() derived a device key — write it back to config."""
+    def _persist_key(unit_id: str, key: str, cipher_version: int = 1) -> None:
+        """Gree bind() derived a device key — write it (and which cipher
+        version the device negotiated) back to config; both are needed to
+        re-bind without a fresh key exchange."""
         cfg = _load_config()
         units = ((cfg.get("ac") or {}).get("units")) or []
         for u in units:
             if str(u.get("id")) == str(unit_id):
                 u["key"] = key
+                u["cipher"] = int(cipher_version)
                 break
         cfg.setdefault("ac", {})["units"] = units
         _save_config(cfg)
-        logger.info(f"AC: persisted learned gree key for {unit_id}")
+        logger.info(f"AC: persisted learned gree key for {unit_id} "
+                    f"(cipher v{cipher_version})")
 
     def _controller() -> "ACController":
         cfg = _load_config()
@@ -167,8 +171,8 @@ def register_ac_routes(app: FastAPI):
                     n += 1
 
             allowed = ("name", "brand", "host", "port", "mac", "key",
-                       "device_id", "token", "protocol", "model", "subtype",
-                       "room_id")
+                       "cipher", "device_id", "token", "protocol", "model",
+                       "subtype", "room_id")
             record = {k: body[k] for k in allowed if body.get(k) is not None}
             record["id"] = unit_id
 
@@ -249,6 +253,7 @@ def register_ac_routes(app: FastAPI):
             ctl = _controller()
             if brand == "gree":
                 unit.pop("key", None)
+                unit.pop("cipher", None)
                 cfg.setdefault("ac", {})["units"] = units
                 _save_config(cfg)
                 state["controller"] = None
