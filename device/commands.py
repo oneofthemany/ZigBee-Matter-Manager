@@ -20,13 +20,20 @@ class DeviceCommandExecutorMixin:
         if asyncio.iscoroutine(result):
             ieee = self.ieee
             async def _run():
+                # write_fail_streak counts consecutive background-write
+                # failures; the heating controller uses it to back off
+                # periodic pushes to a device whose downlink is dead.
                 try:
                     ok = await result
                     if ok is False:
+                        self.write_fail_streak = getattr(self, 'write_fail_streak', 0) + 1
                         logger.warning(f"[{ieee}] {command}: device write failed (see handler logs)")
                         if command == 'motor_calibration':
                             self.update_state({'calibration_status': 'failed'})
+                    else:
+                        self.write_fail_streak = 0
                 except Exception as e:
+                    self.write_fail_streak = getattr(self, 'write_fail_streak', 0) + 1
                     logger.error(f"[{ieee}] {command}: background write error: {type(e).__name__}: {e}")
                     if command == 'motor_calibration':
                         self.update_state({'calibration_status': 'failed'})

@@ -140,6 +140,13 @@ DEFAULT_EXT_TEMP_PUSH_INTERVAL_SEC = 300
 # Min delta before we re-push external temp to a TRV (°C). Saves battery airtime.
 EXT_TEMP_PUSH_MIN_DELTA = 0.3
 
+# Back off external-temp pushes to a TRV whose background writes keep failing
+# (e.g. downlink dead while its own reports still arrive). After this many
+# consecutive failures the effective push interval doubles per further
+# failure, capped at the max — one dead TRV shouldn't log an error every cycle.
+EXT_PUSH_FAIL_STREAK_THRESHOLD = 3
+EXT_PUSH_BACKOFF_MAX_SEC = 3600.0
+
 # ── Weather-based heat suppression ─────────────────────────────────
 # Hysteresis prevents flap when outdoor temp hovers near a single threshold.
 WX_SUPPRESS_OFF_C = 16.0       # engage when current outdoor ≥ this
@@ -283,6 +290,10 @@ FRESHNESS_LOOKBACK_HOURS = 6
 # Stale-sensor fallback warnings repeat every tick — rate-limit per sensor.
 _stale_warned: Dict[str, float] = {}
 _STALE_WARN_INTERVAL_SEC = 3600.0
+
+# Same rate-limit for "skipping external-temp push, sensor stale" warnings,
+# tracked separately so neither warning suppresses the other.
+_push_stale_warned: Dict[str, float] = {}
 
 
 def _room_freshness_threshold_sec(room: dict) -> float:
@@ -582,6 +593,9 @@ class HeatingController:
         self._last_command: Dict[str, Tuple[str, Any, float]] = {}
         # Last external-temp push tracking:  trv_ieee -> (last_pushed_c, ts)
         self._last_ext_push: Dict[str, Tuple[float, float]] = {}
+        # Last push *attempt* per TRV (backoff bookkeeping — unlike
+        # _last_ext_push this also advances on failed attempts)
+        self._ext_push_attempt: Dict[str, float] = {}
         # Last decision snapshot (for dashboard/API)
         self._last_decision: Dict[str, Any] = {}
         self._last_decision_ts: float = 0
@@ -636,7 +650,8 @@ class HeatingController:
         Re-derive enabled / dry_run / circuits from new_config in place,
         without restarting the controller. Operational state is preserved:
         - _last_command (idempotent gate stays warm)
-        - _last_ext_push (TRV external-temp push throttle)
+        - _last_ext_push / _ext_push_attempt (TRV external-temp push
+          throttle and failure-backoff bookkeeping)
         - _trv_config_applied (don't re-push window/child-lock/valve config
           to TRVs that were already configured in this session)
         - _last_decision (panel keeps showing the last tick until a new one
@@ -2986,6 +3001,30 @@ class HeatingController:
                     logger.debug(f"Room {room['id']}: sensor {sensor_ieee} has no temperature")
                     continue
 
+                # Never forward a stale reading: a TRV in external mode
+                # regulates on whatever was pushed last, so a dead sensor
+                # would pin the TRV's view of the room at that value.
+                if _query_state_history is not None:
+                    last_report_ts = _last_temperature_ts(sensor_ieee)
+                    threshold_sec = _room_freshness_threshold_sec(room)
+                    if last_report_ts is None or (now_ts - last_report_ts) > threshold_sec:
+                        last_warn = _push_stale_warned.get(sensor_ieee, 0.0)
+                        if (now_ts - last_warn) >= _STALE_WARN_INTERVAL_SEC:
+                            _push_stale_warned[sensor_ieee] = now_ts
+                            age_txt = (
+                                f"last report {int((now_ts - last_report_ts) / 60)} min ago"
+                                if last_report_ts is not None
+                                else f"no reports in {FRESHNESS_LOOKBACK_HOURS}h"
+                            )
+                            logger.warning(
+                                f"Room {room['id']}: skipping external-temp push — "
+                                f"sensor {sensor_ieee} is stale ({age_txt}, "
+                                f"threshold {int(threshold_sec / 60)} min)"
+                            )
+                        continue
+                    elif sensor_ieee in _push_stale_warned:
+                        del _push_stale_warned[sensor_ieee]
+
                 interval = room.get("external_temp_push_interval_sec",
                                     DEFAULT_EXT_TEMP_PUSH_INTERVAL_SEC)
 
@@ -2999,6 +3038,25 @@ class HeatingController:
                         if fresh_enough and tiny_change:
                             continue
 
+                    # Back off a TRV whose background writes keep failing
+                    # (write_fail_streak is maintained by the device command
+                    # executor; any successful write resets it).
+                    trv_dev = devices.get(ieee)
+                    streak = getattr(trv_dev, "write_fail_streak", 0) if trv_dev is not None else 0
+                    if streak >= EXT_PUSH_FAIL_STREAK_THRESHOLD:
+                        backoff = min(
+                            interval * (2 ** (streak - EXT_PUSH_FAIL_STREAK_THRESHOLD + 1)),
+                            EXT_PUSH_BACKOFF_MAX_SEC,
+                        )
+                        since_attempt = now_ts - self._ext_push_attempt.get(ieee, 0.0)
+                        if since_attempt < backoff:
+                            continue
+                        logger.info(
+                            f"TRV {ieee}: retrying external-temp push after "
+                            f"{int(since_attempt)}s backoff "
+                            f"({streak} consecutive write failures)"
+                        )
+
                     if self.dry_run:
                         logger.info(
                             f"[DRY-RUN] Would push external temp {sensor_temp:.2f}°C "
@@ -3008,6 +3066,7 @@ class HeatingController:
                         continue
 
                     try:
+                        self._ext_push_attempt[ieee] = now_ts
                         resp = await self._throttled_send(ieee, "external_temp", sensor_temp)
                         succeeded = isinstance(resp, dict) and resp.get("success", False)
                         err = resp.get("error", "") if isinstance(resp, dict) else ""

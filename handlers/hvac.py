@@ -407,7 +407,7 @@ class ThermostatHandler(ClusterHandler):
                 },
             )
             if not ok:
-                return
+                return False
 
             self.device.update_state({
                 "system_mode": "heat",
@@ -419,19 +419,27 @@ class ThermostatHandler(ClusterHandler):
                 "target_temp": temperature,
             })
             self._fetch_thermostat_temperature()
-            return
+            return True
 
         # --- Non-Hive thermostats: plain setpoint write ---
         logger.info(
             f"[{self.device.ieee}] Writing occupied_heating_setpoint: "
             f"{temperature}°C ({value_cd} centidegrees)"
         )
-        await self.cluster.write_attributes({"occupied_heating_setpoint": value_cd})
+        try:
+            await self.cluster.write_attributes({"occupied_heating_setpoint": value_cd})
+        except Exception as e:
+            logger.error(
+                f"[{self.device.ieee}] Setpoint write failed: "
+                f"{type(e).__name__}: {e}"
+            )
+            return False
         self.device.update_state({
             "heating_setpoint": temperature,
             "occupied_heating_setpoint": temperature,
             "target_temp": temperature,
         })
+        return True
 
     async def set_hvac_mode(self, mode: str):
         """
@@ -450,7 +458,7 @@ class ThermostatHandler(ClusterHandler):
 
         if mode not in mode_map:
             logger.warning(f"[{self.device.ieee}] Unsupported HVAC mode: {mode}")
-            return
+            return False
 
         mode_val = mode_map[mode]
 
@@ -483,7 +491,7 @@ class ThermostatHandler(ClusterHandler):
                 attrs_by_id=attrs_by_id,
             )
             if not ok:
-                return
+                return False
 
             updates = {
                 "system_mode": mode,
@@ -499,12 +507,19 @@ class ThermostatHandler(ClusterHandler):
                 })
             self.device.update_state(updates)
             self._fetch_thermostat_temperature()
-            return
+            return True
 
         # --- Non-Hive thermostats: plain mode write ---
         logger.info(f"[{self.device.ieee}] Writing system_mode: {mode} ({mode_val})")
-        await self.cluster.write_attributes({"system_mode": mode_val})
+        try:
+            await self.cluster.write_attributes({"system_mode": mode_val})
+        except Exception as e:
+            logger.error(
+                f"[{self.device.ieee}] Mode write failed: {type(e).__name__}: {e}"
+            )
+            return False
         self.device.update_state({"system_mode": mode})
+        return True
 
     def _update_hvac_action(self):
         """Derive hvac_action (heating, idle, off) from system_mode and running_state."""
@@ -523,10 +538,14 @@ class ThermostatHandler(ClusterHandler):
         self.device.update_state({"hvac_action": action})
 
     def process_command(self, command: str, value: Any):
+        # Return the coroutine instead of create_task: the command executor
+        # runs it in a supervised background task, so a TimeoutError from an
+        # unreachable device is logged rather than surfacing as an
+        # unretrieved task exception.
         if command in ("temperature", "set_temperature"):
-            asyncio.create_task(self.set_target_temperature(float(value)))
+            return self.set_target_temperature(float(value))
         elif command in ("system_mode", "set_mode"):
-            asyncio.create_task(self.set_hvac_mode(str(value).lower()))
+            return self.set_hvac_mode(str(value).lower())
 
     async def handle_command(self, command: str, data: Any):
         if command == "system_mode":
