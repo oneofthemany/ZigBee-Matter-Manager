@@ -799,6 +799,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start packet flow broadcaster: {e}")
 
+        app.state.bringup_status = "ready"
         logger.info("✅ Background bring-up complete — all services started")
         await manager.broadcast({
             "type": "log",
@@ -808,10 +809,17 @@ async def lifespan(app: FastAPI):
 
     def _bringup_done(task: asyncio.Task):
         # Retrieve the exception so a failed bring-up is a logged error,
-        # not an unretrieved task exception.
+        # not an unretrieved task exception. Marking the status "failed"
+        # flips /api/system/health to 503, which is what the ZMM Manager's
+        # watchdog keys off to restart the container — the process itself
+        # no longer dies on a boot failure now that bring-up is deferred.
         if not task.cancelled() and task.exception() is not None:
+            app.state.bringup_status = "failed"
+            app.state.bringup_error = f"{type(task.exception()).__name__}: {task.exception()}"
             logger.error(f"Background bring-up failed: {task.exception()!r}")
 
+    app.state.bringup_status = "starting"
+    app.state.bringup_error = None
     app.state.bringup_task = asyncio.create_task(_background_bringup())
     app.state.bringup_task.add_done_callback(_bringup_done)
     logger.info("Web UI starting — service bring-up continues in background")

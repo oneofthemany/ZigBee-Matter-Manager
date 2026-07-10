@@ -238,14 +238,27 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
     @app.get("/api/system/health")
     async def health_check():
         """
-        Lightweight health endpoint. Used by the Containerfile HEALTHCHECK
-        and by the in-app upgrade health probe. Must remain cheap and
-        synchronous-friendly — no DB queries, no I/O, no waiting on
-        subsystems. If it returns 200, the FastAPI process is up and
-        serving; that's all callers need. The optional `version` lets the
-        upgrade watcher confirm the NEW image actually booted after a swap.
+        Lightweight health endpoint. Used by the Containerfile HEALTHCHECK,
+        the ZMM Manager watchdog, and the in-app upgrade health probe. Must
+        remain cheap and synchronous-friendly — no DB queries, no I/O, no
+        waiting on subsystems.
+
+        Since bring-up runs as a background task, "serving" no longer
+        implies "fully started": `bringup` reports the phase (starting →
+        ready, or failed). Returns 200 while starting/ready, but 503 once
+        bring-up has FAILED so the manager watchdog restarts the container
+        — the process itself no longer dies on a boot failure. The optional
+        `version` lets the upgrade watcher confirm the NEW image actually
+        booted after a swap.
         """
-        return {"status": "ok", "version": _APP_VERSION}
+        bringup = getattr(app.state, "bringup_status", "ready")
+        payload = {"status": "ok", "version": _APP_VERSION, "bringup": bringup}
+        if bringup == "failed":
+            from fastapi.responses import JSONResponse
+            payload["status"] = "error"
+            payload["error"] = getattr(app.state, "bringup_error", None)
+            return JSONResponse(payload, status_code=503)
+        return payload
 
     # ---- MQTT Explorer ----
 

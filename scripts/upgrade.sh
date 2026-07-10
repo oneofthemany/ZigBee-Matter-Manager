@@ -23,7 +23,12 @@ APP_DIR="${ZMM_APP_DIR:-/opt/.zigbee-matter-manager/upgrade_build}"
 IMAGE_NAME="${ZMM_IMAGE_NAME:-zigbee-matter-manager}"
 CONTAINER_NAME="${ZMM_CONTAINER_NAME:-zigbee-matter-manager}"
 REPO_URL="${ZMM_REPO_URL:-https://github.com/oneofthemany/ZigBee-Matter-Manager.git}"
-HEALTH_TIMEOUT="${ZMM_HEALTH_TIMEOUT:-60}"  # seconds to wait for new container to become healthy
+# Seconds to wait for the new container to become healthy. Since v3.2.9 the
+# app serves the web UI immediately and finishes bring-up (Zigbee radio,
+# Matter server) in the background, reporting the phase via the health
+# endpoint's "bringup" field — wait_until_healthy() only counts a check once
+# bringup=ready, and a full bring-up can take 2-3 minutes on MultiPAN.
+HEALTH_TIMEOUT="${ZMM_HEALTH_TIMEOUT:-300}"
 
 # Health check URL is auto-detected from config.yaml at health-check time —
 # see detect_health_url(). Override with $ZMM_HEALTH_URL if needed.
@@ -442,9 +447,11 @@ wait_until_healthy() {
 
     while (( elapsed < timeout )); do
         if working=$(is_app_healthy "${urls[@]}"); then
+            local body
+            body=$(curl -fsS -k --max-time 3 "$working" 2>/dev/null || true)
             if [[ -n "$expect_version" ]]; then
                 local got
-                got=$(curl -fsS -k --max-time 3 "$working" 2>/dev/null \
+                got=$(printf '%s' "$body" \
                       | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
                       | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
                 if [[ -n "$got" && "$got" != "$expect_version" ]]; then
@@ -452,6 +459,19 @@ wait_until_healthy() {
                     stable=0
                     sleep 3; elapsed=$((elapsed + 3)); continue
                 fi
+            fi
+            # Deferred bring-up (v3.2.9+): the app answers 200 while services
+            # are still booting and reports the phase in "bringup". Only count
+            # a check once bring-up is ready. Best-effort like the version
+            # check: a response WITHOUT the field (older image) still passes.
+            local bring
+            bring=$(printf '%s' "$body" \
+                    | grep -oE '"bringup"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+                    | sed -E 's/.*"bringup"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+            if [[ -n "$bring" && "$bring" != "ready" ]]; then
+                log "Health: responding but bringup=$bring — not counting"
+                stable=0
+                sleep 3; elapsed=$((elapsed + 3)); continue
             fi
             stable=$((stable + 1))
             if (( stable >= need )); then

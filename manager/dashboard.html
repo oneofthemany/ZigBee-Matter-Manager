@@ -457,9 +457,12 @@ async function refresh(){
   $('conn').className='pill ok';$('conn').innerHTML='<span class="dot"></span>live';
   const a=d.app||{};
   const ver=a.body&&a.body.version;
+  const bringup=a.body&&a.body.bringup;   /* starting|ready|failed (absent pre-3.2.9) */
   $('appver').textContent=ver?('v'+ver):'';
-  if(a.ok)setCell('cApp','ok','healthy',ver?('version '+ver):'');
-  else setCell('cApp','bad','unhealthy',a.error||('HTTP '+(a.status_code??'—')));
+  if(a.ok&&bringup==='starting')setCell('cApp','warn','starting',ver?('v'+ver+' — services booting'):'services booting');
+  else if(a.ok)setCell('cApp','ok','healthy',ver?('version '+ver):'');
+  else setCell('cApp','bad',bringup==='failed'?'boot failed':'unhealthy',
+   (a.body&&a.body.error)||a.error||('HTTP '+(a.status_code??'—')));
   const w=d.watchdog||{};const ws=w.status||'?';
   const wcls=ws==='ok'?'ok':(ws==='unhealthy'||ws==='exhausted'?'bad'
    :(ws==='restarted'||ws==='recovery'?'warn':'mut'));
