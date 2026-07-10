@@ -20,6 +20,9 @@ let _logPollTimer = null;
 let _lastState = null;
 let _lastPayload = null;   // last /status body — skip re-render when unchanged
 let _managerToken = null;  // fetched once; only changes when the sidecar regenerates it
+// Versions from the last status render — fed to the DeLorean-bee time-travel
+// overlay (deploy-animation.js) as the swap's "time circuits" readout.
+let _versions = { present: '', destination: '' };
 
 // Poll fast only while an upgrade is actually in flight; idle status
 // almost never changes, and WS 'upgrade_*' events trigger an immediate
@@ -203,6 +206,11 @@ function renderBody(data) {
         upgrade_state, progress_percent, current_step, error,
         architecture, watcher_installed
     } = data;
+
+    _versions = {
+        present: current_version || '',
+        destination: data.target_version || latest_available || '',
+    };
 
     const stateBadge = renderStateBadge(upgrade_state);
 
@@ -630,15 +638,23 @@ async function startSwap() {
     const res = await fetch('/api/upgrade/swap', { method: 'POST' });
     const data = await res.json();
     if (data.success) {
-        toast('info', 'Swap in progress — reloading when ready...');
+        // Time to hit 88 MPH: full-screen DeLorean-bee overlay with the
+        // version jump on its time circuits. Falls back to a plain toast
+        // if deploy-animation.js didn't load.
+        let tt = null;
+        if (typeof window.showTimeTravelWait === 'function') {
+            tt = window.showTimeTravelWait(_versions);
+        } else {
+            toast('info', 'Swap in progress — reloading when ready...');
+        }
         // Poll for health after the API call likely drops
-        waitForHealth();
+        waitForHealth(tt);
     } else {
         toast('danger', data.error || data.message || 'Swap failed');
     }
 }
 
-function waitForHealth() {
+function waitForHealth(tt) {
     let attempts = 0;
     const iv = setInterval(async () => {
         attempts++;
@@ -646,12 +662,16 @@ function waitForHealth() {
             const r = await fetch('/api/system/health', { cache: 'no-store' });
             if (r.ok) {
                 clearInterval(iv);
-                setTimeout(() => location.reload(), 1500);
+                // Accelerate to 88 and reload at the white-flash peak;
+                // without the overlay, keep the old quiet reload.
+                if (tt) tt.complete(() => location.reload());
+                else setTimeout(() => location.reload(), 1500);
                 return;
             }
         } catch (_) { /* expected during swap */ }
         if (attempts > 150) {
             clearInterval(iv);
+            if (tt) tt.abort();
             toast('danger', 'Server did not come back within 5 minutes. Check the host logs.');
         }
     }, 2000);
