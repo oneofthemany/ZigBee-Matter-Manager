@@ -275,14 +275,17 @@ dialog .remember input{accent-color:var(--honey)}
   </section>
 </div>
 
-<!-- ── Host OS updates — data from the host-side collector ────────────────── -->
+<!-- ── Host OS updates — collected & applied by the host-side helpers ─────── -->
 <section class="card">
   <h2>Host OS <span class="hint">— update check runs on the host every 6h</span></h2>
   <div class="rowline" style="border:0">
     <span id="hoInfo" class="muted">&hellip;</span>
     <span class="spacer"></span>
+    <button class="btn" id="hoRelBtn" onclick="releaseUpgradeHost(this)" hidden>Upgrade OS</button>
+    <button class="btn primary" id="hoApplyBtn" onclick="applyHostUpdates(this)" hidden>Apply updates</button>
     <button class="btn" id="hoCheckBtn" onclick="checkHostNow(this)">Check now</button>
   </div>
+  <div id="hoApply" class="muted" style="margin-top:.3rem" hidden></div>
   <div class="scroll" id="hoScroll" hidden><table class="bk">
     <thead><tr><th>package</th><th>installed</th><th>available</th></tr></thead>
     <tbody id="hoRows"></tbody>
@@ -542,10 +545,27 @@ function ago(sec){if(sec==null)return '';
  if(sec<5400)return Math.round(sec/60)+'m ago';
  if(sec<129600)return Math.round(sec/3600)+'h ago';
  return Math.round(sec/86400)+'d ago';}
-let hoFast=0,hoLastChecked=null;
+let hoFast=0,hoLastChecked=null,hoRelTarget=null;
 async function checkHostNow(btn){
  const d=await act('/host/os-updates/refresh',null,false,btn);
  if(d&&d.success)hoFast=24;}
+async function applyHostUpdates(btn){
+ if(!await confirmM('Install all pending package updates on the host?\n'+
+   'This runs the package manager as root on the machine that hosts every '+
+   'container here. A kernel update will ask for a reboot afterwards.',
+   {title:'Apply host updates',confirmText:'Apply updates',danger:true}))return;
+ const d=await act('/host/os-updates/apply',null,false,btn);
+ if(d&&d.success){hoFast=60;toast('Host update started','ok');}}
+async function releaseUpgradeHost(btn){
+ if(!hoRelTarget)return;
+ if(!await confirmM('Upgrade the host operating system to release '+hoRelTarget+'?\n\n'+
+   'The host downloads the new release and then REBOOTS to install it. '+
+   'Every container (including this manager and the app) will be offline '+
+   'for the duration — typically 15–40 minutes. Make sure package updates '+
+   'are applied first.',
+   {title:'Upgrade host OS',confirmText:'Upgrade & reboot',danger:true}))return;
+ const d=await act('/host/os-updates/release-upgrade',{target:hoRelTarget},false,btn);
+ if(d&&d.success){hoFast=60;toast('OS release upgrade started','ok');}}
 async function loadHost(){
  let delay=60000;
  try{
@@ -554,12 +574,18 @@ async function loadHost(){
    $('hoInfo').innerHTML='no data yet &mdash; the collector installs with the '+
     'upgrade watcher; re-run <code>install_watcher.sh</code> on the host (or upgrade)';
    $('hoScroll').hidden=true;$('hoFoot').textContent='';
+   $('hoApplyBtn').hidden=true;$('hoRelBtn').hidden=true;$('hoApply').hidden=true;
   }else{
    const bits=[];
    if(d.os)bits.push(esc(d.os));
    if(d.kernel_running)bits.push('kernel <code>'+esc(d.kernel_running)+'</code>'+
     (d.kernel_pending?(' &rarr; <code>'+esc(d.kernel_latest||'?')+'</code> installed'):''));
    if(d.reboot_required)bits.push('<strong style="color:var(--bad)">reboot required</strong>');
+   // Release detected but not automatable (e.g. Debian stable jumps): say so
+   // instead of showing an "Upgrade OS" button that would only ever fail.
+   if(d.os_release_available&&!d.os_release_automated)
+    bits.push('<strong style="color:var(--warn)">OS release '+
+     esc(d.os_release_available)+' available — manual upgrade</strong>');
    if(d.checked_at)bits.push('checked '+ago(d.age_seconds)+
     (d.stale?' <strong style="color:var(--warn)">(stale)</strong>':''));
    if(d.refresh_pending)bits.push('check requested&hellip;');
@@ -576,8 +602,38 @@ async function loadHost(){
        ' security</strong>'):'')+
       (pk.length<(d.update_count||0)?(' · showing first '+pk.length):'')+
       (d.error?(' · '+esc(d.error)):''));
+   // Apply / release-upgrade actions (host-side os_apply.sh does the work)
+   const ap=d.apply||{};
+   const busy=d.apply_pending||ap.state==='running'||ap.state==='rebooting';
+   hoRelTarget=(d.os_release_available&&d.os_release_automated)
+    ?d.os_release_available:null;
+   $('hoApplyBtn').hidden=!(d.update_count>0)||busy||d.status==='unsupported';
+   $('hoRelBtn').hidden=!hoRelTarget||busy;
+   if(hoRelTarget)$('hoRelBtn').textContent='Upgrade OS → '+hoRelTarget;
+   if(busy){
+    delay=5000;
+    $('hoApply').hidden=false;
+    $('hoApply').innerHTML='<strong style="color:var(--warn)">'+
+     (ap.state==='rebooting'?'host is rebooting into the OS upgrade&hellip;'
+      :((ap.action==='release_upgrade'?'OS release upgrade':'package update')+
+        ' running&hellip;'))+'</strong>'+
+     (ap.detail?(' '+esc(ap.detail)):'')+
+     ' · <a href="#" onclick="openLog(\'os_apply.log\');return false">watch log</a>';
+   }else if(ap.state==='failed'){
+    $('hoApply').hidden=false;
+    $('hoApply').innerHTML='<strong style="color:var(--bad)">last '+
+     esc(ap.action||'update')+' failed</strong>'+(ap.detail?(' — '+esc(ap.detail)):'')+
+     ' · <a href="#" onclick="openLog(\'os_apply.log\');return false">view log</a>';
+   }else if(ap.state==='done'){
+    $('hoApply').hidden=false;
+    $('hoApply').innerHTML='last '+esc(ap.action||'update')+' completed '+
+     (ap.updated_at?esc(ap.updated_at).replace('T',' ').replace('Z',' UTC'):'')+
+     ' · <a href="#" onclick="openLog(\'os_apply.log\');return false">view log</a>';
+   }else{
+    $('hoApply').hidden=true;
+   }
    // After "Check now": poll fast until a new checked_at lands.
-   if(hoFast>0){delay=5000;hoFast--;
+   if(hoFast>0){delay=Math.min(delay,5000);hoFast--;
     if(hoLastChecked&&d.checked_at&&d.checked_at!==hoLastChecked){
      toast('Host update check finished','ok');hoFast=0;}}
    hoLastChecked=d.checked_at||hoLastChecked;
@@ -681,6 +737,14 @@ function startStream(url,btn){
  es.onerror=()=>{v.textContent+='── connection lost ──\n';};}
 function mkbtn(label,url){const b=document.createElement('button');
  b.className='btn';b.textContent=label;b.onclick=()=>startStream(url,b);return b;}
+/* Open a DATA_DIR log by name (used by the Host OS card's "watch log"). */
+function openLog(name){
+ const url='/logs/file/'+encodeURIComponent(name);
+ let btn=[...document.querySelectorAll('#logbtns .btn')]
+  .find(b=>b.textContent.includes(name));
+ if(!btn){btn=mkbtn('\u{1F4C4} '+name,url);$('logbtns').appendChild(btn);}
+ if(esBtn!==btn)startStream(url,btn);
+ $('logview').scrollIntoView({behavior:'smooth'});}
 async function loadLogSources(){
  try{const r=await fetch('/logs');if(!r.ok)throw 0;const d=await r.json();
   const el=$('logbtns');el.textContent='';el.classList.remove('muted');

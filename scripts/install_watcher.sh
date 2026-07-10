@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=5
+WATCHER_SCHEMA_VERSION=6
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
@@ -169,6 +169,19 @@ if src=$(find_script "os_updates.sh"); then
 else
     warn "os_updates.sh not found — host OS update checks will be unavailable."
 fi
+
+# OS apply worker (schema 6) — applies package updates / OS release upgrades
+# when the manager writes the apply/release_upgrade triggers. Non-fatal like
+# the collector; without it the host card stays view-only.
+HAVE_OS_APPLY=false
+if src=$(find_script "os_apply.sh"); then
+    install_file "$src" "${SCRIPTS_DIR}/os_apply.sh"
+    HAVE_OS_APPLY=true
+    ok "Installed os_apply.sh -> ${SCRIPTS_DIR}/os_apply.sh"
+else
+    warn "os_apply.sh not found — host OS updates stay view-only."
+fi
+
 # The manager writes this file to request an immediate re-check; the path
 # unit below watches it. Must exist as a DIRECTORY parent before the path
 # unit starts, or systemd can't watch it.
@@ -306,12 +319,48 @@ WantedBy=default.target
 PATHUNIT
     fi
 
+    if $HAVE_OS_APPLY; then
+        cat > "$unit_dir/zmm-os-apply.service" <<SERVICE
+[Unit]
+Description=ZMM OS Apply Worker (oneshot — package updates / release upgrade)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/os_apply.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1 2 3
+# A release upgrade downloads a whole distro — no timeout.
+TimeoutStartSec=infinity
+SERVICE
+
+        cat > "$unit_dir/zmm-os-apply.path" <<PATHUNIT
+[Unit]
+Description=Watch for ZMM OS apply / release-upgrade triggers
+
+[Path]
+# The :8001 manager writes these to apply updates / upgrade the OS release.
+PathChanged=${DATA_DIR}/data/os_updates/apply
+PathChanged=${DATA_DIR}/data/os_updates/release_upgrade
+Unit=zmm-os-apply.service
+
+[Install]
+WantedBy=default.target
+PATHUNIT
+    fi
+
     systemctl --user daemon-reload
     systemctl --user enable --now zmm-upgrade.path
     ok "systemd user path unit enabled (event-driven)"
     if $HAVE_OS_UPDATES; then
         systemctl --user enable --now zmm-os-updates.timer zmm-os-updates.path
         ok "OS updates collector enabled (6h timer + on-demand path unit)"
+    fi
+    if $HAVE_OS_APPLY; then
+        systemctl --user enable --now zmm-os-apply.path
+        ok "OS apply worker enabled (needs passwordless sudo to act — see os_apply.sh)"
     fi
 
     # Enable linger so it works without an active login session
@@ -421,12 +470,50 @@ WantedBy=multi-user.target
 PATHUNIT
     fi
 
+    if $HAVE_OS_APPLY; then
+        # NOTE: no User= line — applying updates needs root, and system units
+        # run as root by default.
+        sudo tee "$unit_dir/zmm-os-apply.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM OS Apply Worker (oneshot — package updates / release upgrade)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/os_apply.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1 2 3
+# A release upgrade downloads a whole distro — no timeout.
+TimeoutStartSec=infinity
+SERVICE
+
+        sudo tee "$unit_dir/zmm-os-apply.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM OS apply / release-upgrade triggers
+
+[Path]
+# The :8001 manager writes these to apply updates / upgrade the OS release.
+PathChanged=${DATA_DIR}/data/os_updates/apply
+PathChanged=${DATA_DIR}/data/os_updates/release_upgrade
+Unit=zmm-os-apply.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now zmm-upgrade.path
     ok "systemd system path unit enabled (event-driven)"
     if $HAVE_OS_UPDATES; then
         sudo systemctl enable --now zmm-os-updates.timer zmm-os-updates.path
         ok "OS updates collector enabled (6h timer + on-demand path unit)"
+    fi
+    if $HAVE_OS_APPLY; then
+        sudo systemctl enable --now zmm-os-apply.path
+        ok "OS apply worker enabled (runs as root via system unit)"
     fi
 }
 
@@ -442,8 +529,11 @@ APP_DIR="${ZMM_APP_DIR:-/opt/.zigbee-matter-manager/upgrade_build}"
 UPGRADE_SH="${DATA_DIR}/scripts/upgrade.sh"
 TRIGGER="${DATA_DIR}/data/upgrade/trigger"
 OS_UPDATES_SH="${DATA_DIR}/scripts/os_updates.sh"
+OS_APPLY_SH="${DATA_DIR}/scripts/os_apply.sh"
 OS_JSON="${DATA_DIR}/data/os_updates.json"
 OS_TRIGGER="${DATA_DIR}/data/os_updates/refresh"
+OS_APPLY_TRIGGER="${DATA_DIR}/data/os_updates/apply"
+OS_RELEASE_TRIGGER="${DATA_DIR}/data/os_updates/release_upgrade"
 OS_INTERVAL=21600   # re-check the OS for updates every 6h
 INTERVAL=5
 
@@ -457,6 +547,11 @@ while true; do
         if [[ -f "$OS_TRIGGER" ]] || (( $(date +%s) - last > OS_INTERVAL )); then
             ZMM_DATA_DIR="$DATA_DIR" bash "$OS_UPDATES_SH" || true
         fi
+    fi
+    # OS apply / release upgrade: on demand only.
+    if [[ -x "$OS_APPLY_SH" ]] \
+       && { [[ -f "$OS_APPLY_TRIGGER" ]] || [[ -f "$OS_RELEASE_TRIGGER" ]]; }; then
+        ZMM_DATA_DIR="$DATA_DIR" bash "$OS_APPLY_SH" || true
     fi
     sleep "$INTERVAL"
 done

@@ -206,9 +206,10 @@ async def ollama_update(authorization: str = Header(default="")):
                         status_code=200 if ok else 409)
 
 
-# ── Host OS: pending updates as collected by scripts/os_updates.sh ───────────
-# Read-only towards the host; "check now" just touches the collector's
-# path-unit trigger. Applying updates stays a manual host task by design.
+# ── Host OS: updates as collected by scripts/os_updates.sh ───────────────────
+# Reads are open; every action (re-check, apply, release upgrade) needs the
+# bearer token and just writes the trigger file the host-side path units
+# watch — scripts/os_apply.sh does the actual dnf/apt work as root.
 
 @app.get("/host/os-updates")
 async def host_os_updates():
@@ -222,6 +223,25 @@ async def host_os_updates_refresh(authorization: str = Header(default="")):
     ok, msg = host.request_refresh()
     return JSONResponse({"success": ok, "message" if ok else "error": msg},
                         status_code=200 if ok else 500)
+
+
+@app.post("/host/os-updates/apply")
+async def host_os_updates_apply(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = host.request_apply()
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 409)
+
+
+@app.post("/host/os-updates/release-upgrade")
+async def host_os_release_upgrade(data: dict = Body(...),
+                                  authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    ok, msg = host.request_release_upgrade(str(data.get("target") or ""))
+    return JSONResponse({"success": ok, "message" if ok else "error": msg},
+                        status_code=200 if ok else 409)
 
 
 # ── Disaster recovery (CP2b) — replaces the in-app recovery_server ───────────

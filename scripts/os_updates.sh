@@ -120,6 +120,55 @@ else
     log "$ERR"
 fi
 
+# ── OS release-upgrade availability ─────────────────────────────────────────
+# Distro-agnostic within what each distro sanctions:
+#   Fedora — probe the mirrorlist for releasever+1 (cheap HTTP HEAD, no dnf
+#            metadata download); automated via dnf system-upgrade.
+#   Ubuntu — do-release-upgrade -c; automated via do-release-upgrade.
+#   Debian — compare the running VERSION_ID with the archive's current
+#            stable; DETECTED but flagged manual (Debian ships no official
+#            non-interactive release-upgrade tool — it's a sources rewrite).
+#   Everything else — null (the UI says nothing rather than guessing).
+OS_ID=""
+RELEASE_CURRENT=""
+RELEASE_AVAILABLE=""
+RELEASE_AUTOMATED=false
+if [[ -r /etc/os-release ]]; then
+    OS_ID=$(. /etc/os-release && echo "${ID:-}")
+    RELEASE_CURRENT=$(. /etc/os-release && echo "${VERSION_ID:-}")
+fi
+if [[ "$OS_ID" == "fedora" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
+   && command -v curl >/dev/null 2>&1; then
+    NEXT=$((RELEASE_CURRENT + 1))
+    if curl -fsm 20 -o /dev/null \
+        "https://mirrors.fedoraproject.org/metalink?repo=fedora-${NEXT}&arch=$(uname -m)" \
+        2>>"$LOG_FILE"; then
+        RELEASE_AVAILABLE="$NEXT"
+        RELEASE_AUTOMATED=true
+        log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $NEXT"
+    fi
+elif [[ "$PKG_MANAGER" == "apt" ]] && command -v do-release-upgrade >/dev/null 2>&1; then
+    # Ubuntu (and derivatives that ship ubuntu-release-upgrader)
+    DRU=$(timeout 120 do-release-upgrade -c 2>>"$LOG_FILE")
+    if [[ $? -eq 0 ]]; then
+        RELEASE_AVAILABLE=$(printf '%s\n' "$DRU" \
+            | sed -nE "s/.*New release '([^']+)'.*/\1/p" | head -1)
+        [[ -z "$RELEASE_AVAILABLE" ]] && RELEASE_AVAILABLE="new"
+        RELEASE_AUTOMATED=true
+        log "OS release upgrade available: -> $RELEASE_AVAILABLE"
+    fi
+elif [[ "$OS_ID" == "debian" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
+     && command -v curl >/dev/null 2>&1; then
+    STABLE_VER=$(curl -fsm 20 "http://deb.debian.org/debian/dists/stable/Release" \
+        2>>"$LOG_FILE" | awk '/^Version:/ {print $2; exit}')
+    STABLE_MAJOR="${STABLE_VER%%.*}"
+    if [[ "$STABLE_MAJOR" =~ ^[0-9]+$ ]] && (( STABLE_MAJOR > RELEASE_CURRENT )); then
+        RELEASE_AVAILABLE="$STABLE_MAJOR"
+        RELEASE_AUTOMATED=false   # surfaced in the UI as a manual task
+        log "OS release available (manual): Debian $RELEASE_CURRENT -> $STABLE_MAJOR"
+    fi
+fi
+
 TOTAL=$(printf '%s\n' "$PKGS_TSV" | awk 'NF' | wc -l | tr -d ' ')
 
 PKG_JSON=$(printf '%s\n' "$PKGS_TSV" | awk 'NF' | head -n "$MAX_PKGS" \
@@ -135,6 +184,9 @@ jq -n \
     --arg kr "$KERNEL_RUNNING" \
     --arg kl "$KERNEL_LATEST" \
     --arg err "$ERR" \
+    --arg relcur "$RELEASE_CURRENT" \
+    --arg relav "$RELEASE_AVAILABLE" \
+    --argjson relauto "$RELEASE_AUTOMATED" \
     --argjson total "${TOTAL:-0}" \
     --argjson security "${SECURITY:-0}" \
     --argjson reboot "$REBOOT" \
@@ -151,6 +203,9 @@ jq -n \
       security_count: $security,
       reboot_required: $reboot,
       packages: $packages,
+      os_release_current: (if $relcur == "" then null else $relcur end),
+      os_release_available: (if $relav == "" then null else $relav end),
+      os_release_automated: $relauto,
       error: (if $err == "" then null else $err end)}' \
     > "$TMP" 2>>"$LOG_FILE" && mv -f "$TMP" "$OUT_FILE"
 
