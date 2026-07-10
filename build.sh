@@ -800,6 +800,14 @@ run_container() {
         --volume "${DATA_DIR}/logs:/app/logs"
     )
 
+    # ── Host timezone passthrough ──
+    # The app uses naive datetime.now() for time-based automations; without this
+    # the container runs on UTC and timed rules fire offset from wall-clock time.
+    if [[ -e /etc/localtime ]]; then
+        run_args+=(--volume /etc/localtime:/etc/localtime:ro)
+        ok "Timezone: mounted host /etc/localtime into container"
+    fi
+
     # ── Networking: host-net pod (podman) vs standalone slirp4netns (docker) ──
     if [[ "$RUNTIME" == "podman" ]]; then
         ensure_pod
