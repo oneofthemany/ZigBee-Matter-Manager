@@ -31,6 +31,7 @@ from routes.floor_plan_routes import register_floor_plan_routes
 from routes.media_routes import register_media_routes
 from routes.alert_routes import register_alert_routes
 from routes.signal_routes import register_signal_routes
+from routes.ac_routes import register_ac_routes
 
 
 
@@ -64,6 +65,7 @@ __all__ = [
     'register_floor_plan_routes',
     'register_media_routes',
     'register_api_docs_routes',
+    'register_ac_routes',
     'manager',
     'broadcast_event',
 ]

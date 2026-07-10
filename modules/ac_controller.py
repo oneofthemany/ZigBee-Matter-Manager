@@ -1,0 +1,408 @@
+"""
+ac_controller.py
+================
+Local-LAN air-conditioner control for Gree-protocol units (EcoAir and other
+Gree clones) and Midea-protocol units (Comfee and other Midea clones). No
+Home Assistant bridge — both protocols are spoken directly on the LAN using
+the same libraries the popular HA components wrap:
+
+  • gree  — `greeclimate` (async UDP, port 7000). The per-device AES key is
+            derived once by bind() and persisted to config.
+  • midea — `midea-local` (TCP, port 6444). V3 devices need a token/key pair
+            fetched once from the Midea cloud (the library ships a preset
+            anonymous account, so no personal credentials are required);
+            after that everything is local.
+
+Both libraries are optional dependencies: the module degrades to reporting
+"library not installed" rather than breaking the app.
+
+Config shape (config.yaml)
+--------------------------
+ac:
+  units:
+    - id: ac_living          # stable id, generated on add
+      name: Living Room AC
+      brand: gree | midea
+      host: 192.168.1.60
+      port: 7000             # gree default 7000, midea default 6444
+      mac: "ab12cd34ef56"    # gree only
+      key: "..."             # gree bind key / midea key
+      device_id: 12345       # midea only (appliance id)
+      token: "..."           # midea only
+      protocol: 3            # midea only (1/2/3)
+      model: ""              # midea only, optional
+      subtype: 0             # midea only, optional
+      room_id: room_abc      # optional heating/floor-plan room binding
+
+Normalised state
+----------------
+Every adapter reports/accepts the same shape:
+  { power: bool, mode: auto|cool|dry|fan|heat,
+    target_c: float, current_c: float|None, fan: auto|low|medium|high|turbo }
+Vendor-specific extras are passed through under `extras`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("zbm.ac")
+
+GREE_DEFAULT_PORT = 7000
+MIDEA_DEFAULT_PORT = 6444
+STATUS_CACHE_SEC = 5.0
+
+# Midea AC mode values as used by midealocal.devices.ac
+_MIDEA_MODES = {1: "auto", 2: "cool", 3: "dry", 4: "heat", 5: "fan"}
+_MIDEA_MODES_REV = {v: k for k, v in _MIDEA_MODES.items()}
+# Midea fan_speed: 1..100 percent, 102 = auto
+_MIDEA_FAN = {"auto": 102, "low": 40, "medium": 60, "high": 80, "turbo": 100}
+
+
+def _midea_fan_name(speed: Optional[int]) -> str:
+    if speed is None:
+        return "auto"
+    if speed == 102:
+        return "auto"
+    if speed <= 45:
+        return "low"
+    if speed <= 65:
+        return "medium"
+    if speed <= 85:
+        return "high"
+    return "turbo"
+
+
+class ACError(Exception):
+    """Raised for user-visible AC failures (bad config, offline, no lib)."""
+
+
+# ────────────────────────── Gree adapter ──────────────────────────
+
+class GreeAdapter:
+    """One Gree-protocol unit (EcoAir). All calls are async."""
+
+    def __init__(self, cfg: Dict[str, Any], on_key_learned=None):
+        self.cfg = cfg
+        self._device = None
+        self._on_key_learned = on_key_learned
+
+    async def _ensure(self):
+        if self._device is not None:
+            return self._device
+        try:
+            from greeclimate.device import Device, DeviceInfo
+        except ImportError as e:
+            raise ACError("greeclimate library not installed — "
+                          "add 'greeclimate' to requirements") from e
+        info = DeviceInfo(
+            ip=self.cfg["host"],
+            port=int(self.cfg.get("port") or GREE_DEFAULT_PORT),
+            mac=self.cfg.get("mac") or "",
+            name=self.cfg.get("name") or self.cfg.get("id"),
+        )
+        device = Device(info)
+        key = self.cfg.get("key")
+        await device.bind(key=key or None)
+        if not key and device.device_key and self._on_key_learned:
+            # First contact — persist the derived key so future binds are instant
+            try:
+                self._on_key_learned(self.cfg.get("id"), device.device_key)
+            except Exception as e:
+                logger.warning(f"gree key persist failed: {e}")
+        self._device = device
+        return device
+
+    async def status(self) -> Dict[str, Any]:
+        from greeclimate.device import Mode, FanSpeed
+        d = await self._ensure()
+        await d.update_state()
+        mode_name = None
+        try:
+            mode_name = Mode(d.mode).name.lower() if d.mode is not None else None
+        except ValueError:
+            pass
+        fan_name = None
+        try:
+            fan_name = FanSpeed(d.fan_speed).name.lower() if d.fan_speed is not None else None
+        except ValueError:
+            pass
+        return {
+            "power": bool(d.power),
+            "mode": mode_name,
+            "target_c": d.target_temperature,
+            "current_c": d.current_temperature,
+            "fan": {"mediumlow": "low", "mediumhigh": "high"}.get(fan_name, fan_name),
+            "extras": {
+                "turbo": d.turbo, "quiet": d.quiet, "xfan": d.xfan,
+                "light": d.light, "horizontal_swing": d.horizontal_swing,
+                "vertical_swing": d.vertical_swing,
+            },
+        }
+
+    async def control(self, changes: Dict[str, Any]) -> None:
+        from greeclimate.device import Mode, FanSpeed
+        d = await self._ensure()
+        await d.update_state()
+        if "power" in changes:
+            d.power = bool(changes["power"])
+        if changes.get("mode"):
+            name = str(changes["mode"]).capitalize()
+            try:
+                d.mode = Mode[name].value
+            except KeyError:
+                raise ACError(f"unknown mode '{changes['mode']}' "
+                              f"(use auto/cool/dry/fan/heat)")
+        if changes.get("target_c") is not None:
+            d.target_temperature = int(round(float(changes["target_c"])))
+        if changes.get("fan"):
+            fan_map = {"auto": "Auto", "low": "Low", "medium": "Medium",
+                       "high": "High", "turbo": "High"}
+            name = fan_map.get(str(changes["fan"]).lower())
+            if not name:
+                raise ACError(f"unknown fan '{changes['fan']}'")
+            d.fan_speed = FanSpeed[name].value
+            if str(changes["fan"]).lower() == "turbo":
+                d.turbo = True
+        for extra in ("light", "quiet", "xfan", "turbo",
+                      "horizontal_swing", "vertical_swing"):
+            if extra in changes:
+                setattr(d, extra, changes[extra])
+        await d.push_state_update()
+
+
+# ────────────────────────── Midea adapter ──────────────────────────
+
+class MideaAdapter:
+    """
+    One Midea-protocol unit (Comfee). midea-local is thread/socket based,
+    so blocking calls run in the default executor.
+    """
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self._device = None
+
+    def _ensure_sync(self):
+        if self._device is not None:
+            return self._device
+        try:
+            from midealocal.devices.ac import MideaACDevice
+            from midealocal.const import ProtocolVersion
+        except ImportError as e:
+            raise ACError("midea-local library not installed — "
+                          "add 'midea-local' to requirements") from e
+        token = self.cfg.get("token") or ""
+        key = self.cfg.get("key") or ""
+        proto = int(self.cfg.get("protocol") or 3)
+        if proto >= 3 and (not token or not key):
+            raise ACError("Midea V3 unit needs token+key — run "
+                          "POST /api/ac/units/{id}/bind first (fetches them "
+                          "via the library's preset cloud account)")
+        device = MideaACDevice(
+            name=self.cfg.get("name") or self.cfg.get("id") or "midea_ac",
+            device_id=int(self.cfg["device_id"]),
+            ip_address=self.cfg["host"],
+            port=int(self.cfg.get("port") or MIDEA_DEFAULT_PORT),
+            token=token,
+            key=key,
+            device_protocol=ProtocolVersion(proto),
+            model=str(self.cfg.get("model") or ""),
+            subtype=int(self.cfg.get("subtype") or 0),
+            customize="",
+        )
+        if not device.connect():
+            raise ACError(f"could not connect to Midea unit at "
+                          f"{self.cfg['host']}:{self.cfg.get('port') or MIDEA_DEFAULT_PORT}")
+        self._device = device
+        return device
+
+    def _status_sync(self) -> Dict[str, Any]:
+        d = self._ensure_sync()
+        try:
+            d.refresh_status()
+        except Exception as e:
+            logger.debug(f"midea refresh_status: {e}")
+        attrs = dict(d.attributes or {})
+        mode_val = attrs.get("mode")
+        power = bool(attrs.get("power"))
+        return {
+            "power": power,
+            "mode": _MIDEA_MODES.get(mode_val, "auto") if power else _MIDEA_MODES.get(mode_val),
+            "target_c": attrs.get("target_temperature"),
+            "current_c": attrs.get("indoor_temperature"),
+            "fan": _midea_fan_name(attrs.get("fan_speed")),
+            "extras": {k: v for k, v in attrs.items()
+                       if k in ("outdoor_temperature", "swing_vertical",
+                                "swing_horizontal", "eco_mode", "sleep_mode",
+                                "indirect_wind", "screen_display")},
+        }
+
+    def _control_sync(self, changes: Dict[str, Any]) -> None:
+        d = self._ensure_sync()
+        if "power" in changes:
+            d.set_attribute("power", bool(changes["power"]))
+        if changes.get("mode"):
+            mode = _MIDEA_MODES_REV.get(str(changes["mode"]).lower())
+            if mode is None:
+                raise ACError(f"unknown mode '{changes['mode']}' "
+                              f"(use auto/cool/dry/fan/heat)")
+            d.set_attribute("mode", mode)
+        if changes.get("target_c") is not None:
+            d.set_target_temperature(float(changes["target_c"]), None)
+        if changes.get("fan"):
+            speed = _MIDEA_FAN.get(str(changes["fan"]).lower())
+            if speed is None:
+                raise ACError(f"unknown fan '{changes['fan']}'")
+            d.set_attribute("fan_speed", speed)
+        for extra in ("eco_mode", "sleep_mode", "swing_vertical",
+                      "swing_horizontal", "screen_display"):
+            if extra in changes:
+                d.set_attribute(extra, changes[extra])
+
+    async def status(self) -> Dict[str, Any]:
+        return await asyncio.get_event_loop().run_in_executor(None, self._status_sync)
+
+    async def control(self, changes: Dict[str, Any]) -> None:
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._control_sync, changes)
+
+
+# ────────────────────────── controller ──────────────────────────
+
+class ACController:
+    """
+    Registry of configured units + discovery. Config persistence is the
+    caller's job (routes read/write config.yaml); the controller is handed
+    the current `ac` config block and an optional key-persist callback.
+    """
+
+    def __init__(self, ac_config: Optional[Dict[str, Any]] = None,
+                 on_key_learned=None):
+        self._on_key_learned = on_key_learned
+        self._adapters: Dict[str, Any] = {}
+        self._status_cache: Dict[str, tuple] = {}   # id → (ts, status)
+        self.reload(ac_config or {})
+
+    def reload(self, ac_config: Dict[str, Any]) -> None:
+        self.units: List[Dict[str, Any]] = list(ac_config.get("units") or [])
+        self._adapters.clear()
+        self._status_cache.clear()
+
+    def unit_config(self, unit_id: str) -> Optional[Dict[str, Any]]:
+        return next((u for u in self.units if str(u.get("id")) == str(unit_id)), None)
+
+    def _adapter(self, unit_id: str):
+        if unit_id in self._adapters:
+            return self._adapters[unit_id]
+        cfg = self.unit_config(unit_id)
+        if not cfg:
+            raise ACError(f"unknown AC unit '{unit_id}'")
+        brand = str(cfg.get("brand") or "").lower()
+        if brand == "gree":
+            adapter = GreeAdapter(cfg, on_key_learned=self._on_key_learned)
+        elif brand == "midea":
+            adapter = MideaAdapter(cfg)
+        else:
+            raise ACError(f"unit '{unit_id}' has unknown brand "
+                          f"'{cfg.get('brand')}' (use gree|midea)")
+        self._adapters[unit_id] = adapter
+        return adapter
+
+    async def status(self, unit_id: str, max_age_sec: float = STATUS_CACHE_SEC) -> Dict[str, Any]:
+        cached = self._status_cache.get(unit_id)
+        if cached and (time.monotonic() - cached[0]) < max_age_sec:
+            return cached[1]
+        cfg = self.unit_config(unit_id) or {}
+        base = {"id": unit_id, "name": cfg.get("name"),
+                "brand": cfg.get("brand"), "room_id": cfg.get("room_id")}
+        try:
+            state = await asyncio.wait_for(self._adapter(unit_id).status(), timeout=10)
+            result = {**base, "online": True, **state}
+        except (ACError, Exception) as e:            # noqa: BLE001 — degrade per unit
+            result = {**base, "online": False, "error": str(e)}
+        self._status_cache[unit_id] = (time.monotonic(), result)
+        return result
+
+    async def control(self, unit_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+        adapter = self._adapter(unit_id)
+        await asyncio.wait_for(adapter.control(changes), timeout=10)
+        self._status_cache.pop(unit_id, None)
+        return await self.status(unit_id, max_age_sec=0)
+
+    # ── discovery ────────────────────────────────────────────────
+
+    async def discover(self, wait_for: int = 4) -> Dict[str, List[Dict[str, Any]]]:
+        """Scan the LAN for both protocols; returns candidates, not config."""
+        found: Dict[str, List[Dict[str, Any]]] = {"gree": [], "midea": []}
+
+        try:
+            from greeclimate.discovery import Discovery
+            infos = await Discovery().scan(wait_for=wait_for)
+            for di in infos:
+                found["gree"].append({
+                    "brand": "gree", "host": di.ip, "port": di.port,
+                    "mac": di.mac, "name": di.name,
+                    "model": getattr(di, "model", None),
+                })
+        except ImportError:
+            found["gree_error"] = ["greeclimate not installed"]
+        except Exception as e:
+            logger.warning(f"gree discovery failed: {e}")
+            found["gree_error"] = [str(e)]
+
+        try:
+            from midealocal.discover import discover as midea_discover
+            raw = await asyncio.get_event_loop().run_in_executor(None, midea_discover)
+            for dev_id, info in (raw or {}).items():
+                found["midea"].append({
+                    "brand": "midea", "device_id": dev_id,
+                    "host": info.get("ip_address"), "port": info.get("port"),
+                    "protocol": int(info.get("protocol") or 3),
+                    "type": info.get("type"), "sn": info.get("sn"),
+                    "model": info.get("model"),
+                })
+        except ImportError:
+            found["midea_error"] = ["midea-local not installed"]
+        except Exception as e:
+            logger.warning(f"midea discovery failed: {e}")
+            found["midea_error"] = [str(e)]
+
+        return found
+
+    # ── midea cloud token fetch (one-time, then fully local) ─────
+
+    async def fetch_midea_keys(self, device_id: int,
+                               account: Optional[str] = None,
+                               password: Optional[str] = None,
+                               cloud_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Fetch token/key for a Midea V3 unit. Uses the library's preset
+        anonymous account unless the caller supplies their own.
+        """
+        try:
+            import aiohttp
+            from midealocal.cloud import get_midea_cloud, get_preset_account_cloud
+        except ImportError as e:
+            raise ACError("midea-local library not installed") from e
+
+        if not account or not password:
+            preset = get_preset_account_cloud()
+            account = preset["username"]
+            password = preset["password"]
+            cloud_name = cloud_name or preset["cloud_name"]
+
+        async with aiohttp.ClientSession() as session:
+            cloud = get_midea_cloud(cloud_name or "SmartHome", session, account, password)
+            if not await cloud.login():
+                raise ACError("Midea cloud login failed")
+            keys = await cloud.get_cloud_keys(int(device_id))
+            if not keys:
+                raise ACError(f"Midea cloud returned no keys for device {device_id}")
+            # keys: {protocol_int: {"token": ..., "key": ...}}
+            best = keys.get(3) or next(iter(keys.values()))
+            return {"token": best.get("token"), "key": best.get("key"),
+                    "available_protocols": list(keys.keys())}
