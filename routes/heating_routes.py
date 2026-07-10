@@ -1214,6 +1214,81 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             logger.error(f"Diagnostics failed for {room_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    @app.get("/api/heating/solar-impact")
+    async def solar_impact(days: int = 14,
+                           room_id: Optional[str] = None,
+                           circuit_id: Optional[str] = None):
+        """
+        Measured solar heating impact per room, from heating-off telemetry.
+
+        For each room: find heating-off windows, split them into a no-solar
+        baseline (night / facade in shade, per the clear-sky model) and
+        sunlit windows, fit Newton cooling on the baseline, then read the
+        sunlit residuals — plus heating-off warm-UP events — as measured
+        solar watts. Reports the clear-sky model for the same intervals and
+        the measured/modelled calibration ratio.
+
+        Heavier than a dashboard call (telemetry scans + fits per room) —
+        intended for an on-demand insights view, not polling.
+        """
+        try:
+            from modules.solar_impact import analyse_room
+
+            cfg = _load_config()
+            heating = cfg.get("heating") or {}
+            weather_cfg = cfg.get("weather") or {}
+            lat = weather_cfg.get("latitude")
+            lon = weather_cfg.get("longitude")
+            insulation = (heating.get("property") or {}).get("insulation", "partial")
+            floor_plan = heating.get("floor_plan")
+
+            rooms_out: List[Dict[str, Any]] = []
+            for c in _active_circuits(heating):
+                cid = str(c.get("id"))
+                if circuit_id is not None and cid != str(circuit_id):
+                    continue
+                for r in (c.get("rooms") or []):
+                    if room_id is not None and str(r.get("id")) != str(room_id):
+                        continue
+                    try:
+                        rooms_out.append(analyse_room(
+                            room=r, circuit_id=cid, lat=lat, lon=lon,
+                            days=days, insulation=insulation,
+                            floor_plan=floor_plan,
+                        ))
+                    except Exception as room_err:
+                        logger.error(f"solar-impact failed for room "
+                                     f"{r.get('id')}: {room_err}", exc_info=True)
+                        rooms_out.append({
+                            "room_id": str(r.get("id")),
+                            "room_name": r.get("name"),
+                            "status": "error",
+                            "error": str(room_err),
+                            "confidence": "none",
+                        })
+
+            measured = [r for r in rooms_out
+                        if (r.get("solar") or {}).get("measured_w_median") is not None]
+            measured.sort(key=lambda r: r["solar"]["measured_w_median"], reverse=True)
+            return {
+                "success": True,
+                "days": int(days),
+                "location_configured": lat is not None and lon is not None,
+                "rooms": rooms_out,
+                "summary": {
+                    "rooms_analysed": len(rooms_out),
+                    "rooms_with_measurement": len(measured),
+                    "highest_gain_room": (
+                        {"room_id": measured[0]["room_id"],
+                         "room_name": measured[0].get("room_name"),
+                         "measured_w_median": measured[0]["solar"]["measured_w_median"]}
+                        if measured else None),
+                },
+            }
+        except Exception as e:
+            logger.error(f"solar-impact endpoint failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     @app.get("/api/heating/rooms/{room_id}/thermal")
     async def room_thermal_legacy(room_id: str, days: int = 14):
         """
