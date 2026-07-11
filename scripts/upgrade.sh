@@ -596,7 +596,12 @@ do_build() {
         # mismatch means APP_DIR drifted from the image at some point — not
         # fatal, but worth recording.
         local running_version
-        running_version=$("$RUNTIME" exec "$CONTAINER_NAME" cat /app/VERSION 2>/dev/null | tr -d '[:space:]' || echo "")
+        # timeout: podman exec can hang indefinitely if the container runtime
+        # is wedged, and this check is informational only — never block on it.
+        # (only if coreutils `timeout` exists; otherwise run unbounded).
+        local exec_timeout=""
+        command -v timeout >/dev/null 2>&1 && exec_timeout="timeout 10"
+        running_version=$($exec_timeout "$RUNTIME" exec "$CONTAINER_NAME" cat /app/VERSION 2>/dev/null | tr -d '[:space:]' || echo "")
         if [[ -n "$running_version" && "$existing_version" != "$running_version" && "$existing_version" != "(no VERSION file)" ]]; then
             log_to_build "WARN: APP_DIR VERSION (${existing_version}) does not match running container VERSION (${running_version})"
         fi
