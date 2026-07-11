@@ -105,6 +105,24 @@ function renderUpgradeCard() {
         </div>
       </div>
 
+      <!-- Python dependencies card (recovery / feature testing) -->
+      <div class="card shadow-sm mb-3" id="depsCard">
+        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+          <span class="fw-bold"><i class="fab fa-python me-1"></i> Python Dependencies</span>
+          <button class="btn btn-outline-secondary btn-sm" id="depsRefreshBtn">
+            <i class="fas fa-sync-alt me-1"></i> Refresh
+          </button>
+        </div>
+        <div class="card-body" id="depsCardBody">
+          <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+        </div>
+        <div class="card-footer text-muted small">
+          Installs go into the <strong>running container only</strong> — the next
+          upgrade rebuilds from <code>requirements.lock</code>. Use this to recover a
+          missing dependency or trial a package without upgrading.
+        </div>
+      </div>
+
       <!-- Build log modal -->
       <div class="modal fade" id="upgradeLogModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -131,8 +149,121 @@ function renderUpgradeCard() {
 
     // Hook button
     document.getElementById('upgradeCheckBtn').addEventListener('click', () => checkForUpdates(true));
+    document.getElementById('depsRefreshBtn').addEventListener('click', () => loadDependencies());
 
     mount.dataset.rendered = 'true';
+    loadDependencies();
+}
+
+// ============================================================================
+// PYTHON DEPENDENCIES (recovery / feature testing)
+// ============================================================================
+
+function _depsEsc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadDependencies() {
+    const body = document.getElementById('depsCardBody');
+    if (!body) return;
+    try {
+        const res = await fetch('/api/system/dependencies').then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'failed');
+        renderDependencies(res);
+    } catch (e) {
+        body.innerHTML = `<div class="text-danger small">Failed to load dependencies: ${_depsEsc(e.message)}</div>`;
+    }
+}
+
+function renderDependencies(data) {
+    const body = document.getElementById('depsCardBody');
+    if (!body) return;
+    const pkgs = data.packages || [];
+    const missing = pkgs.filter(p => p.missing);
+
+    const rows = pkgs.map(p => `
+        <tr>
+          <td class="font-monospace">${_depsEsc(p.name)}</td>
+          <td class="font-monospace text-muted">${_depsEsc(p.spec)}</td>
+          <td>${p.missing
+              ? '<span class="badge bg-danger">missing</span>'
+              : `<span class="badge bg-success">${_depsEsc(p.installed)}</span>`}</td>
+        </tr>`).join('');
+
+    body.innerHTML = `
+      <div class="d-flex align-items-center gap-2 mb-2 small">
+        <span class="text-muted">Python ${_depsEsc(data.python)} ·
+          ${pkgs.length} packages in requirements.txt ·</span>
+        ${missing.length
+            ? `<span class="text-danger fw-semibold">${missing.length} missing</span>`
+            : '<span class="text-success fw-semibold">all installed</span>'}
+      </div>
+      <div style="max-height:220px;overflow:auto" class="mb-2 border rounded">
+        <table class="table table-sm small mb-0">
+          <thead><tr class="text-muted"><th>Package</th><th>Required</th><th>Installed</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        ${missing.length ? `
+        <button class="btn btn-warning btn-sm" id="depsInstallMissingBtn">
+          <i class="fas fa-download me-1"></i> Install ${missing.length} missing
+        </button>` : ''}
+        <div class="input-group input-group-sm" style="max-width:340px">
+          <input type="text" class="form-control font-monospace" id="depsCustomSpec"
+                 placeholder="package, package==1.2, package>=1.0">
+          <button class="btn btn-outline-primary" id="depsInstallCustomBtn">
+            <i class="fas fa-plus me-1"></i> Install
+          </button>
+        </div>
+      </div>
+      <pre id="depsOutput" class="small mt-2 mb-0 p-2 border rounded d-none"
+           style="max-height:200px;overflow:auto;white-space:pre-wrap"></pre>`;
+
+    document.getElementById('depsInstallMissingBtn')?.addEventListener('click',
+        () => installDependencies({ missing: true }));
+    document.getElementById('depsInstallCustomBtn')?.addEventListener('click', () => {
+        const spec = document.getElementById('depsCustomSpec')?.value?.trim();
+        if (spec) installDependencies({ packages: [spec] });
+    });
+    document.getElementById('depsCustomSpec')?.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') document.getElementById('depsInstallCustomBtn')?.click();
+    });
+}
+
+async function installDependencies(payload) {
+    const body = document.getElementById('depsCardBody');
+    const out = document.getElementById('depsOutput');
+    body?.querySelectorAll('button, input').forEach(el => { el.disabled = true; });
+    if (out) {
+        out.classList.remove('d-none');
+        out.textContent = 'Running pip install — this can take a few minutes…';
+    }
+    try {
+        const res = await fetch('/api/system/dependencies/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        }).then(r => r.json());
+        if (out) out.textContent = (res.output || res.error || '(no output)')
+            + (res.note ? `\n\n${res.note}` : '');
+        if (res.success) {
+            window.toast?.success?.('Dependencies', 'pip install finished.');
+        } else {
+            window.toast?.error?.('Install failed', res.error || 'see output');
+        }
+    } catch (e) {
+        if (out) out.textContent = `Request failed: ${e.message}`;
+        window.toast?.error?.('Install failed', e.message);
+    }
+    // Re-render the table (fresh installed versions) but keep the output pane.
+    const keptOutput = out?.textContent;
+    await loadDependencies();
+    const newOut = document.getElementById('depsOutput');
+    if (newOut && keptOutput) {
+        newOut.classList.remove('d-none');
+        newOut.textContent = keptOutput;
+    }
 }
 
 // ============================================================================

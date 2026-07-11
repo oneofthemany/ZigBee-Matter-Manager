@@ -631,6 +631,27 @@ do_build() {
     # Stamp VERSION file into the clone so the image knows its own version
     echo "$target_version" > "$work_dir/VERSION"
 
+    # ── requirements drift check ─────────────────────────────────────────────
+    # The image installs from requirements.lock; the Containerfile then tops
+    # up from requirements.txt so a stale lock can't ship a broken image.
+    # Still worth a loud warning in the build log: drift means the release
+    # forgot to regenerate the lock (uv pip compile requirements.txt ...).
+    if [[ -f "$work_dir/requirements.txt" && -f "$work_dir/requirements.lock" ]]; then
+        local drift=""
+        local pkg pkg_re
+        while IFS= read -r pkg; do
+            [[ -z "$pkg" ]] && continue
+            # PyPI names are case-insensitive with - and _ interchangeable
+            pkg_re=$(printf '%s' "$pkg" | sed 's/[-_]/[-_]/g')
+            grep -qiE "^${pkg_re}==" "$work_dir/requirements.lock" || drift="${drift} ${pkg}"
+        done < <(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$work_dir/requirements.txt" \
+                 | sed -E 's/\[[^]]*\]//; s/[<>=!~;].*//; s/[[:space:]\r]+//g' | sort -u)
+        if [[ -n "$drift" ]]; then
+            log_to_build "WARN: requirements.lock does not pin:${drift}"
+            log_to_build "WARN: the build will top-up these from requirements.txt at latest versions — regenerate requirements.lock for reproducible builds"
+        fi
+    fi
+
     # ── Appender choice: read the persisted marker from previous install ─────
     # build.sh writes ${DATA_DIR}/data/state/appender.enabled at install time
     # (containing 'true' or 'false') to record whether the user passed

@@ -580,9 +580,17 @@ WORKDIR /app
 # It already includes python-matter-server[server] (and its home-assistant-chip-core
 # native runtime), so no separate extras install is needed. The manylinux_2_31
 # platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
-COPY requirements.lock .
+#
+# The follow-up `pip install -r requirements.txt` is a self-heal top-up: when
+# the lock is complete it's a no-op, but if a release added a package to
+# requirements.txt without regenerating the lock, this installs the missing
+# package (at latest resolvable version) instead of shipping an image that
+# breaks at import time. The upgrade watcher logs a drift warning when this
+# top-up is expected to do real work.
+COPY requirements.lock requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.lock
+ && pip install --no-cache-dir -r requirements.lock \
+ && pip install --no-cache-dir -r requirements.txt
 DOCKERFILE_TOP
 
     # Part 2 — zmm_telemetry Rust appender (optional)

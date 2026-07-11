@@ -5,6 +5,7 @@ Extracted from main.py.
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 import yaml
@@ -44,6 +45,115 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
 
         asyncio.create_task(perform_restart())
         return {"success": True, "message": "Restarting application..."}
+
+    # ---- Python dependencies (recovery / feature testing) ----
+    # Installs land in the RUNNING container's site-packages and are
+    # discarded by the next upgrade (images install from requirements.lock).
+
+    _REQ_NAME_RE = re.compile(r"[<>=!~;\[]")
+    # A pip requirement spec: name[extras]<constraints>. Deliberately strict —
+    # no whitespace, no leading dash (blocks option injection), no URLs/paths.
+    _REQ_SPEC_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?"
+        r"([<>=!~]=?[A-Za-z0-9.*,<>=!~-]*)?$")
+
+    def _read_requirements():
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "requirements.txt")) as f:
+            lines = [ln.strip() for ln in f]
+        out, seen = [], set()
+        for ln in lines:
+            if not ln or ln.startswith("#"):
+                continue
+            name = _REQ_NAME_RE.split(ln, 1)[0].strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append((name, ln))
+        return out
+
+    @app.get("/api/system/dependencies")
+    async def get_dependencies():
+        """requirements.txt vs what's installed in the running container."""
+        import importlib.metadata as md
+        try:
+            reqs = _read_requirements()
+        except FileNotFoundError:
+            return {"success": False, "error": "requirements.txt not found"}
+        packages = []
+        for name, spec in reqs:
+            try:
+                installed = md.version(name)
+            except md.PackageNotFoundError:
+                installed = None
+            packages.append({"name": name, "spec": spec,
+                             "installed": installed,
+                             "missing": installed is None})
+        return {"success": True,
+                "python": sys.version.split()[0],
+                "missing_count": sum(1 for p in packages if p["missing"]),
+                "packages": packages}
+
+    @app.post("/api/system/dependencies/install")
+    async def install_dependencies(data: dict):
+        """
+        pip install into the running container.
+        body: {"missing": true}                — install every requirements.txt
+                                                 entry that isn't installed
+              {"packages": ["foo", "bar==1.2"]} — install explicit specs
+        """
+        try:
+            specs = []
+            if data.get("missing"):
+                import importlib.metadata as md
+                for name, spec in _read_requirements():
+                    try:
+                        md.version(name)
+                    except md.PackageNotFoundError:
+                        specs.append(spec)
+                if not specs:
+                    return {"success": True, "output": "Nothing missing — "
+                            "all requirements.txt packages are installed."}
+            else:
+                for s in (data.get("packages") or []):
+                    s = str(s).strip()
+                    if not s:
+                        continue
+                    if not _REQ_SPEC_RE.match(s):
+                        return {"success": False,
+                                "error": f"invalid package spec '{s}' — "
+                                         "plain pip specs only (name, name==1.2, "
+                                         "name>=1.0)"}
+                    specs.append(s)
+            if not specs:
+                return {"success": False, "error": "nothing to install"}
+
+            logger.warning(f"pip install requested via API: {specs}")
+            cmd = [sys.executable, "-m", "pip", "install",
+                   "--no-cache-dir", *specs]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return {"success": False, "error": "pip install timed out "
+                        "after 10 minutes", "packages": specs}
+            text = (out or b"").decode("utf-8", "replace")
+            tail = "\n".join(text.splitlines()[-60:])
+            ok = proc.returncode == 0
+            (logger.info if ok else logger.error)(
+                f"pip install {'succeeded' if ok else 'FAILED'} for {specs}")
+            return {"success": ok, "packages": specs, "output": tail,
+                    **({} if ok else {"error": f"pip exited {proc.returncode}"}),
+                    "note": "Installed into the running container only — "
+                            "a future upgrade rebuilds from requirements.lock. "
+                            "Restart the service if the app already tried and "
+                            "failed to import this package."}
+        except Exception as e:
+            logger.error(f"dependency install failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
     # ---- HA Status ----
 
