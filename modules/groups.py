@@ -813,8 +813,10 @@ class GroupManager:
             group_id: The group ID
             state: Command that was executed (contains state, brightness, etc.)
         """
-        if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
-            logger.warning(f"Cannot publish group {group_id} state - MQTT not available")
+        # .connected covers MQTT disabled in config (service exists but
+        # client is None) as well as broker outages — either way, skip quietly
+        if not getattr(getattr(self.service, 'mqtt', None), 'connected', False):
+            logger.debug(f"Skipping group {group_id} state publish - MQTT not connected")
             return
 
         group = self.groups.get(group_id)
@@ -1057,7 +1059,9 @@ class GroupManager:
 
     async def _publish_group_discovery(self, group_id: int, group: Dict):
         """Publish group to Home Assistant via MQTT discovery"""
-        if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
+        if not getattr(getattr(self.service, 'mqtt', None), 'connected', False):
+            return
+        if not getattr(self.service.mqtt, 'ha_discovery', True):
             return
 
         base_topic = self.service.mqtt.base_topic
@@ -1123,7 +1127,9 @@ class GroupManager:
 
     async def _unpublish_group_discovery(self, group_id: int, group_name: str):
         """Remove group from Home Assistant"""
-        if not hasattr(self.service, 'mqtt') or not self.service.mqtt:
+        if not getattr(getattr(self.service, 'mqtt', None), 'connected', False):
+            return
+        if not getattr(self.service.mqtt, 'ha_discovery', True):
             return
 
         node_id = f"group_{group_id}"
