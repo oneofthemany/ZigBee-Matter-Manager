@@ -38,8 +38,23 @@ Normalised state
 ----------------
 Every adapter reports/accepts the same shape:
   { power: bool, mode: auto|cool|dry|fan|heat,
-    target_c: float, current_c: float|None, fan: auto|low|medium|high|turbo }
-Vendor-specific extras are passed through under `extras`.
+    target_c: float, current_c: float|None, fan: auto|low|medium|high|turbo,
+    swing_v: bool, swing_h: bool,
+    extras: {toggle_name: bool, ...} }        # only supported toggles
+plus a `capabilities` block describing what the unit supports:
+  { modes: [...], fan: [...], swing_v: bool, swing_h: bool,
+    extras: [toggle names accepted by control()],
+    min_c: float|None, max_c: float|None,
+    source: b5|probed|assumed }
+Midea capabilities come from the protocol's B5 capability frames (decoded by
+midea-local during every refresh). Gree has no capability query, so support
+is inferred from which props the unit echoes back in its status response
+(`raw_properties`); an empty echo falls back to the standard Gree set.
+
+Normalised toggle names (control() keys, mapped per brand):
+  turbo, quiet, xfan, light, sleep, anion, eco, display, indirect_wind
+Vendor-specific keys (gree horizontal_swing ints, midea swing_vertical, …)
+still pass straight through for callers that want raw control.
 """
 
 from __future__ import annotations
@@ -65,7 +80,26 @@ MIDEA_CONNECT_BACKOFF_SEC = 20.0
 _MIDEA_MODES = {1: "auto", 2: "cool", 3: "dry", 4: "heat", 5: "fan"}
 _MIDEA_MODES_REV = {v: k for k, v in _MIDEA_MODES.items()}
 # Midea fan_speed: 1..100 percent, 102 = auto
-_MIDEA_FAN = {"auto": 102, "low": 40, "medium": 60, "high": 80, "turbo": 100}
+_MIDEA_FAN = {"auto": 102, "silent": 20, "low": 40, "medium": 60,
+              "high": 80, "turbo": 100}
+# Normalised toggle → midealocal attribute name
+_MIDEA_TOGGLES = {"eco": "eco_mode", "sleep": "sleep_mode",
+                  "turbo": "boost_mode", "display": "screen_display",
+                  "anion": "anion", "indirect_wind": "indirect_wind"}
+# B5 capability flag(s) that gate each toggle; None = no flag, assume yes
+_MIDEA_TOGGLE_FLAGS = {"eco": ("eco",), "sleep": None,
+                       "turbo": ("turbo_cool", "turbo_heat"),
+                       "display": ("display_control",), "anion": ("anion",),
+                       "indirect_wind": ("fn_no_wind_sense",)}
+
+# Normalised toggle → gree Device attribute (all bool-ish setters)
+_GREE_TOGGLES = {"turbo": "turbo", "quiet": "quiet", "xfan": "xfan",
+                 "light": "light", "sleep": "sleep", "anion": "anion",
+                 "eco": "power_save"}
+# Normalised toggle → gree wire prop, for the raw_properties support probe
+_GREE_TOGGLE_PROPS = {"turbo": "Tur", "quiet": "Quiet", "xfan": "Blo",
+                      "light": "Lig", "sleep": "SwhSlp", "anion": "Health",
+                      "eco": "SvSt"}
 
 
 def _midea_fan_name(speed: Optional[int]) -> str:
@@ -73,6 +107,8 @@ def _midea_fan_name(speed: Optional[int]) -> str:
         return "auto"
     if speed == 102:
         return "auto"
+    if speed <= 25:
+        return "silent"
     if speed <= 45:
         return "low"
     if speed <= 65:
@@ -168,21 +204,43 @@ class GreeAdapter:
             fan_name = FanSpeed(d.fan_speed).name.lower() if d.fan_speed is not None else None
         except ValueError:
             pass
+
+        # Gree has no capability query — treat "prop echoed back in the
+        # status response" as supported. An empty echo (shouldn't happen on
+        # a live unit) falls back to assuming the standard Gree set.
+        raw = d.raw_properties or {}
+        probed = bool(raw)
+
+        def _has(prop: str) -> bool:
+            return prop in raw if probed else True
+
+        supported = [n for n, p in _GREE_TOGGLE_PROPS.items() if _has(p)]
+        capabilities = {
+            "modes": ["auto", "cool", "dry", "fan", "heat"],
+            "fan": ["auto", "low", "medium", "high", "turbo"],
+            "swing_v": _has("SwUpDn"),
+            "swing_h": _has("SwingLfRig"),
+            "extras": supported,
+            "min_c": 16.0, "max_c": 30.0,
+            "source": "probed" if probed else "assumed",
+        }
+        extras = {n: bool(getattr(d, _GREE_TOGGLES[n], None)) for n in supported}
         return {
             "power": bool(d.power),
             "mode": mode_name,
             "target_c": d.target_temperature,
             "current_c": d.current_temperature,
             "fan": {"mediumlow": "low", "mediumhigh": "high"}.get(fan_name, fan_name),
-            "extras": {
-                "turbo": d.turbo, "quiet": d.quiet, "xfan": d.xfan,
-                "light": d.light, "horizontal_swing": d.horizontal_swing,
-                "vertical_swing": d.vertical_swing,
-            },
+            # any non-Default position (fixed or full) counts as swing "on"
+            "swing_v": bool(d.vertical_swing),
+            "swing_h": bool(d.horizontal_swing),
+            "extras": extras,
+            "capabilities": capabilities,
         }
 
     async def control(self, changes: Dict[str, Any]) -> None:
-        from greeclimate.device import Mode, FanSpeed
+        from greeclimate.device import (Mode, FanSpeed, HorizontalSwing,
+                                        VerticalSwing)
         d = await self._ensure()
         await d.update_state()
         if "power" in changes:
@@ -197,16 +255,35 @@ class GreeAdapter:
         if changes.get("target_c") is not None:
             d.target_temperature = int(round(float(changes["target_c"])))
         if changes.get("fan"):
-            fan_map = {"auto": "Auto", "low": "Low", "medium": "Medium",
-                       "high": "High", "turbo": "High"}
-            name = fan_map.get(str(changes["fan"]).lower())
+            fan_map = {"auto": "Auto", "silent": "Low", "low": "Low",
+                       "medium": "Medium", "high": "High", "turbo": "High"}
+            fan_req = str(changes["fan"]).lower()
+            name = fan_map.get(fan_req)
             if not name:
                 raise ACError(f"unknown fan '{changes['fan']}'")
             d.fan_speed = FanSpeed[name].value
-            if str(changes["fan"]).lower() == "turbo":
-                d.turbo = True
-        for extra in ("light", "quiet", "xfan", "turbo",
-                      "horizontal_swing", "vertical_swing"):
+            # turbo is a flag on top of the speed — set it for "turbo",
+            # clear it when any plain speed is picked so the unit actually
+            # drops out of turbo.
+            d.turbo = fan_req == "turbo"
+            if fan_req == "silent":
+                d.quiet = True
+        # normalised swing toggles: on = full swing, off = default position
+        if "swing_v" in changes:
+            d.vertical_swing = (VerticalSwing.FullSwing.value
+                                if changes["swing_v"] else
+                                VerticalSwing.Default.value)
+        if "swing_h" in changes:
+            d.horizontal_swing = (HorizontalSwing.FullSwing.value
+                                  if changes["swing_h"] else
+                                  HorizontalSwing.Default.value)
+        # normalised toggles (light/quiet/xfan/turbo/sleep/anion/eco)
+        for name, attr in _GREE_TOGGLES.items():
+            if name in changes:
+                setattr(d, attr, bool(changes[name]))
+        # raw vendor passthrough (positional swing ints, gree-only flags)
+        for extra in ("horizontal_swing", "vertical_swing",
+                      "power_save", "steady_heat"):
             if extra in changes:
                 setattr(d, extra, changes[extra])
         await d.push_state_update()
@@ -298,16 +375,65 @@ class MideaAdapter:
         attrs = dict(d.attributes or {})
         mode_val = attrs.get("mode")
         power = bool(attrs.get("power"))
+        capabilities = self._capabilities(d, attrs)
+        extras = {n: bool(attrs.get(_MIDEA_TOGGLES[n]))
+                  for n in capabilities["extras"]}
         return {
             "power": power,
             "mode": _MIDEA_MODES.get(mode_val, "auto") if power else _MIDEA_MODES.get(mode_val),
             "target_c": attrs.get("target_temperature"),
             "current_c": attrs.get("indoor_temperature"),
+            "outdoor_c": attrs.get("outdoor_temperature"),
             "fan": _midea_fan_name(attrs.get("fan_speed")),
-            "extras": {k: v for k, v in attrs.items()
-                       if k in ("outdoor_temperature", "swing_vertical",
-                                "swing_horizontal", "eco_mode", "sleep_mode",
-                                "indirect_wind", "screen_display")},
+            "swing_v": bool(attrs.get("swing_vertical")),
+            "swing_h": bool(attrs.get("swing_horizontal")),
+            "extras": extras,
+            "capabilities": capabilities,
+        }
+
+    @staticmethod
+    def _capabilities(d, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalised capability block from the B5 capability flags midea-local
+        decodes during refresh (device.capabilities). Units that never answer
+        the B5 query get the assumed full set.
+        """
+        b5 = dict(getattr(d, "capabilities", None) or {})
+        if b5:
+            modes = [m for m, flag in (("auto", "auto_mode"),
+                                       ("cool", "cool_mode"),
+                                       ("dry", "dry_mode"),
+                                       ("heat", "heat_mode"))
+                     if b5.get(flag)]
+            modes.append("fan")            # fan-only is always available
+            fan_flags = [f for f in ("fan_auto", "fan_silent", "fan_low",
+                                     "fan_medium", "fan_high") if f in b5]
+            if fan_flags:
+                fans = [f.removeprefix("fan_") for f in fan_flags if b5[f]]
+                fans.append("turbo")       # fan_speed=100% always accepted
+            else:
+                fans = ["auto", "low", "medium", "high", "turbo"]
+            extras = [n for n, flags in _MIDEA_TOGGLE_FLAGS.items()
+                      if flags is None or any(b5.get(f) for f in flags)]
+            swing_v = bool(b5.get("swing_vertical"))
+            swing_h = bool(b5.get("swing_horizontal"))
+            source = "b5"
+        else:
+            modes = ["auto", "cool", "dry", "fan", "heat"]
+            fans = ["auto", "low", "medium", "high", "turbo"]
+            extras = ["eco", "sleep", "turbo", "display"]
+            swing_v = swing_h = True
+            source = "assumed"
+        return {
+            "modes": [m for m in ("auto", "cool", "dry", "fan", "heat")
+                      if m in modes],
+            "fan": [f for f in ("auto", "silent", "low", "medium",
+                                "high", "turbo") if f in fans],
+            "swing_v": swing_v, "swing_h": swing_h,
+            "extras": extras,
+            "min_c": attrs.get("min_temperature"),
+            "max_c": attrs.get("max_temperature"),
+            "source": source,
         }
 
     def _control_sync(self, changes: Dict[str, Any]) -> None:
@@ -359,8 +485,18 @@ class MideaAdapter:
                     d.set_attribute("mode", mode)
             if speed is not None:
                 d.set_attribute("fan_speed", speed)
+            # normalised swing + toggles
+            if "swing_v" in changes:
+                d.set_attribute("swing_vertical", bool(changes["swing_v"]))
+            if "swing_h" in changes:
+                d.set_attribute("swing_horizontal", bool(changes["swing_h"]))
+            for name, attr in _MIDEA_TOGGLES.items():
+                if name in changes:
+                    d.set_attribute(attr, bool(changes[name]))
+            # raw vendor passthrough
             for extra in ("eco_mode", "sleep_mode", "swing_vertical",
-                          "swing_horizontal", "screen_display"):
+                          "swing_horizontal", "screen_display",
+                          "boost_mode", "indirect_wind", "anion"):
                 if extra in changes:
                     d.set_attribute(extra, changes[extra])
         self._with_reconnect(_apply)

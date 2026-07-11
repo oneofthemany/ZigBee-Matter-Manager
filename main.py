@@ -453,6 +453,15 @@ async def lifespan(app: FastAPI):
     register_upgrade_routes(app)
     logger.info("Upgrade routes registered")
 
+    # Reschedule persisted app-side AC timers (registered by ac_routes;
+    # needs the running loop, which is why it's here and not on_event)
+    ac_timers_start = getattr(app.state, "ac_timers_start", None)
+    if ac_timers_start:
+        try:
+            ac_timers_start()
+        except Exception as e:
+            logger.warning(f"AC timer restore failed: {e}")
+
     # Check if setup is needed BEFORE starting MQTT or Zigbee
     from modules.dongle_jedi import DongleJedi
     setup_status = DongleJedi.needs_setup()

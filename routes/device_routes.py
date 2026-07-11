@@ -27,6 +27,13 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         devices = zigbee_service.get_device_list()
         if matter_bridge and matter_bridge.is_connected:
             devices.extend(matter_bridge.get_device_list())
+        # WiFi AC units (gree/midea) — provider registered by ac_routes
+        ac_entries = getattr(app.state, "ac_device_entries", None)
+        if ac_entries is not None:
+            try:
+                devices.extend(await ac_entries())
+            except Exception as e:
+                logger.warning(f"AC device-list merge failed: {e}")
         return devices
 
     @app.post("/api/permit_join")
@@ -92,6 +99,16 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Rename a device."""
         matter_bridge = get_matter_bridge()
         zigbee_service = get_zigbee_service()
+
+        # WiFi AC units use their unit id as pseudo-ieee in the device list
+        ac_rename = getattr(app.state, "ac_rename_unit", None)
+        if ac_rename is not None:
+            try:
+                if ac_rename(request.ieee, request.name):
+                    return {"success": True, "ieee": request.ieee,
+                            "name": request.name}
+            except Exception as e:
+                logger.warning(f"AC rename failed: {e}")
 
         if request.ieee.startswith("matter_") and matter_bridge:
             matter_bridge.rename_device(request.ieee, request.name)

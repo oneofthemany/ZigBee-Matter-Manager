@@ -28,6 +28,11 @@ import {
 // Re-export these functions so main.js (and others) can still import them from here
 export { renderOverviewTab, renderControlTab, renderBindingTab, renderCapsTab, renderAutomationTab, renderProfileTab, saveConfig, handleOTAProgress, renderSettingsTab, applyInterviewStatusUpdate };
 export async function openDeviceModal(d) {
+    // WiFi AC units get their own capability-aware modal
+    if (d?.protocol === 'wifi' && d?.ac_unit_id) {
+        const { openAcModal } = await import('./ac-modal.js');
+        return openAcModal(d.ac_unit_id);
+    }
     // Refresh heating-controller managed set so the Control tab can disable
     // direct heating controls for managed devices. Non-blocking failure.
     await refreshHeatingManaged().catch(() => {});

@@ -730,11 +730,16 @@ window.loadAcUnits = async function () {
                   ${['', 'auto', 'cool', 'dry', 'fan', 'heat'].map(m =>
                     `<option value="${m}" ${m === (u.mode || '') ? 'selected' : ''}>${m || 'mode…'}</option>`).join('')}
                 </select>
-                <input type="number" step="0.5" min="16" max="31" class="form-control form-control-sm d-inline-block ms-1 py-0"
+                <input type="number" step="0.5"
+                       min="${u.capabilities?.min_c ?? 16}" max="${u.capabilities?.max_c ?? 31}"
+                       class="form-control form-control-sm d-inline-block ms-1 py-0"
                        style="width:70px;font-size:0.78rem" value="${u.target_c ?? 22}"
                        id="acTemp_${_acEsc(u.id)}">
                 <button class="btn btn-sm btn-outline-primary py-0 ms-1"
-                        onclick="window.acSetTemp('${_acEsc(u.id)}')">Set</button>` : `
+                        onclick="window.acSetTemp('${_acEsc(u.id)}')">Set</button>
+                <button class="btn btn-sm btn-outline-secondary py-0 ms-1" title="All controls (fan, swing, timer…)"
+                        onclick="window.openAcModal('${_acEsc(u.id)}')">
+                  <i class="fas fa-sliders-h"></i></button>` : `
                 <button class="btn btn-sm btn-outline-warning py-0"
                         onclick="window.acBind('${_acEsc(u.id)}')" title="Fetch key/token and reconnect">
                   <i class="fas fa-key me-1"></i>Bind</button>`;

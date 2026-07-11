@@ -65,6 +65,7 @@ import {
     saveConfig,
     getDeviceStateHtml
 } from './device-modal.js';
+import { openAcModal } from './ac-modal.js';
 import {
     filterLogs,
     clearLogs,
@@ -130,6 +131,7 @@ const log = zmmLog('main');
 
 // Device management
 window.openDeviceModal = openDeviceModal;
+window.openAcModal = openAcModal;
 window.renamePrompt = renamePrompt;
 window.fetchAllDevices = fetchAllDevices;
 window.filterByStatus = filterByStatus;

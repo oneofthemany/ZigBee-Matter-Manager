@@ -154,6 +154,13 @@ export function renderDeviceTable() {
             statusHtml += '<span class="badge bg-info me-1">Matter</span>';
         }
 
+        const isWifi = d.protocol === 'wifi';
+        // AC units report power/mode/temp — show it where LQI would be
+        const wifiStateHtml = isWifi && d.available !== false && d.state
+            ? `<small class="text-muted">${d.state.power ? '⏻ ' + (d.state.mode || 'on') : 'off'}${
+                  d.state.current_c != null ? ` · ${Number(d.state.current_c).toFixed(1)}°C` : ''}</small>`
+            : '<small class="text-muted">—</small>';
+
         tr.innerHTML = `
             <td class="text-center align-middle" style="font-size: 1.2rem;" data-sort-value="${d.type || ''}">${getTypeIcon(d.type)}</td>
             <td class="align-middle">
@@ -166,8 +173,8 @@ export function renderDeviceTable() {
             </td>
             <td class="align-middle">
                 <div class="font-monospace small text-muted">${
-                    d.protocol === 'matter'
-                        ? (d.ip_addresses?.length ? d.ip_addresses[0] : `Node ${d.state?.node_id || '?'}`)
+                    d.protocol === 'matter' || isWifi
+                        ? (d.ip_addresses?.length ? d.ip_addresses[0] : (isWifi ? d.ieee : `Node ${d.state?.node_id || '?'}`))
                         : d.ieee
                 }</div>
             </td>
@@ -178,13 +185,13 @@ export function renderDeviceTable() {
             <td class="align-middle small">
                 <div>${d.model || '?'}</div>
             </td>
-            <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${getLqiBadge(d.lqi)}${d.rssi != null ? `<small class="text-muted d-block">${d.rssi} dBm</small>` : ''}</td>
+            <td class="device-lqi align-middle" data-sort-value="${d.lqi !== undefined ? d.lqi : ''}">${isWifi ? wifiStateHtml : getLqiBadge(d.lqi) + (d.rssi != null ? `<small class="text-muted d-block">${d.rssi} dBm</small>` : '')}</td>
             <td class="last-seen align-middle" data-ts="${d.last_seen_ts}" data-sort-value="${d.last_seen_ts}">${timeAgo(d.last_seen_ts)}</td>
              <td class="align-middle device-status-badges" data-sort-value="${d.available !== false ? 1 : 0}">
                  ${statusHtml}
              </td>
              <td class="align-middle">
-                 <span class="badge ${d.protocol === 'matter' ? 'bg-info' : 'bg-primary'}">${d.protocol === 'matter' ? 'Matter' : 'Zigbee'}</span>
+                 <span class="badge ${d.protocol === 'matter' || isWifi ? 'bg-info' : 'bg-primary'}">${d.protocol === 'matter' ? 'Matter' : isWifi ? 'WiFi' : 'Zigbee'}</span>
              </td>
              <td class="align-middle text-end">
                 <div class="btn-group btn-group-sm">
