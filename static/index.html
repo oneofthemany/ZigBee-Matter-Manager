@@ -611,6 +611,10 @@
                                             title="Open the full-screen lyrics display (then in Chrome: ⋮ → Cast → your Nest Hub → Cast tab — free, no Cast developer account)">
                                         <i class="fas fa-closed-captioning"></i> Lyrics
                                     </button>
+                                    <button class="btn btn-outline-secondary" id="mediaTherapyBtn" onclick="window.mediaTherapyToggle()"
+                                            title="Ambient sound therapy — binaural beats, soundscapes and guided voice (plays on this device)">
+                                        <i class="fas fa-spa"></i> Therapy
+                                    </button>
                                     <button class="btn btn-outline-primary" onclick="window.mediaOpenGroupBuilder()" title="Group players">
                                         <i class="far fa-object-group"></i> Group
                                     </button>
@@ -658,6 +662,15 @@
                             <div id="mediaSearchResults"></div>
                             <div id="mediaRecent" class="mt-2"></div>
                         </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Neural therapy pane (kept mounted while hidden so audio continues) -->
+            <div class="row g-3 mt-1 d-none" id="mediaTherapyRow">
+                <div class="col-12">
+                    <div class="card shadow-sm overflow-hidden">
+                        <iframe id="mediaTherapyFrame" title="Neural therapy"
+                                style="width:100%;height:82vh;border:0;display:block;background:#0a0a0a"></iframe>
                     </div>
                 </div>
             </div>

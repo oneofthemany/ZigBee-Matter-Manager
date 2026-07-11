@@ -148,6 +148,7 @@ try:
     from modules.rotary_bindings import get_rotary_binding_manager
     from modules.weather import WeatherService
     from modules.media import MediaService
+    from modules.media.therapy_tts import TherapyTTS
     from modules.heating_advisor import HeatingAdvisor
     from modules.heating_controller import HeatingController
     from modules.heating_anomaly_watcher import HeatingAnomalyWatcher
@@ -188,6 +189,7 @@ try:
         register_floor_plan_routes,
         register_ac_routes,
         register_media_routes,
+        register_tts_routes,
         register_api_docs_routes,
         register_alert_routes,
         register_signal_routes,
@@ -305,6 +307,9 @@ set_location_provider(lambda: (weather_service.latitude, weather_service.longitu
 media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
+
+# Neural TTS for the therapy page (fronts the host's wyoming-piper container).
+therapy_tts = TherapyTTS(config=CONFIG.get("media", {}).get("therapy", {}))
 
 # Let automation steps play radio/Tidal and control players (engine is built
 # before the media service, so wire the getter in now).
@@ -1003,6 +1008,7 @@ register_backup_routes(app, get_zigbee_service)
 register_weather_routes(app, lambda: weather_service)
 register_sun_routes(app, lambda: weather_service)
 register_media_routes(app, lambda: media_service)
+register_tts_routes(app, lambda: therapy_tts)
 register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher)
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)

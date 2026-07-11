@@ -84,11 +84,26 @@ export function initMedia() {
     window.mediaRadioFavAdd = radioFavAdd;
     window.mediaRadioFavRemove = radioFavRemove;
     window.mediaSetKaraoke = setKaraoke;
+    window.mediaTherapyToggle = therapyToggle;
     window.mediaLyricsScreen = openLyricsScreen;
     window.mediaLyricsClose = closeLyricsScreen;
     window.mediaArtistPanel = artistPanel;
     window.mediaPlayTidalOn = playTidalOn;
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
+}
+
+// ── Neural therapy (ambient soundscapes SPA, served at /static/therapy/) ────
+// The iframe stays mounted once opened so a running session keeps playing
+// while it is hidden or the user browses other tabs.
+function therapyToggle() {
+    const row = document.getElementById('mediaTherapyRow');
+    const btn = document.getElementById('mediaTherapyBtn');
+    const frame = document.getElementById('mediaTherapyFrame');
+    if (!row || !frame) return;
+    const opening = row.classList.contains('d-none');
+    if (opening && !frame.src) frame.src = '/static/therapy/';
+    row.classList.toggle('d-none', !opening);
+    if (btn) btn.classList.toggle('active', opening);
 }
 
 // ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
