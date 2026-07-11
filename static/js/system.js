@@ -66,7 +66,10 @@ export async function restartSystem() {
 export async function loadSSLStatus() {
     const r = await fetch('/api/ssl/status');
     const d = await r.json();
-    document.getElementById('sslToggle').checked = d.enabled;
+    // #sslToggle lives in the dynamically rendered Config sub-tabs — it may
+    // not be in the DOM yet on early calls.
+    const toggle = document.getElementById('sslToggle');
+    if (toggle) toggle.checked = d.enabled;
 }
 
 export async function toggleSSL(enabled) {

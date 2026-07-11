@@ -262,7 +262,8 @@ mqtt_service = MQTTService(
     password=get_conf('mqtt', 'password'),
     base_topic=get_conf('mqtt', 'base_topic', 'zigbee_ha'),
     qos=get_conf('mqtt', 'qos', 0),
-    log_callback=None
+    log_callback=None,
+    ha_discovery=get_conf('homeassistant', 'enabled', True)
 )
 
 mqtt_enabled = get_conf('mqtt', 'enabled', True)  # Default True for backward compat

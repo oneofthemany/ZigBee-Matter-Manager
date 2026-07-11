@@ -30,6 +30,7 @@ class MQTTService:
             log_callback: Optional[Callable] = None,
             command_callback: Optional[Callable] = None,
             group_command_callback: Optional[Callable] = None,
+            ha_discovery: bool = True,
     ):
         self.broker = broker_host
         self.port = port
@@ -40,6 +41,12 @@ class MQTTService:
         self.log = log_callback
         self.command_callback = command_callback
         self.group_command_callback = group_command_callback
+        # Home Assistant integration (config: homeassistant.enabled). When
+        # off, no discovery configs are published (all modules' discovery
+        # funnels through publish()/publish_discovery here) and the HA
+        # command/birth topics are never subscribed. Plain state publishes
+        # on base_topic continue to work.
+        self.ha_discovery = bool(ha_discovery)
 
         # Callback for when HA comes online (birth message)
         self.ha_status_callback: Optional[Callable] = None
@@ -202,15 +209,19 @@ class MQTTService:
             await self.client.subscribe(group_pattern, qos=1)
             self._subscribed_topics.add(group_pattern)
 
-            # 3. Subscribe to HA Commands (Component based)
-            ha_command_pattern = "homeassistant/+/+/+/set"
-            await self.client.subscribe(ha_command_pattern, qos=1)
-            self._subscribed_topics.add(ha_command_pattern)
+            if self.ha_discovery:
+                # 3. Subscribe to HA Commands (Component based)
+                ha_command_pattern = "homeassistant/+/+/+/set"
+                await self.client.subscribe(ha_command_pattern, qos=1)
+                self._subscribed_topics.add(ha_command_pattern)
 
-            # 4. Subscribe to Home Assistant Status (Birth Message)
-            await self.client.subscribe("homeassistant/status", qos=1)
-            self._subscribed_topics.add("homeassistant/status")
-            logger.info("✓ Subscribed to HA Status (Birth Message)")
+                # 4. Subscribe to Home Assistant Status (Birth Message)
+                await self.client.subscribe("homeassistant/status", qos=1)
+                self._subscribed_topics.add("homeassistant/status")
+                logger.info("✓ Subscribed to HA Status (Birth Message)")
+            else:
+                logger.info("Home Assistant integration disabled — skipping "
+                            "HA command/status subscriptions")
 
         except Exception as e:
             logger.error(f"Failed to subscribe to topics: {e}")
@@ -373,6 +384,12 @@ class MQTTService:
         if qos is None:
             qos = self.default_qos
 
+        # HA disabled: drop discovery publishes (presence/zones/matter all
+        # publish their homeassistant/... configs through here)
+        if not self.ha_discovery and subtopic.startswith("homeassistant/"):
+            logger.debug(f"HA integration disabled — dropped publish to {subtopic}")
+            return False
+
         # CRITICAL FIX: QoS 0 + retain = unreliable
         # Force QoS 1 for all retained messages
         if retain and qos == 0:
@@ -400,6 +417,9 @@ class MQTTService:
             configs: List of discovery configs from handlers
             initial_state: Optional initial device state to publish after discovery
         """
+        if not self.ha_discovery:
+            logger.debug("HA integration disabled — skipping discovery publish")
+            return
         if not self._connected or not self.client:
             logger.warning("Cannot publish discovery, not connected")
             return
@@ -598,6 +618,8 @@ class MQTTService:
 
     async def remove_discovery(self, ieee: str, configs: list):
         """Remove HA discovery configs when device is removed."""
+        if not self.ha_discovery:
+            return
         if not self._connected or not self.client:
             return
 

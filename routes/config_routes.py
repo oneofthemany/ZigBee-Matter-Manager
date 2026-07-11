@@ -71,6 +71,10 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         "coordinator_type": zigbee.get("coordinator_type", ""),
                     },
                     "mqtt": cfg.get("mqtt", {}),
+                    "homeassistant": {
+                        "enabled": bool((cfg.get("homeassistant") or {})
+                                        .get("enabled", True)),
+                    },
                     "web": {k: v for k, v in cfg.get("web", {}).items() if k != "ssl"},
                     "web_ssl": cfg.get("web", {}).get("ssl", {}),
                     "logging": cfg.get("logging", {}),
@@ -108,6 +112,10 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
 
             if "mqtt" in incoming:
                 cfg.setdefault("mqtt", {}).update(incoming["mqtt"])
+            if "homeassistant" in incoming:
+                ha = incoming["homeassistant"] or {}
+                if "enabled" in ha:
+                    cfg.setdefault("homeassistant", {})["enabled"] = bool(ha["enabled"])
             if "web" in incoming:
                 cfg.setdefault("web", {}).update(incoming["web"])
             if "web_ssl" in incoming:

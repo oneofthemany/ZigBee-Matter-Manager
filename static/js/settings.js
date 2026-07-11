@@ -93,15 +93,55 @@ function renderConfigTab(config) {
     const w = config.web || {};
     const l = config.logging || {};
     const o = config.ota || {};
+    const ha = config.homeassistant || {};
 
     const el = document.getElementById('configFormBody');
     if (!el) return;
 
+    // Internal tabs — one pane per section instead of one long scroll.
+    // All panes stay in the DOM, so Save (collectFormValues) sees every field.
     el.innerHTML = `
-    <!-- ZIGBEE SECTION -->
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-broadcast-tower me-1"></i> Zigbee Radio
-    </h6>
+    <ul class="nav nav-tabs mb-3" role="tablist">
+      <li class="nav-item">
+        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#cfgPaneZigbee" type="button">
+          <i class="fas fa-broadcast-tower me-1"></i> Zigbee Radio
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneMqtt" type="button">
+          <i class="fas fa-network-wired me-1"></i> MQTT
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneHa" type="button">
+          <i class="fas fa-home me-1"></i> Home Assistant
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneWeb" type="button">
+          <i class="fas fa-globe me-1"></i> Web
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneOta" type="button">
+          <i class="fas fa-cloud-arrow-down me-1"></i> OTA
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneSsl" type="button">
+          <i class="fas fa-lock me-1"></i> HTTPS / SSL
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneBackup" type="button">
+          <i class="fas fa-database me-1"></i> Backup
+        </button>
+      </li>
+    </ul>
+    <div class="tab-content">
+
+    <!-- ZIGBEE PANE -->
+    <div class="tab-pane fade show active" id="cfgPaneZigbee">
     <div class="row g-3 mb-4">
       <div class="col-md-5">
         <label class="form-label small fw-semibold">Serial Port</label>
@@ -130,11 +170,23 @@ function renderConfigTab(config) {
                value="${z.topology_scan_interval || 120}" min="0">
       </div>
     </div>
+    </div>
 
-    <!-- MQTT SECTION -->
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-network-wired me-1"></i> MQTT Broker
-    </h6>
+    <!-- MQTT PANE -->
+    <div class="tab-pane fade" id="cfgPaneMqtt">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-network-wired me-1"></i> MQTT Broker</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_mqtt_enabled"
+               ${m.enabled !== false ? 'checked' : ''}>
+        <label class="form-check-label small text-muted" for="cfg_mqtt_enabled">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-2">
+      Publishes device state and accepts commands over MQTT. Disabling also turns off
+      everything carried over MQTT — Home Assistant discovery, presence and zone
+      publishing. Requires a service restart to apply.
+    </p>
     <div class="row g-3 mb-4">
       <div class="col-md-4">
         <label class="form-label small fw-semibold">Broker Host</label>
@@ -158,11 +210,36 @@ function renderConfigTab(config) {
         <input type="text" class="form-control" id="cfg_mqtt_base_topic" value="${m.base_topic || 'zigbee_manager'}">
       </div>
     </div>
+    </div>
 
-    <!-- WEB SECTION -->
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-globe me-1"></i> Web Interface
-    </h6>
+    <!-- HOME ASSISTANT PANE -->
+    <div class="tab-pane fade" id="cfgPaneHa">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-home me-1"></i> Home Assistant</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_ha_enabled"
+               ${ha.enabled !== false ? 'checked' : ''}>
+        <label class="form-check-label small text-muted" for="cfg_ha_enabled">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-2">
+      Exposes devices, groups, zones and presence to Home Assistant via MQTT
+      discovery (<code>homeassistant/…</code> topics) and listens for HA commands
+      and its birth message. Needs MQTT enabled to do anything. When disabled,
+      nothing is published to or read from the <code>homeassistant/</code> topics —
+      plain state publishing on the base topic keeps working.
+      Requires a service restart to apply.
+    </p>
+    ${m.enabled === false ? `
+    <div class="alert alert-warning py-2 small mb-0">
+      <i class="fas fa-exclamation-triangle me-1"></i>
+      MQTT is currently disabled — Home Assistant integration is inactive
+      regardless of this switch.
+    </div>` : ''}
+    </div>
+
+    <!-- WEB PANE -->
+    <div class="tab-pane fade" id="cfgPaneWeb">
     <div class="row g-3 mb-4">
       <div class="col-md-3">
         <label class="form-label small fw-semibold">Host</label>
@@ -181,11 +258,10 @@ function renderConfigTab(config) {
         </select>
       </div>
     </div>
+    </div>
 
-    <!-- OTA SECTION -->
-    <h6 class="text-uppercase text-muted fw-bold mb-3 mt-2 small">
-      <i class="fas fa-cloud-arrow-down me-1"></i> OTA Firmware Providers
-    </h6>
+    <!-- OTA PANE -->
+    <div class="tab-pane fade" id="cfgPaneOta">
     <p class="text-muted small mb-2">
       Extra firmware providers consulted by zigpy when checking for updates.
       The built-in defaults (IKEA, LEDVANCE, Sonoff, Inovelli, etc.) are always
@@ -228,6 +304,25 @@ function renderConfigTab(config) {
       (local directory — point <code>path</code> at it), <code>salus</code>,
       <code>thirdreality</code>, <code>sonoff</code>. Each entry is passed
       verbatim to zigpy.
+    </div>
+    </div>
+
+    <!-- SSL PANE -->
+    <div class="tab-pane fade" id="cfgPaneSsl">
+      <div class="d-flex align-items-center gap-3">
+        <div class="form-check form-switch fs-5 mb-0">
+          <input class="form-check-input" type="checkbox" id="sslToggle" onchange="toggleSSL(this.checked)">
+          <label class="form-check-label" for="sslToggle">Enable HTTPS (self-signed cert)</label>
+        </div>
+        <small class="text-muted">Applies immediately on toggle — requires service restart to take effect</small>
+      </div>
+    </div>
+
+    <!-- BACKUP PANE (filled by renderBackupRestoreSection) -->
+    <div class="tab-pane fade" id="cfgPaneBackup">
+      <div id="backupRestoreBody"></div>
+    </div>
+
     </div>
     `;
 
@@ -1501,11 +1596,15 @@ function collectFormValues() {
             network_key_hex: get('cfg_network_key') || null,  // null = don't overwrite
         },
         mqtt: {
+            enabled: document.getElementById('cfg_mqtt_enabled')?.checked ?? true,
             broker_host: get('cfg_mqtt_host'),
             broker_port: getNum('cfg_mqtt_port'),
             username: get('cfg_mqtt_username'),
             password: get('cfg_mqtt_password') || undefined,
             base_topic: get('cfg_mqtt_base_topic'),
+        },
+        homeassistant: {
+            enabled: document.getElementById('cfg_ha_enabled')?.checked ?? true,
         },
         web: {
             host: get('cfg_web_host'),
