@@ -725,7 +725,15 @@ do_build() {
     # that can act on it in time. (The polling fallback CAN run a second
     # instance — that one handles cancel pre-lock and leaves CANCEL_MARKER.)
     rm -f "$CANCEL_MARKER"
+    # Pin the pull policy (podman only; docker's --pull is a plain boolean):
+    # if the base image were re-pulled whenever upstream publishes a newer
+    # python:3.11-slim-bookworm digest, the ENTIRE layer cache below it (apt,
+    # SiLabs SDK, OTBR compile, pip wheels) would be invalidated on that
+    # upgrade. "missing" reuses the local base image while it exists.
+    local pull_args=()
+    [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=missing)
     "$RUNTIME" build \
+            "${pull_args[@]}" \
             --format docker \
             --build-arg BUILD_JOBS="$build_jobs" \
             --tag "$new_tag" \
