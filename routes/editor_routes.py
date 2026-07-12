@@ -29,6 +29,7 @@ ALLOWED_DIRS = [
     "modules/media/sources",
     "routes",
     "static",
+    "static/therapy",
     "static/js",
     "static/js/modal",
     "static/css",
