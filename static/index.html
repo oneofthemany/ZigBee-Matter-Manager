@@ -642,7 +642,7 @@
                                     <i class="fas fa-music me-1"></i> Tidal
                                 </button>
                                 <button class="btn btn-outline-primary" id="mediaTherapyBtn"
-                                        onclick="window.mediaTherapyToggle()"
+                                        onclick="window.mediaSetSource('therapy')"
                                         title="Ambient sound therapy — binaural beats, soundscapes and guided voice (plays on this device)">
                                     <i class="fas fa-spa me-1"></i> Therapy
                                 </button>
@@ -650,28 +650,26 @@
                             <span class="small text-muted" id="mediaSearchTarget"></span>
                         </div>
                         <div class="card-body">
-                            <div id="mediaTidalNotice"></div>
-                            <div class="input-group input-group-sm mb-3" id="mediaSearchBar">
-                                <input type="text" class="form-control" id="mediaSearchQuery"
-                                       placeholder="Search stations (e.g. jazz, BBC, classical)"
-                                       onkeydown="if(event.key==='Enter')window.mediaSearch()">
-                                <button class="btn btn-primary" onclick="window.mediaSearch()" aria-label="Search">
-                                    <i class="fas fa-search" aria-hidden="true"></i>
-                                </button>
+                            <div id="mediaSourceContent">
+                                <div id="mediaTidalNotice"></div>
+                                <div class="input-group input-group-sm mb-3" id="mediaSearchBar">
+                                    <input type="text" class="form-control" id="mediaSearchQuery"
+                                           placeholder="Search stations (e.g. jazz, BBC, classical)"
+                                           onkeydown="if(event.key==='Enter')window.mediaSearch()">
+                                    <button class="btn btn-primary" onclick="window.mediaSearch()" aria-label="Search">
+                                        <i class="fas fa-search" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <div id="mediaRadioFav" class="mb-3"></div>
+                                <div id="mediaSearchResults"></div>
+                                <div id="mediaRecent" class="mt-2"></div>
                             </div>
-                            <div id="mediaRadioFav" class="mb-3"></div>
-                            <div id="mediaSearchResults"></div>
-                            <div id="mediaRecent" class="mt-2"></div>
+                            <!-- Neural therapy pane (kept mounted while hidden so audio continues) -->
+                            <div id="mediaTherapyPane" class="d-none">
+                                <iframe id="mediaTherapyFrame" title="Neural therapy"
+                                        style="width:100%;height:75vh;border:0;display:block;background:#0a0a0a;border-radius:.375rem"></iframe>
+                            </div>
                         </div>
-                    </div>
-                </div>
-            </div>
-            <!-- Neural therapy pane (kept mounted while hidden so audio continues) -->
-            <div class="row g-3 mt-1 d-none" id="mediaTherapyRow">
-                <div class="col-12">
-                    <div class="card shadow-sm overflow-hidden">
-                        <iframe id="mediaTherapyFrame" title="Neural therapy"
-                                style="width:100%;height:82vh;border:0;display:block;background:#0a0a0a"></iframe>
                     </div>
                 </div>
             </div>

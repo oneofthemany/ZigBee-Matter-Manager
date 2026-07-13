@@ -12,7 +12,7 @@ const log = zmmLog('media');
 let _players = [];          // latest PlayerState snapshot
 let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
-let _searchSource = 'radio'; // 'radio' | 'tidal'
+let _searchSource = 'radio'; // 'radio' | 'tidal' | 'therapy'
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
@@ -84,26 +84,11 @@ export function initMedia() {
     window.mediaRadioFavAdd = radioFavAdd;
     window.mediaRadioFavRemove = radioFavRemove;
     window.mediaSetKaraoke = setKaraoke;
-    window.mediaTherapyToggle = therapyToggle;
     window.mediaLyricsScreen = openLyricsScreen;
     window.mediaLyricsClose = closeLyricsScreen;
     window.mediaArtistPanel = artistPanel;
     window.mediaPlayTidalOn = playTidalOn;
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
-}
-
-// ── Neural therapy (ambient soundscapes SPA, served at /static/therapy/) ────
-// The iframe stays mounted once opened so a running session keeps playing
-// while it is hidden or the user browses other tabs.
-function therapyToggle() {
-    const row = document.getElementById('mediaTherapyRow');
-    const btn = document.getElementById('mediaTherapyBtn');
-    const frame = document.getElementById('mediaTherapyFrame');
-    if (!row || !frame) return;
-    const opening = row.classList.contains('d-none');
-    if (opening && !frame.src) frame.src = '/static/therapy/';
-    row.classList.toggle('d-none', !opening);
-    if (btn) btn.classList.toggle('active', opening);
 }
 
 // ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
@@ -399,14 +384,33 @@ function requireSelected() {
 }
 
 // ---------------------------------------------------------------------------
-// Search — Radio / Tidal source switch
+// Search — Radio / Tidal / Therapy source switch
 // ---------------------------------------------------------------------------
 function setSource(src) {
     _searchSource = src;
-    document.getElementById('mediaSrcRadio')?.classList.toggle('btn-primary', src === 'radio');
-    document.getElementById('mediaSrcRadio')?.classList.toggle('btn-outline-primary', src !== 'radio');
-    document.getElementById('mediaSrcTidal')?.classList.toggle('btn-primary', src === 'tidal');
-    document.getElementById('mediaSrcTidal')?.classList.toggle('btn-outline-primary', src !== 'tidal');
+    const mark = (id, on) => {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.classList.toggle('btn-primary', on);
+        b.classList.toggle('btn-outline-primary', !on);
+    };
+    mark('mediaSrcRadio', src === 'radio');
+    mark('mediaSrcTidal', src === 'tidal');
+    mark('mediaTherapyBtn', src === 'therapy');
+
+    // Therapy swaps the whole card body for the SPA iframe. Both panes stay
+    // in the DOM so a running therapy session keeps playing while hidden.
+    const isTherapy = src === 'therapy';
+    document.getElementById('mediaSourceContent')?.classList.toggle('d-none', isTherapy);
+    document.getElementById('mediaTherapyPane')?.classList.toggle('d-none', !isTherapy);
+    if (isTherapy) {
+        const frame = document.getElementById('mediaTherapyFrame');
+        // Full path to index.html — the StaticFiles mount has no directory-index
+        // support, so '/static/therapy/' alone would return FastAPI's JSON 404.
+        if (frame && !frame.src) frame.src = '/static/therapy/index.html';
+        return;
+    }
+
     const input = document.getElementById('mediaSearchQuery');
     if (input) input.placeholder = src === 'tidal'
         ? 'Search Tidal (tracks, albums, artists, playlists)'
