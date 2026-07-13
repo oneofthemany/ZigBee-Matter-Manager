@@ -19,7 +19,7 @@ from typing import List, Optional
 
 import httpx
 
-from modules.media.models import MediaItem, RadioStation
+from modules.media.models import MediaItem, RadioStation, https_url
 from modules.media.sources.base import SourceProvider
 
 logger = logging.getLogger("modules.media.radio_browser")
@@ -118,7 +118,7 @@ class RadioBrowserSource(SourceProvider):
                 uuid=r.get("stationuuid", ""),
                 name=r.get("name", "").strip() or "Unknown station",
                 url=stream,
-                favicon=r.get("favicon", ""),
+                favicon=https_url(r.get("favicon", "")),
                 homepage=r.get("homepage", ""),
                 country=r.get("country", ""),
                 tags=r.get("tags", ""),
@@ -149,7 +149,7 @@ class RadioBrowserSource(SourceProvider):
             uuid=r.get("stationuuid", ""),
             name=r.get("name", "").strip() or "Unknown station",
             url=stream,
-            favicon=r.get("favicon", ""),
+            favicon=https_url(r.get("favicon", "")),
             homepage=r.get("homepage", ""),
             country=r.get("country", ""),
             tags=r.get("tags", ""),

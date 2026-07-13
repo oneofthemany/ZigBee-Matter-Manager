@@ -18,6 +18,8 @@ import tempfile
 import threading
 from typing import Any, Dict, List, Optional
 
+from modules.media.models import https_url
+
 logger = logging.getLogger("modules.media.favourites")
 
 # Fields we keep from a RadioStation dict. Anything else the caller sends is
@@ -43,6 +45,7 @@ class RadioFavourites:
 
     def add(self, station: Dict[str, Any]) -> Dict[str, Any]:
         clean = {k: station.get(k) for k in _FIELDS}
+        clean["favicon"] = https_url(clean.get("favicon") or "")
         uuid = (clean.get("uuid") or "").strip()
         if not uuid:
             return {"success": False, "error": "Station has no uuid"}
@@ -72,8 +75,11 @@ class RadioFavourites:
             with open(self._path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
-                return [{k: d.get(k) for k in _FIELDS}
-                        for d in data if isinstance(d, dict) and d.get("uuid")]
+                items = [{k: d.get(k) for k in _FIELDS}
+                         for d in data if isinstance(d, dict) and d.get("uuid")]
+                for s in items:  # favourites saved before the https upgrade
+                    s["favicon"] = https_url(s.get("favicon") or "")
+                return items
         except FileNotFoundError:
             pass
         except Exception as e:

@@ -12,6 +12,13 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 
 
+def https_url(url: str) -> str:
+    """Upgrade an ``http://`` asset URL to ``https://``. The UI is served over
+    HTTPS, so plain-http artwork/favicon URLs trigger mixed-content console
+    noise; browsers auto-upgrade them anyway, so this is behaviour-neutral."""
+    return "https://" + url[7:] if url and url.startswith("http://") else url
+
+
 class PlaybackState(str, Enum):
     IDLE = "idle"
     PLAYING = "playing"
