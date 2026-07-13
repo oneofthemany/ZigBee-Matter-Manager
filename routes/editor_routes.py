@@ -30,6 +30,7 @@ ALLOWED_DIRS = [
     "routes",
     "static",
     "static/therapy",
+    "static/therapy/assets",
     "static/js",
     "static/js/modal",
     "static/css",
