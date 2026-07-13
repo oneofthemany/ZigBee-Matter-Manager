@@ -8,10 +8,15 @@
  */
 const log = zmmLog('media');
 
+import { confirmDialog } from './dialogs.js';
 
 let _players = [];          // latest PlayerState snapshot
 let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
+let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sync'
+let _syncGroups = [];       // saved speaker-sync groups (from /api/media/sync/groups)
+let _syncStatus = null;     // last /api/media/sync/status snapshot
+let _syncTimer = null;      // stats poll while the sync pane is open
 let _searchSource = 'radio'; // 'radio' | 'tidal' | 'therapy'
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
@@ -70,6 +75,13 @@ export function initMedia() {
     window.mediaSelect = selectPlayer;
     window.mediaUngroup = ungroup;
     window.mediaSubmitGroup = submitGroup;
+    // Speaker-sync groups (group-builder sub-tab)
+    window.mediaGroupTab = switchGroupTab;
+    window.mediaSyncCreate = syncCreateGroup;
+    window.mediaSyncDelete = syncDeleteGroup;
+    window.mediaSyncStart = syncStartGroup;
+    window.mediaSyncStop = syncStopSession;
+    window.mediaSyncTrim = syncSetTrim;
     // Phase 2
     window.mediaSetSource = setSource;
     window.mediaSearch = doSearch;
@@ -985,23 +997,53 @@ function spinner() { return '<div class="text-muted small py-2"><i class="fas fa
 function warn(m) { return `<div class="alert alert-warning mb-0">${esc(m)}</div>`; }
 
 // ---------------------------------------------------------------------------
-// Group builder (WiiM native multiroom)
+// Group builder — two sub-tabs: WiiM native multiroom | speaker-sync groups
 // ---------------------------------------------------------------------------
 function toggleGroupBuilder() {
     _groupBuilderOpen = !_groupBuilderOpen;
     if (_groupBuilderOpen) renderGroupBuilder();
-    else renderPlayers();
+    else { _stopSyncPoll(); renderPlayers(); }
+}
+
+function switchGroupTab(tab) {
+    _groupTab = tab;
+    renderGroupBuilder();
 }
 
 function renderGroupBuilder() {
     const el = document.getElementById('mediaPlayers');
     if (!el) return;
+    el.innerHTML = `
+      <ul class="nav nav-pills mb-2">
+        <li class="nav-item">
+          <button class="nav-link py-1 px-3 ${_groupTab === 'wiim' ? 'active' : ''}"
+                  onclick="window.mediaGroupTab('wiim')">
+            <i class="fas fa-volume-up me-1"></i>WiiM multiroom</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link py-1 px-3 ${_groupTab === 'sync' ? 'active' : ''}"
+                  onclick="window.mediaGroupTab('sync')">
+            <i class="fab fa-chromecast me-1"></i>Speaker sync <span class="badge bg-warning text-dark ms-1">beta</span></button>
+        </li>
+        <li class="nav-item ms-auto">
+          <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">
+            <i class="fas fa-xmark me-1"></i>Close</button>
+        </li>
+      </ul>
+      <div id="mediaGroupPane"></div>`;
+    if (_groupTab === 'wiim') { _stopSyncPoll(); renderWiimBuilder(); }
+    else renderSyncPane();
+}
+
+function renderWiimBuilder() {
+    const el = document.getElementById('mediaGroupPane');
+    if (!el) return;
     const wiim = _players.filter(p => p.provider === 'wiim' && p.available && !p.is_group);
     if (wiim.length < 2) {
-        el.innerHTML = `<div class="alert alert-info">
+        el.innerHTML = `<div class="alert alert-info mb-0">
             Native grouping here needs at least two available WiiM players.
-            <div class="small mt-1">Cast speaker groups are created in the Google Home app and appear automatically.</div>
-            <button class="btn btn-sm btn-secondary mt-2" onclick="window.mediaOpenGroupBuilder()">Back</button></div>`;
+            <div class="small mt-1">Google Cast speakers: use the <em>Speaker sync</em> tab
+            (no Google Home needed), or a Google-Home group (appears automatically).</div></div>`;
         return;
     }
     el.innerHTML = `
@@ -1021,8 +1063,180 @@ function renderGroupBuilder() {
         </div>`).join('')}
       <div class="mt-3 d-flex gap-2">
         <button class="btn btn-sm btn-primary" onclick="window.mediaSubmitGroup()">Create group</button>
-        <button class="btn btn-sm btn-secondary" onclick="window.mediaOpenGroupBuilder()">Cancel</button>
       </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Speaker-sync groups (Cast multi-speaker sync without Google Home)
+// ---------------------------------------------------------------------------
+function _stopSyncPoll() {
+    if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+}
+
+async function _syncFetch() {
+    const [g, s] = await Promise.all([
+        fetch('/api/media/sync/groups').then(r => r.json()),
+        fetch('/api/media/sync/status').then(r => r.json()),
+    ]);
+    _syncGroups = g.groups || [];
+    _syncStatus = s;
+}
+
+function _syncDeviceInfo(pid) {
+    return ((_syncStatus || {}).devices || []).find(d => d.player_id === pid);
+}
+
+function _syncStatLine(st) {
+    const s = st && st.stats;
+    if (!s || s.offset_ms == null) return '';
+    return `offset ${s.offset_ms} ms · rtt ${s.rtt_ms} ms · late ${s.late} · resyncs ${s.resyncs}`;
+}
+
+function _syncMemberRow(m, groupActive) {
+    const st = groupActive ? _syncDeviceInfo(m.player_id) : null;
+    const pill = !groupActive ? ''
+        : (st && st.connected
+            ? '<span class="badge bg-success ms-1">connected</span>'
+            : '<span class="badge bg-secondary ms-1">launching…</span>');
+    return `
+      <div class="border-top pt-2 mt-2">
+        <div class="d-flex align-items-center small">
+          <span class="fw-semibold">${esc(m.name)}</span>
+          <span id="syncpill-${esc(m.player_id)}">${pill}</span>
+          <span class="ms-auto text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
+        </div>
+        <input type="range" class="form-range" min="-500" max="500" step="5"
+               value="${m.trim_ms}"
+               oninput="document.getElementById('synctrimlbl-${esc(m.player_id)}').textContent = this.value + ' ms'"
+               onchange="window.mediaSyncTrim('${esc(m.player_id)}', this.value)">
+        <div class="small text-muted" id="syncstat-${esc(m.player_id)}">${_syncStatLine(st)}</div>
+      </div>`;
+}
+
+async function renderSyncPane() {
+    const el = document.getElementById('mediaGroupPane');
+    if (!el) return;
+    el.innerHTML = '<div class="text-muted small">Loading…</div>';
+    try { await _syncFetch(); }
+    catch (e) { el.innerHTML = warn('Could not load sync groups: ' + e.message); return; }
+
+    const disabled = !_syncStatus || !!_syncStatus.error;
+    const unregistered = !disabled && !_syncStatus.configured;
+    const casts = _players.filter(p => p.provider === 'cast' && !p.is_group);
+    const running = !disabled && _syncStatus.running;
+
+    const banner = disabled
+        ? `<div class="alert alert-info small py-2">Speaker sync is disabled — enable it under
+             <strong>Settings → Speakers</strong> (one-time Cast receiver registration).</div>`
+        : unregistered
+            ? `<div class="alert alert-warning small py-2">Almost there — the sync receiver App ID
+                 is missing. Finish registration under <strong>Settings → Speakers</strong>.
+                 You can already define groups below.</div>`
+            : '';
+
+    const groupCards = _syncGroups.map(g => `
+      <div class="card mb-2">
+        <div class="card-body py-2">
+          <div class="d-flex align-items-center gap-2">
+            <span class="fw-semibold">${esc(g.name)}</span>
+            <span class="badge bg-light text-muted border">${g.members.length} speakers</span>
+            <span class="ms-auto"></span>
+            ${g.active
+                ? `<button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
+                     <i class="fas fa-stop me-1"></i>Stop test</button>`
+                : `<button class="btn btn-sm btn-outline-primary" ${running || unregistered || disabled ? 'disabled' : ''}
+                           onclick="window.mediaSyncStart('${esc(g.id)}')"
+                           title="Play the sync test signal (clicks every 2 s) on all members">
+                     <i class="fas fa-play me-1"></i>Test</button>`}
+            <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
+                    title="Delete group"><i class="far fa-trash-alt"></i></button>
+          </div>
+          ${g.active ? '<div class="small text-muted mt-1">Stand between the speakers and drag each trim until the clicks land together. Positive = plays later.</div>' : ''}
+          ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
+        </div>
+      </div>`).join('');
+
+    el.innerHTML = `
+      ${banner}
+      <p class="small text-muted mb-2">Sync groups play the same audio on several Cast speakers,
+        clock-aligned by ZigBee Manager — no Google-Home group required. Per-speaker trim (±ms)
+        is remembered per device.</p>
+      ${groupCards || '<div class="text-muted small mb-2">No sync groups yet — create one below.</div>'}
+      <div class="card">
+        <div class="card-body py-2">
+          <div class="fw-semibold small mb-2"><i class="fas fa-plus-circle me-1"></i> New sync group</div>
+          ${casts.length < 2
+              ? '<div class="text-muted small">Needs at least two discovered Cast speakers.</div>'
+              : `
+          <input type="text" class="form-control form-control-sm mb-2" id="syncGroupName"
+                 placeholder="Group name, e.g. Downstairs">
+          ${casts.map(p => `
+            <div class="form-check">
+              <input class="form-check-input sync-member" type="checkbox" value="${esc(p.player_id)}"
+                     id="sm_${esc(p.player_id)}">
+              <label class="form-check-label small" for="sm_${esc(p.player_id)}">${esc(p.name)}</label>
+            </div>`).join('')}
+          <button class="btn btn-sm btn-primary mt-2" onclick="window.mediaSyncCreate()">Create sync group</button>`}
+        </div>
+      </div>`;
+
+    // Poll while a session runs so pills + stats stay live (in place — a full
+    // re-render would fight an in-progress trim drag).
+    _stopSyncPoll();
+    if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
+}
+
+async function refreshSyncStats() {
+    try {
+        const prevRunning = !!(_syncStatus && _syncStatus.running);
+        _syncStatus = await (await fetch('/api/media/sync/status')).json();
+        if (!!_syncStatus.running !== prevRunning) { renderSyncPane(); return; }
+        for (const d of (_syncStatus.devices || [])) {
+            const pill = document.getElementById('syncpill-' + d.player_id);
+            if (pill) pill.innerHTML = d.connected
+                ? '<span class="badge bg-success ms-1">connected</span>'
+                : '<span class="badge bg-secondary ms-1">launching…</span>';
+            const stat = document.getElementById('syncstat-' + d.player_id);
+            if (stat) stat.textContent = _syncStatLine(d);
+        }
+    } catch (e) { /* transient — next tick */ }
+}
+
+async function syncCreateGroup() {
+    const name = document.getElementById('syncGroupName')?.value?.trim();
+    const members = Array.from(document.querySelectorAll('.sync-member:checked')).map(c => c.value);
+    if (!name) { toast('Give the group a name', 'warning'); return; }
+    if (members.length < 2) { toast('Pick at least two speakers', 'warning'); return; }
+    const r = await apiPost('/api/media/sync/groups', { name, members });
+    if (!r.success) { toast(r.error || 'Could not save group', 'error'); return; }
+    toast('Sync group saved', 'success');
+    renderSyncPane();
+}
+
+async function syncDeleteGroup(gid) {
+    const g = _syncGroups.find(x => x.id === gid);
+    const ok = await confirmDialog(`Delete sync group “${g ? g.name : gid}”?`);
+    if (!ok) return;
+    const r = await apiPost('/api/media/sync/groups/delete', { id: gid });
+    if (!r.success) toast(r.error || 'Delete failed', 'error');
+    renderSyncPane();
+}
+
+async function syncStartGroup(gid) {
+    const r = await apiPost('/api/media/sync/start', { group_id: gid });
+    if (!r.success) { toast(r.error || 'Start failed', 'error'); return; }
+    toast('Sync test starting — speakers join within a few seconds', 'success');
+    renderSyncPane();
+}
+
+async function syncStopSession() {
+    await apiPost('/api/media/sync/stop', {});
+    renderSyncPane();
+}
+
+async function syncSetTrim(pid, val) {
+    const r = await apiPost('/api/media/sync/trim', { player_id: pid, trim_ms: Number(val) });
+    if (!r.success) toast(r.error || 'Trim failed', 'error');
 }
 
 async function submitGroup() {

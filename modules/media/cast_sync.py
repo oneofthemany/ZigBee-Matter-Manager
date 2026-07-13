@@ -115,7 +115,13 @@ class CastSyncPoc:
         self.http_port = int(cfg.get("http_port", 8010))
         self.app_id = (cfg.get("app_id") or "").strip()
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
-        self._trims: Dict[str, int] = self._load_trims()
+        self._trims: Dict[str, int] = {
+            k: int(v) for k, v in self._read_json(self._trims_file).items()}
+        # Named sync groups (built in the Media tab's group builder):
+        # gid -> {"name": str, "members": [player_id, ...]}
+        self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
+        self._groups: Dict[str, dict] = self._read_json(self._groups_file)
+        self._active_group: str = ""               # gid of the running session
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -156,13 +162,22 @@ class CastSyncPoc:
     # ------------------------------------------------------------------
     # Session control (called from routes)
     # ------------------------------------------------------------------
-    async def start_session(self, player_ids: List[str]) -> dict:
+    async def start_session(self, player_ids: Optional[List[str]] = None,
+                            group_id: str = "") -> dict:
         if not self.app_id:
             return {"success": False,
                     "error": "media.cast.sync.app_id not set — register the "
                              "receiver in the Cast console first (see static/cast/README.md)"}
+        if group_id:
+            group = self._groups.get(group_id)
+            if not group:
+                return {"success": False, "error": "Unknown sync group"}
+            player_ids = group.get("members", [])
+        if not player_ids:
+            return {"success": False, "error": "No players to start"}
         if self.running:
             await self.stop_session()
+        self._active_group = group_id
 
         self._epoch = time.monotonic()
         self._buffer = []
@@ -209,6 +224,7 @@ class CastSyncPoc:
                 except Exception as e:
                     logger.debug(f"quit_app failed for {info['player_id']}: {e}")
         self._pending = {}
+        self._active_group = ""
         logger.info("Cast sync session stopped")
         return {"success": True}
 
@@ -228,6 +244,7 @@ class CastSyncPoc:
             "running": self.running,
             "configured": bool(self.app_id),
             "http_port": self.http_port,
+            "group_id": self._active_group,
             "elapsed_s": (time.monotonic() - self._epoch) if self.running else 0,
             "devices": devices,
         }
@@ -235,7 +252,7 @@ class CastSyncPoc:
     async def set_trim(self, player_id: str, trim_ms: int) -> dict:
         trim_ms = max(-2000, min(2000, int(trim_ms)))
         self._trims[player_id] = trim_ms
-        self._save_trims()
+        self._write_json(self._trims_file, self._trims)
         for r in self._receivers.values():
             if r.player_id == player_id:
                 try:
@@ -243,6 +260,48 @@ class CastSyncPoc:
                 except Exception as e:
                     logger.debug(f"trim push failed for {player_id}: {e}")
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
+
+    # ------------------------------------------------------------------
+    # Named groups (managed from the Media tab's group builder)
+    # ------------------------------------------------------------------
+    def list_groups(self) -> dict:
+        groups = []
+        for gid, g in self._groups.items():
+            groups.append({
+                "id": gid,
+                "name": g.get("name", gid),
+                "members": [{
+                    "player_id": pid,
+                    "name": self._player_name(pid),
+                    "trim_ms": self._trims.get(pid, 0),
+                } for pid in g.get("members", [])],
+                "active": self.running and self._active_group == gid,
+            })
+        return {"success": True, "groups": groups}
+
+    def save_group(self, name: str, members: List[str],
+                   group_id: str = "") -> dict:
+        name = (name or "").strip()
+        members = [m for m in (members or []) if m.startswith("cast:")]
+        if not name:
+            return {"success": False, "error": "Group needs a name"}
+        if len(members) < 2:
+            return {"success": False, "error": "Pick at least two cast speakers"}
+        gid = group_id or uuid_mod.uuid4().hex[:8]
+        if group_id and group_id not in self._groups:
+            return {"success": False, "error": "Unknown sync group"}
+        self._groups[gid] = {"name": name, "members": members}
+        self._write_json(self._groups_file, self._groups)
+        return {"success": True, "id": gid}
+
+    async def delete_group(self, group_id: str) -> dict:
+        if group_id not in self._groups:
+            return {"success": False, "error": "Unknown sync group"}
+        if self.running and self._active_group == group_id:
+            await self.stop_session()
+        self._groups.pop(group_id)
+        self._write_json(self._groups_file, self._groups)
+        return {"success": True}
 
     # ------------------------------------------------------------------
     # Device launch
@@ -381,26 +440,28 @@ class CastSyncPoc:
         return app
 
     # ------------------------------------------------------------------
-    # Trim persistence
+    # JSON persistence (trims + groups)
     # ------------------------------------------------------------------
-    def _load_trims(self) -> Dict[str, int]:
+    @staticmethod
+    def _read_json(path: str) -> dict:
         try:
-            with open(self._trims_file, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            return {k: int(v) for k, v in d.items()} if isinstance(d, dict) else {}
+            return d if isinstance(d, dict) else {}
         except FileNotFoundError:
             return {}
         except Exception as e:
-            logger.warning(f"Could not read {self._trims_file}: {e}")
+            logger.warning(f"Could not read {path}: {e}")
             return {}
 
-    def _save_trims(self) -> None:
+    @staticmethod
+    def _write_json(path: str, obj: dict) -> None:
         try:
-            d = os.path.dirname(self._trims_file) or "."
+            d = os.path.dirname(path) or "."
             os.makedirs(d, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self._trims, f, indent=2)
-            os.replace(tmp, self._trims_file)
+                json.dump(obj, f, indent=2)
+            os.replace(tmp, path)
         except Exception as e:
-            logger.error(f"Could not write {self._trims_file}: {e}")
+            logger.error(f"Could not write {path}: {e}")

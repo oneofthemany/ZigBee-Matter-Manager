@@ -69,33 +69,29 @@ devices whose serials are registered in the console.
 
 ## One-time setup
 
-1. In `config/config.yaml` enable the listener and restart:
-   ```yaml
-   media:
-     cast:
-       sync:
-         enabled: true
-         http_port: 8010
-   ```
-   Check `http://<zmm-host>:8010/health` answers on the LAN (if ZMM's podman
+All of this is driven from **Settings → Speakers** in the UI (it edits
+`media.cast.sync` in config.yaml for you):
+
+1. Enable Speaker Sync, *Save & Restart*, and check
+   `http://<zmm-host>:8010/health` answers on the LAN (if ZMM's podman
    container is not on host networking, publish the port).
 
 2. In the [Cast developer console](https://cast.google.com/publish):
    **Add new application → Custom Receiver**, URL
-   `http://<zmm-host>:8010/cast/sync_receiver.html`. Don't publish it.
-   Make sure each test speaker's **serial number is registered** for
-   development (same step you did for the lyrics receiver), then reboot the
-   speakers once.
+   `http://<zmm-host>:8010/cast/sync_receiver.html` (the Speakers tab shows a
+   copy-ready URL). Don't publish it. Make sure each test speaker's **serial
+   number is registered** for development (same step you did for the lyrics
+   receiver), then reboot the speakers once.
 
-3. Put the generated Application ID into `media.cast.sync.app_id` and restart.
+3. Paste the generated Application ID into the Speakers tab and *Save & Restart*.
 
 ## Running the experiment
 
-Open `https://<zmm-host>:8000/static/cast/sync_test.html`, tick two speakers,
-**Start session**. Both should begin the pad + click test signal within a few
-seconds. Stand between them and drag each trim slider (5 ms steps) until the
-clicks fuse into one. Watch the per-device stats (clock offset, RTT, Web Audio
-output latency, late/dropped chunks) — also available raw from
+In **Media → Group → Speaker sync**: create a sync group (two or more Cast
+speakers), hit **Test**. Both should begin the pad + click test signal within
+a few seconds. Stand between them and drag each speaker's trim slider (5 ms
+steps) until the clicks fuse into one. Per-device stats (clock offset, RTT,
+late/dropped chunks) refresh live — also available raw from
 `GET /api/media/sync/status`.
 
 What a *good* result looks like: clicks indistinguishable (≲10 ms), stable

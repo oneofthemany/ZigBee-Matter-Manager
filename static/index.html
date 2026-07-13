@@ -231,6 +231,11 @@
                     </button>
                 </li>
                 <li class="nav-item">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSpeakers">
+                        <i class="fas fa-volume-up me-1"></i> Speakers
+                    </button>
+                </li>
+                <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsNetwork">
                         <i class="fas fa-network-wired me-1"></i> Network
                     </button>
@@ -559,6 +564,13 @@
                 </div>
 
                 <!-- ------------------------------------------------------------------ -->
+                <!-- SPEAKERS TAB  (speaker-sync enablement + receiver registration)      -->
+                <!-- ------------------------------------------------------------------ -->
+                <div class="tab-pane fade p-3" id="settingsSpeakers">
+                    <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading speaker settings…</div>
+                </div>
+
+                <!-- ------------------------------------------------------------------ -->
                 <!-- AI TAB  (host assessment · provider config · local Ollama)           -->
                 <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsAI">
@@ -625,7 +637,8 @@
                         </div>
                         <div class="card-footer text-muted small">
                             <i class="fas fa-info-circle me-1"></i>
-                            Cast speaker groups are managed in the Google Home app and appear here automatically.
+                            Google-Home cast groups appear here automatically. ZigBee Manager's own
+                            sync groups (no Google Home needed) are built under <em>Group → Speaker sync</em>.
                             WiiM players can be grouped here.
                         </div>
                     </div>

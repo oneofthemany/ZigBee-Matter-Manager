@@ -158,6 +158,17 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         cast_cfg["lyrics_app_id"] = str(cast_in.get("lyrics_app_id") or "").strip()
                     if "karaoke" in cast_in:
                         cast_cfg["karaoke"] = bool(cast_in["karaoke"])
+                    if "sync" in cast_in:
+                        # Speaker-sync PoC (Settings → Speakers tab saves only
+                        # this slice, so merge key-wise like everything else).
+                        sync_in = cast_in["sync"] or {}
+                        sync_cfg = cast_cfg.setdefault("sync", {})
+                        if "enabled" in sync_in:
+                            sync_cfg["enabled"] = bool(sync_in["enabled"])
+                        if sync_in.get("http_port"):
+                            sync_cfg["http_port"] = int(sync_in["http_port"])
+                        if "app_id" in sync_in:
+                            sync_cfg["app_id"] = str(sync_in.get("app_id") or "").strip()
                 if "tts" in m:
                     tts_in = m["tts"] or {}
                     tts_cfg = media_cfg.setdefault("tts", {})

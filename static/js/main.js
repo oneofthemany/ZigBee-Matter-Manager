@@ -24,6 +24,9 @@ initMedia();
 import { initAISettingsTab } from './ai-automations.js';
 initAISettingsTab();
 
+import { initSpeakerSyncTab } from './speaker-sync.js';
+initSpeakerSyncTab();
+
 import { initNotifications } from './notifications.js';
 initNotifications();
 
