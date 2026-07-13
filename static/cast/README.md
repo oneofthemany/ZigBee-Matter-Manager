@@ -70,7 +70,8 @@ devices whose serials are registered in the console.
 ## One-time setup
 
 All of this is driven from **Settings → Speakers** in the UI (it edits
-`media.cast.sync` in config.yaml for you):
+`media.cast.sync` in config.yaml for you). Requires a Google Cast developer
+account (one-time $5 registration fee).
 
 1. Enable Speaker Sync, *Save & Restart*, and check
    `http://<zmm-host>:8010/health` answers on the LAN (if ZMM's podman

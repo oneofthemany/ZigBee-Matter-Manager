@@ -111,7 +111,8 @@ async function render() {
             answers on the LAN:
             <code>http://${esc(location.hostname)}:${Number(_cfg.http_port) || 8010}/health</code></li>
           <li class="mb-2">In the <a href="https://cast.google.com/publish" target="_blank"
-              rel="noopener">Cast developer console <i class="fas fa-external-link-alt fa-xs"></i></a>:
+              rel="noopener">Cast developer console <i class="fas fa-external-link-alt fa-xs"></i></a>
+            (one-time $5 developer registration):
             <strong>Add new application → Custom Receiver</strong> and paste this URL
             (don't publish it):
             <div class="input-group input-group-sm mt-1" style="max-width: 480px">
