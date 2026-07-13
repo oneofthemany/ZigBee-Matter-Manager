@@ -282,8 +282,14 @@ export default function MusicTherapyServer() {
   const [speechInterval, setSpeechInterval] = useState(45);
   const [currentMsg, setCurrentMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
-  const [voiceGender, setVoiceGender] = useState("female");
-  const [region, setRegion] = useState("en-US");
+  // Voice preferences persist across sessions (localStorage); a stored region
+  // from an older build that we no longer offer falls back to en-US.
+  const [voiceGender, setVoiceGender] = useState(() =>
+    localStorage.getItem("zmm-tts-gender") === "male" ? "male" : "female");
+  const [region, setRegion] = useState(() => {
+    const saved = localStorage.getItem("zmm-tts-region");
+    return REGIONS.some(r => r.code === saved) ? saved : "en-US";
+  });
   const [customMessages, setCustomMessages] = useState(DEFAULT_MESSAGES);
   const [newLine, setNewLine] = useState("");
   const [tab, setTab] = useState("controls");
@@ -292,7 +298,8 @@ export default function MusicTherapyServer() {
   const [ttsLoading, setTtsLoading] = useState(false);
   const [piperConnected, setPiperConnected] = useState(false);
   const [piperVoices, setPiperVoices] = useState([]);
-  const [piperVoiceOverride, setPiperVoiceOverride] = useState("");
+  const [piperVoiceOverride, setPiperVoiceOverride] = useState(() =>
+    localStorage.getItem("zmm-tts-voice") || "");
   const [ttsSetup, setTtsSetup] = useState(null);   // /api/tts/setup/status
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupMsg, setSetupMsg] = useState("");
@@ -319,6 +326,11 @@ export default function MusicTherapyServer() {
   useEffect(() => { regionRef.current = region; }, [region]);
   useEffect(() => { voiceGenderRef.current = voiceGender; }, [voiceGender]);
   useEffect(() => { piperVoiceOverrideRef.current = piperVoiceOverride; }, [piperVoiceOverride]);
+
+  // Retain voice preferences
+  useEffect(() => { localStorage.setItem("zmm-tts-region", region); }, [region]);
+  useEffect(() => { localStorage.setItem("zmm-tts-gender", voiceGender); }, [voiceGender]);
+  useEffect(() => { localStorage.setItem("zmm-tts-voice", piperVoiceOverride); }, [piperVoiceOverride]);
 
   // Check the TTS engine on mount (and again after a model download)
   const checkTts = useCallback(() => {
@@ -748,14 +760,25 @@ export default function MusicTherapyServer() {
             </div>
           </div>
 
-          {/* Voice picker */}
-          {piperVoices.length > 0 && <div style={{ marginBottom: 14 }}>
-            <span style={{ ...SS.label, display: "block", marginBottom: 8 }}>VOICE</span>
-            <select value={piperVoiceOverride} onChange={e => setPiperVoiceOverride(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e0ddd5", ...SS.mono, fontSize: 10, cursor: "pointer" }}>
-              <option value="" style={{ background: "#1a1a1a" }}>Auto (gender + language)</option>
-              {piperVoices.map((v, i) => <option key={i} value={typeof v === 'string' ? v : v.id} style={{ background: "#1a1a1a" }}>{typeof v === 'string' ? v : `${v.label || v.id} — ${v.lang || ''}`}</option>)}
-            </select>
-          </div>}
+          {/* Voice picker — filtered to the chosen language + gender (falls
+              back to any gender when the language has no match, e.g. French) */}
+          {piperVoices.length > 0 && (() => {
+            const catalog = piperVoices.filter(v => typeof v !== 'string');
+            const inLang = catalog.filter(v => v.lang === region);
+            const matched = inLang.filter(v => v.gender === voiceGender);
+            const shown = matched.length ? matched : inLang.length ? inLang : catalog;
+            const relaxed = !matched.length && inLang.length > 0;
+            return <div style={{ marginBottom: 14 }}>
+              <span style={{ ...SS.label, display: "block", marginBottom: 8 }}>
+                VOICE — {REGIONS.find(r => r.code === region)?.label || region} · {voiceGender}
+              </span>
+              <select value={piperVoiceOverride} onChange={e => setPiperVoiceOverride(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e0ddd5", ...SS.mono, fontSize: 10, cursor: "pointer" }}>
+                <option value="" style={{ background: "#1a1a1a" }}>Auto ({getDefaultVoice(region, voiceGender, "")})</option>
+                {shown.map((v, i) => <option key={i} value={v.id} style={{ background: "#1a1a1a" }}>{v.label || v.id}</option>)}
+              </select>
+              {relaxed && <div style={{ ...SS.mono, fontSize: 8, opacity: 0.4, marginTop: 4 }}>No {voiceGender} voice for this language — showing all genders</div>}
+            </div>;
+          })()}
 
           {/* ── Per-mode voice profile sliders ── */}
           <div style={{ marginBottom: 10, padding: "10px 12px", borderRadius: 10, background: config.color + "08", border: `1px solid ${config.color}12` }}>

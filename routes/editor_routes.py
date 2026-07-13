@@ -32,6 +32,7 @@ ALLOWED_DIRS = [
     "routes",
     "static",
     "static/therapy",
+    "static/therapy/assets",
     "static/js",
     "static/js/modal",
     "static/css",
@@ -44,7 +45,7 @@ ALLOWED_DIRS = [
 
 # Editable file extensions
 EDITABLE_EXTENSIONS = {
-    ".py", ".js", ".css", ".html", ".yaml", ".yml",
+    ".py", ".js", ".jsx", ".css", ".html", ".yaml", ".yml",
     ".json", ".md", ".txt", ".conf", ".sh",
 }
 
