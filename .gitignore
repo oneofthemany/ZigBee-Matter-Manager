@@ -1,6 +1,7 @@
 /build_root.sh
 /frontend/therapy/node_modules/
-/logs/data/tts_models/
+/logs
+/data/tts_models/
 /data/tts_cache/
-/logs__pycache__/
+__pycache__/
 *.pyc
