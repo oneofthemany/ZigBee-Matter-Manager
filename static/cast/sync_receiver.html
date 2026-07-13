@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<!--
+  ZigBee Manager — sync PoC Cast receiver.
+
+  Plays timestamped PCM chunks pushed over a same-origin WebSocket, scheduled
+  sample-accurately with the Web Audio API against the ZMM server clock
+  (estimated NTP-style over the same socket). Per-device trim (±ms) compensates
+  the device's fixed audio-output latency. See static/cast/README.md for
+  registration; this page must be served over plain HTTP from the ZMM sync
+  listener (media.cast.sync.http_port) so the ws:// socket is same-origin.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ZMM Sync Receiver</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #000; color: #fff;
+      font-family: "Roboto", system-ui, sans-serif; overflow: hidden; }
+    #wrap { position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 2vh; }
+    #state { font-size: 5vh; font-weight: 700; }
+    #detail { font-size: 2.6vh; opacity: .7; font-variant-numeric: tabular-nums; }
+    #pulse { width: 6vh; height: 6vh; border-radius: 50%; background: #2a6;
+      opacity: .25; transition: opacity .1s; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="pulse"></div>
+    <div id="state">ZMM Sync — waiting for start…</div>
+    <div id="detail"></div>
+  </div>
+
+  <script>
+    const NAMESPACE = 'urn:x-cast:zmm.sync';
+    const $ = id => document.getElementById(id);
+
+    let ws = null, ctx = null, sid = null;
+    let rate = 44100, channels = 2;
+    let trimMs = 0;
+
+    // ---- Clock sync (server time.monotonic() <-> performance.now()/1000) ----
+    // offset = serverTime - localTime. Estimated from ping/pong pairs; the
+    // lowest-RTT samples in a sliding window are the trustworthy ones.
+    let samples = [];            // {rtt, offset}
+    let estOffset = null;        // best current estimate (seconds)
+    let appliedOffset = null;    // what scheduling actually uses (slewed)
+    let lastRtt = 0;
+
+    const perfSec = () => performance.now() / 1000;
+
+    function onPong(msg) {
+      const t1 = perfSec();
+      const rtt = t1 - msg.t;
+      const offset = (msg.s + rtt / 2) - t1;
+      samples.push({ rtt, offset });
+      if (samples.length > 12) samples.shift();
+      const best = [...samples].sort((a, b) => a.rtt - b.rtt).slice(0, 3);
+      estOffset = best.map(s => s.offset).sort((a, b) => a - b)[Math.floor(best.length / 2)];
+      lastRtt = best[0].rtt;
+      if (appliedOffset === null) appliedOffset = estOffset;
+    }
+
+    // ---- Playback stats -----------------------------------------------------
+    let scheduled = 0, late = 0, resyncs = 0, startedAt = 0;
+
+    // ---- Chunk scheduling ---------------------------------------------------
+    function outLatency() {
+      return (ctx && (ctx.outputLatency || ctx.baseLatency)) || 0;
+    }
+
+    function onChunk(buf) {
+      if (!ctx || estOffset === null) return;   // no clock yet — drop
+      const dv = new DataView(buf);
+      const playAt = dv.getFloat64(0, false);   // server-clock seconds
+      const pcm = new Int16Array(buf, 8);
+      const frames = pcm.length / channels;
+
+      // Slew the applied offset toward the estimate: max 1 ms per chunk, so
+      // chunk boundaries stay (sub-)sample-continuous. A big error (>50 ms)
+      // means the clock genuinely jumped — snap and count a resync.
+      const err = estOffset - appliedOffset;
+      if (Math.abs(err) > 0.05) { appliedOffset = estOffset; resyncs++; }
+      else appliedOffset += Math.max(-0.001, Math.min(0.001, err));
+
+      const localTarget = playAt - appliedOffset + trimMs / 1000 - outLatency();
+      const when = ctx.currentTime + (localTarget - perfSec());
+      if (when < ctx.currentTime + 0.02) { late++; return; }
+
+      const ab = ctx.createBuffer(channels, frames, rate);
+      for (let ch = 0; ch < channels; ch++) {
+        const out = ab.getChannelData(ch);
+        for (let i = 0; i < frames; i++) out[i] = pcm[i * channels + ch] / 32768;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = ab;
+      src.connect(ctx.destination);
+      src.start(when);
+      scheduled++;
+      if (!startedAt) startedAt = perfSec();
+      $('pulse').style.opacity = (scheduled % 4 === 0) ? '1' : '.25';
+    }
+
+    // ---- Status line + stats reporting -------------------------------------
+    function heartbeat() {
+      if (estOffset !== null) {
+        $('detail').textContent =
+          `offset ${(appliedOffset * 1000).toFixed(1)} ms · rtt ${(lastRtt * 1000).toFixed(1)} ms` +
+          ` · trim ${trimMs} ms · played ${scheduled} · late ${late}`;
+      }
+      if (ws && ws.readyState === 1 && sid) {
+        ws.send(JSON.stringify({
+          type: 'stats',
+          offset_ms: estOffset === null ? null : +(estOffset * 1000).toFixed(2),
+          rtt_ms: +(lastRtt * 1000).toFixed(2),
+          out_latency_ms: +(outLatency() * 1000).toFixed(2),
+          ctx_rate: ctx ? ctx.sampleRate : 0,
+          scheduled, late, resyncs,
+          uptime_s: startedAt ? Math.round(perfSec() - startedAt) : 0,
+        }));
+      }
+    }
+    setInterval(heartbeat, 5000);
+
+    // ---- WebSocket ----------------------------------------------------------
+    function connect() {
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        $('state').textContent = 'Connected — syncing clock…';
+        ws.send(JSON.stringify({ type: 'hello', sid }));
+        let n = 0;
+        const ping = () => {
+          if (ws.readyState !== 1) return;
+          ws.send(JSON.stringify({ type: 'ping', t: perfSec() }));
+          n++;
+          setTimeout(ping, n < 15 ? 700 : 4000);   // burst first, then keep-alive
+        };
+        ping();
+      };
+      ws.onmessage = ev => {
+        if (ev.data instanceof ArrayBuffer) { onChunk(ev.data); return; }
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'pong') onPong(msg);
+        else if (msg.type === 'hello_ack') {
+          rate = msg.rate; channels = msg.channels; trimMs = msg.trim_ms || 0;
+          $('state').textContent = 'Playing (sync PoC)';
+        }
+        else if (msg.type === 'trim') trimMs = msg.trim_ms || 0;
+      };
+      ws.onclose = () => {
+        $('state').textContent = 'Disconnected — retrying…';
+        setTimeout(() => { if (sid) connect(); }, 2000);
+      };
+    }
+
+    // ---- Cast wiring --------------------------------------------------------
+    const context = cast.framework.CastReceiverContext.getInstance();
+    context.addCustomMessageListener(NAMESPACE, ev => {
+      const d = ev.data || {};
+      if (d.type === 'start') {
+        trimMs = d.trim_ms || 0;
+        if (sid === d.sid && ws && ws.readyState === 1) return;  // duplicate start
+        sid = d.sid;
+        if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === 'suspended') ctx.resume();
+        if (ws) try { ws.close(); } catch (e) {}
+        connect();
+      }
+    });
+
+    const options = new cast.framework.CastReceiverOptions();
+    // No CAF media session is used — without this the platform would kill the
+    // app as "idle" a few minutes in.
+    options.disableIdleTimeout = true;
+    context.start(options);
+  </script>
+</body>
+</html>
