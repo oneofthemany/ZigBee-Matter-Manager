@@ -395,6 +395,7 @@ class BaseMatterParser:
                 commands.extend([
                     {"command": "lock", "label": "Lock", "endpoint_id": ep, "cluster_id": 257},
                     {"command": "unlock", "label": "Unlock", "endpoint_id": ep, "cluster_id": 257},
+                    {"command": "unlatch", "label": "Unlatch", "endpoint_id": ep, "cluster_id": 257},
                 ])
 
             if MatterClusters.THERMOSTAT in clusters:

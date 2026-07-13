@@ -700,6 +700,36 @@ class MatterBridge:
                     "args": {"color_temperature_mireds": mireds, "transition_time": 5},
                 })
 
+            elif command in ("lock", "unlock", "unlatch"):
+                cluster_id = MatterClusters.DOOR_LOCK
+                if command == "lock":
+                    names = ["LockDoor"]
+                elif command == "unlock":
+                    # UnboltDoor (Matter 1.2) withdraws the bolt without
+                    # pulling the latch — what "unlock" means on a Nuki.
+                    # Older locks without the Unbolting feature reject it,
+                    # so fall back to plain UnlockDoor.
+                    names = ["UnboltDoor", "UnlockDoor"]
+                else:
+                    # UnlockDoor fully unlocks; on latch-capable locks
+                    # (Nuki) that includes pulling the latch.
+                    names = ["UnlockDoor"]
+                last_err = None
+                for command_name in names:
+                    try:
+                        await self._send_command("device_command", {
+                            "node_id": node_id,
+                            "endpoint_id": endpoint_id,
+                            "cluster_id": cluster_id,
+                            "command_name": command_name,
+                        })
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                if last_err is not None:
+                    raise last_err
+
             else:
                 return {"success": False, "error": f"Unknown command: {command}"}
 
@@ -728,6 +758,8 @@ class MatterBridge:
                     if value > 0:
                         dev.state["state"] = "ON"
                         dev.state["on"] = True
+                elif command in ("lock", "unlock", "unlatch"):
+                    dev.state["locked"] = command == "lock"
 
                 if self.event_callback:
                     await self.event_callback("device_updated", {

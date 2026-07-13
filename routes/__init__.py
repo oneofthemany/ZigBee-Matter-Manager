@@ -34,6 +34,7 @@ from routes.tts_routes import register_tts_routes
 from routes.alert_routes import register_alert_routes
 from routes.signal_routes import register_signal_routes
 from routes.ac_routes import register_ac_routes
+from routes.security_routes import register_security_routes
 
 
 
@@ -70,6 +71,7 @@ __all__ = [
     'register_tts_routes',
     'register_api_docs_routes',
     'register_ac_routes',
+    'register_security_routes',
     'manager',
     'broadcast_event',
 ]

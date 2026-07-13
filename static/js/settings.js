@@ -589,18 +589,25 @@ function renderApisTab(config) {
           <i class="fas fa-snowflake me-1"></i> Air Con
         </button>
       </li>
+      <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneSecurity" type="button">
+          <i class="fas fa-shield-halved me-1"></i> Security
+        </button>
+      </li>
     </ul>
     <div class="tab-content">
       <div class="tab-pane fade show active" id="apiPaneWeather">${renderWeatherSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneMedia">${renderMediaSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
+      <div class="tab-pane fade" id="apiPaneSecurity">${renderSecuritySection(config)}</div>
     </div>
     `;
 
     loadWeatherStatus();
     loadTidalStatus();
     loadAcUnits();
+    SECURITY_PROVIDERS.forEach(p => p.onShow?.());
 }
 
 function renderWeatherSection(config) {
@@ -980,6 +987,308 @@ window.acSetTemp = (id) => {
     const inp = document.getElementById(`acTemp_${id}`);
     const v = parseFloat(inp?.value);
     if (Number.isFinite(v)) return _acControl(id, { target_c: v });
+};
+
+// ============================================================================
+// SECURITY SECTION (smart locks) — lives in the External APIs tab
+// ============================================================================
+// Providers are registry-driven: to add one (e.g. Yale) append an entry
+// here with its own render function — the sub-tabs build themselves.
+// Config fields save through the normal Save button (collectFormValues);
+// locks are read/controlled live through /api/security/*.
+
+const SECURITY_PROVIDERS = [
+    {
+        id: 'nuki',
+        label: 'Nuki',
+        icon: 'fa-lock',
+        render: (config) => renderNukiSection(config),
+        onShow: () => { loadNukiStatus(); window.loadNukiLocks(); },
+    },
+];
+
+function renderSecuritySection(config) {
+    const tabs = SECURITY_PROVIDERS.map((p, i) => `
+      <li class="nav-item">
+        <button class="nav-link ${i === 0 ? 'active' : ''}" data-bs-toggle="tab"
+                data-bs-target="#secPane_${_acEsc(p.id)}" type="button">
+          <i class="fas ${_acEsc(p.icon)} me-1"></i> ${_acEsc(p.label)}
+        </button>
+      </li>`).join('');
+    const panes = SECURITY_PROVIDERS.map((p, i) => `
+      <div class="tab-pane fade ${i === 0 ? 'show active' : ''}" id="secPane_${_acEsc(p.id)}">
+        ${p.render(config)}
+      </div>`).join('');
+    return `
+    <ul class="nav nav-pills mb-3" role="tablist">${tabs}</ul>
+    <div class="tab-content">${panes}</div>
+    `;
+}
+
+// ── Nuki ────────────────────────────────────────────────────────────────
+
+function renderNukiSection(config) {
+    const nuki = (config.security || {}).nuki || {};
+    const bridge = nuki.bridge || {};
+    const matter = nuki.matter || {};
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-lock me-1"></i> Nuki Smart Lock</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_nuki_enabled" ${nuki.enabled ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Two ways in: locks paired to a <strong>Nuki Bridge</strong> are controlled over its
+      local HTTP API; bridge-less locks (Smart Lock 3.0 Pro / 4th gen) are commissioned as
+      <strong>Matter</strong> devices via the Matter tab and picked up here automatically.
+      Config changes need Save; lock control below is live.
+    </p>
+
+    <div class="row g-3 mb-3">
+      <div class="col-lg-7">
+        <div class="card h-100">
+          <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span class="small fw-bold"><i class="fas fa-tower-broadcast me-1"></i> Bridge (local HTTP API)</span>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="cfg_nuki_bridge_enabled"
+                     ${bridge.enabled !== false ? 'checked' : ''}>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row g-2 mb-2">
+              <div class="col-md-6">
+                <label class="form-label small fw-semibold">Bridge IP</label>
+                <input type="text" class="form-control form-control-sm" id="cfg_nuki_bridge_host"
+                       value="${_acEsc(bridge.host || '')}" placeholder="192.168.1.50">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small fw-semibold">Port</label>
+                <input type="number" class="form-control form-control-sm" id="cfg_nuki_bridge_port"
+                       value="${bridge.port ?? 8080}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small fw-semibold">API Token</label>
+                <input type="password" class="form-control form-control-sm" id="cfg_nuki_bridge_token"
+                       value="" placeholder="${bridge.token ? '•••••• (saved — blank keeps it)' : 'token'}"
+                       autocomplete="new-password">
+              </div>
+            </div>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="cfg_nuki_bridge_hashed"
+                     ${bridge.hashed_token !== false ? 'checked' : ''}>
+              <label class="form-check-label small text-muted">
+                Hashed token (recommended — plain sends the token unencrypted on the LAN)</label>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-primary btn-sm" id="nukiDiscoverBtn" onclick="window.nukiDiscoverBridges()">
+                <i class="fas fa-search me-1"></i> Discover Bridges
+              </button>
+              <button class="btn btn-outline-primary btn-sm" onclick="window.nukiBridgeAuth()"
+                      title="Press the button on the bridge, then click within 30 seconds">
+                <i class="fas fa-key me-1"></i> Get Token
+              </button>
+              <button class="btn btn-outline-secondary btn-sm" onclick="window.nukiTestBridge()">
+                <i class="fas fa-stethoscope me-1"></i> Test
+              </button>
+            </div>
+            <div id="nukiBridgeResults" class="small mt-2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-5">
+        <div class="card h-100">
+          <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span class="small fw-bold"><i class="fas fa-atom me-1"></i> Matter (no bridge)</span>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="cfg_nuki_matter_enabled"
+                     ${matter.enabled !== false ? 'checked' : ''}>
+            </div>
+          </div>
+          <div class="card-body small text-muted">
+            Enable Matter in the Nuki app (Features &amp; Configuration → Matter), then commission
+            the lock from this app's <strong>Matter</strong> tab with the pairing code.
+            Commissioned locks appear in the list below with a
+            <span class="badge bg-info">matter</span> badge — no credentials needed here.
+            <div id="nukiMatterStatus" class="mt-2"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold small"><i class="fas fa-list me-1"></i> Locks</span>
+      <button class="btn btn-outline-secondary btn-sm" onclick="window.loadNukiLocks()">
+        <i class="fas fa-sync-alt me-1"></i> Refresh
+      </button>
+    </div>
+    <div id="nukiLocksList">
+      <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading locks…</div>
+    </div>
+    `;
+}
+
+async function loadNukiStatus() {
+    const el = document.getElementById('nukiMatterStatus');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/security/nuki/status').then(r => r.json());
+        const m = res.matter;
+        if (!m) { el.innerHTML = ''; return; }
+        el.innerHTML = m.ok
+            ? `<span class="badge bg-success">Matter server connected</span>
+               <span class="ms-1">${m.locks} lock${m.locks === 1 ? '' : 's'} found</span>`
+            : `<span class="badge bg-secondary">Matter server not running</span>`;
+    } catch { el.innerHTML = ''; }
+}
+
+window.loadNukiLocks = async function () {
+    const el = document.getElementById('nukiLocksList');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/security/nuki/locks').then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'failed');
+        if (res.enabled === false) {
+            el.innerHTML = `<div class="text-muted small fst-italic">
+                Nuki is disabled — switch it on above and Save.</div>`;
+            return;
+        }
+        const locks = res.locks || [];
+        const errs = (res.errors || []).map(e =>
+            `<div class="text-warning small mb-1"><i class="fas fa-triangle-exclamation me-1"></i>${_acEsc(e)}</div>`).join('');
+        if (!locks.length) {
+            el.innerHTML = errs + `<div class="text-muted small fst-italic">
+                No locks found yet — configure the bridge above, or commission a
+                Matter lock from the Matter tab.</div>`;
+            return;
+        }
+        const stateBadge = (l) => {
+            const s = (l.state_name || 'unknown').toLowerCase();
+            const cls = s === 'locked' ? 'bg-success'
+                : s.includes('unlock') || s.includes('unlatch') ? 'bg-warning text-dark'
+                : s === 'motor blocked' ? 'bg-danger' : 'bg-secondary';
+            return `<span class="badge ${cls}">${_acEsc(l.state_name || 'unknown')}</span>`;
+        };
+        const rows = locks.map(l => `
+          <tr>
+            <td class="fw-semibold">${_acEsc(l.name)}
+              <div class="small text-muted">
+                ${_acEsc(l.device_type_name || l.model || '')}
+                ${l.firmware ? ' · fw ' + _acEsc(l.firmware) : ''}
+              </div>
+            </td>
+            <td><span class="badge ${l.via === 'bridge' ? 'bg-primary' : 'bg-info'}">${_acEsc(l.via)}</span></td>
+            <td>${stateBadge(l)}
+                ${l.battery_critical ? '<span class="badge bg-danger ms-1">battery!</span>' : ''}
+                ${l.battery != null ? `<span class="small text-muted ms-1">🔋 ${l.battery}%</span>` : ''}
+                ${l.door_state ? `<span class="small text-muted ms-1">door: ${_acEsc(l.door_state)}</span>` : ''}
+            </td>
+            <td class="text-nowrap text-end">
+              <button class="btn btn-sm btn-outline-success py-0" ${l.available === false ? 'disabled' : ''}
+                      onclick="window.nukiAction('${_acEsc(l.id)}', 'lock')">
+                <i class="fas fa-lock me-1"></i>Lock</button>
+              <button class="btn btn-sm btn-outline-warning py-0 ms-1" ${l.available === false ? 'disabled' : ''}
+                      onclick="window.nukiAction('${_acEsc(l.id)}', 'unlock')">
+                <i class="fas fa-lock-open me-1"></i>Unlock</button>
+              <button class="btn btn-sm btn-outline-danger py-0 ms-1" ${l.available === false ? 'disabled' : ''}
+                      title="Also pulls the latch — the door swings open"
+                      onclick="window.nukiAction('${_acEsc(l.id)}', 'unlatch')">
+                <i class="fas fa-door-open me-1"></i>Unlatch</button>
+            </td>
+          </tr>`).join('');
+        el.innerHTML = errs + `
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr class="small text-muted">
+              <th>Lock</th><th>Via</th><th>Status</th><th class="text-end">Control</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+    } catch (e) {
+        el.innerHTML = `<div class="text-danger small">Failed to load locks: ${_acEsc(e.message)}</div>`;
+    }
+};
+
+window.nukiAction = async function (lockId, action) {
+    try {
+        const res = await fetch(`/api/security/nuki/locks/${encodeURIComponent(lockId)}/action`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+        }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || `${action} failed`);
+        window.toast?.success?.('Nuki', `${action} sent`);
+    } catch (e) {
+        window.toast?.error?.('Nuki action failed', e.message);
+    }
+    await window.loadNukiLocks();
+};
+
+window.nukiDiscoverBridges = async function () {
+    const btn = document.getElementById('nukiDiscoverBtn');
+    const out = document.getElementById('nukiBridgeResults');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Searching…'; }
+    try {
+        const res = await fetch('/api/security/nuki/bridge/discover', { method: 'POST' }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'discovery failed');
+        const bridges = res.bridges || [];
+        if (!bridges.length) {
+            out.innerHTML = `<div class="alert alert-warning py-2 small mb-0">
+                No bridges reported for this network — the bridge must be online
+                and have phoned home to the Nuki cloud recently.</div>`;
+            return;
+        }
+        out.innerHTML = bridges.map(b => `
+          <div class="d-flex align-items-center gap-2 py-1">
+            <span class="badge bg-primary">bridge</span>
+            <span class="font-monospace">${_acEsc(b.ip)}:${_acEsc(b.port)}</span>
+            <span class="text-muted">id ${_acEsc(b.bridgeId)}</span>
+            <button class="btn btn-sm btn-outline-success py-0 ms-auto"
+                    onclick="document.getElementById('cfg_nuki_bridge_host').value='${_acEsc(b.ip)}';
+                             document.getElementById('cfg_nuki_bridge_port').value='${_acEsc(b.port)}';">
+              Use</button>
+          </div>`).join('');
+    } catch (e) {
+        out.innerHTML = `<div class="text-danger">${_acEsc(e.message)}</div>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-search me-1"></i> Discover Bridges'; }
+    }
+};
+
+window.nukiBridgeAuth = async function () {
+    const out = document.getElementById('nukiBridgeResults');
+    out.innerHTML = `<div class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i>
+        Waiting for the bridge — press its button if you haven't…</div>`;
+    try {
+        const res = await fetch('/api/security/nuki/bridge/auth', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                host: document.getElementById('cfg_nuki_bridge_host')?.value?.trim(),
+                port: Number(document.getElementById('cfg_nuki_bridge_port')?.value) || 8080,
+            }),
+        }).then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'auth failed');
+        document.getElementById('cfg_nuki_bridge_token').value = res.token;
+        out.innerHTML = `<div class="text-success"><i class="fas fa-check me-1"></i>
+            Token received — click Save to store it.</div>`;
+    } catch (e) {
+        out.innerHTML = `<div class="text-danger">${_acEsc(e.message)}</div>`;
+    }
+};
+
+window.nukiTestBridge = async function () {
+    const out = document.getElementById('nukiBridgeResults');
+    out.innerHTML = `<div class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Testing…</div>`;
+    try {
+        const res = await fetch('/api/security/nuki/status').then(r => r.json());
+        const b = res.bridge;
+        if (!b) { out.innerHTML = `<div class="text-muted">Bridge channel disabled.</div>`; return; }
+        out.innerHTML = b.ok
+            ? `<div class="text-success"><i class="fas fa-check me-1"></i>
+                 Bridge OK — firmware ${_acEsc(b.firmware || '?')}${b.server_connected ? ', cloud-connected' : ''}.
+                 <span class="text-muted">Uses the saved token — Save first after changes.</span></div>`
+            : `<div class="text-danger"><i class="fas fa-xmark me-1"></i> ${_acEsc(b.error || 'unreachable')}</div>`;
+    } catch (e) {
+        out.innerHTML = `<div class="text-danger">${_acEsc(e.message)}</div>`;
+    }
 };
 
 function renderTidalSection(config) {
@@ -1652,6 +1961,22 @@ function collectFormValues() {
             enabled: document.getElementById('cfg_ota_enabled')?.checked ?? true,
             extra_providers: collectOtaProviderRows(),
             disable_default_providers: disableDefaults,
+        },
+        security: {
+            nuki: {
+                enabled: document.getElementById('cfg_nuki_enabled')?.checked ?? false,
+                bridge: {
+                    enabled: document.getElementById('cfg_nuki_bridge_enabled')?.checked ?? true,
+                    host: get('cfg_nuki_bridge_host') ?? '',
+                    port: getNum('cfg_nuki_bridge_port') || 8080,
+                    // Blank = keep the stored token (backend skips falsy)
+                    token: get('cfg_nuki_bridge_token') || '',
+                    hashed_token: document.getElementById('cfg_nuki_bridge_hashed')?.checked ?? true,
+                },
+                matter: {
+                    enabled: document.getElementById('cfg_nuki_matter_enabled')?.checked ?? true,
+                },
+            },
         },
     };
 }

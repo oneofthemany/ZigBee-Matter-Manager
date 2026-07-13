@@ -80,6 +80,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "logging": cfg.get("logging", {}),
                     "weather": cfg.get("weather", {}),
                     "media": cfg.get("media", {}),
+                    "security": cfg.get("security", {}),
                     "ota": {
                         "enabled": bool(ota.get("enabled", True)),
                         # `providers` is the explicit override list (rarely used).
@@ -202,6 +203,36 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     # Allow clearing the manifest URL (lossless off).
                     if "manifest_base_url" in td_in:
                         td_cfg["manifest_base_url"] = str(td_in.get("manifest_base_url") or "").strip()
+
+            # ---- Security providers (Nuki first; future providers merge
+            # their own sub-dict the same way) ----
+            if "security" in incoming:
+                sec_in = incoming["security"] or {}
+                sec_cfg = cfg.setdefault("security", {})
+                if "nuki" in sec_in:
+                    n = sec_in["nuki"] or {}
+                    nuki_cfg = sec_cfg.setdefault("nuki", {})
+                    if "enabled" in n:
+                        nuki_cfg["enabled"] = bool(n["enabled"])
+                    if "bridge" in n:
+                        b_in = n["bridge"] or {}
+                        b_cfg = nuki_cfg.setdefault("bridge", {})
+                        if "enabled" in b_in:
+                            b_cfg["enabled"] = bool(b_in["enabled"])
+                        if "host" in b_in:
+                            b_cfg["host"] = str(b_in.get("host") or "").strip()
+                        if b_in.get("port"):
+                            b_cfg["port"] = int(b_in["port"])
+                        # Blank token = keep the stored one (mqtt-password rule)
+                        if b_in.get("token"):
+                            b_cfg["token"] = str(b_in["token"]).strip()
+                        if "hashed_token" in b_in:
+                            b_cfg["hashed_token"] = bool(b_in["hashed_token"])
+                    if "matter" in n:
+                        m_in = n["matter"] or {}
+                        m_cfg = nuki_cfg.setdefault("matter", {})
+                        if "enabled" in m_in:
+                            m_cfg["enabled"] = bool(m_in["enabled"])
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]
