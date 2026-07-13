@@ -21,6 +21,8 @@ ALLOWED_DIRS = [
     "",              # Root .py files (main.py, device.py, mqtt.py etc.)
     "core",
     "device",
+    "frontend/therapy",
+    "frontend/therapy/src",
     "handlers",
     "manager",
     "modules",
@@ -30,7 +32,6 @@ ALLOWED_DIRS = [
     "routes",
     "static",
     "static/therapy",
-    "static/therapy/assets",
     "static/js",
     "static/js/modal",
     "static/css",
