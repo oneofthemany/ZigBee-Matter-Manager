@@ -438,6 +438,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Alert center init failed: {e}")
 
+    # ── Test-deploy recovery ──
+    # Must run BEFORE the slow background bring-up (Zigbee/Matter/HA can take
+    # minutes): the confirm window for a pending restart-type batch starts
+    # here, when the UI is about to serve, so the user gets the full window.
+    from modules.test_recovery import get_test_recovery_manager
+    trm = get_test_recovery_manager(broadcast_event)
+    startup_result = trm.check_pending_on_startup()
+    if startup_result:
+        if startup_result.get("rolled_back"):
+            logger.warning(f"Auto-rolled back test deployment: {startup_result.get('files')}")
+        elif startup_result.get("pending"):
+            logger.info(f"Pending test: {startup_result.get('files')} — "
+                        f"{startup_result.get('remaining')}s to confirm")
+
     # Wire debugger to WebSocket
     async def debug_callback(packet_data):
         await manager.broadcast({"type": "debug_packet", "payload": packet_data})
@@ -724,16 +738,6 @@ async def lifespan(app: FastAPI):
         zigbee_service.automation._get_names = _names_with_presence
         logger.info("Wired presence users into automation engine")
 
-
-        # ──  Recovery ──
-        from modules.test_recovery import get_test_recovery_manager
-        trm = get_test_recovery_manager(broadcast_event)
-        startup_result = trm.check_pending_on_startup()
-        if startup_result:
-            if startup_result.get("rolled_back"):
-                logger.warning(f"Auto-rolled back test deployment: {startup_result.get('path')}")
-            elif startup_result.get("pending"):
-                logger.info(f"Pending test: {startup_result.get('path')} — {startup_result.get('remaining')}s to confirm")
 
         # Initialise AI Assistant
         ai_config = CONFIG.get("ai", {})

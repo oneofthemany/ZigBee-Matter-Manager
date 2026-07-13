@@ -433,51 +433,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // Test-recovery banner check (auth-gated)
-        fetch('/api/editor/test-status').then(r => r.json()).then(data => {
-            if (data.pending) {
-                const banner = document.createElement('div');
-                banner.id = 'testRecoveryBanner';
-                banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;';
-                let remaining = data.remaining || 120;
-                banner.innerHTML = `
-                    <div style="background:#1e1e1e;border-bottom:2px solid #dc3545;padding:8px 16px;">
-                        <div class="d-flex align-items-center justify-content-between">
-                            <div class="d-flex align-items-center gap-2" style="color:#fff;font-size:13px;">
-                                <i class="fas fa-flask" style="color:#ffc107;"></i>
-                                <strong>Test Deploy Active</strong>
-                                <span style="color:#ffc107;"><span id="testCountdown">${remaining}</span>s remaining</span>
-                            </div>
-                            <div class="d-flex gap-2">
-                                <button class="btn btn-sm btn-success px-3" onclick="fetch('/api/editor/test-confirm',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){document.getElementById('testRecoveryBanner').remove()}else{toast.error(d.error)}})">
-                                    <i class="fas fa-check me-1"></i> Confirm
-                                </button>
-                                <button class="btn btn-sm btn-danger px-3" onclick="fetch('/api/editor/test-rollback',{method:'POST'}).then(r=>r.json()).then(d=>{toast.info(d.message||d.error);document.getElementById('testRecoveryBanner').remove()})">
-                                    <i class="fas fa-undo me-1"></i> Rollback
-                                </button>
-                            </div>
-                        </div>
-                        <div class="progress mt-1" style="height:3px;">
-                            <div id="testProgressBar" class="progress-bar bg-warning" style="width:100%;transition:width 1s linear;"></div>
-                        </div>
-                    </div>`;
-                document.body.prepend(banner);
-                const iv = setInterval(() => {
-                    remaining--;
-                    const el = document.getElementById('testCountdown');
-                    const bar = document.getElementById('testProgressBar');
-                    if (el) el.textContent = remaining;
-                    if (bar) bar.style.width = (remaining / (data.remaining || 120) * 100) + '%';
-                    if (remaining <= 0) {
-                        clearInterval(iv);
-                        fetch('/api/editor/test-status').then(r => r.json()).then(d => {
-                            if (d.pending) location.reload();
-                            else document.getElementById('testRecoveryBanner')?.remove();
-                        }).catch(() => location.reload());
-                    }
-                }, 1000);
-            }
-        }).catch(() => {});
+        // Test-recovery banner lives in test-banner.js — a standalone classic
+        // script — so it still renders when a test deploy breaks this module
+        // graph. Do not re-add it here.
 
         log.log("Zigbee Matter Manager Frontend Initialised");
     }

@@ -175,6 +175,51 @@ class TestRecoveryManager:
                         ),
                     }
 
+        # Mojibake guard (same rule as /api/editor/save): U+FFFD never occurs
+        # in legitimate source — the test path must not be the loophole that
+        # bakes corrupted text into a deploy.
+        for r in resolved:
+            if "�" in r["content"]:
+                lines = [i + 1 for i, line in enumerate(r["content"].splitlines())
+                         if "�" in line]
+                return {
+                    "success": False,
+                    "error": (
+                        f"{r['path']} contains Unicode replacement characters "
+                        f"(U+FFFD) on line(s) {', '.join(map(str, lines[:10]))} — "
+                        "the content was corrupted before it reached the editor. "
+                        "Nothing was deployed."
+                    ),
+                }
+
+        # Exact-parser pre-flight for JSON/YAML (a broken YAML bricks config
+        # load just as hard as a broken .py). JavaScript is intentionally NOT
+        # blocked here: the server-side JS check is a heuristic bracket
+        # balancer, and a false positive would leave no escape hatch — the
+        # editor compile-checks JS client-side with the real engine instead.
+        try:
+            from routes.editor_routes import _validate_json, _validate_yaml
+            parsers = {".json": _validate_json, ".yaml": _validate_yaml,
+                       ".yml": _validate_yaml}
+            for r in resolved:
+                fn = parsers.get(r["full"].suffix.lower())
+                if not fn:
+                    continue
+                errs = [e for e in fn(r["content"])
+                        if e.get("severity") == "error"]
+                if errs:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Syntax error in {r['path']} line "
+                            f"{errs[0].get('line')}: {errs[0].get('message')}. "
+                            "Nothing was deployed."
+                        ),
+                    }
+        except Exception as e:
+            # Validators are best-effort — never let them block a deploy
+            logger.warning(f"JSON/YAML pre-flight skipped: {e}")
+
         # Decide action: restart if ANY file requires it, else reload
         action = "reload"
         for r in resolved:
@@ -317,9 +362,29 @@ class TestRecoveryManager:
             self._clear_pending()
             return None
 
+        paths = [f.get("path") for f in pending.get("files", [])]
+
+        if pending.get("action") == "restart":
+            # The deploy clock started before the service restart, and boot
+            # can eat most (or all) of the window. The user can only confirm
+            # once the app is serving again, so restart the window now.
+            # "New code crashes the boot" is boot_guard's job, not this
+            # wall clock's.
+            timeout = pending.get("timeout", CONFIRM_TIMEOUT)
+            pending["deployed_at"] = time.time()
+            self._save_pending(pending)
+            logger.info(f"Pending batch: {paths} — confirm window restarted ({int(timeout)}s)")
+            self._start_confirm_timer(timeout)
+            return {
+                "pending": True,
+                "files": paths,
+                "remaining": int(timeout),
+                "action": "restart",
+            }
+
+        # reload-type: no restart was involved, the original clock stands
         elapsed = time.time() - pending.get("deployed_at", 0)
         remaining = max(0, pending.get("timeout", CONFIRM_TIMEOUT) - elapsed)
-        paths = [f.get("path") for f in pending.get("files", [])]
 
         if remaining <= 0:
             logger.warning(f"Test timeout expired during restart — rolling back batch: {paths}")
@@ -492,4 +557,9 @@ def get_test_recovery_manager(event_emitter=None) -> TestRecoveryManager:
     global _manager
     if _manager is None:
         _manager = TestRecoveryManager(event_emitter)
+    elif event_emitter is not None and _manager._emit is None:
+        # An API route may construct the singleton (emitter-less) before the
+        # lifespan wires broadcast_event in — attach it late instead of
+        # silently dropping every test_recovery websocket event for the boot.
+        _manager._emit = event_emitter
     return _manager

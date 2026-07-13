@@ -332,7 +332,7 @@ export function handleDeviceUpdate(payload) {
     } else {
         // Device not found in list (maybe new join?), trigger full fetch
         log.log("Device not found in local list, fetching all...");
-        fetchDevices();
+        fetchAllDevices();
     }
 }
 

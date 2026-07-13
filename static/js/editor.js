@@ -1040,6 +1040,50 @@ window.editorSave = saveCurrentFile;
 
 // ---- TEST DEPLOY ----
 
+// Compile-check JavaScript with the engine that will actually run it. The
+// server can't truly parse JS (no JS engine in the container — its validator
+// only balances brackets), which once let an invalid regex literal deploy
+// and hard-kill the whole module graph on reload. Module-only syntax is
+// stripped/neutralised because Function() rejects it; the body is wrapped
+// in an async arrow so top-level await still parses. Returns the engine's
+// SyntaxError message, or null when the code compiles.
+function jsSyntaxError(code) {
+    const stripped = code
+        // import './x.js';  — side-effect imports first
+        .replace(/^\s*import\s*(['"])[^'"]*\1\s*;?/gm, '')
+        // import a, { b } from './x.js';  ([^;]*? keeps it inside one statement)
+        .replace(/^\s*import\s[^;]*?from\s*(['"])[^'"]*\1\s*;?/gm, '')
+        // export default <expr> must stay an expression, not a statement
+        .replace(/^\s*export\s+default\s+/gm, 'var __zmm_default = ')
+        // export { a, b } / export { a } from './x.js';
+        .replace(/^\s*export\s*\{[\s\S]*?\}\s*(from\s*(['"])[^'"]*\2\s*)?;?/gm, '')
+        // export const/function/class ... → keep the declaration
+        .replace(/^(\s*)export\s+/gm, '$1')
+        // dynamic import + import.meta are module-only tokens
+        .replace(/\bimport\s*\(/g, '__zmm_import(')
+        .replace(/\bimport\.meta\b/g, '__zmm_import_meta');
+    try {
+        new Function('"use strict"; return async () => {\n' + stripped + '\n};');
+        return null;
+    } catch (e) {
+        return e.message;
+    }
+}
+
+async function confirmDeploySyntaxErrors(errors) {
+    // Escape hatch: the import/export stripping is heuristic, so a false
+    // positive must never brick the workflow — but make the user own it.
+    return confirmDialog({
+        title: 'JavaScript syntax error',
+        message: 'The JS engine refused to compile the file(s):',
+        detail:
+            errors.map(e => `• ${e.path}: ${e.error}`).join('\n') +
+            '\n\nDeploying this will likely break the frontend on reload.',
+        confirmText: 'Deploy anyway',
+        variant: 'danger'
+    });
+}
+
 window.editorTestDeploy = async function() {
     if (typeof window.showDeloreanAnimation === 'function') window.showDeloreanAnimation();
     if (!currentFile || !editorInstance) return;
@@ -1056,6 +1100,11 @@ window.editorTestDeploy = async function() {
 
     const ext = currentFile.split('.').pop().toLowerCase();
     const isPython = ['py', 'yaml', 'yml'].includes(ext);
+
+    if (ext === 'js') {
+        const err = jsSyntaxError(editorInstance.getValue());
+        if (err && !await confirmDeploySyntaxErrors([{ path: currentFile, error: err }])) return;
+    }
 
     if (!await confirmDialog({
         title: 'Test deploy',
@@ -1158,7 +1207,11 @@ window.editorTestRollback = async function() {
 // ---- BANNER UI ----
 
 function showTestRecoveryBanner(status, timeout) {
+    // The standalone test-banner.js may already own the banner — take over
+    // its countdown so two intervals don't tick the same element.
+    window.zmmTestBanner?.stop?.();
     let banner = document.getElementById('testRecoveryBanner');
+    if (banner && banner._interval) clearInterval(banner._interval);
     if (!banner) {
         banner = document.createElement('div');
         banner.id = 'testRecoveryBanner';
@@ -1178,7 +1231,9 @@ function showTestRecoveryBanner(status, timeout) {
     }
 
     // Pending confirmation
-    let remaining = timeout || 120;
+    // ?? not || — a server-reported 0 must render as expired, not as 120
+    let remaining = timeout ?? 120;
+    const total = Math.max(1, remaining);
     banner.innerHTML = buildBannerHTML(remaining);
 
     // Countdown
@@ -1199,7 +1254,7 @@ function showTestRecoveryBanner(status, timeout) {
 
         const bar = document.getElementById('testProgressBar');
         if (bar) {
-            const pct = (remaining / (timeout || 120)) * 100;
+            const pct = (remaining / total) * 100;
             bar.style.width = pct + '%';
             if (remaining <= 30) bar.classList.add('bg-danger');
         }
@@ -1594,6 +1649,13 @@ window.editorBatchDeploy = async function () {
     if (typeof window.showDeloreanAnimation === 'function') window.showDeloreanAnimation();
     const files = Array.from(testBatch.entries()).map(([path, v]) => ({ path, content: v.content }));
     const hasPy = files.some(f => /\.(py|ya?ml)$/i.test(f.path));
+
+    const syntaxErrors = files
+        .filter(f => /\.js$/i.test(f.path))
+        .map(f => ({ path: f.path, error: jsSyntaxError(f.content) }))
+        .filter(f => f.error);
+    if (syntaxErrors.length && !await confirmDeploySyntaxErrors(syntaxErrors)) return;
+
     if (!await confirmDialog({
         title: 'Test deploy batch',
         message: `Test Deploy: ${files.length} file(s)`,
