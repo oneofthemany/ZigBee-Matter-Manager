@@ -305,9 +305,10 @@ export default function MusicTherapyServer() {
   const [setupMsg, setSetupMsg] = useState("");
   const setupPollRef = useRef(null);
 
-  // Cast-to-player (server-side stream via /api/media/play, like radio)
-  const [players, setPlayers] = useState([]);
-  const [castPlayer, setCastPlayer] = useState(() => localStorage.getItem("zmm-tts-castplayer") || "");
+  // Cast-to-player (server-side stream via /api/media/play, like radio).
+  // The target is the media tab's selected player, pushed in by the parent
+  // frame — same select-then-play flow as radio/Tidal.
+  const [selPlayer, setSelPlayer] = useState(null);   // {id, name} | null
   const [castingOn, setCastingOn] = useState(null);   // player_id while casting
   const [castMsg, setCastMsg] = useState("");
 
@@ -379,16 +380,24 @@ export default function MusicTherapyServer() {
     }
   }, [checkTts]);
 
-  // ── Cast to media players (same /api/media/play path as radio/Tidal) ──
+  // ── Cast to the media tab's selected player (like radio/Tidal) ──
   useEffect(() => {
-    fetch('/api/media/players').then(r => r.json())
-      .then(d => { if (d.success) setPlayers(d.players || []); })
-      .catch(() => {});
+    const onMsg = (e) => {
+      if (e.origin !== location.origin || !e.data) return;
+      if (e.data.type === 'zmm-selected-player') {
+        setSelPlayer(e.data.id ? { id: e.data.id, name: e.data.name } : null);
+      }
+    };
+    window.addEventListener('message', onMsg);
+    // Ask the parent for the current selection (we may load after it was made)
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'zmm-get-selected-player' }, location.origin);
+    }
+    return () => window.removeEventListener('message', onMsg);
   }, []);
-  useEffect(() => { localStorage.setItem("zmm-tts-castplayer", castPlayer); }, [castPlayer]);
 
   const castStart = useCallback(async () => {
-    if (!castPlayer) return;
+    if (!selPlayer) return;
     const vp = voiceProfiles[mode] || VOICE_PROFILE_DEFAULTS[mode];
     const params = new URLSearchParams({
       mode,
@@ -404,17 +413,17 @@ export default function MusicTherapyServer() {
       const r = await fetch('/api/media/play', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          player_id: castPlayer,
+          player_id: selPlayer.id,
           url: `${location.origin}/api/therapy/stream?${params}`,
           title: `Neural Therapy — ${MODES[mode].label}`,
           artist: "Neural Therapy",
           content_type: "audio/wav",
         }),
       }).then(x => x.json());
-      if (r.success) setCastingOn(castPlayer);
+      if (r.success) setCastingOn(selPlayer.id);
       else setCastMsg(r.error || "Cast failed");
     } catch { setCastMsg("Cast request failed"); }
-  }, [castPlayer, mode, speechEnabled, piperConnected, region, voiceGender, piperVoiceOverride, voiceProfiles, speechInterval, breathPattern]);
+  }, [selPlayer, mode, speechEnabled, piperConnected, region, voiceGender, piperVoiceOverride, voiceProfiles, speechInterval, breathPattern]);
 
   const castStop = useCallback(async () => {
     if (!castingOn) return;
@@ -747,24 +756,23 @@ export default function MusicTherapyServer() {
       <div style={{ width: "100%", maxWidth: 420, background: "rgba(0,0,0,0.25)", borderRadius: 14, padding: 18, border: "1px solid rgba(255,255,255,0.04)", minHeight: 180 }}>
 
         {tab === "controls" && <>
-          {/* Cast to speakers */}
+          {/* Play on the media tab's selected player (same flow as radio/Tidal) */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={SS.label}>CAST TO SPEAKERS</span>
+              <span style={SS.label}>PLAY ON SPEAKER</span>
               {castingOn && <span style={{ ...SS.mono, fontSize: 9, color: config.color, animation: "pulse 1.5s infinite" }}>● CASTING</span>}
             </div>
-            {players.length ? <div style={{ display: "flex", gap: 6 }}>
-              <select value={castPlayer} onChange={e => setCastPlayer(e.target.value)} style={{ flex: 1, minWidth: 0, padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e0ddd5", ...SS.mono, fontSize: 10, cursor: "pointer" }}>
-                <option value="" style={{ background: "#1a1a1a" }}>Select a player…</option>
-                {players.map(p => <option key={p.id} value={p.id} style={{ background: "#1a1a1a" }}>{p.name || p.id}</option>)}
-              </select>
+            <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+              <div style={{ flex: 1, minWidth: 0, padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", ...SS.mono, fontSize: 10, opacity: selPlayer ? 0.85 : 0.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selPlayer ? `→ ${selPlayer.name}` : "select a player in the Players list"}
+              </div>
               {!castingOn
-                ? <button onClick={castStart} disabled={!castPlayer} style={{ ...btnStyle(!!castPlayer), padding: "8px 14px", opacity: castPlayer ? 1 : 0.4 }}>▶ Cast</button>
+                ? <button onClick={castStart} disabled={!selPlayer} style={{ ...btnStyle(!!selPlayer), padding: "8px 14px", opacity: selPlayer ? 1 : 0.4 }}>▶ Play</button>
                 : <button onClick={castStop} style={{ ...btnStyle(true), padding: "8px 14px", borderColor: "rgba(255,100,100,0.4)", color: "rgba(255,100,100,0.7)", background: "rgba(255,100,100,0.08)" }}>⏹ Stop</button>}
-            </div> : <div style={{ ...SS.mono, fontSize: 9, opacity: 0.35 }}>No media players found</div>}
+            </div>
             {castMsg && <div style={{ marginTop: 6, ...SS.mono, fontSize: 8, color: "#e87838" }}>{castMsg}</div>}
             {castingOn && <div style={{ marginTop: 6, ...SS.mono, fontSize: 8, opacity: 0.4 }}>
-              Streaming {config.label} to the player — re-cast after changing mode or voice settings.
+              Streaming {config.label} to the player — press Play again after changing mode or voice settings.
               Binaural beats need headphones; on speakers you still get the ambient bed and voice.
             </div>}
           </div>

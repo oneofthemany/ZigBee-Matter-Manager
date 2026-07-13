@@ -65,6 +65,12 @@ export function initMedia() {
     if (tab) {
         tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); loadKaraoke(); });
     }
+    // The therapy iframe asks for the current player selection when it mounts
+    // (it may load after a player was already selected).
+    window.addEventListener('message', (e) => {
+        if (e.origin !== location.origin) return;
+        if (e.data && e.data.type === 'zmm-get-selected-player') notifyTherapyFrame();
+    });
     // Expose handlers for inline onclick + the websocket dispatcher.
     window.handleMediaState = handleMediaState;
     window.mediaRefresh = loadPlayers;
@@ -358,6 +364,20 @@ function updateSearchTarget() {
     if (!el) return;
     const p = _players.find(x => x.player_id === _selectedId);
     el.textContent = p ? `→ ${p.name}` : 'select a player';
+    notifyTherapyFrame();
+}
+
+// Tell the therapy iframe which player is selected — therapy plays on the
+// media tab's selected player, the same flow as radio/Tidal.
+function notifyTherapyFrame() {
+    const frame = document.getElementById('mediaTherapyFrame');
+    if (!frame || !frame.contentWindow) return;
+    const p = _players.find(x => x.player_id === _selectedId);
+    frame.contentWindow.postMessage({
+        type: 'zmm-selected-player',
+        id: p ? p.player_id : null,
+        name: p ? p.name : null,
+    }, location.origin);
 }
 
 async function control(playerId, action) {
@@ -420,6 +440,7 @@ function setSource(src) {
         // Full path to index.html — the StaticFiles mount has no directory-index
         // support, so '/static/therapy/' alone would return FastAPI's JSON 404.
         if (frame && !frame.src) frame.src = '/static/therapy/index.html';
+        notifyTherapyFrame();
         return;
     }
 
