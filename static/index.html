@@ -37,7 +37,8 @@
         <!-- Connection Status Group -->
         <div class="d-flex align-items-center gap-3">
             <!-- Home Assistant Status Badge -->
-            <span class="badge rounded-pill bg-secondary" id="ha-status-badge" title="Home Assistant Connection">
+            <!-- Hidden until the first status check; stays hidden when HA is disabled -->
+            <span class="badge rounded-pill bg-secondary" id="ha-status-badge" title="Home Assistant Connection" style="display: none">
                 <i class="fas fa-home"></i> HA: Unknown
             </span>
 

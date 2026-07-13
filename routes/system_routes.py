@@ -161,6 +161,19 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
     async def get_ha_status():
         """Get current Home Assistant connection status."""
         try:
+            # HA integration off (homeassistant.enabled: false) or standalone
+            # mode (mqtt.enabled: false, so HA can never connect): report
+            # "disabled" so the UI hides the badge instead of showing Offline.
+            try:
+                with open("./config/config.yaml", "r") as f:
+                    cfg = yaml.safe_load(f) or {}
+                ha_enabled = bool((cfg.get("homeassistant") or {}).get("enabled", True))
+                mqtt_enabled = bool((cfg.get("mqtt") or {}).get("enabled", True))
+            except Exception:
+                ha_enabled = mqtt_enabled = True
+            if not (ha_enabled and mqtt_enabled):
+                return {"status": "disabled", "connected": False, "enabled": False}
+
             mqtt_service = get_mqtt_service()
             if not mqtt_service or not mqtt_service.connected:
                 return {"status": "offline", "connected": False}

@@ -274,9 +274,13 @@ export function initWS() {
     };
 }
 
+// Set when the backend reports HA integration is disabled in config, so the
+// generic "unknown" pushed on WebSocket drops doesn't re-show a hidden badge.
+let _haDisabled = false;
+
 /**
  * Update Home Assistant Status Badge
- * status: 'online', 'offline', 'unknown'
+ * status: 'online', 'offline', 'unknown', 'disabled'
  */
 function updateHAStatus(status) {
     const badge = document.getElementById('ha-status-badge');
@@ -284,6 +288,16 @@ function updateHAStatus(status) {
 
     // Normalize status string
     const s = (status || 'unknown').toLowerCase();
+
+    if (s === 'disabled') {
+        _haDisabled = true;
+        badge.style.display = 'none';
+        return;
+    }
+    if (_haDisabled && s === 'unknown') return;
+
+    _haDisabled = false;
+    badge.style.display = '';
 
     if (s === 'online') {
         badge.className = 'badge rounded-pill bg-success';
