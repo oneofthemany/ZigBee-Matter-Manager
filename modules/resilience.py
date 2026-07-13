@@ -17,6 +17,7 @@ from typing import Optional, Callable, Dict, Any
 from datetime import datetime, timedelta
 from bellows.ash import NcpFailure
 import bellows.types as t
+import zigpy.config as zigpy_conf
 
 logger = logging.getLogger("resilience")
 
@@ -184,6 +185,24 @@ class ResilienceManager:
             logger.info("Watchdog recovered, resetting failure counter")
             self.watchdog_failures = 0
 
+    def _restart_zigpy_watchdog(self):
+        """Recreate zigpy's watchdog feed loop after a manual reconnect.
+
+        zigpy only starts _watchdog_task in initialize(); the loop exits
+        when a feed fails (e.g. NCP failure), and connect()/start_network()
+        don't restart it — without this, nothing feeds the watchdog after
+        recovery and the stale/recover cycle repeats every ~3 minutes.
+        """
+        try:
+            if not self.app.config.get(zigpy_conf.CONF_WATCHDOG_ENABLED, True):
+                return
+            task = getattr(self.app, '_watchdog_task', None)
+            if task is None or task.done():
+                self.app._watchdog_task = asyncio.create_task(self.app._watchdog_loop())
+                logger.info("zigpy watchdog loop restarted")
+        except Exception as e:
+            logger.error(f"Failed to restart zigpy watchdog loop: {e}", exc_info=True)
+
     def _is_error_storm(self) -> bool:
         """
         Detect if we're experiencing an error storm.
@@ -259,6 +278,7 @@ class ResilienceManager:
                 # the NCP to report JOINED_NETWORK.
                 await self.app.start_network()
                 logger.info("Network restarted successfully")
+                self._restart_zigpy_watchdog()
                 self.feed_watchdog()
             except Exception as e:
                 logger.error(f"NCP reconnect failed: {e}", exc_info=True)
