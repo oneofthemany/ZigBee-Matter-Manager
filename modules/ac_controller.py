@@ -63,7 +63,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("zbm.ac")
 
@@ -569,6 +569,15 @@ class ACController:
                           f"'{cfg.get('brand')}' (use gree|midea)")
         self._adapters[unit_id] = adapter
         return adapter
+
+    def cached_status(self, unit_id: str) -> Optional[Tuple[float, Dict[str, Any]]]:
+        """(age_sec, status) of the last probe result, or None if never
+        probed. Never triggers a probe — the /api/devices hot path uses this
+        to stay non-blocking while an offline unit is timing out."""
+        cached = self._status_cache.get(unit_id)
+        if not cached:
+            return None
+        return time.monotonic() - cached[0], cached[1]
 
     async def status(self, unit_id: str, max_age_sec: float = STATUS_CACHE_SEC) -> Dict[str, Any]:
         cached = self._status_cache.get(unit_id)

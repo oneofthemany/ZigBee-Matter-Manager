@@ -107,38 +107,59 @@ def register_ac_routes(app: FastAPI):
     # protocol "wifi"; the frontend routes Manage to the AC modal via
     # ac_unit_id.
 
+    LIST_STATUS_MAX_AGE = 15.0
+
+    def _spawn_status_probe(ctl, unit_id: str) -> None:
+        """Refresh a unit's status cache in the background — at most one
+        in-flight probe per unit. The dict holds strong refs so the tasks
+        aren't garbage-collected mid-flight."""
+        tasks: Dict[str, asyncio.Task] = state.setdefault("probe_tasks", {})
+        t = tasks.get(unit_id)
+        if t is not None and not t.done():
+            return
+
+        async def _probe():
+            try:
+                await ctl.status(unit_id, max_age_sec=LIST_STATUS_MAX_AGE)
+            except Exception as e:
+                # status() caches its own failures; this only catches
+                # controller-level errors (bad config, unknown unit)
+                logger.debug(f"AC background probe for {unit_id} failed: {e}")
+
+        tasks[unit_id] = asyncio.create_task(_probe())
+
     async def _device_list_entries() -> list:
         import time as _time
-        async def _one(u):
-            # /api/devices is a hot path — don't let one cold/offline unit
-            # stall the whole device list (controller caches errors, so the
-            # slow probe happens at most once per cache window).
-            try:
-                return await asyncio.wait_for(
-                    ctl.status(str(u.get("id")), max_age_sec=15.0), timeout=4.0)
-            except Exception as e:
-                return {"online": False, "error": str(e)}
-
+        # /api/devices is a hot path — never probe a unit inline. Serve the
+        # last cached status (stale is fine) and refresh in the background,
+        # so an offline unit can't stall the whole device list.
         try:
             ctl = _controller()
             if not ctl.units:
                 return []
-            statuses = await asyncio.gather(*(_one(u) for u in ctl.units))
         except Exception as e:
             logger.warning(f"AC device-list entries failed: {e}")
             return []
         entries = []
-        for u, s in zip(ctl.units, statuses):
+        for u in ctl.units:
+            uid = str(u.get("id"))
+            cached = ctl.cached_status(uid)
+            if cached is None or cached[0] >= LIST_STATUS_MAX_AGE:
+                _spawn_status_probe(ctl, uid)
+            s = cached[1] if cached else {}
             online = bool(s.get("online"))
             entries.append({
-                "ieee": str(u.get("id")),
-                "ac_unit_id": str(u.get("id")),
+                "ieee": uid,
+                "ac_unit_id": uid,
                 "friendly_name": u.get("name") or u.get("id"),
                 "type": "AirConditioner",
                 "protocol": "wifi",
                 "manufacturer": str(u.get("brand") or "").capitalize(),
                 "model": u.get("model") or str(u.get("brand") or "").capitalize(),
-                "available": online,
+                # None (unknown) until the first probe lands, so a fresh boot
+                # doesn't flash every AC as offline — the UI only treats an
+                # explicit false as offline.
+                "available": online if cached else None,
                 "ip_addresses": [u.get("host")] if u.get("host") else [],
                 "last_seen_ts": int(_time.time() * 1000) if online else None,
                 "state": {k: s.get(k) for k in
