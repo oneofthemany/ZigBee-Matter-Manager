@@ -574,12 +574,17 @@ WORKDIR /app
 
 # ── Application requirements (layer cache) ──
 # Install from the fully-pinned lockfile for reproducible builds/upgrades.
-# requirements.lock is generated from requirements.txt via:
-#   uv pip compile requirements.txt --python-version 3.11 \
-#       --python-platform x86_64-manylinux_2_31 -o requirements.lock
+# requirements.lock is generated from requirements.txt via scripts/regen_lock.sh
+# (uv pip compile, python 3.11, manylinux_2_31).
 # It already includes python-matter-server[server] (and its home-assistant-chip-core
 # native runtime), so no separate extras install is needed. The manylinux_2_31
 # platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
+#
+# The --mount=type=cache keeps pip's wheel/download cache in a host-side
+# buildah volume that survives across builds (it is NOT committed to the
+# image). When a release changes requirements, only the new/changed packages
+# are downloaded — everything else installs from the local cache. Supported
+# natively by podman/buildah; docker needs BuildKit (both fine here).
 #
 # The follow-up `pip install -r requirements.txt` is a self-heal top-up: when
 # the lock is complete it's a no-op, but if a release added a package to
@@ -588,9 +593,10 @@ WORKDIR /app
 # breaks at import time. The upgrade watcher logs a drift warning when this
 # top-up is expected to do real work.
 COPY requirements.lock requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.lock \
- && pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+ && pip install -r requirements.lock \
+ && pip install -r requirements.txt
 DOCKERFILE_TOP
 
     # Part 2 — zmm_telemetry Rust appender (optional)
