@@ -342,6 +342,19 @@ function _renderPage(container, devices) {
             <div class="card-body" id="ap-edit-host"></div>
         </div>
 
+        <!-- Trace Panel (hidden by default) -->
+        <div id="ap-trace-panel" class="card mb-3" style="display:none">
+            <div class="card-header bg-dark text-white d-flex justify-content-between py-1">
+                <strong><i class="fas fa-search"></i> Trace</strong>
+                <div class="d-flex gap-2 align-items-center">
+                    <select class="form-select form-select-sm bg-dark text-white border-secondary" id="tf" style="width:auto;max-width:220px;font-size:.75rem" onchange="window._aRefTrace()"><option value="">All</option></select>
+                    <button class="btn btn-sm btn-outline-light" onclick="window._aRefTrace()"><i class="fas fa-sync-alt"></i></button>
+                    <button class="btn btn-sm btn-outline-light" onclick="document.getElementById('ap-trace-panel').style.display='none'"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
+            <div class="card-body p-0" style="max-height:400px;overflow-y:auto"><div id="a-trace-c" class="font-monospace small p-2"></div></div>
+        </div>
+
         <!-- Rules List -->
         <div id="ap-rules-list"></div>
     `;
@@ -444,6 +457,7 @@ function _ruleCard(rule, src) {
             <span class="ap-csum">When ${trig.text} → ${nActs} action${nActs === 1 ? '' : 's'}</span>
             ${stateChip}
             <span class="ap-crow-btns" onclick="event.stopPropagation()">
+                <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._apTrace('${rule.id}')" title="Trace"><i class="fas fa-search"></i></button>
                 <button class="btn btn-sm btn-outline-primary py-0" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'} py-0" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
                 <button class="btn btn-sm btn-outline-danger py-0" onclick="window._apDelete('${rule.id}')" title="Delete"><i class="fas fa-trash"></i></button>
@@ -463,6 +477,7 @@ function _ruleCard(rule, src) {
         <div class="ap-foot">
             <button class="btn btn-sm btn-outline-secondary" onclick="window._apToggleExpand('${rule.id}')" title="Collapse"><i class="fas fa-chevron-up"></i></button>
             <span class="spacer"></span>
+            <button class="btn btn-sm btn-outline-secondary" onclick="window._apTrace('${rule.id}')" title="Trace"><i class="fas fa-search"></i> Trace</button>
             <button class="btn btn-sm btn-outline-primary" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i> Edit</button>
             <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'}" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
             <button class="btn btn-sm btn-outline-danger" onclick="window._apDelete('${rule.id}')" title="Delete"><i class="fas fa-trash"></i></button>
@@ -513,11 +528,35 @@ function _syncExpandBtn(rules) {
     btn.title = allOpen ? 'Collapse all' : 'Expand all';
 }
 
+// --- Trace ---
+
+// Open the page-level trace panel filtered to one rule. Reuses the trace
+// loader from modal/automation.js (window._aRefTrace), which reads the shared
+// #tf / #a-trace-c IDs — the create/edit hosts render their own copies of
+// those IDs, so clear them first or they'd shadow the panel's.
+function _apTrace(ruleId) {
+    document.getElementById('ap-create-panel').style.display = 'none';
+    document.getElementById('ap-form-host').innerHTML = '';
+    document.getElementById('ap-edit-panel').style.display = 'none';
+    document.getElementById('ap-edit-host').innerHTML = '';
+
+    const panel = document.getElementById('ap-trace-panel');
+    const f = document.getElementById('tf');
+    f.innerHTML = '<option value="">All</option>'
+        + allRulesCache.map(r => `<option value="${_esc(r.id)}">${_esc(r.name || r.id)}</option>`).join('')
+        + '<option value="-">System</option>';
+    f.value = ruleId || '';
+    panel.style.display = 'block';
+    panel.scrollIntoView({ behavior: 'smooth' });
+    window._aRefTrace();
+}
+
 // --- Create ---
 
 function _apCreate() {
     document.getElementById('ap-create-panel').style.display = 'block';
     document.getElementById('ap-edit-panel').style.display = 'none';
+    document.getElementById('ap-trace-panel').style.display = 'none';
     document.getElementById('ap-source-select').value = '';
     document.getElementById('ap-form-host').innerHTML = '<div class="text-muted small">Select a source device to begin.</div>';
     document.getElementById('ap-create-panel').scrollIntoView({ behavior: 'smooth' });
@@ -563,8 +602,9 @@ async function _apEdit(ruleId) {
     const rule = allRulesCache.find(r => r.id === ruleId);
     if (!rule) return;
 
-    // Close create panel if open
+    // Close create panel / trace panel if open
     document.getElementById('ap-create-panel').style.display = 'none';
+    document.getElementById('ap-trace-panel').style.display = 'none';
 
     const editPanel = document.getElementById('ap-edit-panel');
     const editHost = document.getElementById('ap-edit-host');
@@ -677,6 +717,7 @@ window._apRefresh = _apRefresh;
 window._apFilterDev = _apFilterDev;
 window._apFilterState = _apFilterState;
 window._apToggleExpand = _apToggleExpand;
+window._apTrace = _apTrace;
 window._apExpandAll = _apExpandAll;
 window._apCreate = _apCreate;
 window._apCloseCreate = _apCloseCreate;
