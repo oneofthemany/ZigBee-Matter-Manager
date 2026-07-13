@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from fastapi import FastAPI, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("routes.tts")
@@ -88,5 +89,24 @@ def register_tts_routes(app: FastAPI, get_tts):
     async def tts_setup_job():
         svc = get_tts()
         return svc.setup_job() if svc else {"status": "idle"}
+
+    # ── Endless soundscape stream for casting to media players ──────────
+    # Played on Cast/WiiM through POST /api/media/play, exactly like a
+    # radio station URL — the server synthesizes the therapy bed + speech.
+
+    @app.get("/api/therapy/stream")
+    async def therapy_stream(mode: str = "relaxation", speech: int = 1,
+                             voice: str = "", speed: float = 0.75,
+                             pitch: float = 1.0, interval: int = 45,
+                             breath: str = "4-7-8"):
+        from modules.media.therapy_stream import TherapyStream
+        svc = _svc()
+        tts_ok = bool(svc) and await svc.status()
+        ts = TherapyStream(svc if tts_ok else None, mode,
+                           speech=bool(speech) and tts_ok,
+                           voice=voice or "af_heart", speech_speed=speed,
+                           pitch=pitch, interval=interval, breath=breath)
+        return StreamingResponse(ts.wav_stream(), media_type="audio/wav",
+                                 headers={"Cache-Control": "no-store"})
 
     logger.info("TTS routes registered")

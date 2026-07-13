@@ -305,6 +305,12 @@ export default function MusicTherapyServer() {
   const [setupMsg, setSetupMsg] = useState("");
   const setupPollRef = useRef(null);
 
+  // Cast-to-player (server-side stream via /api/media/play, like radio)
+  const [players, setPlayers] = useState([]);
+  const [castPlayer, setCastPlayer] = useState(() => localStorage.getItem("zmm-tts-castplayer") || "");
+  const [castingOn, setCastingOn] = useState(null);   // player_id while casting
+  const [castMsg, setCastMsg] = useState("");
+
   // ── Editable voice profiles (per mode) ──
   const [voiceProfiles, setVoiceProfiles] = useState(() => JSON.parse(JSON.stringify(VOICE_PROFILE_DEFAULTS)));
 
@@ -372,6 +378,54 @@ export default function MusicTherapyServer() {
       setSetupBusy(false);
     }
   }, [checkTts]);
+
+  // ── Cast to media players (same /api/media/play path as radio/Tidal) ──
+  useEffect(() => {
+    fetch('/api/media/players').then(r => r.json())
+      .then(d => { if (d.success) setPlayers(d.players || []); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { localStorage.setItem("zmm-tts-castplayer", castPlayer); }, [castPlayer]);
+
+  const castStart = useCallback(async () => {
+    if (!castPlayer) return;
+    const vp = voiceProfiles[mode] || VOICE_PROFILE_DEFAULTS[mode];
+    const params = new URLSearchParams({
+      mode,
+      speech: speechEnabled && piperConnected ? "1" : "0",
+      voice: getDefaultVoice(region, voiceGender, piperVoiceOverride),
+      speed: String(vp.speed),
+      pitch: String(vp.pitch),
+      interval: String(speechInterval),
+    });
+    if (mode === "breathwork") params.set("breath", breathPattern);
+    setCastMsg("");
+    try {
+      const r = await fetch('/api/media/play', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: castPlayer,
+          url: `${location.origin}/api/therapy/stream?${params}`,
+          title: `Neural Therapy — ${MODES[mode].label}`,
+          artist: "Neural Therapy",
+          content_type: "audio/wav",
+        }),
+      }).then(x => x.json());
+      if (r.success) setCastingOn(castPlayer);
+      else setCastMsg(r.error || "Cast failed");
+    } catch { setCastMsg("Cast request failed"); }
+  }, [castPlayer, mode, speechEnabled, piperConnected, region, voiceGender, piperVoiceOverride, voiceProfiles, speechInterval, breathPattern]);
+
+  const castStop = useCallback(async () => {
+    if (!castingOn) return;
+    try {
+      await fetch('/api/media/control', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_id: castingOn, action: 'stop' }),
+      });
+    } catch {}
+    setCastingOn(null);
+  }, [castingOn]);
 
   const vp = voiceProfiles[mode] || VOICE_PROFILE_DEFAULTS[mode];
   const bounds = VOICE_PROFILE_BOUNDS[mode] || VOICE_PROFILE_BOUNDS.focus;
@@ -693,6 +747,28 @@ export default function MusicTherapyServer() {
       <div style={{ width: "100%", maxWidth: 420, background: "rgba(0,0,0,0.25)", borderRadius: 14, padding: 18, border: "1px solid rgba(255,255,255,0.04)", minHeight: 180 }}>
 
         {tab === "controls" && <>
+          {/* Cast to speakers */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={SS.label}>CAST TO SPEAKERS</span>
+              {castingOn && <span style={{ ...SS.mono, fontSize: 9, color: config.color, animation: "pulse 1.5s infinite" }}>● CASTING</span>}
+            </div>
+            {players.length ? <div style={{ display: "flex", gap: 6 }}>
+              <select value={castPlayer} onChange={e => setCastPlayer(e.target.value)} style={{ flex: 1, minWidth: 0, padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e0ddd5", ...SS.mono, fontSize: 10, cursor: "pointer" }}>
+                <option value="" style={{ background: "#1a1a1a" }}>Select a player…</option>
+                {players.map(p => <option key={p.id} value={p.id} style={{ background: "#1a1a1a" }}>{p.name || p.id}</option>)}
+              </select>
+              {!castingOn
+                ? <button onClick={castStart} disabled={!castPlayer} style={{ ...btnStyle(!!castPlayer), padding: "8px 14px", opacity: castPlayer ? 1 : 0.4 }}>▶ Cast</button>
+                : <button onClick={castStop} style={{ ...btnStyle(true), padding: "8px 14px", borderColor: "rgba(255,100,100,0.4)", color: "rgba(255,100,100,0.7)", background: "rgba(255,100,100,0.08)" }}>⏹ Stop</button>}
+            </div> : <div style={{ ...SS.mono, fontSize: 9, opacity: 0.35 }}>No media players found</div>}
+            {castMsg && <div style={{ marginTop: 6, ...SS.mono, fontSize: 8, color: "#e87838" }}>{castMsg}</div>}
+            {castingOn && <div style={{ marginTop: 6, ...SS.mono, fontSize: 8, opacity: 0.4 }}>
+              Streaming {config.label} to the player — re-cast after changing mode or voice settings.
+              Binaural beats need headphones; on speakers you still get the ambient bed and voice.
+            </div>}
+          </div>
+
           {/* Session Timer */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
