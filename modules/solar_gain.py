@@ -87,7 +87,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from sun_position import sun_position
+from .sun_position import sun_position
 
 # ── Solar Heat Gain Coefficients by glazing type ──────────────────────
 # ASHRAE Fundamentals 2021, Table 15 (centre-of-glass SHGC).
