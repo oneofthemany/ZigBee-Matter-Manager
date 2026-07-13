@@ -31,6 +31,7 @@ edits apply without a restart. Lock ids are channel-namespaced:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -46,6 +47,10 @@ from modules.nuki_controller import (
 logger = logging.getLogger("zbm.security")
 
 CONFIG_PATH = "./config/config.yaml"
+# Last bridge /list snapshot persisted across restarts (mirrors the AC
+# status store) so the lock modal/device list render instantly on boot.
+LOCKS_STORE_PATH = "./data/nuki_locks_cache.json"
+LOCKS_STORE_MIN_WRITE_SEC = 30.0
 
 
 def _load_nuki_cfg() -> Dict[str, Any]:
@@ -122,7 +127,43 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
         locks = [client.normalize_device(d) for d in devices]
         state["bridge_cache"] = (time.monotonic(), locks)
         _emit_changes(_sync_lock_registry(locks))
+        _persist_locks(locks)
         return locks
+
+    def _persist_locks(locks: List[Dict[str, Any]]) -> None:
+        now = time.monotonic()
+        if now - state.get("last_persist", 0.0) < LOCKS_STORE_MIN_WRITE_SEC:
+            return
+        state["last_persist"] = now
+        try:
+            os.makedirs(os.path.dirname(LOCKS_STORE_PATH), exist_ok=True)
+            tmp = LOCKS_STORE_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"ts": time.time(),
+                           "locks": [{k: v for k, v in l.items()
+                                      if k != "cached"} for l in locks]}, f)
+            os.replace(tmp, LOCKS_STORE_PATH)
+        except OSError as e:
+            logger.debug(f"Nuki locks store write failed: {e}")
+
+    def _load_persisted_locks() -> None:
+        try:
+            with open(LOCKS_STORE_PATH, "r") as f:
+                raw = json.load(f) or {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        locks = raw.get("locks") or []
+        if not locks:
+            return
+        age = max(0.0, time.time() - float(raw.get("ts") or 0))
+        for lock in locks:
+            lock["cached"] = True   # tell the UI this may be stale
+        state["bridge_cache"] = (time.monotonic() - age, locks)
+        _sync_lock_registry(locks)   # pre-populate the device registry
+        logger.info(f"Nuki: restored {len(locks)} lock(s) from cache "
+                    f"({age:.0f}s old)")
+
+    _load_persisted_locks()
 
     def _cached_bridge_locks():
         c = state["bridge_cache"]
@@ -285,19 +326,32 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
         return out
 
     @app.get("/api/security/nuki/locks")
-    async def nuki_locks():
+    async def nuki_locks(max_age: float = 0.0):
+        """max_age > 0 serves the app-side bridge cache (persisted across
+        restarts) when younger than that many seconds — the lock modal uses
+        it to render instantly, then refreshes live. Matter locks are always
+        served from the matter bridge's in-memory registry (no probe cost)."""
         if not _load_nuki_cfg().get("enabled"):
             return {"success": True, "enabled": False, "locks": []}
         locks: List[Dict[str, Any]] = []
         errors: List[str] = []
+        age_sec = 0
         if _channel_enabled("bridge"):
             try:
-                locks.extend(await _fetch_bridge_locks())
+                cached = _cached_bridge_locks()
+                if max_age > 0 and cached and cached[0] < max_age:
+                    locks.extend(cached[1])
+                    age_sec = round(cached[0], 1)
+                    if cached[0] >= BRIDGE_LIST_MAX_AGE:
+                        _spawn_bridge_probe()
+                else:
+                    locks.extend(await _fetch_bridge_locks())
             except Exception as e:
                 errors.append(f"bridge: {str(e) or type(e).__name__}")
         if _channel_enabled("matter"):
             locks.extend(_matter_locks())
-        return {"success": True, "enabled": True, "locks": locks, "errors": errors}
+        return {"success": True, "enabled": True, "locks": locks,
+                "errors": errors, "age_sec": age_sec}
 
     @app.post("/api/security/nuki/locks/{lock_id}/action")
     async def nuki_lock_action(lock_id: str, data: dict):

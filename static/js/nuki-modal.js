@@ -29,22 +29,30 @@ export async function openNukiModal(lockId) {
     body.innerHTML = `<div class="text-center text-muted py-5">
         <i class="fas fa-spinner fa-spin me-2"></i>Contacting lock…</div>`;
     bootstrap.Modal.getOrCreateInstance(modalEl).show();
-    await refreshNukiModal(lockId);
+    // Render instantly from the app-side cache (persisted across restarts),
+    // then refresh live in the background if what we showed wasn't fresh.
+    const res = await refreshNukiModal(lockId, 86400);
+    const lock = res?.locks?.find(l => l.id === lockId);
+    if (lock?.via === 'bridge' && (res.age_sec > 5 || lock.cached)) {
+        refreshNukiModal(lockId);
+    }
 }
 
-async function refreshNukiModal(lockId) {
+async function refreshNukiModal(lockId, maxAge = 0) {
     const body = document.getElementById('capModalBody');
-    if (!body || lockId !== currentLockId) return;
+    if (!body || lockId !== currentLockId) return null;
     try {
-        const r = await fetch('/api/security/nuki/locks');
+        const r = await fetch(`/api/security/nuki/locks?max_age=${maxAge}`);
         const res = await r.json();
         if (!res.success) throw new Error(res.error || 'status failed');
         const lock = (res.locks || []).find(l => l.id === lockId);
         if (!lock) throw new Error('Lock not found — is the bridge reachable?');
         renderNukiModal(lock);
+        return res;
     } catch (e) {
         log.error('Nuki modal status failed:', e);
         body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`;
+        return null;
     }
 }
 
@@ -129,7 +137,9 @@ function renderNukiModal(l) {
         </button>`).join('')}
     </div>
     <div id="nukiModalHint" class="text-center text-muted small">
-      ${l.last_updated ? 'Lock state as of ' + esc(l.last_updated) : ''}
+      ${l.cached
+        ? '<i class="fas fa-history me-1"></i>cached state — refreshing…'
+        : (l.last_updated ? 'Lock state as of ' + esc(l.last_updated) : '')}
     </div>
     `;
 }
