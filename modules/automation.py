@@ -1350,7 +1350,11 @@ class AutomationEngine:
         try:
             ok, detail = True, ""
             if action == "play_radio":
-                await svc.play_radio_station(player_id, step["station_uuid"])
+                # Favourited stations play from their pinned snapshot (no
+                # directory lookup), so the rule still fires when the
+                # radio-browser directory is unreachable; falls back to a
+                # live lookup for non-favourited stations.
+                await svc.play_radio_favourite(player_id, step["station_uuid"])
             elif action == "play_tidal":
                 res = await svc.play_tidal(
                     player_id, step.get("tidal_kind"), step.get("tidal_id"),

@@ -114,7 +114,8 @@ class MediaService:
     async def play_radio_station(self, player_id: str, station_uuid: str) -> MediaItem:
         station = await self.radio.get_station(station_uuid)
         if not station:
-            raise ValueError(f"Radio station {station_uuid} not found")
+            raise ValueError(f"Radio station {station_uuid} not found "
+                             f"(or radio directory unreachable)")
         item = station.to_media_item()
         # Single-item queue so radio shows consistently in the now-playing/queue
         # UI. Radio is LIVE (duration 0) so it never auto-advances.

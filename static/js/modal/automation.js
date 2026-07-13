@@ -621,7 +621,8 @@ function _mediaSubHtml(step, sid) {
     if (a === 'play_radio')
         return `<div class="input-group input-group-sm">
             <input type="text" class="form-control s-msearch" data-sid="${sid}" placeholder="Search stations…" onkeydown="if(event.key==='Enter'){event.preventDefault();window._aMediaSearch(${sid},'radio');}">
-            <button class="btn btn-outline-secondary" type="button" onclick="window._aMediaSearch(${sid},'radio')"><i class="fas fa-search"></i></button>
+            <button class="btn btn-outline-secondary" type="button" onclick="window._aMediaSearch(${sid},'radio')" title="Search the radio directory"><i class="fas fa-search"></i></button>
+            <button class="btn btn-outline-warning" type="button" onclick="window._aMediaFavs(${sid})" title="Pick from favourites"><i class="fas fa-star"></i></button>
             <select class="form-select s-mtarget" data-sid="${sid}">${_mediaSavedOpt(step)}</select></div>`;
     // play_tidal
     const kind = step.tidal_kind || 'playlist';
@@ -676,6 +677,8 @@ window._aMAction = (sid, sel) => {
     if (sub) sub.innerHTML = _mediaSubHtml(s, sid);
     if (s.media_action==='play_tidal' && (s.tidal_kind||'playlist')!=='track')
         _aMediaLoadLib(sid, s.tidal_kind||'playlist', s.tidal_id);
+    else if (s.media_action==='play_radio')
+        window._aMediaFavs(sid);
 };
 
 window._aMediaKind = (sid, sel) => {
@@ -685,6 +688,25 @@ window._aMediaKind = (sid, sel) => {
     const sub = document.getElementById(`media-sub-${sid}`);
     if (sub) sub.innerHTML = _mediaSubHtml(s, sid);
     if (s.tidal_kind !== 'track') _aMediaLoadLib(sid, s.tidal_kind);
+};
+
+// Populate a radio step's target dropdown from pinned favourites. Favourited
+// stations play from their stored snapshot at rule time, so the automation
+// keeps working even when the radio-browser directory is unreachable.
+window._aMediaFavs = async (sid) => {
+    const sel = document.querySelector(`.s-mtarget[data-sid="${sid}"]`); if(!sel) return;
+    const cur = sel.value;
+    const curLbl = sel.options[sel.selectedIndex]?.dataset?.label || cur;
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+        const j = await (await fetch('/api/media/radio/favourites')).json();
+        const st = j.success ? (j.stations||[]) : [];
+        if (!st.length) { sel.innerHTML = '<option value="">no favourites — ⭐ a station in the Media tab</option>'; return; }
+        sel.innerHTML = '<option value="">— pick a favourite —</option>' + st.map(s=>
+            `<option value="${s.uuid}" data-label="${String(s.name||'').replace(/"/g,'&quot;')}" ${s.uuid===cur?'selected':''}>⭐ ${s.name}${s.country?' · '+s.country:''}</option>`).join('');
+        if (cur && !st.some(s=>s.uuid===cur))
+            sel.insertAdjacentHTML('afterbegin', `<option value="${cur}" data-label="${String(curLbl).replace(/"/g,'&quot;')}" selected>${curLbl}</option>`);
+    } catch(e) { sel.innerHTML = '<option value="">load failed</option>'; }
 };
 
 window._aMediaSearch = async (sid, kind) => {
@@ -725,6 +747,9 @@ function _initStepSelects(steps, path) {
             // Reload the library so an edited Tidal step shows its peers (saved id stays selected).
             if(s.media_action==='play_tidal' && s.tidal_kind && s.tidal_kind!=='track')
                 _aMediaLoadLib(s._id, s.tidal_kind, s.tidal_id);
+            // Same for radio: offer favourites alongside the saved station.
+            else if(s.media_action==='play_radio')
+                window._aMediaFavs(s._id);
         }
     });
 }
