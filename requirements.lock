@@ -39,8 +39,11 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   jsonschema
+    #   phonemizer-fork
     #   referencing
     #   zigpy
+babel==2.18.0
+    # via csvw
 bellows==0.49.0
     # via -r requirements.txt
 casttube==0.2.1
@@ -67,7 +70,9 @@ coloredlogs==15.0.1
     #   python-matter-server
     #   zigpy-znp
 colorlog==6.10.1
-    # via midea-local
+    # via
+    #   kokoro-onnx
+    #   midea-local
 commonregex==1.5.4
     # via midea-local
 construct==2.10.70
@@ -79,6 +84,8 @@ cryptography==44.0.0
     #   home-assistant-chip-core
     #   python-matter-server
     #   zigpy
+csvw==4.1.0
+    # via segments
 dacite==1.9.2
     # via
     #   home-assistant-chip-clusters
@@ -93,14 +100,20 @@ deprecated==1.3.1
     # via midea-local
 deprecation==2.1.0
     # via home-assistant-chip-core
+dlinfo==2.0.0
+    # via phonemizer-fork
 duckdb==1.5.4
     # via -r requirements.txt
 ecdsa==0.19.2
     # via home-assistant-chip-core
+espeakng-loader==0.2.4
+    # via kokoro-onnx
 executing==2.2.1
     # via stack-data
 fastapi==0.138.1
     # via -r requirements.txt
+flatbuffers==25.12.19
+    # via onnxruntime
 frozendict==2.4.7
     # via zigpy
 frozenlist==1.8.0
@@ -142,15 +155,24 @@ ipython==9.15.0
 ipython-pygments-lexers==1.1.1
     # via ipython
 isodate==0.7.2
-    # via tidalapi
+    # via
+    #   csvw
+    #   tidalapi
 jedi==0.20.0
     # via ipython
+joblib==1.5.3
+    # via phonemizer-fork
 jsonschema==4.26.0
     # via
+    #   csvw
     #   zigpy
     #   zigpy-znp
 jsonschema-specifications==2025.9.1
     # via jsonschema
+kokoro-onnx==0.4.7
+    # via -r requirements.txt
+language-tags==1.3.1
+    # via csvw
 markdown-it-py==4.2.0
     # via rich
 matplotlib-inline==0.2.2
@@ -168,17 +190,26 @@ multidict==6.7.1
 netifaces==0.11.0
     # via greeclimate
 numpy==2.4.6
-    # via -r requirements.txt
+    # via
+    #   -r requirements.txt
+    #   kokoro-onnx
+    #   onnxruntime
+onnxruntime==1.27.0
+    # via kokoro-onnx
 orjson==3.10.13
     # via python-matter-server
 packaging==26.2
-    # via deprecation
+    # via
+    #   deprecation
+    #   onnxruntime
 paho-mqtt==2.1.0
     # via aiomqtt
 parso==0.8.7
     # via jedi
 pexpect==4.9.0
     # via ipython
+phonemizer-fork==3.3.1
+    # via kokoro-onnx
 platformdirs==4.10.0
     # via midea-local
 prompt-toolkit==3.0.52
@@ -188,7 +219,9 @@ propcache==0.5.2
     #   aiohttp
     #   yarl
 protobuf==7.35.1
-    # via pychromecast
+    # via
+    #   onnxruntime
+    #   pychromecast
 psutil==7.2.2
     # via ipython
 ptyprocess==0.7.0
@@ -216,12 +249,16 @@ pygments==2.20.0
     #   ipython
     #   ipython-pygments-lexers
     #   rich
+pyparsing==3.3.2
+    # via rdflib
 pyserial==3.5
     # via pyserial-asyncio-fast
 pyserial-asyncio-fast==0.16
     # via zigpy
 python-dateutil==2.9.0.post0
-    # via tidalapi
+    # via
+    #   csvw
+    #   tidalapi
 python-dotenv==1.2.2
     # via uvicorn
 python-matter-server==7.0.1
@@ -235,20 +272,28 @@ pyyaml==6.0.3
     #   uvicorn
 ratelimit==2.2.1
     # via tidalapi
+rdflib==7.6.0
+    # via csvw
 referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
+regex==2026.7.10
+    # via segments
 requests==2.34.2
     # via
     #   casttube
     #   tidalapi
+rfc3986==1.5.0
+    # via csvw
 rich==15.0.0
     # via home-assistant-chip-core
 rpds-py==2026.5.1
     # via
     #   jsonschema
     #   referencing
+segments==2.4.0
+    # via phonemizer-fork
 six==1.17.0
     # via
     #   ecdsa
@@ -257,6 +302,8 @@ stack-data==0.6.3
     # via ipython
 starlette==1.3.1
     # via fastapi
+termcolor==3.3.0
+    # via csvw
 tidalapi==0.8.11
     # via -r requirements.txt
 traitlets==5.15.1
@@ -270,6 +317,7 @@ typing-extensions==4.15.0
     #   anyio
     #   fastapi
     #   ipython
+    #   phonemizer-fork
     #   pydantic
     #   pydantic-core
     #   referencing
@@ -281,6 +329,8 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
+uritemplate==4.2.0
+    # via csvw
 urllib3==2.7.0
     # via requests
 uvicorn==0.49.0

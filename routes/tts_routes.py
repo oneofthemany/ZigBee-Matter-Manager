@@ -68,4 +68,25 @@ def register_tts_routes(app: FastAPI, get_tts):
         svc = _svc()
         return {"connected": bool(svc) and await svc.status()}
 
+    # ── Engine setup (kokoro: model download; wyoming: external server) ─────
+
+    @app.get("/api/tts/setup/status")
+    async def tts_setup_status():
+        svc = get_tts()
+        if not svc:
+            return {"installable": False}
+        return svc.setup_status()
+
+    @app.post("/api/tts/setup/start")
+    async def tts_setup_start():
+        svc = get_tts()
+        if not svc:
+            return {"success": False, "error": "TTS not configured"}
+        return svc.setup_start()
+
+    @app.get("/api/tts/setup/job")
+    async def tts_setup_job():
+        svc = get_tts()
+        return svc.setup_job() if svc else {"status": "idle"}
+
     logger.info("TTS routes registered")

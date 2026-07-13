@@ -19,3 +19,4 @@ tidalapi~=0.8
 greeclimate
 midea-local
 numpy
+kokoro-onnx==0.4.7

@@ -1,9 +1,11 @@
 """
-TherapyTTS — neural TTS for the therapy SPA (/static/therapy/).
+TherapyTTS — Wyoming (external piper) backend for the therapy SPA.
 
-Talks the Wyoming protocol to the wyoming-piper container that already runs
-on the host for HA voice (no extra sidecar), assembles the streamed PCM into
-a WAV, and caches results on disk keyed by (voice, speed, pitch, text).
+Legacy/alternative engine: talks the Wyoming protocol to a wyoming-piper
+container (e.g. the one HA voice hosts already run), assembles the streamed
+PCM into a WAV, and caches results on disk keyed by (voice, speed, pitch,
+text). The default engine is the in-process KokoroTTS — see
+modules/media/kokoro_tts.py and the create_therapy_tts() factory below.
 
 Piper applies speech speed via length_scale, which wyoming-piper does not
 expose per-request, so speed != 1.0 is approximated here with a WSOLA
@@ -15,8 +17,10 @@ Config (config.yaml):
   media:
     therapy:
       enabled: true
-      piper_host: "127.0.0.1"   # wyoming-piper, host network
-      piper_port: 10200
+      engine: wyoming       # kokoro (default, in-process) | wyoming
+      wyoming:
+        host: "127.0.0.1"   # wyoming-piper server, host network
+        port: 10200
 """
 from __future__ import annotations
 
@@ -52,8 +56,11 @@ class TherapyTTS:
     def __init__(self, config: dict, cache_dir: str = "data/tts_cache"):
         config = config or {}
         self.enabled = config.get("enabled", True)
-        self.host = config.get("piper_host", "127.0.0.1")
-        self.port = int(config.get("piper_port", 10200))
+        # media.therapy.wyoming.{host,port}; legacy piper_host/piper_port
+        # (pre-kokoro configs) still honoured.
+        wy = config.get("wyoming") or {}
+        self.host = wy.get("host", config.get("piper_host", "127.0.0.1"))
+        self.port = int(wy.get("port", config.get("piper_port", 10200)))
         self.cache_dir = Path(cache_dir)
         self._sem = asyncio.Semaphore(2)
         self._stretch_warned = False
@@ -271,3 +278,30 @@ class TherapyTTS:
         if len(files) > _CACHE_MAX_FILES:
             for stale in files[:_CACHE_TRIM_BATCH]:
                 stale.unlink(missing_ok=True)
+
+    # ── Setup (/api/tts/setup/*) — nothing to install for this engine ───
+
+    def setup_status(self) -> dict:
+        return {"engine": "wyoming", "ready": None, "installable": False,
+                "hint": f"Expects a wyoming-piper server at "
+                        f"{self.host}:{self.port} (media.therapy config)."}
+
+    def setup_start(self) -> dict:
+        return {"success": False,
+                "error": "The wyoming engine uses an external piper server — "
+                         "start it on the host, or switch media.therapy.engine "
+                         "to 'kokoro' for the built-in engine."}
+
+    def setup_job(self) -> dict:
+        return {"status": "idle"}
+
+
+def create_therapy_tts(config: dict):
+    """Engine factory for the therapy TTS (media.therapy.engine)."""
+    engine = ((config or {}).get("engine") or "kokoro").lower()
+    if engine == "wyoming":
+        return TherapyTTS(config)
+    if engine != "kokoro":
+        logger.warning("Unknown media.therapy.engine %r — using kokoro", engine)
+    from modules.media.kokoro_tts import KokoroTTS
+    return KokoroTTS(config)

@@ -1,11 +1,6 @@
-/core/new.py
-/device/new.py
-/handlers/new.py
-/modules/new.py
-/routes/new.py
-/static/js/modal/new.js
-/static/js/new.js
-/static/new.html
 /build_root.sh
-/new.py
-/new.md
+/frontend/therapy/node_modules/
+/logs/data/tts_models/
+/data/tts_cache/
+/logs__pycache__/
+*.pyc

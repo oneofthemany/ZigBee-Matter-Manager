@@ -1,24 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// Languages covered by the Kokoro-82M voice pack
 const REGIONS = [
   { code: "en-US", label: "English (US)" },
   { code: "en-GB", label: "English (UK)" },
-  { code: "en-AU", label: "English (Australia)" },
-  { code: "en-IN", label: "English (India)" },
-  { code: "es-ES", label: "Spanish (Spain)" },
-  { code: "es-MX", label: "Spanish (Mexico)" },
-  { code: "fr-FR", label: "French (France)" },
-  { code: "de-DE", label: "German" },
-  { code: "it-IT", label: "Italian" },
-  { code: "pt-BR", label: "Portuguese (Brazil)" },
-  { code: "ja-JP", label: "Japanese" },
-  { code: "ko-KR", label: "Korean" },
-  { code: "zh-CN", label: "Chinese (Mandarin)" },
+  { code: "es-ES", label: "Spanish" },
+  { code: "fr-FR", label: "French" },
   { code: "hi-IN", label: "Hindi" },
-  { code: "ar-SA", label: "Arabic" },
-  { code: "nl-NL", label: "Dutch" },
-  { code: "sv-SE", label: "Swedish" },
-  { code: "ru-RU", label: "Russian" },
+  { code: "it-IT", label: "Italian" },
+  { code: "ja-JP", label: "Japanese" },
+  { code: "pt-BR", label: "Portuguese (Brazil)" },
+  { code: "zh-CN", label: "Chinese (Mandarin)" },
 ];
 
 const DEFAULT_MESSAGES = {
@@ -104,37 +96,33 @@ const SESSION_DURATIONS = [
   { value: 7200, label: "2h",     desc: "2 hours" },
 ];
 
-// Voice IDs must match filenames in /data/voices (pre-downloaded in Piper container)
-const PIPER_VOICES = {
-  "en-US-female": "en_US-amy-medium",
-  "en-US-male":   "en_US-danny-low",
-  "en-GB-female": "en_GB-alba-medium",
-  "en-GB-male":   "en_GB-alan-medium",
-  "de-DE-female": "de_DE-thorsten-medium",
-  "de-DE-male":   "de_DE-thorsten-medium",
-  "fr-FR-female": "fr_FR-siwis-medium",
-  "fr-FR-male":   "fr_FR-siwis-medium",
-  "es-ES-female": "es_ES-davefx-medium",
-  "es-ES-male":   "es_ES-davefx-medium",
-  "it-IT-female": "it_IT-riccardo-x_low",
-  "it-IT-male":   "it_IT-riccardo-x_low",
-  "pt-BR-female": "pt_BR-faber-medium",
-  "pt-BR-male":   "pt_BR-faber-medium",
-  "nl-NL-female": "nl_NL-mls-medium",
-  "nl-NL-male":   "nl_NL-mls-medium",
-  "sv-SE-female": "sv_SE-nst-medium",
-  "sv-SE-male":   "sv_SE-nst-medium",
-  "ru-RU-female": "ru_RU-dmitri-medium",
-  "ru-RU-male":   "ru_RU-dmitri-medium",
-  "zh-CN-female": "zh_CN-huayan-medium",
-  "zh-CN-male":   "zh_CN-huayan-medium",
-  "default":      "en_US-amy-medium",
+// Kokoro-82M voice ids: <lang><f|m>_<name> (af_heart = American female "Heart")
+const DEFAULT_VOICES = {
+  "en-US-female": "af_heart",
+  "en-US-male":   "am_michael",
+  "en-GB-female": "bf_emma",
+  "en-GB-male":   "bm_george",
+  "es-ES-female": "ef_dora",
+  "es-ES-male":   "em_alex",
+  "fr-FR-female": "ff_siwis",
+  "fr-FR-male":   "ff_siwis",
+  "hi-IN-female": "hf_alpha",
+  "hi-IN-male":   "hm_omega",
+  "it-IT-female": "if_sara",
+  "it-IT-male":   "im_nicola",
+  "ja-JP-female": "jf_alpha",
+  "ja-JP-male":   "jm_kumo",
+  "pt-BR-female": "pf_dora",
+  "pt-BR-male":   "pm_alex",
+  "zh-CN-female": "zf_xiaobei",
+  "zh-CN-male":   "zm_yunjian",
+  "default":      "af_heart",
 };
 
-function getPiperVoice(region, gender, override) {
+function getDefaultVoice(region, gender, override) {
   if (override) return override;
   const key = `${region}-${gender}`;
-  return PIPER_VOICES[key] || PIPER_VOICES[region.slice(0, 5) + `-${gender}`] || PIPER_VOICES.default;
+  return DEFAULT_VOICES[key] || DEFAULT_VOICES[region.slice(0, 5) + `-${gender}`] || DEFAULT_VOICES.default;
 }
 
 function createReverb(ctx, decay) {
@@ -305,6 +293,10 @@ export default function MusicTherapyServer() {
   const [piperConnected, setPiperConnected] = useState(false);
   const [piperVoices, setPiperVoices] = useState([]);
   const [piperVoiceOverride, setPiperVoiceOverride] = useState("");
+  const [ttsSetup, setTtsSetup] = useState(null);   // /api/tts/setup/status
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupMsg, setSetupMsg] = useState("");
+  const setupPollRef = useRef(null);
 
   // ── Editable voice profiles (per mode) ──
   const [voiceProfiles, setVoiceProfiles] = useState(() => JSON.parse(JSON.stringify(VOICE_PROFILE_DEFAULTS)));
@@ -328,16 +320,46 @@ export default function MusicTherapyServer() {
   useEffect(() => { voiceGenderRef.current = voiceGender; }, [voiceGender]);
   useEffect(() => { piperVoiceOverrideRef.current = piperVoiceOverride; }, [piperVoiceOverride]);
 
-  // Check Piper on mount
-  useEffect(() => {
+  // Check the TTS engine on mount (and again after a model download)
+  const checkTts = useCallback(() => {
     fetch('/api/tts/status').then(r => r.json()).then(d => {
       setPiperConnected(d.connected);
-      if (d.connected) fetch('/api/tts/voices').then(r => r.json()).then(v => {
-        const list = v.voices || v.downloaded || (Array.isArray(v) ? v : []);
-        setPiperVoices(Array.isArray(list) ? list : Object.keys(list));
-      }).catch(() => {});
+      if (d.connected) {
+        fetch('/api/tts/voices').then(r => r.json()).then(v => {
+          const list = v.voices || v.downloaded || (Array.isArray(v) ? v : []);
+          setPiperVoices(Array.isArray(list) ? list : Object.keys(list));
+        }).catch(() => {});
+      } else {
+        fetch('/api/tts/setup/status').then(r => r.json()).then(setTtsSetup).catch(() => {});
+      }
     }).catch(() => setPiperConnected(false));
   }, []);
+  useEffect(() => { checkTts(); }, [checkTts]);
+  useEffect(() => () => clearInterval(setupPollRef.current), []);
+
+  // One-off Kokoro voice-model download (kokoro engine only), with progress
+  const downloadModel = useCallback(async () => {
+    setSetupBusy(true);
+    setSetupMsg("Starting download…");
+    try {
+      const r = await fetch('/api/tts/setup/start', { method: 'POST' }).then(x => x.json());
+      if (!r.success) { setSetupMsg(r.error || "Download failed"); setSetupBusy(false); return; }
+      clearInterval(setupPollRef.current);
+      setupPollRef.current = setInterval(async () => {
+        const j = await fetch('/api/tts/setup/job').then(x => x.json()).catch(() => null);
+        if (!j) return;
+        setSetupMsg((j.log || []).slice(-1)[0] || j.status);
+        if (j.status === "done" || j.status === "error") {
+          clearInterval(setupPollRef.current);
+          setSetupBusy(false);
+          if (j.status === "done") { setSetupMsg(""); checkTts(); }
+        }
+      }, 2000);
+    } catch {
+      setSetupMsg("Download request failed");
+      setSetupBusy(false);
+    }
+  }, [checkTts]);
 
   const vp = voiceProfiles[mode] || VOICE_PROFILE_DEFAULTS[mode];
   const bounds = VOICE_PROFILE_BOUNDS[mode] || VOICE_PROFILE_BOUNDS.focus;
@@ -359,11 +381,11 @@ export default function MusicTherapyServer() {
     setCurrentMsg("");
   }, []);
 
-  // ── Piper TTS speak ──
+  // ── Neural TTS speak (POST /api/tts → WAV) ──
   const speak = useCallback(async (text, audioCtx, destNode) => {
     const currentMode = modeRef.current;
     const profile = voiceProfilesRef.current[currentMode] || VOICE_PROFILE_DEFAULTS[currentMode];
-    const voice = getPiperVoice(regionRef.current, voiceGenderRef.current, piperVoiceOverrideRef.current);
+    const voice = getDefaultVoice(regionRef.current, voiceGenderRef.current, piperVoiceOverrideRef.current);
     const controller = new AbortController();
     ttsAbortRef.current = controller;
 
@@ -382,7 +404,7 @@ export default function MusicTherapyServer() {
       const audioBuf = await ctx.decodeAudioData(arrayBuf);
       const source = ctx.createBufferSource();
       source.buffer = audioBuf;
-      // Apply pitch via playbackRate (Piper generates at speed, we shift pitch here)
+      // Apply pitch via playbackRate (the engine applies speed, we shift pitch here)
       source.playbackRate.value = profile.pitch;
 
       const speechReverb = createSpeechReverb(ctx, profile.reverbMix);
@@ -576,6 +598,21 @@ export default function MusicTherapyServer() {
   const dflt = VOICE_PROFILE_DEFAULTS[mode];
   const isModified = vp.speed !== dflt.speed || vp.pitch !== dflt.pitch || vp.reverbMix !== dflt.reverbMix;
 
+  // Voice-model download prompt (shown wherever the engine is reported offline)
+  const ttsSetupUi = !piperConnected && (
+    <div style={{ marginTop: 8 }}>
+      {ttsSetup?.installable && !setupBusy && (
+        <button onClick={downloadModel} style={{ ...btnStyle(true), width: "100%", padding: "8px 0", textAlign: "center" }}>
+          ⬇ Download voice model ({ttsSetup.download_mb || 340} MB, one-off)
+        </button>
+      )}
+      {ttsSetup && ttsSetup.installable === false && ttsSetup.hint && (
+        <div style={{ ...SS.mono, fontSize: 8, opacity: 0.45 }}>{ttsSetup.hint}</div>
+      )}
+      {setupMsg && <div style={{ marginTop: 6, ...SS.mono, fontSize: 8, opacity: 0.55, textAlign: "center", animation: setupBusy ? "pulse 1.5s infinite" : "none" }}>{setupMsg}</div>}
+    </div>
+  );
+
   return (
     <div style={{ minHeight: "100vh", background: config.bg, color: "#e0ddd5", fontFamily: "'Cormorant Garamond','Georgia',serif", transition: "background 1.5s ease", display: "flex", flexDirection: "column", alignItems: "center", padding: "28px 16px" }}>
       <style>{`
@@ -677,16 +714,18 @@ export default function MusicTherapyServer() {
             <input type="range" min={15} max={120} step={5} value={speechInterval} onChange={e => setSpeechInterval(+e.target.value)} />
           </div>}
           {!piperConnected && speechEnabled && <div style={{ marginTop: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(255,100,100,0.08)", border: "1px solid rgba(255,100,100,0.15)" }}>
-            <span style={{ ...SS.mono, fontSize: 9, color: "#e87838" }}>Piper TTS not connected — speech will be silent until the TTS container is running</span>
+            <span style={{ ...SS.mono, fontSize: 9, color: "#e87838" }}>Neural TTS not ready — download the voice model to enable speech</span>
+            {ttsSetupUi}
           </div>}
         </>}
 
         {tab === "speech" && <>
-          {/* Piper status */}
+          {/* Engine status */}
           <div style={{ marginBottom: 14, padding: "6px 10px", borderRadius: 6, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }}>
             <span style={{ ...SS.mono, fontSize: 9, opacity: 0.5 }}>
-              {piperConnected ? <><span style={{ color: "#5B9F6B" }}>●</span> Piper Neural TTS connected</> : <><span style={{ color: "#e87838" }}>●</span> Piper TTS offline — start the piper container</>}
+              {piperConnected ? <><span style={{ color: "#5B9F6B" }}>●</span> Neural TTS ready (Kokoro-82M)</> : <><span style={{ color: "#e87838" }}>●</span> Neural TTS not ready — download the voice model</>}
             </span>
+            {ttsSetupUi}
           </div>
 
           {/* Default language */}
@@ -709,9 +748,9 @@ export default function MusicTherapyServer() {
             </div>
           </div>
 
-          {/* Piper voice picker */}
+          {/* Voice picker */}
           {piperVoices.length > 0 && <div style={{ marginBottom: 14 }}>
-            <span style={{ ...SS.label, display: "block", marginBottom: 8 }}>PIPER VOICE</span>
+            <span style={{ ...SS.label, display: "block", marginBottom: 8 }}>VOICE</span>
             <select value={piperVoiceOverride} onChange={e => setPiperVoiceOverride(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e0ddd5", ...SS.mono, fontSize: 10, cursor: "pointer" }}>
               <option value="" style={{ background: "#1a1a1a" }}>Auto (gender + language)</option>
               {piperVoices.map((v, i) => <option key={i} value={typeof v === 'string' ? v : v.id} style={{ background: "#1a1a1a" }}>{typeof v === 'string' ? v : `${v.label || v.id} — ${v.lang || ''}`}</option>)}
@@ -766,7 +805,7 @@ export default function MusicTherapyServer() {
           <div style={{ marginBottom: 14 }}>
             <span style={{ ...SS.label, display: "block", marginBottom: 6 }}>ACTIVE VOICE</span>
             <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", ...SS.mono, fontSize: 10, color: piperConnected ? config.color : "#e87838", opacity: 0.8 }}>
-              {piperConnected ? `${piperVoiceOverride || getPiperVoice(region, voiceGender, "")}` : "Piper TTS offline"}
+              {piperConnected ? `${piperVoiceOverride || getDefaultVoice(region, voiceGender, "")}` : "TTS offline"}
             </div>
           </div>
 
@@ -817,7 +856,7 @@ export default function MusicTherapyServer() {
       </div>
 
       <div style={{ marginTop: 18, textAlign: "center", opacity: 0.25, fontSize: 9, ...SS.mono, letterSpacing: 2, lineHeight: 2 }}>
-        USE HEADPHONES FOR BINAURAL BEATS<br/>PIPER NEURAL TTS · PROCEDURAL AUDIO · WEB AUDIO API
+        USE HEADPHONES FOR BINAURAL BEATS<br/>KOKORO NEURAL TTS · PROCEDURAL AUDIO · WEB AUDIO API
       </div>
     </div>
   );

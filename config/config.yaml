@@ -34,9 +34,13 @@ media:
     base_url: "https://translate.google.com/translate_tts"  # keyless; swap engine here
     lang: en
   therapy:                    # neural TTS for the therapy page (Media tab).
-    enabled: true             # Talks Wyoming to the host's wyoming-piper
-    piper_host: "127.0.0.1"   # container (the one HA voice uses) — no extra
-    piper_port: 10200         # sidecar. Voices download on first use.
+    enabled: true
+    engine: kokoro            # kokoro = in-process Kokoro-82M (default; the
+                              # ~340 MB model downloads on demand from the
+                              # therapy UI into data/tts_models).
+    # wyoming:                # legacy engine — an external wyoming-piper
+    #   host: "127.0.0.1"     # server (e.g. the one HA voice uses); set
+    #   port: 10200           # engine: wyoming to use it.
   tidal:
     enabled: false             # log in under Settings → APIs → Media
     quality: high             # high = 320k AAC (plays on Cast + WiiM).

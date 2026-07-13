@@ -148,7 +148,7 @@ try:
     from modules.rotary_bindings import get_rotary_binding_manager
     from modules.weather import WeatherService
     from modules.media import MediaService
-    from modules.media.therapy_tts import TherapyTTS
+    from modules.media.therapy_tts import create_therapy_tts
     from modules.heating_advisor import HeatingAdvisor
     from modules.heating_controller import HeatingController
     from modules.heating_anomaly_watcher import HeatingAnomalyWatcher
@@ -308,8 +308,10 @@ media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
 
-# Neural TTS for the therapy page (fronts the host's wyoming-piper container).
-therapy_tts = TherapyTTS(config=CONFIG.get("media", {}).get("therapy", {}))
+# Neural TTS for the therapy page. Default engine is in-process Kokoro-82M
+# (model downloads on demand from the therapy UI); set media.therapy.engine
+# to "wyoming" to use an external wyoming-piper server instead.
+therapy_tts = create_therapy_tts(CONFIG.get("media", {}).get("therapy", {}))
 
 # Let automation steps play radio/Tidal and control players (engine is built
 # before the media service, so wire the getter in now).
