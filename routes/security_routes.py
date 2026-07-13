@@ -136,8 +136,8 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
                         "server_connected": info.get("serverConnected"),
                         "uptime": info.get("uptime"),
                     }
-                except NukiError as e:
-                    out["bridge"] = {"ok": False, "error": str(e)}
+                except Exception as e:
+                    out["bridge"] = {"ok": False, "error": str(e) or type(e).__name__}
             else:
                 out["bridge"] = {"ok": False, "error": "not configured"}
         if _channel_enabled("matter"):
@@ -160,8 +160,8 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
                 try:
                     devices = await client.list_devices()
                     locks.extend(client.normalize_device(d) for d in devices)
-                except NukiError as e:
-                    errors.append(f"bridge: {e}")
+                except Exception as e:
+                    errors.append(f"bridge: {str(e) or type(e).__name__}")
         if _channel_enabled("matter"):
             locks.extend(_matter_locks())
         return {"success": True, "enabled": True, "locks": locks, "errors": errors}
@@ -196,8 +196,9 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
                 return await mb.send_command(int(raw_id), cmd)
             return {"success": False,
                     "error": f"Unknown channel in lock id '{lock_id}'"}
-        except (NukiError, ValueError) as e:
-            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.warning(f"Nuki action '{action}' on {lock_id} failed: {e}")
+            return {"success": False, "error": str(e) or type(e).__name__}
 
     # ── Nuki: bridge onboarding helpers ─────────────────────────────────
 
@@ -206,8 +207,8 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
         try:
             bridges = await discover_bridges()
             return {"success": True, "bridges": bridges}
-        except NukiError as e:
-            return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e) or type(e).__name__}
 
     @app.post("/api/security/nuki/bridge/auth")
     async def nuki_bridge_auth(data: dict = None):
@@ -225,7 +226,8 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
                         "error": "Bridge refused — press its button and retry "
                                  "within 30 seconds"}
             return {"success": True, "token": res.get("token")}
-        except NukiError as e:
-            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.warning(f"Nuki bridge /auth failed: {e}")
+            return {"success": False, "error": str(e) or type(e).__name__}
 
     logger.info("Security routes registered (providers: nuki)")

@@ -26,6 +26,7 @@ Config lives in config.yaml under security.nuki.bridge:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import random
@@ -120,8 +121,11 @@ class NukiBridgeClient:
                     if resp.status >= 400:
                         raise NukiError(f"Bridge HTTP {resp.status}")
                     return await resp.json(content_type=None)
-        except aiohttp.ClientError as e:
-            raise NukiError(f"Bridge unreachable at {self.host}:{self.port} ({e})")
+        # TimeoutError is NOT a ClientError — catch both, plus OS-level
+        # socket errors, so callers only ever see NukiError.
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+            reason = str(e) or type(e).__name__
+            raise NukiError(f"Bridge unreachable at {self.host}:{self.port} ({reason})")
 
     # ── API surface ─────────────────────────────────────────────────────
 
@@ -188,8 +192,8 @@ async def discover_bridges(timeout: float = 10.0) -> List[Dict[str, Any]]:
         ) as session:
             async with session.get(DISCOVER_URL) as resp:
                 data = await resp.json(content_type=None)
-    except aiohttp.ClientError as e:
-        raise NukiError(f"Bridge discovery failed ({e})")
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+        raise NukiError(f"Bridge discovery failed ({str(e) or type(e).__name__})")
     if data.get("errorCode") not in (0, None):
         raise NukiError(f"Bridge discovery error code {data.get('errorCode')}")
     return data.get("bridges") or []

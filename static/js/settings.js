@@ -1007,6 +1007,17 @@ const SECURITY_PROVIDERS = [
     },
 ];
 
+// fetch → JSON with a readable failure when the server answers non-JSON
+// (e.g. a 500 error page), instead of "Unexpected token ... is not valid JSON".
+async function _secFetch(url, opts) {
+    const r = await fetch(url, opts);
+    try {
+        return await r.json();
+    } catch {
+        throw new Error(`HTTP ${r.status} ${r.statusText || ''} from ${url}`.trim());
+    }
+}
+
 function renderSecuritySection(config) {
     const tabs = SECURITY_PROVIDERS.map((p, i) => `
       <li class="nav-item">
@@ -1133,7 +1144,7 @@ async function loadNukiStatus() {
     const el = document.getElementById('nukiMatterStatus');
     if (!el) return;
     try {
-        const res = await fetch('/api/security/nuki/status').then(r => r.json());
+        const res = await _secFetch('/api/security/nuki/status');
         const m = res.matter;
         if (!m) { el.innerHTML = ''; return; }
         el.innerHTML = m.ok
@@ -1147,7 +1158,7 @@ window.loadNukiLocks = async function () {
     const el = document.getElementById('nukiLocksList');
     if (!el) return;
     try {
-        const res = await fetch('/api/security/nuki/locks').then(r => r.json());
+        const res = await _secFetch('/api/security/nuki/locks');
         if (!res.success) throw new Error(res.error || 'failed');
         if (res.enabled === false) {
             el.innerHTML = `<div class="text-muted small fst-italic">
@@ -1210,10 +1221,10 @@ window.loadNukiLocks = async function () {
 
 window.nukiAction = async function (lockId, action) {
     try {
-        const res = await fetch(`/api/security/nuki/locks/${encodeURIComponent(lockId)}/action`, {
+        const res = await _secFetch(`/api/security/nuki/locks/${encodeURIComponent(lockId)}/action`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action }),
-        }).then(r => r.json());
+        });
         if (!res.success) throw new Error(res.error || `${action} failed`);
         window.toast?.success?.('Nuki', `${action} sent`);
     } catch (e) {
@@ -1227,7 +1238,7 @@ window.nukiDiscoverBridges = async function () {
     const out = document.getElementById('nukiBridgeResults');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Searching…'; }
     try {
-        const res = await fetch('/api/security/nuki/bridge/discover', { method: 'POST' }).then(r => r.json());
+        const res = await _secFetch('/api/security/nuki/bridge/discover', { method: 'POST' });
         if (!res.success) throw new Error(res.error || 'discovery failed');
         const bridges = res.bridges || [];
         if (!bridges.length) {
@@ -1258,13 +1269,13 @@ window.nukiBridgeAuth = async function () {
     out.innerHTML = `<div class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i>
         Waiting for the bridge — press its button if you haven't…</div>`;
     try {
-        const res = await fetch('/api/security/nuki/bridge/auth', {
+        const res = await _secFetch('/api/security/nuki/bridge/auth', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 host: document.getElementById('cfg_nuki_bridge_host')?.value?.trim(),
                 port: Number(document.getElementById('cfg_nuki_bridge_port')?.value) || 8080,
             }),
-        }).then(r => r.json());
+        });
         if (!res.success) throw new Error(res.error || 'auth failed');
         document.getElementById('cfg_nuki_bridge_token').value = res.token;
         out.innerHTML = `<div class="text-success"><i class="fas fa-check me-1"></i>
@@ -1278,7 +1289,7 @@ window.nukiTestBridge = async function () {
     const out = document.getElementById('nukiBridgeResults');
     out.innerHTML = `<div class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Testing…</div>`;
     try {
-        const res = await fetch('/api/security/nuki/status').then(r => r.json());
+        const res = await _secFetch('/api/security/nuki/status');
         const b = res.bridge;
         if (!b) { out.innerHTML = `<div class="text-muted">Bridge channel disabled.</div>`; return; }
         out.innerHTML = b.ok
