@@ -108,6 +108,18 @@ class MediaService:
             except ImportError as e:
                 logger.warning(f"Cast support unavailable (pychromecast not installed?): {e}")
 
+        # Sync PoC — synchronised multi-speaker casting without a Google-Home
+        # group (custom receiver + shared server clock). Off by default; see
+        # modules/media/cast_sync.py and static/cast/README.md.
+        self.cast_sync = None
+        sync_cfg = cast_cfg.get("sync", {}) or {}
+        if self.cast is not None and sync_cfg.get("enabled", False):
+            try:
+                from modules.media.cast_sync import CastSyncPoc
+                self.cast_sync = CastSyncPoc(self.cast, sync_cfg)
+            except Exception as e:
+                logger.warning(f"Cast sync PoC unavailable: {e}")
+
     # ------------------------------------------------------------------
     # Public helpers used by routes
     # ------------------------------------------------------------------
@@ -240,10 +252,14 @@ class MediaService:
             logger.info("Media service disabled")
             return
         self._task = asyncio.create_task(self._run())
+        if self.cast_sync is not None:
+            self.cast_sync.start()      # brings up the plain-HTTP sync listener
         logger.info(f"Media service started (poll={self.poll_interval}s)")
 
     def stop(self):
         self._save_sessions()       # best-effort final persist before going down
+        if self.cast_sync is not None:
+            self.cast_sync.stop()
         if self._task:
             self._task.cancel()
             self._task = None

@@ -29,6 +29,7 @@ from routes.remote_access_routes import register_remote_access_routes
 from routes.sun_routes import register_sun_routes
 from routes.floor_plan_routes import register_floor_plan_routes
 from routes.media_routes import register_media_routes
+from routes.cast_sync_routes import register_cast_sync_routes
 from routes.tts_routes import register_tts_routes
 from routes.alert_routes import register_alert_routes
 from routes.signal_routes import register_signal_routes
@@ -65,6 +66,7 @@ __all__ = [
     'register_sun_routes',
     'register_floor_plan_routes',
     'register_media_routes',
+    'register_cast_sync_routes',
     'register_tts_routes',
     'register_api_docs_routes',
     'register_ac_routes',

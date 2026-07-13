@@ -40,6 +40,11 @@ import uuid as uuid_mod
 from typing import Dict, List, Optional
 
 import numpy as np
+# Module-level on purpose: with ``from __future__ import annotations`` the
+# ``ws: WebSocket`` annotation is a string FastAPI resolves against module
+# globals — imported inside _build_http_app it silently 403s every handshake.
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 logger = logging.getLogger("modules.media.cast_sync")
 
@@ -314,9 +319,6 @@ class CastSyncPoc:
     # HTTP sub-app (plain HTTP: receiver page + WebSocket)
     # ------------------------------------------------------------------
     def _build_http_app(self):
-        from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-        from fastapi.responses import FileResponse
-
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
         @app.get("/cast/sync_receiver.html")

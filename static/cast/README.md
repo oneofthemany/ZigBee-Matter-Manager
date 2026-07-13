@@ -1,3 +1,11 @@
+# Cast receivers
+
+Two custom Google Cast Web Receivers live here:
+
+- `receiver.html` — album art + synced lyrics (see below).
+- `sync_receiver.html` — **sync PoC**: synchronised multi-speaker playback
+  without a Google-Home group (see the last section).
+
 # Cast lyrics receiver
 
 `receiver.html` is a custom Google Cast **Web Receiver** that shows album art +
@@ -42,3 +50,55 @@ It's fully static: ZigBee Manager sends the artwork + LRC-timed lyrics inline as
   scroll and highlight the active line against the media clock.
 - If you later publish the app in the Cast console you can drop the per-device
   registration from step 3.
+
+# Sync PoC receiver (`sync_receiver.html`)
+
+Proof-of-concept for **echo-free multi-speaker playback without a Google-Home
+group**. ZMM streams timestamped PCM chunks over a WebSocket; the receiver
+estimates its offset to the ZMM server clock (NTP-style) and schedules each
+chunk sample-accurately with the Web Audio API. A per-speaker trim (±ms)
+compensates each device's fixed output latency — tune it once by ear against
+the 2-second click track, it stays valid.
+
+Unlike the lyrics receiver, this page **must be served by ZMM itself over
+plain HTTP** (config `media.cast.sync.http_port`, default 8010): the receiver
+needs a live same-origin `ws://` socket back to ZMM, which an HTTPS-hosted
+page can't open (mixed content) and the app's self-signed cert can't provide.
+Plain-HTTP receiver URLs work for *unpublished* (development) Cast apps on
+devices whose serials are registered in the console.
+
+## One-time setup
+
+1. In `config/config.yaml` enable the listener and restart:
+   ```yaml
+   media:
+     cast:
+       sync:
+         enabled: true
+         http_port: 8010
+   ```
+   Check `http://<zmm-host>:8010/health` answers on the LAN (if ZMM's podman
+   container is not on host networking, publish the port).
+
+2. In the [Cast developer console](https://cast.google.com/publish):
+   **Add new application → Custom Receiver**, URL
+   `http://<zmm-host>:8010/cast/sync_receiver.html`. Don't publish it.
+   Make sure each test speaker's **serial number is registered** for
+   development (same step you did for the lyrics receiver), then reboot the
+   speakers once.
+
+3. Put the generated Application ID into `media.cast.sync.app_id` and restart.
+
+## Running the experiment
+
+Open `https://<zmm-host>:8000/static/cast/sync_test.html`, tick two speakers,
+**Start session**. Both should begin the pad + click test signal within a few
+seconds. Stand between them and drag each trim slider (5 ms steps) until the
+clicks fuse into one. Watch the per-device stats (clock offset, RTT, Web Audio
+output latency, late/dropped chunks) — also available raw from
+`GET /api/media/sync/status`.
+
+What a *good* result looks like: clicks indistinguishable (≲10 ms), stable
+over 15+ minutes (drift is being corrected), `late` staying near zero. That
+would green-light building the real feature (ZMM-defined groups playing radio/
+Tidal through this pipeline).

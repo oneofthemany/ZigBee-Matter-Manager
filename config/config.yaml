@@ -25,6 +25,14 @@ media:
                               # here. Empty = use the default receiver (art only, no lyrics).
     karaoke: false             # default for "karaoke mode" (cast synced lyrics). Runtime
                               # toggle in the media tab overrides this; needs lyrics_app_id set.
+    sync:                     # PoC: synchronised multi-speaker casting WITHOUT a
+      enabled: false          # Google-Home group. Custom receiver schedules a
+                              # server-clocked PCM stream via Web Audio; per-speaker
+                              # ±ms trim. See static/cast/README.md ("Sync receiver").
+      http_port: 8010         # plain-HTTP listener for the receiver page + WebSocket
+                              # (the Cast device rejects our self-signed HTTPS).
+      app_id: ""              # Cast console App ID registered for
+                              # http://<zmm-host>:8010/cast/sync_receiver.html
   wiim:
     enabled: false
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
