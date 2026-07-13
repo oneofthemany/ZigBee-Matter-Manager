@@ -60,7 +60,9 @@ still pass straight through for callers that want raw control.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -70,6 +72,11 @@ logger = logging.getLogger("zbm.ac")
 GREE_DEFAULT_PORT = 7000
 MIDEA_DEFAULT_PORT = 6444
 STATUS_CACHE_SEC = 5.0
+# Last good status per unit (including the capabilities block that drives
+# the control UI) persisted across restarts/controller rebuilds, so the UI
+# can render controls instantly instead of re-probing every unit.
+STATUS_STORE_PATH = "./data/ac_status_cache.json"
+STATUS_STORE_MIN_WRITE_SEC = 30.0
 # Midea dongles lock up and refuse TCP for a while if they see rapid
 # connect churn (verified against a Comfee 00000Q1D: ~3 reconnects in a few
 # seconds and port 6444 goes dead). After a failed connect, wait this long
@@ -523,6 +530,8 @@ class ACController:
         self._on_key_learned = on_key_learned
         self._adapters: Dict[str, Any] = {}
         self._status_cache: Dict[str, tuple] = {}   # id → (ts, status)
+        self._last_persist = 0.0
+        self._load_status_store()
         self.reload(ac_config or {})
 
     def reload(self, ac_config: Dict[str, Any]) -> None:
@@ -546,9 +555,53 @@ class ACController:
                 except Exception as e:
                     logger.debug(f"adapter close for {uid}: {e}")
         self._adapters = keep
+        # Drop cache only for units no longer configured — keeping it for
+        # not-yet-connected units is what lets disk-loaded status survive
+        # until the first live probe replaces it.
+        new_ids = {str(u.get("id")) for u in new_units}
         self._status_cache = {uid: v for uid, v in self._status_cache.items()
-                              if uid in keep}
+                              if uid in new_ids}
         self.units = new_units
+
+    # ── status persistence ───────────────────────────────────────
+
+    def _load_status_store(self) -> None:
+        try:
+            with open(STATUS_STORE_PATH, "r") as f:
+                raw = json.load(f) or {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        now_wall, now_mono = time.time(), time.monotonic()
+        for uid, ent in raw.items():
+            st = ent.get("status")
+            if not isinstance(st, dict):
+                continue
+            age = max(0.0, now_wall - float(ent.get("ts") or 0))
+            # Mark so callers can tell "restored, possibly stale" from live
+            self._status_cache[uid] = (now_mono - age, {**st, "cached": True})
+
+    def _persist_status_store(self) -> None:
+        now = time.monotonic()
+        if now - self._last_persist < STATUS_STORE_MIN_WRITE_SEC:
+            return
+        self._last_persist = now
+        data = {}
+        for uid, (mts, st) in self._status_cache.items():
+            if st.get("online"):
+                data[uid] = {
+                    "ts": time.time() - (now - mts),
+                    "status": {k: v for k, v in st.items() if k != "cached"},
+                }
+        if not data:
+            return
+        try:
+            os.makedirs(os.path.dirname(STATUS_STORE_PATH), exist_ok=True)
+            tmp = STATUS_STORE_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, STATUS_STORE_PATH)
+        except OSError as e:
+            logger.debug(f"AC status store write failed: {e}")
 
     def unit_config(self, unit_id: str) -> Optional[Dict[str, Any]]:
         return next((u for u in self.units if str(u.get("id")) == str(unit_id)), None)
@@ -591,7 +644,15 @@ class ACController:
             result = {**base, "online": True, **state}
         except (ACError, Exception) as e:            # noqa: BLE001 — degrade per unit
             result = {**base, "online": False, "error": str(e)}
+            # Carry last-known capabilities forward so the control UI can
+            # still render (disabled) controls for an offline unit.
+            prev = cached or self._status_cache.get(unit_id)
+            prev_caps = (prev[1] if prev else {}).get("capabilities")
+            if prev_caps:
+                result["capabilities"] = prev_caps
         self._status_cache[unit_id] = (time.monotonic(), result)
+        if result.get("online"):
+            self._persist_status_store()
         return result
 
     async def control(self, unit_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:

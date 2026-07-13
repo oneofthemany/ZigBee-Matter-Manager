@@ -414,10 +414,19 @@ def register_ac_routes(app: FastAPI):
     # ── status / control ───────────────────────────────────────────
 
     @app.get("/api/ac/units/{unit_id}/status")
-    async def unit_status(unit_id: str):
+    async def unit_status(unit_id: str, max_age: float = 0.0):
+        """max_age > 0 serves the app-side cache (persisted across
+        restarts) when it's younger than that many seconds — the AC modal
+        uses it to render controls instantly, then refreshes live."""
         try:
-            status = await _controller().status(unit_id, max_age_sec=0)
-            return {"success": True, "status": status}
+            ctl = _controller()
+            if max_age > 0:
+                cached = ctl.cached_status(unit_id)
+                if cached and cached[0] < max_age:
+                    return {"success": True, "status": cached[1],
+                            "age_sec": round(cached[0], 1)}
+            status = await ctl.status(unit_id, max_age_sec=0)
+            return {"success": True, "status": status, "age_sec": 0}
         except ACError as e:
             return {"success": False, "error": str(e)}
         except Exception as e:

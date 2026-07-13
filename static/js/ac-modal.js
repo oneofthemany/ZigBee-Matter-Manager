@@ -36,20 +36,25 @@ export async function openAcModal(unitId) {
     body.innerHTML = `<div class="text-center text-muted py-5">
         <i class="fas fa-spinner fa-spin me-2"></i>Contacting AC unit…</div>`;
     bootstrap.Modal.getOrCreateInstance(modalEl).show();
-    await refreshAcModal(unitId);
+    // Render instantly from the app-side cache (persisted across restarts),
+    // then refresh live in the background if what we showed wasn't fresh.
+    const res = await refreshAcModal(unitId, 86400);
+    if (res && (res.age_sec > 5 || res.status?.cached)) refreshAcModal(unitId);
 }
 
-export async function refreshAcModal(unitId) {
+export async function refreshAcModal(unitId, maxAge = 0) {
     const body = document.getElementById('capModalBody');
-    if (!body || unitId !== currentUnitId) return;
+    if (!body || unitId !== currentUnitId) return null;
     try {
-        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}/status`)
+        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}/status?max_age=${maxAge}`)
             .then(r => r.json());
         if (!res.success) throw new Error(res.error || 'status failed');
         renderAcModal(res.status);
+        return res;
     } catch (e) {
         log.error('AC modal status failed:', e);
         body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`;
+        return null;
     }
 }
 
