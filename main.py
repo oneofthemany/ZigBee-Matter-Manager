@@ -486,6 +486,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"AC timer restore failed: {e}")
 
+    # Nuki bridge poller (registered by security_routes; needs the running
+    # loop) — keeps lock state fresh so automations trigger on lock/unlock
+    nuki_poll_start = getattr(app.state, "nuki_poll_start", None)
+    if nuki_poll_start:
+        try:
+            nuki_poll_start()
+        except Exception as e:
+            logger.warning(f"Nuki poller start failed: {e}")
+
     # Check if setup is needed BEFORE starting MQTT or Zigbee
     from modules.dongle_jedi import DongleJedi
     setup_status = DongleJedi.needs_setup()
@@ -1022,7 +1031,7 @@ register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)
 register_ac_routes(app)
-register_security_routes(app, get_matter_bridge)
+register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_alert_routes(app)
 register_presence_routes(app, get_presence_manager)

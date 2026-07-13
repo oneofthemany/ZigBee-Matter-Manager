@@ -33,6 +33,12 @@ export async function openDeviceModal(d) {
         const { openAcModal } = await import('./ac-modal.js');
         return openAcModal(d.ac_unit_id);
     }
+    // Nuki bridge locks likewise (matter-commissioned locks fall through
+    // to the standard modal, whose Control tab has lock/unlock/unlatch)
+    if (d?.nuki_lock_id) {
+        const { openNukiModal } = await import('./nuki-modal.js');
+        return openNukiModal(d.nuki_lock_id);
+    }
     // Refresh heating-controller managed set so the Control tab can disable
     // direct heating controls for managed devices. Non-blocking failure.
     await refreshHeatingManaged().catch(() => {});

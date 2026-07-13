@@ -184,6 +184,121 @@ class NukiBridgeClient:
         }
 
 
+class _LockCapabilities:
+    """Duck-typed capabilities object (has_capability) the automation
+    engine's actuator filter expects on non-Matter devices."""
+
+    def has_capability(self, cap: str) -> bool:
+        return cap in ("lock", "door_lock")
+
+    def get_capabilities(self) -> List[str]:
+        return ["lock"]
+
+
+_LOCK_CAPS = _LockCapabilities()
+
+
+class NukiLockDevice:
+    """
+    Bridge-paired lock exposed to the device list and the automation engine.
+    Mirrors the surface MatterDevice presents (.state, .friendly_name,
+    async send_command, get_control_commands) so both treat it like any
+    other device. Pseudo-ieee: nuki_<nukiId>.
+    """
+
+    def __init__(self, lock: Dict[str, Any], action_sender):
+        # action_sender: async (nuki_id, action, device_type) -> result dict
+        self._send_action = action_sender
+        self.nuki_id = lock.get("nuki_id")
+        self.ieee = f"nuki_{self.nuki_id}"
+        self.manufacturer = "Nuki"
+        self.state: Dict[str, Any] = {}
+        self.last_seen = time.time()
+        self._available = False
+        self._lock: Dict[str, Any] = {}
+        self.update_from_lock(lock)
+
+    @property
+    def friendly_name(self) -> str:
+        return self._lock.get("name") or self.ieee
+
+    @property
+    def model(self) -> str:
+        return self._lock.get("device_type_name") or "Smart Lock"
+
+    @property
+    def capabilities(self) -> _LockCapabilities:
+        return _LOCK_CAPS
+
+    def update_from_lock(self, lock: Dict[str, Any]) -> Dict[str, Any]:
+        """Refresh from a normalized /list entry. Returns just the state keys
+        that changed — the poller feeds those to automation.evaluate()."""
+        self._lock = lock
+        self._available = bool(lock.get("available"))
+        if self._available:
+            self.last_seen = time.time()
+        raw_state = lock.get("state")
+        new_state = {k: v for k, v in {
+            "locked": (raw_state == 1) if raw_state is not None else None,
+            "lock_state": lock.get("state_name"),
+            "battery_critical": lock.get("battery_critical"),
+            "door_state": lock.get("door_state"),
+        }.items() if v is not None}
+        changed = {k: v for k, v in new_state.items()
+                   if self.state.get(k) != v}
+        self.state = new_state
+        return changed
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def get_role(self) -> str:
+        return "Nuki"
+
+    def get_type(self) -> str:
+        return "Lock"
+
+    def get_control_commands(self) -> List[Dict[str, Any]]:
+        return [
+            {"command": "lock", "label": "Lock", "endpoint_id": None},
+            {"command": "unlock", "label": "Unlock", "endpoint_id": None},
+            {"command": "unlatch", "label": "Unlatch", "endpoint_id": None},
+            {"command": "lock_n_go", "label": "Lock 'n' Go", "endpoint_id": None},
+        ]
+
+    async def send_command(self, command, value=None, endpoint_id=None, **_):
+        if command not in LOCK_ACTIONS:
+            return {"success": False,
+                    "error": f"Unknown lock command '{command}'"}
+        res = await self._send_action(self.nuki_id, command,
+                                      self._lock.get("device_type", 0))
+        if res.get("success"):
+            locked = command in ("lock", "lock_n_go")
+            self.state["locked"] = locked
+            self.state["lock_state"] = ("locked" if locked else
+                                        "unlatched" if "unlatch" in command
+                                        else "unlocked")
+        return res
+
+    def to_device_list_entry(self) -> dict:
+        """Dict matching ZigbeeService.get_device_list() format — merged
+        into /api/devices so locks appear alongside zigbee/matter/AC."""
+        return {
+            "ieee": self.ieee,
+            "nuki_lock_id": self._lock.get("id"),
+            "friendly_name": self.friendly_name,
+            "type": "Lock",
+            "protocol": "wifi",
+            "manufacturer": self.manufacturer,
+            "model": self.model,
+            "available": self._available,
+            "ip_addresses": [],
+            "last_seen_ts": int(self.last_seen * 1000) if self._available else None,
+            "state": dict(self.state),
+            "capabilities": ["lock"],
+        }
+
+
 async def discover_bridges(timeout: float = 10.0) -> List[Dict[str, Any]]:
     """Ask the Nuki cloud which bridges have phoned home from this network."""
     try:

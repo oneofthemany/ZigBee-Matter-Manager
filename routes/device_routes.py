@@ -34,6 +34,14 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 devices.extend(await ac_entries())
             except Exception as e:
                 logger.warning(f"AC device-list merge failed: {e}")
+        # Nuki bridge locks — provider registered by security_routes
+        # (Matter-commissioned locks already arrive via the matter bridge)
+        nuki_entries = getattr(app.state, "nuki_device_entries", None)
+        if nuki_entries is not None:
+            try:
+                devices.extend(await nuki_entries())
+            except Exception as e:
+                logger.warning(f"Nuki device-list merge failed: {e}")
         return devices
 
     @app.post("/api/permit_join")

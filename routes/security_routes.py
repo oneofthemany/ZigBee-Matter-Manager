@@ -30,15 +30,17 @@ edits apply without a restart. Lock ids are channel-namespaced:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from typing import Any, Dict, List
 
 import yaml
 from fastapi import FastAPI
 
 from modules.nuki_controller import (
-    LOCK_ACTIONS, NukiBridgeClient, NukiError, discover_bridges,
+    LOCK_ACTIONS, NukiBridgeClient, NukiError, NukiLockDevice, discover_bridges,
 )
 
 logger = logging.getLogger("zbm.security")
@@ -54,10 +56,144 @@ def _load_nuki_cfg() -> Dict[str, Any]:
     return ((cfg.get("security") or {}).get("nuki")) or {}
 
 
-def register_security_routes(app: FastAPI, get_matter_bridge=None):
+def register_security_routes(app: FastAPI, get_matter_bridge=None,
+                             get_zigbee_service=None):
+
+    # Last bridge /list result — serves /api/devices without blocking on a
+    # slow/offline bridge (same pattern as ac_routes' status cache) — plus
+    # the NukiLockDevice registry the automation engine reads.
+    state: Dict[str, Any] = {"bridge_cache": None, "probe": None,
+                             "poll_task": None}
+    lock_devices: Dict[str, NukiLockDevice] = {}
+    BRIDGE_LIST_MAX_AGE = 20.0
+    POLL_DEFAULT_SEC = 30.0
 
     def _bridge_client() -> NukiBridgeClient:
         return NukiBridgeClient(_load_nuki_cfg().get("bridge") or {})
+
+    def _bridge_channel_on(cfg: Dict[str, Any]) -> bool:
+        return bool(cfg.get("enabled")) and \
+            bool((cfg.get("bridge") or {}).get("enabled", True))
+
+    async def _send_bridge_action(nuki_id, action: str, device_type) -> dict:
+        res = await _bridge_client().lock_action(nuki_id, action,
+                                                 device_type or 0)
+        _spawn_bridge_probe()   # pick up the real post-action state
+        return {"success": bool(res.get("success")),
+                "battery_critical": res.get("batteryCritical")}
+
+    def _sync_lock_registry(locks: List[Dict[str, Any]]) -> Dict[str, Dict]:
+        """Upsert NukiLockDevice objects from a fresh /list snapshot;
+        returns {ieee: changed_state} for devices whose state moved."""
+        changes: Dict[str, Dict] = {}
+        seen = set()
+        for lock in locks:
+            ieee = f"nuki_{lock.get('nuki_id')}"
+            seen.add(ieee)
+            dev = lock_devices.get(ieee)
+            if dev is None:
+                lock_devices[ieee] = NukiLockDevice(lock, _send_bridge_action)
+            else:
+                changed = dev.update_from_lock(lock)
+                if changed:
+                    changes[ieee] = changed
+        for ieee in [i for i in lock_devices if i not in seen]:
+            del lock_devices[ieee]
+        return changes
+
+    def _emit_changes(changes: Dict[str, Dict]) -> None:
+        """Feed lock state changes to the automation engine (lock/unlock
+        triggers, door-sensor conditions, battery alerts...)."""
+        if not changes:
+            return
+        svc = get_zigbee_service() if get_zigbee_service else None
+        engine = getattr(svc, "automation", None) if svc else None
+        if not engine:
+            return
+        for ieee, changed in changes.items():
+            logger.info(f"Nuki: {ieee} changed {changed}")
+            asyncio.create_task(engine.evaluate(ieee, changed))
+
+    async def _fetch_bridge_locks() -> List[Dict[str, Any]]:
+        client = _bridge_client()
+        if not client.configured:
+            return []
+        devices = await client.list_devices()
+        locks = [client.normalize_device(d) for d in devices]
+        state["bridge_cache"] = (time.monotonic(), locks)
+        _emit_changes(_sync_lock_registry(locks))
+        return locks
+
+    def _cached_bridge_locks():
+        c = state["bridge_cache"]
+        return (time.monotonic() - c[0], c[1]) if c else None
+
+    def _spawn_bridge_probe() -> None:
+        t = state.get("probe")
+        if t is not None and not t.done():
+            return
+
+        async def _probe():
+            try:
+                await _fetch_bridge_locks()
+            except Exception as e:
+                logger.debug(f"Nuki background list probe failed: {e}")
+
+        state["probe"] = asyncio.create_task(_probe())
+
+    # ── device-list + automation integration ───────────────────────────
+    # Locks (never the bridge itself) surface in /api/devices like AC units
+    # do, and the poller below keeps their state fresh so automations can
+    # trigger on lock/unlock even with no UI open.
+
+    async def _device_list_entries() -> list:
+        cfg = _load_nuki_cfg()
+        if not _bridge_channel_on(cfg) or not _bridge_client().configured:
+            return []
+        cached = _cached_bridge_locks()
+        if cached is None or cached[0] >= BRIDGE_LIST_MAX_AGE:
+            _spawn_bridge_probe()
+        return [dev.to_device_list_entry() for dev in lock_devices.values()]
+
+    app.state.nuki_device_entries = _device_list_entries
+
+    def _register_device_getter() -> bool:
+        """Expose the lock registry to the automation engine's merged
+        device view. Returns False until the service is up."""
+        try:
+            svc = get_zigbee_service() if get_zigbee_service else None
+            engine = getattr(svc, "automation", None) if svc else None
+            if engine and hasattr(engine, "add_device_getter"):
+                engine.add_device_getter(lambda: dict(lock_devices))
+                return True
+        except Exception as e:
+            logger.debug(f"Nuki automation wiring not ready: {e}")
+        return False
+
+    async def _poll_loop():
+        registered = False
+        while True:
+            interval = POLL_DEFAULT_SEC
+            try:
+                cfg = _load_nuki_cfg()
+                interval = float(cfg.get("poll_interval_seconds")
+                                 or POLL_DEFAULT_SEC)
+                if _bridge_channel_on(cfg) and \
+                        NukiBridgeClient(cfg.get("bridge") or {}).configured:
+                    if not registered:
+                        registered = _register_device_getter()
+                    await _fetch_bridge_locks()
+            except Exception as e:
+                logger.debug(f"Nuki poll failed: {e}")
+            await asyncio.sleep(max(10.0, interval))
+
+    def _start_poller():
+        """Called from main.py's lifespan once the loop is running."""
+        t = state.get("poll_task")
+        if t is None or t.done():
+            state["poll_task"] = asyncio.create_task(_poll_loop())
+
+    app.state.nuki_poll_start = _start_poller
 
     def _channel_enabled(channel: str) -> bool:
         cfg = _load_nuki_cfg()
@@ -155,13 +291,10 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
         locks: List[Dict[str, Any]] = []
         errors: List[str] = []
         if _channel_enabled("bridge"):
-            client = _bridge_client()
-            if client.configured:
-                try:
-                    devices = await client.list_devices()
-                    locks.extend(client.normalize_device(d) for d in devices)
-                except Exception as e:
-                    errors.append(f"bridge: {str(e) or type(e).__name__}")
+            try:
+                locks.extend(await _fetch_bridge_locks())
+            except Exception as e:
+                errors.append(f"bridge: {str(e) or type(e).__name__}")
         if _channel_enabled("matter"):
             locks.extend(_matter_locks())
         return {"success": True, "enabled": True, "locks": locks, "errors": errors}
@@ -175,17 +308,17 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None):
         try:
             channel, _, raw_id = lock_id.partition(":")
             if channel == "bridge":
-                client = _bridge_client()
-                # deviceType is needed alongside nukiId; look it up from /list
-                devices = await client.list_devices()
-                dev = next((d for d in devices
-                            if str(d.get("nukiId")) == raw_id), None)
-                if not dev:
-                    return {"success": False, "error": f"Unknown lock {lock_id}"}
-                res = await client.lock_action(
-                    dev["nukiId"], action, dev.get("deviceType", 0))
-                return {"success": bool(res.get("success")),
-                        "battery_critical": res.get("batteryCritical")}
+                dev = lock_devices.get(f"nuki_{raw_id}")
+                if dev is not None:
+                    return await dev.send_command(action)
+                # Registry cold (e.g. right after startup) — resolve the
+                # deviceType from a live /list and fire directly.
+                for lock in await _fetch_bridge_locks():
+                    if str(lock.get("nuki_id")) == raw_id:
+                        return await _send_bridge_action(
+                            lock["nuki_id"], action,
+                            lock.get("device_type", 0))
+                return {"success": False, "error": f"Unknown lock {lock_id}"}
             if channel == "matter":
                 mb = get_matter_bridge() if get_matter_bridge else None
                 if not mb:

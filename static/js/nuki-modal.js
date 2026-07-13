@@ -1,0 +1,135 @@
+/**
+ * Nuki Lock Modal (bridge-paired locks; pseudo-ieee nuki_<id>)
+ * Opened from the device list via device-modal.js when the entry carries
+ * nuki_lock_id. Matter-commissioned locks use the standard device modal.
+ * Reuses the shared #capModal shell like ac-modal.js.
+ */
+
+const log = zmmLog('nuki-modal');
+
+let currentLockId = null;
+
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const STATE_BADGES = {
+    'locked': 'bg-success',
+    'unlocked': 'bg-warning text-dark',
+    'unlatched': 'bg-warning text-dark',
+    'motor blocked': 'bg-danger',
+};
+
+export async function openNukiModal(lockId) {
+    const modalEl = document.getElementById('capModal');
+    const body = document.getElementById('capModalBody');
+    if (!modalEl || !body) return;
+    currentLockId = lockId;
+    body.innerHTML = `<div class="text-center text-muted py-5">
+        <i class="fas fa-spinner fa-spin me-2"></i>Contacting lock…</div>`;
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    await refreshNukiModal(lockId);
+}
+
+async function refreshNukiModal(lockId) {
+    const body = document.getElementById('capModalBody');
+    if (!body || lockId !== currentLockId) return;
+    try {
+        const r = await fetch('/api/security/nuki/locks');
+        const res = await r.json();
+        if (!res.success) throw new Error(res.error || 'status failed');
+        const lock = (res.locks || []).find(l => l.id === lockId);
+        if (!lock) throw new Error('Lock not found — is the bridge reachable?');
+        renderNukiModal(lock);
+    } catch (e) {
+        log.error('Nuki modal status failed:', e);
+        body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`;
+    }
+}
+
+async function nukiModalAction(action) {
+    const lockId = currentLockId;
+    const body = document.getElementById('capModalBody');
+    body?.querySelectorAll('button').forEach(el => { el.disabled = true; });
+    const hint = document.getElementById('nukiModalHint');
+    if (hint) hint.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i> Sending ${esc(action)}…`;
+    try {
+        const r = await fetch(`/api/security/nuki/locks/${encodeURIComponent(lockId)}/action`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+        });
+        const res = await r.json();
+        if (!res.success) throw new Error(res.error || `${action} failed`);
+        window.toast?.success?.('Nuki', `${action} sent`);
+    } catch (e) {
+        window.toast?.error?.('Nuki action failed', e.message);
+    }
+    await refreshNukiModal(lockId);
+    // keep the settings pane's table in sync if it's on screen
+    window.loadNukiLocks?.();
+}
+window.nukiModalAction = nukiModalAction;
+
+function renderNukiModal(l) {
+    const body = document.getElementById('capModalBody');
+    if (!body || l.id !== currentLockId) return;
+    const stateName = l.state_name || 'unknown';
+    const badgeCls = STATE_BADGES[stateName.toLowerCase()] || 'bg-secondary';
+    const actions = [
+        { action: 'lock', label: 'Lock', icon: 'fa-lock', btn: 'success' },
+        { action: 'unlock', label: 'Unlock', icon: 'fa-lock-open', btn: 'warning' },
+        { action: 'unlatch', label: 'Unlatch', icon: 'fa-door-open', btn: 'danger',
+          title: 'Also pulls the latch — the door swings open' },
+        { action: 'lock_n_go', label: "Lock 'n' Go", icon: 'fa-walking', btn: 'primary',
+          title: 'Unlocks now, relocks automatically after the Nuki-configured delay' },
+    ];
+    body.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <h5 class="mb-0"><i class="fas fa-lock me-2"></i>${esc(l.name)}</h5>
+        <div class="text-muted small">${esc(l.device_type_name || 'Smart Lock')}
+          ${l.firmware ? ' · fw ' + esc(l.firmware) : ''}</div>
+      </div>
+      <span class="badge bg-primary">via ${esc(l.via)}</span>
+    </div>
+
+    <div class="row g-3 mb-3 text-center">
+      <div class="col-4">
+        <div class="border rounded p-3">
+          <div class="small text-muted mb-1">State</div>
+          <span class="badge ${badgeCls} fs-6">${esc(stateName)}</span>
+        </div>
+      </div>
+      <div class="col-4">
+        <div class="border rounded p-3">
+          <div class="small text-muted mb-1">Battery</div>
+          <div class="fw-semibold">
+            ${l.battery_critical
+                ? '<span class="text-danger"><i class="fas fa-battery-empty me-1"></i>critical</span>'
+                : '<i class="fas fa-battery-three-quarters me-1 text-success"></i>ok'}
+            ${l.battery_charge != null ? ` · ${esc(l.battery_charge)}%` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="col-4">
+        <div class="border rounded p-3">
+          <div class="small text-muted mb-1">Door Sensor</div>
+          <div class="fw-semibold">${esc(l.door_state || 'n/a')}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2 flex-wrap justify-content-center mb-2">
+      ${actions.map(a => `
+        <button class="btn btn-outline-${a.btn}" ${l.available === false ? 'disabled' : ''}
+                ${a.title ? `title="${esc(a.title)}"` : ''}
+                onclick="window.nukiModalAction('${esc(a.action)}')">
+          <i class="fas ${a.icon} me-1"></i> ${esc(a.label)}
+        </button>`).join('')}
+    </div>
+    <div id="nukiModalHint" class="text-center text-muted small">
+      ${l.last_updated ? 'Lock state as of ' + esc(l.last_updated) : ''}
+    </div>
+    `;
+}

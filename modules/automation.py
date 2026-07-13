@@ -84,6 +84,11 @@ class AutomationEngine:
         self._event_emitter = event_emitter
         self._get_group_manager = group_manager_getter
         self._get_matter_devices = matter_device_getter or (lambda: {})
+        # Extra device registries merged into the engine's view — providers
+        # that come up after the engine (e.g. Nuki locks) register a getter
+        # via add_device_getter. Each returns {ieee: device-like} where the
+        # object has .state, .friendly_name and async send_command().
+        self._extra_device_getters: List[Callable[[], Dict]] = []
         # Optional media service (Cast/WiiM/radio/Tidal). Injected post-construction
         # via set_media_service_getter since the media service is built after the
         # engine. Lets automation steps play radio/Tidal and control players.
@@ -118,16 +123,32 @@ class AutomationEngine:
         """Wire the media service in after construction (see __init__)."""
         self._get_media_service = getter
 
+    def add_device_getter(self, getter: Callable) -> None:
+        """Merge another device registry into the engine's view (see __init__).
+        Idempotent-unsafe — callers register once."""
+        self._extra_device_getters.append(getter)
+
     def _get_all_devices(self) -> Dict:
-        """Merged view of Zigbee + Matter devices."""
+        """Merged view of Zigbee + Matter (+ extra provider) devices."""
         merged = dict(self._get_devices())
         merged.update(self._get_matter_devices())
+        for getter in self._extra_device_getters:
+            try:
+                merged.update(getter())
+            except Exception as e:
+                logger.debug(f"Extra device getter failed: {e}")
         return merged
 
     def _get_all_names(self) -> Dict:
-        """Merged friendly names: Zigbee names + Matter device friendly_name attrs."""
+        """Merged friendly names: Zigbee names + provider friendly_name attrs."""
         names = dict(self._get_names())
-        for ieee, dev in self._get_matter_devices().items():
+        extra: Dict = dict(self._get_matter_devices())
+        for getter in self._extra_device_getters:
+            try:
+                extra.update(getter())
+            except Exception:
+                pass
+        for ieee, dev in extra.items():
             if ieee not in names:
                 names[ieee] = getattr(dev, 'friendly_name', ieee)
         return names
@@ -1776,13 +1797,15 @@ class AutomationEngine:
                 # Zigbee device — capabilities object with has_capability()
                 hc = getattr(caps, "has_capability", lambda x: False)
                 if not any(hc(c) for c in ["on_off", "light", "switch", "cover",
-                                           "window_covering", "thermostat", "fan_control"]):
+                                           "window_covering", "thermostat", "fan_control",
+                                           "lock"]):
                     continue
             elif hasattr(dev, "_get_capabilities"):
                 # Matter device — capabilities as a list
                 cap_list = dev._get_capabilities()
                 if not any(c in cap_list for c in ["on_off", "light", "switch", "cover",
-                                                   "window_covering", "thermostat", "fan_control"]):
+                                                   "window_covering", "thermostat", "fan_control",
+                                                   "lock"]):
                     continue
             else:
                 continue
