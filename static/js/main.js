@@ -331,6 +331,9 @@ document.addEventListener('DOMContentLoaded', () => {
         loadInterviewStatusPending();
         if (typeof checkPairingStatus === 'function') checkPairingStatus();
         checkMatterStatus();
+        // Fallback poll — the matter_status websocket event is the primary
+        // signal; this catches missed events (ws reconnects, backend restarts)
+        setInterval(checkMatterStatus, 60000);
 
         // Settings tab listener
         const settingsTab = document.querySelector('button[data-bs-target="#settings"]');

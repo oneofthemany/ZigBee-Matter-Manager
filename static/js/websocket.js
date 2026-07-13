@@ -214,6 +214,12 @@ export function initWS() {
                     handlePacketFlow(msg.payload || msg.data);
                     break;
 
+                case "matter_status":
+                    // Bridge connected/disconnected — re-check so the navbar
+                    // badge and pair button update without a page refresh
+                    window.checkMatterStatus?.();
+                    break;
+
                 case "matter_button_event":
                     const mPayload = msg.payload || msg.data || {};
                     const eventLog = document.getElementById('matterEventLog');

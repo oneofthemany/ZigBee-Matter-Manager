@@ -174,6 +174,20 @@ class MatterBridge:
     def is_connected(self) -> bool:
         return self._connected
 
+    async def _set_connected(self, value: bool):
+        """Update connection state and, on change, push a matter_status
+        event over the app websocket so the UI badge updates live."""
+        changed = value != self._connected
+        self._connected = value
+        if changed and self.event_callback:
+            try:
+                await self.event_callback("matter_status", {
+                    "connected": value,
+                    "device_count": len(self.devices),
+                })
+            except Exception as e:
+                logger.debug(f"matter_status broadcast failed: {e}")
+
     # =========================================================================
     # LIFECYCLE
     # =========================================================================
@@ -192,7 +206,7 @@ class MatterBridge:
                 heartbeat=30,
                 timeout=aiohttp.ClientTimeout(total=10)
             )
-            self._connected = True
+            await self._set_connected(True)
             self._shutdown = False
             logger.info(f"✅ Connected to Matter server: {self.server_url}")
 
@@ -213,7 +227,7 @@ class MatterBridge:
                 f"Matter server not reachable yet ({self.server_url}): {e} "
                 f"— retrying in background"
             )
-            self._connected = False
+            await self._set_connected(False)
 
             # Clean up the leaked session
             if self._session and not self._session.closed:
@@ -228,7 +242,7 @@ class MatterBridge:
     async def stop(self):
         """Disconnect from matter-server."""
         self._shutdown = True
-        self._connected = False
+        await self._set_connected(False)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -272,7 +286,7 @@ class MatterBridge:
                     heartbeat=30,
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
-                self._connected = True
+                await self._set_connected(True)
                 logger.info(f"✅ Reconnected to Matter server: {self.server_url}")
 
                 await self._send_command("start_listening")
@@ -288,7 +302,7 @@ class MatterBridge:
                     )
                 else:
                     logger.warning(f"Matter reconnect failed: {e}")
-                self._connected = False
+                await self._set_connected(False)
                 # Clean up leaked session
                 if self._session and not self._session.closed:
                     await self._session.close()
@@ -340,7 +354,7 @@ class MatterBridge:
         except Exception as e:
             logger.error(f"Matter listener error: {e}")
         finally:
-            self._connected = False
+            await self._set_connected(False)
             if not self._shutdown:
                 logger.warning("Matter server connection lost — scheduling reconnect")
                 if not self._reconnect_task or self._reconnect_task.done():
