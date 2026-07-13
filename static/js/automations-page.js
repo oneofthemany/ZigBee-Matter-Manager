@@ -530,10 +530,13 @@ function _syncExpandBtn(rules) {
 
 // --- Trace ---
 
-// Open the page-level trace panel filtered to one rule. Reuses the trace
-// loader from modal/automation.js (window._aRefTrace), which reads the shared
-// #tf / #a-trace-c IDs — the create/edit hosts render their own copies of
-// those IDs, so clear them first or they'd shadow the panel's.
+// Open the page-level trace panel filtered to the pressed rule (the backend
+// keeps a per-rule history, so the rule's full timeline survives churn in
+// the shared log). The dropdown can switch to All / another rule / System.
+// Reuses the trace loader from modal/automation.js (window._aRefTrace),
+// which reads the shared #tf / #a-trace-c IDs — the create/edit hosts render
+// their own copies of those IDs, so clear them first or they'd shadow the
+// panel's.
 function _apTrace(ruleId) {
     document.getElementById('ap-create-panel').style.display = 'none';
     document.getElementById('ap-form-host').innerHTML = '';

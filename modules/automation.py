@@ -29,6 +29,7 @@ import os
 import time
 import traceback
 import uuid
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.automation")
@@ -98,6 +99,11 @@ class AutomationEngine:
 
         self._trace_log: List[Dict[str, Any]] = []
         self._max_trace_entries = 200
+        # Per-rule history alongside the shared log: chatty rules/system
+        # events churn the 200-entry shared buffer in minutes, which used to
+        # leave a rule-filtered trace with only its newest entry or two.
+        self._trace_by_rule: Dict[str, deque] = {}
+        self._max_trace_per_rule = 100
 
         self._stats = {
             "evaluations": 0, "matches": 0, "transitions": 0,
@@ -412,6 +418,9 @@ class AutomationEngine:
         self._trace_log.append(entry)
         if len(self._trace_log) > self._max_trace_entries:
             self._trace_log = self._trace_log[-self._max_trace_entries:]
+        if rule_id not in self._trace_by_rule:
+            self._trace_by_rule[rule_id] = deque(maxlen=self._max_trace_per_rule)
+        self._trace_by_rule[rule_id].append(entry)
 
         log_msg = f"[AUTO {rule_id}] {message}"
         if level == "ERROR": logger.error(log_msg)
@@ -426,7 +435,9 @@ class AutomationEngine:
             except RuntimeError:
                 pass
 
-    def get_trace_log(self) -> List[Dict[str, Any]]:
+    def get_trace_log(self, rule_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        if rule_id is not None:
+            return list(self._trace_by_rule.get(rule_id, ()))
         return list(self._trace_log)
 
     # =========================================================================

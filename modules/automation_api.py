@@ -142,8 +142,9 @@ def register_automation_routes(app: FastAPI,
     async def trace(rule_id: Optional[str] = None):
         e = ge()
         if not e: return []
-        entries = e.get_trace_log()
-        return [x for x in entries if x.get("rule_id")==rule_id] if rule_id else entries
+        # Rule-filtered requests come from the per-rule ring buffer, which
+        # keeps a rule's own history even after the shared log has churned.
+        return e.get_trace_log(rule_id)
 
     @app.get("/api/automations/rule/{rule_id}", tags=["automations"])
     async def get_rule(rule_id: str):
