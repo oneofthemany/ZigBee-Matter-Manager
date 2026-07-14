@@ -92,3 +92,30 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         if sync is None:
             return {"success": False, "error": "Sync PoC disabled"}
         return await sync.delete_group(body.id)
+
+    @app.get("/api/media/sync/history")
+    async def sync_history(group_id: str = "", hours: int = 24,
+                           bucket_minutes: int = 0):
+        """Lag/hysteresis history from the group's own DuckDB — raw rows, or
+        median-bucketed per player when bucket_minutes > 0."""
+        import asyncio
+        try:
+            from modules.media import sync_db
+            samples = await asyncio.to_thread(
+                sync_db.query_history,
+                group_id, min(int(hours), 24 * 30), int(bucket_minutes))
+            return {"success": True, "samples": samples}
+        except Exception as e:
+            logger.warning(f"sync history query failed: {e}")
+            return {"success": False, "error": str(e), "samples": []}
+
+    @app.get("/api/media/sync/model")
+    async def sync_model():
+        """The learned per-device model, trained across all group DBs."""
+        import asyncio
+        try:
+            from modules.media import sync_db
+            model = await asyncio.to_thread(sync_db.query_device_model)
+            return {"success": True, "model": model}
+        except Exception as e:
+            return {"success": False, "error": str(e), "model": {}}

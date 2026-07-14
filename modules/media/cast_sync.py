@@ -59,6 +59,15 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+# Per-group DuckDB stores (data/sync/<group>.duckdb) are the model's store
+# of record — separate files so the zmm_telemetry appender's lock on
+# telemetry.duckdb is never contended. The JSON model file is only the
+# fallback when duckdb is unavailable.
+try:
+    from modules.media import sync_db as _sdb
+except Exception:                                    # pragma: no cover
+    _sdb = None
+
 logger = logging.getLogger("modules.media.cast_sync")
 
 RATE = 44100
@@ -162,6 +171,12 @@ class _Stream:
         self.cooldown: int = 0       # monitor polls to skip after a jump
         self.resyncs: int = 0
         self.stats: dict = {}
+        # Software PLL: serve fractionally more/fewer samples to cancel the
+        # device's clock drift instead of waiting for step corrections.
+        self.rate_ppm: float = 0.0   # >0 = device consumes slow, skip forward
+        self.frac: float = 0.0       # accumulated fractional rate samples
+        self.lag_hist: List[tuple] = []   # (t, lag) points for drift fitting
+        self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
 
 
 class CastSyncPoc:
@@ -178,6 +193,12 @@ class CastSyncPoc:
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
+        # Learned per-device latency model (stream mode): startup lag +
+        # clock-drift rate, EMA-updated every session so later sessions
+        # start pre-aligned. player_id -> {lag_s, drift_ppm, sessions}
+        self._model_file = cfg.get("model_file", "./data/cast_sync_model.json")
+        self._model: Dict[str, dict] = self._read_json(self._model_file)
+        self._session_id: str = ""
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -218,6 +239,8 @@ class CastSyncPoc:
         if self._http_server is not None:
             self._http_server.should_exit = True
         self._http_task = None
+        if _sdb is not None:
+            _sdb.close_all()
 
     # ------------------------------------------------------------------
     # Session control (called from routes)
@@ -235,6 +258,17 @@ class CastSyncPoc:
             await self.stop_session()
         self._active_group = group_id
         stream_mode = not self.app_id   # no registered receiver -> default receiver
+        self._session_id = uuid_mod.uuid4().hex[:8]
+
+        # Prefer the DuckDB-trained model (robust medians over raw history,
+        # across every group's DB); the in-memory/JSON EMAs remain the fallback.
+        if stream_mode and _sdb is not None:
+            try:
+                db_model = await asyncio.to_thread(_sdb.query_device_model)
+                for pid, m in db_model.items():
+                    self._model[pid] = {**self._model.get(pid, {}), **m}
+            except Exception as e:
+                logger.debug(f"Sync model DB load failed (using JSON model): {e}")
 
         self._epoch = time.monotonic()
         self._buffer = []
@@ -246,6 +280,15 @@ class CastSyncPoc:
         if not stream_mode:
             self._producer = asyncio.create_task(self._produce())
 
+        # If the model knows every member's startup lag, fix the session
+        # target now and pre-compensate each stream so devices start already
+        # roughly aligned (the monitor only mops up the residual).
+        model_lags = {pid: self._model.get(pid, {}).get("lag_s")
+                      for pid in player_ids}
+        if stream_mode and all(v is not None for v in model_lags.values()):
+            self._target_lag = max(model_lags.values()) + STREAM_LAG_MARGIN_S
+            logger.info(f"Sync stream target lag from model: {self._target_lag:.2f}s")
+
         launched, errors = [], {}
         for pid in player_ids:
             sid = uuid_mod.uuid4().hex[:12]
@@ -253,7 +296,12 @@ class CastSyncPoc:
             self._pending[sid] = {"player_id": pid, "name": name}
             try:
                 if stream_mode:
-                    self._streams[sid] = _Stream(sid, pid, name)
+                    st = _Stream(sid, pid, name)
+                    m = self._model.get(pid, {})
+                    if self._target_lag is not None and m.get("lag_s") is not None:
+                        st.precomp_s = max(0.0, self._target_lag - m["lag_s"])
+                    st.rate_ppm = float(m.get("drift_ppm", 0.0))
+                    self._streams[sid] = st
                     task = asyncio.create_task(self._launch_stream(pid, sid))
                 else:
                     task = asyncio.create_task(self._launch(pid, sid))
@@ -279,6 +327,8 @@ class CastSyncPoc:
         if self._monitor:
             self._monitor.cancel()
             self._monitor = None
+        if self._streams:    # persist what this session taught the model
+            self._write_json(self._model_file, self._model)
         self._streams = {}   # generators see running=False and finish
         for r in list(self._receivers.values()):
             try:
@@ -343,6 +393,8 @@ class CastSyncPoc:
                 s.pos -= delta
                 s.shift -= delta
                 s.cooldown = STREAM_COOLDOWN_POLLS
+                s.lag_hist = []   # baseline moved — old slope points are invalid
+                await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
     # ------------------------------------------------------------------
@@ -508,6 +560,7 @@ class CastSyncPoc:
                         continue     # wait until every connected device reports
                     self._target_lag = max(lags.values()) + STREAM_LAG_MARGIN_S
                     logger.info(f"Sync stream target lag: {self._target_lag:.2f}s")
+                batch = []
                 for sid, lag in lags.items():
                     st = self._streams.get(sid)
                     if st is None:
@@ -515,22 +568,78 @@ class CastSyncPoc:
                     if st.cooldown > 0:
                         st.cooldown -= 1
                         continue
+                    if st.natural_lag is None:
+                        st.natural_lag = lag
+                        self._model_learn(st, "lag_s", lag - st.precomp_s)
+                        batch.append(self._sample_row(st, "startup", lag=lag))
                     error = lag - self._target_lag   # >0: behind, skip forward
                     st.stats = {"offset_ms": round(error * 1000),
                                 "rtt_ms": "n/a", "late": 0,
-                                "resyncs": st.resyncs}
+                                "resyncs": st.resyncs,
+                                "drift_ppm": round(st.rate_ppm)}
+                    batch.append(self._sample_row(st, "poll", lag=lag,
+                                                  error=error))
                     if abs(error) > STREAM_CORRECT_MIN_S:
                         jump = int(error * RATE)
                         st.pos += jump
                         st.shift += jump
                         st.resyncs += 1
                         st.cooldown = STREAM_COOLDOWN_POLLS
+                        st.lag_hist = []      # slope is meaningless across a jump
+                        batch.append(self._sample_row(st, "resync", lag=lag,
+                                                      error=error))
                         logger.info(f"Sync stream resync {st.name}: "
                                     f"{error * 1000:+.0f} ms")
+                    else:
+                        self._pll_update(st, lag)
+                await self._record_samples(batch)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"Sync stream monitor died: {e}")
+
+    def _sample_row(self, st: _Stream, kind: str, lag: Optional[float] = None,
+                    error: Optional[float] = None) -> dict:
+        return {"session_id": self._session_id,
+                "player_id": st.player_id, "kind": kind, "lag_s": lag,
+                "error_ms": None if error is None else error * 1000,
+                "rate_ppm": st.rate_ppm,
+                "trim_ms": self._trims.get(st.player_id, 0),
+                "precomp_s": st.precomp_s, "target_lag_s": self._target_lag}
+
+    async def _record_samples(self, rows: List[dict]):
+        """Append measurement rows to the session group's DB (best-effort)."""
+        if not rows or _sdb is None:
+            return
+        try:
+            await asyncio.to_thread(_sdb.write_samples, self._active_group, rows)
+        except Exception as e:
+            logger.debug(f"Sync sample write failed: {e}")
+
+    def _pll_update(self, st: _Stream, lag: float):
+        """Integral rate control: fit the residual lag slope over recent
+        polls and fold it into the stream's sample-rate correction."""
+        st.lag_hist.append((time.monotonic(), lag))
+        if len(st.lag_hist) > 10:
+            st.lag_hist.pop(0)
+        if len(st.lag_hist) < 4:
+            return
+        ts = [p[0] for p in st.lag_hist]
+        ls = [p[1] for p in st.lag_hist]
+        n, tm, lm = len(ts), sum(ts) / len(ts), sum(ls) / len(ls)
+        den = sum((t - tm) ** 2 for t in ts)
+        if den <= 0:
+            return
+        slope = sum((ts[i] - tm) * (ls[i] - lm) for i in range(n)) / den
+        st.rate_ppm = max(-300.0, min(300.0, st.rate_ppm + 0.5 * slope * 1e6))
+        self._model_learn(st, "drift_ppm", st.rate_ppm)
+
+    def _model_learn(self, st: _Stream, key: str, value: float):
+        """EMA-update one field of the device's learned latency model."""
+        m = self._model.setdefault(st.player_id, {})
+        old = m.get(key)
+        m[key] = round(value if old is None else 0.7 * old + 0.3 * value, 4)
+        m["sessions"] = m.get("sessions", 0) + (1 if key == "lag_s" else 0)
 
     async def _measure_lag(self, st: _Stream) -> Optional[float]:
         """How far behind the server clock this device's playout is, in
@@ -568,7 +677,9 @@ class CastSyncPoc:
             yield _wav_header()
             if st.pos is None:
                 trim = int(self._trims.get(st.player_id, 0) * RATE / 1000)
-                st.pos = int((time.monotonic() - self._epoch) * RATE) - trim
+                precomp = int(st.precomp_s * RATE)
+                st.pos = (int((time.monotonic() - self._epoch) * RATE)
+                          - trim - precomp)
                 st.start_pos = st.pos
             block = int(RATE * STREAM_BLOCK_S)
             while self.running and self._streams.get(st.sid) is st:
@@ -578,6 +689,14 @@ class CastSyncPoc:
                     continue
                 pos = st.pos
                 st.pos = pos + block
+                # PLL rate correction: a few samples per second, inaudible,
+                # cancels clock drift between step resyncs.
+                st.frac += block * st.rate_ppm / 1e6
+                n = int(st.frac)
+                if n:
+                    st.pos += n
+                    st.shift += n
+                    st.frac -= n
                 yield _gen_samples(pos, block)
         except asyncio.CancelledError:
             pass

@@ -88,6 +88,7 @@ export function initMedia() {
     window.mediaSyncStart = syncStartGroup;
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncTrim = syncSetTrim;
+    window.mediaSyncNudge = syncNudgeTrim;
     // Phase 2
     window.mediaSetSource = setSource;
     window.mediaSearch = doSearch;
@@ -1111,7 +1112,8 @@ function _syncStatLine(st) {
     const s = st && st.stats;
     if (!s || s.offset_ms == null) return '';
     const rtt = Number.isFinite(s.rtt_ms) ? ` · rtt ${s.rtt_ms} ms` : '';
-    return `offset ${s.offset_ms} ms${rtt} · late ${s.late} · resyncs ${s.resyncs}`;
+    const drift = Number.isFinite(s.drift_ppm) ? ` · drift ${s.drift_ppm} ppm` : '';
+    return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late} · resyncs ${s.resyncs}`;
 }
 
 // Deviation meter: a centered bar on the same ±500 ms scale as the trim
@@ -1158,11 +1160,17 @@ function _syncMemberRow(m, groupActive) {
         <div class="d-flex align-items-center small">
           <span class="fw-semibold">${esc(m.name)}</span>
           <span id="syncpill-${esc(m.player_id)}">${pill}</span>
-          <span class="ms-auto text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
+          <span class="ms-auto d-flex align-items-center gap-1">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="1 ms earlier"
+                    onclick="window.mediaSyncNudge('${esc(m.player_id)}', -1)">−</button>
+            <span class="text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="1 ms later"
+                    onclick="window.mediaSyncNudge('${esc(m.player_id)}', 1)">+</button>
+          </span>
         </div>
         ${groupActive ? _syncMeter(m.player_id) : ''}
-        <input type="range" class="form-range" min="-500" max="500" step="5"
-               value="${m.trim_ms}"
+        <input type="range" class="form-range" min="-500" max="500" step="1"
+               value="${m.trim_ms}" id="synctrim-${esc(m.player_id)}"
                oninput="document.getElementById('synctrimlbl-${esc(m.player_id)}').textContent = this.value + ' ms'"
                onchange="window.mediaSyncTrim('${esc(m.player_id)}', this.value)">
         <div class="small text-muted" id="syncstat-${esc(m.player_id)}">${_syncStatLine(st)}</div>
@@ -1297,6 +1305,16 @@ async function syncStopSession() {
 async function syncSetTrim(pid, val) {
     const r = await apiPost('/api/media/sync/trim', { player_id: pid, trim_ms: Number(val) });
     if (!r.success) toast(r.error || 'Trim failed', 'error');
+}
+
+async function syncNudgeTrim(pid, delta) {
+    const sl = document.getElementById('synctrim-' + pid);
+    if (!sl) return;
+    const v = Math.max(-500, Math.min(500, Number(sl.value) + delta));
+    sl.value = v;
+    const lbl = document.getElementById('synctrimlbl-' + pid);
+    if (lbl) lbl.textContent = v + ' ms';
+    await syncSetTrim(pid, v);
 }
 
 async function submitGroup() {
