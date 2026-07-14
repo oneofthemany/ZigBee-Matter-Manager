@@ -25,6 +25,7 @@ Supported shapes (case-insensitive, order-flexible):
   - "when kitchen temperature goes above 25 turn on the fan otherwise turn it off"
 """
 
+import difflib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -100,14 +101,30 @@ _EXAMPLES = [
     "turn on the hall light when the hallway sensor detects motion",
     "when the front door opens turn on the ensuite lights",
     "turn off the media socket after 30 minutes",
+    "turn on the porch light for 5 minutes when motion is detected",
     "set the bedroom lights to 40% when motion is detected",
-    "turn on the porch light after sunset",
+    "turn on all the bedroom lights at sunset",
+    "when motion is detected and it is dark turn on the hall light",
     "turn on the lamp when it gets dark",
     "turn on the hallway lights between 08:00 and 23:30",
     "when the kitchen temperature goes above 25 turn on the fan otherwise turn it off",
     "when the front door opens announce \"front door opened\" on the kitchen speaker",
     "pause the lounge speaker when motion clears in the lounge",
 ]
+
+# Words that carry no meaning when matching device names in an action clause.
+_STOPWORDS = {"all", "every", "each", "the", "a", "an", "my", "our", "in",
+              "of", "to", "at", "on", "off", "and", "then", "please", "room"}
+
+# command → its reverting command, for "for N minutes" auto-revert semantics.
+_OPPOSITE_CMD = {"on": "off", "off": "on", "open": "close", "close": "open",
+                 "lock": "unlock", "unlock": "lock", "brightness": "off"}
+
+# Spelled-out quantities accepted in delays ("after five minutes").
+_WORD_NUMBERS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+                 "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                 "ten": 10, "fifteen": 15, "twenty": 20, "thirty": 30,
+                 "forty": 40, "fifty": 50, "sixty": 60, "ninety": 90}
 
 
 def _norm(name: str) -> str:
@@ -142,7 +159,7 @@ class NLAutomationParser:
         t, else_text = self._split_keyword(t, r"otherwise|or else|else")
         t, prereq_text = self._split_keyword(
             t, r"only if|provided that|provided|as long as|while")
-        t, delay_secs = self._extract_delay(t)
+        t, delay_secs, delay_kind = self._extract_delay(t)
         t, temporal_cond, time_phrase = self._extract_temporal(t)
         if time_phrase:
             matched["time"] = time_phrase
@@ -154,13 +171,29 @@ class NLAutomationParser:
         prerequisites: List[Dict] = []
         source_ieee: Optional[str] = None
 
-        # 3. Trigger (device + predicate).
+        # 3. Trigger (device + predicate). "and" chains a gating clause onto
+        #    the trigger ("when motion is detected and it is dark"): the first
+        #    segment is the trigger, the rest become prerequisites.
         if trigger_text and _norm(trigger_text):
-            src, cond, note = self._parse_trigger(trigger_text)
+            segs = [s for s in re.split(r"\band\b", trigger_text) if _norm(s)]
+            src, cond, note = self._parse_trigger(segs[0] if segs else trigger_text)
+            if len(segs) > 1 and not (src and cond):
+                # The "and" may be part of a device name — retry unsplit.
+                segs = [trigger_text]
+                src, cond, note = self._parse_trigger(trigger_text)
             if src and cond:
                 source_ieee = src
                 conditions.append(cond)
                 matched["trigger"] = note
+                for seg in segs[1:]:
+                    pre, pnote = self._parse_prerequisite(seg)
+                    if pre:
+                        prerequisites.append(pre)
+                        matched["prerequisite"] = pnote
+                    else:
+                        return self._fail(
+                            "I understood the trigger but not the extra "
+                            "condition \"" + seg.strip() + "\".", matched)
             elif note:
                 return self._fail(note, matched)
 
@@ -173,13 +206,16 @@ class NLAutomationParser:
             else:
                 conditions.append(tw)
 
-        # 5. THEN action(s).
+        # 5. THEN action(s). "after N" delays the action; "for N" acts now and
+        #    schedules the reverting command once the delay elapses.
         then_seq: List[Dict] = []
-        if delay_secs and delay_secs > 0:
+        if delay_secs and delay_kind == "after":
             then_seq.append({"type": "delay", "seconds": delay_secs})
+        action_steps: List[Dict] = []
         if action_text:
             steps, note = self._parse_action(action_text, source_ieee)
             if steps:
+                action_steps = steps
                 then_seq.extend(steps)
                 matched["action"] = note
             elif note and not then_seq:
@@ -189,6 +225,31 @@ class NLAutomationParser:
             return self._fail(
                 "I couldn't find an action to perform (e.g. \"turn on the lamp\").",
                 matched)
+
+        # 5b. "for N minutes" — do X, wait, undo X. Without a trigger it is
+        #     the classic auto-revert timer: whenever the device reaches the
+        #     acted state, wait, then revert ("turn on the porch light for
+        #     5 minutes" → when it's ON, wait 5 min, turn it off).
+        if delay_secs and delay_kind == "for":
+            reverts = self._revert_steps(action_steps)
+            anchor = self._first_command_target(action_steps)
+            if reverts and conditions:
+                then_seq.append({"type": "delay", "seconds": delay_secs})
+                then_seq.extend(reverts)
+                matched["timer"] = f"revert after {delay_secs}s"
+            elif reverts and anchor and not anchor.startswith("group:"):
+                acted = self._acted_state_condition(anchor, action_steps)
+                if acted:
+                    source_ieee = anchor
+                    conditions.append(acted)
+                    then_seq = [{"type": "delay", "seconds": delay_secs},
+                                *reverts]
+                    matched["trigger"] = "auto-revert timer on the target device"
+                else:
+                    then_seq.insert(0, {"type": "delay", "seconds": delay_secs})
+            else:
+                # No revertable command — fall back to plain delayed action.
+                then_seq.insert(0, {"type": "delay", "seconds": delay_secs})
 
         # 6. Auto-timer pattern: a delayed action with no trigger/time means
         #    "do X to this device N seconds after it changes to the opposite".
@@ -297,10 +358,11 @@ class NLAutomationParser:
         for c in candidates:
             if c in names:
                 return names[c]
-        # loose contains-match (e.g. "state_1" for "state")
+        # loose match (e.g. "state_1" for "state"). Containment needs a
+        # substantial candidate — "on" ⊂ "position" must NOT match.
         for c in candidates:
             for an, meta in names.items():
-                if an.startswith(c) or c in an:
+                if an.startswith(c) or (len(c) >= 4 and c in an):
                     return meta
         return None
 
@@ -330,7 +392,57 @@ class NLAutomationParser:
             score = len(toks & words)
             if score >= max(1, len(toks) - 1) and score > best_score:
                 best, best_score = d, score
-        return best
+        if best:
+            return best
+        # Fuzzy fallback: typo-tolerant per-token match ("hallway lite",
+        # "kichen light"). A device matches when (nearly) all of its name
+        # tokens have a close counterpart in the text.
+        fbest, fbest_score = None, 0.0
+        for d in pool:
+            toks = d["norm"].split()
+            if not toks:
+                continue
+            hits = sum(1 for tk in toks if self._token_close(tk, words))
+            if hits < max(1, len(toks) - 1):
+                continue
+            score = hits / len(toks) + len(toks) * 0.01  # specific names win
+            if score > fbest_score:
+                fbest, fbest_score = d, score
+        return fbest
+
+    @staticmethod
+    def _token_close(token: str, words: set, cutoff: float = 0.8) -> bool:
+        """True if a text word equals or is a near-miss of the name token
+        (typos, singular/plural)."""
+        if token in words:
+            return True
+        if len(token) < 3:
+            return False
+        for w in words:
+            if len(w) < 3:
+                continue
+            if w == token + "s" or token == w + "s":
+                return True
+            if difflib.SequenceMatcher(None, token, w).ratio() >= cutoff:
+                return True
+        return False
+
+    def _suggest_devices(self, text: str, limit: int = 3) -> List[str]:
+        """Closest device names to a clause, for did-you-mean feedback."""
+        words = [w for w in _norm(text).split() if w not in _STOPWORDS]
+        if not words:
+            return []
+        scored = []
+        for d in self._devices:
+            toks = d["norm"].split()
+            if not toks:
+                continue
+            # How well the query words are covered by this device's name.
+            s = sum(max((difflib.SequenceMatcher(None, w, tk).ratio()
+                         for tk in toks), default=0.0) for w in words) / len(words)
+            scored.append((s, d["name"]))
+        scored.sort(key=lambda x: -x[0])
+        return [n for s, n in scored[:limit] if s >= 0.55]
 
     # ── Trigger parsing ─────────────────────────────────────────────────────
 
@@ -342,9 +454,12 @@ class NLAutomationParser:
             if ambiguous:
                 return None, None, ambiguous
         if not dev:
+            sug = self._suggest_devices(text)
+            hint = ("Did you mean: " + ", ".join(sug) + "?") if sug else \
+                   ("Known devices: " + self._device_hint())
             return None, None, (
                 "I couldn't find the trigger device in \"" + text.strip() +
-                "\". Known devices: " + self._device_hint())
+                "\". " + hint)
         if dev["is_group"]:
             return None, None, ("Groups can't be a trigger source — name a "
                                 "single device for the \"when\" part.")
@@ -519,6 +634,10 @@ class NLAutomationParser:
                     phrase or "time")
         dev = self._match_device(text)
         if not dev:
+            # No device named ("…and it is dark") — infer from the concept
+            # when exactly one device can answer it.
+            dev, _ambiguous = self._infer_device_by_concept(" " + text + " ")
+        if not dev:
             return None, None
         negated = bool(re.search(r"\b(not|isn't|n't|no)\b", text))
         pred = self._detect_predicate(dev["ieee"],
@@ -538,31 +657,37 @@ class NLAutomationParser:
         steps: List[Dict] = []
         notes: List[str] = []
         # Split compound actions on " and ".
+        errors: List[str] = []
         for clause in re.split(r"\band\b", text):
             clause = clause.strip()
             if not clause:
                 continue
-            step, note = self._parse_single_action(clause, source_ieee)
-            if step:
-                steps.append(step)
+            csteps, note = self._parse_single_action(clause, source_ieee)
+            if csteps:
+                steps.extend(csteps)
                 notes.append(note)
+            elif note:
+                errors.append(note)
         if not steps:
-            return [], ("I couldn't turn \"" + text.strip() +
+            # A clause-level error (with did-you-mean hints) beats the
+            # generic fallback.
+            return [], (errors[0] if errors else
+                        "I couldn't turn \"" + text.strip() +
                         "\" into a command (try \"turn on/off <device>\").")
         return steps, ", ".join(notes)
 
     def _parse_single_action(self, clause: str, source_ieee: Optional[str]
-                             ) -> Tuple[Optional[Dict], Optional[str]]:
+                             ) -> Tuple[List[Dict], Optional[str]]:
         # Media intent (announce / control / volume on a named player) first —
         # it only succeeds when a real player is matched, so device rules are
         # untouched (e.g. "stop the kitchen light" stays a device command).
         mstep, mnote = self._parse_media_action(clause)
         if mstep:
-            return mstep, mnote
+            return [mstep], mnote
 
         vm = _ACTION_VERB_RE.search(clause)
         if not vm:
-            return None, None
+            return [], None
         verb = vm.group(1).lower()
         command = None
         for pat, cmd in _ACTION_VERBS:
@@ -576,17 +701,28 @@ class NLAutomationParser:
         num = re.search(r"\bto\s+(-?\d+)\b", clause) or \
             re.search(r"\b(\d+)\b", clause[vm.end():])
 
-        # Resolve target device.
+        # Resolve target device(s). "all/every/each" fans out to every
+        # actuator whose name matches the remaining words ("all the bedroom
+        # lights" → every *bedroom light* device, or the matching group).
         after = clause[vm.end():]
-        dev = self._match_device(after, actuators_only=True) or \
-            self._match_device(clause, actuators_only=True)
-        if not dev and (set(_norm(after).split()) & _PRONOUNS or not after.strip()):
-            if source_ieee:
-                dev = next((d for d in self._devices
-                            if d["ieee"] == source_ieee), None)
-        if not dev:
-            return None, ("I couldn't find which device to control in \"" +
-                          clause.strip() + "\".")
+        targets: List[Dict] = []
+        if re.search(r"\b(all|every|each)\b", clause, re.I):
+            targets = self._match_all_devices(after or clause)
+        if not targets:
+            dev = self._match_device(after, actuators_only=True) or \
+                self._match_device(clause, actuators_only=True)
+            if not dev and (set(_norm(after).split()) & _PRONOUNS
+                            or not after.strip()):
+                if source_ieee:
+                    dev = next((d for d in self._devices
+                                if d["ieee"] == source_ieee), None)
+            if dev:
+                targets = [dev]
+        if not targets:
+            sug = self._suggest_devices(after or clause)
+            hint = (" Did you mean: " + ", ".join(sug) + "?") if sug else ""
+            return [], ("I couldn't find which device to control in \"" +
+                        clause.strip() + "\"." + hint)
 
         # Resolve generic "set" → brightness / color_temp / position.
         if command == "set" or command == "brightness":
@@ -610,18 +746,45 @@ class NLAutomationParser:
             command = "position"
             value = int(pm.group(1))
 
-        # Validate the command exists on the target (best-effort).
-        endpoint_id = self._command_endpoint(dev, command)
-
-        step = {"type": "command", "target_ieee": dev["ieee"],
-                "command": command}
-        if value is not None:
-            step["value"] = value
-        if endpoint_id is not None:
-            step["endpoint_id"] = endpoint_id
+        steps = []
+        for dev in targets:
+            step = {"type": "command", "target_ieee": dev["ieee"],
+                    "command": command}
+            if value is not None:
+                step["value"] = value
+            endpoint_id = self._command_endpoint(dev, command)
+            if endpoint_id is not None:
+                step["endpoint_id"] = endpoint_id
+            steps.append(step)
+        names = ", ".join(d["name"] for d in targets)
         label = f"{command}{'=' + str(value) if value is not None else ''} "\
-                f"→ {dev['name']}"
-        return step, label
+                f"→ {names}"
+        return steps, label
+
+    def _match_all_devices(self, text: str) -> List[Dict]:
+        """Every actuator whose name matches the clause words ("all the
+        bedroom lights"). Prefers a matching group (one command) over
+        fanning out to its member devices."""
+        words = [w for w in _norm(text).split() if w not in _STOPWORDS]
+        # Drop bare numbers (values like "50" aren't name words).
+        words = [w for w in words if not w.isdigit()]
+        if not words:
+            return []
+        matches, groups = [], []
+        for d in self._devices:
+            if not (d["ieee"] in self._act_ieees or d["is_group"]):
+                continue
+            toks = set(d["norm"].split())
+            if not toks:
+                continue
+            # Every clause word must land in the device name (typo/plural
+            # tolerant) — "bedroom lights" matches "Bedroom Light 1", not
+            # "Bedroom Socket".
+            if all(self._token_close(w, toks) for w in words):
+                (groups if d["is_group"] else matches).append(d)
+        if groups:
+            return groups[:1] if len(groups) > 1 else groups
+        return matches
 
     def _command_endpoint(self, dev: Dict, command: str):
         for c in dev.get("commands", []):
@@ -707,18 +870,34 @@ class NLAutomationParser:
 
     # ── Time / delay extraction ─────────────────────────────────────────────
 
-    def _extract_delay(self, t: str) -> Tuple[str, Optional[int]]:
-        m = re.search(r"\bafter\s+(\d+)\s*(second|sec|minute|min|hour|hr)s?\b", t)
-        if not m:
-            m = re.search(r"\bfor\s+(\d+)\s*(second|sec|minute|min|hour|hr)s?\b", t)
-        if not m:
-            return t, None
-        n, unit = int(m.group(1)), m.group(2)
-        secs = n * (3600 if unit.startswith(("hour", "hr")) else
-                    60 if unit.startswith("min") else 1)
-        return (t[:m.start()] + " " + t[m.end():]), secs
+    _QTY = r"(\d+|" + "|".join(_WORD_NUMBERS) + r"|half\s+an?)"
+    _UNIT = r"(second|sec|minute|min|hour|hr)s?"
 
-    _CLOCK = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
+    def _extract_delay(self, t: str) -> Tuple[str, Optional[int], Optional[str]]:
+        """Pull "after/for N <unit>" out of the text.
+
+        Returns (text, seconds, kind) where kind is "after" (delay before
+        acting) or "for" (act now, revert after the delay) — they mean
+        different rules and are handled differently by parse().
+        """
+        m = re.search(r"\b(after|for)\s+" + self._QTY + r"\s*" + self._UNIT
+                      + r"\b", t)
+        if not m:
+            return t, None, None
+        kind, qty, unit = m.group(1), m.group(2), m.group(3)
+        if qty.startswith("half"):
+            n = 0.5
+        elif qty.isdigit():
+            n = int(qty)
+        else:
+            n = _WORD_NUMBERS.get(qty, 0)
+        secs = round(n * (3600 if unit.startswith(("hour", "hr")) else
+                          60 if unit.startswith("min") else 1))
+        if secs <= 0:
+            return t, None, None
+        return (t[:m.start()] + " " + t[m.end():]), secs, kind
+
+    _CLOCK = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday|midnight)"
 
     def _extract_temporal(self, t: str
                           ) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
@@ -788,6 +967,10 @@ class NLAutomationParser:
     @staticmethod
     def _clock(token: str) -> Optional[str]:
         token = token.strip().lower()
+        if token in ("noon", "midday"):
+            return "12:00"
+        if token == "midnight":
+            return "00:00"
         m = re.match(r"^(\d{1,2}):(\d{2})\s*(am|pm)?$", token)
         if m:
             h, mi, ap = int(m.group(1)), int(m.group(2)), m.group(3)
@@ -869,16 +1052,50 @@ class NLAutomationParser:
                 return s["target_ieee"]
         return None
 
-    def _opposite_state_condition(self, ieee: str,
-                                  steps: List[Dict]) -> Optional[Dict]:
+    def _revert_steps(self, steps: List[Dict]) -> List[Dict]:
+        """Reverting commands for each command step (on→off, open→close…).
+        Returns [] when any command has no clean opposite."""
+        out = []
+        for s in steps:
+            if s.get("type") != "command":
+                continue
+            opp = _OPPOSITE_CMD.get(s.get("command"))
+            if not opp:
+                return []
+            step = {"type": "command", "target_ieee": s["target_ieee"],
+                    "command": opp}
+            if s.get("endpoint_id") is not None:
+                step["endpoint_id"] = s["endpoint_id"]
+            out.append(step)
+        return out
+
+    def _acted_state_condition(self, ieee: str,
+                               steps: List[Dict]) -> Optional[Dict]:
+        """Condition matching the state the action puts the device in —
+        the trigger for a standalone "for N minutes" auto-revert rule."""
         cmd = next((s.get("command") for s in steps
                     if s.get("type") == "command"), None)
         meta = self._find_attr_meta(ieee, _STATE_ATTRS)
         if not meta:
             return None
-        # "turn off after N" fires while the device is ON, and vice-versa.
-        truthy = (cmd == "off")
-        return self._bool_cond(meta, truthy)
+        return self._bool_cond(meta, cmd in ("on", "brightness"))
+
+    def _opposite_state_condition(self, ieee: str,
+                                  steps: List[Dict]) -> Optional[Dict]:
+        cmd = next((s.get("command") for s in steps
+                    if s.get("type") == "command"), None)
+        meta = self._find_attr_meta(ieee, _STATE_ATTRS)
+        if meta:
+            # "turn off after N" fires while the device is ON, and vice-versa.
+            return self._bool_cond(meta, cmd == "off")
+        # Positional device (blind/cover): "close after N" fires while open.
+        if cmd in ("open", "close"):
+            meta = self._find_attr_meta(ieee, ["position", "current_position"])
+            if meta:
+                return {"type": "attribute", "attribute": meta["attribute"],
+                        "operator": "gt" if cmd == "close" else "lt",
+                        "value": 0 if cmd == "close" else 100}
+        return None
 
     def _any_source(self) -> Optional[str]:
         for d in self._devices:

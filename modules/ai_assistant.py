@@ -74,6 +74,19 @@ class AIAssistant:
         # Human-readable detail of the most recent chat() failure, so callers
         # (test endpoint, UI) can show *why* instead of a bare "no response".
         self.last_error: Optional[str] = None
+        # Local model servers process one request at a time; concurrent calls
+        # just queue behind each other until the caller's timeout fires. One
+        # in-flight request per assistant keeps every call inside its budget.
+        self._lock = asyncio.Lock()
+
+    def _is_local(self) -> bool:
+        return any(h in self.base_url for h in
+                   ("127.0.0.1", "localhost", "10.0.2.2"))
+
+    def _default_timeout(self) -> float:
+        # CPU-bound local models legitimately take minutes on a long prompt;
+        # remote APIs that haven't answered in 2 minutes never will.
+        return 480.0 if self._is_local() else 120.0
 
         if defaults["requires_key"] and not self.api_key:
             logger.warning(f"AI provider '{self.provider}' requires an API key")
@@ -83,7 +96,8 @@ class AIAssistant:
 
     async def chat(self, system_prompt: str, user_message: str,
                    temperature: Optional[float] = None,
-                   history: Optional[list] = None) -> Optional[str]:
+                   history: Optional[list] = None,
+                   timeout: Optional[float] = None) -> Optional[str]:
         """
         Send a chat completion request and return the text response.
         Uses aiohttp to avoid adding openai SDK as a dependency.
@@ -127,10 +141,11 @@ class AIAssistant:
                 "max_tokens": self.max_tokens,
             }
 
+        total = timeout if timeout is not None else self._default_timeout()
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._lock, aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers,
-                                        timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                                        timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status != 200:
                         body = await resp.text()
                         self.last_error = f"HTTP {resp.status} from {url}: {body[:300]}"
@@ -157,8 +172,8 @@ class AIAssistant:
                     return None
 
         except asyncio.TimeoutError:
-            self.last_error = f"Request to {url} timed out after 180s"
-            logger.error("AI API request timed out")
+            self.last_error = f"Request to {url} timed out after {int(total)}s"
+            logger.error(f"AI API request timed out after {int(total)}s")
             return None
         except Exception as e:
             self.last_error = f"{type(e).__name__}: {e} (url: {url})"
@@ -175,7 +190,7 @@ class AIAssistant:
         t0 = time.monotonic()
         reply = await self.chat(
             "You are a connectivity probe. Reply with exactly: OK",
-            "Reply with exactly: OK", temperature=0.0)
+            "Reply with exactly: OK", temperature=0.0, timeout=60)
         latency_ms = int((time.monotonic() - t0) * 1000)
         if reply is None:
             return {"success": False, "latency_ms": latency_ms,

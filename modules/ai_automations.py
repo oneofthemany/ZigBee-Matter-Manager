@@ -128,17 +128,67 @@ class AIAutomations:
         from modules.nl_automations import NLAutomationParser
         self.local = NLAutomationParser(automation_engine)
 
-    def _build_device_context(self) -> str:
+    # Concept keywords → attribute names, so a sentence that names no device
+    # ("when motion is detected…") still keeps the right sensors in context.
+    _CONCEPT_ATTRS = {
+        r"\b(motion|movement|presence|occupanc|occupied|someone|anyone)\b":
+            ("occupancy", "presence", "motion", "occupied"),
+        r"\b(door|window|contact|open|close|shut|ajar)\b":
+            ("contact", "is_open", "opening", "is_closed"),
+        r"\b(dark|bright|lux|illuminanc|light level)\b":
+            ("illuminance", "lux", "light_level"),
+        r"\b(temperature|temp|degrees|warm|cold|heat)\b":
+            ("temperature", "local_temperature"),
+        r"\b(humidity|damp)\b": ("humidity",),
+        r"\b(power|watt|energy|consumption)\b": ("power", "energy"),
+    }
+
+    def _relevant_devices(self, devices: list, intent: str) -> list:
+        """Prefilter the registry to devices relevant to the intent.
+
+        A full-registry prompt costs minutes of prompt-eval on a CPU-only
+        host, so we keep only devices whose name tokens appear in the request
+        or whose attributes match a concept the request mentions ("motion",
+        "door", "temperature"). If nothing matches we fall back to the full
+        list — an over-long prompt beats a wrong answer.
+        """
+        text = re.sub(r"[^a-z0-9 ]+", " ", intent.lower())
+        words = set(w for w in text.split() if len(w) > 2)
+
+        concept_attrs: List[str] = []
+        for pat, attrs in self._CONCEPT_ATTRS.items():
+            if re.search(pat, text):
+                concept_attrs.extend(attrs)
+
+        selected = []
+        for dev in devices:
+            name_toks = set(
+                w for w in re.sub(r"[^a-z0-9 ]+", " ",
+                                  dev.get("friendly_name", "").lower()).split()
+                if len(w) > 2)
+            if name_toks & words:
+                selected.append(dev)
+                continue
+            if concept_attrs:
+                keys = [k.lower() for k in (dev.get("state_keys") or [])]
+                if any(any(ca in k for k in keys) for ca in concept_attrs):
+                    selected.append(dev)
+        return selected or devices
+
+    def _build_device_context(self, intent: Optional[str] = None) -> str:
         """Build a compact device summary for the LLM system prompt.
 
         Includes each attribute's type, current value and allowed values so the
         model grounds conditions in reality instead of guessing (e.g. that
         occupancy is boolean true/false, or that a contact reports ON/OFF).
+        When an intent is given the registry is prefiltered to relevant
+        devices (see _relevant_devices) to keep the prompt small.
         """
         lines = []
 
-        # All devices with their triggerable attributes
         devices = self._engine.get_all_devices_summary()
+        if intent:
+            devices = self._relevant_devices(devices, intent)
         for dev in devices:
             ieee = dev["ieee"]
             name = dev["friendly_name"]
@@ -183,9 +233,9 @@ class AIAutomations:
 
         return "\n".join(lines) if lines else "(No devices found)"
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, intent: Optional[str] = None) -> str:
         """Build the full system prompt with live device context."""
-        ctx = self._build_device_context()
+        ctx = self._build_device_context(intent)
         return SYSTEM_PROMPT_TEMPLATE.format(device_context=ctx)
 
     async def generate_rule(self, user_intent: str) -> Dict[str, Any]:
@@ -207,13 +257,19 @@ class AIAutomations:
         if not self._ai or not self._ai.is_configured():
             return {"success": False, "error": "AI provider not configured"}
 
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(user_intent)
+        ctx_devices = system_prompt.count("\n- ")
 
-        logger.info(f"AI automation request: {user_intent[:100]}")
+        logger.info(f"AI automation request: {user_intent[:100]} "
+                    f"(context: {ctx_devices} devices, {len(system_prompt)} chars)")
         raw = await self._ai.chat(system_prompt, user_intent)
 
         if not raw:
-            return {"success": False, "error": "No response from AI provider"}
+            return {"success": False,
+                    "error": getattr(self._ai, "last_error", None)
+                             or "No response from AI provider",
+                    "context_devices": ctx_devices,
+                    "prompt_chars": len(system_prompt)}
 
         # Parse JSON from response (strip markdown fences if present)
         rule_data = self._extract_json(raw)
@@ -235,7 +291,9 @@ class AIAutomations:
         # Build explanation from the rule
         explanation = self._explain_rule(rule_data)
 
-        return {"success": True, "rule": rule_data, "explanation": explanation}
+        return {"success": True, "rule": rule_data, "explanation": explanation,
+                "context_devices": ctx_devices,
+                "prompt_chars": len(system_prompt)}
 
     def _extract_json(self, text: str) -> Optional[Dict]:
         """Extract JSON from LLM response, handling markdown fences."""

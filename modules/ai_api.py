@@ -50,8 +50,9 @@ class OllamaPullRequest(BaseModel):
 
 
 class AITestRequest(BaseModel):
-    # quick = connectivity + JSON compliance; full = also a real rule generation
-    level: str = Field("quick", pattern="^(quick|full)$")
+    # One stage per call so the UI can show live progress between stages.
+    stage: str = Field("connectivity",
+                       pattern="^(connectivity|json|rule)$")
 
 
 class SglangInstallRequest(BaseModel):
@@ -170,97 +171,129 @@ async def chat_clear():
     return chat.clear()
 
 
+# Verb templates for the grounded rule-generation test, tried in order.
+# The test device must actually support the command it's asked to run —
+# "turn off" a blind is nonsense; blinds close.
+_TEST_VERBS = [("off", "Turn off {name} after 5 minutes"),
+               ("on", "Turn on {name} when the time is after 22:00"),
+               ("close", "Close {name} after 5 minutes"),
+               ("open", "Open {name} when the time is after 08:00"),
+               ("toggle", "Toggle {name} after 5 minutes")]
+
+
+def _pick_test_intent(ai_auto):
+    """Choose a real device + a command it supports for the capability test.
+
+    Returns (prompt, device_name, command) or (None, None, None).
+    """
+    try:
+        devices = ai_auto._engine.get_all_devices_summary() or []
+    except Exception:
+        return None, None, None
+    for cmd, template in _TEST_VERBS:
+        for dev in devices:
+            ieee = dev.get("ieee", "")
+            if not ieee or ieee.startswith("group:"):
+                continue
+            try:
+                actions = ai_auto._engine.get_target_actions(ieee) or []
+            except Exception:
+                continue
+            if any(a.get("command") == cmd for a in actions):
+                name = dev.get("friendly_name", ieee)
+                return template.format(name=name), name, cmd
+    return None, None, None
+
+
 @router.post("/test")
 async def ai_test(request: AITestRequest):
-    """Staged provider self-test: reachability → JSON compliance → rule quality.
+    """One stage of the provider self-test; the UI calls the stages in order.
 
     Unlike POST /automation (local parser first, full device-context prompt),
-    this talks to the provider directly with tiny prompts so a failure shows
-    the *actual* reason (connection refused, HTTP 404 model-not-found, timeout)
-    instead of a generic "No response from AI provider". level=full appends a
-    real automation generation against the live device registry — the slowest
-    but most honest capability check.
+    this talks to the provider directly so a failure shows the *actual* reason
+    (connection refused, HTTP 404 model-not-found, timeout) instead of a
+    generic "No response from AI provider".
+
+    Stages:
+      connectivity — tiny prompt, no device context, fails fast (60s cap).
+      json         — strict-format compliance probe.
+      rule         — real automation generation, grounded: the test device is
+                     one that actually supports the command being asked, and
+                     the device context is prefiltered to relevant devices.
     """
     ai = _get_ai_assistant() if _get_ai_assistant else None
     if not ai:
         raise HTTPException(503, "AI module not initialised")
 
-    result = {"provider": ai.provider, "model": ai.model,
-              "base_url": ai.base_url, "checks": []}
+    base = {"provider": ai.provider, "model": ai.model, "base_url": ai.base_url}
 
     if not ai.is_configured():
-        result["success"] = False
-        result["checks"].append({
-            "name": "configuration", "success": False,
-            "error": f"Provider '{ai.provider}' is missing required settings "
-                     f"(API key / base URL). Save a valid configuration first."})
-        return result
+        return {**base, "name": "configuration", "success": False,
+                "error": f"Provider '{ai.provider}' is missing required "
+                         f"settings (API key / base URL). Save a valid "
+                         f"configuration first."}
 
-    # 1. Connectivity — tiny prompt, no device context.
-    ping = await ai.ping()
-    result["checks"].append({"name": "connectivity", **ping})
-    if not ping["success"]:
-        result["success"] = False
-        return result
+    if request.stage == "connectivity":
+        ping = await ai.ping()
+        return {**base, "name": "connectivity", **ping}
 
-    # 2. JSON compliance — can the model follow a strict-format instruction?
-    raw = await ai.chat(
-        "You are a JSON generator. Respond with ONLY a raw JSON object. "
-        "No prose, no markdown fences.",
-        'Return exactly this JSON object: {"ok": true, "model_check": "pass"}',
-        temperature=0.0)
     import json as _json
     import re as _re
-    parsed = None
-    if raw:
-        cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        try:
-            parsed = _json.loads(cleaned)
-        except Exception:
-            m = _re.search(r"\{[\s\S]*\}", cleaned)
-            if m:
-                try:
-                    parsed = _json.loads(m.group())
-                except Exception:
-                    parsed = None
-    result["checks"].append({
-        "name": "json_compliance",
-        "success": isinstance(parsed, dict),
-        "error": None if isinstance(parsed, dict) else
-                 (ai.last_error or f"Model replied but not with parseable JSON: "
-                                   f"{(raw or '')[:200]}"),
-        "reply": (raw or "")[:200]})
+    import time as _time
 
-    # 3. Full pipeline — real rule generation with the live device context.
-    if request.level == "full":
-        ai_auto = _get_ai_automations() if _get_ai_automations else None
-        if ai_auto:
-            devices = []
+    if request.stage == "json":
+        t0 = _time.monotonic()
+        raw = await ai.chat(
+            "You are a JSON generator. Respond with ONLY a raw JSON object. "
+            "No prose, no markdown fences.",
+            'Return exactly this JSON object: {"ok": true, "model_check": "pass"}',
+            temperature=0.0, timeout=120)
+        latency_ms = int((_time.monotonic() - t0) * 1000)
+        parsed = None
+        if raw:
+            cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
             try:
-                devices = ai_auto._engine.get_all_devices_summary()
+                parsed = _json.loads(cleaned)
             except Exception:
-                pass
-            if devices:
-                name = devices[0].get("friendly_name", "device")
-                prompt = f"Turn off {name} after 5 minutes"
-                import time as _time
-                t0 = _time.monotonic()
-                gen = await ai_auto.generate_rule(prompt)
-                result["checks"].append({
-                    "name": "rule_generation",
-                    "success": bool(gen.get("success")),
-                    "latency_ms": int((_time.monotonic() - t0) * 1000),
-                    "prompt": prompt,
-                    "explanation": gen.get("explanation"),
-                    "error": gen.get("error")})
-            else:
-                result["checks"].append({
-                    "name": "rule_generation", "success": None,
-                    "error": "Skipped — no devices in the registry to test against."})
+                m = _re.search(r"\{[\s\S]*\}", cleaned)
+                if m:
+                    try:
+                        parsed = _json.loads(m.group())
+                    except Exception:
+                        parsed = None
+        return {**base, "name": "json_compliance",
+                "success": isinstance(parsed, dict),
+                "latency_ms": latency_ms,
+                "reply": (raw or "")[:200],
+                "error": None if isinstance(parsed, dict) else
+                         (ai.last_error if raw is None else
+                          f"Model replied but not with parseable JSON: "
+                          f"{(raw or '')[:200]}")}
 
-    result["success"] = all(c.get("success") is not False
-                            for c in result["checks"])
-    return result
+    # stage == "rule"
+    ai_auto = _get_ai_automations() if _get_ai_automations else None
+    if not ai_auto:
+        return {**base, "name": "rule_generation", "success": None,
+                "error": "Skipped — AI automations module not available."}
+
+    prompt, dev_name, cmd = _pick_test_intent(ai_auto)
+    if not prompt:
+        return {**base, "name": "rule_generation", "success": None,
+                "error": "Skipped — no controllable device found to test against."}
+
+    t0 = _time.monotonic()
+    gen = await ai_auto.generate_rule(prompt)
+    return {**base, "name": "rule_generation",
+            "success": bool(gen.get("success")),
+            "latency_ms": int((_time.monotonic() - t0) * 1000),
+            "prompt": prompt,
+            "device": dev_name,
+            "command": cmd,
+            "context_devices": gen.get("context_devices"),
+            "prompt_chars": gen.get("prompt_chars"),
+            "explanation": gen.get("explanation"),
+            "raw_response": (gen.get("raw_response") or "")[:400] or None,
+            "error": gen.get("error")}
 
 
 @router.get("/host")
@@ -411,14 +444,18 @@ async def update_ai_config(request: AIConfigRequest):
 
 
 @router.get("/context")
-async def ai_context():
-    """Preview the device context that would be sent to the LLM (debug)."""
+async def ai_context(intent: Optional[str] = None):
+    """Preview the device context that would be sent to the LLM (debug).
+
+    With ?intent=<request text> the context is prefiltered to relevant
+    devices, exactly as generate_rule does for that request.
+    """
     ai_auto = _get_ai_automations() if _get_ai_automations else None
     if not ai_auto:
         raise HTTPException(503, "AI automations module not available")
 
-    ctx = ai_auto._build_device_context()
-    prompt = ai_auto._build_system_prompt()
+    ctx = ai_auto._build_device_context(intent)
+    prompt = ai_auto._build_system_prompt(intent)
     return {
         "device_count": ctx.count("\n- ") + (1 if ctx.startswith("- ") else 0),
         "context_chars": len(ctx),

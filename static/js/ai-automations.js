@@ -534,66 +534,113 @@ async function _aiSaveSettings() {
     }
 }
 
-const _AI_CHECK_LABELS = {
-    configuration: 'Configuration',
-    connectivity: 'Provider reachable',
-    json_compliance: 'Strict JSON output',
-    rule_generation: 'Automation rule generation',
-};
+const _AI_TEST_STAGES = [
+    { stage: 'connectivity', label: 'Provider reachable',
+      hint: 'tiny prompt, no device context' },
+    { stage: 'json', label: 'Strict JSON output',
+      hint: 'can the model follow a format instruction' },
+    { stage: 'rule', label: 'Automation rule generation',
+      hint: 'real rule against your devices — slow on CPU' },
+];
 
-// Staged self-test against /api/ai/test: shows the *actual* failure reason
-// (connection refused, HTTP 404 model-not-found, timeout) per stage, plus a
-// capability check. level 'quick' = ping + JSON; 'full' adds a real rule
-// generation against the live device registry.
+// Progressive self-test: stages run one at a time against /api/ai/test with a
+// live elapsed counter, and every failure shows the provider's actual error.
+// 'quick' = connectivity + JSON; 'full' adds a grounded rule generation.
 async function _aiTestConnection(level = 'quick') {
     const alert = document.getElementById('ai-settings-alert');
-    if (alert) alert.innerHTML = `<div class="alert alert-info py-1 mb-2 small">
-        <i class="fas fa-spinner fa-spin me-1"></i> ${level === 'full'
-            ? 'Running capability test — generates a real rule, can take a minute on CPU…'
-            : 'Testing connection…'}
+    if (!alert) return;
+    const stages = level === 'full' ? _AI_TEST_STAGES : _AI_TEST_STAGES.slice(0, 2);
+
+    alert.innerHTML = `<div class="alert alert-info py-2 mb-2 small" id="ai-test-panel">
+        <div class="fw-bold mb-1" id="ai-test-head"><i class="fas fa-plug me-1"></i>Testing AI provider…</div>
+        ${stages.map(s => `<div id="ai-test-${s.stage}" class="mb-1">
+            <i class="far fa-circle text-muted"></i> ${s.label}
+            <span class="text-muted">— ${s.hint}</span></div>`).join('')}
+        <div id="ai-test-extra" class="mt-1"></div>
     </div>`;
 
-    try {
-        const res = await fetch('/api/ai/test', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level })
-        });
-        const data = await res.json();
+    let overall = true;
+    for (const s of stages) {
+        const row = document.getElementById(`ai-test-${s.stage}`);
+        if (!row) return;                          // panel replaced meanwhile
+        const t0 = Date.now();
+        row.innerHTML = `<i class="fas fa-spinner fa-spin text-info"></i> ${s.label}
+            <span class="text-muted">— ${s.hint} · <span id="ai-test-${s.stage}-t">0s</span></span>`;
+        const timer = setInterval(() => {
+            const el = document.getElementById(`ai-test-${s.stage}-t`);
+            if (el) el.textContent = `${Math.round((Date.now() - t0) / 1000)}s`;
+        }, 500);
 
-        const rows = (data.checks || []).map(c => {
-            const icon = c.success === true
-                ? '<i class="fas fa-check-circle text-success"></i>'
-                : c.success === false
-                    ? '<i class="fas fa-times-circle text-danger"></i>'
-                    : '<i class="fas fa-minus-circle text-muted"></i>';
-            const lat = c.latency_ms != null
-                ? ` <span class="text-muted">(${(c.latency_ms / 1000).toFixed(1)}s)</span>` : '';
-            let detail = '';
-            if (c.success === false && c.error) {
-                detail = `<div class="text-danger ms-3" style="word-break:break-word">${_esc(c.error)}</div>`;
-            } else if (c.explanation) {
-                detail = `<div class="text-muted ms-3">${_esc(c.explanation)}</div>`;
-            } else if (c.success === null && c.error) {
-                detail = `<div class="text-muted ms-3">${_esc(c.error)}</div>`;
+        let d;
+        try {
+            const res = await fetch('/api/ai/test', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stage: s.stage })
+            });
+            d = await res.json();
+        } catch (e) {
+            d = { success: false, error: e.message };
+        }
+        clearInterval(timer);
+
+        const head = document.getElementById('ai-test-head');
+        if (head && d.provider) {
+            head.innerHTML = `<i class="fas fa-plug me-1"></i>${_esc(d.provider)}/${_esc(d.model || '?')}
+                <span class="text-muted fw-normal">@ ${_esc(d.base_url || '')}</span>`;
+        }
+        const secs = d.latency_ms != null
+            ? `${(d.latency_ms / 1000).toFixed(1)}s`
+            : `${Math.round((Date.now() - t0) / 1000)}s`;
+
+        if (d.success === true) {
+            let extra = '';
+            if (s.stage === 'rule') {
+                extra = `
+                    <div class="ms-3 text-muted">Asked: &ldquo;${_esc(d.prompt || '')}&rdquo;</div>
+                    ${d.explanation ? `<div class="ms-3">Got: ${_esc(d.explanation)}</div>` : ''}
+                    <div class="ms-3 text-muted">Context sent: ${d.context_devices ?? '?'} device(s),
+                        ${d.prompt_chars ?? '?'} chars —
+                        <a href="#" onclick="window._aiShowTestContext(event, '${encodeURIComponent(d.prompt || '')}')">view</a></div>`;
             }
-            return `<div>${icon} ${_esc(_AI_CHECK_LABELS[c.name] || c.name)}${lat}${detail}</div>`;
-        }).join('');
+            row.innerHTML = `<i class="fas fa-check-circle text-success"></i> ${s.label}
+                <span class="text-muted">(${secs})</span>${extra}`;
+        } else if (d.success === false) {
+            overall = false;
+            row.innerHTML = `<i class="fas fa-times-circle text-danger"></i> ${s.label}
+                <span class="text-muted">(${secs})</span>
+                <div class="ms-3 text-danger" style="word-break:break-word">${_esc(d.error || 'failed')}</div>
+                ${d.prompt ? `<div class="ms-3 text-muted">Asked: &ldquo;${_esc(d.prompt)}&rdquo;</div>` : ''}
+                ${d.raw_response ? `<div class="ms-3 text-muted">Model said: <code>${_esc(d.raw_response)}</code></div>` : ''}`;
+            break;                                  // later stages depend on this one
+        } else {
+            row.innerHTML = `<i class="fas fa-minus-circle text-muted"></i> ${s.label}
+                <div class="ms-3 text-muted">${_esc(d.error || 'skipped')}</div>`;
+        }
+    }
 
-        const capBtn = (data.success && level === 'quick')
-            ? `<button class="btn btn-sm btn-outline-primary mt-2" onclick="window._aiTestConnection('full')">
-                <i class="fas fa-vial me-1"></i>Run full capability test</button>` : '';
+    const panel = document.getElementById('ai-test-panel');
+    if (panel) panel.className = `alert alert-${overall ? 'success' : 'warning'} py-2 mb-2 small`;
+    const extraBox = document.getElementById('ai-test-extra');
+    if (extraBox && overall && level === 'quick') {
+        extraBox.innerHTML = `<button class="btn btn-sm btn-outline-primary mt-1" onclick="window._aiTestConnection('full')">
+            <i class="fas fa-vial me-1"></i>Run full capability test</button>`;
+    }
+}
 
-        if (alert) alert.innerHTML = `<div class="alert alert-${data.success ? 'success' : 'warning'} py-2 mb-2 small">
-            <div class="fw-bold mb-1">${_esc(data.provider || '?')}/${_esc(data.model || '?')}
-                <span class="text-muted fw-normal">@ ${_esc(data.base_url || '')}</span></div>
-            ${rows || _esc(data.error || 'No checks ran')}
-            ${capBtn}
-        </div>`;
+// Show the exact device context the rule test sent (prefiltered by intent).
+async function _aiShowTestContext(ev, encPrompt) {
+    ev.preventDefault();
+    const box = document.getElementById('ai-test-extra');
+    if (!box) return;
+    box.innerHTML = '<i class="fas fa-spinner fa-spin"></i> loading context…';
+    try {
+        const d = await (await fetch('/api/ai/context?intent=' + encPrompt)).json();
+        box.innerHTML = `
+            <div class="fw-bold mt-1">Device context sent to the model
+                (${d.device_count} device(s), ${d.prompt_chars} prompt chars):</div>
+            <pre class="bg-dark text-light p-2 rounded" style="max-height:220px;overflow:auto;font-size:.72rem">${_esc(d.device_context)}</pre>`;
     } catch (e) {
-        if (alert) alert.innerHTML = `<div class="alert alert-danger py-1 mb-2 small">
-            <i class="fas fa-times-circle me-1"></i> Test failed: ${_esc(e.message)}
-        </div>`;
+        box.innerHTML = `<div class="text-danger">${_esc(e.message)}</div>`;
     }
 }
 
@@ -1043,6 +1090,7 @@ window._aiEditRule = _aiEditRule;
 window._aiSaveSettings = _aiSaveSettings;
 window._aiProviderChanged = _aiProviderChanged;
 window._aiTestConnection = _aiTestConnection;
+window._aiShowTestContext = _aiShowTestContext;
 window._aiUseExample = _aiUseExample;
 window._aiShowHelp = _aiShowHelp;
 window._aiCheckHost = _aiCheckHost;
