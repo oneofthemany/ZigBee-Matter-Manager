@@ -71,6 +71,9 @@ class AIAssistant:
         self.api_key = config.get("api_key", "")
         self.temperature = float(config.get("temperature", 0.3))
         self.max_tokens = int(config.get("max_tokens", 2000))
+        # Human-readable detail of the most recent chat() failure, so callers
+        # (test endpoint, UI) can show *why* instead of a bare "no response".
+        self.last_error: Optional[str] = None
 
         if defaults["requires_key"] and not self.api_key:
             logger.warning(f"AI provider '{self.provider}' requires an API key")
@@ -130,6 +133,7 @@ class AIAssistant:
                                         timeout=aiohttp.ClientTimeout(total=180)) as resp:
                     if resp.status != 200:
                         body = await resp.text()
+                        self.last_error = f"HTTP {resp.status} from {url}: {body[:300]}"
                         logger.error(f"AI API error {resp.status}: {body[:500]}")
                         return None
 
@@ -137,23 +141,47 @@ class AIAssistant:
 
                     # OpenAI-compatible format
                     if "choices" in data:
+                        self.last_error = None
                         return data["choices"][0]["message"]["content"]
 
                     # Anthropic format
                     if "content" in data:
                         for block in data["content"]:
                             if block.get("type") == "text":
+                                self.last_error = None
                                 return block["text"]
 
+                    self.last_error = (f"Unexpected response format from {url} "
+                                       f"(keys: {', '.join(list(data.keys())[:8])})")
                     logger.error(f"Unexpected AI response format: {list(data.keys())}")
                     return None
 
         except asyncio.TimeoutError:
+            self.last_error = f"Request to {url} timed out after 180s"
             logger.error("AI API request timed out")
             return None
         except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e} (url: {url})"
             logger.error(f"AI API request failed: {e}")
             return None
+
+    async def ping(self) -> Dict[str, Any]:
+        """Minimal round-trip to the provider — no device context, tiny prompt.
+
+        Returns latency and, on failure, the specific reason (connection
+        refused, HTTP status + body, timeout) rather than a generic error.
+        """
+        import time
+        t0 = time.monotonic()
+        reply = await self.chat(
+            "You are a connectivity probe. Reply with exactly: OK",
+            "Reply with exactly: OK", temperature=0.0)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if reply is None:
+            return {"success": False, "latency_ms": latency_ms,
+                    "error": self.last_error or "No response from provider"}
+        return {"success": True, "latency_ms": latency_ms,
+                "reply": reply.strip()[:120]}
 
     def is_configured(self) -> bool:
         """Check if the provider has minimum viable configuration."""

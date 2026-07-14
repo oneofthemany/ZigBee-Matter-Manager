@@ -49,6 +49,16 @@ class OllamaPullRequest(BaseModel):
     model: str = Field(..., min_length=1, max_length=80)
 
 
+class AITestRequest(BaseModel):
+    # quick = connectivity + JSON compliance; full = also a real rule generation
+    level: str = Field("quick", pattern="^(quick|full)$")
+
+
+class SglangInstallRequest(BaseModel):
+    model: str = Field(..., min_length=1, max_length=120)
+    hf_token: Optional[str] = Field(None, max_length=200)
+
+
 class AIConfigRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -160,6 +170,99 @@ async def chat_clear():
     return chat.clear()
 
 
+@router.post("/test")
+async def ai_test(request: AITestRequest):
+    """Staged provider self-test: reachability → JSON compliance → rule quality.
+
+    Unlike POST /automation (local parser first, full device-context prompt),
+    this talks to the provider directly with tiny prompts so a failure shows
+    the *actual* reason (connection refused, HTTP 404 model-not-found, timeout)
+    instead of a generic "No response from AI provider". level=full appends a
+    real automation generation against the live device registry — the slowest
+    but most honest capability check.
+    """
+    ai = _get_ai_assistant() if _get_ai_assistant else None
+    if not ai:
+        raise HTTPException(503, "AI module not initialised")
+
+    result = {"provider": ai.provider, "model": ai.model,
+              "base_url": ai.base_url, "checks": []}
+
+    if not ai.is_configured():
+        result["success"] = False
+        result["checks"].append({
+            "name": "configuration", "success": False,
+            "error": f"Provider '{ai.provider}' is missing required settings "
+                     f"(API key / base URL). Save a valid configuration first."})
+        return result
+
+    # 1. Connectivity — tiny prompt, no device context.
+    ping = await ai.ping()
+    result["checks"].append({"name": "connectivity", **ping})
+    if not ping["success"]:
+        result["success"] = False
+        return result
+
+    # 2. JSON compliance — can the model follow a strict-format instruction?
+    raw = await ai.chat(
+        "You are a JSON generator. Respond with ONLY a raw JSON object. "
+        "No prose, no markdown fences.",
+        'Return exactly this JSON object: {"ok": true, "model_check": "pass"}',
+        temperature=0.0)
+    import json as _json
+    import re as _re
+    parsed = None
+    if raw:
+        cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        try:
+            parsed = _json.loads(cleaned)
+        except Exception:
+            m = _re.search(r"\{[\s\S]*\}", cleaned)
+            if m:
+                try:
+                    parsed = _json.loads(m.group())
+                except Exception:
+                    parsed = None
+    result["checks"].append({
+        "name": "json_compliance",
+        "success": isinstance(parsed, dict),
+        "error": None if isinstance(parsed, dict) else
+                 (ai.last_error or f"Model replied but not with parseable JSON: "
+                                   f"{(raw or '')[:200]}"),
+        "reply": (raw or "")[:200]})
+
+    # 3. Full pipeline — real rule generation with the live device context.
+    if request.level == "full":
+        ai_auto = _get_ai_automations() if _get_ai_automations else None
+        if ai_auto:
+            devices = []
+            try:
+                devices = ai_auto._engine.get_all_devices_summary()
+            except Exception:
+                pass
+            if devices:
+                name = devices[0].get("friendly_name", "device")
+                prompt = f"Turn off {name} after 5 minutes"
+                import time as _time
+                t0 = _time.monotonic()
+                gen = await ai_auto.generate_rule(prompt)
+                result["checks"].append({
+                    "name": "rule_generation",
+                    "success": bool(gen.get("success")),
+                    "latency_ms": int((_time.monotonic() - t0) * 1000),
+                    "prompt": prompt,
+                    "explanation": gen.get("explanation"),
+                    "error": gen.get("error")})
+            else:
+                result["checks"].append({
+                    "name": "rule_generation", "success": None,
+                    "error": "Skipped — no devices in the registry to test against."})
+
+    result["success"] = all(c.get("success") is not False
+                            for c in result["checks"])
+    return result
+
+
 @router.get("/host")
 async def host_capability():
     """llmfit-style host assessment: can this box run a local LLM, and which?
@@ -206,6 +309,44 @@ async def ollama_install():
 async def ollama_pull(request: OllamaPullRequest):
     """Pull a model into the running Ollama container. Runs in background."""
     result = _ollama().pull(request.model)
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error"))
+    return result
+
+
+# ── SGLang enablement (privileged; UI-gated behind host viability) ───────────
+
+_sglang_mgr = None
+
+
+def _sglang():
+    global _sglang_mgr
+    if _sglang_mgr is None:
+        from modules.sglang_manager import SGLangManager
+        _sglang_mgr = SGLangManager()
+    return _sglang_mgr
+
+
+@router.get("/sglang/status")
+async def sglang_status():
+    """Detect whether the local SGLang container is installed/running + model."""
+    return _sglang().status()
+
+
+@router.get("/sglang/job")
+async def sglang_job():
+    """Poll the current SGLang install job's status and streamed log."""
+    return _sglang().job_status()
+
+
+@router.post("/sglang/install")
+async def sglang_install(request: SglangInstallRequest):
+    """Create/start the SGLang container serving a given HF model.
+
+    Privileged and GPU-gated: refused unless the host assessor marks SGLang
+    viable and NVIDIA CDI passthrough exists. Runs in background.
+    """
+    result = _sglang().install(request.model, request.hf_token)
     if not result.get("success"):
         raise HTTPException(400, result.get("error"))
     return result

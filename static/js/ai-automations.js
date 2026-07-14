@@ -534,32 +534,65 @@ async function _aiSaveSettings() {
     }
 }
 
-async function _aiTestConnection() {
+const _AI_CHECK_LABELS = {
+    configuration: 'Configuration',
+    connectivity: 'Provider reachable',
+    json_compliance: 'Strict JSON output',
+    rule_generation: 'Automation rule generation',
+};
+
+// Staged self-test against /api/ai/test: shows the *actual* failure reason
+// (connection refused, HTTP 404 model-not-found, timeout) per stage, plus a
+// capability check. level 'quick' = ping + JSON; 'full' adds a real rule
+// generation against the live device registry.
+async function _aiTestConnection(level = 'quick') {
     const alert = document.getElementById('ai-settings-alert');
     if (alert) alert.innerHTML = `<div class="alert alert-info py-1 mb-2 small">
-        <i class="fas fa-spinner fa-spin me-1"></i> Testing connection...
+        <i class="fas fa-spinner fa-spin me-1"></i> ${level === 'full'
+            ? 'Running capability test — generates a real rule, can take a minute on CPU…'
+            : 'Testing connection…'}
     </div>`;
 
     try {
-        const res = await fetch('/api/ai/automation', {
+        const res = await fetch('/api/ai/test', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: 'Test: respond with a JSON object containing just {"test": true}' })
+            body: JSON.stringify({ level })
         });
         const data = await res.json();
 
-        if (data.success || data.rule) {
-            if (alert) alert.innerHTML = `<div class="alert alert-success py-1 mb-2 small">
-                <i class="fas fa-check-circle me-1"></i> Connection successful — LLM responded
-            </div>`;
-        } else {
-            if (alert) alert.innerHTML = `<div class="alert alert-warning py-1 mb-2 small">
-                <i class="fas fa-exclamation-triangle me-1"></i> ${data.error || 'No response from LLM'}
-            </div>`;
-        }
+        const rows = (data.checks || []).map(c => {
+            const icon = c.success === true
+                ? '<i class="fas fa-check-circle text-success"></i>'
+                : c.success === false
+                    ? '<i class="fas fa-times-circle text-danger"></i>'
+                    : '<i class="fas fa-minus-circle text-muted"></i>';
+            const lat = c.latency_ms != null
+                ? ` <span class="text-muted">(${(c.latency_ms / 1000).toFixed(1)}s)</span>` : '';
+            let detail = '';
+            if (c.success === false && c.error) {
+                detail = `<div class="text-danger ms-3" style="word-break:break-word">${_esc(c.error)}</div>`;
+            } else if (c.explanation) {
+                detail = `<div class="text-muted ms-3">${_esc(c.explanation)}</div>`;
+            } else if (c.success === null && c.error) {
+                detail = `<div class="text-muted ms-3">${_esc(c.error)}</div>`;
+            }
+            return `<div>${icon} ${_esc(_AI_CHECK_LABELS[c.name] || c.name)}${lat}${detail}</div>`;
+        }).join('');
+
+        const capBtn = (data.success && level === 'quick')
+            ? `<button class="btn btn-sm btn-outline-primary mt-2" onclick="window._aiTestConnection('full')">
+                <i class="fas fa-vial me-1"></i>Run full capability test</button>` : '';
+
+        if (alert) alert.innerHTML = `<div class="alert alert-${data.success ? 'success' : 'warning'} py-2 mb-2 small">
+            <div class="fw-bold mb-1">${_esc(data.provider || '?')}/${_esc(data.model || '?')}
+                <span class="text-muted fw-normal">@ ${_esc(data.base_url || '')}</span></div>
+            ${rows || _esc(data.error || 'No checks ran')}
+            ${capBtn}
+        </div>`;
     } catch (e) {
         if (alert) alert.innerHTML = `<div class="alert alert-danger py-1 mb-2 small">
-            <i class="fas fa-times-circle me-1"></i> Connection failed: ${e.message}
+            <i class="fas fa-times-circle me-1"></i> Test failed: ${_esc(e.message)}
         </div>`;
     }
 }
@@ -706,9 +739,11 @@ async function _aiCheckHost() {
             ${fits ? `<div class="mt-2 small"><strong>Fits here:</strong> ${fits}</div>` : ''}
             ${v.recommended_model ? `<div class="mt-1 small text-muted">Recommended: <code>${_esc(v.recommended_model)}</code></div>` : ''}
             <div id="ai-ollama" class="mt-2"></div>
+            <div id="ai-sglang" class="mt-2"></div>
         `;
         _aiGateSglang(h);
         _aiOllamaRender();
+        _aiSglangRender();
     } catch (e) {
         box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
     }
@@ -837,7 +872,116 @@ async function _aiOllamaUse(model) {
             badge.className = `badge ${_aiConfigured ? 'bg-success' : 'bg-secondary'} small`;
             badge.textContent = `AI: ${_aiConfigured ? 'connected' : 'optional'}`;
         }
+        // Reflect the applied provider/model/base URL in the settings form —
+        // without this the form keeps showing the previous values.
+        await _aiLoadSettings();
+        window.toast?.success?.(`AI now using ${d.provider}/${d.model}`);
         _aiOllamaRender();
+    } catch (e) { window.toast.error(e.message); }
+}
+
+// ── SGLang enablement (GPU-class; only rendered when the assessor says so) ───
+
+async function _aiSglangRender() {
+    const box = document.getElementById('ai-sglang');
+    if (!box) return;
+    const sg = (_aiHost || {}).backends?.sglang;
+    if (!sg || !sg.viable) { box.innerHTML = ''; return; }
+    try {
+        const s = await (await fetch('/api/ai/sglang/status')).json();
+        if (s.job && s.job.status === 'running') { _aiSglangRenderJob(s.job); _aiSglangPoll(); return; }
+
+        let html = `<div class="border rounded p-2 small">
+            <div class="fw-bold mb-1"><i class="fas fa-bolt me-1"></i>Local SGLang
+                <span class="text-muted fw-normal">(high-throughput GPU serving)</span></div>`;
+        if (s.running) {
+            html += `<div class="mb-1">Status: <span class="badge bg-success">running</span>
+                ${s.model ? ` · <code>${_esc(s.model)}</code>` : ' · <span class="text-muted">starting / loading weights…</span>'}</div>`;
+            if (s.model) {
+                html += `<button class="btn btn-sm btn-success" onclick="window._aiSglangUse('${_esc(s.model)}')">
+                    <i class="fas fa-plug me-1"></i>Use for AI</button>`;
+            }
+        } else {
+            html += `<div class="mb-1">Status: <span class="badge bg-secondary">not running</span></div>
+                <div class="input-group input-group-sm mb-1" style="max-width:440px">
+                    <input type="text" class="form-control" id="ai-sglang-model"
+                        value="Qwen/Qwen2.5-7B-Instruct" placeholder="HF model path, e.g. Qwen/Qwen2.5-7B-Instruct">
+                    <button class="btn btn-success" onclick="window._aiSglangInstall()">
+                        <i class="fas fa-download me-1"></i>Install &amp; start</button>
+                </div>
+                <div class="text-muted">Pulls the SGLang image (several GB), then serves the model on :30000
+                    (weights download on first boot). ZMM will reach it at <code>${_esc(s.base_url || '')}</code>.</div>`;
+        }
+        box.innerHTML = html + '</div>';
+    } catch (e) {
+        box.innerHTML = `<div class="text-danger small">${_esc(e.message)}</div>`;
+    }
+}
+
+function _aiSglangRenderJob(j) {
+    const box = document.getElementById('ai-sglang');
+    if (!box) return;
+    const tail = (j.log || []).slice(-6).map(_esc).join('\n');
+    const st = j.status === 'running'
+        ? `<i class="fas fa-spinner fa-spin"></i> ${_esc(j.action || 'working')}…`
+        : j.status === 'done' ? '<span class="text-success">done</span>'
+            : '<span class="text-danger">error</span>';
+    box.innerHTML = `<div class="border rounded p-2 small">
+        <div class="fw-bold mb-1">SGLang ${_esc(j.action || '')} ${st}</div>
+        <pre class="mb-0 bg-dark text-light p-2 rounded" style="max-height:140px;overflow:auto;font-size:.72rem">${tail || '…'}</pre>
+    </div>`;
+}
+
+function _aiSglangPoll() {
+    const tick = async () => {
+        try {
+            const j = await (await fetch('/api/ai/sglang/job')).json();
+            _aiSglangRenderJob(j);
+            if (j.status === 'running') { setTimeout(tick, 2000); }
+            else { setTimeout(_aiSglangRender, 600); }
+        } catch (e) { setTimeout(tick, 3000); }
+    };
+    tick();
+}
+
+async function _aiSglangInstall() {
+    const model = document.getElementById('ai-sglang-model')?.value?.trim();
+    if (!model) { window.toast.error('Enter a HuggingFace model path first'); return; }
+    if (!await window.zbmConfirm({
+        title: 'Start SGLang',
+        message: `Start an SGLang container serving "${model}" on this host's GPU?`,
+        detail: 'Downloads the SGLang image (several GB) plus the model weights on first boot. This can take a long while.',
+        confirmText: 'Start'
+    })) return;
+    try {
+        const r = await fetch('/api/ai/sglang/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
+        });
+        const d = await r.json();
+        if (!r.ok) { window.toast.error(d.detail || d.error || 'Install failed'); return; }
+        _aiSglangPoll();
+    } catch (e) { window.toast.error(e.message); }
+}
+
+async function _aiSglangUse(model) {
+    try {
+        let base = 'http://localhost:30000/v1';
+        try { const st = await (await fetch('/api/ai/sglang/status')).json(); if (st.base_url) base = st.base_url; } catch { /* default */ }
+        const r = await fetch('/api/ai/config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'sglang', base_url: base, model })
+        });
+        const d = await r.json();
+        _aiConfigured = !!d.configured;
+        const badge = document.getElementById('ai-status-badge');
+        if (badge) {
+            badge.className = `badge ${_aiConfigured ? 'bg-success' : 'bg-secondary'} small`;
+            badge.textContent = `AI: ${_aiConfigured ? 'connected' : 'optional'}`;
+        }
+        await _aiLoadSettings();
+        window.toast?.success?.(`AI now using ${d.provider}/${d.model}`);
+        _aiSglangRender();
     } catch (e) { window.toast.error(e.message); }
 }
 
@@ -906,6 +1050,8 @@ window._aiOpenSettingsTab = _aiOpenSettingsTab;
 window._aiOllamaInstall = _aiOllamaInstall;
 window._aiOllamaPull = _aiOllamaPull;
 window._aiOllamaUse = _aiOllamaUse;
+window._aiSglangInstall = _aiSglangInstall;
+window._aiSglangUse = _aiSglangUse;
 window._aiToggleChat = _aiToggleChat;
 window._aiChatSend = _aiChatSend;
 window._aiChatClear = _aiChatClear;
