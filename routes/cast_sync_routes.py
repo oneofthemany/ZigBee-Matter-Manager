@@ -142,6 +142,18 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             return {"success": False, "error": str(e),
                     "series": [], "players": []}
 
+    @app.get("/api/media/sync/trend")
+    async def sync_trend(group_id: str = "", limit: int = 20):
+        """Per-session learning trend (start misalignment, time to lock)."""
+        import asyncio
+        try:
+            from modules.media import sync_db
+            trend = await asyncio.to_thread(
+                sync_db.query_group_trend, group_id, min(int(limit), 50))
+            return {"success": True, "trend": trend}
+        except Exception as e:
+            return {"success": False, "error": str(e), "trend": []}
+
     @app.get("/api/media/sync/model")
     async def sync_model():
         """The learned per-device model, trained across all group DBs."""

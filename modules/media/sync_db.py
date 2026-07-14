@@ -226,6 +226,10 @@ def query_session_detail(group_id: str, session_id: str) -> Dict[str, Any]:
                    FILTER (WHERE l.kind = 'poll'
                            AND k.lock_ts IS NOT NULL
                            AND l.ts >= k.lock_ts)          AS settled_med_ms,
+               median(l.error_ms)
+                   FILTER (WHERE l.kind = 'poll'
+                           AND k.lock_ts IS NOT NULL
+                           AND l.ts >= k.lock_ts)          AS settled_bias_ms,
                quantile_cont(abs(l.error_ms), 0.95)
                    FILTER (WHERE l.kind = 'poll'
                            AND k.lock_ts IS NOT NULL
@@ -243,11 +247,53 @@ def query_session_detail(group_id: str, session_id: str) -> Dict[str, Any]:
         ORDER BY l.player_id
     """, [session_id, session_id, session_id]).fetchall()
     pcols = ["player_id", "startup_lag_s", "precomp_s", "lock_s",
-             "settled_med_ms", "settled_p95_ms", "final_ppm",
-             "resyncs", "trims", "trim_ms"]
+             "settled_med_ms", "settled_bias_ms", "settled_p95_ms",
+             "final_ppm", "resyncs", "trims", "trim_ms"]
     return {"session_id": session_id,
             "series": [dict(zip(scols, r)) for r in series],
             "players": [dict(zip(pcols, r)) for r in summary]}
+
+
+def query_group_trend(group_id: str, limit: int = 20) -> List[Dict]:
+    """Model report card: per session (oldest→newest), how misaligned the
+    group STARTED and how long the slowest speaker took to lock. If the
+    learned model is doing its job, both fall toward zero across sessions."""
+    con = _get_con(group_id)
+    rows = con.execute("""
+        WITH t0 AS (
+            SELECT session_id, min(ts) AS t0 FROM lag_samples GROUP BY session_id
+        ),
+        firstp AS (   -- each speaker's error on its first poll of the session
+            SELECT session_id, player_id,
+                   arg_min(abs(error_ms), ts) AS first_err_ms
+            FROM lag_samples
+            WHERE kind = 'poll' AND error_ms IS NOT NULL
+            GROUP BY session_id, player_id
+        ),
+        lck AS (
+            SELECT session_id, player_id, min(ts) AS lock_ts
+            FROM lag_samples
+            WHERE kind = 'poll' AND abs(error_ms) <= 60
+            GROUP BY session_id, player_id
+        )
+        SELECT f.session_id,
+               any_value(t.t0)                          AS started,
+               round(max(f.first_err_ms))               AS start_misalign_ms,
+               round(max(date_diff('millisecond', t.t0, k.lock_ts)) / 1000.0, 1)
+                                                        AS lock_s,
+               (SELECT count(*) FROM lag_samples r
+                WHERE r.session_id = f.session_id AND r.kind = 'resync')
+                                                        AS resyncs
+        FROM firstp f
+        JOIN t0 t USING (session_id)
+        LEFT JOIN lck k ON k.session_id = f.session_id
+                       AND k.player_id = f.player_id
+        GROUP BY f.session_id
+        ORDER BY started ASC
+        LIMIT ?
+    """, [int(limit)]).fetchall()
+    cols = ["session_id", "started", "start_misalign_ms", "lock_s", "resyncs"]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def close_all():

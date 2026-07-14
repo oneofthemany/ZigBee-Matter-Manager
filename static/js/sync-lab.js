@@ -32,8 +32,11 @@ let _sessions = [];
 let _selected = '';           // selected session_id
 let _model = {};              // /api/media/sync/model
 let _detail = null;           // /api/media/sync/session payload
+let _trend = [];              // /api/media/sync/trend payload
 let _convChart = null;
 let _pllChart = null;
+let _trendAChart = null;
+let _trendBChart = null;
 let _timer = null;
 let _live = false;            // this group's session is actually running
 let _themeHook = null;
@@ -83,6 +86,8 @@ export function closeSyncLab() {
     _stopLive();
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
+    if (_trendAChart) { _trendAChart.dispose(); _trendAChart = null; }
+    if (_trendBChart) { _trendBChart.dispose(); _trendBChart = null; }
     if (_themeHook) { document.removeEventListener('themechange', _themeHook); _themeHook = null; }
     const host = document.getElementById('syncLabHost');
     if (host) host.innerHTML = '';
@@ -101,13 +106,15 @@ export function restoreSyncLab() {
 // Data
 // ---------------------------------------------------------------------------
 async function _loadAll() {
-    const [s, m, st] = await Promise.all([
+    const [s, m, st, tr] = await Promise.all([
         fetch(`/api/media/sync/sessions?group_id=${encodeURIComponent(_gid)}`).then(r => r.json()),
         fetch('/api/media/sync/model').then(r => r.json()),
         fetch('/api/media/sync/status').then(r => r.json()).catch(() => null),
+        fetch(`/api/media/sync/trend?group_id=${encodeURIComponent(_gid)}`).then(r => r.json()).catch(() => null),
     ]);
     _sessions = s.sessions || [];
     _model = m.model || {};
+    _trend = (tr && tr.trend) || [];
     _live = !!(st && st.running && st.group_id === _gid);
     if (!_selected || !_sessions.some(x => x.session_id === _selected)) {
         _selected = _sessions.length ? _sessions[0].session_id : '';
@@ -143,7 +150,13 @@ function _startLive() {
             _refreshPicker();
             if (latest && (followingLive || !_selected)) {
                 _selected = latest;
-                _detail = await _fetchDetail(latest);
+                const [detail, tr] = await Promise.all([
+                    _fetchDetail(latest),
+                    fetch(`/api/media/sync/trend?group_id=${encodeURIComponent(_gid)}`)
+                        .then(r => r.json()).catch(() => null),
+                ]);
+                _detail = detail;
+                if (tr && tr.trend) _trend = tr.trend;
                 _renderDetail();
             }
         } catch (e) { /* transient — next tick */ }
@@ -183,6 +196,7 @@ function _renderShell() {
             Manual trims show as <span aria-hidden="true">▲</span>. Startup latency and
             drift learned here pre-align the next session.
           </p>
+          <div id="syncLabGuide" class="mb-3"></div>
           <div class="row g-2 mb-3" id="syncLabTiles"></div>
           <div class="fw-semibold small mb-1">Convergence — playback error vs group target</div>
           <div id="syncLabConv" style="height: 260px" role="img"
@@ -190,6 +204,22 @@ function _renderShell() {
           <div class="fw-semibold small mb-1 mt-3">Rate lock — stream correction (ppm)</div>
           <div id="syncLabPll" style="height: 190px" role="img"
                aria-label="Per-speaker sample-rate correction over time"></div>
+          <div class="fw-semibold small mb-1 mt-3">Learning progress — the model, session by session</div>
+          <p class="small text-muted mb-2">Every session's startup latency and drift feed the
+            group's model. If it's learning, sessions start closer to aligned and lock sooner —
+            these should trend toward zero.</p>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="small text-muted">Start misalignment per session (ms)</div>
+              <div id="syncLabTrendA" style="height: 140px" role="img"
+                   aria-label="Start misalignment per session"></div>
+            </div>
+            <div class="col-md-6">
+              <div class="small text-muted">Time to lock per session (s)</div>
+              <div id="syncLabTrendB" style="height: 140px" role="img"
+                   aria-label="Time to lock per session"></div>
+            </div>
+          </div>
           <details class="mt-3 small">
             <summary class="text-muted">Session data table</summary>
             <div class="table-responsive mt-2" id="syncLabTable"></div>
@@ -206,6 +236,8 @@ function _renderShell() {
     _refreshPicker();
     _convChart = createChart(document.getElementById('syncLabConv'));
     _pllChart = createChart(document.getElementById('syncLabPll'));
+    _trendAChart = createChart(document.getElementById('syncLabTrendA'));
+    _trendBChart = createChart(document.getElementById('syncLabTrendB'));
 }
 
 function _refreshPicker() {
@@ -250,9 +282,128 @@ function _renderDetail() {
         return;
     }
     const players = _detail.players || [];
+    _renderGuidance(players);
     _renderTiles(players);
     _renderCharts(_detail.series, players.map(p => p.player_id));
+    _renderTrend();
     _renderTable(players);
+}
+
+// ---------------------------------------------------------------------------
+// Guidance — turn the numbers into actions
+// ---------------------------------------------------------------------------
+function _renderGuidance(players) {
+    const el = document.getElementById('syncLabGuide');
+    if (!el) return;
+    if (!players.length) { el.innerHTML = ''; return; }
+    const items = [];
+    const locked = [];
+    for (const p of players) {
+        const name = esc(_nameFor(p.player_id));
+        if (p.lock_s == null) {
+            items.push({ cls: 'warning', icon: 'fa-triangle-exclamation',
+                html: `<strong>${name}</strong> never locked this session — check it's
+                       powered and on WiFi, then re-run the test.` });
+            continue;
+        }
+        const bias = p.settled_bias_ms;
+        if (bias == null) {
+            items.push({ cls: 'secondary', icon: 'fa-hourglass-half',
+                html: `<strong>${name}</strong> is still converging — give the
+                       auto-correction another minute before trimming.` });
+            continue;
+        }
+        locked.push(p);
+        if (Math.abs(bias) <= 10) {
+            items.push({ cls: 'success', icon: 'fa-check',
+                html: `<strong>${name}</strong> is in sync (bias ${bias > 0 ? '+' : ''}${Math.round(bias)} ms)
+                       — no action needed.` });
+        } else {
+            const suggested = Math.max(-500, Math.min(500,
+                Math.round((p.trim_ms ?? 0) - bias)));
+            items.push({ cls: 'primary', icon: 'fa-sliders',
+                html: `<strong>${name}</strong> plays ${Math.abs(Math.round(bias))} ms
+                       ${bias > 0 ? 'late' : 'early'} after lock — suggested trim
+                       <strong>${suggested} ms</strong> (now ${p.trim_ms ?? 0} ms)
+                       <button class="btn btn-sm btn-primary py-0 ms-1 syncGuideApply"
+                               data-pid="${esc(p.player_id)}" data-trim="${suggested}">
+                         Apply</button>` });
+        }
+        if ((p.resyncs ?? 0) >= 3) {
+            items.push({ cls: 'warning', icon: 'fa-wifi',
+                html: `<strong>${name}</strong> needed ${p.resyncs} hard resyncs — an
+                       unstable link. Prefer 5&nbsp;GHz WiFi, reduce congestion, or move
+                       the speaker closer to the AP.` });
+        }
+    }
+    if (locked.length >= 2) {
+        const biases = locked.map(p => p.settled_bias_ms);
+        const spread = Math.round(Math.max(...biases) - Math.min(...biases));
+        items.unshift({
+            cls: spread <= 20 ? 'success' : spread <= 45 ? 'secondary' : 'primary',
+            icon: 'fa-headphones',
+            html: `<strong>Group verdict:</strong> speakers are within
+                   <strong>${spread} ms</strong> of each other after lock
+                   ${spread <= 20 ? '— echo-free to the ear.'
+                     : spread <= 45 ? '— close; a small trim will tighten it.'
+                     : '— audibly apart; apply the suggested trims below.'}` });
+    }
+    el.innerHTML = `
+      <div class="border rounded p-2">
+        <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
+        ${items.map(i => `
+          <div class="small d-flex align-items-baseline gap-2 mb-1">
+            <i class="fas ${i.icon} text-${i.cls}" aria-hidden="true" style="width:14px"></i>
+            <span>${i.html}</span>
+          </div>`).join('')}
+      </div>`;
+    el.querySelectorAll('.syncGuideApply').forEach(btn => {
+        btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+                const r = await fetch('/api/media/sync/trim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ player_id: btn.dataset.pid,
+                                           trim_ms: Number(btn.dataset.trim) }),
+                }).then(x => x.json());
+                if (window.toast) window.toast(r.success
+                    ? `Trim set to ${btn.dataset.trim} ms` : (r.error || 'Trim failed'),
+                    r.success ? 'success' : 'error');
+                _detail = await _fetchDetail(_selected);
+                _renderDetail();
+            } catch (e) { btn.disabled = false; }
+        };
+    });
+}
+
+function _renderTrend() {
+    if (!_trendAChart || !_trendBChart) return;
+    if (!_trend.length) {
+        _trendAChart.setOption(_emptyOption('First session — nothing to compare yet'));
+        _trendBChart.setOption(_emptyOption(''));
+        return;
+    }
+    const c = _pal()[0];
+    const labels = _trend.map(t => {
+        const d = new Date(t.started);
+        return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    });
+    const bar = (data, unit) => ({
+        grid: { left: 44, right: 8, top: 8, bottom: 22 },
+        tooltip: { trigger: 'axis',
+                   valueFormatter: v => (v == null ? '—' : `${v} ${unit}`) },
+        xAxis: { type: 'category', data: labels,
+                 axisLabel: { fontSize: 10, interval: 'auto' } },
+        yAxis: { type: 'value', min: 0 },
+        series: [{
+            type: 'bar', data,
+            itemStyle: { color: c, borderRadius: [3, 3, 0, 0] },
+            barMaxWidth: 26,
+        }],
+    });
+    _trendAChart.setOption(bar(_trend.map(t => t.start_misalign_ms), 'ms'));
+    _trendBChart.setOption(bar(_trend.map(t => t.lock_s), 's'));
 }
 
 function _tile(p) {
