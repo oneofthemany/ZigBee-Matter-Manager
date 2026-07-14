@@ -755,6 +755,44 @@ export function renderControlTab(device) {
         </div>`;
     }
 
+    // --- Door Lock (matter locks, nuki bridge locks) ---
+    const caps = Array.isArray(device.capabilities) ? device.capabilities : [];
+    if (s.locked !== undefined || s.lock_state !== undefined || caps.includes('lock')) {
+        controlsFound = true;
+        const stateName = s.lock_state || (s.locked === true ? 'locked'
+            : s.locked === false ? 'unlocked' : 'unknown');
+        const badgeCls = String(stateName).toLowerCase() === 'locked' ? 'bg-success'
+            : String(stateName).toLowerCase().includes('unl') ? 'bg-warning text-dark'
+            : 'bg-secondary';
+        html += `
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                    <strong><i class="fas fa-lock"></i> Door Lock</strong>
+                    <span>
+                        <span class="badge ${badgeCls}">${_escHtml(stateName)}</span>
+                        ${s.battery_critical ? '<span class="badge bg-danger ms-1">battery!</span>' : ''}
+                        ${s.door_state ? `<span class="small text-muted ms-1">door: ${_escHtml(s.door_state)}</span>` : ''}
+                    </span>
+                </div>
+                <div class="card-body">
+                    <div class="btn-group w-100">
+                        <button type="button" class="btn btn-outline-success"
+                                onclick="window.sendCommand('${device.ieee}', 'lock')">
+                            <i class="fas fa-lock"></i> Lock</button>
+                        <button type="button" class="btn btn-outline-warning"
+                                onclick="window.sendCommand('${device.ieee}', 'unlock')">
+                            <i class="fas fa-lock-open"></i> Unlock</button>
+                        <button type="button" class="btn btn-outline-danger"
+                                title="Also pulls the latch — the door swings open"
+                                onclick="window.sendCommand('${device.ieee}', 'unlatch')">
+                            <i class="fas fa-door-open"></i> Unlatch</button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    }
+
     // --- Thermostat (0x0201) ---
     const hasThermostat = hasCluster(device, 0x0201);
     if (hasThermostat) {

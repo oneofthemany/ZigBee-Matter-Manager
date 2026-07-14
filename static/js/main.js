@@ -68,7 +68,7 @@ import {
     saveConfig,
     getDeviceStateHtml
 } from './device-modal.js';
-import { openAcModal } from './ac-modal.js';
+import { openAcModal } from './modal/ac-modal.js';
 import {
     filterLogs,
     clearLogs,

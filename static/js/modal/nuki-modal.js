@@ -2,8 +2,14 @@
  * Nuki Lock Modal (bridge-paired locks; pseudo-ieee nuki_<id>)
  * Opened from the device list via device-modal.js when the entry carries
  * nuki_lock_id. Matter-commissioned locks use the standard device modal.
+ * Two tabs: Control (live state + actions) and Automation — the latter
+ * reuses the full rule builder from ./automation.js, so lock rules
+ * (time-based lock/unlock, locked-state conditions) work exactly like
+ * any other device's.
  * Reuses the shared #capModal shell like ac-modal.js.
  */
+
+import { renderAutomationTab, initAutomationTab } from './automation.js';
 
 const log = zmmLog('nuki-modal');
 
@@ -20,6 +26,10 @@ const STATE_BADGES = {
     'unlatched': 'bg-warning text-dark',
     'motor blocked': 'bg-danger',
 };
+
+function _lockIeee(l) {
+    return `nuki_${l.nuki_id}`;
+}
 
 export async function openNukiModal(lockId) {
     const modalEl = document.getElementById('capModal');
@@ -58,8 +68,8 @@ async function refreshNukiModal(lockId, maxAge = 0) {
 
 async function nukiModalAction(action) {
     const lockId = currentLockId;
-    const body = document.getElementById('capModalBody');
-    body?.querySelectorAll('button').forEach(el => { el.disabled = true; });
+    const pane = document.getElementById('nukiCtlPane');
+    pane?.querySelectorAll('button').forEach(el => { el.disabled = true; });
     const hint = document.getElementById('nukiModalHint');
     if (hint) hint.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i> Sending ${esc(action)}…`;
     try {
@@ -82,6 +92,41 @@ window.nukiModalAction = nukiModalAction;
 function renderNukiModal(l) {
     const body = document.getElementById('capModalBody');
     if (!body || l.id !== currentLockId) return;
+
+    // Build the tabbed shell once per modal open; later refreshes only
+    // repaint the Control pane so the Automation tab keeps its state.
+    if (!document.getElementById('nukiModalShell')) {
+        const ieee = _lockIeee(l);
+        body.innerHTML = `
+        <div id="nukiModalShell">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <h5 class="mb-0"><i class="fas fa-lock me-2"></i>${esc(l.name)}</h5>
+              <div class="text-muted small">${esc(l.device_type_name || 'Smart Lock')}
+                ${l.firmware ? ' · fw ' + esc(l.firmware) : ''}</div>
+            </div>
+            <span class="badge bg-primary">via ${esc(l.via)}</span>
+          </div>
+          <ul class="nav nav-tabs mb-3">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab"
+                data-bs-target="#nukiTabControl">Control</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab"
+                data-bs-target="#nukiTabAutomation">Automation</button></li>
+          </ul>
+          <div class="tab-content">
+            <div class="tab-pane fade show active" id="nukiTabControl">
+              <div id="nukiCtlPane"></div>
+            </div>
+            <div class="tab-pane fade" id="nukiTabAutomation">
+              ${renderAutomationTab({ ieee })}
+            </div>
+          </div>
+        </div>`;
+        initAutomationTab(ieee);
+    }
+
+    const pane = document.getElementById('nukiCtlPane');
+    if (!pane) return;
     const stateName = l.state_name || 'unknown';
     const badgeCls = STATE_BADGES[stateName.toLowerCase()] || 'bg-secondary';
     const actions = [
@@ -92,16 +137,7 @@ function renderNukiModal(l) {
         { action: 'lock_n_go', label: "Lock 'n' Go", icon: 'fa-walking', btn: 'primary',
           title: 'Unlocks now, relocks automatically after the Nuki-configured delay' },
     ];
-    body.innerHTML = `
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <div>
-        <h5 class="mb-0"><i class="fas fa-lock me-2"></i>${esc(l.name)}</h5>
-        <div class="text-muted small">${esc(l.device_type_name || 'Smart Lock')}
-          ${l.firmware ? ' · fw ' + esc(l.firmware) : ''}</div>
-      </div>
-      <span class="badge bg-primary">via ${esc(l.via)}</span>
-    </div>
-
+    pane.innerHTML = `
     <div class="row g-3 mb-3 text-center">
       <div class="col-4">
         <div class="border rounded p-3">
