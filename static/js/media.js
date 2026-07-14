@@ -1114,6 +1114,39 @@ function _syncStatLine(st) {
     return `offset ${s.offset_ms} ms${rtt} · late ${s.late} · resyncs ${s.resyncs}`;
 }
 
+// Deviation meter: a centered bar on the same ±500 ms scale as the trim
+// slider below it. Fill grows from the zero line — right = plays late,
+// left = plays early — coloured by error magnitude (in sync / drifting /
+// off). The numeric offset stays in the stat line, so colour is never the
+// only signal.
+const _SYNC_METER_FS = 500;   // full-scale ms, matches the trim slider
+
+function _syncMeter(pid) {
+    return `
+      <div class="position-relative mt-1" style="height:10px;background:var(--bs-secondary-bg);border-radius:5px;"
+           title="Playback offset vs the group target — aim for the centre">
+        <div style="position:absolute;left:50%;top:-2px;bottom:-2px;width:2px;background:var(--bs-border-color);"></div>
+        <div id="syncfill-${esc(pid)}"
+             style="position:absolute;top:2px;height:6px;border-radius:3px;width:0;left:50%;"></div>
+      </div>
+      <div class="d-flex justify-content-between text-muted" style="font-size:.65rem;">
+        <span>plays early −${_SYNC_METER_FS} ms</span><span>0</span><span>+${_SYNC_METER_FS} ms plays late</span>
+      </div>`;
+}
+
+function _syncMeterPaint(pid, st) {
+    const fill = document.getElementById('syncfill-' + pid);
+    if (!fill) return;
+    const o = st && st.stats ? st.stats.offset_ms : null;
+    if (o == null || !Number.isFinite(o)) { fill.style.width = '0'; return; }
+    const c = Math.max(-_SYNC_METER_FS, Math.min(_SYNC_METER_FS, o));
+    const pct = Math.abs(c) / _SYNC_METER_FS * 50;
+    fill.style.width = Math.max(pct, 0.8) + '%';   // keep a sliver visible at ~0
+    fill.style.left = (o >= 0 ? 50 : 50 - pct) + '%';
+    fill.style.background = Math.abs(o) <= 60 ? 'var(--bs-success)'
+        : Math.abs(o) <= 150 ? 'var(--bs-warning)' : 'var(--bs-danger)';
+}
+
 function _syncMemberRow(m, groupActive) {
     const st = groupActive ? _syncDeviceInfo(m.player_id) : null;
     const pill = !groupActive ? ''
@@ -1127,6 +1160,7 @@ function _syncMemberRow(m, groupActive) {
           <span id="syncpill-${esc(m.player_id)}">${pill}</span>
           <span class="ms-auto text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
         </div>
+        ${groupActive ? _syncMeter(m.player_id) : ''}
         <input type="range" class="form-range" min="-500" max="500" step="5"
                value="${m.trim_ms}"
                oninput="document.getElementById('synctrimlbl-${esc(m.player_id)}').textContent = this.value + ' ms'"
@@ -1206,6 +1240,7 @@ async function renderSyncPane() {
 
     // Poll while a session runs so pills + stats stay live (in place — a full
     // re-render would fight an in-progress trim drag).
+    for (const d of ((_syncStatus || {}).devices || [])) _syncMeterPaint(d.player_id, d);
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
@@ -1222,6 +1257,7 @@ async function refreshSyncStats() {
                 : '<span class="badge bg-secondary ms-1">launching…</span>';
             const stat = document.getElementById('syncstat-' + d.player_id);
             if (stat) stat.textContent = _syncStatLine(d);
+            _syncMeterPaint(d.player_id, d);
         }
     } catch (e) { /* transient — next tick */ }
 }
