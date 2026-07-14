@@ -31,10 +31,13 @@ Fallback stream mode (no Cast console account)
     (``/sync/stream/<sid>.wav``) cut from the same shared timeline. Because
     the test signal is a pure function of timeline position, the server can
     seek any device's stream instantly: a monitor polls each device's
-    reported media time, computes its lag against the server clock, and
-    skips/rewinds its stream until all devices converge on a common lag.
-    Coarser than the custom receiver (tens of ms, not sample-accurate) but
-    needs nothing from Google; manual trim does the final alignment by ear.
+    reported media time and computes its lag against the server clock.
+    Hard stream jumps are reserved for acquisition/rebuffer (>±100 ms);
+    every smaller correction — clock drift, residual offset, trim changes —
+    goes through a per-device fractional-position resampler as a bounded
+    rate slew (fast 1000 ppm ≈ 1.7 cents, steady-state 20 ppm), so
+    corrections are inaudible and the buffer never steps (OpenZone §5.2).
+    Needs nothing from Google; manual trim does the final alignment by ear.
 
 This is deliberately PoC-scoped: one global session, generated audio only,
 stats surfaced via /api/media/sync/status and the sync_test.html page.
@@ -83,16 +86,25 @@ DEFAULT_APP_ID = "CC1AD845"      # built-in default media receiver (no registrat
 STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
 STREAM_AHEAD_S = 1.2             # serve at most this far ahead of the timeline
 STREAM_LAG_MARGIN_S = 0.35       # common target lag = max natural lag + this
-STREAM_CORRECT_MIN_S = 0.06      # leave errors smaller than this to manual trim
 STREAM_POLL_S = 2.5              # monitor poll interval
 STREAM_COOLDOWN_POLLS = 2        # polls to skip after a jump (client buffer flush)
+# Correction policy (OpenZone §5.2): jumps only for acquisition/rebuffer;
+# every correction below the jump threshold is applied as a bounded rate
+# slew through the fractional resampler — inaudible, no buffer steps.
+STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
+STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
+STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
+STREAM_SLEW_FAST_THRESH_S = 0.015
+STREAM_RATE_MAX_PPM = 300.0      # drift-cancel term cap (integral controller)
 
 
-def _gen_samples(n0: int, frames: int) -> bytes:
-    """Test-signal PCM for ``frames`` samples starting at absolute timeline
-    sample ``n0`` — pure function of the sample position, so any receiver or
-    stream joining/seeking later gets a bit-identical timeline. Chord pad
-    with a slow swell + a 1 kHz click every 2 s."""
+def _gen_float(n0: int, frames: int) -> np.ndarray:
+    """Test-signal samples (float mono) for ``frames`` samples starting at
+    absolute timeline sample ``n0`` — pure function of the sample position,
+    so any receiver or stream joining/seeking later gets a bit-identical
+    timeline. Chord pad with a slow swell + a 1 kHz click every 2 s.
+    This is the integer-grid source the resampler interpolates over; step 2
+    replaces it with the real-media ring buffer, nothing else changes."""
     t = (n0 + np.arange(frames)) / RATE
     sig = (0.10 * np.sin(2 * np.pi * 220.0 * t)
            + 0.08 * np.sin(2 * np.pi * 277.18 * t)
@@ -102,8 +114,34 @@ def _gen_samples(n0: int, frames: int) -> bytes:
     m = ph < 0.008
     if m.any():   # sharp exponentially-decaying tick — the sync "ruler"
         sig[m] += 0.85 * np.sin(2 * np.pi * 1000.0 * ph[m]) * np.exp(-ph[m] / 0.002)
+    return sig
+
+
+def _encode_s16(sig: np.ndarray) -> bytes:
     s16 = (np.clip(sig, -0.98, 0.98) * 32767).astype("<i2")
     return np.repeat(s16[:, None], CHANNELS, axis=1).tobytes()
+
+
+def _gen_samples(n0: int, frames: int) -> bytes:
+    """Unity-ratio PCM straight off the integer grid (WS/chunk mode)."""
+    return _encode_s16(_gen_float(n0, frames))
+
+
+def _resample_block(pos: float, frames: int, adv: float) -> bytes:
+    """Fractional-position resampler (the OpenZone §5.2 actuator): emit
+    ``frames`` output samples reading the timeline from float sample
+    position ``pos``, consuming ``adv`` timeline samples in total, i.e. a
+    ratio of adv/frames modulated a few hundred ppm around unity. Sub-sample
+    linear interpolation between adjacent integer-grid samples — at unity
+    ratio from an integer position it degenerates to a bit-exact copy, and
+    at ±1000 ppm the interpolation error is far below the s16 noise floor."""
+    idx = pos + np.arange(frames) * (adv / frames)
+    base = np.floor(idx).astype(np.int64)
+    frac = idx - base
+    i0 = int(base[0])
+    src = _gen_float(i0, int(base[-1]) - i0 + 2)
+    rel = base - i0
+    return _encode_s16(src[rel] * (1.0 - frac) + src[rel + 1] * frac)
 
 
 def _gen_chunk(index: int) -> bytes:
@@ -155,26 +193,28 @@ class _Receiver:
 
 class _Stream:
     """Stream-mode per-device state (the default-receiver counterpart of
-    _Receiver). ``pos`` is the next timeline sample its WAV stream will
-    serve; deliberate jumps (corrections, trim changes) must also be added
-    to ``shift`` so the monitor's position estimate stays consistent."""
+    _Receiver). ``pos`` is the (fractional) next timeline sample its WAV
+    stream will serve; every deliberate timeline move (jump, slew, trim)
+    must also be reflected in ``shift`` so the monitor's position estimate
+    stays consistent."""
 
     def __init__(self, sid: str, player_id: str, name: str):
         self.sid = sid
         self.player_id = player_id
         self.name = name
         self.connected = False       # WAV stream currently being consumed
-        self.pos: Optional[int] = None   # next timeline sample to serve
+        self.pos: Optional[float] = None  # next timeline sample (fractional)
         self.start_pos: int = 0      # timeline sample of the first PCM byte
-        self.shift: int = 0          # cumulative deliberate jumps (samples)
+        self.shift: float = 0.0      # cumulative deliberate moves (samples)
         self.natural_lag: Optional[float] = None   # first stable lag (s)
         self.cooldown: int = 0       # monitor polls to skip after a jump
         self.resyncs: int = 0
         self.stats: dict = {}
-        # Software PLL: serve fractionally more/fewer samples to cancel the
-        # device's clock drift instead of waiting for step corrections.
-        self.rate_ppm: float = 0.0   # >0 = device consumes slow, skip forward
-        self.frac: float = 0.0       # accumulated fractional rate samples
+        # Software PLL: the resampler serves fractionally more/fewer timeline
+        # samples per output second to cancel the device's clock drift.
+        self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
+        self.slew_s: float = 0.0     # pending offset to slew away (s, >0 =
+        #                              device behind → consume timeline faster)
         self.lag_hist: List[tuple] = []   # (t, lag) points for drift fitting
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
 
@@ -384,15 +424,19 @@ class CastSyncPoc:
                     await r.ws.send_json({"type": "trim", "trim_ms": trim_ms})
                 except Exception as e:
                     logger.debug(f"trim push failed for {player_id}: {e}")
-        # Stream mode: positive trim = play later = serve older timeline, so
-        # jump the stream back by the trim delta (and mirror it in ``shift``
-        # so the monitor's position estimate stays consistent).
-        delta = int((trim_ms - old) * RATE / 1000)
+        # Stream mode: positive trim = play later = serve older timeline.
+        # Deltas within the slew window are drained through the resampler —
+        # inaudible, no buffer step (OpenZone §5.2/§8); only larger moves
+        # jump the stream (mirrored in ``shift`` like any resync).
+        delta_s = (trim_ms - old) / 1000.0
         for s in self._streams.values():
             if s.player_id == player_id and s.pos is not None:
-                s.pos -= delta
-                s.shift -= delta
-                s.cooldown = STREAM_COOLDOWN_POLLS
+                if abs(delta_s) <= STREAM_JUMP_MIN_S:
+                    s.slew_s -= delta_s
+                else:
+                    s.pos -= delta_s * RATE
+                    s.shift -= delta_s * RATE
+                    s.cooldown = STREAM_COOLDOWN_POLLS
                 s.lag_hist = []   # baseline moved — old slope points are invalid
                 await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
@@ -572,17 +616,20 @@ class CastSyncPoc:
                         st.natural_lag = lag
                         self._model_learn(st, "lag_s", lag - st.precomp_s)
                         batch.append(self._sample_row(st, "startup", lag=lag))
-                    error = lag - self._target_lag   # >0: behind, skip forward
+                    error = lag - self._target_lag   # >0: behind, serve faster
                     st.stats = {"offset_ms": round(error * 1000),
                                 "rtt_ms": "n/a", "late": 0,
                                 "resyncs": st.resyncs,
                                 "drift_ppm": round(st.rate_ppm)}
                     batch.append(self._sample_row(st, "poll", lag=lag,
                                                   error=error))
-                    if abs(error) > STREAM_CORRECT_MIN_S:
-                        jump = int(error * RATE)
-                        st.pos += jump
-                        st.shift += jump
+                    # Correction ladder (OpenZone §5.2): buffer jumps only
+                    # for acquisition/rebuffer; everything inside ±100 ms is
+                    # a bounded rate slew through the resampler.
+                    if abs(error) > STREAM_JUMP_MIN_S:
+                        st.pos += error * RATE
+                        st.shift += error * RATE
+                        st.slew_s = 0.0       # jump supersedes any pending slew
                         st.resyncs += 1
                         st.cooldown = STREAM_COOLDOWN_POLLS
                         st.lag_hist = []      # slope is meaningless across a jump
@@ -590,8 +637,26 @@ class CastSyncPoc:
                                                       error=error))
                         logger.info(f"Sync stream resync {st.name}: "
                                     f"{error * 1000:+.0f} ms")
+                    elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S:
+                        pass   # fast slew still draining — lag is transient
+                    elif abs(error) > STREAM_SLEW_FAST_THRESH_S:
+                        # Fast slew: 1000 ppm ≈ 1.7 cents, inaudible; drains
+                        # in |error| × 1000 s. Assignment, not +=: a pending
+                        # gentle residual is already part of the measurement.
+                        st.slew_s = error
+                        st.lag_hist = []      # baseline moves under the slew
+                        batch.append(self._sample_row(st, "slew", lag=lag,
+                                                      error=error))
+                        logger.info(f"Sync stream slew {st.name}: "
+                                    f"{error * 1000:+.0f} ms @ "
+                                    f"{STREAM_SLEW_FAST_PPM:.0f} ppm")
                     else:
+                        # Steady state: refresh the gentle trickle (≤20 ppm,
+                        # ~50 µs/poll — too small to bias the drift fit) and
+                        # keep the PLL locked on the residual slope.
+                        st.slew_s = error
                         self._pll_update(st, lag)
+                    st.stats["slew_ms"] = round(st.slew_s * 1000, 1)
                 await self._record_samples(batch)
         except asyncio.CancelledError:
             pass
@@ -631,7 +696,9 @@ class CastSyncPoc:
         if den <= 0:
             return
         slope = sum((ts[i] - tm) * (ls[i] - lm) for i in range(n)) / den
-        st.rate_ppm = max(-300.0, min(300.0, st.rate_ppm + 0.5 * slope * 1e6))
+        st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
+                          min(STREAM_RATE_MAX_PPM,
+                              st.rate_ppm + 0.5 * slope * 1e6))
         self._model_learn(st, "drift_ppm", st.rate_ppm)
 
     def _model_learn(self, st: _Stream, key: str, value: float):
@@ -687,17 +754,24 @@ class CastSyncPoc:
                 if ahead > STREAM_AHEAD_S:
                     await asyncio.sleep(STREAM_BLOCK_S / 2)
                     continue
-                pos = st.pos
-                st.pos = pos + block
-                # PLL rate correction: a few samples per second, inaudible,
-                # cancels clock drift between step resyncs.
-                st.frac += block * st.rate_ppm / 1e6
-                n = int(st.frac)
-                if n:
-                    st.pos += n
-                    st.shift += n
-                    st.frac -= n
-                yield _gen_samples(pos, block)
+                # Actuator (OpenZone §5.2): ratio = 1 + drift + slew. The
+                # drift term cancels the device clock; the slew term drains
+                # the scheduled offset at a bounded rate — fast (1000 ppm)
+                # above 15 ms remaining, gentle (20 ppm) below. All of it is
+                # fractional through the resampler; the buffer never steps.
+                rm = 0.0
+                if st.slew_s:
+                    ppm = (STREAM_SLEW_FAST_PPM
+                           if abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S
+                           else STREAM_SLEW_GENTLE_PPM)
+                    lim = (block / RATE) * ppm / 1e6
+                    rm = max(-lim, min(lim, st.slew_s))
+                    st.slew_s -= rm
+                adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
+                pcm = _resample_block(st.pos, block, adv)
+                st.pos += adv
+                st.shift += adv - block
+                yield pcm
         except asyncio.CancelledError:
             pass
         finally:
