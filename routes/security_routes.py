@@ -52,13 +52,30 @@ CONFIG_PATH = "./config/config.yaml"
 LOCKS_STORE_PATH = "./data/nuki_locks_cache.json"
 LOCKS_STORE_MIN_WRITE_SEC = 30.0
 
+# Which Matter-commissioned locks belong to which provider tab, matched
+# case-insensitively against the device's manufacturer string. Locks that
+# match no provider still appear in the main device list — they just don't
+# claim a Security sub-tab.
+MATTER_MFR_FILTERS = {
+    "nuki": ("nuki",),
+    "yale": ("yale", "august", "assa abloy"),
+}
 
-def _load_nuki_cfg() -> Dict[str, Any]:
+
+def _load_security_cfg() -> Dict[str, Any]:
     if not os.path.exists(CONFIG_PATH):
         return {}
     with open(CONFIG_PATH, "r") as f:
         cfg = yaml.safe_load(f) or {}
-    return ((cfg.get("security") or {}).get("nuki")) or {}
+    return cfg.get("security") or {}
+
+
+def _load_nuki_cfg() -> Dict[str, Any]:
+    return _load_security_cfg().get("nuki") or {}
+
+
+def _load_yale_cfg() -> Dict[str, Any]:
+    return _load_security_cfg().get("yale") or {}
 
 
 def register_security_routes(app: FastAPI, get_matter_bridge=None,
@@ -241,9 +258,11 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
         return bool(cfg.get("enabled")) and \
             bool((cfg.get(channel) or {}).get("enabled", True))
 
-    def _matter_locks() -> List[Dict[str, Any]]:
+    def _matter_locks(provider: str = None) -> List[Dict[str, Any]]:
         """Matter devices whose parser classified them as locks, in the
-        same unified shape as bridge locks."""
+        same unified shape as bridge locks. With a provider id, only locks
+        whose manufacturer matches that provider's filter are returned."""
+        mfr_filter = MATTER_MFR_FILTERS.get(provider) if provider else None
         mb = get_matter_bridge() if get_matter_bridge else None
         if not mb:
             return []
@@ -252,6 +271,10 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             try:
                 if dev.get_type() != "Lock" and "locked" not in dev.state:
                     continue
+                if mfr_filter:
+                    mfr = (dev.manufacturer or "").lower()
+                    if not any(f in mfr for f in mfr_filter):
+                        continue
                 locked = dev.state.get("locked")
                 locks.append({
                     "id": f"matter:{dev.node_id}",
@@ -270,14 +293,26 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                 logger.debug(f"Security: skipping matter node: {e}")
         return locks
 
+    async def _matter_lock_action(node_id: int, action: str) -> dict:
+        """Send a lock verb to a Matter-commissioned lock. Matter has no
+        lock'n'go, so those degrade to the closest single verb."""
+        mb = get_matter_bridge() if get_matter_bridge else None
+        if not mb:
+            return {"success": False, "error": "Matter bridge not running"}
+        cmd = {"lock_n_go": "lock",
+               "lock_n_go_unlatch": "unlatch"}.get(action, action)
+        return await mb.send_command(node_id, cmd)
+
     # ── Provider registry ───────────────────────────────────────────────
 
     @app.get("/api/security/providers")
     async def security_providers():
         """Registry the frontend builds its Security sub-tabs from.
-        Future providers (yale, ...) append entries here."""
+        Future providers append entries here."""
         nuki = _load_nuki_cfg()
+        yale = _load_yale_cfg()
         bridge = nuki.get("bridge") or {}
+        matter_up = bool(get_matter_bridge and get_matter_bridge())
         return {"success": True, "providers": [
             {
                 "id": "nuki",
@@ -291,8 +326,25 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                     },
                     "matter": {
                         "enabled": bool((nuki.get("matter") or {}).get("enabled", True)),
-                        "available": bool(get_matter_bridge and get_matter_bridge()),
+                        "available": matter_up,
                     },
+                },
+            },
+            {
+                "id": "yale",
+                "name": "Yale",
+                "icon": "fa-key",
+                "enabled": bool(yale.get("enabled")),
+                "channels": {
+                    "matter": {
+                        "enabled": bool((yale.get("matter") or {}).get("enabled", True)),
+                        "available": matter_up,
+                    },
+                    # Yale/August cloud (yalexs) is deliberately absent: both
+                    # backends now reject the community API key — August needs
+                    # an official partner key, Yale Home OAuths only via Home
+                    # Assistant. Matter is the local, credential-free path.
+                    "cloud": {"enabled": False, "available": False},
                 },
             },
         ]}
@@ -321,7 +373,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             mb = get_matter_bridge() if get_matter_bridge else None
             out["matter"] = {
                 "ok": bool(mb and mb.is_connected()),
-                "locks": len(_matter_locks()),
+                "locks": len(_matter_locks("nuki")),
             }
         return out
 
@@ -349,7 +401,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             except Exception as e:
                 errors.append(f"bridge: {str(e) or type(e).__name__}")
         if _channel_enabled("matter"):
-            locks.extend(_matter_locks())
+            locks.extend(_matter_locks("nuki"))
         return {"success": True, "enabled": True, "locks": locks,
                 "errors": errors, "age_sec": age_sec}
 
@@ -374,13 +426,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                             lock.get("device_type", 0))
                 return {"success": False, "error": f"Unknown lock {lock_id}"}
             if channel == "matter":
-                mb = get_matter_bridge() if get_matter_bridge else None
-                if not mb:
-                    return {"success": False, "error": "Matter bridge not running"}
-                # Matter has no lock'n'go; degrade to the closest verb
-                cmd = {"lock_n_go": "lock",
-                       "lock_n_go_unlatch": "unlatch"}.get(action, action)
-                return await mb.send_command(int(raw_id), cmd)
+                return await _matter_lock_action(int(raw_id), action)
             return {"success": False,
                     "error": f"Unknown channel in lock id '{lock_id}'"}
         except Exception as e:
@@ -417,4 +463,53 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             logger.warning(f"Nuki bridge /auth failed: {e}")
             return {"success": False, "error": str(e) or type(e).__name__}
 
-    logger.info("Security routes registered (providers: nuki)")
+    # ── Yale: status / locks / actions (Matter channel) ─────────────────
+    # Cloud control via yalexs is intentionally not wired: both August and
+    # Yale backends now reject the community API key (August requires an
+    # official partner key; Yale Home OAuths only through Home Assistant),
+    # so a standalone app cannot authenticate. Yale Assure Lock 2 / Linus
+    # L2 commission over Matter instead — local and credential-free. If a
+    # partner key is ever obtained, add a yale_controller module and a
+    # "cloud" channel here mirroring the Nuki bridge pattern.
+
+    def _yale_enabled() -> bool:
+        cfg = _load_yale_cfg()
+        return bool(cfg.get("enabled")) and \
+            bool((cfg.get("matter") or {}).get("enabled", True))
+
+    @app.get("/api/security/yale/status")
+    async def yale_status():
+        out: Dict[str, Any] = {"success": True, "matter": None}
+        if _yale_enabled():
+            mb = get_matter_bridge() if get_matter_bridge else None
+            out["matter"] = {
+                "ok": bool(mb and mb.is_connected()),
+                "locks": len(_matter_locks("yale")),
+            }
+        return out
+
+    @app.get("/api/security/yale/locks")
+    async def yale_locks():
+        if not _load_yale_cfg().get("enabled"):
+            return {"success": True, "enabled": False, "locks": []}
+        locks = _matter_locks("yale") if _yale_enabled() else []
+        return {"success": True, "enabled": True, "locks": locks,
+                "errors": [], "age_sec": 0}
+
+    @app.post("/api/security/yale/locks/{lock_id}/action")
+    async def yale_lock_action(lock_id: str, data: dict):
+        action = str((data or {}).get("action") or "").strip()
+        if action not in ("lock", "unlock", "unlatch"):
+            return {"success": False,
+                    "error": "action must be one of lock, unlock, unlatch"}
+        try:
+            channel, _, raw_id = lock_id.partition(":")
+            if channel != "matter":
+                return {"success": False,
+                        "error": f"Unknown channel in lock id '{lock_id}'"}
+            return await _matter_lock_action(int(raw_id), action)
+        except Exception as e:
+            logger.warning(f"Yale action '{action}' on {lock_id} failed: {e}")
+            return {"success": False, "error": str(e) or type(e).__name__}
+
+    logger.info("Security routes registered (providers: nuki, yale)")

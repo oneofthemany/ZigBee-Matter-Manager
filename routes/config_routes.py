@@ -233,6 +233,16 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         m_cfg = nuki_cfg.setdefault("matter", {})
                         if "enabled" in m_in:
                             m_cfg["enabled"] = bool(m_in["enabled"])
+                if "yale" in sec_in:
+                    y = sec_in["yale"] or {}
+                    yale_cfg = sec_cfg.setdefault("yale", {})
+                    if "enabled" in y:
+                        yale_cfg["enabled"] = bool(y["enabled"])
+                    if "matter" in y:
+                        m_in = y["matter"] or {}
+                        m_cfg = yale_cfg.setdefault("matter", {})
+                        if "enabled" in m_in:
+                            m_cfg["enabled"] = bool(m_in["enabled"])
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

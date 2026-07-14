@@ -1005,6 +1005,13 @@ const SECURITY_PROVIDERS = [
         render: (config) => renderNukiSection(config),
         onShow: () => { loadNukiStatus(); window.loadNukiLocks(); },
     },
+    {
+        id: 'yale',
+        label: 'Yale',
+        icon: 'fa-key',
+        render: (config) => renderYaleSection(config),
+        onShow: () => { loadYaleStatus(); window.loadYaleLocks(); },
+    },
 ];
 
 // fetch → JSON with a readable failure when the server answers non-JSON
@@ -1154,24 +1161,24 @@ async function loadNukiStatus() {
     } catch { el.innerHTML = ''; }
 }
 
-window.loadNukiLocks = async function () {
-    const el = document.getElementById('nukiLocksList');
+// Shared lock table — one renderer for every security provider. Providers
+// differ only in endpoint, empty-state hint and provider label.
+async function loadSecurityLocks(provider, listElId, emptyHint) {
+    const el = document.getElementById(listElId);
     if (!el) return;
     try {
-        const res = await _secFetch('/api/security/nuki/locks');
+        const res = await _secFetch(`/api/security/${provider}/locks`);
         if (!res.success) throw new Error(res.error || 'failed');
         if (res.enabled === false) {
             el.innerHTML = `<div class="text-muted small fst-italic">
-                Nuki is disabled — switch it on above and Save.</div>`;
+                ${_acEsc(provider === 'nuki' ? 'Nuki' : 'Yale')} is disabled — switch it on above and Save.</div>`;
             return;
         }
         const locks = res.locks || [];
         const errs = (res.errors || []).map(e =>
             `<div class="text-warning small mb-1"><i class="fas fa-triangle-exclamation me-1"></i>${_acEsc(e)}</div>`).join('');
         if (!locks.length) {
-            el.innerHTML = errs + `<div class="text-muted small fst-italic">
-                No locks found yet — configure the bridge above, or commission a
-                Matter lock from the Matter tab.</div>`;
+            el.innerHTML = errs + `<div class="text-muted small fst-italic">${emptyHint}</div>`;
             return;
         }
         const stateBadge = (l) => {
@@ -1197,14 +1204,14 @@ window.loadNukiLocks = async function () {
             </td>
             <td class="text-nowrap text-end">
               <button class="btn btn-sm btn-outline-success py-0" ${l.available === false ? 'disabled' : ''}
-                      onclick="window.nukiAction('${_acEsc(l.id)}', 'lock')">
+                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'lock')">
                 <i class="fas fa-lock me-1"></i>Lock</button>
               <button class="btn btn-sm btn-outline-warning py-0 ms-1" ${l.available === false ? 'disabled' : ''}
-                      onclick="window.nukiAction('${_acEsc(l.id)}', 'unlock')">
+                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'unlock')">
                 <i class="fas fa-lock-open me-1"></i>Unlock</button>
               <button class="btn btn-sm btn-outline-danger py-0 ms-1" ${l.available === false ? 'disabled' : ''}
                       title="Also pulls the latch — the door swings open"
-                      onclick="window.nukiAction('${_acEsc(l.id)}', 'unlatch')">
+                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'unlatch')">
                 <i class="fas fa-door-open me-1"></i>Unlatch</button>
             </td>
           </tr>`).join('');
@@ -1217,20 +1224,27 @@ window.loadNukiLocks = async function () {
     } catch (e) {
         el.innerHTML = `<div class="text-danger small">Failed to load locks: ${_acEsc(e.message)}</div>`;
     }
-};
+}
 
-window.nukiAction = async function (lockId, action) {
+window.loadNukiLocks = () => loadSecurityLocks('nuki', 'nukiLocksList',
+    'No locks found yet — configure the bridge above, or commission a Matter lock from the Matter tab.');
+window.loadYaleLocks = () => loadSecurityLocks('yale', 'yaleLocksList',
+    'No Yale locks found yet — commission the lock from the Matter tab and it appears here.');
+
+window.securityLockAction = async function (provider, lockId, action) {
+    const label = provider === 'nuki' ? 'Nuki' : 'Yale';
     try {
-        const res = await _secFetch(`/api/security/nuki/locks/${encodeURIComponent(lockId)}/action`, {
+        const res = await _secFetch(`/api/security/${provider}/locks/${encodeURIComponent(lockId)}/action`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action }),
         });
         if (!res.success) throw new Error(res.error || `${action} failed`);
-        window.toast?.success?.('Nuki', `${action} sent`);
+        window.toast?.success?.(label, `${action} sent`);
     } catch (e) {
-        window.toast?.error?.('Nuki action failed', e.message);
+        window.toast?.error?.(`${label} action failed`, e.message);
     }
-    await window.loadNukiLocks();
+    if (provider === 'nuki') await window.loadNukiLocks();
+    else await window.loadYaleLocks();
 };
 
 window.nukiDiscoverBridges = async function () {
@@ -1301,6 +1315,90 @@ window.nukiTestBridge = async function () {
         out.innerHTML = `<div class="text-danger">${_acEsc(e.message)}</div>`;
     }
 };
+
+// ── Yale ────────────────────────────────────────────────────────────────
+// Matter-only by design: the Yale/August cloud API (yalexs) now requires
+// an official partner key (August) or OAuth brokered through Home
+// Assistant (Yale Home) — neither is available to a standalone app, so
+// there are no cloud credentials to configure here.
+
+function renderYaleSection(config) {
+    const yale = (config.security || {}).yale || {};
+    const matter = yale.matter || {};
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-key me-1"></i> Yale Smart Lock</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_yale_enabled" ${yale.enabled ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Local control over <strong>Matter</strong> — works with Matter-capable Yale locks
+      (Assure Lock 2, Linus L2, or older models with the Yale Matter module).
+      No Yale account or cloud credentials needed.
+    </p>
+
+    <div class="row g-3 mb-3">
+      <div class="col-lg-7">
+        <div class="card h-100">
+          <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span class="small fw-bold"><i class="fas fa-atom me-1"></i> Matter</span>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="cfg_yale_matter_enabled"
+                     ${matter.enabled !== false ? 'checked' : ''}>
+            </div>
+          </div>
+          <div class="card-body small text-muted">
+            Put the lock in pairing mode (see the Yale app or manual for the Matter
+            pairing code), then commission it from this app's <strong>Matter</strong> tab.
+            Commissioned Yale locks appear in the list below and in the main device
+            list, with automations support.
+            <div id="yaleMatterStatus" class="mt-2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-5">
+        <div class="card h-100">
+          <div class="card-header py-2">
+            <span class="small fw-bold text-muted"><i class="fas fa-cloud me-1"></i> Cloud API
+              <span class="badge bg-secondary ms-1">unavailable</span></span>
+          </div>
+          <div class="card-body small text-muted">
+            The Yale/August cloud API (yalexs) no longer accepts community API keys:
+            August requires an official partner key and Yale Home only authenticates
+            via Home Assistant's OAuth. If a partner key is ever issued, a cloud
+            channel can be added here alongside Matter.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold small"><i class="fas fa-list me-1"></i> Locks</span>
+      <button class="btn btn-outline-secondary btn-sm" onclick="window.loadYaleLocks()">
+        <i class="fas fa-sync-alt me-1"></i> Refresh
+      </button>
+    </div>
+    <div id="yaleLocksList">
+      <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading locks…</div>
+    </div>
+    `;
+}
+
+async function loadYaleStatus() {
+    const el = document.getElementById('yaleMatterStatus');
+    if (!el) return;
+    try {
+        const res = await _secFetch('/api/security/yale/status');
+        const m = res.matter;
+        if (!m) { el.innerHTML = ''; return; }
+        el.innerHTML = m.ok
+            ? `<span class="badge bg-success">Matter server connected</span>
+               <span class="ms-1">${m.locks} Yale lock${m.locks === 1 ? '' : 's'} found</span>`
+            : `<span class="badge bg-secondary">Matter server not running</span>`;
+    } catch { el.innerHTML = ''; }
+}
 
 function renderTidalSection(config) {
     const tidal = (config.media || {}).tidal || {};
@@ -1986,6 +2084,12 @@ function collectFormValues() {
                 },
                 matter: {
                     enabled: document.getElementById('cfg_nuki_matter_enabled')?.checked ?? true,
+                },
+            },
+            yale: {
+                enabled: document.getElementById('cfg_yale_enabled')?.checked ?? false,
+                matter: {
+                    enabled: document.getElementById('cfg_yale_matter_enabled')?.checked ?? true,
                 },
             },
         },
