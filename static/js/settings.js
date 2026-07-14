@@ -823,37 +823,17 @@ window.loadAcUnits = async function () {
                    ${u.target_c != null ? ' → ' + Number(u.target_c).toFixed(1) + '°C' : ''}</span>`
                 : `<span class="badge bg-secondary" title="${_acEsc(u.error || '')}">offline</span>
                    <span class="ms-1 small text-muted">${_acEsc((u.error || '').slice(0, 60))}</span>`;
-            const controls = online ? `
-                <button class="btn btn-sm btn-outline-${u.power ? 'danger' : 'success'} py-0"
-                        onclick="window.acPower('${_acEsc(u.id)}', ${u.power ? 'false' : 'true'})">
-                  ${u.power ? 'Off' : 'On'}</button>
-                <select class="form-select form-select-sm d-inline-block py-0 ms-1" style="width:auto;font-size:0.78rem"
-                        onchange="window.acSetMode('${_acEsc(u.id)}', this.value)">
-                  ${['', 'auto', 'cool', 'dry', 'fan', 'heat'].map(m =>
-                    `<option value="${m}" ${m === (u.mode || '') ? 'selected' : ''}>${m || 'mode…'}</option>`).join('')}
-                </select>
-                <input type="number" step="0.5"
-                       min="${u.capabilities?.min_c ?? 16}" max="${u.capabilities?.max_c ?? 31}"
-                       class="form-control form-control-sm d-inline-block ms-1 py-0"
-                       style="width:70px;font-size:0.78rem" value="${u.target_c ?? 22}"
-                       id="acTemp_${_acEsc(u.id)}">
-                <button class="btn btn-sm btn-outline-primary py-0 ms-1"
-                        onclick="window.acSetTemp('${_acEsc(u.id)}')">Set</button>
-                <button class="btn btn-sm btn-outline-secondary py-0 ms-1" title="All controls (fan, swing, timer…)"
-                        onclick="window.openAcModal('${_acEsc(u.id)}')">
-                  <i class="fas fa-sliders-h"></i></button>` : `
-                <button class="btn btn-sm btn-outline-warning py-0"
-                        onclick="window.acBind('${_acEsc(u.id)}')" title="Fetch key/token and reconnect">
-                  <i class="fas fa-key me-1"></i>Bind</button>`;
             return `
               <tr>
                 <td class="fw-semibold">${_acEsc(u.name || u.id)}
                     <div class="small text-muted">${_acEsc(u.brand)}${u.room_id ? ' · room: ' + _acEsc(u.room_id) : ''}</div></td>
                 <td>${status}</td>
-                <td class="text-nowrap">${controls}</td>
-                <td class="text-end">
+                <td class="text-nowrap text-end">
                   ${online ? `<button class="btn btn-sm btn-link text-warning py-0" title="Re-bind"
-                        onclick="window.acBind('${_acEsc(u.id)}')"><i class="fas fa-key"></i></button>` : ''}
+                        onclick="window.acBind('${_acEsc(u.id)}')"><i class="fas fa-key"></i></button>`
+                    : `<button class="btn btn-sm btn-outline-warning py-0"
+                        onclick="window.acBind('${_acEsc(u.id)}')" title="Fetch key/token and reconnect">
+                        <i class="fas fa-key me-1"></i>Bind</button>`}
                   <button class="btn btn-sm btn-link text-danger py-0" title="Remove"
                         onclick="window.acDelete('${_acEsc(u.id)}')"><i class="fas fa-trash"></i></button>
                 </td>
@@ -862,9 +842,11 @@ window.loadAcUnits = async function () {
         el.innerHTML = `
           <table class="table table-sm align-middle mb-0">
             <thead><tr class="small text-muted">
-              <th>Unit</th><th>Status</th><th>Control</th><th></th></tr></thead>
+              <th>Unit</th><th>Status</th><th class="text-end"></th></tr></thead>
             <tbody>${rows}</tbody>
-          </table>`;
+          </table>
+          <div class="small text-muted mt-2 fst-italic">
+            Control units from the Devices tab — Manage button.</div>`;
     } catch (e) {
         el.innerHTML = `<div class="text-danger small">Failed to load AC units: ${_acEsc(e.message)}</div>`;
     }
@@ -968,27 +950,6 @@ window.acDelete = async function (unitId) {
     await window.loadAcUnits();
 };
 
-async function _acControl(unitId, changes) {
-    try {
-        const res = await fetch(`/api/ac/units/${encodeURIComponent(unitId)}/control`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(changes),
-        }).then(r => r.json());
-        if (!res.success) throw new Error(res.error || 'control failed');
-    } catch (e) {
-        window.toast?.error?.('AC control failed', e.message);
-    }
-    await window.loadAcUnits();
-}
-
-window.acPower = (id, on) => _acControl(id, { power: on === true || on === 'true' });
-window.acSetMode = (id, mode) => mode ? _acControl(id, { mode }) : null;
-window.acSetTemp = (id) => {
-    const inp = document.getElementById(`acTemp_${id}`);
-    const v = parseFloat(inp?.value);
-    if (Number.isFinite(v)) return _acControl(id, { target_c: v });
-};
-
 // ============================================================================
 // SECURITY SECTION (smart locks) — lives in the External APIs tab
 // ============================================================================
@@ -1061,7 +1022,7 @@ function renderNukiSection(config) {
       Two ways in: locks paired to a <strong>Nuki Bridge</strong> are controlled over its
       local HTTP API; bridge-less locks (Smart Lock 3.0 Pro / 4th gen) are commissioned as
       <strong>Matter</strong> devices via the Matter tab and picked up here automatically.
-      Config changes need Save; lock control below is live.
+      Config changes need Save. Locks are controlled from the Devices tab (Manage).
     </p>
 
     <div class="row g-3 mb-3">
@@ -1202,25 +1163,15 @@ async function loadSecurityLocks(provider, listElId, emptyHint) {
                 ${l.battery != null ? `<span class="small text-muted ms-1">🔋 ${l.battery}%</span>` : ''}
                 ${l.door_state ? `<span class="small text-muted ms-1">door: ${_acEsc(l.door_state)}</span>` : ''}
             </td>
-            <td class="text-nowrap text-end">
-              <button class="btn btn-sm btn-outline-success py-0" ${l.available === false ? 'disabled' : ''}
-                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'lock')">
-                <i class="fas fa-lock me-1"></i>Lock</button>
-              <button class="btn btn-sm btn-outline-warning py-0 ms-1" ${l.available === false ? 'disabled' : ''}
-                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'unlock')">
-                <i class="fas fa-lock-open me-1"></i>Unlock</button>
-              <button class="btn btn-sm btn-outline-danger py-0 ms-1" ${l.available === false ? 'disabled' : ''}
-                      title="Also pulls the latch — the door swings open"
-                      onclick="window.securityLockAction('${_acEsc(provider)}', '${_acEsc(l.id)}', 'unlatch')">
-                <i class="fas fa-door-open me-1"></i>Unlatch</button>
-            </td>
           </tr>`).join('');
         el.innerHTML = errs + `
           <table class="table table-sm align-middle mb-0">
             <thead><tr class="small text-muted">
-              <th>Lock</th><th>Via</th><th>Status</th><th class="text-end">Control</th></tr></thead>
+              <th>Lock</th><th>Via</th><th>Status</th></tr></thead>
             <tbody>${rows}</tbody>
-          </table>`;
+          </table>
+          <div class="small text-muted mt-2 fst-italic">
+            Control locks from the Devices tab — Manage button.</div>`;
     } catch (e) {
         el.innerHTML = `<div class="text-danger small">Failed to load locks: ${_acEsc(e.message)}</div>`;
     }
@@ -1230,22 +1181,6 @@ window.loadNukiLocks = () => loadSecurityLocks('nuki', 'nukiLocksList',
     'No locks found yet — configure the bridge above, or commission a Matter lock from the Matter tab.');
 window.loadYaleLocks = () => loadSecurityLocks('yale', 'yaleLocksList',
     'No Yale locks found yet — commission the lock from the Matter tab and it appears here.');
-
-window.securityLockAction = async function (provider, lockId, action) {
-    const label = provider === 'nuki' ? 'Nuki' : 'Yale';
-    try {
-        const res = await _secFetch(`/api/security/${provider}/locks/${encodeURIComponent(lockId)}/action`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action }),
-        });
-        if (!res.success) throw new Error(res.error || `${action} failed`);
-        window.toast?.success?.(label, `${action} sent`);
-    } catch (e) {
-        window.toast?.error?.(`${label} action failed`, e.message);
-    }
-    if (provider === 'nuki') await window.loadNukiLocks();
-    else await window.loadYaleLocks();
-};
 
 window.nukiDiscoverBridges = async function () {
     const btn = document.getElementById('nukiDiscoverBtn');
