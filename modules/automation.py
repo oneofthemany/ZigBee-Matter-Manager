@@ -1191,8 +1191,8 @@ class AutomationEngine:
         Returns (met: bool, results: list).
         logic: 'and' or 'or'
         """
-        devices = self._get_devices()
-        names = self._get_names()
+        devices = self._get_all_devices()
+        names = self._get_all_names()
         results = []
         any_pass = False
         all_pass = True
@@ -1718,7 +1718,8 @@ class AutomationEngine:
         return names.get(ieee_or_group, ieee_or_group), dev.state or {}
 
     def get_source_attributes(self, ieee: str) -> List[Dict[str, Any]]:
-        devices = self._get_devices()
+        # Merged view — matter/nuki/etc. devices trigger automations too
+        devices = self._get_all_devices()
         if ieee not in devices: return []
         state = devices[ieee].state
         skip = {"last_seen","available","manufacturer","model","power_source","lqi","linkquality"}

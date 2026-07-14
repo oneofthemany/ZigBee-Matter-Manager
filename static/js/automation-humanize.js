@@ -51,8 +51,12 @@ export function deviceType(ieee, summary) {
     // button even if it also advertises a switch/on_off cluster.
     const looksButton = keys.includes('action') || /\b(button|remote)\b/.test(name);
 
+    // Locks first — a lock's state keys (locked/lock_state) are unambiguous
+    if (keys.includes('locked') || keys.includes('lock_state')) return 'lock';
+
     const caps = _capList(ieee);
     if (caps) {
+        if (caps.includes('lock') || caps.includes('door_lock')) return 'lock';
         if (caps.includes('contact_sensor')) return 'contact';
         if (caps.includes('presence_sensor') || caps.includes('radar_sensor')) return 'presence';
         if (caps.includes('motion_sensor') || caps.includes('occupancy_sensing')) return 'motion';
@@ -88,6 +92,8 @@ const ATTR_LABEL = {
     battery:'Battery', voltage:'Voltage', power:'Power draw', energy:'Energy',
     smoke:'Smoke', water_leak:'Water leak', gas:'Gas', vibration:'Vibration',
     tamper:'Tamper', running_state:'Running',
+    locked:'Locked / Unlocked', lock_state:'Lock state',
+    door_state:'Door sensor', battery_critical:'Battery critical',
 };
 
 function _splitEndpoint(attr) {
@@ -116,6 +122,11 @@ const ACTION_ENUM = [
     { value:'triple', label:'Triple press' }, { value:'hold', label:'Hold' },
     { value:'release', label:'Release' }, { value:'long', label:'Long press' },
 ];
+const LOCK_STATE_ENUM = [
+    { value:'locked', label:'Locked' }, { value:'unlocked', label:'Unlocked' },
+    { value:'unlatched', label:'Unlatched' }, { value:'locking', label:'Locking' },
+    { value:'unlocking', label:'Unlocking' }, { value:'motor blocked', label:'Motor blocked' },
+];
 
 /**
  * Enumerated value choices for an attribute (or null if free-form/numeric).
@@ -133,6 +144,9 @@ export function attrEnum(type, attribute, valType) {
         return _BOOL(['Detected', 'Clear']);
     if (base === 'water_leak' || base === 'smoke' || base === 'gas' || base === 'tamper' || base === 'vibration')
         return _BOOL(['Detected', 'Clear']);
+    if (base === 'locked') return _BOOL(['Locked', 'Unlocked']);
+    if (base === 'lock_state') return LOCK_STATE_ENUM;
+    if (base === 'battery_critical') return _BOOL(['Critical', 'OK']);
     if (base === 'on') return _BOOL(['On', 'Off']);
     if (base === 'state') return _ONOFF;
     if (valType === 'boolean') return _BOOL(['Yes', 'No']);
@@ -170,6 +184,14 @@ export function typeTriggerAttrs(type) {
             return [{ attribute: type === 'motion' ? 'occupancy' : 'presence',
                       type:'boolean', operators:['eq','neq'],
                       value_options:['true','false'], _synthetic:true }];
+        case 'lock':
+            // Offer lock triggers even before the first state poll lands
+            return [
+                { attribute:'locked', type:'boolean', operators:['eq','neq'],
+                  value_options:['true','false'], _synthetic:true },
+                { attribute:'lock_state', type:'string', operators:['eq','neq'],
+                  value_options: enumVals(LOCK_STATE_ENUM), _synthetic:true },
+            ];
         default:
             return [];
     }

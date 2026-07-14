@@ -215,21 +215,39 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
 
     app.state.nuki_device_entries = _device_list_entries
 
+    async def _nuki_send_command(ieee: str, command: str) -> dict:
+        """Hook for /api/device/command so the standard device modal and
+        automation engine reach bridge locks by pseudo-ieee."""
+        dev = lock_devices.get(ieee)
+        if dev is None:
+            return {"success": False, "error": f"Unknown Nuki lock {ieee}"}
+        return await dev.send_command(command)
+
+    app.state.nuki_send_command = _nuki_send_command
+
     def _register_device_getter() -> bool:
         """Expose the lock registry to the automation engine's merged
-        device view. Returns False until the service is up."""
+        device view (idempotent). Returns False until the service is up."""
+        if state.get("engine_registered"):
+            return True
         try:
             svc = get_zigbee_service() if get_zigbee_service else None
             engine = getattr(svc, "automation", None) if svc else None
             if engine and hasattr(engine, "add_device_getter"):
                 engine.add_device_getter(lambda: dict(lock_devices))
+                state["engine_registered"] = True
+                logger.info("Nuki locks wired into automation engine")
                 return True
         except Exception as e:
             logger.debug(f"Nuki automation wiring not ready: {e}")
         return False
 
+    # Wire into the automation engine right away — the engine exists before
+    # routes register, and rules must see locks even if the poller never
+    # runs (e.g. bridge not configured yet, matter-only setups).
+    _register_device_getter()
+
     async def _poll_loop():
-        registered = False
         while True:
             interval = POLL_DEFAULT_SEC
             try:
@@ -238,8 +256,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                                  or POLL_DEFAULT_SEC)
                 if _bridge_channel_on(cfg) and \
                         NukiBridgeClient(cfg.get("bridge") or {}).configured:
-                    if not registered:
-                        registered = _register_device_getter()
+                    _register_device_getter()
                     await _fetch_bridge_locks()
             except Exception as e:
                 logger.debug(f"Nuki poll failed: {e}")

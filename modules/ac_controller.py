@@ -580,9 +580,12 @@ class ACController:
             # Mark so callers can tell "restored, possibly stale" from live
             self._status_cache[uid] = (now_mono - age, {**st, "cached": True})
 
-    def _persist_status_store(self) -> None:
+    def _persist_status_store(self, force: bool = False) -> None:
+        """force=True skips the write throttle — used when a unit's
+        capabilities appear or change (discovery/add/bind), so the control
+        UI has them cached before the user ever opens the modal."""
         now = time.monotonic()
-        if now - self._last_persist < STATUS_STORE_MIN_WRITE_SEC:
+        if not force and now - self._last_persist < STATUS_STORE_MIN_WRITE_SEC:
             return
         self._last_persist = now
         data = {}
@@ -650,9 +653,12 @@ class ACController:
             prev_caps = (prev[1] if prev else {}).get("capabilities")
             if prev_caps:
                 result["capabilities"] = prev_caps
+        prev_entry = self._status_cache.get(unit_id)
+        caps_changed = bool(result.get("capabilities")) and \
+            result.get("capabilities") != (prev_entry[1] if prev_entry else {}).get("capabilities")
         self._status_cache[unit_id] = (time.monotonic(), result)
         if result.get("online"):
-            self._persist_status_store()
+            self._persist_status_store(force=caps_changed)
         return result
 
     async def control(self, unit_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:

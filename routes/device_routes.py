@@ -209,6 +209,11 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     @app.post("/api/device/command")
     async def send_command(request: CommandRequest):
         """Send a command to a device."""
+        # Nuki bridge locks (pseudo-ieee nuki_<id>) — hook from security_routes
+        nuki_command = getattr(app.state, "nuki_send_command", None)
+        if request.ieee.startswith("nuki_") and nuki_command is not None:
+            return await nuki_command(request.ieee, request.command)
+
         matter_bridge = get_matter_bridge()
         if request.ieee.startswith("matter_") and matter_bridge and matter_bridge.is_connected:
             node_id = int(request.ieee.replace("matter_", ""))

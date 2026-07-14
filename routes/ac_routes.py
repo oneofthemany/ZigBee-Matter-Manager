@@ -391,6 +391,16 @@ def register_ac_routes(app: FastAPI):
                 units.append(record)
             _save_config(cfg)
             state["controller"] = None   # rebuild adapters on next use
+
+            # Probe right away so capabilities land in the persistent status
+            # store before the user first opens the control modal.
+            async def _initial_probe(uid: str):
+                try:
+                    await _controller().status(uid, max_age_sec=0)
+                except Exception as e:
+                    logger.debug(f"AC initial probe for {uid} failed: {e}")
+            asyncio.create_task(_initial_probe(str(unit_id)))
+
             return {"success": True, "unit": record}
         except Exception as e:
             logger.error(f"AC upsert failed: {e}", exc_info=True)
