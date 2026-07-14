@@ -72,17 +72,18 @@ def _get_con(group_id: str):
 
 
 def write_samples(group_id: str, rows: List[Dict[str, Any]]):
-    """Bulk append measurement rows to the group's DB."""
+    """Bulk append measurement rows to the group's DB. Rows may carry an
+    explicit 'ts' (datetime) — omitted means now()."""
     if not rows:
         return
     con = _get_con(group_id)
     con.executemany("""
         INSERT INTO lag_samples (
-            session_id, player_id, kind,
+            ts, session_id, player_id, kind,
             lag_s, error_ms, rate_ppm, trim_ms, precomp_s, target_lag_s
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (COALESCE(?, now()), ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
-        (r["session_id"], r["player_id"], r["kind"],
+        (r.get("ts"), r["session_id"], r["player_id"], r["kind"],
          r.get("lag_s"), r.get("error_ms"), r.get("rate_ppm"),
          r.get("trim_ms"), r.get("precomp_s"), r.get("target_lag_s"))
         for r in rows
@@ -165,6 +166,88 @@ def query_history(group_id: str, hours: int = 24,
         cols = ["ts", "player_id", "session_id", "kind", "error_ms",
                 "rate_ppm", "trim_ms"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def query_sessions(group_id: str, days: int = 30) -> List[Dict]:
+    """Session index for one group, newest first — powers the Sync Lab's
+    session picker."""
+    con = _get_con(group_id)
+    rows = con.execute(f"""
+        SELECT session_id,
+               min(ts)                                   AS started,
+               date_diff('second', min(ts), max(ts))     AS duration_s,
+               count(DISTINCT player_id)                 AS players,
+               count(*) FILTER (WHERE kind = 'poll')     AS polls,
+               count(*) FILTER (WHERE kind = 'resync')   AS resyncs,
+               count(*) FILTER (WHERE kind = 'trim')     AS trims,
+               max(target_lag_s)                         AS target_lag_s
+        FROM lag_samples
+        WHERE ts >= now() - INTERVAL '{int(days)} days'
+        GROUP BY session_id
+        ORDER BY started DESC
+    """).fetchall()
+    cols = ["session_id", "started", "duration_s", "players", "polls",
+            "resyncs", "trims", "target_lag_s"]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def query_session_detail(group_id: str, session_id: str) -> Dict[str, Any]:
+    """Everything the Sync Lab needs for one session: the full measurement
+    series (elapsed seconds from session start) and per-speaker summary
+    stats. 'Settled' stats only count polls after the speaker first locked
+    (|error| within the correction dead-band), so startup convergence
+    doesn't pollute the steady-state numbers."""
+    con = _get_con(group_id)
+    series = con.execute("""
+        WITH s AS (SELECT min(ts) AS t0 FROM lag_samples WHERE session_id = ?)
+        SELECT round(date_diff('millisecond', s.t0, l.ts) / 1000.0, 1) AS elapsed_s,
+               l.player_id, l.kind, l.error_ms, l.rate_ppm, l.trim_ms
+        FROM lag_samples l CROSS JOIN s
+        WHERE l.session_id = ?
+        ORDER BY l.ts ASC
+    """, [session_id, session_id]).fetchall()
+    scols = ["elapsed_s", "player_id", "kind", "error_ms", "rate_ppm", "trim_ms"]
+
+    summary = con.execute("""
+        WITH s AS (SELECT min(ts) AS t0 FROM lag_samples WHERE session_id = ?),
+        lock AS (
+            SELECT player_id, min(ts) AS lock_ts
+            FROM lag_samples
+            WHERE session_id = ? AND kind = 'poll' AND abs(error_ms) <= 60
+            GROUP BY player_id
+        )
+        SELECT l.player_id,
+               any_value(l.lag_s)
+                   FILTER (WHERE l.kind = 'startup')       AS startup_lag_s,
+               any_value(l.precomp_s)                      AS precomp_s,
+               round(min(date_diff('millisecond', s.t0, k.lock_ts)) / 1000.0, 1)
+                                                           AS lock_s,
+               median(abs(l.error_ms))
+                   FILTER (WHERE l.kind = 'poll'
+                           AND k.lock_ts IS NOT NULL
+                           AND l.ts >= k.lock_ts)          AS settled_med_ms,
+               quantile_cont(abs(l.error_ms), 0.95)
+                   FILTER (WHERE l.kind = 'poll'
+                           AND k.lock_ts IS NOT NULL
+                           AND l.ts >= k.lock_ts)          AS settled_p95_ms,
+               arg_max(l.rate_ppm, l.ts)
+                   FILTER (WHERE l.kind = 'poll')          AS final_ppm,
+               count(*) FILTER (WHERE l.kind = 'resync')   AS resyncs,
+               count(*) FILTER (WHERE l.kind = 'trim')     AS trims,
+               arg_max(l.trim_ms, l.ts)                    AS trim_ms
+        FROM lag_samples l
+        CROSS JOIN s
+        LEFT JOIN lock k ON k.player_id = l.player_id
+        WHERE l.session_id = ?
+        GROUP BY l.player_id
+        ORDER BY l.player_id
+    """, [session_id, session_id, session_id]).fetchall()
+    pcols = ["player_id", "startup_lag_s", "precomp_s", "lock_s",
+             "settled_med_ms", "settled_p95_ms", "final_ppm",
+             "resyncs", "trims", "trim_ms"]
+    return {"session_id": session_id,
+            "series": [dict(zip(scols, r)) for r in series],
+            "players": [dict(zip(pcols, r)) for r in summary]}
 
 
 def close_all():

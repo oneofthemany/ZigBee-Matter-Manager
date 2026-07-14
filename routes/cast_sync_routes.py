@@ -109,6 +109,39 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             logger.warning(f"sync history query failed: {e}")
             return {"success": False, "error": str(e), "samples": []}
 
+    @app.get("/api/media/sync/sessions")
+    async def sync_sessions(group_id: str = "", days: int = 30):
+        """Session index for the Sync Lab's picker."""
+        import asyncio
+        try:
+            from modules.media import sync_db
+            sessions = await asyncio.to_thread(
+                sync_db.query_sessions, group_id, min(int(days), 90))
+            return {"success": True, "sessions": sessions}
+        except Exception as e:
+            return {"success": False, "error": str(e), "sessions": []}
+
+    @app.get("/api/media/sync/session")
+    async def sync_session_detail(group_id: str = "", session_id: str = ""):
+        """Full series + per-speaker stats for one session (latest if
+        session_id omitted)."""
+        import asyncio
+        try:
+            from modules.media import sync_db
+            if not session_id:
+                sessions = await asyncio.to_thread(
+                    sync_db.query_sessions, group_id, 90)
+                if not sessions:
+                    return {"success": True, "session_id": "",
+                            "series": [], "players": []}
+                session_id = sessions[0]["session_id"]
+            detail = await asyncio.to_thread(
+                sync_db.query_session_detail, group_id, session_id)
+            return {"success": True, **detail}
+        except Exception as e:
+            return {"success": False, "error": str(e),
+                    "series": [], "players": []}
+
     @app.get("/api/media/sync/model")
     async def sync_model():
         """The learned per-device model, trained across all group DBs."""

@@ -9,6 +9,7 @@
 const log = zmmLog('media');
 
 import { confirmDialog } from './dialogs.js';
+import { openSyncLab, restoreSyncLab } from './sync-lab.js';
 
 let _players = [];          // latest PlayerState snapshot
 let _selectedId = null;     // player targeted by search "play"
@@ -89,6 +90,7 @@ export function initMedia() {
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
+    window.mediaSyncLab = (gid) => openSyncLab(gid, _syncGroups.find(g => g.id === gid));
     // Phase 2
     window.mediaSetSource = setSource;
     window.mediaSearch = doSearch;
@@ -1214,6 +1216,8 @@ async function renderSyncPane() {
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
                            title="Play the sync test signal (clicks every 2 s) on all members">
                      <i class="fas fa-play me-1"></i>Test</button>`}
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.mediaSyncLab('${esc(g.id)}')"
+                    title="Sync Lab — session analysis &amp; learned model"><i class="fas fa-wave-square"></i></button>
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
           </div>
@@ -1244,11 +1248,13 @@ async function renderSyncPane() {
             </div>`).join('')}
           <button class="btn btn-sm btn-primary mt-2" onclick="window.mediaSyncCreate()">Create sync group</button>`}
         </div>
-      </div>`;
+      </div>
+      <div id="syncLabHost"></div>`;
 
     // Poll while a session runs so pills + stats stay live (in place — a full
     // re-render would fight an in-progress trim drag).
     for (const d of ((_syncStatus || {}).devices || [])) _syncMeterPaint(d.player_id, d);
+    restoreSyncLab();
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
