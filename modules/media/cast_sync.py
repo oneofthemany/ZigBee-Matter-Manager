@@ -24,6 +24,18 @@ How it works
     corrects clock drift continuously. Per-device manual trim (±ms) covers the
     device's fixed output-pipeline latency.
 
+Fallback stream mode (no Cast console account)
+  * When ``media.cast.sync.app_id`` is EMPTY, sessions run in "stream mode":
+    each device gets the built-in default media receiver (CC1AD845 — no
+    registration, no $5 console fee) pointed at a per-device live WAV stream
+    (``/sync/stream/<sid>.wav``) cut from the same shared timeline. Because
+    the test signal is a pure function of timeline position, the server can
+    seek any device's stream instantly: a monitor polls each device's
+    reported media time, computes its lag against the server clock, and
+    skips/rewinds its stream until all devices converge on a common lag.
+    Coarser than the custom receiver (tens of ms, not sample-accurate) but
+    needs nothing from Google; manual trim does the final alignment by ear.
+
 This is deliberately PoC-scoped: one global session, generated audio only,
 stats surfaced via /api/media/sync/status and the sync_test.html page.
 """
@@ -33,6 +45,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import struct
 import tempfile
 import time
@@ -44,7 +57,7 @@ import numpy as np
 # ``ws: WebSocket`` annotation is a string FastAPI resolves against module
 # globals — imported inside _build_http_app it silently 403s every handshake.
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 logger = logging.getLogger("modules.media.cast_sync")
 
@@ -57,13 +70,21 @@ AHEAD_SECONDS = 1.5      # send each chunk this early (receiver scheduling slack
 BUFFER_CHUNKS = 6        # kept for late joiners
 SYNC_NAMESPACE = "urn:x-cast:zmm.sync"
 
+DEFAULT_APP_ID = "CC1AD845"      # built-in default media receiver (no registration)
+STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
+STREAM_AHEAD_S = 1.2             # serve at most this far ahead of the timeline
+STREAM_LAG_MARGIN_S = 0.35       # common target lag = max natural lag + this
+STREAM_CORRECT_MIN_S = 0.06      # leave errors smaller than this to manual trim
+STREAM_POLL_S = 2.5              # monitor poll interval
+STREAM_COOLDOWN_POLLS = 2        # polls to skip after a jump (client buffer flush)
 
-def _gen_chunk(index: int) -> bytes:
-    """Test-signal PCM for chunk ``index`` — pure function of the absolute
-    sample position, so any receiver joining later gets a bit-identical
-    timeline. Chord pad with a slow swell + a 1 kHz click every 2 s."""
-    n0 = index * CHUNK_FRAMES
-    t = (n0 + np.arange(CHUNK_FRAMES)) / RATE
+
+def _gen_samples(n0: int, frames: int) -> bytes:
+    """Test-signal PCM for ``frames`` samples starting at absolute timeline
+    sample ``n0`` — pure function of the sample position, so any receiver or
+    stream joining/seeking later gets a bit-identical timeline. Chord pad
+    with a slow swell + a 1 kHz click every 2 s."""
+    t = (n0 + np.arange(frames)) / RATE
     sig = (0.10 * np.sin(2 * np.pi * 220.0 * t)
            + 0.08 * np.sin(2 * np.pi * 277.18 * t)
            + 0.08 * np.sin(2 * np.pi * 329.63 * t))
@@ -74,6 +95,21 @@ def _gen_chunk(index: int) -> bytes:
         sig[m] += 0.85 * np.sin(2 * np.pi * 1000.0 * ph[m]) * np.exp(-ph[m] / 0.002)
     s16 = (np.clip(sig, -0.98, 0.98) * 32767).astype("<i2")
     return np.repeat(s16[:, None], CHANNELS, axis=1).tobytes()
+
+
+def _gen_chunk(index: int) -> bytes:
+    """WS-mode framing: fixed CHUNK_FRAMES chunk ``index`` of the timeline."""
+    return _gen_samples(index * CHUNK_FRAMES, CHUNK_FRAMES)
+
+
+def _wav_header() -> bytes:
+    """WAV header for an endless live stream (RIFF/data sizes maxed out —
+    the default receiver treats it as unbounded)."""
+    byte_rate = RATE * CHANNELS * 2
+    return (b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, CHANNELS, RATE,
+                                    byte_rate, CHANNELS * 2, 16)
+            + b"data" + struct.pack("<I", 0xFFFFFFFF))
 
 
 class _SyncMessageController:
@@ -108,6 +144,26 @@ class _Receiver:
         self.connected_at = time.monotonic()
 
 
+class _Stream:
+    """Stream-mode per-device state (the default-receiver counterpart of
+    _Receiver). ``pos`` is the next timeline sample its WAV stream will
+    serve; deliberate jumps (corrections, trim changes) must also be added
+    to ``shift`` so the monitor's position estimate stays consistent."""
+
+    def __init__(self, sid: str, player_id: str, name: str):
+        self.sid = sid
+        self.player_id = player_id
+        self.name = name
+        self.connected = False       # WAV stream currently being consumed
+        self.pos: Optional[int] = None   # next timeline sample to serve
+        self.start_pos: int = 0      # timeline sample of the first PCM byte
+        self.shift: int = 0          # cumulative deliberate jumps (samples)
+        self.natural_lag: Optional[float] = None   # first stable lag (s)
+        self.cooldown: int = 0       # monitor polls to skip after a jump
+        self.resyncs: int = 0
+        self.stats: dict = {}
+
+
 class CastSyncPoc:
     def __init__(self, cast_provider, cfg: dict):
         cfg = cfg or {}
@@ -134,6 +190,10 @@ class CastSyncPoc:
         self._receivers: Dict[str, _Receiver] = {}     # sid -> _Receiver
         self._pending: Dict[str, dict] = {}            # sid -> {player_id, name}
         self._controllers: Dict[str, object] = {}      # cast uuid -> controller
+        # Stream (default-receiver) mode:
+        self._streams: Dict[str, _Stream] = {}         # sid -> _Stream
+        self._monitor: Optional[asyncio.Task] = None
+        self._target_lag: Optional[float] = None       # common lag target (s)
 
     # ------------------------------------------------------------------
     # Lifecycle (called from MediaService)
@@ -164,10 +224,6 @@ class CastSyncPoc:
     # ------------------------------------------------------------------
     async def start_session(self, player_ids: Optional[List[str]] = None,
                             group_id: str = "") -> dict:
-        if not self.app_id:
-            return {"success": False,
-                    "error": "media.cast.sync.app_id not set — register the "
-                             "receiver in the Cast console first (see static/cast/README.md)"}
         if group_id:
             group = self._groups.get(group_id)
             if not group:
@@ -178,13 +234,17 @@ class CastSyncPoc:
         if self.running:
             await self.stop_session()
         self._active_group = group_id
+        stream_mode = not self.app_id   # no registered receiver -> default receiver
 
         self._epoch = time.monotonic()
         self._buffer = []
         self._receivers = {}
+        self._streams = {}
         self._pending = {}
+        self._target_lag = None
         self.running = True
-        self._producer = asyncio.create_task(self._produce())
+        if not stream_mode:
+            self._producer = asyncio.create_task(self._produce())
 
         launched, errors = [], {}
         for pid in player_ids:
@@ -192,13 +252,21 @@ class CastSyncPoc:
             name = self._player_name(pid)
             self._pending[sid] = {"player_id": pid, "name": name}
             try:
-                task = asyncio.create_task(self._launch(pid, sid))
+                if stream_mode:
+                    self._streams[sid] = _Stream(sid, pid, name)
+                    task = asyncio.create_task(self._launch_stream(pid, sid))
+                else:
+                    task = asyncio.create_task(self._launch(pid, sid))
                 self._launch_tasks.append(task)
                 launched.append({"player_id": pid, "name": name, "sid": sid})
             except Exception as e:
                 errors[pid] = str(e)
-        logger.info(f"Cast sync session started for {len(launched)} device(s)")
-        return {"success": True, "launched": launched, "errors": errors}
+        if stream_mode:
+            self._monitor = asyncio.create_task(self._stream_monitor())
+        logger.info(f"Cast sync session started for {len(launched)} device(s) "
+                    f"({'default-receiver stream' if stream_mode else 'custom receiver'} mode)")
+        return {"success": True, "launched": launched, "errors": errors,
+                "mode": "stream" if stream_mode else "receiver"}
 
     async def stop_session(self) -> dict:
         self.running = False
@@ -208,6 +276,10 @@ class CastSyncPoc:
         if self._producer:
             self._producer.cancel()
             self._producer = None
+        if self._monitor:
+            self._monitor.cancel()
+            self._monitor = None
+        self._streams = {}   # generators see running=False and finish
         for r in list(self._receivers.values()):
             try:
                 await r.ws.close()
@@ -232,17 +304,19 @@ class CastSyncPoc:
         devices = []
         for sid, info in self._pending.items():
             r = self._receivers.get(sid)
+            s = self._streams.get(sid)
             devices.append({
                 "sid": sid,
                 "player_id": info["player_id"],
                 "name": info["name"],
-                "connected": r is not None,
+                "connected": (r is not None) or (s is not None and s.connected),
                 "trim_ms": self._trims.get(info["player_id"], 0),
-                "stats": (r.stats if r else {}),
+                "stats": (r.stats if r else (s.stats if s else {})),
             })
         return {
             "running": self.running,
             "configured": bool(self.app_id),
+            "mode": "receiver" if self.app_id else "stream",
             "http_port": self.http_port,
             "group_id": self._active_group,
             "elapsed_s": (time.monotonic() - self._epoch) if self.running else 0,
@@ -251,6 +325,7 @@ class CastSyncPoc:
 
     async def set_trim(self, player_id: str, trim_ms: int) -> dict:
         trim_ms = max(-2000, min(2000, int(trim_ms)))
+        old = self._trims.get(player_id, 0)
         self._trims[player_id] = trim_ms
         self._write_json(self._trims_file, self._trims)
         for r in self._receivers.values():
@@ -259,6 +334,15 @@ class CastSyncPoc:
                     await r.ws.send_json({"type": "trim", "trim_ms": trim_ms})
                 except Exception as e:
                     logger.debug(f"trim push failed for {player_id}: {e}")
+        # Stream mode: positive trim = play later = serve older timeline, so
+        # jump the stream back by the trim delta (and mirror it in ``shift``
+        # so the monitor's position estimate stays consistent).
+        delta = int((trim_ms - old) * RATE / 1000)
+        for s in self._streams.values():
+            if s.player_id == player_id and s.pos is not None:
+                s.pos -= delta
+                s.shift -= delta
+                s.cooldown = STREAM_COOLDOWN_POLLS
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
     # ------------------------------------------------------------------
@@ -345,6 +429,163 @@ class CastSyncPoc:
                            f"(app_id registered? device serial enabled for dev?)")
 
     # ------------------------------------------------------------------
+    # Stream (default-receiver) mode — no Cast console registration needed
+    # ------------------------------------------------------------------
+    def _local_ip_for(self, host: str) -> str:
+        """Our LAN IP as seen from ``host`` (the cast device) — the stream
+        URL must be reachable from the device, not from localhost."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((host, 9))    # no packets sent for UDP connect
+                return s.getsockname()[0]
+            finally:
+                s.close()
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
+
+    async def _launch_stream(self, player_id: str, sid: str):
+        """Point the built-in default media receiver at this device's live
+        WAV stream. One retry, mirroring the provider's cold-start hardening."""
+        uuid_str = player_id.split(":", 1)[1]
+        cast = await self.cast._get_cast(uuid_str)
+        if not cast:
+            logger.warning(f"Sync stream launch: {player_id} unreachable")
+            return
+        host = getattr(getattr(cast, "cast_info", None), "host", None) or \
+            getattr(getattr(cast, "socket_client", None), "host", "")
+        url = (f"http://{self._local_ip_for(host)}:{self.http_port}"
+               f"/sync/stream/{sid}.wav")
+        for attempt in (1, 2):
+            if not self.running:
+                return
+            try:
+                await asyncio.to_thread(self._play_stream, cast, url)
+                logger.info(f"Sync stream playing on {self._pending.get(sid, {}).get('name', player_id)}")
+                return
+            except Exception as e:
+                logger.warning(f"Sync stream launch attempt {attempt} failed "
+                               f"for {player_id}: {e}")
+                await asyncio.sleep(2)
+
+    def _play_stream(self, cast, url: str):
+        cast.wait(timeout=10)
+        mc = cast.media_controller
+        mc.play_media(url, "audio/wav", stream_type="LIVE",
+                      title="ZMM speaker-sync test")
+        mc.block_until_active(timeout=15)
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if mc.status.player_state in ("PLAYING", "BUFFERING"):
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f"media did not start (state={mc.status.player_state})")
+
+    async def _stream_monitor(self):
+        """Converge all stream-mode devices onto a common lag behind the
+        server clock. Each poll reads the default receiver's reported media
+        time; deliberate stream jumps land after the device drains its HTTP
+        buffer, hence the post-jump cooldown."""
+        try:
+            while self.running:
+                await asyncio.sleep(STREAM_POLL_S)
+                lags: Dict[str, float] = {}
+                for sid, st in list(self._streams.items()):
+                    if not st.connected or st.pos is None:
+                        continue
+                    lag = await self._measure_lag(st)
+                    if lag is not None:
+                        lags[sid] = lag
+                if not lags:
+                    continue
+                # Fix the common target from the slowest starter, once. Don't
+                # wait forever for stragglers — after 25 s use whoever reports.
+                if self._target_lag is None:
+                    n_connected = len([s for s in self._streams.values()
+                                       if s.connected])
+                    if (len(lags) < n_connected
+                            and time.monotonic() - self._epoch < 25):
+                        continue     # wait until every connected device reports
+                    self._target_lag = max(lags.values()) + STREAM_LAG_MARGIN_S
+                    logger.info(f"Sync stream target lag: {self._target_lag:.2f}s")
+                for sid, lag in lags.items():
+                    st = self._streams.get(sid)
+                    if st is None:
+                        continue
+                    if st.cooldown > 0:
+                        st.cooldown -= 1
+                        continue
+                    error = lag - self._target_lag   # >0: behind, skip forward
+                    st.stats = {"offset_ms": round(error * 1000),
+                                "rtt_ms": "n/a", "late": 0,
+                                "resyncs": st.resyncs}
+                    if abs(error) > STREAM_CORRECT_MIN_S:
+                        jump = int(error * RATE)
+                        st.pos += jump
+                        st.shift += jump
+                        st.resyncs += 1
+                        st.cooldown = STREAM_COOLDOWN_POLLS
+                        logger.info(f"Sync stream resync {st.name}: "
+                                    f"{error * 1000:+.0f} ms")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Sync stream monitor died: {e}")
+
+    async def _measure_lag(self, st: _Stream) -> Optional[float]:
+        """How far behind the server clock this device's playout is, in
+        seconds, trim excluded. None if no usable media status."""
+        uuid_str = st.player_id.split(":", 1)[1]
+        cast = self.cast._casts.get(uuid_str)
+        if cast is None:
+            return None
+        try:
+            mc = cast.media_controller
+            await asyncio.to_thread(mc.update_status)
+            await asyncio.sleep(0.3)     # let the status push arrive
+            status = mc.status
+            if getattr(status, "player_state", "") != "PLAYING":
+                return None
+            ct = getattr(status, "adjusted_current_time", None)
+            if ct is None:
+                ct = getattr(status, "current_time", None)
+            if not ct or ct <= 0:
+                return None
+        except Exception as e:
+            logger.debug(f"Sync stream status failed for {st.player_id}: {e}")
+            return None
+        now = time.monotonic()
+        played_timeline_s = (st.start_pos + st.shift) / RATE + float(ct)
+        trim_s = self._trims.get(st.player_id, 0) / 1000.0
+        return (now - self._epoch) - played_timeline_s - trim_s
+
+    async def _pcm_stream(self, st: _Stream):
+        """Async generator: endless WAV cut from the shared timeline for one
+        device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
+        st.connected = True
+        logger.info(f"Sync stream opened: {st.name}")
+        try:
+            yield _wav_header()
+            if st.pos is None:
+                trim = int(self._trims.get(st.player_id, 0) * RATE / 1000)
+                st.pos = int((time.monotonic() - self._epoch) * RATE) - trim
+                st.start_pos = st.pos
+            block = int(RATE * STREAM_BLOCK_S)
+            while self.running and self._streams.get(st.sid) is st:
+                ahead = (st.pos - st.shift) / RATE - (time.monotonic() - self._epoch)
+                if ahead > STREAM_AHEAD_S:
+                    await asyncio.sleep(STREAM_BLOCK_S / 2)
+                    continue
+                pos = st.pos
+                st.pos = pos + block
+                yield _gen_samples(pos, block)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            st.connected = False
+            logger.info(f"Sync stream closed: {st.name}")
+
+    # ------------------------------------------------------------------
     # Chunk producer
     # ------------------------------------------------------------------
     async def _produce(self):
@@ -388,6 +629,15 @@ class CastSyncPoc:
         @app.get("/health")
         async def health():
             return {"ok": True, "running": self.running}
+
+        @app.get("/sync/stream/{sid}.wav")
+        async def stream_wav(sid: str):
+            st = self._streams.get(sid)
+            if st is None or not self.running:
+                return Response(status_code=404)
+            return StreamingResponse(self._pcm_stream(st),
+                                     media_type="audio/wav",
+                                     headers={"Cache-Control": "no-store"})
 
         @app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket):

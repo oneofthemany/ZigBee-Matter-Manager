@@ -1110,7 +1110,8 @@ function _syncDeviceInfo(pid) {
 function _syncStatLine(st) {
     const s = st && st.stats;
     if (!s || s.offset_ms == null) return '';
-    return `offset ${s.offset_ms} ms · rtt ${s.rtt_ms} ms · late ${s.late} · resyncs ${s.resyncs}`;
+    const rtt = Number.isFinite(s.rtt_ms) ? ` · rtt ${s.rtt_ms} ms` : '';
+    return `offset ${s.offset_ms} ms${rtt} · late ${s.late} · resyncs ${s.resyncs}`;
 }
 
 function _syncMemberRow(m, groupActive) {
@@ -1148,11 +1149,13 @@ async function renderSyncPane() {
 
     const banner = disabled
         ? `<div class="alert alert-info small py-2">Speaker sync is disabled — enable it under
-             <strong>Settings → Speakers</strong> (one-time Cast receiver registration).</div>`
+             <strong>Settings → Speakers</strong>.</div>`
         : unregistered
-            ? `<div class="alert alert-warning small py-2">Almost there — the sync receiver App ID
-                 is missing. Finish registration under <strong>Settings → Speakers</strong>.
-                 You can already define groups below.</div>`
+            ? `<div class="alert alert-info small py-2">Running in <strong>built-in receiver
+                 mode</strong> — no Cast registration needed. Sync is auto-corrected to within
+                 a few tens of ms; use the trim sliders for the final by-ear alignment.
+                 (Registering a custom receiver under <strong>Settings → Speakers</strong>
+                 upgrades this to sample-accurate sync.)</div>`
             : '';
 
     const groupCards = _syncGroups.map(g => `
@@ -1165,7 +1168,7 @@ async function renderSyncPane() {
             ${g.active
                 ? `<button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
                      <i class="fas fa-stop me-1"></i>Stop test</button>`
-                : `<button class="btn btn-sm btn-outline-primary" ${running || unregistered || disabled ? 'disabled' : ''}
+                : `<button class="btn btn-sm btn-outline-primary" ${running || disabled ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
                            title="Play the sync test signal (clicks every 2 s) on all members">
                      <i class="fas fa-play me-1"></i>Test</button>`}

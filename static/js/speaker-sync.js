@@ -43,8 +43,8 @@ async function render() {
     const live = status && !status.error;          // service constructed = enabled at boot
     const statusBadge = live
         ? (status.configured
-            ? '<span class="badge bg-success">listener running · receiver registered</span>'
-            : '<span class="badge bg-warning text-dark">listener running · App ID missing</span>')
+            ? '<span class="badge bg-success">listener running · custom receiver</span>'
+            : '<span class="badge bg-success">listener running · built-in receiver mode</span>')
         : '<span class="badge bg-secondary">disabled (or not yet restarted)</span>';
 
     host.innerHTML = `
@@ -64,9 +64,11 @@ async function render() {
       <div class="card-body">
         <p class="text-muted small mb-3">
           Play the same audio on several Google Cast speakers in sync <strong>without</strong>
-          creating a group in Google Home. ZigBee Manager streams a server-clocked feed to a
-          custom Cast receiver on each speaker; a per-speaker trim (±ms) lets you align them
-          by ear. Build the groups themselves under <strong>Media → Group</strong>.
+          creating a group in Google Home. Works out of the box using each speaker's
+          <em>built-in</em> receiver (no Cast console account needed) with automatic lag
+          correction; a per-speaker trim (±ms) lets you align them by ear. Build the groups
+          themselves under <strong>Media → Group</strong>. Optionally, registering a custom
+          receiver (below) upgrades sync from ~tens of ms to sample-accurate.
         </p>
         <div class="row g-3 mb-3">
           <div class="col-md-2">
@@ -84,10 +86,11 @@ async function render() {
               WebSocket (Cast devices reject the app's self-signed HTTPS).</small>
           </div>
           <div class="col-md-4">
-            <label class="form-label small fw-semibold">Sync Receiver App ID</label>
+            <label class="form-label small fw-semibold">Sync Receiver App ID <span class="fw-normal text-muted">(optional)</span></label>
             <input type="text" class="form-control" id="cfg_sync_appid"
-                   value="${esc(_cfg.app_id)}" placeholder="e.g. AB12CD34 (blank = not registered)">
-            <small class="text-muted">From the Cast developer console (step 2 below).</small>
+                   value="${esc(_cfg.app_id)}" placeholder="blank = built-in receiver mode">
+            <small class="text-muted">Leave blank to use each speaker's built-in receiver.
+              Fill from the Cast developer console (below) for sample-accurate sync.</small>
           </div>
           <div class="col-md-3">
             <label class="form-label small fw-semibold">Status</label>
@@ -103,9 +106,11 @@ async function render() {
 
     <div class="card shadow-sm">
       <div class="card-header bg-light py-2">
-        <span class="fw-bold"><i class="fas fa-list-check me-1"></i> One-time registration</span>
+        <span class="fw-bold"><i class="fas fa-list-check me-1"></i> Optional: custom-receiver registration (sample-accurate sync)</span>
       </div>
       <div class="card-body small">
+        <p class="text-muted mb-2">Not required — sync works without it. Registration only
+          buys tighter (sample-accurate) alignment via a custom Cast receiver.</p>
         <ol class="mb-2">
           <li class="mb-2">Enable above, <em>Save &amp; Restart</em>, then check the listener
             answers on the LAN:
