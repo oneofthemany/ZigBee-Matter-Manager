@@ -93,6 +93,27 @@ def register_websocket_routes(app: FastAPI):
                         authenticated = True
                         auth_username = verified[0].username
 
+        # First-run gate (mirrors auth_middleware's /api/setup/* window):
+        # while no enabled admin exists, the setup wizard runs anonymously
+        # and needs this WS for live coordinator-scan progress
+        # (setup_scan_progress events). LAN clients only; self-closes the
+        # moment an admin user is created.
+        if not authenticated and auth_mgr:
+            no_admin_yet = not any(
+                (not u.disabled)
+                and ("admins" in u.groups or "admin" in u.extra_scopes)
+                for u in auth_mgr.users.values()
+            )
+            if no_admin_yet:
+                resolver = get_network_resolver()
+                is_lan = True
+                if resolver is not None:
+                    is_lan = resolver.is_lan(resolver.resolve(ws))
+                if is_lan:
+                    authenticated = True
+                    logger.info("WebSocket accepted anonymously (setup phase, "
+                                "no admin user yet, LAN client)")
+
         # LAN-only accounts may not connect from outside the LAN. The
         # resolver duck-types over WebSocket (it only touches .headers
         # and .client, both present on Starlette WebSockets).

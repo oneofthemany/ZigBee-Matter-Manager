@@ -30,7 +30,10 @@ export function initWS() {
         document.getElementById('connection-status').innerHTML =
             '<i class="fas fa-circle text-success"></i> Connected';
 
-        if (!state.isRestarting) {
+        // Skip the refresh fetches while anonymous (first-run setup wizard —
+        // the WS itself is allowed, but /api/devices etc. would just 401).
+        const authed = !window.zmmAuth || window.zmmAuth.whoami();
+        if (!state.isRestarting && authed) {
             fetchAllDevices();
             checkDebugStatus();
             checkHAStatus();  // Check HA status on connect
@@ -45,8 +48,11 @@ export function initWS() {
         updateHAStatus("unknown");
         state.socket = null;  // ← clear so the auth-gated reconnect can fire
 
-        // Only reconnect if still authenticated
-        if (window.zmmAuth && window.zmmAuth.whoami()) {
+        // Only reconnect if still authenticated — or mid first-run setup,
+        // where the wizard runs anonymously but needs the WS for live
+        // coordinator-scan progress (the server allows LAN clients while no
+        // admin user exists yet).
+        if ((window.zmmAuth && window.zmmAuth.whoami()) || window._setupWizardActive) {
             setTimeout(initWS, 3000);
         }
     };
@@ -279,6 +285,10 @@ export function initWS() {
         }
     };
 }
+
+// Non-module hook for the setup wizard (a classic script that can't import
+// this module): connect the WS if it isn't already. Idempotent.
+window.zmmEnsureWS = () => { if (!state.socket) initWS(); };
 
 // Set when the backend reports HA integration is disabled in config, so the
 // generic "unknown" pushed on WebSocket drops doesn't re-show a hidden badge.

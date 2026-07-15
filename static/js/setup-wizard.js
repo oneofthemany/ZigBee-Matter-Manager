@@ -98,11 +98,20 @@
         createOverlay();
         requestAnimationFrame(() => overlay.classList.add('active'));
         wizardVisible = true;
+        // The wizard runs before any principal exists, so main.js's auth-gated
+        // initDashboard() never opens the WebSocket — but the coordinator scan
+        // streams its progress (setup_scan_progress) over it. Connect it
+        // ourselves; the server accepts anonymous LAN clients while no admin
+        // user exists. The flag also keeps websocket.js reconnecting on drops
+        // for as long as the wizard is up.
+        window._setupWizardActive = true;
+        if (window.zmmEnsureWS) window.zmmEnsureWS();
     }
 
     function hide() {
         if (overlay) overlay.classList.remove('active');
         wizardVisible = false;
+        window._setupWizardActive = false;
     }
 
     // =====================================================================
@@ -884,6 +893,10 @@
         currentStep = 2;   // still the Coordinator step while the scan runs
 
         renderScanning();
+
+        // Progress + completion arrive as setup_scan_progress WS events —
+        // make sure the socket is up before kicking the scan off.
+        if (window.zmmEnsureWS) window.zmmEnsureWS();
 
         try {
             const res = await fetch('/api/setup/scan', {
