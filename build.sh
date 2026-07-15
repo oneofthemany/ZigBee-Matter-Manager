@@ -600,6 +600,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         net-tools \
         pkg-config \
         bluez \
+        libportaudio2 \
+        alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Fetch and install Silicon Labs packages matching Bookworm
@@ -992,6 +994,21 @@ SYSCTL
     if [[ -d /dev/bus/usb ]]; then
         run_args+=(-v /dev/bus/usb:/dev/bus/usb)
         ok "Mounted /dev/bus/usb for USB device reset support"
+    fi
+
+    # ── ALSA audio devices for the speaker-sync chirp calibration ──
+    # sounddevice/PortAudio inside the container captures from the mic and plays
+    # the chirp. Passing the whole /dev/snd dir exposes every card at once — the
+    # internal codec AND any USB microphone — so the feature works without
+    # naming a specific device. Podman maps devices at CREATE time, so a USB mic
+    # plugged in AFTER the container starts needs a restart to appear (same as
+    # the serial coordinator). Pick the right capture card with
+    # media.cast.sync.mic_device in config (substring match, e.g. "USB").
+    if [[ -d /dev/snd ]]; then
+        run_args+=(--device /dev/snd)
+        ok "Mounted /dev/snd (mic capture + playback for speaker-sync chirp)"
+    else
+        info "No /dev/snd on host — speaker-sync chirp mic capture will be unavailable"
     fi
 
     # ── Container-runtime socket passthrough (for local AI / Ollama) ──
