@@ -2,11 +2,14 @@
    Setup Wizard — Multi-Step First-Run Configuration
    ============================================================================
 
-   Steps:
+   Steps (coordinator FIRST, account LAST — the anonymous /api/setup/* window is
+   LAN + no-admin-yet, so creating the admin first would lock the coordinator
+   scan out on any resume):
      1. Coordinator Detection  — auto-detect Zigbee USB adapter
      2. Integration Mode       — Standalone vs Home Assistant
      3. MQTT Configuration     — broker details (HA mode only)
-     4. Summary & Apply        — review and write config
+     4. Summary & Apply        — review and write config (sets setup_completed)
+     5. Admin Account          — create the first admin (deferred to the end)
 
    Listens for WebSocket events: "setup_scan_progress"
    API endpoints:
@@ -34,6 +37,12 @@
     // exists (e.g. someone manually wiped users to recover from a forgotten
     // bootstrap password).
     let recoveryMode = false;
+    // First-run creates the admin account as the LAST step (after the coordinator
+    // is set up and config applied), not the first. This keeps the anonymous
+    // /api/setup/* window (LAN + no-admin-yet) open for coordinator detection —
+    // creating the admin first flips that gate shut and locks the coordinator
+    // scan out on any resume. When true, the Account step is still owed.
+    let accountPending = false;
 
     // Collected config across steps
     let wizardConfig = {
@@ -114,30 +123,33 @@
             `;
         }
 
+        // Coordinator first, Account last. `num` matches the internal currentStep
+        // value each screen sets (coordinator=2 … summary=5, account=6); the dot
+        // shows the sequential position so the user still sees 1..N.
         const steps = [
-            { num: 1, label: 'Account' },
             { num: 2, label: 'Coordinator' },
             { num: 3, label: 'Integration' },
             { num: 4, label: 'MQTT' },
             { num: 5, label: 'Summary' },
+            { num: 6, label: 'Account' },
         ];
+
+        // Skip the MQTT indicator in standalone mode.
+        const visible = steps.filter(s =>
+            !(s.num === 4 && wizardConfig.integrationMode === 'standalone'));
 
         return `
             <div class="setup-steps mb-4">
-                ${steps.map(s => {
+                ${visible.map((s, i) => {
                     const state = s.num < currentStep ? 'completed'
                                 : s.num === currentStep ? 'active'
                                 : 'pending';
-                    // Skip MQTT (step 4) indicator in standalone mode
-                    if (s.num === 4 && wizardConfig.integrationMode === 'standalone') {
-                        return '';
-                    }
                     return `
                         <div class="setup-step ${state}">
                             <div class="step-dot">
                                 ${state === 'completed'
                                     ? '<i class="fas fa-check"></i>'
-                                    : s.num}
+                                    : (i + 1)}
                             </div>
                             <div class="step-label">${s.label}</div>
                         </div>
@@ -215,9 +227,10 @@
             });
 
             if (r.status === 409) {
-                // Admin already exists — skip past this step
-                currentStep = 2;
-                renderStep2Welcome('', '');
+                // Admin already exists — nothing more to do; setup is complete.
+                accountPending = false;
+                hide();
+                window.location.reload();
                 return;
             }
             if (!r.ok) {
@@ -225,22 +238,15 @@
                 return showError(e.detail || `Create failed (HTTP ${r.status})`);
             }
 
-            // Refresh the auth principal so main.js can init the dashboard
-            // once the wizard finishes (without a full page reload).
+            // Account creation is the FINAL step (coordinator + config were
+            // already applied, or this is the recovery flow). Refresh the auth
+            // principal, then close and reload so the dashboard takes over.
+            accountPending = false;
             if (window.zmmAuth && window.zmmAuth.refresh) {
                 try { await window.zmmAuth.refresh(); } catch (_) {}
             }
-
-            // Recovery mode: everything else was already configured. Close
-            // the wizard and reload so the dashboard takes over cleanly.
-            if (recoveryMode) {
-                hide();
-                window.location.reload();
-                return;
-            }
-
-            currentStep = 2;
-            renderStep2Welcome('', '');
+            hide();
+            window.location.reload();
         } catch (e) {
             showError('Network error: ' + e.message);
         }
@@ -793,6 +799,14 @@
     }
 
     function renderApplySuccess() {
+        // Config is written (setup_completed=true). If we still owe an admin
+        // account, that is the FINAL step — do it now, while the app is
+        // configured but before handing over to the dashboard.
+        if (accountPending) {
+            currentStep = 6;
+            renderStep1Account();
+            return;
+        }
         const el = getContent();
         el.innerHTML = `
             <div class="text-center py-3">
@@ -867,7 +881,7 @@
         scanning = true;
         scanResults = [];
         selectedResult = null;
-        currentStep = 1;
+        currentStep = 2;   // still the Coordinator step while the scan runs
 
         renderScanning();
 
@@ -1231,18 +1245,21 @@
 
             show();
 
-            if (needsAdmin) {
-                // Recovery scenario: setup was previously completed (config is
-                // fine, port is fine) but the admin user is gone. Run *only*
-                // the Account step and exit — no need to redo coordinator,
-                // integration or MQTT.
-                recoveryMode = (data.reason === 'no_admin_user');
-                currentStep = 1;
+            // Recovery scenario: setup was previously completed (config + port
+            // are fine) but the admin user is gone. Run *only* the Account step
+            // and exit — no need to redo coordinator, integration or MQTT.
+            if (needsAdmin && data.reason === 'no_admin_user') {
+                recoveryMode = true;
+                currentStep = 6;
                 renderStep1Account();
                 return;
             }
 
-            // Admin exists — resume from the appropriate later step.
+            // First run (or resuming coordinator/integration/MQTT). Go COORDINATOR
+            // FIRST; if an admin still needs creating, defer it to the final step
+            // (appended after config is applied) rather than gating the whole
+            // wizard behind it.
+            accountPending = needsAdmin;
             if (data.reason === 'mqtt_not_configured') {
                 // Pre-fill coordinator info, jump to integration step
                 wizardConfig.coordinator = { port: data.current_port };
