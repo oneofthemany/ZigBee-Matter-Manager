@@ -191,29 +191,41 @@ MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"
 MANAGER_CONTAINER_NAME="${CONTAINER_NAME}-manager"   # sidecar; runs the app image as `python -m manager`
 
 # =============================================================================
-# PRE-FLIGHT: dialout group membership
+# PRE-FLIGHT: ensure the data directory exists and is writable
 # =============================================================================
-check_dialout_group() {
-    # Container runs as root so device access inside is guaranteed.
-    # We still detect the group for informational purposes and to help
-    # the host user manage the container (e.g. podman exec).
-    local serial_group=""
-    if getent group dialout &>/dev/null; then
-        serial_group="dialout"
-    elif getent group uucp &>/dev/null; then
-        serial_group="uucp"
-    else
-        warn "No dialout or uucp group found on this system."
+# DATA_DIR defaults to /opt/.zigbee-matter-manager — a root-owned location. When
+# the installer is run as an unprivileged user (the common `curl | bash` case,
+# where even `sudo curl | bash` leaves *bash* running unprivileged), a plain
+# `mkdir` under /opt fails with "Permission denied". Create it with sudo up
+# front and hand ownership to the invoking user so every later user-context
+# step — git clone, the mkdir -p calls, rootless podman volume writes — just
+# works without sprinkling sudo through the rest of the script.
+ensure_data_dir() {
+    # Owner of the tree: the unprivileged user that runs podman and the rest of
+    # this script. Under sudo that's $SUDO_USER; otherwise whoever invoked us.
+    local owner="${SUDO_USER:-$CURRENT_USER}"
+
+    if [[ -d "$DATA_DIR" && -w "$DATA_DIR" ]]; then
+        ok "Data directory present and writable: ${BOLD}${DATA_DIR}${NC}"
         return 0
     fi
 
-    DIALOUT_GID=$(getent group "$serial_group" | cut -d: -f3)
-    ok "Serial device group: ${BOLD}${serial_group}${NC} (GID ${DIALOUT_GID})"
-
-    if ! id -nG "$USER" 2>/dev/null | grep -qw "$serial_group"; then
-        warn "User ${BOLD}${USER}${NC} is NOT in ${BOLD}${serial_group}${NC}."
-        warn "Not required for the container, but recommended for host-side device access."
+    local SUDO=""
+    if [[ "$(id -u)" -ne 0 ]]; then
+        command -v sudo &>/dev/null || die \
+            "Cannot create ${DATA_DIR}: not root and sudo is unavailable. Re-run as root."
+        SUDO="sudo"
     fi
+
+    info "Creating data directory ${BOLD}${DATA_DIR}${NC} (owner: ${owner}) ..."
+    $SUDO mkdir -p "$DATA_DIR" || die "Failed to create ${DATA_DIR}"
+    # Non-recursive: only the top dir needs re-owning on a fresh install; the
+    # user creates everything beneath it. (chgrp may not match the username, so
+    # fall back to just the user if the matching group doesn't exist.)
+    $SUDO chown "${owner}:${owner}" "$DATA_DIR" 2>/dev/null \
+        || $SUDO chown "${owner}" "$DATA_DIR" 2>/dev/null \
+        || warn "Could not chown ${DATA_DIR} to ${owner} — later steps may need sudo."
+    ok "Data directory ready: ${BOLD}${DATA_DIR}${NC}"
 }
 
 # =============================================================================
@@ -1175,8 +1187,8 @@ echo
 
 step_announce "Pre-flight checks"
 check_deps
-check_dialout_group
 detect_runtime
+ensure_data_dir
 
 step_announce "Fetch repository"
 fetch_repo
