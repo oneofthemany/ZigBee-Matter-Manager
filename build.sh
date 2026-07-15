@@ -600,9 +600,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         net-tools \
         pkg-config \
         bluez \
-        usbutils \
-        libportaudio2 \
-        alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Fetch and install Silicon Labs packages matching Bookworm
@@ -724,6 +721,17 @@ DOCKERFILE_NOAPPENDER
 
     # Part 3 — application source and final image config (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_BOTTOM'
+
+# Lightweight runtime extras — deliberately a LATE, separate apt layer so adding
+# them never invalidates the heavy SDK/OTBR/pip layers above (which would force
+# the 15-25 min OTBR recompile AND re-hit the rate-limited SiliconLabs GitHub
+# API). usbutils=lsusb for coordinator auto-detection; libportaudio2=PortAudio
+# runtime for the speaker-sync chirp; alsa-utils=arecord/aplay for audio debug.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        usbutils \
+        libportaudio2 \
+        alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
 
 # cloudflared — static Go binary for the managed remote-access tunnel
 # (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
