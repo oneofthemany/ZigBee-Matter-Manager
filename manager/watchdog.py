@@ -144,12 +144,33 @@ def _upgrade_in_progress() -> bool:
         return False
 
 
+def alt_scheme_url(url: str) -> str:
+    """Same URL with http<->https swapped (the app may serve either)."""
+    if url.startswith("https://"):
+        return "http://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "https://" + url[len("http://"):]
+    return url
+
+
 async def _healthy(http: httpx.AsyncClient) -> bool:
-    try:
-        r = await http.get(APP_HEALTH_URL)
-        return r.status_code == 200
-    except Exception:
-        return False
+    # Try the configured URL, then the other scheme. The app normally serves
+    # HTTPS but runs plain HTTP in some states (e.g. before a self-signed cert
+    # exists on first run). A scheme mismatch must NOT be read as "unhealthy" —
+    # otherwise the watchdog restarts a perfectly healthy app on a loop
+    # (~STARTUP_GRACE + FAIL_THRESHOLD*INTERVAL after every boot).
+    urls = [APP_HEALTH_URL]
+    alt = alt_scheme_url(APP_HEALTH_URL)
+    if alt != APP_HEALTH_URL:
+        urls.append(alt)
+    for url in urls:
+        try:
+            r = await http.get(url)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def _check_app(http: httpx.AsyncClient, t: Dict[str, int]):

@@ -46,16 +46,30 @@ app = FastAPI(title="ZMM Manager", docs_url=None, redoc_url=None, openapi_url=No
 
 
 async def _app_health() -> dict:
+    # Try the configured URL, then the other scheme — the app serves HTTPS
+    # normally but plain HTTP in some states (e.g. before a cert exists), and a
+    # scheme mismatch shouldn't read as "down". Mirrors watchdog._healthy.
+    urls = [APP_HEALTH_URL]
+    alt = watchdog.alt_scheme_url(APP_HEALTH_URL)
+    if alt != APP_HEALTH_URL:
+        urls.append(alt)
+    last_err = None
     try:
         async with httpx.AsyncClient(verify=False, timeout=5.0) as cx:
-            r = await cx.get(APP_HEALTH_URL)
-            body = None
-            if r.headers.get("content-type", "").startswith("application/json"):
+            for url in urls:
                 try:
-                    body = r.json()
-                except Exception:
-                    body = None
-            return {"ok": r.status_code == 200, "status_code": r.status_code, "body": body}
+                    r = await cx.get(url)
+                except Exception as e:
+                    last_err = str(e)
+                    continue
+                body = None
+                if r.headers.get("content-type", "").startswith("application/json"):
+                    try:
+                        body = r.json()
+                    except Exception:
+                        body = None
+                return {"ok": r.status_code == 200, "status_code": r.status_code, "body": body}
+        return {"ok": False, "error": last_err or "unreachable"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
