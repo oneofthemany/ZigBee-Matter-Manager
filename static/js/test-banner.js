@@ -106,9 +106,10 @@
             .then(function (d) {
                 if (d.pending) {
                     render(typeof d.remaining === 'number' ? d.remaining : 120);
-                } else if (d.auth_required && attempt < RETRIES) {
-                    setTimeout(function () { check(attempt + 1); }, RETRY_DELAY);
                 }
+                // Not pending → nothing to show; stop. We only start polling
+                // once authenticated (see startWhenAuthed), so a stray
+                // auth_required here is a transient race — don't loop on it.
             })
             .catch(function () {
                 if (attempt < RETRIES) {
@@ -119,9 +120,30 @@
 
     window.zmmTestBanner = { stop: stop };
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function () { check(0); });
-    } else {
+    // The banner only reports on an in-progress *authenticated* editor test
+    // deploy. Polling /api/editor/test-status while anonymous (the login page or
+    // the first-run setup wizard) just spams 401s, so gate the first poll on a
+    // real principal. zmmAuth.onChange fires on boot (null when anonymous) and
+    // again after a successful login, so the banner still appears post-login.
+    var started = false;
+    function startWhenAuthed() {
+        if (started) return;
+        var auth = window.zmmAuth;
+        if (auth && typeof auth.onChange === 'function') {
+            auth.onChange(function (principal) {
+                if (principal && !started) { started = true; check(0); }
+            });
+            return;
+        }
+        // Escape hatch: auth.js is absent (e.g. a broken test deploy killed the
+        // module graph) — poll directly so Confirm/Rollback still works.
+        started = true;
         check(0);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startWhenAuthed);
+    } else {
+        startWhenAuthed();
     }
 })();
