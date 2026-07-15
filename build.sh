@@ -770,15 +770,46 @@ DOCKERFILE_BOTTOM
 # =============================================================================
 # BUILD IMAGE
 # =============================================================================
+# The base image the Containerfile FROMs. Keep in sync with write_containerfile().
+BASE_IMAGE="python:3.11-slim-bookworm"
+
+# True if the base image is already in local storage (under any of the names
+# podman/docker may have stored it as).
+base_image_present() {
+    local n
+    for n in "$BASE_IMAGE" \
+             "docker.io/library/${BASE_IMAGE}" \
+             "docker.io/${BASE_IMAGE}"; do
+        "$RUNTIME" image inspect "$n" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
 build_image() {
     local log_file="${ZMM_BUILD_LOG:-/tmp/zmm-build-$$.log}"
     local rc=0
+
+    # Decide the base-image pull policy. During dev / partial rebuilds the
+    # bookworm base is usually already local and fine to reuse — don't let the
+    # builder phone Docker Hub for it (needless network, and anonymous-pull rate
+    # limits show up as confusing "login"/auth errors). podman defaults can
+    # re-check the registry, so we pin the policy explicitly. docker's default
+    # already reuses a local base and only pulls when missing, so it needs no flag.
+    local -a pull_args=()
+    if base_image_present; then
+        ok "Base image ${BOLD}${BASE_IMAGE}${NC} already in local storage — reusing it (no pull)"
+        [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=never)
+    else
+        info "Base image ${BASE_IMAGE} not in local storage — it will be pulled once"
+        [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=missing)
+    fi
 
     info "Building image ${BOLD}${IMAGE_NAME}${NC} with ${BUILD_JOBS} parallel jobs ..."
     info "(progress shown below; full build output saved to ${log_file})"
 
     # set -o pipefail propagates podman's exit code through the pipe.
     "$RUNTIME" build \
+        "${pull_args[@]}" \
         --format docker \
         --build-arg BUILD_JOBS="${BUILD_JOBS}" \
         --tag "${IMAGE_NAME}:latest" \
