@@ -1465,7 +1465,12 @@ class ZigbeeInterrogator:
             pid = p.pid or 0
 
             if vid == 0 and pid == 0:
-                # Non-USB port — only keep ttyAMA (Raspberry Pi GPIO → RaspBee)
+                # No USB descriptor from pyserial. This is normal for the RPi
+                # GPIO UART, but ALSO for a USB coordinator inside a container:
+                # `--device /dev/ttyACM0` exposes the node but not the sysfs USB
+                # metadata, so pyserial reports vid/pid as None. Keep ttyAMA
+                # (GPIO → RaspBee) AND ttyACM*/ttyUSB* (a real USB serial device
+                # worth probing) rather than discarding them.
                 if "ttyAMA" in p.device:
                     candidates.append({
                         "port": p.device, "vid": 0, "pid": 0,
@@ -1474,6 +1479,16 @@ class ZigbeeInterrogator:
                     })
                     seen_ports.add(p.device)
                     line = f"? {p.device} — GPIO UART (possible RaspBee)"
+                    print(f"  │ {line:<{col_w}}│")
+                elif "ttyACM" in p.device or "ttyUSB" in p.device:
+                    candidates.append({
+                        "port": p.device, "vid": 0, "pid": 0,
+                        "description": p.product or p.description
+                                       or "USB serial (no descriptor in container)",
+                        "likely_family": None, "priority": 2,
+                    })
+                    seen_ports.add(p.device)
+                    line = f"? {p.device} — USB serial (no USB descriptor)"
                     print(f"  │ {line:<{col_w}}│")
                 continue
 

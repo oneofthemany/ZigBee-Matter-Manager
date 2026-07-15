@@ -600,6 +600,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         net-tools \
         pkg-config \
         bluez \
+        usbutils \
         libportaudio2 \
         alsa-utils \
     && rm -rf /var/lib/apt/lists/*
