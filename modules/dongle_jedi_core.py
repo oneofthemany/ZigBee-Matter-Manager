@@ -484,6 +484,7 @@ class EZSPProbe:
                     ("10C4", "8A2A"): "Nortek HUSBZB-1 (dual Zigbee/Z-Wave)",
                     ("1CF1", "0030"): "Dresden Elektronik ConBee II",
                     ("1A86", "55D4"): "SkyConnect / Nabu Casa",
+                    ("303A", "831A"): "Nabu Casa Home Assistant Connect ZBT-2 (EFR32MG21)",
                     ("1A86", "7523"): "CH340 based Zigbee adapter",
                     ("0403", "6015"): "FTDI FT230X based adapter",
                     ("0403", "6001"): "FTDI FT232 based adapter",
@@ -1263,6 +1264,8 @@ class ZigbeeInterrogator:
         (0x10C4, 0x8A2A): ("ezsp",   "Nortek HUSBZB-1 (Zigbee/Z-Wave)"),
         # Nabu Casa SkyConnect
         (0x1A86, 0x55D4): ("ezsp",   "Nabu Casa SkyConnect (CH9102)"),
+        # Nabu Casa Home Assistant Connect ZBT-2 (ESP32-S3 USB bridge → EFR32MG21)
+        (0x303A, 0x831A): ("ezsp",   "Nabu Casa Home Assistant Connect ZBT-2"),
         # Dresden Elektronik — ConBee / RaspBee
         (0x1CF1, 0x0030): ("conbee", "Dresden Elektronik ConBee II"),
         (0x0403, 0x6015): (None,     "FTDI FT230X (ConBee I / Tube's / other)"),

@@ -101,7 +101,10 @@ The first install also sets up the **in-app upgrade watcher** (a small host-side
 - Linux (Ubuntu/Debian recommended)
 - Python 3.8+
 - An MQTT broker (e.g. Mosquitto) - for Home Assistant support
-- A supported Zigbee coordinator (EZSP, ZNP USB stick)
+- A supported Zigbee coordinator (auto-detected on first boot). Recognised families:
+  - **EZSP / EmberZNet** (Silicon Labs EFR32) — e.g. **Nabu Casa Home Assistant Connect ZBT-2**, **Nabu Casa SkyConnect**, Sonoff Zigbee Dongle Plus-E, Elelabs, Nortek HUSBZB-1, CP210x-based sticks
+  - **ZNP / Z-Stack** (Texas Instruments CC2531 / CC2538 / CC2652, Electrolama zzh)
+  - **deCONZ** (Dresden Elektronik ConBee II / III, RaspBee)
 - **Optional for Matter:** `python-matter-server[server]` pip package, IPv6-enabled network
 
 ---
