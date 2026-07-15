@@ -130,19 +130,23 @@ _end_block() {
     (( _LINES_DRAWN > 0 )) && { printf '\n' >&2; _LINES_DRAWN=0; }
 }
 
-# Compose both lines from the current state and repaint.
+# Compose both lines from the current state and repaint. An elapsed-seconds
+# timer (sub_idle) is shown right after the spinner/percent — BEFORE the text so
+# it survives truncation — whenever a step has gone quiet, proving liveness
+# during long silent phases (dpkg unpacking a big package, a stalled download).
 _render() {
     local mpct=0; (( total > 0 )) && mpct=$(( current * 100 / total ))
     local cached_suffix=""; (( cached > 0 )) && cached_suffix=" ${cached} cached"
+    local idle_str=""; (( sub_idle > 2 )) && idle_str=" (${sub_idle}s)"
     local l1 l2=""
     printf -v l1 "  [%s] %3d%% step %d/%d%s" \
         "$(_bar_str "$current" "$total" 22)" "$mpct" "$current" "$total" "$cached_suffix"
     if (( sub_active )); then
         if (( sub_percent >= 0 )); then
-            printf -v l2 "   └ [%s] %3d%% %s" \
-                "$(_bar_str "$sub_percent" 100 18)" "$sub_percent" "$sub_text"
+            printf -v l2 "   └ [%s] %3d%%%s %s" \
+                "$(_bar_str "$sub_percent" 100 18)" "$sub_percent" "$idle_str" "$sub_text"
         else
-            printf -v l2 "   └ %s %s" "${SPIN[$spin_idx]}" "$sub_text"
+            printf -v l2 "   └ %s%s %s" "${SPIN[$spin_idx]}" "$idle_str" "$sub_text"
         fi
     fi
     # Keep each line to one physical row (char count == display cols here).
@@ -164,66 +168,82 @@ build_progress_filter() {
     fi
 
     local current=0 total=0 cached=0 last_op=""
-    local sub_active=0 sub_percent=-1 sub_text=""
-    local spin_idx=0 _LINES_DRAWN=0
+    local sub_active=0 sub_percent=-1 sub_text="" sub_idle=0
+    local spin_idx=0 _LINES_DRAWN=0 last_line_at=$SECONDS
     local -a SPIN=('|' '/' '-' '\')
     local TERM_W; TERM_W=$(tput cols 2>/dev/null || echo 80)
     (( TERM_W < 40 )) && TERM_W=80
 
-    local line
-    while IFS= read -r line; do
-        # Always log everything (raw)
-        printf '%s\n' "$line" >> "$log_file"
-        # Collapse CR-updated progress (git/apt redraw a line with \r) to its
-        # final segment so we render the latest value, not the whole history.
-        line="${line##*$'\r'}"
+    local line rc
+    # -t 1: wake at least once a second even with no new output, so the spinner
+    # and elapsed timer keep moving during long silent build phases (the display
+    # otherwise only repaints when podman emits a line and looks hung). Keep the
+    # read in the `if` condition — never `! read`, which clobbers $? so a timeout
+    # (rc>128) can't be told apart from EOF — and handle the no-line case in the
+    # matching `else`.
+    while true; do
+        if IFS= read -r -t 1 line; then
+            # Got a real line: reset the idle timer up front so the `continue`s
+            # below don't skip it.
+            last_line_at=$SECONDS
+            sub_idle=0
+            # Always log everything (raw)
+            printf '%s\n' "$line" >> "$log_file"
+            # Collapse CR-updated progress (git/apt redraw a line with \r) to
+            # its final segment so we render the latest value, not the history.
+            line="${line##*$'\r'}"
 
-        if [[ "$line" =~ ^STEP\ ([0-9]+)/([0-9]+):\ (.*)$ ]]; then
-            current="${BASH_REMATCH[1]}"; total="${BASH_REMATCH[2]}"
-            last_op="${BASH_REMATCH[3]}"
-            last_op="${last_op#RUN }"; last_op="${last_op#COPY }"
-            last_op="${last_op#FROM }"; last_op="${last_op#ENV }"
-            # New step: reset sub-progress, seed the sub-line with the step's op.
-            sub_active=1; sub_percent=-1; sub_text="$last_op"
-            _render
-            continue
-        fi
-        if [[ "$line" == *"Using cache"* ]]; then
-            cached=$((cached + 1)); _render; continue
-        fi
-        if [[ "$line" == "Successfully tagged"* || "$line" == COMMIT* ]]; then
-            current="$total"; sub_active=0; _render; continue
-        fi
-        if [[ "$line" =~ ^Error|^ERROR ]]; then
-            _end_block; printf '%s\n' "$line" >&2; continue
-        fi
-
-        # ── Sub-progress WITHIN the current step ──────────────────────────────
-        if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\](.*)$ ]]; then
-            # ninja: "[132/487] Building CXX object ..."
-            local _n="${BASH_REMATCH[1]}" _m="${BASH_REMATCH[2]}"
-            (( _m > 0 )) && sub_percent=$(( _n * 100 / _m ))
-            sub_text="${BASH_REMATCH[3]# }"
-        elif [[ "$line" =~ ^\[\ *([0-9]+)%\](.*)$ ]]; then
-            # cmake/make: "[ 42%] Building ..."
-            sub_percent="${BASH_REMATCH[1]}"; sub_text="${BASH_REMATCH[2]# }"
-        elif [[ "$line" =~ (Receiving objects|Resolving deltas|Compressing objects|Counting objects|Unpacking objects):\ *([0-9]+)% ]]; then
-            # git clone / submodule fetch
-            sub_percent="${BASH_REMATCH[2]}"; sub_text="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ Progress:\ *\[\ *([0-9]+)%\] ]]; then
-            # apt-get progress meter
-            sub_percent="${BASH_REMATCH[1]}"; sub_text="installing packages"
-        elif [[ -n "${line//[[:space:]]/}" ]]; then
-            # Any other non-blank line = liveness (pip "Collecting…", compiler
-            # output, etc). Keep the last percent, refresh text + spinner.
-            sub_text="$line"
+            if [[ "$line" =~ ^STEP\ ([0-9]+)/([0-9]+):\ (.*)$ ]]; then
+                current="${BASH_REMATCH[1]}"; total="${BASH_REMATCH[2]}"
+                last_op="${BASH_REMATCH[3]}"
+                last_op="${last_op#RUN }"; last_op="${last_op#COPY }"
+                last_op="${last_op#FROM }"; last_op="${last_op#ENV }"
+                # New step: reset sub-progress, seed the sub-line with its op.
+                sub_active=1; sub_percent=-1; sub_text="$last_op"
+                _render
+            elif [[ "$line" == *"Using cache"* ]]; then
+                cached=$((cached + 1)); _render
+            elif [[ "$line" == "Successfully tagged"* || "$line" == COMMIT* ]]; then
+                current="$total"; sub_active=0; _render
+            elif [[ "$line" =~ ^Error|^ERROR ]]; then
+                _end_block; printf '%s\n' "$line" >&2
+            # ── Sub-progress WITHIN the current step ──────────────────────────
+            elif [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\](.*)$ ]]; then
+                # ninja: "[132/487] Building CXX object ..."
+                local _n="${BASH_REMATCH[1]}" _m="${BASH_REMATCH[2]}"
+                (( _m > 0 )) && sub_percent=$(( _n * 100 / _m ))
+                sub_text="${BASH_REMATCH[3]# }"
+                sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
+            elif [[ "$line" =~ ^\[\ *([0-9]+)%\](.*)$ ]]; then
+                # cmake/make: "[ 42%] Building ..."
+                sub_percent="${BASH_REMATCH[1]}"; sub_text="${BASH_REMATCH[2]# }"
+                sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
+            elif [[ "$line" =~ (Receiving objects|Resolving deltas|Compressing objects|Counting objects|Unpacking objects):\ *([0-9]+)% ]]; then
+                # git clone / submodule fetch
+                sub_percent="${BASH_REMATCH[2]}"; sub_text="${BASH_REMATCH[1]}"
+                sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
+            elif [[ "$line" =~ Progress:\ *\[\ *([0-9]+)%\] ]]; then
+                # apt-get progress meter
+                sub_percent="${BASH_REMATCH[1]}"; sub_text="installing packages"
+                sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
+            elif [[ -n "${line//[[:space:]]/}" ]]; then
+                # Any other non-blank line = liveness (pip "Collecting…",
+                # compiler output, dpkg "Unpacking…"). Keep the last percent,
+                # refresh text + spinner.
+                sub_text="$line"
+                sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
+            fi
+            # (blank lines fall through with no render)
         else
-            continue   # blank line — nothing to show
+            rc=$?
+            (( rc > 128 )) || break     # >128 = read timeout; else EOF → done
+            # No output this second — animate liveness while a step is running.
+            if (( sub_active )); then
+                sub_idle=$(( SECONDS - last_line_at ))
+                spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} ))
+                _render
+            fi
         fi
-
-        sub_active=1
-        spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} ))
-        _render
     done
 
     _end_block
