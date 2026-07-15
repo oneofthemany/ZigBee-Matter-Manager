@@ -201,177 +201,18 @@ else
 fi
 
 # ── Mechanism selection ──────────────────────────────────────────────────────
-# Prefer user systemd (rootless-friendly), fall back to system systemd, then polling.
-USE_SYSTEMD_USER=false
+# System systemd (root) when available, else a polling fallback. There is no
+# rootless / `systemctl --user` path: ZMM always runs rootful (the Zigbee USB
+# coordinator and OTBR need root), so the watcher and its workers run as root
+# system units too.
 USE_SYSTEMD_SYSTEM=false
 USE_POLLING=false
 
 if command -v systemctl >/dev/null 2>&1; then
-    if [[ "$(id -u)" -eq 0 ]]; then
-        USE_SYSTEMD_SYSTEM=true
-    elif systemctl --user status >/dev/null 2>&1; then
-      USE_SYSTEMD_USER=true
-    else
-        USE_POLLING=true
-    fi
+    USE_SYSTEMD_SYSTEM=true
 else
     USE_POLLING=true
 fi
-
-# ── systemd user: path unit + service unit ───────────────────────────────────
-install_systemd_user() {
-    local unit_dir="/opt/.config/systemd/user"
-    mkdir -p "$unit_dir"
-
-    cat > "$unit_dir/zmm-upgrade.service" <<SERVICE
-[Unit]
-Description=ZMM Upgrade Worker (oneshot)
-# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
-# (read by upgrade.sh's self_heal_helpers; bump install_watcher.sh's
-#  WATCHER_SCHEMA_VERSION constant when changing helper-script behaviour)
-After=default.target
-# If we burn through the start limit, recover automatically after 10 minutes
-StartLimitIntervalSec=600
-StartLimitBurst=20
-
-[Service]
-Type=oneshot
-# CRITICAL: the watcher starts the app + manager containers as its children.
-# With the default KillMode=control-group, systemd kills every process left in
-# this service's cgroup — including the containers' conmon — the instant the
-# oneshot exits, so both containers die (exit 0) seconds after a successful
-# swap. KillMode=process makes systemd reap only the main upgrade.sh process on
-# exit and leave the containers (conmon reparented) running.
-KillMode=process
-ExecStart=${SCRIPTS_DIR}/upgrade.sh
-Environment=ZMM_DATA_DIR=${DATA_DIR}
-Environment=ZMM_APP_DIR=${APP_DIR}
-# Ensure the user's PATH includes common runtime locations
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# A trigger that produces a non-zero exit (e.g. malformed) should not be
-# treated as a failure that prevents the next run. Treat any exit as success.
-SuccessExitStatus=0 1 2 3
-# A full image build takes 15-25 min on ARM. Default oneshot timeout would
-# kill the build mid-flight and leave the lock dangling. Disable it.
-TimeoutStartSec=infinity
-
-[Install]
-WantedBy=default.target
-SERVICE
-
-    cat > "$unit_dir/zmm-upgrade.path" <<PATHUNIT
-[Unit]
-Description=Watch for ZMM upgrade triggers
-
-[Path]
-# PathChanged fires once when the trigger file is closed after writing.
-# (Unlike PathExists, this does NOT retrigger while the file remains.)
-# Note: do NOT add MakeDirectory=true here — that would cause systemd to
-# create the trigger path as a directory, breaking everything.
-PathChanged=${UPGRADE_DIR}/trigger
-Unit=zmm-upgrade.service
-
-[Install]
-WantedBy=default.target
-PATHUNIT
-
-    if $HAVE_OS_UPDATES; then
-        cat > "$unit_dir/zmm-os-updates.service" <<SERVICE
-[Unit]
-Description=ZMM OS Updates Collector (oneshot, read-only)
-# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${SCRIPTS_DIR}/os_updates.sh
-Environment=ZMM_DATA_DIR=${DATA_DIR}
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-SuccessExitStatus=0 1 2 3
-# Metadata refresh can be slow on tiny boards; don't let a hang pile up.
-TimeoutStartSec=900
-SERVICE
-
-        cat > "$unit_dir/zmm-os-updates.timer" <<TIMER
-[Unit]
-Description=Periodic ZMM OS update check
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=6h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-TIMER
-
-        cat > "$unit_dir/zmm-os-updates.path" <<PATHUNIT
-[Unit]
-Description=Watch for ZMM on-demand OS update checks
-
-[Path]
-# The :8001 manager writes this file when the user clicks "Check now".
-PathChanged=${DATA_DIR}/data/os_updates/refresh
-Unit=zmm-os-updates.service
-
-[Install]
-WantedBy=default.target
-PATHUNIT
-    fi
-
-    if $HAVE_OS_APPLY; then
-        cat > "$unit_dir/zmm-os-apply.service" <<SERVICE
-[Unit]
-Description=ZMM OS Apply Worker (oneshot — package updates / release upgrade)
-# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${SCRIPTS_DIR}/os_apply.sh
-Environment=ZMM_DATA_DIR=${DATA_DIR}
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-SuccessExitStatus=0 1 2 3
-# A release upgrade downloads a whole distro — no timeout.
-TimeoutStartSec=infinity
-SERVICE
-
-        cat > "$unit_dir/zmm-os-apply.path" <<PATHUNIT
-[Unit]
-Description=Watch for ZMM OS apply / release-upgrade triggers
-
-[Path]
-# The :8001 manager writes these to apply updates / upgrade the OS release.
-PathChanged=${DATA_DIR}/data/os_updates/apply
-PathChanged=${DATA_DIR}/data/os_updates/release_upgrade
-Unit=zmm-os-apply.service
-
-[Install]
-WantedBy=default.target
-PATHUNIT
-    fi
-
-    systemctl --user daemon-reload
-    systemctl --user enable --now zmm-upgrade.path
-    ok "systemd user path unit enabled (event-driven)"
-    if $HAVE_OS_UPDATES; then
-        systemctl --user enable --now zmm-os-updates.timer zmm-os-updates.path
-        ok "OS updates collector enabled (6h timer + on-demand path unit)"
-    fi
-    if $HAVE_OS_APPLY; then
-        systemctl --user enable --now zmm-os-apply.path
-        ok "OS apply worker enabled (needs passwordless sudo to act — see os_apply.sh)"
-    fi
-
-    # Enable linger so it works without an active login session
-    if command -v loginctl >/dev/null 2>&1; then
-        if ! loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
-            warn "Enabling user linger (sudo required) so the watcher survives logout..."
-            sudo loginctl enable-linger "$USER" 2>/dev/null || \
-                warn "Could not enable linger — watcher will only run while you're logged in"
-        fi
-    fi
-}
 
 # ── systemd system: same pattern but as root ─────────────────────────────────
 install_systemd_system() {
@@ -389,7 +230,7 @@ StartLimitBurst=20
 
 [Service]
 Type=oneshot
-User=$USER
+# No User= — runs as root. Rootful podman (USB coordinator + OTBR) needs it.
 # CRITICAL: the watcher starts the app + manager containers as its children.
 # With the default KillMode=control-group, systemd kills every process left in
 # this service's cgroup — including the containers' conmon — the instant the
@@ -434,7 +275,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=$USER
+# No User= — runs as root. Rootful podman (USB coordinator + OTBR) needs it.
 ExecStart=${SCRIPTS_DIR}/os_updates.sh
 Environment=ZMM_DATA_DIR=${DATA_DIR}
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -571,7 +412,7 @@ After=network-online.target
 ExecStart=${poll_script}
 Restart=always
 RestartSec=5
-User=$USER
+# No User= — runs as root. Rootful podman (USB coordinator + OTBR) needs it.
 
 [Install]
 WantedBy=multi-user.target
@@ -604,10 +445,7 @@ SVC
 }
 
 # ── Install based on detected mechanism ──────────────────────────────────────
-if $USE_SYSTEMD_USER; then
-    info "Detected: systemd --user available → using path-based watcher"
-    install_systemd_user
-elif $USE_SYSTEMD_SYSTEM; then
+if $USE_SYSTEMD_SYSTEM; then
     info "Detected: root systemd → using path-based watcher"
     install_systemd_system
 elif $USE_POLLING; then

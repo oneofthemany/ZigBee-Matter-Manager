@@ -50,16 +50,23 @@ The system is designed for production-grade home automation — running 40+ devi
 ## ⚡ Quick Start
 
 ### Podman Container
+
+The installer runs **entirely as root** — rootful podman is required for the
+Zigbee USB coordinator, OTBR network namespaces and the host systemd units.
+Pipe into `sudo bash` (not `sudo curl`): with `sudo curl … | bash` only *curl*
+is elevated and the `bash` reading the pipe stays unprivileged, which fails when
+it tries to create `/opt/.zigbee-matter-manager`.
+
 ```bash
 # curl bash automated install
-sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | sudo bash
 
 # if you know the device
-sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --usb /dev/ttyUSB0
+curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | sudo bash -s -- --usb /dev/ttyUSB0
 
 # large/enterprise networks — bake the Rust telemetry appender into the image
 # (adds ~3–5 min to the build for the Rust toolchain + maturin compile)
-sudo curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | bash -s -- --with-appender --usb /dev/ttyUSB0
+curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | sudo bash -s -- --with-appender --usb /dev/ttyUSB0
 ```
 
 **Note**: You may see the following during boot - DO NOT PANIC THIS IS INTENTIONAL
@@ -312,7 +319,7 @@ Upgrade the application directly from the web UI — no SSH, no `build.sh` re-ru
 - **Multi-arch aware** — Images are tagged per-architecture (`zigbee-matter-manager:1.3.2-arm64` vs `-amd64`) and the upgrade picks the right one automatically. Won't accidentally load an `amd64` image on a Rock 5B
 - **Image retention policy** — Configurable how many old images to keep (default 2). Old images are pruned automatically; manual "Clean up" button also available
 - **Stable / pre-release channel** — Choose between GitHub Releases (stable only) or all tags (including pre-releases) for early access
-- **Cross-distro watcher** — Host-side trigger uses `systemd-path` units where available (event-driven, no CPU when idle), with a polling fallback for systems without systemd. Works under rootless Podman, root Podman, and Docker identically
+- **Cross-distro watcher** — Host-side trigger uses `systemd-path` units where available (event-driven, no CPU when idle), with a polling fallback for systems without systemd. Runs as a root system unit under Podman or Docker (ZMM is rootful — the Zigbee USB coordinator and OTBR need root)
 - **SELinux-friendly** — Watcher scripts live under `/opt/zmm/` (FHS-standard add-on package location) so SELinux's `init_t → usr_t` policy lets systemd execute them without manual relabelling
 - **Build log streaming** — Real-time view of `git clone` and `podman build` output in the UI during an upgrade, plus captured logs from the new container if it fails to start
 
@@ -321,7 +328,7 @@ Upgrade the application directly from the web UI — no SSH, no `build.sh` re-ru
 For an existing install that pre-dates the upgrade infrastructure, the watcher can be installed once on the host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/scripts/install_watcher.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/scripts/install_watcher.sh | sudo bash
 ```
 
 After that, all future upgrades are one click in **Settings → Upgrade**.

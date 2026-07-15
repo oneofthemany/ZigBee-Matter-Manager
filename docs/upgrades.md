@@ -10,7 +10,7 @@ This is a blue-green deployment model adapted for self-hosted single-host contai
 2. **No Kubernetes / Swarm / multi-node infrastructure.** A single Rock 5B (or similar) is the entire fleet.
 3. **No privileged container.** The container that serves the UI is fully unprivileged and must not be granted access to the host's container runtime, even via a mounted socket.
 
-The upgrade flow has to work under **all of**: rootless Podman + SELinux, rootless Podman + AppArmor, root Podman, Docker, with or without systemd, on any modern Linux distro. The architecture below is what falls out of those constraints.
+The upgrade flow has to work under **all of**: root Podman + SELinux, root Podman + AppArmor, Docker, with or without systemd, on any modern Linux distro. (ZMM is rootful only — the Zigbee USB coordinator and OTBR require root — so there is no rootless case to support.) The architecture below is what falls out of those constraints.
 
 ---
 
@@ -568,26 +568,21 @@ On non-SELinux systems (Ubuntu, Debian default), `restorecon` is a no-op and not
 
 ## Cross-distro watcher
 
-The host-side watcher must work on:
-- Modern systemd-based distros (Fedora, RHEL, Ubuntu, Debian, Arch) — uses `systemd-path`
-- systemd as root only (containers in containers, restricted environments) — same path unit but in `/etc/systemd/system/`
+ZMM always runs **rootful** (the Zigbee USB coordinator and OTBR require root),
+so the watcher and its workers are always **root system units**. There is no
+rootless / `systemd --user` mode. The host-side watcher must work on:
+- Modern systemd-based distros (Fedora, RHEL, Ubuntu, Debian, Arch) — a root
+  `systemd-path` unit in `/etc/systemd/system/`
 - Non-systemd distros (Alpine, some embedded) — falls back to a polling loop
 
 `install_watcher.sh` detects which mode applies:
 
 ```bash
-USE_SYSTEMD_USER=false
 USE_SYSTEMD_SYSTEM=false
 USE_POLLING=false
 
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl --user status >/dev/null 2>&1; then
-        USE_SYSTEMD_USER=true
-    elif [[ "$(id -u)" -eq 0 ]]; then
-        USE_SYSTEMD_SYSTEM=true
-    else
-        USE_POLLING=true
-    fi
+    USE_SYSTEMD_SYSTEM=true
 else
     USE_POLLING=true
 fi

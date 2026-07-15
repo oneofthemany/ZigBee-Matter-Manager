@@ -39,9 +39,12 @@ if [[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]] && [[ -n "${ZMM_DATA_DIR:-}" || -n "$
 fi
 # =============================================================================
 
-CURRENT_USER=$(whoami)
-export XDG_RUNTIME_DIR=/run/user/$(id -u "$CURRENT_USER")
-export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+# This installer runs ENTIRELY as root. Rootful podman is required: the Zigbee
+# USB coordinator, OTBR network namespaces, ipset/iptables and the host systemd
+# units all need root, and a rootless pod created here would be invisible to the
+# root-owned boot units. ensure_root (called from main) re-execs under sudo when
+# needed. No user-session XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS is set —
+# those are rootless-podman artifacts and do not apply here.
 
 set -euo pipefail
 
@@ -191,40 +194,34 @@ MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"
 MANAGER_CONTAINER_NAME="${CONTAINER_NAME}-manager"   # sidecar; runs the app image as `python -m manager`
 
 # =============================================================================
-# PRE-FLIGHT: ensure the data directory exists and is writable
+# PRE-FLIGHT: require root, then ensure the data directory exists
 # =============================================================================
-# DATA_DIR defaults to /opt/.zigbee-matter-manager — a root-owned location. When
-# the installer is run as an unprivileged user (the common `curl | bash` case,
-# where even `sudo curl | bash` leaves *bash* running unprivileged), a plain
-# `mkdir` under /opt fails with "Permission denied". Create it with sudo up
-# front and hand ownership to the invoking user so every later user-context
-# step — git clone, the mkdir -p calls, rootless podman volume writes — just
-# works without sprinkling sudo through the rest of the script.
-ensure_data_dir() {
-    # Owner of the tree: the unprivileged user that runs podman and the rest of
-    # this script. Under sudo that's $SUDO_USER; otherwise whoever invoked us.
-    local owner="${SUDO_USER:-$CURRENT_USER}"
+# The whole installer must run as root (rootful podman + host units). If it
+# isn't, re-exec under sudo when we're a real script file; when piped straight
+# from curl there is no file to re-exec, so tell the operator how to fix it.
+ensure_root() {
+    [[ "$(id -u)" -eq 0 ]] && return 0
+    local self="${BASH_SOURCE[0]:-$0}"
+    if [[ -f "$self" ]] && command -v sudo &>/dev/null; then
+        info "Not root — re-running under sudo (rootful podman is required for USB access)..."
+        exec sudo -E bash "$self" "$@"
+    fi
+    error "This installer must run as root (rootful podman is required for USB access)."
+    error "Re-run it as root, e.g.:"
+    error "  curl -fsSL <installer-url> | sudo bash -s -- ${*}"
+    exit 1
+}
 
-    if [[ -d "$DATA_DIR" && -w "$DATA_DIR" ]]; then
-        ok "Data directory present and writable: ${BOLD}${DATA_DIR}${NC}"
+# DATA_DIR defaults to /opt/.zigbee-matter-manager — a root-owned location.
+# We're root by the time this runs (ensure_root), so a plain mkdir is enough,
+# and the tree stays root-owned to match rootful podman.
+ensure_data_dir() {
+    if [[ -d "$DATA_DIR" ]]; then
+        ok "Data directory present: ${BOLD}${DATA_DIR}${NC}"
         return 0
     fi
-
-    local SUDO=""
-    if [[ "$(id -u)" -ne 0 ]]; then
-        command -v sudo &>/dev/null || die \
-            "Cannot create ${DATA_DIR}: not root and sudo is unavailable. Re-run as root."
-        SUDO="sudo"
-    fi
-
-    info "Creating data directory ${BOLD}${DATA_DIR}${NC} (owner: ${owner}) ..."
-    $SUDO mkdir -p "$DATA_DIR" || die "Failed to create ${DATA_DIR}"
-    # Non-recursive: only the top dir needs re-owning on a fresh install; the
-    # user creates everything beneath it. (chgrp may not match the username, so
-    # fall back to just the user if the matching group doesn't exist.)
-    $SUDO chown "${owner}:${owner}" "$DATA_DIR" 2>/dev/null \
-        || $SUDO chown "${owner}" "$DATA_DIR" 2>/dev/null \
-        || warn "Could not chown ${DATA_DIR} to ${owner} — later steps may need sudo."
+    info "Creating data directory ${BOLD}${DATA_DIR}${NC} ..."
+    mkdir -p "$DATA_DIR" || die "Failed to create ${DATA_DIR}"
     ok "Data directory ready: ${BOLD}${DATA_DIR}${NC}"
 }
 
@@ -1114,6 +1111,15 @@ usage() {
     cat << EOF
 ${BOLD}Usage:${NC} $0 [OPTIONS]
 
+${BOLD}Must run as root${NC} — rootful podman is required for the Zigbee USB
+coordinator, OTBR and the host systemd units. When piping from curl, pipe into
+${BOLD}sudo bash${NC} (NOT sudo curl — that only elevates curl, leaving bash
+unprivileged so it can't create ${DATA_DIR}):
+
+  curl -fsSL <installer-url> | sudo bash -s -- [OPTIONS]
+
+Run from a local checkout as a normal user and it re-execs itself under sudo.
+
 ${BOLD}Options:${NC}
   --port   PORT      Preferred host port  (default: ${INTERNAL_PORT})
   --usb    DEVICE    Zigbee USB device    (default: auto-detect)
@@ -1139,6 +1145,7 @@ EOF
 # ARGUMENT PARSING
 # =============================================================================
 main() {
+ensure_root "$@"
 PREFERRED_PORT=$INTERNAL_PORT
 INSTALL_AUTOSTART=true
 FORCE_REBUILD=false

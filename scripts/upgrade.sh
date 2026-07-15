@@ -12,7 +12,8 @@
 # Runs on the host (user or root systemd, or fallback polling wrapper).
 # NEVER runs inside the container. Has full access to podman/docker.
 #
-# Works with Podman (preferred) and Docker, rootless or root.
+# Works with Podman (preferred) and Docker. Rootful only — ZMM always runs as
+# root (the Zigbee USB coordinator and OTBR require it).
 # =============================================================================
 set -u  # NOTE: not -e; we want to catch errors and report them cleanly.
 set -o pipefail
@@ -65,7 +66,7 @@ log_to_build() {
     echo "[$ts] $*" | tee -a "$BUILD_LOG" >&2
 }
 
-# ── RUNTIME DETECTION (rootless podman / root podman / docker) ───────────────
+# ── RUNTIME DETECTION (root podman / docker) ─────────────────────────────────
 detect_runtime() {
     if [[ -n "${RUNTIME:-}" ]]; then
         command -v "$RUNTIME" &>/dev/null || { log "RUNTIME $RUNTIME not found"; return 1; }
@@ -810,21 +811,14 @@ detect_container_unit() {
         "container-${CONTAINER_NAME}.service"
         "${CONTAINER_NAME}.service"
     )
-    # System scope first (we run as root). User scope only if explicitly non-root.
+    # System scope only — ZMM always runs rootful, so the container/pod units
+    # are root system units. There is no `systemctl --user` (rootless) path.
     for unit in "${candidates[@]}"; do
         if systemctl --system cat "$unit" >/dev/null 2>&1; then
             echo "--system $unit"
             return 0
         fi
     done
-    if [[ "$(id -u)" -ne 0 ]]; then
-        for unit in "${candidates[@]}"; do
-            if systemctl --user cat "$unit" >/dev/null 2>&1; then
-                echo "--user $unit"
-                return 0
-            fi
-        done
-    fi
     return 1
 }
 
@@ -839,12 +833,8 @@ container_unit_mask_and_stop() {
     read -r scope unit <<< "$unit_desc"
     log "Supervisor: disabling auto-restart on $scope $unit (runtime drop-in)"
 
-    local override_dir
-    if [[ "$scope" == "--system" ]]; then
-        override_dir="/run/systemd/system/${unit}.d"
-    else
-        override_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user/${unit}.d"
-    fi
+    # System scope only (rootful) — detect_container_unit never returns --user.
+    local override_dir="/run/systemd/system/${unit}.d"
     mkdir -p "$override_dir"
     cat > "${override_dir}/zzz-zmm-upgrade-norestart.conf" <<EOF
 [Service]
