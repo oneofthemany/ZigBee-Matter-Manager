@@ -80,7 +80,7 @@ die()     { error "$*"; exit 1; }
 #   2. build_progress_filter() — parses podman's STEP N/M output and renders
 #      an in-place progress bar. Falls back to plain pass-through if stdout
 #      isn't a TTY (e.g. when build.sh's output is being captured to a file).
-TOTAL_STEPS=10
+TOTAL_STEPS=11
 CURRENT_STEP=0
 
 step_announce() {
@@ -90,46 +90,69 @@ step_announce() {
     echo -e "${BOLD}${CYAN}▸ Step ${CURRENT_STEP} of ${TOTAL_STEPS}: ${desc}${NC}"
 }
 
-# Render a progress bar to stderr. Caller passes current/total/description.
-# Uses \r and \033[K to redraw in place.
-_render_bar() {
-    local current="$1"
-    local total="$2"
-    local cached="$3"
-    local desc="$4"
-    local bar_width=30
-    local term_width
-    term_width=$(tput cols 2>/dev/null || echo 80)
+# In-place progress renderer — two stacked lines redrawn with \r + cursor moves:
+#   line 1 — overall image build: podman's STEP N/M as a bar
+#   line 2 — sub-progress WITHIN the current step. The long RUN steps (OTBR/CPC
+#            compile, pip install) stream ninja/cmake/git/apt/pip output but emit
+#            no new STEP line for minutes, so the overall bar looks frozen. We
+#            surface a real percentage when the inner tool reports one, else the
+#            latest activity line plus a spinner so a slow step still shows life.
 
-    local percent=0
-    (( total > 0 )) && percent=$(( current * 100 / total ))
-    local filled=$(( current * bar_width / (total > 0 ? total : 1) ))
-
-    local bar=""
-    local i
-    for ((i=0; i<bar_width; i++)); do
-        if (( i < filled )); then bar+="█"; else bar+="░"; fi
-    done
-
-    # Truncate desc to fit
-    local prefix_len=$((bar_width + 25))   # bar + percentages + spacing
-    local max_desc=$(( term_width - prefix_len ))
-    (( max_desc < 10 )) && max_desc=10
-    if (( ${#desc} > max_desc )); then
-        desc="${desc:0:$((max_desc - 3))}..."
-    fi
-
-    # Cached count appended only if we've seen any
-    local cached_suffix=""
-    (( cached > 0 )) && cached_suffix=" (${cached} cached)"
-
-    # \r = cursor to column 0; \033[K = clear from cursor to EOL
-    printf "\r\033[K  [%s] %3d%% (%2d/%-2d)%s %s" \
-        "$bar" "$percent" "$current" "$total" "$cached_suffix" "$desc" >&2
+# Build a "████░░░░" bar of WIDTH columns for value/total.
+_bar_str() {
+    local v="$1" t="$2" w="$3" i filled bar=""
+    (( t > 0 )) || t=1
+    filled=$(( v * w / t ))
+    (( filled > w )) && filled=w
+    (( filled < 0 )) && filled=0
+    for ((i=0; i<w; i++)); do (( i < filled )) && bar+="█" || bar+="░"; done
+    printf '%s' "$bar"
 }
 
-# Filter podman build output: parse STEP N/M lines, render bar, save full
-# log for debugging on failure. Pass-through when not a TTY.
+# Repaint the in-place block (1 or 2 lines). _LINES_DRAWN is dynamically scoped
+# from build_progress_filter and tracks how many rows the block currently spans.
+_repaint() {
+    local l1="$1" l2="$2" drawn=1
+    # Return the cursor to the top row of the previously drawn block.
+    (( _LINES_DRAWN > 1 )) && printf '\033[%dA' $(( _LINES_DRAWN - 1 )) >&2
+    printf '\r%s\033[K' "$l1" >&2
+    if [[ -n "$l2" ]]; then
+        printf '\n%s\033[K' "$l2" >&2
+        drawn=2
+    fi
+    # Shrinking (2 rows -> 1): wipe the now-stale row below, then step back up.
+    (( _LINES_DRAWN > drawn )) && printf '\n\033[K\033[1A' >&2
+    _LINES_DRAWN=$drawn
+}
+
+# Move the cursor below the block so normal output / errors start on a clean row.
+_end_block() {
+    (( _LINES_DRAWN > 0 )) && { printf '\n' >&2; _LINES_DRAWN=0; }
+}
+
+# Compose both lines from the current state and repaint.
+_render() {
+    local mpct=0; (( total > 0 )) && mpct=$(( current * 100 / total ))
+    local cached_suffix=""; (( cached > 0 )) && cached_suffix=" ${cached} cached"
+    local l1 l2=""
+    printf -v l1 "  [%s] %3d%% step %d/%d%s" \
+        "$(_bar_str "$current" "$total" 22)" "$mpct" "$current" "$total" "$cached_suffix"
+    if (( sub_active )); then
+        if (( sub_percent >= 0 )); then
+            printf -v l2 "   └ [%s] %3d%% %s" \
+                "$(_bar_str "$sub_percent" 100 18)" "$sub_percent" "$sub_text"
+        else
+            printf -v l2 "   └ %s %s" "${SPIN[$spin_idx]}" "$sub_text"
+        fi
+    fi
+    # Keep each line to one physical row (char count == display cols here).
+    (( ${#l1} > TERM_W )) && l1="${l1:0:TERM_W}"
+    (( ${#l2} > TERM_W )) && l2="${l2:0:$(( TERM_W - 1 ))}…"
+    _repaint "$l1" "$l2"
+}
+
+# Filter podman build output: overall STEP bar + per-step sub-progress. Tees the
+# full log for post-mortem on failure. Plain pass-through when stderr isn't a TTY.
 build_progress_filter() {
     local log_file="$1"
     : > "$log_file"
@@ -140,39 +163,70 @@ build_progress_filter() {
         return
     fi
 
-    local current=0
-    local total=0
-    local cached=0
-    local last_op=""
+    local current=0 total=0 cached=0 last_op=""
+    local sub_active=0 sub_percent=-1 sub_text=""
+    local spin_idx=0 _LINES_DRAWN=0
+    local -a SPIN=('|' '/' '-' '\')
+    local TERM_W; TERM_W=$(tput cols 2>/dev/null || echo 80)
+    (( TERM_W < 40 )) && TERM_W=80
 
+    local line
     while IFS= read -r line; do
-        # Always log everything
+        # Always log everything (raw)
         printf '%s\n' "$line" >> "$log_file"
+        # Collapse CR-updated progress (git/apt redraw a line with \r) to its
+        # final segment so we render the latest value, not the whole history.
+        line="${line##*$'\r'}"
 
         if [[ "$line" =~ ^STEP\ ([0-9]+)/([0-9]+):\ (.*)$ ]]; then
-            current="${BASH_REMATCH[1]}"
-            total="${BASH_REMATCH[2]}"
+            current="${BASH_REMATCH[1]}"; total="${BASH_REMATCH[2]}"
             last_op="${BASH_REMATCH[3]}"
-            # Strip leading verbs we don't need to show
-            last_op="${last_op#RUN }"
-            last_op="${last_op#COPY }"
-            last_op="${last_op#FROM }"
-            last_op="${last_op#ENV }"
-            _render_bar "$current" "$total" "$cached" "$last_op"
-        elif [[ "$line" == *"Using cache"* ]]; then
-            cached=$((cached + 1))
-            _render_bar "$current" "$total" "$cached" "$last_op"
-        elif [[ "$line" == "Successfully tagged"* ]] || [[ "$line" == COMMIT* ]]; then
-            _render_bar "$total" "$total" "$cached" "finalising"
-        elif [[ "$line" =~ ^Error|^ERROR ]]; then
-            # Drop to a fresh line so the error is readable
-            printf "\n" >&2
-            printf '%s\n' "$line" >&2
+            last_op="${last_op#RUN }"; last_op="${last_op#COPY }"
+            last_op="${last_op#FROM }"; last_op="${last_op#ENV }"
+            # New step: reset sub-progress, seed the sub-line with the step's op.
+            sub_active=1; sub_percent=-1; sub_text="$last_op"
+            _render
+            continue
         fi
+        if [[ "$line" == *"Using cache"* ]]; then
+            cached=$((cached + 1)); _render; continue
+        fi
+        if [[ "$line" == "Successfully tagged"* || "$line" == COMMIT* ]]; then
+            current="$total"; sub_active=0; _render; continue
+        fi
+        if [[ "$line" =~ ^Error|^ERROR ]]; then
+            _end_block; printf '%s\n' "$line" >&2; continue
+        fi
+
+        # ── Sub-progress WITHIN the current step ──────────────────────────────
+        if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\](.*)$ ]]; then
+            # ninja: "[132/487] Building CXX object ..."
+            local _n="${BASH_REMATCH[1]}" _m="${BASH_REMATCH[2]}"
+            (( _m > 0 )) && sub_percent=$(( _n * 100 / _m ))
+            sub_text="${BASH_REMATCH[3]# }"
+        elif [[ "$line" =~ ^\[\ *([0-9]+)%\](.*)$ ]]; then
+            # cmake/make: "[ 42%] Building ..."
+            sub_percent="${BASH_REMATCH[1]}"; sub_text="${BASH_REMATCH[2]# }"
+        elif [[ "$line" =~ (Receiving objects|Resolving deltas|Compressing objects|Counting objects|Unpacking objects):\ *([0-9]+)% ]]; then
+            # git clone / submodule fetch
+            sub_percent="${BASH_REMATCH[2]}"; sub_text="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ Progress:\ *\[\ *([0-9]+)%\] ]]; then
+            # apt-get progress meter
+            sub_percent="${BASH_REMATCH[1]}"; sub_text="installing packages"
+        elif [[ -n "${line//[[:space:]]/}" ]]; then
+            # Any other non-blank line = liveness (pip "Collecting…", compiler
+            # output, etc). Keep the last percent, refresh text + spinner.
+            sub_text="$line"
+        else
+            continue   # blank line — nothing to show
+        fi
+
+        sub_active=1
+        spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} ))
+        _render
     done
 
-    # Final newline so subsequent output isn't on the bar's line
-    printf "\n" >&2
+    _end_block
 }
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
@@ -392,7 +446,7 @@ detect_usb_coordinator() {
             real_dev=$(readlink -f "$dev")
             local label
             label=$(basename "$dev")
-            if echo "$label" | grep -qiE 'cp210|ezsp|zigbee|silabs|ember|ch340|ch341|cc253|cc265|conbee|raspbee|sonoff|tube|slzb|zzh'; then
+            if echo "$label" | grep -qiE 'cp210|ezsp|zigbee|silabs|ember|ch340|ch341|cc253|cc265|conbee|raspbee|sonoff|tube|slzb|zzh|nabu|zbt|skyconnect'; then
                 found_devices+=("$real_dev")
                 found_labels+=("$label → $real_dev")
             fi
@@ -866,16 +920,52 @@ SYSCTL
         ok "Bluetooth adapter available for Matter commissioning"
     fi
 
-    # ── USB device passthrough (direct — root container has full access) ──
-    if [[ -n "${USB_DEVICE:-}" ]]; then
-        local real_dev
-        real_dev=$(readlink -f "$USB_DEVICE")
-        run_args+=(--device "${real_dev}:${real_dev}")
+    # ── Serial coordinator passthrough (direct — root container has full access) ──
+    # Pass through EVERY serial coordinator candidate present at start, not just
+    # the one picked at build time. This is what lets the in-container setup
+    # wizard enumerate and auto-detect a coordinator — including one plugged in
+    # after the image was built. Without this, `--device` is only added when a
+    # dongle happened to be detected during the build, so a later-plugged adapter
+    # (e.g. a Nabu Casa ZBT-2 on /dev/ttyACM0) never reaches the container and
+    # the wizard reports "No serial ports detected".
+    local -a serial_devs=()
+    local _d _seen
+    _add_serial_dev() {
+        local d; d=$(readlink -f "$1" 2>/dev/null) || return 0
+        [[ -c "$d" ]] || return 0                 # real character device only
+        for _seen in "${serial_devs[@]}"; do
+            [[ "$_seen" == "$d" ]] && return 0     # dedup
+        done
+        serial_devs+=("$d")
+    }
+    [[ -n "${USB_DEVICE:-}" ]] && _add_serial_dev "$USB_DEVICE"
+    for _d in /dev/ttyACM* /dev/ttyUSB*; do
+        [[ -e "$_d" ]] && _add_serial_dev "$_d"
+    done
 
-        # If the original path was a symlink, also map that
-        if [[ "$USB_DEVICE" != "$real_dev" ]]; then
-            run_args+=(--device "${USB_DEVICE}:${USB_DEVICE}")
-        fi
+    if (( ${#serial_devs[@]} > 0 )); then
+        for _d in "${serial_devs[@]}"; do
+            run_args+=(--device "${_d}:${_d}")
+        done
+        ok "Serial coordinator passthrough: ${serial_devs[*]}"
+    else
+        warn "No serial coordinator (/dev/ttyACM*, /dev/ttyUSB*) present at container start."
+        warn "Plug the coordinator in, then recreate the container (re-run this installer,"
+        warn "or '${RUNTIME} rm -f ${CONTAINER_NAME}' and re-run) so it gets passed through."
+    fi
+
+    # Also map the chosen device's stable by-id symlink (if it is one) so
+    # config.yaml can reference a path that survives re-enumeration.
+    if [[ -n "${USB_DEVICE:-}" && -e "$USB_DEVICE" ]]; then
+        local real_dev; real_dev=$(readlink -f "$USB_DEVICE" 2>/dev/null || echo "$USB_DEVICE")
+        [[ "$USB_DEVICE" != "$real_dev" ]] && run_args+=(--device "${USB_DEVICE}:${USB_DEVICE}")
+    fi
+
+    # Mount the by-id / by-path symlink tree (stable coordinator names) so the
+    # app and config can use a name that doesn't shift across reboots/replugs.
+    if [[ -d /dev/serial ]]; then
+        run_args+=(--volume /dev/serial:/dev/serial:ro)
+        ok "Mounted /dev/serial (stable by-id coordinator names)"
     fi
 
     # ── USB bus access for USBDEVFS_RESET (MultiPAN CPC state cleanup) ──
@@ -1179,7 +1269,7 @@ echo -e "${BOLD}=====================================================${NC}"
 echo -e "${BOLD}   Zigbee Matter Manager — Container Build & Deploy  ${NC}"
 echo -e "${BOLD}=====================================================${NC}"
 echo
-echo -e "${BOLD}This install will run 10 steps:${NC}"
+echo -e "${BOLD}This install will run 11 steps:${NC}"
 echo "   1. Pre-flight checks"
 echo "   2. Fetch repository"
 echo "   3. USB coordinator detection"
@@ -1189,7 +1279,8 @@ echo "   6. Prepare data directories"
 echo "   7. OTBR D-Bus policy"
 echo "   8. Start container"
 echo "   9. Install systemd auto-start unit"
-echo "  10. Confirm app code location and install upgrade watcher"
+echo "  10. Confirm app code location"
+echo "  11. Install upgrade watcher"
 echo
 
 step_announce "Pre-flight checks"
@@ -1244,7 +1335,7 @@ step_announce "Confirm app code location"
 # In the new single-source-dir layout CLONE_DIR == APP_DIR, so there is no
 # copy step. Verify the canonical files are present and executable, then
 # carry on. The 'Populate APP_DIR' phase used to live here; it's retained
-# as a sanity check so the step count stays at 10.
+# as a sanity check and remains its own numbered step.
 mkdir -p "${APP_DIR}/scripts" "${DATA_DIR}/data/upgrade" "${DATA_DIR}/data/state"
 
 if [[ -f "${APP_DIR}/build.sh" ]]; then
