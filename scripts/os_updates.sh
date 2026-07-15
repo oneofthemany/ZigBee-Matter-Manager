@@ -139,13 +139,25 @@ if [[ -r /etc/os-release ]]; then
 fi
 if [[ "$OS_ID" == "fedora" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
    && command -v curl >/dev/null 2>&1; then
+    # Probe upward and report the HIGHEST reachable release, not just +1 — a
+    # host on 42 should be offered 44 if it exists, not left on 43. Fedora
+    # sanctions skipping up to two releases (N -> N+2), so cap the probe there.
+    RELEASE_LATEST=""
     NEXT=$((RELEASE_CURRENT + 1))
-    if curl -fsm 20 -o /dev/null \
-        "https://mirrors.fedoraproject.org/metalink?repo=fedora-${NEXT}&arch=$(uname -m)" \
-        2>>"$LOG_FILE"; then
-        RELEASE_AVAILABLE="$NEXT"
+    while (( NEXT <= RELEASE_CURRENT + 2 )); do
+        if curl -fsm 20 -o /dev/null \
+            "https://mirrors.fedoraproject.org/metalink?repo=fedora-${NEXT}&arch=$(uname -m)" \
+            2>>"$LOG_FILE"; then
+            RELEASE_LATEST="$NEXT"
+            NEXT=$((NEXT + 1))
+        else
+            break
+        fi
+    done
+    if [[ -n "$RELEASE_LATEST" ]]; then
+        RELEASE_AVAILABLE="$RELEASE_LATEST"
         RELEASE_AUTOMATED=true
-        log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $NEXT"
+        log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $RELEASE_LATEST"
     fi
 elif [[ "$PKG_MANAGER" == "apt" ]] && command -v do-release-upgrade >/dev/null 2>&1; then
     # Ubuntu (and derivatives that ship ubuntu-release-upgrader)

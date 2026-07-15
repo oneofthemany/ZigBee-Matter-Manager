@@ -151,7 +151,17 @@ case "$ACTION:$PKG_MANAGER" in
                 "release $RELEASE_TARGET downloaded — rebooting to install; the host will be down for a while"
             log "rebooting into system-upgrade for Fedora $RELEASE_TARGET"
             sync
-            $SUDO dnf -y system-upgrade reboot >> "$LOG_FILE" 2>&1
+            # dnf5 (Fedora 41+) stages an offline transaction that is activated
+            # by `dnf offline reboot`; the legacy `system-upgrade reboot` is
+            # dnf4-only and silently boots back into the old release on dnf5.
+            # Prefer offline reboot, fall back to the legacy command for dnf4.
+            if $SUDO dnf offline --help >/dev/null 2>&1; then
+                log "using dnf5 offline reboot"
+                $SUDO dnf offline reboot >> "$LOG_FILE" 2>&1
+            else
+                log "using dnf4 system-upgrade reboot"
+                $SUDO dnf -y system-upgrade reboot >> "$LOG_FILE" 2>&1
+            fi
             exit 0   # (unreachable if the reboot proceeds)
         fi
         ;;
