@@ -397,7 +397,7 @@ from modules.remote_access import (
 
 _web_cfg = CONFIG.get('web', {}) or {}
 remote_access_manager = RemoteAccessManager(
-    origin_port=int(_web_cfg.get('port', 8000)),
+    origin_port=int(_web_cfg.get('port') or 8000),
     origin_https=bool((_web_cfg.get('ssl') or {}).get('enabled', False)),
 )
 remote_access_manager.load()
@@ -1147,16 +1147,16 @@ if __name__ == "__main__":
     # and the watchdog / manager / container healthcheck all expect HTTPS.
     ssl_enabled = ssl_config.get('enabled', True)
 
-    host = get_conf('web', 'host', '0.0.0.0')
+    host = get_conf('web', 'host') or '0.0.0.0'
     # Environment variable takes priority (set by build.sh for host networking),
     # then config.yaml, then default 8000
-    port = int(os.environ.get('ZMM_PORT', 0)) or get_conf('web', 'port', 8000)
+    port = int(os.environ.get('ZMM_PORT', 0)) or int(get_conf('web', 'port') or 8000)
 
     kwargs = {
         "app": "main:app",
         "host": host,
         "port": port,
-        "log_level": get_conf('logging', 'level', 'info').lower(),
+        "log_level": (get_conf('logging', 'level') or 'info').lower(),
     }
 
     if ssl_enabled:
