@@ -904,7 +904,57 @@ prepare_data_dirs() {
         ok "config.yaml updated with device: ${USB_DEVICE}"
     fi
 
+    generate_ssl_cert
+
     ok "Data directories ready at ${DATA_DIR}"
+}
+
+# Self-signed HTTPS cert, generated HOST-side on first install so it exists
+# before the container ever starts. Generating here (rather than only at first
+# app boot, which remains as a fallback in modules/ssl_bootstrap.py) buys two
+# things the in-container path cannot:
+#   - the SAN carries the HOST's hostname and LAN IP (inside the container
+#     gethostname() is just the container ID), so browsing to the printed
+#     https://<lan-ip>:PORT URL has a name-matching cert to trust;
+#   - launcher.py's recovery standby finds a cert even if the very first app
+#     boot crash-loops before main.py could generate one.
+# Same rules as ssl_bootstrap.py: NEVER regenerate an existing pair (browser
+# trust must survive rebuilds/upgrades), key locked to 0600.
+generate_ssl_cert() {
+    local cert="$DATA_DIR/data/certs/cert.pem"
+    local key="$DATA_DIR/data/certs/key.pem"
+
+    if [[ -f "$cert" && -f "$key" ]]; then
+        ok "SSL cert already present at ${DATA_DIR}/data/certs — preserving it"
+        return 0
+    fi
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        warn "openssl not found on the host — the app will self-generate a cert on first boot"
+        return 0
+    fi
+
+    local host_name lan_ip san
+    host_name="$(hostname 2>/dev/null || true)"
+    host_name="${host_name:-zigbee-manager}"
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    san="subjectAltName=DNS:localhost,DNS:${host_name},IP:127.0.0.1"
+    [[ -n "$lan_ip" ]] && san+=",IP:${lan_ip}"
+
+    info "Generating self-signed SSL cert (CN=${host_name}, SAN: localhost, ${host_name}${lan_ip:+, ${lan_ip}}) ..."
+    # -addext needs openssl 1.1.1+ (2018); on failure fall back to the in-app
+    # generator rather than aborting the install over a cert.
+    if openssl req -x509 -newkey rsa:2048 \
+            -keyout "$key" -out "$cert" \
+            -days 3650 -nodes \
+            -subj "/CN=${host_name}" \
+            -addext "$san" >/dev/null 2>&1; then
+        chmod 600 "$key"
+        ok "Self-signed cert written to ${DATA_DIR}/data/certs (valid 10 years)"
+    else
+        rm -f "$cert" "$key"
+        warn "openssl cert generation failed — the app will self-generate a cert on first boot"
+    fi
 }
 
 # =============================================================================
