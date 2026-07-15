@@ -91,6 +91,7 @@ export function initMedia() {
     window.mediaSyncStart = syncStartGroup;
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncDur = syncSetDuration;
+    window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
     window.mediaSyncLab = (gid) => openSyncLab(gid, _syncGroups.find(g => g.id === gid));
@@ -1244,7 +1245,11 @@ async function renderSyncPane() {
             <span class="badge bg-light text-muted border">${g.members.length} speakers</span>
             <span class="ms-auto"></span>
             ${g.active
-                ? `<button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
+                ? `<button class="btn btn-sm btn-outline-primary" id="syncCalBtn"
+                           onclick="window.mediaSyncCalibrate()"
+                           title="Play a chirp on each speaker and measure the real in-air offsets with the server microphone — sets the trims automatically (takes ~15 s)">
+                     <i class="fas fa-microphone me-1"></i>Calibrate</button>
+                   <button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
                      <i class="fas fa-stop me-1"></i>Stop test
                      <span id="syncRemain" class="ms-1"></span></button>`
                 : `<select class="form-select form-select-sm w-auto" id="syncdur-${esc(g.id)}"
@@ -1374,6 +1379,29 @@ async function syncStartGroup(gid) {
 async function syncStopSession() {
     await apiPost('/api/media/sync/stop', {});
     renderSyncPane();
+}
+
+async function syncCalibrate() {
+    const btn = document.getElementById('syncCalBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Listening…';
+    }
+    try {
+        const r = await apiPost('/api/media/sync/calibrate', {});
+        if (r.success) {
+            const parts = (r.devices || []).filter(d => d.detected)
+                .map(d => `${d.name} ${d.rel_ms > 0 ? '+' : ''}${Math.round(d.rel_ms)} ms`);
+            toast(`Calibrated (in-air spread was ${Math.round(r.spread_ms)} ms): `
+                  + `${parts.join(', ')} — trims set`, 'success');
+        } else {
+            toast(r.error || 'Calibration failed', 'error');
+        }
+    } catch (e) {
+        toast('Calibration failed: ' + e.message, 'error');
+    } finally {
+        renderSyncPane();   // restores the button + shows the new trims
+    }
 }
 
 async function syncSetTrim(pid, val) {

@@ -19,4 +19,5 @@ tidalapi~=0.8
 greeclimate
 midea-local
 numpy
+sounddevice                  # mic capture for speaker-sync chirp calibration (needs PortAudio + /dev/snd)
 kokoro-onnx==0.4.7

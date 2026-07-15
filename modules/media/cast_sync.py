@@ -71,6 +71,8 @@ try:
 except Exception:                                    # pragma: no cover
     _sdb = None
 
+from modules.media import sync_chirp as _chirp
+
 logger = logging.getLogger("modules.media.cast_sync")
 
 RATE = 44100
@@ -166,7 +168,8 @@ def _gen_samples(n0: int, frames: int) -> bytes:
     return _encode_s16(_gen_float(n0, frames))
 
 
-def _resample_block(pos: float, frames: int, adv: float) -> bytes:
+def _resample_block(pos: float, frames: int, adv: float,
+                    extra=None) -> bytes:
     """Fractional-position resampler (the OpenZone §5.2 actuator): emit
     ``frames`` output samples reading the timeline from float sample
     position ``pos``, consuming ``adv`` timeline samples in total, i.e. a
@@ -180,7 +183,16 @@ def _resample_block(pos: float, frames: int, adv: float) -> bytes:
     base = np.floor(idx).astype(np.int64)
     frac = idx - base
     i0 = int(base[0])
-    src = _gen_float(i0, int(base[-1]) - i0 + 2)
+    n = int(base[-1]) - i0 + 2
+    src = _gen_float(i0, n)
+    if extra is not None:
+        # Per-device timeline-domain injection (calibration chirp): mixed
+        # into the integer grid before interpolation, so it rides through
+        # the resampler exactly like programme material.
+        c0, wave = extra
+        a, b = max(i0, c0), min(i0 + n, c0 + len(wave))
+        if a < b:
+            src[a - i0:b - i0] += wave[a - c0:b - c0]
     rel = base - i0
     return _encode_s16(src[rel] * (1.0 - frac) + src[rel + 1] * frac)
 
@@ -267,6 +279,8 @@ class _Stream:
         # than ground down by a 30 s slew (observed: 32 ms residuals taking
         # half a minute to clear at every start). Sticky once locked.
         self.acquired: bool = False
+        # Calibration chirp scheduled on this stream: (timeline_sample, wave)
+        self.chirp: Optional[tuple] = None
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
 
@@ -291,6 +305,10 @@ class CastSyncPoc:
         self._model_file = cfg.get("model_file", "./data/cast_sync_model.json")
         self._model: Dict[str, dict] = self._read_json(self._model_file)
         self._session_id: str = ""
+        # Acoustic calibration (mic + chirps): optional input device name /
+        # index for sounddevice; None = system default.
+        self._mic_device = cfg.get("mic_device") or None
+        self._calibrating = False
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -528,6 +546,106 @@ class CastSyncPoc:
                 s.err_hist = []       # baseline moved — old medians invalid
                 await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
+
+    # ------------------------------------------------------------------
+    # Acoustic calibration (OpenZone §7 chirp mode): measure the audio in
+    # the AIR, which the status sensor cannot see, and set trims from it.
+    # ------------------------------------------------------------------
+    async def calibrate(self) -> dict:
+        """Chirp sequence → GCC-PHAT arrivals → trims. Runs during normal
+        playback: each device plays a 100 ms 2–8 kHz chirp in its own time
+        slot; one mic recording covers all slots, so every common-mode
+        error (mic start latency, mic clock, shared path) cancels when the
+        arrivals are differenced across devices."""
+        if not self.running or self.app_id:
+            return {"success": False,
+                    "error": "Calibration needs a running stream-mode session"}
+        if self._calibrating:
+            return {"success": False, "error": "Calibration already running"}
+        if self._target_lag is None:
+            return {"success": False,
+                    "error": "Devices still acquiring — try again in a few seconds"}
+        streams = [s for s in self._streams.values()
+                   if s.connected and s.pos is not None]
+        if len(streams) < 2:
+            return {"success": False,
+                    "error": "Need at least two connected speakers"}
+        try:
+            import sounddevice  # noqa: F401 — fail early with a clear error
+        except Exception as e:
+            return {"success": False,
+                    "error": f"Mic unavailable (sounddevice/PortAudio): {e}"}
+        self._calibrating = True
+        try:
+            return await self._run_chirp_sequence(streams)
+        finally:
+            for s in streams:
+                s.chirp = None
+            self._calibrating = False
+
+    async def _run_chirp_sequence(self, streams: List[_Stream]) -> dict:
+        wave = _chirp.chirp_wave(RATE)
+        # Slots must land beyond every serve head — audio already generated
+        # (and buffered device-side) can't be changed. Because devices
+        # buffer several seconds, the chirps sound target_lag later.
+        head_s = max((s.pos - s.shift) / RATE for s in streams)
+        plan = []          # (stream, expected arrival in elapsed-seconds)
+        for i, s in enumerate(streams):
+            slot_s = head_s + _chirp.CHIRP_LEAD_S + i * _chirp.CHIRP_GAP_S
+            s.chirp = (int(slot_s * RATE), wave)
+            trim_s = self._trims.get(s.player_id, 0) / 1000.0
+            plan.append((s, slot_s + self._target_lag + trim_s))
+        rec_start = time.monotonic() - self._epoch
+        rec_dur = (max(t for _, t in plan) - rec_start
+                   + _chirp.SEARCH_S + _chirp.CHIRP_S + 0.5)
+        if not 0 < rec_dur <= 30:
+            return {"success": False,
+                    "error": f"Calibration window infeasible ({rec_dur:.0f}s)"}
+        logger.info(f"Chirp calibration: {len(plan)} device(s), "
+                    f"recording {rec_dur:.1f}s")
+        try:
+            mic = await asyncio.to_thread(
+                _chirp.record, rec_dur, RATE, self._mic_device)
+        except Exception as e:
+            return {"success": False, "error": f"Mic capture failed: {e}"}
+
+        devices, deltas = [], {}
+        for s, t_exp in plan:
+            a = max(0, int((t_exp - _chirp.SEARCH_S - rec_start) * RATE))
+            b = min(len(mic),
+                    int((t_exp + _chirp.SEARCH_S + _chirp.CHIRP_S
+                         - rec_start) * RATE))
+            idx, quality = _chirp.gcc_phat(mic[a:b].astype(np.float64), wave)
+            info = {"player_id": s.player_id, "name": s.name,
+                    "quality": round(quality, 1), "detected": False}
+            if idx is not None and quality >= _chirp.MIN_PEAK_RATIO:
+                t_arr = rec_start + (a + idx) / RATE
+                deltas[s.sid] = t_arr - t_exp
+                info["detected"] = True
+            devices.append(info)
+        if len(deltas) < 2:
+            return {"success": False, "devices": devices,
+                    "error": "Chirps not detected on enough speakers — "
+                             "check the mic and its input level"}
+        # Differencing: only relative arrival matters; the mean keeps the
+        # group's overall timing where it is.
+        mean_d = sum(deltas.values()) / len(deltas)
+        rows = []
+        for info, (s, _) in zip(devices, plan):
+            if s.sid not in deltas:
+                continue
+            rel = deltas[s.sid] - mean_d
+            info["rel_ms"] = round(rel * 1000, 1)
+            new_trim = int(round(self._trims.get(s.player_id, 0) - rel * 1000))
+            info["trim_ms"] = max(-2000, min(2000, new_trim))
+            rows.append(self._sample_row(s, "chirp", error=rel))
+            await self.set_trim(s.player_id, new_trim)
+            logger.info(f"Chirp calibration {s.name}: {rel * 1000:+.1f} ms "
+                        f"in-air → trim {info['trim_ms']} ms")
+        await self._record_samples(rows)
+        return {"success": True, "devices": devices,
+                "spread_ms": round((max(deltas.values()) - min(deltas.values()))
+                                   * 1000, 1)}
 
     # ------------------------------------------------------------------
     # Named groups (managed from the Media tab's group builder)
@@ -974,7 +1092,7 @@ class CastSyncPoc:
                     rm = max(-lim, min(lim, st.slew_s))
                     st.slew_s -= rm
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
-                pcm = _resample_block(st.pos, block, adv)
+                pcm = _resample_block(st.pos, block, adv, st.chirp)
                 st.pos += adv
                 st.shift += adv - block
                 st.moved_s += (adv - block) / RATE   # decompensate drift fit

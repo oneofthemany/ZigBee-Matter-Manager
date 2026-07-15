@@ -74,6 +74,15 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             return {"success": False, "error": "Sync PoC disabled"}
         return await sync.set_trim(body.player_id, body.trim_ms)
 
+    @app.post("/api/media/sync/calibrate")
+    async def sync_calibrate():
+        """Chirp calibration: measure in-air inter-device offsets with the
+        server mic and set trims automatically (needs a running session)."""
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "Sync PoC disabled"}
+        return await sync.calibrate()
+
     @app.get("/api/media/sync/groups")
     async def sync_groups():
         sync = _sync()
