@@ -178,8 +178,13 @@ function renderPanel() {
 // ---------------------------------------------------------------------------
 
 async function fetchAlerts() {
+    // Only meaningful for an authenticated session. Skip while anonymous
+    // (login page / first-run setup wizard) so we don't spam /api/alerts 401s.
+    const auth = window.zmmAuth;
+    if (auth && typeof auth.whoami === 'function' && !auth.whoami()) return;
     try {
         const r = await fetch('/api/alerts');
+        if (!r.ok) return;   // e.g. a 401 before auth settles — stay quiet
         const data = await r.json();
         alerts = data.alerts || [];
         updateBadge();
@@ -204,7 +209,15 @@ function onLiveAlert(e) {
 export function initAppAlerts() {
     const boot = () => {
         createBell();
-        fetchAlerts();
+        // Fetch now if already authenticated, and (re)fetch when auth becomes
+        // ready/changes. fetchAlerts() itself no-ops while anonymous, so the
+        // first-run wizard / login page never trigger a 401.
+        const auth = window.zmmAuth;
+        if (auth && typeof auth.onChange === 'function') {
+            auth.onChange((principal) => { if (principal) fetchAlerts(); });
+        } else {
+            fetchAlerts();
+        }
     };
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot);
