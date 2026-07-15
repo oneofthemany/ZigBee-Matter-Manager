@@ -98,7 +98,7 @@ The first install also sets up the **in-app upgrade watcher** (a small host-side
 
 ### Prerequisites
 
-- Linux (Ubuntu/Debian recommended)
+- Linux with Podman (preferred) or Docker, plus `root` access — the installer runs entirely as root (rootful podman is required for USB coordinator access, OTBR network namespaces and the host systemd units)
 - Python 3.8+
 - An MQTT broker (e.g. Mosquitto) - for Home Assistant support
 - A supported Zigbee coordinator (auto-detected on first boot). Recognised families:
@@ -106,6 +106,7 @@ The first install also sets up the **in-app upgrade watcher** (a small host-side
   - **ZNP / Z-Stack** (Texas Instruments CC2531 / CC2538 / CC2652, Electrolama zzh)
   - **deCONZ** (Dresden Elektronik ConBee II / III, RaspBee)
 - **Optional for Matter:** `python-matter-server[server]` pip package, IPv6-enabled network
+- **Optional for multi-speaker sync:** a microphone (USB or built-in) for the chirp-based Cast speaker-sync calibration — passed through automatically via `/dev/snd`
 
 ---
 
@@ -325,6 +326,7 @@ Upgrade the application directly from the web UI — no SSH, no `build.sh` re-ru
 - **Cross-distro watcher** — Host-side trigger uses `systemd-path` units where available (event-driven, no CPU when idle), with a polling fallback for systems without systemd. Runs as a root system unit under Podman or Docker (ZMM is rootful — the Zigbee USB coordinator and OTBR need root)
 - **SELinux-friendly** — Watcher scripts live under `/opt/zmm/` (FHS-standard add-on package location) so SELinux's `init_t → usr_t` policy lets systemd execute them without manual relabelling
 - **Build log streaming** — Real-time view of `git clone` and `podman build` output in the UI during an upgrade, plus captured logs from the new container if it fails to start
+- **Host OS updates (beyond the app)** — Settings also surfaces pending *host* package updates and available OS release upgrades (`dnf` on Fedora/RHEL, `apt` on Debian/Ubuntu) and can apply them on the host: package updates in place, or a full distro release upgrade. Fedora release upgrades target the **latest** available release (not just the next one) and finish via the offline-transaction reboot — `dnf offline reboot` on dnf5, `dnf system-upgrade reboot` on dnf4. Image-based hosts (Silverblue / IoT) report and stage `rpm-ostree` deployments instead.
 
 **How it works internally.** The container is fully unprivileged and never touches the host's container runtime directly. Instead, the app writes a small JSON trigger file to a shared volume; a host-side `systemd-path` unit detects the new file and runs `/opt/zmm/upgrade.sh`, which clones the target tag, builds the new image, performs the stop/rename/run sequence, and writes status back to a file the app polls. This keeps the security model simple — no podman socket mounting, no privileged containers, no cross-runtime API differences.
 
@@ -494,7 +496,26 @@ web:
   host: 0.0.0.0
   port: 8000
   ssl: false
+
+media:                         # Optional: Cast media + multi-speaker sync (experimental)
+  cast:
+    sync:
+      mic_device: "USB"        # Substring match to pick the capture device used
+                               # for chirp-based cross-vendor speaker-sync
+                               # calibration. Needs a mic + /dev/snd passed into
+                               # the container (see note below). Omit to use the
+                               # system default capture device.
 ```
+
+> **Audio for speaker-sync calibration.** The chirp calibration records a test
+> tone through a microphone, so it needs a capture device inside the container.
+> `build.sh` passes the host's `/dev/snd` through automatically and bakes the
+> PortAudio runtime (`libportaudio2` + `alsa-utils`) into the image. Because
+> podman maps devices at container **create** time, a USB mic plugged in *after*
+> the container is running needs a container restart to appear. List the
+> capture devices the container can see with
+> `sudo podman exec zigbee-matter-manager arecord -l`, then set
+> `media.cast.sync.mic_device` to a substring of the one you want.
 
 ---
 
@@ -525,6 +546,30 @@ sudo systemctl start zigbee-matter-manager              # Start the service
 sudo journalctl -u zigbee-matter-manager -f             # Follow system logs
 sudo tail -f /opt/zigbee_matter_manager/logs/zigbee.log # Follow app logs
 ```
+
+### Coordinator / USB device not detected
+
+If the setup wizard shows **"No serial ports detected"** or auto-detect finds no
+adapter even though `lsusb` and `/dev/ttyACM0` show it on the host, the device
+almost certainly isn't passed through to the container. podman maps `--device`
+entries at container **create** time, so a coordinator plugged in after the
+container was built never reaches it.
+
+```bash
+# Confirm the host sees it
+lsusb; ls -l /dev/serial/by-id /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+
+# Recreate the container with the coordinator plugged in (image is cached, so
+# this skips the long build and just re-passes the devices)
+curl -fsSL https://raw.githubusercontent.com/oneofthemany/ZigBee-Matter-Manager/main/build.sh | sudo bash
+```
+
+`build.sh` passes through **every** `/dev/ttyACM*` / `/dev/ttyUSB*` present at
+start (plus `/dev/serial` for stable by-id names), so any recognised coordinator
+— Nabu Casa ZBT-2 / SkyConnect, Sonoff, ConBee, TI CC26xx, CP210x — is picked up
+automatically once it's present when the container is created. The same
+plug-in-then-recreate rule applies to a USB microphone for speaker-sync (see the
+audio note in the **Configuration** section).
 
 ### Upgrade Issues
 
