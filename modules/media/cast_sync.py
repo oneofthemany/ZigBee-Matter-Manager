@@ -93,9 +93,15 @@ STREAM_POLL_S = 2.5              # monitor poll interval once baselines exist
 # speeds itself up), and take several media-time reads per poll — the
 # median knocks per-measurement noise down ~√N and shrugs off one bogus
 # status. Neither changes what is measured, only how well.
-STREAM_POLL_FAST_S = 1.2         # cadence while acquiring
+STREAM_POLL_FAST_S = 1.0         # cadence while acquiring
 STREAM_STATUS_READS = 3          # media-time reads per poll (median)
-STREAM_STATUS_WAIT_S = 0.25      # wait for each status push to land
+STREAM_STATUS_READS_ACQ = 5      # ...while acquiring: denser + more robust.
+#                                  Beyond ~5 the returns die: consecutive
+#                                  reads share the device's underlying status
+#                                  report (quantised + extrapolated), so more
+#                                  reads re-sample the same value — the DB is
+#                                  not the constraint, information is.
+STREAM_STATUS_WAIT_S = 0.2       # wait for each status push to land
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
 #                                  (device drains its HTTP buffer; wall-time
 #                                  so the fast cadence doesn't shorten it)
@@ -256,6 +262,11 @@ class _Stream:
         # (feeding corrections into the fit is what railed the old PLL).
         self.moved_s: float = 0.0
         self.err_hist: List[float] = []   # last 3 poll errors (median filter)
+        # Until first lock nobody is listening to this device as part of a
+        # group yet, so sub-100 ms offsets are stepped away instantly rather
+        # than ground down by a 30 s slew (observed: 32 ms residuals taking
+        # half a minute to clear at every start). Sticky once locked.
+        self.acquired: bool = False
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
 
@@ -499,22 +510,21 @@ class CastSyncPoc:
                 except Exception as e:
                     logger.debug(f"trim push failed for {player_id}: {e}")
         # Stream mode: positive trim = play later = serve older timeline.
-        # Deltas within the slew window are drained through the resampler —
-        # inaudible, no buffer step (OpenZone §5.2/§8); only larger moves
-        # jump the stream (mirrored in ``shift`` like any resync).
+        # Trims apply as an IMMEDIATE buffer step, deliberately breaking the
+        # §5.2 no-step rule: trim exists for by-ear alignment, and a slewed
+        # trim takes |Δ|×1000 s to become audible — users chased ±400 ms in
+        # circles because they couldn't hear their own adjustments land.
+        # The step is decompensated via ``moved_s``, so the drift fit keeps
+        # its baseline; the cooldown covers the device-buffer transient.
+        # The chirp calibrator will set trims automatically; the slider then
+        # remains as a manual override for taste.
         delta_s = (trim_ms - old) / 1000.0
         for s in self._streams.values():
             if s.player_id == player_id and s.pos is not None:
-                if abs(delta_s) <= STREAM_JUMP_MIN_S:
-                    # Slewed trims are decompensated via ``moved_s`` as they
-                    # drain, so the drift fit survives them untouched.
-                    s.slew_s -= delta_s
-                else:
-                    s.pos -= delta_s * RATE
-                    s.shift -= delta_s * RATE
-                    s.moved_s -= delta_s
-                    s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
-                    s.lag_hist = []   # device-buffer transient around a jump
+                s.pos -= delta_s * RATE
+                s.shift -= delta_s * RATE
+                s.moved_s -= delta_s
+                s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
                 s.err_hist = []       # baseline moved — old medians invalid
                 await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
@@ -721,7 +731,16 @@ class CastSyncPoc:
                     # single reading can be wrong by 100s of ms right after
                     # (re)connect, and jumping on it caused an audible
                     # overshoot-then-jump-back at every session start.
-                    if abs(residual) > STREAM_JUMP_MIN_S \
+                    # Before first lock the jump threshold drops to the slew
+                    # window: the device isn't audibly in the group yet, so
+                    # stepping a 30–100 ms startup offset away instantly
+                    # beats grinding it out over 30 s.
+                    jump_min = (STREAM_JUMP_MIN_S if st.acquired
+                                else STREAM_SLEW_FAST_THRESH_S)
+                    if not st.acquired and len(st.err_hist) >= 2 \
+                            and abs(med3) <= STREAM_SLEW_FAST_THRESH_S:
+                        st.acquired = True
+                    if abs(residual) > jump_min \
                             and len(st.err_hist) >= 2:
                         st.pos += med3 * RATE
                         st.shift += med3 * RATE
@@ -747,12 +766,16 @@ class CastSyncPoc:
                         # a single noise spike can't move real audio, and
                         # slewing the median, not the spike. Assignment, not
                         # +=: pending slew is already inside the measurement.
+                        # Refreshes are routine while a slew drains — only a
+                        # meaningful change is worth an event row.
+                        fresh = abs(med3 - st.slew_s) > 0.010
                         st.slew_s = med3
-                        batch.append(self._sample_row(st, "slew", lag=lag,
-                                                      error=error))
-                        logger.info(f"Sync stream slew {st.name}: "
-                                    f"{med3 * 1000:+.0f} ms @ "
-                                    f"{STREAM_SLEW_FAST_PPM:.0f} ppm")
+                        if fresh:
+                            batch.append(self._sample_row(st, "slew", lag=lag,
+                                                          error=error))
+                            logger.info(f"Sync stream slew {st.name}: "
+                                        f"{med3 * 1000:+.0f} ms @ "
+                                        f"{STREAM_SLEW_FAST_PPM:.0f} ppm")
                         self._pll_update(st, lag)
                     else:
                         # Steady state: gentle trickle (≤20 ppm) on the
@@ -828,6 +851,13 @@ class CastSyncPoc:
                 slope = self._fit_slope(kept)
                 if slope is None:
                     return
+        # A slope no crystal can produce means a step landed in the window —
+        # a server stall (observed: 4 s event-loop freeze), a device pipeline
+        # hiccup — not drift. Learning from it rails the clamp; start the
+        # baseline over instead.
+        if abs(slope) * 1e6 > 4 * STREAM_RATE_MAX_PPM:
+            st.lag_hist = st.lag_hist[-1:]
+            return
         # slope = d(free-running lag)/dt: device clock slow → lag grows →
         # positive ppm → serve faster. The EMA gain scales with the fit's
         # baseline (short spans are noise-dominated); clamp to the physical
@@ -846,19 +876,24 @@ class CastSyncPoc:
         m[key] = round(value if old is None else 0.7 * old + 0.3 * value, 4)
         m["sessions"] = m.get("sessions", 0) + (1 if key == "lag_s" else 0)
 
-    def _poll_interval(self) -> float:
-        """Fast cadence while any device's drift-fit baseline is still
-        building (fresh session, or a jump cleared it) — more points early
-        is what lets the slope fit beat the sensor noise. Relax once every
-        baseline spans the apply threshold."""
+    def _acquiring(self) -> bool:
+        """True while any device's drift-fit baseline is still building
+        (fresh session, or a jump cleared it) — the phase where extra
+        measurements buy convergence."""
         for st in self._streams.values():
             if not st.connected or st.pos is None:
                 continue
             span = (st.lag_hist[-1][0] - st.lag_hist[0][0]
                     if len(st.lag_hist) >= 2 else 0.0)
             if span < STREAM_FIT_APPLY_SPAN_S:
-                return STREAM_POLL_FAST_S
-        return STREAM_POLL_S
+                return True
+        return False
+
+    def _poll_interval(self) -> float:
+        """Fast cadence while acquiring — more points early is what lets
+        the slope fit beat the sensor noise. Relax once every baseline
+        spans the apply threshold."""
+        return STREAM_POLL_FAST_S if self._acquiring() else STREAM_POLL_S
 
     async def _measure_lag_once(self, st: _Stream) -> Optional[float]:
         """One media-time read → lag vs server clock (s), trim excluded."""
@@ -887,12 +922,14 @@ class CastSyncPoc:
         return (now - self._epoch) - played_timeline_s - trim_s
 
     async def _measure_lag(self, st: _Stream) -> Optional[float]:
-        """Median of several consecutive reads. adjusted_current_time
-        extrapolates each report to read time, so the reads target the same
-        quantity and the median suppresses ~√N of the per-read noise while
-        discarding a single bogus status outright."""
+        """Median of several consecutive reads (more while acquiring).
+        adjusted_current_time extrapolates each report to read time, so the
+        reads target the same quantity and the median suppresses ~√N of the
+        per-read noise while discarding a single bogus status outright."""
+        n = (STREAM_STATUS_READS_ACQ if self._acquiring()
+             else STREAM_STATUS_READS)
         reads: List[float] = []
-        for _ in range(STREAM_STATUS_READS):
+        for _ in range(n):
             if not self.running:
                 break
             lag = await self._measure_lag_once(st)

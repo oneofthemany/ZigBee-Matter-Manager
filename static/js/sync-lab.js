@@ -206,6 +206,7 @@ function _stopLive() {
 function _renderShell() {
     const host = document.getElementById('syncLabHost');
     if (!host) return;
+    log('shell rebuild — all charts recreated (expected only on open/theme/session switch)');
     if (_spreadChart) { _spreadChart.dispose(); _spreadChart = null; }
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
@@ -224,7 +225,7 @@ function _renderShell() {
           <p class="small text-muted mb-3">
             Each speaker pulls its own PCM stream cut from one server timeline and reports
             its playback position back every 1–3&nbsp;s (fast while acquiring, relaxed once
-            locked; each report is the median of three reads). Deviation from the group target is
+            locked; each report is the median of 3–5 reads). Deviation from the group target is
             plotted below: only past ±${JUMP_MS}&nbsp;ms (startup, rebuffer) is the stream
             hard-resynced (<span aria-hidden="true">◆</span>); every smaller correction is
             an inaudible parts-per-million rate slew (<span aria-hidden="true">▽</span>)
@@ -577,6 +578,9 @@ function _emptyOption(text) {
 function _setChart(chart, opt, merge = false, empty = false) {
     if (!chart) return;
     const flip = chart._zmmEmpty !== empty;
+    if (flip && chart._zmmEmpty !== undefined) {
+        log(`chart flip → ${empty ? 'EMPTY placeholder' : 'data'} (full redraw)`);
+    }
     chart._zmmEmpty = empty;
     chart.setOption(opt, !merge || flip);
 }
