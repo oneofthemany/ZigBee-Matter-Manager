@@ -729,6 +729,7 @@ DOCKERFILE_NOAPPENDER
 # runtime for the speaker-sync chirp; alsa-utils=arecord/aplay for audio debug.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         usbutils \
+        openssl \
         libportaudio2 \
         alsa-utils \
     && rm -rf /var/lib/apt/lists/*

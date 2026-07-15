@@ -133,7 +133,7 @@ web:
   debug: false
   secret_key: ssshItsASecret
   ssl:
-    enabled: false
+    enabled: true
     cert_file: ./data/certs/cert.pem
     key_file: ./data/certs/key.pem
 

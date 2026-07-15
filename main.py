@@ -1141,8 +1141,11 @@ async def start_services_after_setup():
 # ============================================================================
 
 if __name__ == "__main__":
-    ssl_config = CONFIG.get('web', {}).get('ssl', {})
-    ssl_enabled = ssl_config.get('enabled', False)
+    ssl_config = CONFIG.get('web', {}).get('ssl', {}) or {}
+    # Secure by default: serve HTTPS unless explicitly disabled. A self-signed
+    # cert is auto-generated on first boot (below), so no user setup is needed —
+    # and the watchdog / manager / container healthcheck all expect HTTPS.
+    ssl_enabled = ssl_config.get('enabled', True)
 
     host = get_conf('web', 'host', '0.0.0.0')
     # Environment variable takes priority (set by build.sh for host networking),
@@ -1157,10 +1160,25 @@ if __name__ == "__main__":
     }
 
     if ssl_enabled:
-        kwargs["ssl_certfile"] = ssl_config.get('cert_file', './data/certs/cert.pem')
-        kwargs["ssl_keyfile"] = ssl_config.get('key_file', './data/certs/key.pem')
-        logger.info(f"Starting with SSL on https://{host}:{port}")
-    else:
+        cert_file = ssl_config.get('cert_file', './data/certs/cert.pem')
+        key_file = ssl_config.get('key_file', './data/certs/key.pem')
+        from modules.ssl_bootstrap import ensure_self_signed_cert
+        action = ensure_self_signed_cert(cert_file, key_file)
+        have_certs = os.path.isfile(cert_file) and os.path.isfile(key_file)
+        if have_certs:
+            kwargs["ssl_certfile"] = cert_file
+            kwargs["ssl_keyfile"] = key_file
+            logger.info(f"Starting with SSL on https://{host}:{port} (cert {action})")
+        else:
+            # Generation failed and no usable cert — fall back to HTTP rather
+            # than crash-looping on a missing certfile.
+            ssl_enabled = False
+            logger.error(
+                f"SSL enabled but no usable cert ({action}) — falling back to "
+                f"http://{host}:{port}. Install openssl or drop a cert at {cert_file}."
+            )
+
+    if not ssl_enabled:
         logger.info(f"Starting on http://{host}:{port}")
 
     uvicorn.run(**kwargs)

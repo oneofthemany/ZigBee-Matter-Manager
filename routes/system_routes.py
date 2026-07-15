@@ -487,9 +487,6 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         Note: changes only take effect after a container/server restart;
         uvicorn does not support hot cert reload.
         """
-        import subprocess
-        import socket as _socket
-
         enable = data.get('enabled', False)
         try:
             with open('./config/config.yaml', 'r') as f:
@@ -513,41 +510,13 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
                 cert_dir = os.path.dirname(cert) or '.'
                 os.makedirs(cert_dir, exist_ok=True)
 
-                certs_present = os.path.isfile(cert) and os.path.isfile(key)
-                if certs_present:
-                    # Existing certs — preserve them. The user may have
-                    # already set up browser trust against this cert, or
-                    # imported a CA-signed cert manually.
-                    logger.info(f"SSL enabled — preserving existing certs at {cert}")
-                    cert_action = "preserved"
-                else:
-                    # No certs found — generate a self-signed pair with
-                    # sensible SAN entries so browsers don't immediately
-                    # complain about IP/name mismatches.
-                    hostname = _socket.gethostname() or 'zigbee-manager'
-                    san = f"subjectAltName=DNS:localhost,DNS:{hostname},IP:127.0.0.1"
-
-                    logger.warning(
-                        f"SSL enabled but certs missing — generating self-signed "
-                        f"cert at {cert} (CN={hostname}, SAN={san})"
-                    )
-                    result = subprocess.run([
-                        'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
-                        '-keyout', key, '-out', cert,
-                        '-days', '3650', '-nodes',
-                        '-subj', f'/CN={hostname}',
-                        '-addext', san,
-                    ], capture_output=True, text=True)
-                    if result.returncode != 0:
-                        logger.error(f"openssl failed: {result.stderr}")
-                        return {"success": False, "error": result.stderr}
-                    cert_action = "generated"
-
-                    # Lock down the private key — openssl writes 0644 by default
-                    try:
-                        os.chmod(key, 0o600)
-                    except Exception as e:
-                        logger.warning(f"Could not chmod key file: {e}")
+                # Shared with main.py's first-boot auto-enable so both generate
+                # certs identically (preserves existing, never regenerates).
+                from modules.ssl_bootstrap import ensure_self_signed_cert
+                cert_action = ensure_self_signed_cert(cert, key)
+                if cert_action.startswith("failed"):
+                    logger.error(f"SSL cert generation failed: {cert_action}")
+                    return {"success": False, "error": cert_action}
 
             with open('./config/config.yaml', 'w') as f:
                 yaml.dump(cfg, f, default_flow_style=False)
