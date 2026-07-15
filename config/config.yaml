@@ -3,7 +3,7 @@ database:
   path: ./data/zigbee.db
 
 weather:
-  enabled: true
+  enabled: false
   latitude:
   longitude:
   poll_interval_minutes: 60
@@ -42,7 +42,7 @@ media:
     base_url: "https://translate.google.com/translate_tts"  # keyless; swap engine here
     lang: en
   therapy:                    # neural TTS for the therapy page (Media tab).
-    enabled: true
+    enabled: false
     engine: kokoro            # kokoro = in-process Kokoro-82M (default; the
                               # ~340 MB model downloads on demand from the
                               # therapy UI into data/tts_models).
@@ -58,7 +58,7 @@ media:
                               # on the LAN (needs valid TLS or http). Needed for lossless DASH.
 
 heating:
-  enabled: true
+  enabled: false
   property: { type, age, insulation, glazing, floor_area_m2, floors }
   background:
     present: true
@@ -75,7 +75,7 @@ heating:
   comfort: { target_temp, night_setback, min_temp, preheat_max_minutes }
 
   controller:
-    enabled: true
+    enabled: false
     dry_run: false
     weather_suppression:
       enabled: true
