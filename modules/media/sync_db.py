@@ -90,6 +90,19 @@ def write_samples(group_id: str, rows: List[Dict[str, Any]]):
     ])
 
 
+def _con_if_exists(group_id: str):
+    """Connection only if the group's DB already exists. Read endpoints must
+    never mint a database for an arbitrary group id — a client once queried
+    with a literal "null" and left an empty null.duckdb behind."""
+    gid = _gid(group_id)
+    with _lock:
+        if gid in _cons:
+            return _cons[gid]
+    if not os.path.exists(os.path.join(DB_DIR, f"{gid}.duckdb")):
+        return None
+    return _get_con(group_id)
+
+
 def _all_group_ids() -> List[str]:
     try:
         return [f[:-7] for f in os.listdir(DB_DIR) if f.endswith(".duckdb")]
@@ -97,41 +110,66 @@ def _all_group_ids() -> List[str]:
         return []
 
 
+# Model-training hygiene. Drift: a session's settled rate only counts if the
+# session ran long enough for the drift fit to actually update (otherwise the
+# recorded rate is just the seed it was given — old junk re-recording itself
+# as fresh evidence, which is how −43.5 ppm kept resurrecting) and if it's
+# inside the physical crystal bound. Recency beats volume for both fields:
+# the estimator improves and device firmware changes, so only the newest few
+# qualifying sessions are aggregated.
+MODEL_DRIFT_MIN_SESSION_S = 240   # matches STREAM_RATE_EMA_SPAN_S
+MODEL_DRIFT_MAX_PPM = 50          # matches STREAM_RATE_MAX_PPM
+MODEL_DRIFT_SESSIONS = 5          # newest qualifying sessions per device
+MODEL_LAG_SESSIONS = 10
+
+
 def query_device_model(days: int = 30) -> Dict[str, Dict[str, Any]]:
     """Learned model per cast device, trained across EVERY group's history
     with robust aggregates (medians — one bad-WiFi session can't skew it):
-      lag_s     — median startup lag across sessions, pre-compensation removed
-      drift_ppm — median of each session's SETTLED PLL rate (arg_max by ts,
-                  so early-session ramp-up polls don't dilute it)
+      lag_s     — median startup lag over the newest sessions, pre-comp removed
+      drift_ppm — median settled drift over the newest QUALIFYING sessions
+                  (long enough for the fit to run, physically plausible)
     """
     days = int(days)
-    lag_vals: Dict[str, List[float]] = {}
-    ppm_vals: Dict[str, List[float]] = {}
+    lag_vals: Dict[str, List[tuple]] = {}    # pid -> [(started, lag), ...]
+    ppm_vals: Dict[str, List[tuple]] = {}    # pid -> [(started, ppm), ...]
     for gid in _all_group_ids():
         try:
             con = _get_con(gid)
-            for pid, lag in con.execute(f"""
-                SELECT player_id, lag_s - COALESCE(precomp_s, 0)
+            for pid, started, lag in con.execute(f"""
+                SELECT player_id, min(ts), any_value(lag_s - COALESCE(precomp_s, 0))
                 FROM lag_samples
                 WHERE kind = 'startup' AND lag_s IS NOT NULL
                   AND ts >= now() - INTERVAL '{days} days'
-            """).fetchall():
-                lag_vals.setdefault(pid, []).append(float(lag))
-            for pid, ppm in con.execute(f"""
-                SELECT player_id, arg_max(rate_ppm, ts) AS ppm
-                FROM lag_samples
-                WHERE kind = 'poll' AND rate_ppm IS NOT NULL
-                  AND ts >= now() - INTERVAL '{days} days'
                 GROUP BY player_id, session_id
             """).fetchall():
+                lag_vals.setdefault(pid, []).append((started, float(lag)))
+            for pid, started, ppm in con.execute(f"""
+                SELECT player_id, started, ppm FROM (
+                    SELECT player_id, session_id,
+                           min(ts)                               AS started,
+                           date_diff('second', min(ts), max(ts)) AS dur,
+                           arg_max(rate_ppm, ts)                 AS ppm
+                    FROM lag_samples
+                    WHERE kind = 'poll' AND rate_ppm IS NOT NULL
+                      AND ts >= now() - INTERVAL '{days} days'
+                    GROUP BY player_id, session_id)
+                WHERE dur >= {MODEL_DRIFT_MIN_SESSION_S}
+                  AND abs(ppm) <= {MODEL_DRIFT_MAX_PPM}
+            """).fetchall():
                 if ppm is not None:
-                    ppm_vals.setdefault(pid, []).append(float(ppm))
+                    ppm_vals.setdefault(pid, []).append((started, float(ppm)))
         except Exception as e:
             logger.warning(f"Sync model read failed for group {gid}: {e}")
+
+    def _recent(vals: List[tuple], keep: int) -> List[float]:
+        return [v for _, v in sorted(vals, reverse=True)[:keep]]
+
     out: Dict[str, Dict[str, Any]] = {}
     for pid, lags in lag_vals.items():
-        out[pid] = {"lag_s": median(lags),
-                    "drift_ppm": median(ppm_vals[pid]) if ppm_vals.get(pid) else 0.0,
+        ppms = _recent(ppm_vals.get(pid, []), MODEL_DRIFT_SESSIONS)
+        out[pid] = {"lag_s": median(_recent(lags, MODEL_LAG_SESSIONS)),
+                    "drift_ppm": median(ppms) if ppms else 0.0,
                     "sessions": len(lags)}
     return out
 
@@ -140,7 +178,9 @@ def query_history(group_id: str, hours: int = 24,
                   bucket_minutes: int = 0) -> List[Dict]:
     """Lag/hysteresis history for one group — raw rows by default,
     median-bucketed per player when bucket_minutes > 0."""
-    con = _get_con(group_id)
+    con = _con_if_exists(group_id)
+    if con is None:
+        return []
     hours, bucket_minutes = int(hours), int(bucket_minutes)
     if bucket_minutes > 0:
         rows = con.execute(f"""
@@ -171,7 +211,9 @@ def query_history(group_id: str, hours: int = 24,
 def query_sessions(group_id: str, days: int = 30) -> List[Dict]:
     """Session index for one group, newest first — powers the Sync Lab's
     session picker."""
-    con = _get_con(group_id)
+    con = _con_if_exists(group_id)
+    if con is None:
+        return []
     rows = con.execute(f"""
         SELECT session_id,
                min(ts)                                   AS started,
@@ -197,7 +239,9 @@ def query_session_detail(group_id: str, session_id: str) -> Dict[str, Any]:
     stats. 'Settled' stats only count polls after the speaker first locked
     (|error| within the correction dead-band), so startup convergence
     doesn't pollute the steady-state numbers."""
-    con = _get_con(group_id)
+    con = _con_if_exists(group_id)
+    if con is None:
+        return {"session_id": session_id, "series": [], "players": []}
     series = con.execute("""
         WITH s AS (SELECT min(ts) AS t0 FROM lag_samples WHERE session_id = ?)
         SELECT round(date_diff('millisecond', s.t0, l.ts) / 1000.0, 1) AS elapsed_s,
@@ -258,7 +302,9 @@ def query_group_trend(group_id: str, limit: int = 20) -> List[Dict]:
     """Model report card: per session (oldest→newest), how misaligned the
     group STARTED and how long the slowest speaker took to lock. If the
     learned model is doing its job, both fall toward zero across sessions."""
-    con = _get_con(group_id)
+    con = _con_if_exists(group_id)
+    if con is None:
+        return []
     rows = con.execute("""
         WITH t0 AS (
             SELECT session_id, min(ts) AS t0 FROM lag_samples GROUP BY session_id

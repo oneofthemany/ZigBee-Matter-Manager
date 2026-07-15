@@ -99,6 +99,11 @@ STREAM_STATUS_WAIT_S = 0.25      # wait for each status push to land
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
 #                                  (device drains its HTTP buffer; wall-time
 #                                  so the fast cadence doesn't shorten it)
+STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
+#                                  (re)connect — the device is still filling
+#                                  its buffer and its early media time is
+#                                  junk (observed: first poll off by 550 ms,
+#                                  causing a jump ping-pong at every start)
 # Correction policy (OpenZone §5.2): jumps only for acquisition/rebuffer;
 # every correction below the jump threshold is applied as a bounded rate
 # slew through the fractional resampler — inaudible, no buffer steps.
@@ -706,30 +711,37 @@ class CastSyncPoc:
                     # RESIDUAL — what would remain once the slew finishes.
                     # Deciding on the raw error re-corrected work already
                     # scheduled (a 68 ms trim slew once triggered a jump).
-                    residual = error - st.slew_s
                     st.err_hist = (st.err_hist + [error])[-3:]
                     med3 = sorted(st.err_hist)[len(st.err_hist) // 2]
+                    residual = med3 - st.slew_s
                     # Correction ladder (OpenZone §5.2): buffer jumps only
                     # for acquisition/rebuffer; everything inside ±100 ms is
-                    # a bounded rate slew through the resampler.
-                    if abs(residual) > STREAM_JUMP_MIN_S:
-                        # Way beyond poll noise (σ ≈ 15 ms) — act on one poll.
-                        st.pos += error * RATE
-                        st.shift += error * RATE
-                        st.moved_s += error
+                    # a bounded rate slew through the resampler. Jumps also
+                    # wait for 2 agreeing polls and act on the median — a
+                    # single reading can be wrong by 100s of ms right after
+                    # (re)connect, and jumping on it caused an audible
+                    # overshoot-then-jump-back at every session start.
+                    if abs(residual) > STREAM_JUMP_MIN_S \
+                            and len(st.err_hist) >= 2:
+                        st.pos += med3 * RATE
+                        st.shift += med3 * RATE
+                        st.moved_s += med3
                         st.slew_s = 0.0       # jump supersedes any pending slew
                         st.resyncs += 1
                         st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
                         st.err_hist = []
                         st.lag_hist = []      # device-buffer transient follows
                         batch.append(self._sample_row(st, "resync", lag=lag,
-                                                      error=error))
+                                                      error=med3))
                         logger.info(f"Sync stream resync {st.name}: "
-                                    f"{error * 1000:+.0f} ms")
-                    elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S:
-                        self._pll_update(st, lag)   # decompensated — fit safe
-                    elif abs(med3) > STREAM_SLEW_FAST_THRESH_S \
-                            and len(st.err_hist) >= 2:
+                                    f"{med3 * 1000:+.0f} ms")
+                    elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
+                            or len(st.err_hist) < 2:
+                        # Fast slew still draining, or only one reading since
+                        # the history was reset — observe, don't act. (A
+                        # lone reading has been seen 550 ms wrong.)
+                        self._pll_update(st, lag)
+                    elif abs(med3) > STREAM_SLEW_FAST_THRESH_S:
                         # Fast slew: 1000 ppm ≈ 1.7 cents, inaudible; drains
                         # in |error| × 1000 s. Gated on the 3-poll median so
                         # a single noise spike can't move real audio, and
@@ -894,6 +906,8 @@ class CastSyncPoc:
         """Async generator: endless WAV cut from the shared timeline for one
         device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
         st.connected = True
+        st.cooldown_until = max(st.cooldown_until,
+                                time.monotonic() + STREAM_CONNECT_GRACE_S)
         logger.info(f"Sync stream opened: {st.name}")
         try:
             yield _wav_header()
