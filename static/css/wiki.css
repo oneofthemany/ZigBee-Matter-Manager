@@ -1,0 +1,95 @@
+/* Docs / Wiki tab — readable rendering of server-rendered markdown.
+   Uses currentColor / inherited colours so it works in light and dark themes. */
+
+.wiki-article {
+    line-height: 1.6;
+    word-wrap: break-word;
+}
+
+.wiki-article h1,
+.wiki-article h2,
+.wiki-article h3,
+.wiki-article h4 {
+    margin-top: 1.4em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    line-height: 1.25;
+}
+.wiki-article h1 { font-size: 1.7rem; }
+.wiki-article h2 {
+    font-size: 1.35rem;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+.wiki-article h3 { font-size: 1.15rem; }
+.wiki-article > *:first-child { margin-top: 0; }
+
+.wiki-article p,
+.wiki-article ul,
+.wiki-article ol,
+.wiki-article table,
+.wiki-article pre,
+.wiki-article blockquote { margin-bottom: 1em; }
+
+.wiki-article code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.875em;
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    background: rgba(128, 128, 128, 0.15);
+}
+.wiki-article pre {
+    padding: 0.9em 1em;
+    border-radius: 6px;
+    overflow-x: auto;
+    background: rgba(128, 128, 128, 0.12);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+}
+.wiki-article pre code {
+    padding: 0;
+    background: none;
+    font-size: 0.85em;
+}
+
+.wiki-article blockquote {
+    padding: 0.2em 1em;
+    border-left: 3px solid rgba(128, 128, 128, 0.4);
+    color: inherit;
+    opacity: 0.9;
+}
+
+.wiki-article table {
+    border-collapse: collapse;
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+}
+.wiki-article th,
+.wiki-article td {
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    padding: 0.4em 0.7em;
+    text-align: left;
+}
+.wiki-article th { background: rgba(128, 128, 128, 0.12); }
+
+.wiki-article img { max-width: 100%; height: auto; }
+
+/* docs/images screenshots are not bundled in the image, so any image ref
+   404s — hide the broken-image icon and keep the alt text tidy. */
+.wiki-article img:not([src^="data:"]) {
+    /* Show a subtle placeholder rather than a broken icon. */
+    font-style: italic;
+    opacity: 0.6;
+}
+
+.wiki-raw {
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85em;
+}
+
+/* Sidebar active doc */
+#wikiList .wiki-doc-link.active {
+    font-weight: 600;
+}

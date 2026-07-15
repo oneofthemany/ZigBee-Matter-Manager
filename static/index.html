@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/static/css/debug.css">
     <link rel="stylesheet" href="/static/css/groups.css">
     <link rel="stylesheet" href="/static/css/mqtt-explorer.css">
+    <link rel="stylesheet" href="/static/css/wiki.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/setup-wizard.css">
@@ -120,6 +121,7 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> System Overview</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cog"></i> Settings</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#editor-tab"><i class="fas fa-code"></i> <span class="d-none d-md-inline">Editor</span></button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#wiki"><i class="fas fa-book"></i> <span class="d-none d-md-inline">Docs</span></button></li>
    </ul>
 
 <div class="tab-content">
@@ -1363,6 +1365,20 @@
             <div id="editorContainer"></div>
         </div>
 
+        <div class="tab-pane fade" id="wiki">
+            <div class="row g-3">
+                <div class="col-12 col-md-3">
+                    <div class="list-group" id="wikiList" style="max-height:75vh;overflow-y:auto;">
+                        <div class="text-muted small p-3">Loading…</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-9">
+                    <div id="wikiContent" class="wiki-article border rounded p-3"
+                         style="max-height:75vh;overflow-y:auto;"></div>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
 
@@ -1481,6 +1497,7 @@
 <script src="/static/js/presence-settings.js"></script>
 <script src="/static/js/setup-jedi.js"></script>
 <script src="/static/js/setup-wizard.js"></script>
+<script src="/static/js/wiki.js"></script>
 <script src="/static/js/theme-toggle.js"></script>
 <script src="/static/js/device-status.js"></script>
 <script src="/static/js/device-search.js"></script>

@@ -23,6 +23,7 @@ from routes.heating_routes import register_heating_routes
 from routes.heating_controller_routes import register_heating_controller_routes
 from routes.upgrade_routes import register_upgrade_routes
 from routes.api_docs_routes import register_api_docs_routes
+from routes.wiki_routes import register_wiki_routes
 from routes.auth_routes import register_auth_routes
 from routes.presence_routes import register_presence_routes
 from routes.remote_access_routes import register_remote_access_routes
@@ -70,6 +71,7 @@ __all__ = [
     'register_cast_sync_routes',
     'register_tts_routes',
     'register_api_docs_routes',
+    'register_wiki_routes',
     'register_ac_routes',
     'register_security_routes',
     'manager',

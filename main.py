@@ -193,6 +193,7 @@ try:
         register_cast_sync_routes,
         register_tts_routes,
         register_api_docs_routes,
+        register_wiki_routes,
         register_alert_routes,
         register_signal_routes,
         manager, broadcast_event,
@@ -1033,6 +1034,7 @@ register_floor_plan_routes(app, lambda: heating_controller)
 register_ac_routes(app)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
+register_wiki_routes(app)
 register_alert_routes(app)
 register_presence_routes(app, get_presence_manager)
 register_remote_access_routes(app)
