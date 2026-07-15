@@ -1,5 +1,5 @@
 """
-Acoustic chirp calibrator — the OpenZone §7 sensor, chirp mode.
+Acoustic chirp calibrator — the OpenZone §6.2 sensor (chirp calibration).
 
 The stream-mode status sensor aligns what devices REPORT playing; it cannot
 see each device's output-pipeline latency (DAC chain, speaker DSP) or, of
@@ -24,7 +24,7 @@ import numpy as np
 
 logger = logging.getLogger("modules.media.sync_chirp")
 
-CHIRP_S = 0.1            # chirp duration (doc §7.1: 100 ms log chirp)
+CHIRP_S = 0.1            # chirp duration (open-zone.md §6.2: 100 ms log chirp)
 CHIRP_F0 = 2000.0        # start frequency (Hz)
 CHIRP_F1 = 8000.0        # end frequency (Hz) — above the test pad + click
 CHIRP_AMP = 0.5          # linear amplitude in the PCM mix
@@ -60,7 +60,7 @@ def gcc_phat(sig: np.ndarray, template: np.ndarray,
     Returns (index, quality): fractional sample index in ``sig`` where the
     template starts (parabolic sub-sample interpolation around the peak),
     and the peak-to-floor ratio. PHAT whitening keeps the peak sharp in
-    reverberant rooms (doc §7.4); the floor is the median |correlation|,
+    reverberant rooms (open-zone.md §8); the floor is the median |correlation|,
     so quality is directly comparable against MIN_PEAK_RATIO.
     """
     if len(sig) < 2 * len(template):

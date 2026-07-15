@@ -36,7 +36,7 @@ Fallback stream mode (no Cast console account)
     every smaller correction — clock drift, residual offset, trim changes —
     goes through a per-device fractional-position resampler as a bounded
     rate slew (fast 1000 ppm ≈ 1.7 cents, steady-state 20 ppm), so
-    corrections are inaudible and the buffer never steps (OpenZone §5.2).
+    corrections are inaudible and the buffer never steps (open-zone.md §7.1).
     Needs nothing from Google; manual trim does the final alignment by ear.
 
 This is deliberately PoC-scoped: one global session, generated audio only,
@@ -112,7 +112,7 @@ STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
 #                                  its buffer and its early media time is
 #                                  junk (observed: first poll off by 550 ms,
 #                                  causing a jump ping-pong at every start)
-# Correction policy (OpenZone §5.2): jumps only for acquisition/rebuffer;
+# Correction policy (open-zone.md §7.1): jumps only for acquisition/rebuffer;
 # every correction below the jump threshold is applied as a bounded rate
 # slew through the fractional resampler — inaudible, no buffer steps.
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
@@ -144,7 +144,7 @@ def _gen_float(n0: int, frames: int) -> np.ndarray:
     timeline. Chord pad with a slow swell + a 1 kHz click every 2 s.
     This is the integer-grid source the resampler interpolates over; step 2
     replaces it with the real-media ring buffer — at which point the linear
-    interpolator must be upgraded too (soxr per OpenZone §5.2): linear is
+    interpolator must be upgraded too (soxr per open-zone.md §4.2): linear is
     clean on this ≤1 kHz signal but rolls off HF audibly on real music."""
     t = (n0 + np.arange(frames)) / RATE
     sig = (0.10 * np.sin(2 * np.pi * 220.0 * t)
@@ -170,7 +170,7 @@ def _gen_samples(n0: int, frames: int) -> bytes:
 
 def _resample_block(pos: float, frames: int, adv: float,
                     extra=None) -> bytes:
-    """Fractional-position resampler (the OpenZone §5.2 actuator): emit
+    """Fractional-position resampler (the open-zone.md §4.2 actuator): emit
     ``frames`` output samples reading the timeline from float sample
     position ``pos``, consuming ``adv`` timeline samples in total, i.e. a
     ratio of adv/frames modulated a few hundred ppm around unity. Sub-sample
@@ -529,7 +529,7 @@ class CastSyncPoc:
                     logger.debug(f"trim push failed for {player_id}: {e}")
         # Stream mode: positive trim = play later = serve older timeline.
         # Trims apply as an IMMEDIATE buffer step, deliberately breaking the
-        # §5.2 no-step rule: trim exists for by-ear alignment, and a slewed
+        # no-step rule (open-zone.md §7.4): trim exists for by-ear alignment, and a slewed
         # trim takes |Δ|×1000 s to become audible — users chased ±400 ms in
         # circles because they couldn't hear their own adjustments land.
         # The step is decompensated via ``moved_s``, so the drift fit keeps
@@ -548,7 +548,7 @@ class CastSyncPoc:
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
     # ------------------------------------------------------------------
-    # Acoustic calibration (OpenZone §7 chirp mode): measure the audio in
+    # Acoustic calibration (open-zone.md §6.2 chirp mode): measure the audio in
     # the AIR, which the status sensor cannot see, and set trims from it.
     # ------------------------------------------------------------------
     async def calibrate(self) -> dict:
@@ -842,7 +842,7 @@ class CastSyncPoc:
                     st.err_hist = (st.err_hist + [error])[-3:]
                     med3 = sorted(st.err_hist)[len(st.err_hist) // 2]
                     residual = med3 - st.slew_s
-                    # Correction ladder (OpenZone §5.2): buffer jumps only
+                    # Correction ladder (open-zone.md §7.1): buffer jumps only
                     # for acquisition/rebuffer; everything inside ±100 ms is
                     # a bounded rate slew through the resampler. Jumps also
                     # wait for 2 agreeing polls and act on the median — a
@@ -937,7 +937,7 @@ class CastSyncPoc:
         return sum((p[0] - tm) * (p[1] - ym) for p in pts) / den
 
     def _pll_update(self, st: _Stream, lag: float):
-        """Drift estimator (OpenZone §7.2): fit the slope of the device's
+        """Drift estimator (open-zone.md §7.2): fit the slope of the device's
         FREE-RUNNING lag — measured lag with every deliberate timeline move
         (rate term, slews, jumps) added back via ``moved_s``. That slope IS
         the device's clock drift, measured independently of whatever
@@ -957,7 +957,7 @@ class CastSyncPoc:
         if slope is None:
             return
         # One robust pass: drop >3σ outliers (bogus media status, WiFi
-        # hiccup) and refit — §7.2's outlier rejection.
+        # hiccup) and refit — open-zone.md §7.2's outlier rejection.
         n = len(st.lag_hist)
         tm = sum(p[0] for p in st.lag_hist) / n
         ym = sum(p[1] for p in st.lag_hist) / n
@@ -1078,7 +1078,7 @@ class CastSyncPoc:
                 if ahead > STREAM_AHEAD_S:
                     await asyncio.sleep(STREAM_BLOCK_S / 2)
                     continue
-                # Actuator (OpenZone §5.2): ratio = 1 + drift + slew. The
+                # Actuator (open-zone.md §4.2): ratio = 1 + drift + slew. The
                 # drift term cancels the device clock; the slew term drains
                 # the scheduled offset at a bounded rate — fast (1000 ppm)
                 # above 15 ms remaining, gentle (20 ppm) below. All of it is
