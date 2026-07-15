@@ -18,6 +18,8 @@ let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sync'
 let _syncGroups = [];       // saved speaker-sync groups (from /api/media/sync/groups)
 let _syncStatus = null;     // last /api/media/sync/status snapshot
 let _syncTimer = null;      // stats poll while the sync pane is open
+let _syncLabKeep = null;    // live Sync Lab DOM node — survives pane wipes so
+//                             charts are re-attached, never rebuilt mid-test
 let _searchSource = 'radio'; // 'radio' | 'tidal' | 'therapy'
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
@@ -1038,31 +1040,50 @@ function switchGroupTab(tab) {
 function renderGroupBuilder() {
     const el = document.getElementById('mediaPlayers');
     if (!el) return;
-    el.innerHTML = `
-      <ul class="nav nav-pills mb-2">
-        <li class="nav-item">
-          <button class="nav-link py-1 px-3 ${_groupTab === 'wiim' ? 'active' : ''}"
-                  onclick="window.mediaGroupTab('wiim')">
-            <i class="fas fa-volume-up me-1"></i>WiiM multiroom</button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link py-1 px-3 ${_groupTab === 'sync' ? 'active' : ''}"
-                  onclick="window.mediaGroupTab('sync')">
-            <i class="fab fa-chromecast me-1"></i>Speaker sync <span class="badge bg-warning text-dark ms-1">beta</span></button>
-        </li>
-        <li class="nav-item ms-auto">
-          <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">
-            <i class="fas fa-xmark me-1"></i>Close</button>
-        </li>
-      </ul>
-      <div id="mediaGroupPane"></div>`;
-    if (_groupTab === 'wiim') { _stopSyncPoll(); renderWiimBuilder(); }
-    else renderSyncPane();
+    // Idempotent: player refreshes re-enter here constantly while the
+    // builder is open. Rebuilding the scaffold each time destroyed
+    // #mediaGroupPane — and the live Sync Lab inside it — mid-test (the
+    // recurring "charts drop out" bug). Build once; after that only the
+    // pill states are touched, and the sync pane (which keeps its own
+    // state + poller) is left alone unless the tab actually changed.
+    let pane = document.getElementById('mediaGroupPane');
+    if (!pane) {
+        el.innerHTML = `
+          <ul class="nav nav-pills mb-2">
+            <li class="nav-item">
+              <button class="nav-link py-1 px-3" id="mediaGroupTabWiim"
+                      onclick="window.mediaGroupTab('wiim')">
+                <i class="fas fa-volume-up me-1"></i>WiiM multiroom</button>
+            </li>
+            <li class="nav-item">
+              <button class="nav-link py-1 px-3" id="mediaGroupTabSync"
+                      onclick="window.mediaGroupTab('sync')">
+                <i class="fab fa-chromecast me-1"></i>Speaker sync <span class="badge bg-warning text-dark ms-1">beta</span></button>
+            </li>
+            <li class="nav-item ms-auto">
+              <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">
+                <i class="fas fa-xmark me-1"></i>Close</button>
+            </li>
+          </ul>
+          <div id="mediaGroupPane"></div>`;
+        pane = document.getElementById('mediaGroupPane');
+    }
+    document.getElementById('mediaGroupTabWiim')
+        ?.classList.toggle('active', _groupTab === 'wiim');
+    document.getElementById('mediaGroupTabSync')
+        ?.classList.toggle('active', _groupTab === 'sync');
+    if (_groupTab === 'wiim') {
+        _stopSyncPoll();
+        renderWiimBuilder();          // cheap + depends on _players
+    } else if (pane.dataset.tab !== 'sync') {
+        renderSyncPane();             // first show / tab switch only
+    }
 }
 
 function renderWiimBuilder() {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
+    el.dataset.tab = 'wiim';
     const wiim = _players.filter(p => p.provider === 'wiim' && p.available && !p.is_group);
     if (wiim.length < 2) {
         el.innerHTML = `<div class="alert alert-info mb-0">
@@ -1183,14 +1204,20 @@ function _syncMemberRow(m, groupActive) {
 async function renderSyncPane() {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
-    // Keep a live Sync Lab (charts, zoom, scroll) across pane rebuilds —
-    // player refreshes re-render this pane, and rebuilding the lab from
-    // scratch every time is exactly the "charts keep resetting" bug.
-    const savedLab = document.getElementById('syncLabHost');
-    const keepLab = savedLab && savedLab.childElementCount > 0;
-    el.innerHTML = '<div class="text-muted small">Loading…</div>';
+    el.dataset.tab = 'sync';
+    // Fetch BEFORE touching the DOM: the old content (including a live
+    // Sync Lab) stays attached and visible for the whole round-trip, so
+    // charts don't blink out while the pane refreshes.
+    const hadContent = el.childElementCount > 0;
+    if (!hadContent) el.innerHTML = '<div class="text-muted small">Loading…</div>';
     try { await _syncFetch(); }
     catch (e) { el.innerHTML = warn('Could not load sync groups: ' + e.message); return; }
+    // Keep a live Sync Lab (charts, zoom, scroll) across pane rebuilds —
+    // rebuilding the lab from scratch every time is exactly the "charts
+    // keep resetting" bug. The module-level fallback still finds the node
+    // when a parent rebuild detached it (getElementById can't).
+    const savedLab = document.getElementById('syncLabHost') || _syncLabKeep;
+    const keepLab = savedLab && savedLab.childElementCount > 0;
 
     const disabled = !_syncStatus || !!_syncStatus.error;
     const unregistered = !disabled && !_syncStatus.configured;
@@ -1271,6 +1298,7 @@ async function renderSyncPane() {
     for (const d of ((_syncStatus || {}).devices || [])) _syncMeterPaint(d.player_id, d);
     if (keepLab) document.getElementById('syncLabHost').replaceWith(savedLab);
     else restoreSyncLab();
+    _syncLabKeep = document.getElementById('syncLabHost');
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }

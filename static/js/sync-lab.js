@@ -181,7 +181,14 @@ function _startLive() {
                     fetch(`/api/media/sync/trend?group_id=${encodeURIComponent(_gid)}`)
                         .then(r => r.json()).catch(() => null),
                 ]);
-                _detail = detail;
+                // A failed/empty fetch is a transient (auth blip, poll race)
+                // — keep showing the last good data rather than blanking
+                // the charts for a tick. A genuinely fresh session has a
+                // new id, so its (legitimately) empty detail still lands.
+                if (detail && (detail.series?.length
+                               || detail.session_id !== _detail?.session_id)) {
+                    _detail = detail;
+                }
                 if (tr && tr.trend) _trend = tr.trend;
                 _renderDetail(true);   // merged in-place update — no reset
             }
@@ -313,11 +320,12 @@ function _renderDetail(merge = false) {
     if (!_detail || !_detail.series || !_detail.series.length) {
         _renderTiles([]);
         _renderHeadline([]);
-        _spreadChart?.setOption(_emptyOption(''));
-        _convChart?.setOption(_emptyOption('No measurements in this session yet'));
-        _pllChart?.setOption(_emptyOption(''));
+        _setChart(_spreadChart, _emptyOption(''), false, true);
+        _setChart(_convChart, _emptyOption('No measurements in this session yet'),
+                  false, true);
+        _setChart(_pllChart, _emptyOption(''), false, true);
         const tbl = document.getElementById('syncLabTable');
-        if (tbl) tbl.innerHTML = '<div class="text-muted">No data.</div>';
+        if (tbl) _setHtml(tbl, '<div class="text-muted">No data.</div>');
         return;
     }
     const players = _detail.players || [];
@@ -327,7 +335,7 @@ function _renderDetail(merge = false) {
     _renderTiles(players);
     _renderSpread(spread, merge);
     _renderCharts(_detail.series, players.map(p => p.player_id), merge);
-    _renderTrend();
+    _renderTrend(merge);
     _renderTable(players);
 }
 
@@ -378,11 +386,12 @@ function _renderHeadline(spread) {
 function _renderSpread(spread, merge = false) {
     if (!_spreadChart) return;
     if (!spread.length) {
-        _spreadChart.setOption(_emptyOption('Needs two speakers reporting'));
+        _setChart(_spreadChart, _emptyOption('Needs two speakers reporting'),
+                  false, true);
         return;
     }
     const c = _pal()[0];
-    _spreadChart.setOption({
+    _setChart(_spreadChart, {
         grid: { left: 48, right: 16, top: 10, bottom: 26 },
         tooltip: { trigger: 'axis',
                    valueFormatter: v => (v == null ? '—' : `${v} ms`) },
@@ -401,7 +410,7 @@ function _renderSpread(spread, merge = false) {
                 data: [[{ yAxis: 0 }, { yAxis: AUDIBLE_MS }]],
             },
         }],
-    }, !merge);
+    }, merge);
 }
 
 // ---------------------------------------------------------------------------
@@ -493,11 +502,12 @@ function _renderGuidance(players) {
     });
 }
 
-function _renderTrend() {
+function _renderTrend(merge = false) {
     if (!_trendAChart || !_trendBChart) return;
     if (!_trend.length) {
-        _trendAChart.setOption(_emptyOption('First session — nothing to compare yet'));
-        _trendBChart.setOption(_emptyOption(''));
+        _setChart(_trendAChart,
+                  _emptyOption('First session — nothing to compare yet'), false, true);
+        _setChart(_trendBChart, _emptyOption(''), false, true);
         return;
     }
     const c = _pal()[0];
@@ -518,8 +528,8 @@ function _renderTrend() {
             barMaxWidth: 26,
         }],
     });
-    _trendAChart.setOption(bar(_trend.map(t => t.start_misalign_ms), 'ms'));
-    _trendBChart.setOption(bar(_trend.map(t => t.lock_s), 's'));
+    _setChart(_trendAChart, bar(_trend.map(t => t.start_misalign_ms), 'ms'), merge);
+    _setChart(_trendBChart, bar(_trend.map(t => t.lock_s), 's'), merge);
 }
 
 function _tile(p) {
@@ -637,7 +647,7 @@ function _renderCharts(series, pids, merge = false) {
             tooltip: { valueFormatter: () => 'manual trim' },
         });
     });
-    _convChart?.setOption({
+    _setChart(_convChart, {
         grid: { left: 48, right: 16, top: 28, bottom: 26 },
         legend: { data: names, top: 0, icon: 'roundRect' },
         tooltip: { trigger: 'axis',
@@ -646,8 +656,8 @@ function _renderCharts(series, pids, merge = false) {
         yAxis: { type: 'value', name: 'ms',
                  axisLine: { show: false } },
         series: convSeries,
-    }, !merge);
-    _pllChart?.setOption({
+    }, merge);
+    _setChart(_pllChart, {
         grid: { left: 48, right: 16, top: 10, bottom: 26 },
         tooltip: { trigger: 'axis',
                    valueFormatter: v => (v == null ? '—' : `${v} ppm`) },
@@ -663,7 +673,7 @@ function _renderCharts(series, pids, merge = false) {
                 label: { show: false }, data: [{ yAxis: 0 }],
             } } : {}),
         })),
-    }, !merge);
+    }, merge);
 }
 
 function _renderTable(players) {
