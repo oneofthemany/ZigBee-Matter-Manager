@@ -765,6 +765,52 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 CMD ["python", "launcher.py"]
 DOCKERFILE_BOTTOM
     ok "Containerfile written (appender=${WITH_APPENDER})."
+
+    # Keep the image lean: exclude build-context cruft that `COPY . .` would
+    # otherwise bake in (~24 MB of .git + screenshots that are useless at
+    # runtime). Written next to the Containerfile so podman (.containerignore /
+    # .dockerignore) and docker (.dockerignore) both honour it, and so the
+    # upgrade flow — which also calls write_containerfile() — gets it for free.
+    #
+    # NOTE: docs/*.md is deliberately KEPT (it's ~100 KB and is what a future
+    # in-app wiki would render); only the heavy docs/images screenshots are cut.
+    cat > "$CLONE_DIR/.dockerignore" << 'DOCKERIGNORE'
+# Version control / CI (never needed at runtime; .git alone is ~19 MB)
+.git
+.github
+.gitignore
+.gitattributes
+
+# Heavy docs/readme imagery — keep the markdown, drop the screenshots
+docs/images
+screenshots
+
+# Dev tooling / editor
+# NB: do NOT exclude test_*.py — modules/test_recovery.py and
+# routes/test_recovery_routes.py are RUNTIME modules, not pytest files.
+.idea
+.vscode
+*.code-workspace
+
+# Python / build caches
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Rust build artifacts (the wheel is built separately in the image)
+zmm_telemetry/target
+
+# Local/editor/OS noise
+*.log
+*.tmp
+*.swp
+.DS_Store
+scratchpad
+DOCKERIGNORE
+    ok ".dockerignore written (excludes .git, screenshots, caches; keeps docs/*.md)"
 }
 
 # =============================================================================
