@@ -3,8 +3,11 @@
  *
  * Renders into #syncLabHost (Media → Group → sync pane) from the group's
  * own DuckDB via /api/media/sync/{sessions,session,model}:
+ *   - group spread chart (the headline): how far apart the speakers are,
+ *     against the ±20 ms "audibly together" band
  *   - convergence chart: per-speaker playback error vs elapsed time, with
- *     the ±60 ms lock window, hard-resync (◆) and manual-trim (▲) events
+ *     the ±30 ms slew window, ±100 ms jump threshold, hard-resync (◆),
+ *     rate-slew (▽) and manual-trim (▲) events
  *   - PLL chart: per-speaker stream rate correction (ppm) locking onto the
  *     device's true clock offset
  *   - per-speaker tiles: startup lag, time-to-lock, settled median/p95
@@ -13,7 +16,8 @@
  *
  * Colours: fixed per speaker by group-member order (colour follows the
  * entity), palette validated for CVD + both themes (dataviz procedure).
- * Live mode: while this group's session is running, refreshes every 3 s.
+ * Live mode: while this group's session is running, refreshes every 3 s
+ * IN PLACE — merged chart updates, stable DOM — so nothing visibly resets.
  */
 import { createChart } from './chart-utils.js';
 
@@ -24,7 +28,11 @@ const PALETTE = {
     dark:  ['#3987e5', '#d95926', '#199e70', '#9085e9'],
     extra: { light: '#7d858f', dark: '#8f98a3' },   // members beyond 4 — never cycle hues
 };
-const LOCK_MS = 60;           // matches STREAM_CORRECT_MIN_S server-side
+// Server correction ladder (cast_sync.py): inside ±SLEW_MS the stream is
+// rate-slewed (inaudible); beyond ±JUMP_MS it is hard-resynced.
+const SLEW_MS = 30;           // STREAM_SLEW_FAST_THRESH_S
+const JUMP_MS = 100;          // STREAM_JUMP_MIN_S
+const AUDIBLE_MS = 20;        // spread below this reads as echo-free
 
 let _gid = null;              // open group id ('' = closed)
 let _group = null;            // {id, name, members:[{player_id, name}]}
@@ -33,6 +41,7 @@ let _selected = '';           // selected session_id
 let _model = {};              // /api/media/sync/model
 let _detail = null;           // /api/media/sync/session payload
 let _trend = [];              // /api/media/sync/trend payload
+let _spreadChart = null;
 let _convChart = null;
 let _pllChart = null;
 let _trendAChart = null;
@@ -46,6 +55,17 @@ function esc(s) {
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 const _dark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+
+/** Write innerHTML only when it actually changed — live ticks re-render
+ *  every 3 s and must not wipe hover/focus state or flicker static text.
+ *  Returns true when the DOM was touched (callers rebind handlers then). */
+function _setHtml(el, html) {
+    if (!el) return false;
+    if (el._zmmPrev === html) return false;
+    el._zmmPrev = html;
+    el.innerHTML = html;
+    return true;
+}
 const _pal = () => _dark() ? PALETTE.dark : PALETTE.light;
 const fmtMs = v => (v == null || !isFinite(v)) ? '—' : `${Math.round(v)} ms`;
 const fmtS = v => (v == null || !isFinite(v)) ? '—' : `${Number(v).toFixed(1)} s`;
@@ -66,7 +86,7 @@ function _nameFor(pid) {
 // ---------------------------------------------------------------------------
 // Public API (wired from media.js)
 // ---------------------------------------------------------------------------
-export async function openSyncLab(gid, group) {
+export async function openSyncLab(gid, group, opts = {}) {
     if (_gid === gid) { closeSyncLab(); return; }   // toggle
     closeSyncLab();
     _gid = gid;
@@ -79,11 +99,16 @@ export async function openSyncLab(gid, group) {
         _themeHook = () => { if (_gid) { _renderShell(); _renderDetail(); } };
         document.addEventListener('themechange', _themeHook);
     }
-    document.getElementById('syncLab')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Only jump the viewport on a user-initiated open — a restore after a
+    // pane rebuild must not yank the page around mid-test.
+    if (!opts.restore) {
+        document.getElementById('syncLab')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 export function closeSyncLab() {
     _stopLive();
+    if (_spreadChart) { _spreadChart.dispose(); _spreadChart = null; }
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
     if (_trendAChart) { _trendAChart.dispose(); _trendAChart = null; }
@@ -94,12 +119,13 @@ export function closeSyncLab() {
     _gid = null; _group = null; _detail = null; _sessions = []; _selected = '';
 }
 
-/** Re-open after the sync pane re-renders (renderSyncPane wipes the host). */
+/** Re-open after the sync pane re-renders with a FRESH host (the normal
+ *  path keeps the old DOM node alive, so this is only the fallback). */
 export function restoreSyncLab() {
     if (!_gid) return;
     const gid = _gid;
     _gid = null;                        // defeat the toggle in openSyncLab
-    openSyncLab(gid, _group);
+    openSyncLab(gid, _group, { restore: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +183,7 @@ function _startLive() {
                 ]);
                 _detail = detail;
                 if (tr && tr.trend) _trend = tr.trend;
-                _renderDetail();
+                _renderDetail(true);   // merged in-place update — no reset
             }
         } catch (e) { /* transient — next tick */ }
     }, 3000);
@@ -173,6 +199,7 @@ function _stopLive() {
 function _renderShell() {
     const host = document.getElementById('syncLabHost');
     if (!host) return;
+    if (_spreadChart) { _spreadChart.dispose(); _spreadChart = null; }
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
     host.innerHTML = `
@@ -189,16 +216,24 @@ function _renderShell() {
         <div class="card-body">
           <p class="small text-muted mb-3">
             Each speaker pulls its own PCM stream cut from one server timeline and reports
-            its playback position back every 2.5&nbsp;s. Deviation from the group target is
-            plotted below: outside ±${LOCK_MS}&nbsp;ms the stream is hard-resynced
-            (<span aria-hidden="true">◆</span>); inside it, a rate-lock loop reshapes the
-            stream by parts-per-million until the device's clock offset is cancelled.
-            Manual trims show as <span aria-hidden="true">▲</span>. Startup latency and
-            drift learned here pre-align the next session.
+            its playback position back every 1–3&nbsp;s (fast while acquiring, relaxed once
+            locked; each report is the median of three reads). Deviation from the group target is
+            plotted below: only past ±${JUMP_MS}&nbsp;ms (startup, rebuffer) is the stream
+            hard-resynced (<span aria-hidden="true">◆</span>); every smaller correction is
+            an inaudible parts-per-million rate slew (<span aria-hidden="true">▽</span>)
+            while a drift estimator cancels each device's clock error. Manual trims show
+            as <span aria-hidden="true">▲</span>. Startup latency and drift learned here
+            pre-align the next session.
           </p>
           <div id="syncLabGuide" class="mb-3"></div>
+          <div class="row g-2 mb-3" id="syncLabHeadline"></div>
           <div class="row g-2 mb-3" id="syncLabTiles"></div>
-          <div class="fw-semibold small mb-1">Convergence — playback error vs group target</div>
+          <div class="fw-semibold small mb-1">Group spread — how far apart the speakers are</div>
+          <p class="small text-muted mb-1">Worst pairwise gap at each poll. Inside the
+            shaded ±${AUDIBLE_MS}&nbsp;ms band the group sounds echo-free.</p>
+          <div id="syncLabSpread" style="height: 170px" role="img"
+               aria-label="Worst speaker-to-speaker sync gap over time"></div>
+          <div class="fw-semibold small mb-1 mt-3">Convergence — playback error vs group target</div>
           <div id="syncLabConv" style="height: 260px" role="img"
                aria-label="Per-speaker playback error over time"></div>
           <div class="fw-semibold small mb-1 mt-3">Rate lock — stream correction (ppm)</div>
@@ -234,6 +269,7 @@ function _renderShell() {
         _renderDetail();
     };
     _refreshPicker();
+    _spreadChart = createChart(document.getElementById('syncLabSpread'));
     _convChart = createChart(document.getElementById('syncLabConv'));
     _pllChart = createChart(document.getElementById('syncLabPll'));
     _trendAChart = createChart(document.getElementById('syncLabTrendA'));
@@ -243,13 +279,14 @@ function _renderShell() {
 function _refreshPicker() {
     const sel = document.getElementById('syncLabSession');
     if (!sel) return;
+    if (document.activeElement === sel) return;   // don't fight an open dropdown
     if (!_sessions.length) {
-        sel.innerHTML = '<option>No sessions recorded yet — run a test</option>';
+        _setHtml(sel, '<option>No sessions recorded yet — run a test</option>');
         sel.disabled = true;
         return;
     }
     sel.disabled = false;
-    sel.innerHTML = _sessions.map((s, i) => {
+    _setHtml(sel, _sessions.map((s, i) => {
         const d = new Date(s.started);
         const when = d.toLocaleString([], { month: 'short', day: 'numeric',
                                             hour: '2-digit', minute: '2-digit' });
@@ -259,13 +296,13 @@ function _refreshPicker() {
         return `<option value="${esc(s.session_id)}" ${s.session_id === _selected ? 'selected' : ''}>
                   ${when} · ${dur} · ${s.players} speakers · ${s.resyncs} resyncs${i === 0 ? ' (latest)' : ''}
                 </option>`;
-    }).join('');
+    }).join(''));
 }
 
 // ---------------------------------------------------------------------------
 // Detail (tiles, charts, table)
 // ---------------------------------------------------------------------------
-function _renderDetail() {
+function _renderDetail(merge = false) {
     const live = document.getElementById('syncLabLive');
     if (live) {
         const isLatest = _sessions.length && _selected === _sessions[0].session_id;
@@ -275,6 +312,8 @@ function _renderDetail() {
     }
     if (!_detail || !_detail.series || !_detail.series.length) {
         _renderTiles([]);
+        _renderHeadline([]);
+        _spreadChart?.setOption(_emptyOption(''));
         _convChart?.setOption(_emptyOption('No measurements in this session yet'));
         _pllChart?.setOption(_emptyOption(''));
         const tbl = document.getElementById('syncLabTable');
@@ -282,11 +321,87 @@ function _renderDetail() {
         return;
     }
     const players = _detail.players || [];
+    const spread = _spreadSeries(_detail.series, players.map(p => p.player_id));
     _renderGuidance(players);
+    _renderHeadline(spread);
     _renderTiles(players);
-    _renderCharts(_detail.series, players.map(p => p.player_id));
+    _renderSpread(spread, merge);
+    _renderCharts(_detail.series, players.map(p => p.player_id), merge);
     _renderTrend();
     _renderTable(players);
+}
+
+// ---------------------------------------------------------------------------
+// Group spread — the metric the ears actually hear
+// ---------------------------------------------------------------------------
+/** Worst pairwise error gap over time: [[elapsed_s, spread_ms], ...].
+ *  Uses each speaker's most recent poll; a point is emitted only while every
+ *  speaker has reported within the last 8 s (≈2 poll cycles). */
+function _spreadSeries(series, pids) {
+    if (pids.length < 2) return [];
+    const lastErr = {}, lastT = {};
+    const out = [];
+    for (const r of series) {
+        if (r.kind !== 'poll' || r.error_ms == null) continue;
+        lastErr[r.player_id] = r.error_ms;
+        lastT[r.player_id] = r.elapsed_s;
+        if (pids.every(p => lastT[p] != null && r.elapsed_s - lastT[p] <= 8)) {
+            const errs = pids.map(p => lastErr[p]);
+            out.push([r.elapsed_s, Math.round(Math.max(...errs) - Math.min(...errs))]);
+        }
+    }
+    return out;
+}
+
+function _renderHeadline(spread) {
+    const el = document.getElementById('syncLabHeadline');
+    if (!el) return;
+    if (!spread.length) { _setHtml(el, ''); return; }
+    const vals = spread.map(p => p[1]);
+    const sorted = [...vals].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const now = vals[vals.length - 1];
+    const inSyncPct = Math.round(100 * vals.filter(v => v <= AUDIBLE_MS).length / vals.length);
+    const stat = (label, value, sub, good) => `
+      <div class="col-4">
+        <div class="border rounded p-2 text-center h-100">
+          <div class="fs-4 fw-semibold ${good == null ? '' : good ? 'text-success' : 'text-warning'}">${value}</div>
+          <div class="small text-muted">${label}${sub ? `<br>${sub}` : ''}</div>
+        </div>
+      </div>`;
+    _setHtml(el,
+        stat('group spread now', `${now} ms`, '', now <= AUDIBLE_MS)
+        + stat('median spread', `${median} ms`, 'this session', median <= AUDIBLE_MS)
+        + stat('time in sync', `${inSyncPct}%`, `within ±${AUDIBLE_MS} ms`, inSyncPct >= 80));
+}
+
+function _renderSpread(spread, merge = false) {
+    if (!_spreadChart) return;
+    if (!spread.length) {
+        _spreadChart.setOption(_emptyOption('Needs two speakers reporting'));
+        return;
+    }
+    const c = _pal()[0];
+    _spreadChart.setOption({
+        grid: { left: 48, right: 16, top: 10, bottom: 26 },
+        tooltip: { trigger: 'axis',
+                   valueFormatter: v => (v == null ? '—' : `${v} ms`) },
+        xAxis: { type: 'value', name: 's', nameGap: 6, min: 0,
+                 axisLabel: { formatter: v => `${v}` } },
+        yAxis: { type: 'value', name: 'ms', min: 0 },
+        series: [{
+            id: 'spread', name: 'spread', type: 'line', data: spread,
+            showSymbol: false, lineStyle: { width: 2, color: c },
+            itemStyle: { color: c },
+            areaStyle: { opacity: 0.12, color: c },
+            markArea: {
+                silent: true,
+                itemStyle: { color: _dark() ? 'rgba(25,158,112,0.12)'
+                                            : 'rgba(27,175,122,0.10)' },
+                data: [[{ yAxis: 0 }, { yAxis: AUDIBLE_MS }]],
+            },
+        }],
+    }, !merge);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +463,7 @@ function _renderGuidance(players) {
                      : spread <= 45 ? '— close; a small trim will tighten it.'
                      : '— audibly apart; apply the suggested trims below.'}` });
     }
-    el.innerHTML = `
+    const changed = _setHtml(el, `
       <div class="border rounded p-2">
         <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
         ${items.map(i => `
@@ -356,7 +471,8 @@ function _renderGuidance(players) {
             <i class="fas ${i.icon} text-${i.cls}" aria-hidden="true" style="width:14px"></i>
             <span>${i.html}</span>
           </div>`).join('')}
-      </div>`;
+      </div>`);
+    if (!changed) return;
     el.querySelectorAll('.syncGuideApply').forEach(btn => {
         btn.onclick = async () => {
             btn.disabled = true;
@@ -433,9 +549,9 @@ function _tile(p) {
 }
 
 function _renderTiles(players) {
-    const el = document.getElementById('syncLabTiles');
-    if (el) el.innerHTML = players.map(_tile).join('')
-        || '<div class="col text-muted small">No speakers reported in this session.</div>';
+    _setHtml(document.getElementById('syncLabTiles'),
+        players.map(_tile).join('')
+        || '<div class="col text-muted small">No speakers reported in this session.</div>');
 }
 
 function _emptyOption(text) {
@@ -444,9 +560,20 @@ function _emptyOption(text) {
              xAxis: { show: false }, yAxis: { show: false }, series: [] };
 }
 
-function _renderCharts(series, pids) {
+/** Apply a chart option, tracking empty↔data transitions. A merged update
+ *  must never be merged INTO an empty-state option (the placeholder title
+ *  and hidden axes would survive the merge — stuck "no data" text, missing
+ *  axis labels), so any flip between the two states forces a full replace. */
+function _setChart(chart, opt, merge = false, empty = false) {
+    if (!chart) return;
+    const flip = chart._zmmEmpty !== empty;
+    chart._zmmEmpty = empty;
+    chart.setOption(opt, !merge || flip);
+}
+
+function _renderCharts(series, pids, merge = false) {
     const byPid = {};
-    for (const pid of pids) byPid[pid] = { poll: [], ppm: [], resync: [], trim: [] };
+    for (const pid of pids) byPid[pid] = { poll: [], ppm: [], resync: [], slew: [], trim: [] };
     for (const r of series) {
         const b = byPid[r.player_id];
         if (!b) continue;
@@ -455,6 +582,8 @@ function _renderCharts(series, pids) {
             if (r.rate_ppm != null) b.ppm.push([r.elapsed_s, Math.round(r.rate_ppm)]);
         } else if (r.kind === 'resync' && r.error_ms != null) {
             b.resync.push([r.elapsed_s, Math.round(r.error_ms)]);
+        } else if (r.kind === 'slew' && r.error_ms != null) {
+            b.slew.push([r.elapsed_s, Math.round(r.error_ms)]);
         } else if (r.kind === 'trim') {
             b.trim.push([r.elapsed_s, 0]);
         }
@@ -464,27 +593,46 @@ function _renderCharts(series, pids) {
         xAxis: { type: 'value', name: 's', nameGap: 6, min: 0,
                  axisLabel: { formatter: v => `${v}` } },
     };
+    // Every series always exists with a stable id (empty data is fine), so
+    // merged live updates map onto the same series instead of re-stacking.
     const convSeries = [];
     pids.forEach((pid, i) => {
         const c = _colorFor(pid);
         convSeries.push({
-            name: names[i], type: 'line', data: byPid[pid].poll,
+            id: `line-${pid}`, name: names[i], type: 'line', data: byPid[pid].poll,
             showSymbol: false, lineStyle: { width: 2, color: c },
             itemStyle: { color: c }, emphasis: { focus: 'series' },
-            ...(i === 0 ? { markArea: {
-                silent: true,
-                itemStyle: { color: _dark() ? 'rgba(140,150,160,0.10)'
-                                            : 'rgba(120,120,120,0.08)' },
-                data: [[{ yAxis: -LOCK_MS }, { yAxis: LOCK_MS }]],
-            } } : {}),
+            ...(i === 0 ? {
+                // Inner band: slew window (corrections inaudible). Dashed
+                // lines: the ±jump threshold (an audible hard resync).
+                markArea: {
+                    silent: true,
+                    itemStyle: { color: _dark() ? 'rgba(140,150,160,0.10)'
+                                                : 'rgba(120,120,120,0.08)' },
+                    data: [[{ yAxis: -SLEW_MS }, { yAxis: SLEW_MS }]],
+                },
+                markLine: {
+                    silent: true, symbol: 'none',
+                    lineStyle: { type: 'dashed', width: 1 },
+                    label: { show: true, position: 'insideEndTop',
+                             formatter: 'jump', fontSize: 10 },
+                    data: [{ yAxis: JUMP_MS }, { yAxis: -JUMP_MS }],
+                },
+            } : {}),
         });
-        if (byPid[pid].resync.length) convSeries.push({
-            name: names[i], type: 'scatter', data: byPid[pid].resync,
+        convSeries.push({
+            id: `re-${pid}`, name: names[i], type: 'scatter', data: byPid[pid].resync,
             symbol: 'diamond', symbolSize: 11, itemStyle: { color: c },
             tooltip: { valueFormatter: v => `${v} ms (hard resync)` },
         });
-        if (byPid[pid].trim.length) convSeries.push({
-            name: names[i], type: 'scatter', data: byPid[pid].trim,
+        convSeries.push({
+            id: `sl-${pid}`, name: names[i], type: 'scatter', data: byPid[pid].slew,
+            symbol: 'triangle', symbolRotate: 180, symbolSize: 9,
+            itemStyle: { color: c, opacity: 0.75 },
+            tooltip: { valueFormatter: v => `${v} ms (rate slew)` },
+        });
+        convSeries.push({
+            id: `tr-${pid}`, name: names[i], type: 'scatter', data: byPid[pid].trim,
             symbol: 'triangle', symbolSize: 10, itemStyle: { color: c },
             tooltip: { valueFormatter: () => 'manual trim' },
         });
@@ -498,7 +646,7 @@ function _renderCharts(series, pids) {
         yAxis: { type: 'value', name: 'ms',
                  axisLine: { show: false } },
         series: convSeries,
-    });
+    }, !merge);
     _pllChart?.setOption({
         grid: { left: 48, right: 16, top: 10, bottom: 26 },
         tooltip: { trigger: 'axis',
@@ -506,7 +654,7 @@ function _renderCharts(series, pids) {
         ...axis,
         yAxis: { type: 'value', name: 'ppm' },
         series: pids.map((pid, i) => ({
-            name: names[i], type: 'line', data: byPid[pid].ppm,
+            id: `ppm-${pid}`, name: names[i], type: 'line', data: byPid[pid].ppm,
             showSymbol: false, lineStyle: { width: 2, color: _colorFor(pid) },
             itemStyle: { color: _colorFor(pid) },
             ...(i === 0 ? { markLine: {
@@ -515,13 +663,13 @@ function _renderCharts(series, pids) {
                 label: { show: false }, data: [{ yAxis: 0 }],
             } } : {}),
         })),
-    });
+    }, !merge);
 }
 
 function _renderTable(players) {
     const el = document.getElementById('syncLabTable');
     if (!el) return;
-    el.innerHTML = `
+    _setHtml(el, `
       <table class="table table-sm align-middle mb-0">
         <thead><tr>
           <th>Speaker</th><th>Startup lag</th><th>Pre-comp</th><th>Time to lock</th>
@@ -544,5 +692,5 @@ function _renderTable(players) {
               <td>${p.trim_ms ?? 0} ms</td>
             </tr>`).join('')}
         </tbody>
-      </table>`;
+      </table>`);
 }

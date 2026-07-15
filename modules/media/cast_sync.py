@@ -86,16 +86,42 @@ DEFAULT_APP_ID = "CC1AD845"      # built-in default media receiver (no registrat
 STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
 STREAM_AHEAD_S = 1.2             # serve at most this far ahead of the timeline
 STREAM_LAG_MARGIN_S = 0.35       # common target lag = max natural lag + this
-STREAM_POLL_S = 2.5              # monitor poll interval
-STREAM_COOLDOWN_POLLS = 2        # polls to skip after a jump (client buffer flush)
+STREAM_POLL_S = 2.5              # monitor poll interval once baselines exist
+# Sensor improvements ahead of the acoustic calibrator: poll fast while any
+# device's drift-fit baseline is still building (more points → the slope
+# fit beats the noise sooner; a jump clears the baseline, so reacquisition
+# speeds itself up), and take several media-time reads per poll — the
+# median knocks per-measurement noise down ~√N and shrugs off one bogus
+# status. Neither changes what is measured, only how well.
+STREAM_POLL_FAST_S = 1.2         # cadence while acquiring
+STREAM_STATUS_READS = 3          # media-time reads per poll (median)
+STREAM_STATUS_WAIT_S = 0.25      # wait for each status push to land
+STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
+#                                  (device drains its HTTP buffer; wall-time
+#                                  so the fast cadence doesn't shorten it)
 # Correction policy (OpenZone §5.2): jumps only for acquisition/rebuffer;
 # every correction below the jump threshold is applied as a bounded rate
 # slew through the fractional resampler — inaudible, no buffer steps.
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
 STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
-STREAM_SLEW_FAST_THRESH_S = 0.015
-STREAM_RATE_MAX_PPM = 300.0      # drift-cancel term cap (integral controller)
+# ~2σ of the media-time poll noise (measured ±10–25 ms): below this a single
+# poll can't be told apart from noise, so fast slews also require the median
+# of the last 3 polls to agree (a lone spike must not move real audio).
+STREAM_SLEW_FAST_THRESH_S = 0.030
+# Drift-cancel bounds: consumer DAC crystals sit within ±50 ppm, so any
+# estimate outside that is estimator noise, not clock error.
+STREAM_RATE_MAX_PPM = 50.0
+# Drift-fit statistics: resolving ppm-grade slopes through ±12 ms poll noise
+# needs baseline, not cleverness — slope noise falls as span^1.5, so the
+# window GROWS (capped ~20 min to re-track thermal drift) and the fit is
+# applied only once the span can beat the noise (simulated: estimate lands
+# within ±2–4 ppm of true drift by ~6 min; a 100 s cap railed the clamp).
+STREAM_FIT_MIN_POINTS = 8        # polls needed before the drift fit runs
+STREAM_FIT_MAX_POINTS = 360      # ≈20 min of polls
+STREAM_FIT_APPLY_SPAN_S = 60.0   # shorter baselines are all noise — hold off
+STREAM_RATE_EMA = 0.25           # max blend of a new fit into rate_ppm
+STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
 
 
 def _gen_float(n0: int, frames: int) -> np.ndarray:
@@ -104,7 +130,9 @@ def _gen_float(n0: int, frames: int) -> np.ndarray:
     so any receiver or stream joining/seeking later gets a bit-identical
     timeline. Chord pad with a slow swell + a 1 kHz click every 2 s.
     This is the integer-grid source the resampler interpolates over; step 2
-    replaces it with the real-media ring buffer, nothing else changes."""
+    replaces it with the real-media ring buffer — at which point the linear
+    interpolator must be upgraded too (soxr per OpenZone §5.2): linear is
+    clean on this ≤1 kHz signal but rolls off HF audibly on real music."""
     t = (n0 + np.arange(frames)) / RATE
     sig = (0.10 * np.sin(2 * np.pi * 220.0 * t)
            + 0.08 * np.sin(2 * np.pi * 277.18 * t)
@@ -133,8 +161,10 @@ def _resample_block(pos: float, frames: int, adv: float) -> bytes:
     position ``pos``, consuming ``adv`` timeline samples in total, i.e. a
     ratio of adv/frames modulated a few hundred ppm around unity. Sub-sample
     linear interpolation between adjacent integer-grid samples — at unity
-    ratio from an integer position it degenerates to a bit-exact copy, and
-    at ±1000 ppm the interpolation error is far below the s16 noise floor."""
+    ratio from an integer position it degenerates to a bit-exact copy; at
+    fractional positions the worst-case error on this test signal is about
+    −84 dBFS (measured) — a shade above the −90 dBFS s16 LSB, far below
+    audibility. Real media needs soxr instead (see _gen_float note)."""
     idx = pos + np.arange(frames) * (adv / frames)
     base = np.floor(idx).astype(np.int64)
     frac = idx - base
@@ -207,7 +237,7 @@ class _Stream:
         self.start_pos: int = 0      # timeline sample of the first PCM byte
         self.shift: float = 0.0      # cumulative deliberate moves (samples)
         self.natural_lag: Optional[float] = None   # first stable lag (s)
-        self.cooldown: int = 0       # monitor polls to skip after a jump
+        self.cooldown_until: float = 0.0   # skip polls until then after a jump
         self.resyncs: int = 0
         self.stats: dict = {}
         # Software PLL: the resampler serves fractionally more/fewer timeline
@@ -215,7 +245,13 @@ class _Stream:
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
         self.slew_s: float = 0.0     # pending offset to slew away (s, >0 =
         #                              device behind → consume timeline faster)
-        self.lag_hist: List[tuple] = []   # (t, lag) points for drift fitting
+        # Cumulative deliberate timeline motion (s): rate term + drained slew
+        # + jumps. Added back onto measured lag before drift fitting, so the
+        # fit sees the device's FREE-RUNNING clock, never our own corrections
+        # (feeding corrections into the fit is what railed the old PLL).
+        self.moved_s: float = 0.0
+        self.err_hist: List[float] = []   # last 3 poll errors (median filter)
+        self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
 
 
@@ -243,6 +279,8 @@ class CastSyncPoc:
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
         self._producer: Optional[asyncio.Task] = None
+        self._auto_stop: Optional[asyncio.Task] = None
+        self._duration_s: int = 0                      # 0 = run until stopped
         self._launch_tasks: List[asyncio.Task] = []
 
         self.running = False
@@ -286,7 +324,7 @@ class CastSyncPoc:
     # Session control (called from routes)
     # ------------------------------------------------------------------
     async def start_session(self, player_ids: Optional[List[str]] = None,
-                            group_id: str = "") -> dict:
+                            group_id: str = "", duration_s: int = 0) -> dict:
         if group_id:
             group = self._groups.get(group_id)
             if not group:
@@ -299,6 +337,9 @@ class CastSyncPoc:
         self._active_group = group_id
         stream_mode = not self.app_id   # no registered receiver -> default receiver
         self._session_id = uuid_mod.uuid4().hex[:8]
+        # Fixed-length runs keep sessions comparable: the learned model and
+        # the Sync Lab trends are evaluated over identical time windows.
+        self._duration_s = max(0, int(duration_s or 0))
 
         # Prefer the DuckDB-trained model (robust medians over raw history,
         # across every group's DB); the in-memory/JSON EMAs remain the fallback.
@@ -340,7 +381,11 @@ class CastSyncPoc:
                     m = self._model.get(pid, {})
                     if self._target_lag is not None and m.get("lag_s") is not None:
                         st.precomp_s = max(0.0, self._target_lag - m["lag_s"])
-                    st.rate_ppm = float(m.get("drift_ppm", 0.0))
+                    # Clamp to the physical bound — models trained before the
+                    # estimator fix may hold rail values (±300 ppm).
+                    st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
+                                      min(STREAM_RATE_MAX_PPM,
+                                          float(m.get("drift_ppm", 0.0))))
                     self._streams[sid] = st
                     task = asyncio.create_task(self._launch_stream(pid, sid))
                 else:
@@ -351,10 +396,25 @@ class CastSyncPoc:
                 errors[pid] = str(e)
         if stream_mode:
             self._monitor = asyncio.create_task(self._stream_monitor())
+        if self._duration_s:
+            self._auto_stop = asyncio.create_task(
+                self._auto_stop_after(self._duration_s))
         logger.info(f"Cast sync session started for {len(launched)} device(s) "
-                    f"({'default-receiver stream' if stream_mode else 'custom receiver'} mode)")
+                    f"({'default-receiver stream' if stream_mode else 'custom receiver'} mode"
+                    f"{f', {self._duration_s}s window' if self._duration_s else ''})")
         return {"success": True, "launched": launched, "errors": errors,
-                "mode": "stream" if stream_mode else "receiver"}
+                "mode": "stream" if stream_mode else "receiver",
+                "duration_s": self._duration_s}
+
+    async def _auto_stop_after(self, secs: int):
+        """End the session when its fixed test window elapses."""
+        try:
+            await asyncio.sleep(secs)
+            if self.running:
+                logger.info(f"Sync session test window over ({secs}s) — stopping")
+                await self.stop_session()
+        except asyncio.CancelledError:
+            pass
 
     async def stop_session(self) -> dict:
         self.running = False
@@ -367,6 +427,11 @@ class CastSyncPoc:
         if self._monitor:
             self._monitor.cancel()
             self._monitor = None
+        # May be called FROM the auto-stop task — cancelling ourselves here
+        # would abort the rest of this cleanup.
+        if self._auto_stop and self._auto_stop is not asyncio.current_task():
+            self._auto_stop.cancel()
+        self._auto_stop = None
         if self._streams:    # persist what this session taught the model
             self._write_json(self._model_file, self._model)
         self._streams = {}   # generators see running=False and finish
@@ -403,13 +468,17 @@ class CastSyncPoc:
                 "trim_ms": self._trims.get(info["player_id"], 0),
                 "stats": (r.stats if r else (s.stats if s else {})),
             })
+        elapsed = (time.monotonic() - self._epoch) if self.running else 0
         return {
             "running": self.running,
             "configured": bool(self.app_id),
             "mode": "receiver" if self.app_id else "stream",
             "http_port": self.http_port,
             "group_id": self._active_group,
-            "elapsed_s": (time.monotonic() - self._epoch) if self.running else 0,
+            "elapsed_s": elapsed,
+            "duration_s": self._duration_s if self.running else 0,
+            "remaining_s": (max(0, self._duration_s - elapsed)
+                            if self.running and self._duration_s else None),
             "devices": devices,
         }
 
@@ -432,12 +501,16 @@ class CastSyncPoc:
         for s in self._streams.values():
             if s.player_id == player_id and s.pos is not None:
                 if abs(delta_s) <= STREAM_JUMP_MIN_S:
+                    # Slewed trims are decompensated via ``moved_s`` as they
+                    # drain, so the drift fit survives them untouched.
                     s.slew_s -= delta_s
                 else:
                     s.pos -= delta_s * RATE
                     s.shift -= delta_s * RATE
-                    s.cooldown = STREAM_COOLDOWN_POLLS
-                s.lag_hist = []   # baseline moved — old slope points are invalid
+                    s.moved_s -= delta_s
+                    s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+                    s.lag_hist = []   # device-buffer transient around a jump
+                s.err_hist = []       # baseline moved — old medians invalid
                 await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
@@ -584,14 +657,20 @@ class CastSyncPoc:
         buffer, hence the post-jump cooldown."""
         try:
             while self.running:
-                await asyncio.sleep(STREAM_POLL_S)
-                lags: Dict[str, float] = {}
-                for sid, st in list(self._streams.items()):
-                    if not st.connected or st.pos is None:
-                        continue
-                    lag = await self._measure_lag(st)
-                    if lag is not None:
-                        lags[sid] = lag
+                await asyncio.sleep(self._poll_interval())
+                # Measure all devices concurrently — one poll pass costs one
+                # device's round-trip instead of N, and the readings land
+                # close together in time (less skew inside a spread sample).
+                items = [(sid, st) for sid, st in list(self._streams.items())
+                         if st.connected and st.pos is not None]
+                if not items:
+                    continue
+                results = await asyncio.gather(
+                    *(self._measure_lag(st) for _, st in items),
+                    return_exceptions=True)
+                lags: Dict[str, float] = {
+                    sid: r for (sid, _), r in zip(items, results)
+                    if isinstance(r, float)}
                 if not lags:
                     continue
                 # Fix the common target from the slowest starter, once. Don't
@@ -609,8 +688,7 @@ class CastSyncPoc:
                     st = self._streams.get(sid)
                     if st is None:
                         continue
-                    if st.cooldown > 0:
-                        st.cooldown -= 1
+                    if time.monotonic() < st.cooldown_until:
                         continue
                     if st.natural_lag is None:
                         st.natural_lag = lag
@@ -623,38 +701,51 @@ class CastSyncPoc:
                                 "drift_ppm": round(st.rate_ppm)}
                     batch.append(self._sample_row(st, "poll", lag=lag,
                                                   error=error))
+                    # The measured error still contains whatever slew is
+                    # pending (undrained), so decisions are made on the
+                    # RESIDUAL — what would remain once the slew finishes.
+                    # Deciding on the raw error re-corrected work already
+                    # scheduled (a 68 ms trim slew once triggered a jump).
+                    residual = error - st.slew_s
+                    st.err_hist = (st.err_hist + [error])[-3:]
+                    med3 = sorted(st.err_hist)[len(st.err_hist) // 2]
                     # Correction ladder (OpenZone §5.2): buffer jumps only
                     # for acquisition/rebuffer; everything inside ±100 ms is
                     # a bounded rate slew through the resampler.
-                    if abs(error) > STREAM_JUMP_MIN_S:
+                    if abs(residual) > STREAM_JUMP_MIN_S:
+                        # Way beyond poll noise (σ ≈ 15 ms) — act on one poll.
                         st.pos += error * RATE
                         st.shift += error * RATE
+                        st.moved_s += error
                         st.slew_s = 0.0       # jump supersedes any pending slew
                         st.resyncs += 1
-                        st.cooldown = STREAM_COOLDOWN_POLLS
-                        st.lag_hist = []      # slope is meaningless across a jump
+                        st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+                        st.err_hist = []
+                        st.lag_hist = []      # device-buffer transient follows
                         batch.append(self._sample_row(st, "resync", lag=lag,
                                                       error=error))
                         logger.info(f"Sync stream resync {st.name}: "
                                     f"{error * 1000:+.0f} ms")
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S:
-                        pass   # fast slew still draining — lag is transient
-                    elif abs(error) > STREAM_SLEW_FAST_THRESH_S:
+                        self._pll_update(st, lag)   # decompensated — fit safe
+                    elif abs(med3) > STREAM_SLEW_FAST_THRESH_S \
+                            and len(st.err_hist) >= 2:
                         # Fast slew: 1000 ppm ≈ 1.7 cents, inaudible; drains
-                        # in |error| × 1000 s. Assignment, not +=: a pending
-                        # gentle residual is already part of the measurement.
-                        st.slew_s = error
-                        st.lag_hist = []      # baseline moves under the slew
+                        # in |error| × 1000 s. Gated on the 3-poll median so
+                        # a single noise spike can't move real audio, and
+                        # slewing the median, not the spike. Assignment, not
+                        # +=: pending slew is already inside the measurement.
+                        st.slew_s = med3
                         batch.append(self._sample_row(st, "slew", lag=lag,
                                                       error=error))
                         logger.info(f"Sync stream slew {st.name}: "
-                                    f"{error * 1000:+.0f} ms @ "
+                                    f"{med3 * 1000:+.0f} ms @ "
                                     f"{STREAM_SLEW_FAST_PPM:.0f} ppm")
+                        self._pll_update(st, lag)
                     else:
-                        # Steady state: refresh the gentle trickle (≤20 ppm,
-                        # ~50 µs/poll — too small to bias the drift fit) and
-                        # keep the PLL locked on the residual slope.
-                        st.slew_s = error
+                        # Steady state: gentle trickle (≤20 ppm) on the
+                        # denoised error, drift fit on every poll.
+                        st.slew_s = med3
                         self._pll_update(st, lag)
                     st.stats["slew_ms"] = round(st.slew_s * 1000, 1)
                 await self._record_samples(batch)
@@ -681,25 +772,60 @@ class CastSyncPoc:
         except Exception as e:
             logger.debug(f"Sync sample write failed: {e}")
 
-    def _pll_update(self, st: _Stream, lag: float):
-        """Integral rate control: fit the residual lag slope over recent
-        polls and fold it into the stream's sample-rate correction."""
-        st.lag_hist.append((time.monotonic(), lag))
-        if len(st.lag_hist) > 10:
-            st.lag_hist.pop(0)
-        if len(st.lag_hist) < 4:
-            return
-        ts = [p[0] for p in st.lag_hist]
-        ls = [p[1] for p in st.lag_hist]
-        n, tm, lm = len(ts), sum(ts) / len(ts), sum(ls) / len(ls)
-        den = sum((t - tm) ** 2 for t in ts)
+    @staticmethod
+    def _fit_slope(pts: List[tuple]) -> Optional[float]:
+        """Least-squares slope of (t, y) points; None if degenerate."""
+        n = len(pts)
+        tm = sum(p[0] for p in pts) / n
+        ym = sum(p[1] for p in pts) / n
+        den = sum((p[0] - tm) ** 2 for p in pts)
         if den <= 0:
+            return None
+        return sum((p[0] - tm) * (p[1] - ym) for p in pts) / den
+
+    def _pll_update(self, st: _Stream, lag: float):
+        """Drift estimator (OpenZone §7.2): fit the slope of the device's
+        FREE-RUNNING lag — measured lag with every deliberate timeline move
+        (rate term, slews, jumps) added back via ``moved_s``. That slope IS
+        the device's clock drift, measured independently of whatever
+        correction is currently applied, so the estimate cannot chase its
+        own actuator. (The old integral form folded 0.5× the slope of the
+        *corrected* lag into rate_ppm every poll: correction-induced motion
+        and ±15 ms poll noise over a 30 s window — a ~300 ppm slope noise
+        floor — fed straight back into the estimate, which is why it railed
+        at the clamp and sign-flipped on a ~90 s period in live sessions.)"""
+        st.lag_hist.append((time.monotonic(), lag + st.moved_s))
+        del st.lag_hist[:-STREAM_FIT_MAX_POINTS]
+        span = st.lag_hist[-1][0] - st.lag_hist[0][0]
+        if len(st.lag_hist) < STREAM_FIT_MIN_POINTS \
+                or span < STREAM_FIT_APPLY_SPAN_S:
             return
-        slope = sum((ts[i] - tm) * (ls[i] - lm) for i in range(n)) / den
+        slope = self._fit_slope(st.lag_hist)
+        if slope is None:
+            return
+        # One robust pass: drop >3σ outliers (bogus media status, WiFi
+        # hiccup) and refit — §7.2's outlier rejection.
+        n = len(st.lag_hist)
+        tm = sum(p[0] for p in st.lag_hist) / n
+        ym = sum(p[1] for p in st.lag_hist) / n
+        resid = [p[1] - (ym + slope * (p[0] - tm)) for p in st.lag_hist]
+        sd = (sum(r * r for r in resid) / n) ** 0.5
+        if sd > 0:
+            kept = [p for p, r in zip(st.lag_hist, resid) if abs(r) <= 3 * sd]
+            if STREAM_FIT_MIN_POINTS <= len(kept) < n:
+                slope = self._fit_slope(kept)
+                if slope is None:
+                    return
+        # slope = d(free-running lag)/dt: device clock slow → lag grows →
+        # positive ppm → serve faster. The EMA gain scales with the fit's
+        # baseline (short spans are noise-dominated); clamp to the physical
+        # crystal bound. The model only learns span-backed estimates.
+        ema = STREAM_RATE_EMA * min(1.0, span / STREAM_RATE_EMA_SPAN_S)
         st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
                           min(STREAM_RATE_MAX_PPM,
-                              st.rate_ppm + 0.5 * slope * 1e6))
-        self._model_learn(st, "drift_ppm", st.rate_ppm)
+                              st.rate_ppm + ema * (slope * 1e6 - st.rate_ppm)))
+        if span >= STREAM_RATE_EMA_SPAN_S:
+            self._model_learn(st, "drift_ppm", st.rate_ppm)
 
     def _model_learn(self, st: _Stream, key: str, value: float):
         """EMA-update one field of the device's learned latency model."""
@@ -708,9 +834,22 @@ class CastSyncPoc:
         m[key] = round(value if old is None else 0.7 * old + 0.3 * value, 4)
         m["sessions"] = m.get("sessions", 0) + (1 if key == "lag_s" else 0)
 
-    async def _measure_lag(self, st: _Stream) -> Optional[float]:
-        """How far behind the server clock this device's playout is, in
-        seconds, trim excluded. None if no usable media status."""
+    def _poll_interval(self) -> float:
+        """Fast cadence while any device's drift-fit baseline is still
+        building (fresh session, or a jump cleared it) — more points early
+        is what lets the slope fit beat the sensor noise. Relax once every
+        baseline spans the apply threshold."""
+        for st in self._streams.values():
+            if not st.connected or st.pos is None:
+                continue
+            span = (st.lag_hist[-1][0] - st.lag_hist[0][0]
+                    if len(st.lag_hist) >= 2 else 0.0)
+            if span < STREAM_FIT_APPLY_SPAN_S:
+                return STREAM_POLL_FAST_S
+        return STREAM_POLL_S
+
+    async def _measure_lag_once(self, st: _Stream) -> Optional[float]:
+        """One media-time read → lag vs server clock (s), trim excluded."""
         uuid_str = st.player_id.split(":", 1)[1]
         cast = self.cast._casts.get(uuid_str)
         if cast is None:
@@ -718,7 +857,7 @@ class CastSyncPoc:
         try:
             mc = cast.media_controller
             await asyncio.to_thread(mc.update_status)
-            await asyncio.sleep(0.3)     # let the status push arrive
+            await asyncio.sleep(STREAM_STATUS_WAIT_S)   # let the push arrive
             status = mc.status
             if getattr(status, "player_state", "") != "PLAYING":
                 return None
@@ -734,6 +873,22 @@ class CastSyncPoc:
         played_timeline_s = (st.start_pos + st.shift) / RATE + float(ct)
         trim_s = self._trims.get(st.player_id, 0) / 1000.0
         return (now - self._epoch) - played_timeline_s - trim_s
+
+    async def _measure_lag(self, st: _Stream) -> Optional[float]:
+        """Median of several consecutive reads. adjusted_current_time
+        extrapolates each report to read time, so the reads target the same
+        quantity and the median suppresses ~√N of the per-read noise while
+        discarding a single bogus status outright."""
+        reads: List[float] = []
+        for _ in range(STREAM_STATUS_READS):
+            if not self.running:
+                break
+            lag = await self._measure_lag_once(st)
+            if lag is not None:
+                reads.append(lag)
+        if not reads:
+            return None
+        return sorted(reads)[len(reads) // 2]
 
     async def _pcm_stream(self, st: _Stream):
         """Async generator: endless WAV cut from the shared timeline for one
@@ -771,6 +926,7 @@ class CastSyncPoc:
                 pcm = _resample_block(st.pos, block, adv)
                 st.pos += adv
                 st.shift += adv - block
+                st.moved_s += (adv - block) / RATE   # decompensate drift fit
                 yield pcm
         except asyncio.CancelledError:
             pass

@@ -88,6 +88,7 @@ export function initMedia() {
     window.mediaSyncDelete = syncDeleteGroup;
     window.mediaSyncStart = syncStartGroup;
     window.mediaSyncStop = syncStopSession;
+    window.mediaSyncDur = syncSetDuration;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
     window.mediaSyncLab = (gid) => openSyncLab(gid, _syncGroups.find(g => g.id === gid));
@@ -1182,6 +1183,11 @@ function _syncMemberRow(m, groupActive) {
 async function renderSyncPane() {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
+    // Keep a live Sync Lab (charts, zoom, scroll) across pane rebuilds —
+    // player refreshes re-render this pane, and rebuilding the lab from
+    // scratch every time is exactly the "charts keep resetting" bug.
+    const savedLab = document.getElementById('syncLabHost');
+    const keepLab = savedLab && savedLab.childElementCount > 0;
     el.innerHTML = '<div class="text-muted small">Loading…</div>';
     try { await _syncFetch(); }
     catch (e) { el.innerHTML = warn('Could not load sync groups: ' + e.message); return; }
@@ -1211,8 +1217,17 @@ async function renderSyncPane() {
             <span class="ms-auto"></span>
             ${g.active
                 ? `<button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
-                     <i class="fas fa-stop me-1"></i>Stop test</button>`
-                : `<button class="btn btn-sm btn-outline-primary" ${running || disabled ? 'disabled' : ''}
+                     <i class="fas fa-stop me-1"></i>Stop test
+                     <span id="syncRemain" class="ms-1"></span></button>`
+                : `<select class="form-select form-select-sm w-auto" id="syncdur-${esc(g.id)}"
+                           ${running || disabled ? 'disabled' : ''}
+                           title="Test length — fixed windows keep sessions comparable in the Sync Lab"
+                           onchange="window.mediaSyncDur('${esc(g.id)}', this.value)">
+                     ${[[120, '2 min'], [300, '5 min'], [600, '10 min'], [0, 'Until stopped']]
+                         .map(([v, l]) => `<option value="${v}" ${v === _syncDurFor(g.id) ? 'selected' : ''}>${l}</option>`)
+                         .join('')}
+                   </select>
+                   <button class="btn btn-sm btn-outline-primary" ${running || disabled ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
                            title="Play the sync test signal (clicks every 2 s) on all members">
                      <i class="fas fa-play me-1"></i>Test</button>`}
@@ -1254,7 +1269,8 @@ async function renderSyncPane() {
     // Poll while a session runs so pills + stats stay live (in place — a full
     // re-render would fight an in-progress trim drag).
     for (const d of ((_syncStatus || {}).devices || [])) _syncMeterPaint(d.player_id, d);
-    restoreSyncLab();
+    if (keepLab) document.getElementById('syncLabHost').replaceWith(savedLab);
+    else restoreSyncLab();
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
@@ -1264,6 +1280,8 @@ async function refreshSyncStats() {
         const prevRunning = !!(_syncStatus && _syncStatus.running);
         _syncStatus = await (await fetch('/api/media/sync/status')).json();
         if (!!_syncStatus.running !== prevRunning) { renderSyncPane(); return; }
+        const remain = document.getElementById('syncRemain');
+        if (remain) remain.textContent = _fmtRemain(_syncStatus.remaining_s);
         for (const d of (_syncStatus.devices || [])) {
             const pill = document.getElementById('syncpill-' + d.player_id);
             if (pill) pill.innerHTML = d.connected
@@ -1296,10 +1314,31 @@ async function syncDeleteGroup(gid) {
     renderSyncPane();
 }
 
+// Test-window length per group, remembered locally. Fixed windows keep the
+// learned model and the Sync Lab's session-by-session trends comparable —
+// a 5-minute run and a 40-second run don't measure the same thing.
+function _syncDurFor(gid) {
+    const v = Number(localStorage.getItem('zmm.syncdur.' + gid));
+    return Number.isFinite(v) && [0, 120, 300, 600].includes(v) ? v : 300;
+}
+
+function syncSetDuration(gid, val) {
+    localStorage.setItem('zmm.syncdur.' + gid, String(Number(val) || 0));
+}
+
+function _fmtRemain(s) {
+    if (s == null || !isFinite(s)) return '';
+    const m = Math.floor(s / 60), sec = Math.max(0, Math.round(s % 60));
+    return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
 async function syncStartGroup(gid) {
-    const r = await apiPost('/api/media/sync/start', { group_id: gid });
+    const r = await apiPost('/api/media/sync/start',
+        { group_id: gid, duration_s: _syncDurFor(gid) });
     if (!r.success) { toast(r.error || 'Start failed', 'error'); return; }
-    toast('Sync test starting — speakers join within a few seconds', 'success');
+    toast(r.duration_s
+        ? `Sync test starting — ${Math.round(r.duration_s / 60)} min window`
+        : 'Sync test starting — speakers join within a few seconds', 'success');
     renderSyncPane();
 }
 

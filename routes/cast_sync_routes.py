@@ -17,6 +17,7 @@ logger = logging.getLogger("routes.cast_sync")
 class SyncStartBody(BaseModel):
     player_ids: List[str] = []   # cast:<uuid> ids (individual devices, not groups)
     group_id: str = ""           # ...or a saved sync-group id
+    duration_s: int = 0          # auto-stop after this many seconds (0 = manual)
 
 
 class SyncTrimBody(BaseModel):
@@ -55,7 +56,9 @@ def register_cast_sync_routes(app: FastAPI, get_media):
                     "error": "Sync PoC disabled — set media.cast.sync.enabled"}
         if not body.player_ids and not body.group_id:
             return {"success": False, "error": "No players or group given"}
-        return await sync.start_session(body.player_ids, group_id=body.group_id)
+        return await sync.start_session(body.player_ids, group_id=body.group_id,
+                                        duration_s=min(max(body.duration_s, 0),
+                                                       3600))
 
     @app.post("/api/media/sync/stop")
     async def sync_stop():
