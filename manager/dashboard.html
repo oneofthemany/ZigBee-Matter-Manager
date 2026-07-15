@@ -468,8 +468,14 @@ async function refresh(){
    (a.body&&a.body.error)||a.error||('HTTP '+(a.status_code??'—')));
   const w=d.watchdog||{};const ws=w.status||'?';
   const wcls=ws==='ok'?'ok':(ws==='unhealthy'||ws==='exhausted'?'bad'
-   :(ws==='restarted'||ws==='recovery'?'warn':'mut'));
-  setCell('cWd',wcls,ws,w.restarts?w.restarts+' restart(s)':(w.last_action||''));
+   :(ws==='restarted'||ws==='recovery'||ws==='test-deploy'?'warn':'mut'));
+  const td=(d.recovery||{}).test_deploy;
+  const wdetail=ws==='test-deploy'
+   ?('editor test in progress'+(td&&td.files&&td.files.length
+      ?': '+td.files.slice(0,2).join(', ')+(td.files.length>2?' +'+(td.files.length-2):'')
+      :''))
+   :(w.restarts?w.restarts+' restart(s)':(w.last_action||''));
+  setCell('cWd',wcls,ws,wdetail);
   const h=d.host||{};
   if(h.status==='attention'){
    const why=h.security_count?(h.security_count+' security'):

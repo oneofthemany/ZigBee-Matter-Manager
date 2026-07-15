@@ -11,6 +11,13 @@ Conservative by design so it never makes things worse:
   - **Stand down during upgrades**: never act while a build/swap/rollback is in
     progress — that's the watcher's job, and we mustn't fight it. Likewise for
     the ollama container while manager.ollama runs an image update.
+  - **Stand down during editor test deploys**: a restart-type test deploy
+    restarts the app IN-PROCESS (os.execl), so the container's StartedAt never
+    changes and the normal startup grace can't protect the boot. While
+    ``data/.test_pending`` is fresh, the test-recovery machinery (confirm
+    timer, boot_guard) owns the outcome — restarting the container mid-test
+    destroys the confirm window and can push boot_guard into rolling back a
+    perfectly healthy batch.
   - **Cap restarts**: after MAX_RESTARTS we stop and report 'exhausted' (manual
     intervention needed) rather than thrash.
 
@@ -46,9 +53,18 @@ STATUS_FILE = os.path.join(DATA_DIR, "data", "upgrade", "status.json")
 # the user is mid-repair via the manager's recovery UI — restarting the app
 # container out from under them would destroy the session.
 RECOVERY_MARKER = os.path.join(DATA_DIR, "data", ".recovery_active")
+# Written by modules/test_recovery.py for the editor's "Test deploy" feature
+# (and consumed by boot_guard.py). See the module docstring: while fresh, the
+# test cycle owns app health and the watchdog must not act.
+TEST_PENDING_MARKER = os.path.join(DATA_DIR, "data", ".test_pending")
 
 INTERVAL = float(os.environ.get("ZMM_WATCHDOG_INTERVAL", "20"))
 STARTUP_GRACE = float(os.environ.get("ZMM_WATCHDOG_GRACE", "180"))
+# How long a .test_pending marker keeps the watchdog standing down. The marker
+# is rewritten on every app boot while a batch is pending (confirm window
+# 120s + boot up to STARTUP_GRACE per cycle), so a live test cycle always
+# stays fresh; a stale leftover can't disable the watchdog for good.
+TEST_GRACE = float(os.environ.get("ZMM_WATCHDOG_TEST_GRACE", "600"))
 FAIL_THRESHOLD = int(os.environ.get("ZMM_WATCHDOG_THRESHOLD", "3"))
 MAX_RESTARTS = int(os.environ.get("ZMM_WATCHDOG_MAX_RESTARTS", "3"))
 OLLAMA_MAX_RESTARTS = int(os.environ.get("ZMM_WATCHDOG_OLLAMA_MAX_RESTARTS",
@@ -57,7 +73,7 @@ OLLAMA_MAX_RESTARTS = int(os.environ.get("ZMM_WATCHDOG_OLLAMA_MAX_RESTARTS",
 # Top-level keys are the app target (the dashboard's watchdog cell reads
 # them); the ollama target reports under its own sub-dict.
 _state: Dict[str, Any] = {
-    "status": "starting",   # starting|ok|unhealthy|restarted|exhausted|standby|recovery|disabled
+    "status": "starting",   # starting|ok|unhealthy|restarted|exhausted|standby|recovery|test-deploy|disabled
     "streak": 0,
     "restarts": 0,
     "last_action": None,
@@ -110,6 +126,15 @@ def _epoch(rfc3339: str) -> float:
         return 0.0
 
 
+def _test_deploy_active() -> bool:
+    """True while an editor test deploy is pending and fresh (mtime-based)."""
+    try:
+        age = time.time() - os.stat(TEST_PENDING_MARKER).st_mtime
+    except OSError:
+        return False
+    return age < TEST_GRACE
+
+
 def _upgrade_in_progress() -> bool:
     try:
         with open(STATUS_FILE) as f:
@@ -160,6 +185,17 @@ async def _check_app(http: httpx.AsyncClient, t: Dict[str, int]):
     if not healthy and os.path.isfile(RECOVERY_MARKER):
         t["streak"] = 0
         _set("recovery", streak=0, restarts=t["restarts"])
+        return
+
+    # Test-deploy mode: the editor's test-recovery cycle restarts the app
+    # in-process, so health WILL fail during its boot with no container
+    # startup grace to cover it. The confirm timer and boot_guard own both
+    # success and rollback here — a container restart from us would eat the
+    # confirm window and could trip boot_guard's failure counter into
+    # rolling back good code. Fresh markers only (see TEST_GRACE).
+    if not healthy and _test_deploy_active():
+        t["streak"] = 0
+        _set("test-deploy", streak=0, restarts=t["restarts"])
         return
 
     if healthy:

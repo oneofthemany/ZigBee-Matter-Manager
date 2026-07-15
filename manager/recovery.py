@@ -104,6 +104,29 @@ def is_active(app_ok: Optional[bool] = None) -> bool:
     return not app_ok
 
 
+def _test_deploy_detail() -> Optional[Dict[str, Any]]:
+    """Parsed view of a pending editor test deploy (data/.test_pending),
+    so the dashboard can say WHAT is mid-test instead of just naming the
+    marker file. None when no batch is pending."""
+    p = HOST_DATA / ".test_pending"
+    if not p.is_file():
+        return None
+    info = _read_json(p)
+    files = [f.get("path") for f in info.get("files", [])]
+    if not files and info.get("path"):        # legacy single-file schema
+        files = [info.get("path")]
+    try:
+        age = int(time.time() - p.stat().st_mtime)
+    except OSError:
+        age = None
+    return {
+        "files": files,
+        "action": info.get("action"),
+        "deployed_at": info.get("deployed_at"),
+        "age_seconds": age,
+    }
+
+
 def state(app_ok: Optional[bool] = None) -> Dict[str, Any]:
     active = is_active(app_ok)
     pending = [p for p in PENDING_FILES if (HOST_DATA / p).is_file()]
@@ -113,6 +136,7 @@ def state(app_ok: Optional[bool] = None) -> Dict[str, Any]:
         "marker": _read_json(ACTIVE_MARKER) if active else None,
         "crash": _read_json(CRASH_FILE),
         "pending_markers": pending,
+        "test_deploy": _test_deploy_detail(),
     }
 
 
