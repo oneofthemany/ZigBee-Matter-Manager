@@ -16,6 +16,72 @@ from modules.spectrum_monitor import get_history, get_channel_averages, get_chan
 logger = logging.getLogger("routes.config")
 
 
+# ---------------------------------------------------------------------------
+# Integration defaults — every supported external API always appears in the
+# structured config (and therefore in the Settings → APIs tab) with its full
+# shape, even when config.yaml predates the integration or omits the section.
+# Enablement is then always editable in the frontend, and saving writes the
+# complete block back to config.yaml so backups capture it.
+# ---------------------------------------------------------------------------
+
+WEATHER_DEFAULTS = {
+    "enabled": False,
+    "latitude": None,
+    "longitude": None,
+    "poll_interval_minutes": 60,
+    "mqtt_publish": False,
+}
+
+MEDIA_DEFAULTS = {
+    "enabled": False,
+    "poll_interval_seconds": 10,
+    "adopt_sessions": True,
+    # Sub-source defaults mirror modules/media/service.py: cast and wiim
+    # default ON when the key is absent (they only matter once media.enabled
+    # is true), radio_browser ON, tidal and speaker-sync OFF.
+    "cast": {
+        "enabled": True,
+        "app_id": "CC1AD845",
+        "lyrics_app_id": "",
+        "karaoke": False,
+        "sync": {"enabled": False, "http_port": 8010, "app_id": ""},
+    },
+    "wiim": {"enabled": True, "devices": []},
+    "radio_browser": {"enabled": True},
+    "tidal": {"enabled": False, "quality": "high", "manifest_base_url": ""},
+    "tts": {
+        "base_url": "https://translate.google.com/translate_tts",
+        "lang": "en",
+    },
+}
+
+SECURITY_DEFAULTS = {
+    "nuki": {
+        "enabled": False,
+        "bridge": {"enabled": False, "host": "", "port": 8080,
+                   "hashed_token": True},
+        "matter": {"enabled": False},
+    },
+    "yale": {
+        "enabled": False,
+        "matter": {"enabled": False},
+    },
+}
+
+
+def _with_defaults(value, defaults: dict) -> dict:
+    """Recursive dict merge — configured values win, defaults fill the gaps."""
+    if not isinstance(value, dict):
+        value = {}
+    out = dict(value)
+    for k, dv in defaults.items():
+        if isinstance(dv, dict):
+            out[k] = _with_defaults(out.get(k), dv)
+        elif k not in out or out[k] is None:
+            out[k] = dv
+    return out
+
+
 def _is_auto_local_provider(p: dict) -> bool:
     if not isinstance(p, dict):
         return False
@@ -78,9 +144,13 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "web": {k: v for k, v in cfg.get("web", {}).items() if k != "ssl"},
                     "web_ssl": cfg.get("web", {}).get("ssl", {}),
                     "logging": cfg.get("logging", {}),
-                    "weather": cfg.get("weather", {}),
-                    "media": cfg.get("media", {}),
-                    "security": cfg.get("security", {}),
+                    # Integrations are default-filled so every supported API
+                    # always reaches the frontend with its full shape — the
+                    # Settings → APIs tab must never depend on config.yaml
+                    # already containing (or enabling) a section.
+                    "weather": _with_defaults(cfg.get("weather"), WEATHER_DEFAULTS),
+                    "media": _with_defaults(cfg.get("media"), MEDIA_DEFAULTS),
+                    "security": _with_defaults(cfg.get("security"), SECURITY_DEFAULTS),
                     "ota": {
                         "enabled": bool(ota.get("enabled", True)),
                         # `providers` is the explicit override list (rarely used).
