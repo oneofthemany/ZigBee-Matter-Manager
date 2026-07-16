@@ -10,8 +10,11 @@ const log = zmmLog('media');
 
 import { confirmDialog } from './dialogs.js';
 import { openSyncLab, restoreSyncLab } from './sync-lab.js';
+import * as local from './local-player.js';
+import { LOCAL_ID } from './local-player.js';
 
-let _players = [];          // latest PlayerState snapshot
+let _remote = [];           // players from /api/media/players (Cast / WiiM)
+let _players = [];          // _remote + the "This device" entry, as rendered
 let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
 let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sync'
@@ -21,6 +24,7 @@ let _syncTimer = null;      // stats poll while the sync pane is open
 let _syncLabKeep = null;    // live Sync Lab DOM node — survives pane wipes so
 //                             charts are re-attached, never rebuilt mid-test
 let _searchSource = 'radio'; // 'radio' | 'tidal' | 'therapy'
+let _pane = null;            // mobile pane: 'players' | 'browse' (null = not yet chosen)
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
@@ -64,6 +68,10 @@ function _tickPositions() {
 // Init
 // ---------------------------------------------------------------------------
 export function initMedia() {
+    local.initLocalPlayer({
+        onChange: _localChanged,
+        onError: (msg) => toast(msg, 'error'),
+    });
     const tab = document.querySelector('[data-bs-target="#media"]');
     if (tab) {
         tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); loadKaraoke(); });
@@ -173,24 +181,40 @@ async function loadPlayers() {
         el.innerHTML = `<div class="alert alert-warning mb-0">${esc(data.error || 'Media service unavailable')}</div>`;
         return;
     }
-    _players = data.players || [];
-    _syncPosAnchors();
+    _remote = data.players || [];
+    _rebuild();
     autoSelect();
     renderPlayers();
 }
 
-// If nothing is selected yet and there's exactly one (available) player,
-// select it automatically so radio "play" just works without a hidden step.
+// "This device" is always offered first — it needs no discovery and is the
+// only target that works with no speaker on the network at all.
+function _rebuild() {
+    _players = [local.snapshot(), ..._remote];
+    _syncPosAnchors();
+}
+
+// Re-render when the local <audio> changes state (play/pause/track/volume).
+function _localChanged() {
+    _rebuild();
+    if (_groupBuilderOpen) return;
+    renderPlayers();
+}
+
+// If nothing is selected yet and there's exactly one (available) *remote*
+// player, select it automatically so radio "play" just works without a hidden
+// step. "This device" is excluded: it's always present, so counting it would
+// disable the auto-select that users already rely on.
 function autoSelect() {
     if (_selectedId) return;
-    const avail = _players.filter(p => p.available);
+    const avail = _remote.filter(p => p.available);
     if (avail.length === 1) _selectedId = avail[0].player_id;
 }
 
 function handleMediaState(payload) {
     if (!payload) return;
-    _players = payload.players || [];
-    _syncPosAnchors();
+    _remote = payload.players || [];
+    _rebuild();
     autoSelect();
     // Don't yank a volume slider out from under the user mid-drag.
     const active = document.activeElement;
@@ -204,6 +228,7 @@ function iconFor(p) {
     // is a BRAND icon (fab); `fa-speaker` doesn't exist in FA6-free — both
     // render as a missing-glyph box if forced to `fas`.
     if (p.is_group) return 'fas fa-layer-group';          // any group: stacked icon
+    if (p.provider === 'local') return 'fas fa-mobile-screen';   // this browser
     return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
 }
 
@@ -236,13 +261,14 @@ function renderPlayers() {
     const el = document.getElementById('mediaPlayers');
     if (!el) return;
     if (_groupBuilderOpen) return renderGroupBuilder();
-    if (!_players.length) {
-        el.innerHTML = `<div class="text-muted text-center py-4">
-            No players found. Add WiiM device IPs under Settings → APIs, and make sure
-            Cast devices are on the same subnet.</div>`;
-        return;
-    }
-    el.innerHTML = _players.map(p => {
+    // "This device" is always in _players, so an empty *remote* list is the
+    // real "nothing discovered" case — still usable, just local-only.
+    const noRemote = !_remote.length
+        ? `<div class="text-muted small text-center pb-2">
+             No speakers found — playing on this device still works. Add WiiM device IPs
+             under Settings → APIs, and make sure Cast devices are on the same subnet.</div>`
+        : '';
+    el.innerHTML = noRemote + _players.map(p => {
         const selected = p.player_id === _selectedId;
         const playing = p.state === 'playing';
         const lyricsLink = (p.media_type === 'tidal' && p.now_playing_id)
@@ -324,7 +350,7 @@ function renderPlayers() {
                      <i class="far fa-object-ungroup"></i></button>`
                 : ''}
           </div>
-          ${q ? queueControls(p, q) : ''}
+          ${q && p.provider !== 'local' ? queueControls(p, q) : ''}
         </div>`;
     }).join('');
     updateSearchTarget();
@@ -379,7 +405,11 @@ function updateSearchTarget() {
 function notifyTherapyFrame() {
     const frame = document.getElementById('mediaTherapyFrame');
     if (!frame || !frame.contentWindow) return;
-    const p = _players.find(x => x.player_id === _selectedId);
+    // "This device" is deliberately reported as no player: therapy already
+    // falls back to its own in-browser synth when nothing is selected, which
+    // is exactly what local playback means there. Casting to 'local:browser'
+    // would be meaningless.
+    const p = _players.find(x => x.player_id === _selectedId && x.provider !== 'local');
     frame.contentWindow.postMessage({
         type: 'zmm-selected-player',
         id: p ? p.player_id : null,
@@ -388,6 +418,12 @@ function notifyTherapyFrame() {
 }
 
 async function control(playerId, action) {
+    // "This device" is driven by the <audio> element, not the media API.
+    if (playerId === LOCAL_ID) {
+        ({ pause: local.pause, resume: local.resume, stop: local.stop,
+           next: local.next, prev: local.prev }[action] || (() => {}))();
+        return;
+    }
     const r = await apiPost('/api/media/control', { player_id: playerId, action });
     if (!r.success) toast(r.error || 'Control failed', 'error');
     else loadPlayers();
@@ -395,6 +431,7 @@ async function control(playerId, action) {
 
 async function setVolume(playerId, value) {
     const level = Math.max(0, Math.min(1, Number(value) / 100));
+    if (playerId === LOCAL_ID) { local.setVolume(level); return; }
     const r = await apiPost('/api/media/volume', { player_id: playerId, level });
     if (!r.success) toast(r.error || 'Volume failed', 'error');
 }
@@ -583,8 +620,19 @@ async function radioFavRemove(uuid) {
     if (_searchSource === 'radio' && _radioSearchCache.length) radioSearch();
 }
 
+// Resolve something to a browser-playable queue and hand it to the <audio>.
+// Shared by radio and Tidal — the only difference is what we ask for.
+async function playLocal(body, name) {
+    const r = await apiPost('/api/media/local/playlist', body);
+    if (!r.success) { toast(r.error || 'Could not resolve for local playback', 'error'); return; }
+    await local.playItems(r.items || []);
+    const n = (r.items || []).length;
+    toast(`Playing ${name} on this device${n > 1 ? ` (${n} tracks)` : ''}`, 'success');
+}
+
 async function playFavourite(uuid, name) {
     if (!requireSelected()) return;
+    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid }, name);
     const r = await apiPost('/api/media/radio/favourites/play', { player_id: _selectedId, station_uuid: uuid });
     if (!r.success) toast(r.error || 'Play failed', 'error');
     else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
@@ -592,6 +640,7 @@ async function playFavourite(uuid, name) {
 
 async function playStation(uuid, name) {
     if (!requireSelected()) return;
+    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid }, name);
     const r = await apiPost('/api/media/play', { player_id: _selectedId, station_uuid: uuid });
     if (!r.success) toast(r.error || 'Play failed', 'error');
     else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
@@ -973,6 +1022,7 @@ async function playTidalOn(playerId, kind, id, mode, name) {
 
 async function tidalPlay(kind, id, mode, name) {
     if (!requireSelected()) return;
+    if (_selectedId === LOCAL_ID) return playLocal({ kind, id, mode }, name);
     const r = await apiPost('/api/media/tidal/play', { player_id: _selectedId, kind, id, mode });
     if (!r.success) { toast(r.error || 'Tidal play failed', 'error'); return; }
     const tag = r.radio ? ' radio ∞' : (r.count > 1 ? ` (${r.count} tracks)` : '');

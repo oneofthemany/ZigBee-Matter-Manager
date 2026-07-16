@@ -214,14 +214,16 @@ class MediaService:
         return (f"{self._tts_base}?ie=UTF-8&client=tw-ob"
                 f"&tl={lang or self._tts_lang}&q={quote(text[:200])}")
 
-    async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
-                         mode: str = "play") -> dict:
-        """Resolve a Tidal track/album/playlist/artist/mix to items and play them.
-        ``mode='radio'`` makes track/artist play an infinite auto-extending queue.
-        Shared by the API route and the automation engine."""
+    async def tidal_items(self, kind: str, tidal_id: str,
+                          mode: str = "play") -> List[MediaItem]:
+        """Resolve a Tidal track/album/playlist/artist/mix to MediaItems.
+
+        Raises ValueError for a bad kind or an empty result. Shared by casting
+        (play_tidal) and browser-local playback, which builds its own queue.
+        """
         src = self.controller.get_source("tidal")
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            raise ValueError("Tidal unavailable")
         radio = mode == "radio"
         if kind == "track":
             if radio:
@@ -238,9 +240,21 @@ class MediaService:
         elif kind == "mix":
             items = await src.mix_items(tidal_id)
         else:
-            return {"success": False, "error": "kind must be track|album|playlist|artist|mix"}
+            raise ValueError("kind must be track|album|playlist|artist|mix")
         if not items:
-            return {"success": False, "error": "Nothing to play (empty, not found, or login required)"}
+            raise ValueError("Nothing to play (empty, not found, or login required)")
+        return items
+
+    async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
+                         mode: str = "play") -> dict:
+        """Resolve a Tidal track/album/playlist/artist/mix to items and play them.
+        ``mode='radio'`` makes track/artist play an infinite auto-extending queue.
+        Shared by the API route and the automation engine."""
+        radio = mode == "radio"
+        try:
+            items = await self.tidal_items(kind, tidal_id, mode)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
         await self.controller.play_items(player_id, items, auto_extend=radio)
         return {"success": True, "count": len(items), "radio": radio}
 

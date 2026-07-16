@@ -23,6 +23,18 @@ class PlayBody(BaseModel):
     media_type: Optional[str] = None     # "live" for endless streams (therapy)
 
 
+class LocalPlaylistBody(BaseModel):
+    """Resolve something to a queue the browser can play itself.
+
+    Either a radio ``station_uuid`` (one endless stream) or a Tidal
+    ``kind``+``id`` (which may expand to a whole album/playlist).
+    """
+    station_uuid: Optional[str] = None
+    kind: Optional[str] = None       # track | album | playlist | artist | mix
+    id: Optional[str] = None
+    mode: str = "play"               # play | radio
+
+
 class ControlBody(BaseModel):
     player_id: str
     action: str  # pause | resume | stop | next | prev
@@ -153,6 +165,59 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True, "now_playing": item.to_dict()}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ── Browser-local playback ("This device") ──────────────────────────
+    # The page plays audio itself via an <audio> element, so it needs a
+    # directly-playable URL rather than a player to cast to. Tidal hands back
+    # 320k AAC for any non-Cast provider (DASH/FLAC is Cast-only), which is
+    # exactly what a browser can play natively.
+
+    @app.post("/api/media/local/playlist")
+    async def local_playlist(body: LocalPlaylistBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            if body.station_uuid:
+                station = await svc.radio.get_station(body.station_uuid)
+                if not station:
+                    return {"success": False, "error": "Radio station not found"}
+                items = [station.to_media_item()]
+            elif body.kind and body.id:
+                if not _tidal(svc):
+                    return {"success": False, "error": "Tidal unavailable"}
+                items = await svc.tidal_items(body.kind, body.id, body.mode)
+            else:
+                return {"success": False, "error": "Provide station_uuid or kind+id"}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.warning(f"Local playlist resolve failed: {e}")
+            return {"success": False, "error": str(e)}
+        return {"success": True, "items": [i.to_dict() for i in items]}
+
+    @app.get("/api/media/local/track_url")
+    async def local_track_url(source_id: str):
+        """Fresh, browser-playable URL for one Tidal track.
+
+        Resolved just-in-time per track: the signed URLs are short-lived, so a
+        long queue resolved up front would go stale before it got there.
+        """
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        try:
+            # provider="browser" → never Cast → AAC, not DASH (see _wants_lossless)
+            got = await src.resolve_url(source_id, "browser")
+        except Exception as e:
+            logger.warning(f"Local track URL resolve failed for {source_id}: {e}")
+            return {"success": False, "error": str(e)}
+        if not got or not got.get("url"):
+            return {"success": False, "error": "Could not resolve a playable URL"}
+        return {"success": True, **got}
 
     @app.post("/api/media/control")
     async def control(body: ControlBody):
