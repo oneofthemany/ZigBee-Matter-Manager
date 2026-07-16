@@ -299,7 +299,9 @@ class CastPlayerProvider(PlayerProvider):
         # only plays on the 2nd try" symptom). We ensure the socket client is
         # connected, then issue play_media and confirm it actually goes active —
         # retrying once if it doesn't, so the user never has to click twice.
-        stream_type = "LIVE" if item.media_type == "radio" else "BUFFERED"
+        # Endless streams (radio, therapy) must load as LIVE — a Cast device
+        # asked to BUFFER a stream with no end never leaves IDLE.
+        stream_type = "LIVE" if item.media_type in ("radio", "live") else "BUFFERED"
         # Rich metadata so screened devices (Nest Hub) show album art + artist,
         # not a bare title. metadataType 3 == MUSIC_TRACK.
         metadata = {"metadataType": 3, "title": item.title or "",

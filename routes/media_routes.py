@@ -20,6 +20,7 @@ class PlayBody(BaseModel):
     title: str = ""
     artist: str = ""
     content_type: Optional[str] = None   # MIME hint (e.g. therapy's audio/wav)
+    media_type: Optional[str] = None     # "live" for endless streams (therapy)
 
 
 class ControlBody(BaseModel):
@@ -144,7 +145,8 @@ def register_media_routes(app: FastAPI, get_media_service):
             elif body.url:
                 from modules.media.models import MediaItem
                 item = MediaItem(url=body.url, title=body.title, artist=body.artist,
-                                 content_type=body.content_type or "audio/mpeg")
+                                 content_type=body.content_type or "audio/mpeg",
+                                 media_type=body.media_type or "url")
                 await svc.controller.play_url(body.player_id, item)
             else:
                 return {"success": False, "error": "Provide url or station_uuid"}

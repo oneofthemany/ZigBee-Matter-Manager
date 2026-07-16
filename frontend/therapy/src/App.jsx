@@ -431,6 +431,8 @@ export default function MusicTherapyServer() {
           title: `Neural Therapy — ${MODES[mode].label}`,
           artist: "Neural Therapy",
           content_type: "audio/wav",
+          // Endless stream — Cast must load it as LIVE, not BUFFERED
+          media_type: "live",
         }),
       }).then(x => x.json());
       if (r.success) {

@@ -34,7 +34,8 @@ class MediaItem:
     title: str = ""
     artist: str = ""
     artwork_url: str = ""
-    # "radio" | "url" | "tidal" etc. Helps the UI render hints + queue behaviour.
+    # "radio" | "url" | "tidal" | "live" etc. Helps the UI render hints + queue
+    # behaviour; "radio"/"live" also mark endless streams for Cast (LIVE load).
     media_type: str = "url"
     content_type: str = "audio/mpeg"  # MIME hint for players that want one
     # Provider-specific source id (e.g. Tidal track id) — lets us re-resolve a
