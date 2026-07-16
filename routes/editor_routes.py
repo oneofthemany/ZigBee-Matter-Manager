@@ -357,10 +357,19 @@ def register_editor_routes(app: FastAPI, get_zigbee_service):
         if not backup_name or not target_path:
             return {"success": False, "error": "backup and path required"}
 
-        backup_file = BACKUP_DIR / backup_name
+        # Containment check: backup_name reaches the filesystem directly, so a
+        # crafted "../../.." would otherwise copy any readable file over a
+        # project file. Resolve and confirm it stays inside BACKUP_DIR.
+        backup_file = (BACKUP_DIR / backup_name).resolve()
+        try:
+            backup_file.relative_to(BACKUP_DIR.resolve())
+        except ValueError:
+            logger.warning(f"Rejected backup path outside backup dir: {backup_name!r}")
+            return {"success": False, "error": "Invalid backup name"}
+
         target_file = _resolve_path(target_path)
 
-        if not backup_file.exists():
+        if not backup_file.is_file():
             return {"success": False, "error": "Backup not found"}
         if not target_file:
             return {"success": False, "error": "Invalid target path"}

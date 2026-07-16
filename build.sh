@@ -750,6 +750,35 @@ COPY . .
 # Application version control - used for upgrades
 COPY VERSION /app/VERSION
 
+# Release manifest — sha256 of every file that ships, so modules/live_edits.py
+# can tell live in-container edits from pristine release files WITHOUT needing
+# .git in the image. Deliberately NOT solved by shipping .git: a depth-1 .git is
+# ~7.5 MB of which ~5.6 MB is the screenshots/docs-images blobs that the
+# .dockerignore exists to strip (the pack carries them even though COPY skips
+# the working-tree copies). This manifest is ~40 KB and is content-based, so it
+# gives exact paths with no git binary and no mtime guesswork.
+#
+# Generated in-image (not from the build context) so it hashes exactly what
+# shipped and can never drift from the .dockerignore's filtering.
+# Excludes the runtime bind-mount targets (data/ logs/ config/) — those are
+# volume-mounted over at run time, so hashing them here is meaningless. Keep the
+# exclusions in sync with _IGNORE_PREFIXES in modules/live_edits.py.
+RUN cd /app \
+ && find . -type f \
+        -not -path './data/*' \
+        -not -path './logs/*' \
+        -not -path './config/*' \
+        -not -path './.git/*' \
+        -not -name '*.pyc' \
+        -not -name '*.pyo' \
+        -not -name '.release_manifest' \
+        -print0 \
+  | sort -z \
+  | xargs -0 -r sha256sum \
+  | sed 's|^\(\S*\)  \./|\1  |' \
+  > /app/.release_manifest \
+ && echo "release manifest: $(wc -l < /app/.release_manifest) files, $(du -h /app/.release_manifest | cut -f1)"
+
 # Required directories
 RUN mkdir -p /data /app/data/matter /app/data/backups /app/data/certs /app/logs /app/config /var/lib/thread \
         /usr/local/lib/python3.11/site-packages/credentials/development/paa-root-certs

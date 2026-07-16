@@ -9,20 +9,28 @@ divergence so the upgrade flow can warn the user (and offer to wait) before the
 point of no return.
 
 Detection is best-effort and never raises — the upgrade UI must keep working
-even if detection fails. Two strategies, in priority order:
+even if detection fails. Three strategies, in priority order:
 
-  1. git — the image is built from `git clone --depth 1 <tag>` with `.git`
-     retained (build.sh does `COPY . .` and there is no .dockerignore), so
-     `git status --porcelain` (which honours .gitignore, hiding data/ logs/
-     __pycache__/) lists exactly the working-tree changes vs the shipped tag.
-     Most accurate; gives real paths.
+  1. release manifest — build.sh bakes /app/.release_manifest into the image:
+     a `sha256sum` line per shipped file. Comparing it against the tree on disk
+     gives exact paths for modified/added/deleted files with no git dependency.
+     Authoritative, and self-clearing: a fresh image's manifest matches its own
+     files by construction, so a completed upgrade always drops the count to 0.
 
-  2. .editor_backups fallback — if git or the .git dir is unavailable, the
-     presence of editor/test-recovery backups tells us files were edited. We
-     can't perfectly reverse the backup filename back to a path, so we report
-     a best-effort count + name hints rather than guess wrongly.
+  2. git — only present when running from a dev checkout; `.git` is excluded
+     from the image by build.sh's .dockerignore (a depth-1 .git is ~7.5 MB, most
+     of it the screenshot blobs that exclusion exists to strip). Kept so
+     detection still works when developing outside a container.
+
+  3. .editor_backups fallback — last resort, for pre-manifest images. Backups
+     record that a file was edited at SOME point; they live in the data/ bind
+     mount and are never pruned, so they OUTLIVE the upgrade that discarded the
+     edit. Counting them naively reports the same phantom edits forever, so we
+     resolve each backup name back to a real path and keep only those whose file
+     still diverges from the image (mtime newer than the image build).
 """
 import datetime
+import hashlib
 import io
 import logging
 import os
@@ -41,6 +49,8 @@ _CACHE_TTL = 15.0
 _cache = {"at": 0.0, "result": None}
 
 PROJECT_ROOT = Path("/app")
+# Written by build.sh's Containerfile: "<sha256>  <relpath>" per shipped file.
+MANIFEST_PATH = PROJECT_ROOT / ".release_manifest"
 # Under data/ (host bind mount) since the move to manager-side recovery —
 # keep in sync with modules/test_recovery.py and boot_guard.py. The old
 # ".editor_backups/" ignore prefix stays for pre-migration checkouts.
@@ -54,11 +64,17 @@ _IGNORE_PREFIXES = ("data/", "logs/", "config/", ".editor_backups/",
                     "__pycache__/", ".git/")
 _IGNORE_SUFFIXES = (".pyc", ".pyo", ".log")
 # Exact paths that aren't user edits to preserve: VERSION is replaced by the new
-# image by design; Containerfile/.dockerignore are build artifacts.
-_IGNORE_EXACT = {"VERSION", "Containerfile", ".dockerignore"}
+# image by design; Containerfile/.dockerignore are build artifacts;
+# .release_manifest is the yardstick itself.
+_IGNORE_EXACT = {"VERSION", "Containerfile", ".dockerignore", ".release_manifest"}
 
 # backup name = "<safe>.<YYYYMMDD_HHMMSS>...bak"  →  capture <safe> for grouping.
 _BACKUP_TS_RE = re.compile(r"^(.*?)\.\d{8}_\d{6}")
+
+# Tolerance when comparing a file's mtime against the image build reference.
+# COPY replays context mtimes, so pristine files land a hair before VERSION;
+# a real edit is minutes-to-days newer, so a few seconds of slack is ample.
+_MTIME_SLACK = 5.0
 
 
 def _ignored(path: str) -> bool:
@@ -70,6 +86,80 @@ def _ignored(path: str) -> bool:
         or any(p.startswith(pre) for pre in _IGNORE_PREFIXES)
         or any(p.endswith(suf) for suf in _IGNORE_SUFFIXES)
     )
+
+
+def _walk_tree():
+    """Yield non-ignored file paths under /app, relative to it."""
+    for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
+        rel_dir = os.path.relpath(dirpath, PROJECT_ROOT)
+        rel_dir = "" if rel_dir == "." else rel_dir
+        # Prune ignored dirs in place so os.walk never descends into data/ etc.
+        dirnames[:] = [
+            d for d in dirnames
+            if not _ignored(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
+        ]
+        for fn in filenames:
+            rel = f"{rel_dir}/{fn}" if rel_dir else fn
+            if not _ignored(rel):
+                yield rel
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _read_manifest():
+    """Parse .release_manifest → {relpath: sha256}, or None if unusable."""
+    try:
+        text = MANIFEST_PATH.read_text()
+    except Exception:
+        return None  # pre-manifest image, or dev checkout
+
+    out = {}
+    for line in text.splitlines():
+        # sha256sum format: "<hash>  <path>". A leading '\' on the hash means
+        # sha256sum escaped a path containing a newline/backslash.
+        digest, sep, path = line.partition("  ")
+        if not sep:
+            continue
+        digest = digest.strip().lstrip("\\")
+        path = path.strip()
+        if digest and path and not _ignored(path):
+            out[path] = digest
+    return out or None
+
+
+def _manifest_changes():
+    """Return list[{path,status,source}] vs the shipped manifest, or None."""
+    manifest = _read_manifest()
+    if manifest is None:
+        return None
+
+    changes = []
+    seen = set()
+    for rel in _walk_tree():
+        seen.add(rel)
+        expected = manifest.get(rel)
+        if expected is None:
+            # Not in the release at all — a file created in-app.
+            changes.append({"path": rel, "status": "A", "source": "manifest"})
+            continue
+        try:
+            if _sha256(PROJECT_ROOT / rel) != expected:
+                changes.append({"path": rel, "status": "M", "source": "manifest"})
+        except Exception as e:
+            logger.warning("hash failed for %s: %s", rel, e)
+
+    for rel in manifest:
+        if rel not in seen:
+            changes.append({"path": rel, "status": "D", "source": "manifest"})
+
+    changes.sort(key=lambda c: c["path"])
+    return changes
 
 
 def _git_changes():
@@ -107,14 +197,55 @@ def _git_changes():
     return changes
 
 
-def _backup_changes():
-    """Fallback: infer edited files from backup filenames (count + name hints).
+def _image_build_ref():
+    """Best guess at when the running image was built, as an mtime.
 
-    Backup names mangle '/' → '_' irreversibly, so we don't fabricate paths;
-    we report the distinct base names as hints so the warning is honest.
+    COPY preserves the build context's mtimes, and that context is a fresh
+    `git clone` (scripts/upgrade.sh), so every pristine file carries ~clone time.
+    VERSION is stamped just after the clone, making it the newest image-origin
+    file — anything newer than it was written at runtime, i.e. a live edit.
+    """
+    for name in ("VERSION", "main.py", "launcher.py"):
+        try:
+            p = PROJECT_ROOT / name
+            if p.is_file():
+                return p.stat().st_mtime
+        except Exception:
+            continue
+    return None
+
+
+def _unmangle_index():
+    """Map mangled backup base names back to real paths.
+
+    Backups are named with '/' → '_' (routes/editor_routes.py), which looks
+    lossy in the abstract but is resolvable against the actual tree: mangle
+    every real path and look the backup name up. Collisions (two real paths
+    mangling to the same name) are dropped rather than guessed at.
+    """
+    index, ambiguous = {}, set()
+    for rel in _walk_tree():
+        safe = rel.replace("/", "_").replace("\\", "_")
+        if index.get(safe, rel) != rel:
+            ambiguous.add(safe)
+        index[safe] = rel
+    for safe in ambiguous:
+        index.pop(safe, None)
+    return index
+
+
+def _backup_changes():
+    """Last-resort fallback for pre-manifest images.
+
+    A backup only proves an edit happened at some point — and since backups sit
+    in the data/ bind mount and are never pruned, they survive the very upgrade
+    that discarded the edit. So resolve each to a real path and keep it only if
+    that file is STILL divergent (written after the image was built). Without
+    this gate the count freezes and the banner can never clear.
     """
     if not BACKUP_DIR.is_dir():
         return []
+
     bases = set()
     try:
         for f in BACKUP_DIR.iterdir():
@@ -125,7 +256,27 @@ def _backup_changes():
     except Exception as e:
         logger.warning("backup scan failed: %s", e)
         return []
-    return [{"path": b, "status": "edited", "source": "backups"} for b in sorted(bases)]
+    if not bases:
+        return []
+
+    index = _unmangle_index()
+    build_ref = _image_build_ref()
+    changes = []
+    for base in sorted(bases):
+        rel = index.get(base)
+        if rel is None:
+            # File is gone, or the name is ambiguous. Can't confirm it's live,
+            # and reporting it would be the phantom-count bug all over again.
+            logger.debug("backup %r does not resolve to a live file — skipping", base)
+            continue
+        if build_ref is not None:
+            try:
+                if (PROJECT_ROOT / rel).stat().st_mtime <= build_ref + _MTIME_SLACK:
+                    continue  # came from the image; the edit is already gone
+            except Exception:
+                continue
+        changes.append({"path": rel, "status": "M", "source": "backups"})
+    return changes
 
 
 def detect_live_edits(use_cache: bool = False) -> dict:
@@ -140,10 +291,10 @@ def detect_live_edits(use_cache: bool = False) -> dict:
     Returns:
       {
         "supported": bool,        # could we detect at all?
-        "method": "git"|"backups"|"none",
+        "method": "manifest"|"git"|"backups"|"none",
         "count": int,
         "files": [{"path","status","source"}, ...],   # capped for UI
-        "exact": bool,            # True for git (real paths), False for fallback
+        "exact": bool,            # False only for the backups fallback
       }
     """
     if use_cache and _cache["result"] is not None and (time.time() - _cache["at"]) < _CACHE_TTL:
@@ -156,17 +307,26 @@ def detect_live_edits(use_cache: bool = False) -> dict:
 
 
 def _detect_live_edits_uncached() -> dict:
-    files = _git_changes()
-    if files is not None:
-        return {
-            "supported": True,
-            "method": "git",
-            "exact": True,
-            "count": len(files),
-            "files": files[:200],
-        }
+    for method, fn in (("manifest", _manifest_changes), ("git", _git_changes)):
+        try:
+            files = fn()
+        except Exception as e:
+            logger.warning("%s detection failed: %s", method, e)
+            continue
+        if files is not None:
+            return {
+                "supported": True,
+                "method": method,
+                "exact": True,
+                "count": len(files),
+                "files": files[:200],
+            }
 
-    fallback = _backup_changes()
+    try:
+        fallback = _backup_changes()
+    except Exception as e:
+        logger.warning("backup detection failed: %s", e)
+        fallback = []
     return {
         "supported": True,
         "method": "backups" if fallback else "none",
@@ -187,9 +347,10 @@ def build_export_archive():
     """Build a zip of the CURRENT content of live-edited files so the user can
     keep them before an upgrade discards them.
 
-    git method  → real paths preserved (unzip straight into a checkout).
-    fallback    → bundles the raw .editor_backups/ (pre-edit originals), since
-                  exact current paths can't be reconstructed without git.
+    exact methods (manifest/git) → real paths preserved (unzip into a checkout).
+    fallback                     → bundles the raw .editor_backups/ (pre-edit
+                  originals), since without an exact method we can't be sure the
+                  resolved paths are the full picture.
 
     Returns (bytes, filename) or (None, None) when there's nothing to export.
     """
@@ -212,7 +373,7 @@ def build_export_archive():
     root = PROJECT_ROOT.resolve()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        if info["method"] == "git":
+        if info.get("exact"):
             for entry in info["files"]:
                 path = entry.get("path", "")
                 status = entry.get("status", "")
@@ -235,7 +396,7 @@ def build_export_archive():
                 except Exception as e:
                     manifest.append(f"[error:{e}] {path}")
         else:
-            manifest.append("git unavailable — bundling .editor_backups/ (pre-edit originals).")
+            manifest.append("no exact detection method — bundling .editor_backups/ (pre-edit originals).")
             if BACKUP_DIR.is_dir():
                 for f in sorted(BACKUP_DIR.iterdir()):
                     if f.is_file():
