@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="/static/css/floor-plan.css">
     <link rel="stylesheet" href="/static/css/hive-tokens.css">
     <link rel="stylesheet" href="/static/css/hive-components.css">
+    <link rel="stylesheet" href="/static/css/frames.css">
     <link rel="stylesheet" href="/static/css/automations.css">
 </head>
 <body>
@@ -110,6 +111,7 @@
 <div class="container-fluid app-main">
    <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#devices"><i class="fas fa-list"></i> Devices</button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#frames"><i class="fas fa-border-all"></i> Frames</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#groups"><i class="fas fa-layer-group"></i> Groups</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#media"><i class="fas fa-music"></i> Media</button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automations"><i class="fas fa-bolt"></i> Automations</button></li>
@@ -204,6 +206,32 @@
                         </table>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- FRAMES TAB -->
+        <div class="tab-pane fade" id="frames" role="tabpanel">
+            <div class="container-fluid p-3">
+                <div class="frames-toolbar">
+                    <div>
+                        <h5 class="mb-0"><i class="fas fa-border-all me-2"></i>Frames</h5>
+                        <small class="text-muted">Your hive, laid out by chamber or by device type</small>
+                    </div>
+                    <div class="ms-auto d-flex gap-2 align-items-center">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Frame layout">
+                            <button type="button" class="btn btn-warning" data-frames-split="chamber" aria-pressed="true">
+                                <i class="fas fa-location-dot"></i> By chamber
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" data-frames-split="type" aria-pressed="false">
+                                <i class="fas fa-shapes"></i> By type
+                            </button>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" id="framesRefresh" aria-label="Refresh frame">
+                            <i class="fas fa-arrows-rotate"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="framesGrid"></div>
             </div>
         </div>
 

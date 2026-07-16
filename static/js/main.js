@@ -59,6 +59,15 @@ import {
 } from './zones.js';
 
 import {
+    initFrames,
+    loadFrame,
+    setSplit,
+    frameCommand,
+    frameSetpoint,
+    framesHandleDeviceUpdate
+} from './frames.js';
+
+import {
     initChambers,
     loadChambers,
     openChamberManager,
@@ -256,6 +265,14 @@ window.recalibrateZone = recalibrateZone;
 window.deleteZone = deleteZone;
 window.viewZoneDetails = viewZoneDetails;
 
+// Frames
+window.loadFrame = loadFrame;
+window.setFramesSplit = setSplit;
+window.frameCommand = frameCommand;
+window.frameSetpoint = frameSetpoint;
+// Hook read by devices.js:handleDeviceUpdate on every websocket state change.
+window.framesHandleDeviceUpdate = framesHandleDeviceUpdate;
+
 // Chambers (Frames room registry)
 window.openChamberManager = openChamberManager;
 window.createChamber = createChamber;
@@ -336,6 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initOtbr();
         loadTabs();
         initChambers();
+        initFrames();
         initMesh();
         initGroups();
         initMQTTExplorer();

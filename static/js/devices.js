@@ -297,6 +297,10 @@ export function handleDeviceUpdate(payload) {
 
         try { dismissKnownDevices(state.devices); } catch(e) {}
 
+        // Frames renders live values straight from the cache, so it only needs
+        // to re-render the cells for this device.
+        if (window.framesHandleDeviceUpdate) window.framesHandleDeviceUpdate(payload.ieee);
+
         // If availability changed while an online/offline filter is active,
         // the row may need to appear or disappear — re-render the whole table
         if (payload.data.available !== undefined && state.statusFilter !== 'all') {

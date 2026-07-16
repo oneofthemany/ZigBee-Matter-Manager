@@ -1,0 +1,231 @@
+/* ============================================================
+   ZigBee Matter Manager — Frames
+   ============================================================
+   Frames are dynamically-generated dashboards. A Frame holds
+   Chambers (rooms); each Chamber holds Cells (device tiles).
+
+   Consumes the semantic tokens from hive-tokens.css — never raw
+   palette values, so light/dark remap for free.
+
+   On the honeycomb: cells are rectangles, not hexagons. --hexclip
+   is used for the icon chip only. A grid of real hexagons looks
+   the part but cramps labels, sliders and toggles, and a dashboard
+   you can't operate isn't worth the metaphor.
+   ============================================================ */
+
+.frames-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+/* ---------- groups (a chamber, or a device type) ---------- */
+
+.frame-group {
+    margin-bottom: 1.5rem;
+}
+
+.frame-group-head {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin-bottom: .6rem;
+    padding-bottom: .35rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.frame-group-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    font-size: 1rem;
+}
+
+.frame-group-count {
+    font-size: .75rem;
+    color: var(--text-muted);
+    background: var(--bg-surface-sunken);
+    border-radius: 10px;
+    padding: 0 .5rem;
+}
+
+/* ---------- the comb ---------- */
+
+.frame-comb {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: .75rem;
+}
+
+.frame-cell {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: .7rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    min-height: 104px;
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.frame-cell:hover {
+    border-color: var(--honey);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .08);
+}
+
+/* An unreachable device is dimmed, never hidden — a missing tile reads as
+   "I deleted it", which is worse than "I can't reach it". */
+.frame-cell.is-offline {
+    opacity: .55;
+}
+
+.frame-cell.is-offline .cell-controls {
+    pointer-events: none;
+}
+
+.cell-head {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+}
+
+/* The honeycomb, kept to a chip so the content stays rectangular. */
+.cell-icon {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 30px;
+    clip-path: var(--hexclip);
+    background: var(--bg-surface-sunken);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .75rem;
+}
+
+.frame-cell.is-active .cell-icon {
+    background: var(--honey);
+    color: var(--honey-ink);
+}
+
+.cell-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cell-badges {
+    flex: 0 0 auto;
+    display: flex;
+    gap: .2rem;
+    color: var(--text-muted);
+    font-size: .65rem;
+}
+
+.cell-body {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    margin-top: auto;
+}
+
+.cell-controls {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    flex-wrap: wrap;
+}
+
+/* ---------- readouts ---------- */
+
+.cell-readouts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+}
+
+.readout {
+    font-size: .72rem;
+    padding: .1rem .45rem;
+    border-radius: 6px;
+    background: var(--bg-surface-sunken);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.readout i {
+    opacity: .7;
+    margin-right: .2rem;
+}
+
+.readout.is-pending {
+    opacity: .5;
+    font-style: italic;
+}
+
+/* Binary states carry meaning through colour AND text — never colour alone. */
+.readout.state-alarm {
+    background: var(--bad);
+    color: #fff;
+}
+
+.readout.state-active {
+    background: var(--honey);
+    color: var(--honey-ink);
+}
+
+.readout.state-idle {
+    background: var(--bg-surface-sunken);
+    color: var(--text-muted);
+}
+
+/* ---------- controls ---------- */
+
+.cell-slider {
+    width: 100%;
+    margin: 0;
+}
+
+.cell-setpoint {
+    display: flex;
+    align-items: center;
+    gap: .3rem;
+}
+
+.cell-setpoint-value {
+    font-family: var(--mono);
+    font-size: .95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 3.6ch;
+    text-align: center;
+}
+
+.frame-empty {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: var(--text-muted);
+}
+
+/* ---------- mobile ---------- */
+/* Phase 5 extracts a dedicated mobile surface; this keeps the tab usable
+   on a phone in the meantime. */
+@media (max-width: 576px) {
+    .frame-comb {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: .5rem;
+    }
+
+    .frame-cell {
+        min-height: 96px;
+    }
+}
