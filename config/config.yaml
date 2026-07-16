@@ -133,7 +133,8 @@ web:
   debug: false
   secret_key: ssshItsASecret
   ssl:
-    enabled: true
+    # HTTPS is always on — a self-signed cert is generated at first boot.
+    # Point these at your own cert/key to use a trusted certificate instead.
     cert_file: ./data/certs/cert.pem
     key_file: ./data/certs/key.pem
 

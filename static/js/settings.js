@@ -10,7 +10,6 @@ const log = zmmLog('settings');
  // IMPORTS
  // ============================================================================
 
- import { loadSSLStatus } from './system.js';
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
 
@@ -36,7 +35,6 @@ export function initSettings() {
 
 export async function loadSettingsPanel() {
     await loadStructuredConfig();
-    await loadSSLStatus();
     renderBackupRestoreSection();
 }
 
@@ -125,11 +123,6 @@ function renderConfigTab(config) {
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneOta" type="button">
           <i class="fas fa-cloud-arrow-down me-1"></i> OTA
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneSsl" type="button">
-          <i class="fas fa-lock me-1"></i> HTTPS / SSL
         </button>
       </li>
       <li class="nav-item">
@@ -305,17 +298,6 @@ function renderConfigTab(config) {
       <code>thirdreality</code>, <code>sonoff</code>. Each entry is passed
       verbatim to zigpy.
     </div>
-    </div>
-
-    <!-- SSL PANE -->
-    <div class="tab-pane fade" id="cfgPaneSsl">
-      <div class="d-flex align-items-center gap-3">
-        <div class="form-check form-switch fs-5 mb-0">
-          <input class="form-check-input" type="checkbox" id="sslToggle" onchange="toggleSSL(this.checked)">
-          <label class="form-check-label" for="sslToggle">Enable HTTPS (self-signed cert)</label>
-        </div>
-        <small class="text-muted">Applies immediately on toggle — requires service restart to take effect</small>
-      </div>
     </div>
 
     <!-- BACKUP PANE (filled by renderBackupRestoreSection) -->

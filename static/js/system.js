@@ -59,54 +59,6 @@ export async function restartSystem() {
     setTimeout(() => location.reload(), 15000);
 }
 
-/**
- * SSL Status
- */
-
-export async function loadSSLStatus() {
-    const r = await fetch('/api/ssl/status');
-    const d = await r.json();
-    // #sslToggle lives in the dynamically rendered Config sub-tabs — it may
-    // not be in the DOM yet on early calls.
-    const toggle = document.getElementById('sslToggle');
-    if (toggle) toggle.checked = d.enabled;
-}
-
-export async function toggleSSL(enabled) {
-    const r = await fetch('/api/ssl/toggle', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ enabled })
-    });
-    const d = await r.json();
-
-    if (!d.success) {
-        window.toast.error('SSL toggle failed: ' + d.error);
-        // Revert toggle
-        document.getElementById('sslToggle').checked = !enabled;
-        return;
-    }
-
-    // Tell the user what happened, with extra detail when a cert was generated.
-    if (enabled) {
-        if (d.cert_action === 'generated') {
-            window.toast.success(
-                `HTTPS enabled. A new self-signed certificate was generated at ` +
-                `${d.cert_path}.\n` +
-                `You will need to re-trust it in your browser the next time you ` +
-                `connect.\n` +
-                `${d.message || 'Restart the service to apply.'}`,
-                { duration: 10000 }
-            );
-        } else if (d.cert_action === 'preserved') {
-            window.toast.success(
-                `HTTPS enabled using existing certificate at ${d.cert_path}.\n` +
-                `${d.message || 'Restart the service to apply.'}`
-            );
-        } else {
-            window.toast.success(d.message || 'HTTPS enabled. Restart the service to apply.');
-        }
-    } else {
-        window.toast.success(d.message || 'HTTPS disabled. Restart the service to apply.');
-    }
-}
+// HTTPS is always on (self-signed cert auto-generated at boot by
+// modules/ssl_bootstrap.py) — there is deliberately no HTTP option, so the
+// old SSL toggle UI and its /api/ssl/* endpoints are gone.

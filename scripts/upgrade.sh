@@ -203,20 +203,20 @@ detect_arch() {
 }
 
 # ── HEALTH CHECK URL DETECTION ──────────────────────────────────────────────
-# The new container may be running plain HTTP, or HTTPS (with a self-signed
-# cert). config.yaml tells us which — but we read it defensively because
-# config.yaml shape can vary across versions.
+# The app always serves HTTPS (self-signed cert auto-generated at boot); the
+# only time it serves plain HTTP is the error fallback when no usable cert
+# could be provisioned. So we probe https first and keep http as a last
+# resort — no config flag consulted.
 #
 # We build a list of candidate URLs to try, in priority order:
 #   1. $ZMM_HEALTH_URL (if set explicitly — overrides everything)
-#   2. https://127.0.0.1:${port}/api/system/health   (if web.ssl.enabled is true)
-#   3. http://127.0.0.1:${port}/api/system/health    (fallback for non-SSL setups)
+#   2. https://127.0.0.1:${port}/api/system/health
+#   3. http://127.0.0.1:${port}/api/system/health    (cert-failure fallback)
 #
 # is_app_healthy() returns 0 if ANY of the candidates returns 200.
 detect_health_urls() {
     local config="${DATA_DIR}/config/config.yaml"
     local port="8000"
-    local ssl_enabled="false"
 
     # If user has set ZMM_HEALTH_URL, use only that
     if [[ -n "${HEALTH_URL:-}" ]]; then
@@ -224,16 +224,7 @@ detect_health_urls() {
         return 0
     fi
 
-    # Best-effort YAML parsing without yq dependency. Look for:
-    #   web:
-    #     port: 8000
-    #     ssl:
-    #       enabled: true            (or "enabled", "yes", etc.)
-    #       certfile: ./...          (or cert_file: with underscore)
-    #       keyfile: ./...           (or key_file: with underscore)
-    #
-    # Accept both naming conventions because real configs use either.
-    # Treat "enabled" as truthy unless the value is explicitly falsy.
+    # Best-effort YAML parsing without yq dependency — just the web port.
     if [[ -f "$config" ]]; then
         # Extract port (anywhere under "web:" stanza). Keep simple — first hit wins.
         local p
@@ -243,32 +234,11 @@ detect_health_urls() {
             in_web && /^  port:/ { gsub(/[^0-9]/,"",$2); print $2; exit }
         ' "$config" 2>/dev/null)
         [[ -n "$p" && "$p" =~ ^[0-9]+$ ]] && port="$p"
-
-        # Extract ssl.enabled. Look for the nested key.
-        local s
-        s=$(awk '
-            /^web:/         { in_web=1; next }
-            /^[a-zA-Z]/     { in_web=0; in_ssl=0 }
-            in_web && /^  ssl:/ { in_ssl=1; next }
-            in_web && /^  [a-zA-Z]/ { in_ssl=0 }
-            in_web && in_ssl && /^    enabled:/ { print $2; exit }
-        ' "$config" 2>/dev/null | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]')
-        # Truthy unless explicitly falsy. "enabled" itself is truthy.
-        case "$s" in
-            ""|false|no|0|off|disabled|none|null)
-                ssl_enabled="false"
-                ;;
-            *)
-                ssl_enabled="true"
-                ;;
-        esac
     fi
 
     # Output candidate URLs, one per line, in priority order.
     # We only check /api/system/health — the canonical health endpoint.
-    if [[ "$ssl_enabled" == "true" ]]; then
-        echo "https://127.0.0.1:${port}/api/system/health"
-    fi
+    echo "https://127.0.0.1:${port}/api/system/health"
     echo "http://127.0.0.1:${port}/api/system/health"
 }
 

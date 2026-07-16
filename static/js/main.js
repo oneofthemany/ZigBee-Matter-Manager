@@ -86,9 +86,7 @@ import { createSignalInspector } from './modal/signals.js';
 import {
     loadConfigYaml,
     saveConfigYaml,
-    restartSystem,
-    loadSSLStatus,
-    toggleSSL
+    restartSystem
 } from './system.js';
 import {
     sendCommand,
@@ -180,8 +178,6 @@ window.showConsoleLogSettings = showConsoleLogSettings;
 window.loadConfigYaml = loadConfigYaml;
 window.saveConfigYaml = saveConfigYaml;
 window.restartSystem = restartSystem;
-window.loadSSLStatus = loadSSLStatus;
-window.toggleSSL = toggleSSL;
 
 window.applyManualChannel = function() {
     const ch = parseInt(document.getElementById('manualChannelSelect').value);
@@ -340,7 +336,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (settingsTab) {
             settingsTab.addEventListener('click', () => {
                 loadConfigYaml();
-                loadSSLStatus();
 
                 if (window.initMyAccount) window.initMyAccount();
                 if (window.initAuthSettings) window.initAuthSettings();

@@ -1149,10 +1149,11 @@ async def start_services_after_setup():
 
 if __name__ == "__main__":
     ssl_config = CONFIG.get('web', {}).get('ssl', {}) or {}
-    # Secure by default: serve HTTPS unless explicitly disabled. A self-signed
-    # cert is auto-generated on first boot (below), so no user setup is needed —
-    # and the watchdog / manager / container healthcheck all expect HTTPS.
-    ssl_enabled = ssl_config.get('enabled', True)
+    # HTTPS is ALWAYS on — there is no supported HTTP mode and no UI toggle.
+    # A self-signed cert is auto-generated on first boot (below), so no user
+    # setup is needed; web.ssl only carries optional cert/key path overrides
+    # for user-supplied certificates. A stale `enabled: false` left in an old
+    # config.yaml is deliberately ignored.
 
     host = get_conf('web', 'host') or '0.0.0.0'
     # Environment variable takes priority (set by build.sh for host networking),
@@ -1166,26 +1167,21 @@ if __name__ == "__main__":
         "log_level": (get_conf('logging', 'level') or 'info').lower(),
     }
 
-    if ssl_enabled:
-        cert_file = ssl_config.get('cert_file', './data/certs/cert.pem')
-        key_file = ssl_config.get('key_file', './data/certs/key.pem')
-        from modules.ssl_bootstrap import ensure_self_signed_cert
-        action = ensure_self_signed_cert(cert_file, key_file)
-        have_certs = os.path.isfile(cert_file) and os.path.isfile(key_file)
-        if have_certs:
-            kwargs["ssl_certfile"] = cert_file
-            kwargs["ssl_keyfile"] = key_file
-            logger.info(f"Starting with SSL on https://{host}:{port} (cert {action})")
-        else:
-            # Generation failed and no usable cert — fall back to HTTP rather
-            # than crash-looping on a missing certfile.
-            ssl_enabled = False
-            logger.error(
-                f"SSL enabled but no usable cert ({action}) — falling back to "
-                f"http://{host}:{port}. Install openssl or drop a cert at {cert_file}."
-            )
-
-    if not ssl_enabled:
-        logger.info(f"Starting on http://{host}:{port}")
+    cert_file = ssl_config.get('cert_file', './data/certs/cert.pem')
+    key_file = ssl_config.get('key_file', './data/certs/key.pem')
+    from modules.ssl_bootstrap import ensure_self_signed_cert
+    action = ensure_self_signed_cert(cert_file, key_file)
+    if os.path.isfile(cert_file) and os.path.isfile(key_file):
+        kwargs["ssl_certfile"] = cert_file
+        kwargs["ssl_keyfile"] = key_file
+        logger.info(f"Starting with SSL on https://{host}:{port} (cert {action})")
+    else:
+        # Cert generation failed and no usable pair on disk — serve HTTP
+        # rather than crash-looping on a missing certfile. This is the ONLY
+        # path to HTTP and it is an error condition, not a configuration.
+        logger.error(
+            f"No usable TLS certificate ({action}) — falling back to "
+            f"http://{host}:{port}. Install openssl or drop a cert at {cert_file}."
+        )
 
     uvicorn.run(**kwargs)

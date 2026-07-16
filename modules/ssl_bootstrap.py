@@ -1,11 +1,12 @@
 """
 Self-signed cert bootstrap.
 
-Single source of truth for generating the app's self-signed HTTPS cert, shared by:
-  - main.py's entry point — auto-generates on first boot so the app serves
-    HTTPS out of the box (no user configuration needed), which is what the
-    watchdog / manager / container healthcheck all expect.
-  - the /api/ssl/toggle route — the manual "Enable HTTPS" switch in Settings.
+Single source of truth for generating the app's self-signed HTTPS cert, used by
+main.py's entry point — auto-generates on first boot so the app serves HTTPS
+out of the box (no user configuration needed), which is what the watchdog /
+manager / container healthcheck all expect. HTTPS is always on; there is no
+HTTP mode or toggle (plain HTTP only ever appears as the cert-failure
+fallback in main.py).
 
 Design rules (kept identical to the original route logic):
   - NEVER regenerate an existing pair — browsers that already trust the cert
