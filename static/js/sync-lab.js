@@ -206,7 +206,7 @@ function _stopLive() {
 function _renderShell() {
     const host = document.getElementById('syncLabHost');
     if (!host) return;
-    log('shell rebuild — all charts recreated (expected only on open/theme/session switch)');
+    log.debug('shell rebuild — all charts recreated (expected only on open/theme/session switch)');
     if (_spreadChart) { _spreadChart.dispose(); _spreadChart = null; }
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
