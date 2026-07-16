@@ -22,10 +22,14 @@ logger = logging.getLogger("routes.backup")
 
 # Core files always included
 BACKUP_MANIFEST = [
-    # Network credentials & config
+    # Network credentials & config — every integration's enablement lives in
+    # config.yaml, so this file alone carries the full enablement state.
     "config/config.yaml",
 
-    # Zigpy device database (paired devices, network state)
+    # Zigpy device database (paired devices, network state).
+    # The live path is data/zigbee.db (config_builder database_path); the bare
+    # root entry is kept so backups from the legacy layout still restore.
+    "data/zigbee.db",
     "zigbee.db",
 
     # Application data
@@ -40,8 +44,31 @@ BACKUP_MANIFEST = [
     "data/zones.yaml",
     "data/auth.yaml",
 
-    # Groups
+    # Groups — live registry is data/groups.json; the groups/ entry is the
+    # legacy in-image location, kept so old backups still restore.
+    "data/groups.json",
     "groups/groups.json",
+
+    # Integration enablement & user config (External APIs tab and friends)
+    "data/presence_users.yaml",
+    "data/remote_access.yaml",
+    "data/app_alerts.json",
+    "data/ac_timers.json",
+    "data/cast_sync_groups.json",
+    "data/cast_sync_model.json",
+    "data/cast_sync_trims.json",
+    "data/media_prefs.json",
+    "data/media_sessions.json",
+    "data/radio_favourites.json",
+    "data/media/tidal_session.json",
+]
+
+# Directories included recursively (each contained file is backed up and
+# restorable — see _entry_allowed()).
+BACKUP_DIRS = [
+    "data/floor_plans",   # heating floor-plan background images
+    "data/matter",        # Matter fabric / commissioning storage
+    "data/certs",         # TLS pair — preserves browser trust across restores
 ]
 
 # Optional files (toggled via query param)
@@ -60,8 +87,11 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
     async def create_backup(include_telemetry: bool = True):
         """
         Create a full network backup as a downloadable .zip file.
-        Includes: config, zigbee.db, all data/*.json, zones, groups,
-        and (optionally) the telemetry DuckDB.
+        Includes: config.yaml (all integration enablement + settings),
+        the zigpy device DB, groups/zones/automations/auth, per-integration
+        data files (presence, remote access, alerts, AC timers, media,
+        speaker-sync), floor-plan images, Matter storage, the TLS cert pair,
+        and (optionally) the telemetry DuckDBs.
         """
         try:
             svc = get_zigbee_service()
@@ -110,19 +140,37 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                     "files": [],
                 }
 
+                def add_file(full, rel_path):
+                    zf.write(full, rel_path)
+                    included.append(rel_path)
+                    meta["files"].append({
+                        "path": rel_path,
+                        "size": os.path.getsize(full),
+                    })
+
                 for rel_path in manifest_files:
                     full = os.path.join(APP_DIR, rel_path)
                     if os.path.isfile(full):
-                        zf.write(full, rel_path)
-                        size = os.path.getsize(full)
-                        included.append(rel_path)
-                        meta["files"].append({
-                            "path": rel_path,
-                            "size": size,
-                        })
+                        add_file(full, rel_path)
                     else:
                         skipped.append(rel_path)
                         logger.debug(f"Backup skip (not found): {full}")
+
+                # Recursive directory entries (floor plans, matter storage, certs)
+                for rel_dir in BACKUP_DIRS:
+                    full_dir = os.path.join(APP_DIR, rel_dir)
+                    if not os.path.isdir(full_dir):
+                        skipped.append(rel_dir + "/")
+                        continue
+                    for root, _dirs, files in os.walk(full_dir):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            rel_path = os.path.relpath(full, APP_DIR)
+                            try:
+                                add_file(full, rel_path)
+                            except OSError as e:
+                                skipped.append(rel_path)
+                                logger.warning(f"Backup skip (unreadable): {rel_path}: {e}")
 
                 if skipped:
                     logger.info(f"Backup skipped {len(skipped)} missing files: {skipped}")
@@ -205,17 +253,31 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                 )
 
                 allowed = set(BACKUP_MANIFEST) | set(OPTIONAL_BACKUP_FILES)
+
+                def _entry_allowed(name: str) -> bool:
+                    # Zip-slip guard: reject absolute paths and any traversal
+                    # outside APP_DIR, then whitelist exact manifest files or
+                    # anything under a manifest directory.
+                    norm = os.path.normpath(name)
+                    if os.path.isabs(norm) or norm.startswith(".."):
+                        return False
+                    if norm in allowed:
+                        return True
+                    return any(
+                        norm.startswith(d.rstrip("/") + "/") for d in BACKUP_DIRS
+                    )
+
                 restored = []
                 errors = []
 
                 for entry in names:
-                    if entry == "backup_manifest.json":
+                    if entry == "backup_manifest.json" or entry.endswith("/"):
                         continue
-                    if entry not in allowed:
+                    if not _entry_allowed(entry):
                         logger.warning(f"Skipping unknown file in backup: {entry}")
                         continue
 
-                    target = os.path.join(APP_DIR, entry)
+                    target = os.path.join(APP_DIR, os.path.normpath(entry))
                     try:
                         os.makedirs(os.path.dirname(target), exist_ok=True)
                         data = zf.read(entry)
@@ -341,6 +403,27 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
             size = os.path.getsize(full) if exists else 0
             total_size += size
             files.append({"path": rel_path, "exists": exists, "size": size, "optional": False})
+
+        for rel_dir in BACKUP_DIRS:
+            full_dir = os.path.join(APP_DIR, rel_dir)
+            dir_size = 0
+            count = 0
+            if os.path.isdir(full_dir):
+                for root, _dirs, fnames in os.walk(full_dir):
+                    for fname in fnames:
+                        try:
+                            dir_size += os.path.getsize(os.path.join(root, fname))
+                            count += 1
+                        except OSError:
+                            pass
+            total_size += dir_size
+            files.append({
+                "path": rel_dir + "/",
+                "exists": count > 0,
+                "size": dir_size,
+                "optional": False,
+                "file_count": count,
+            })
 
         for rel_path in OPTIONAL_BACKUP_FILES:
             full = os.path.join(APP_DIR, rel_path)
