@@ -1205,7 +1205,7 @@ function _syncMemberRow(m, groupActive) {
 async function renderSyncPane() {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
-    log(`sync pane rebuild (caller: ${new Error().stack?.split('\n')[2]?.trim() || '?'})`);
+    log.debug(`sync pane rebuild (caller: ${new Error().stack?.split('\n')[2]?.trim() || '?'})`);
     el.dataset.tab = 'sync';
     // Fetch BEFORE touching the DOM: the old content (including a live
     // Sync Lab) stays attached and visible for the whole round-trip, so
