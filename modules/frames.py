@@ -53,6 +53,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+# Frame ids follow the same grammar as chamber ids, including the deliberate
+# refusal to fall back to a literal "id" for unusable input. Reusing the helpers
+# beats a second copy of the regex that can drift.
+from modules.chambers import slugify, valid_id
+
 logger = logging.getLogger("modules.frames")
 
 SCHEMA_VERSION = 1
@@ -322,6 +327,8 @@ def build_auto_frame(
     chambers: Optional[List[dict]] = None,
     include_chambers: Optional[List[str]] = None,
     include_kinds: Optional[List[str]] = None,
+    include_devices: Optional[List[str]] = None,
+    order: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Group devices into a frame.
@@ -334,6 +341,15 @@ def build_auto_frame(
 
     ``include_chambers`` / ``include_kinds`` filter the frame to what the user
     picked. Empty or None means everything.
+
+    ``include_devices`` is an explicit allow-list of ieees — a hand-built frame.
+    It is applied AFTER the other filters and narrows further, so a frame that
+    names devices and also filters by chamber shows the intersection, which is
+    what the builder's two panels visibly imply.
+
+    ``order`` is a manual arrangement of ieees. Listed devices come first, in
+    that order; anything unlisted keeps its natural sort behind them, so a new
+    device joining the hive appears rather than vanishing from a saved frame.
 
     Chamber group order follows the registry (level index, then name), so a
     chamber-split frame reads ground floor first. Unassigned devices always sort
@@ -354,6 +370,14 @@ def build_auto_frame(
     if include_kinds:
         wanted = set(include_kinds)
         cells = [c for c in cells if c["kind"] in wanted]
+    if include_devices:
+        wanted = set(include_devices)
+        cells = [c for c in cells if c["ieee"] in wanted]
+
+    # Manual arrangement: listed ieees first in the given order, everything else
+    # keeps its natural sort behind them.
+    rank_of = {ieee: i for i, ieee in enumerate(order or [])}
+    unranked = len(rank_of)
 
     groups: Dict[str, Dict[str, Any]] = {}
     for cell in cells:
@@ -379,11 +403,12 @@ def build_auto_frame(
         return (order, 0, "")
 
     def cell_sort(cell: Dict[str, Any]):
+        manual = rank_of.get(cell["ieee"], unranked)
         if split == SPLIT_CHAMBER:
             kind_rank = CELL_ORDER.index(cell["kind"]) if cell["kind"] in CELL_ORDER else len(CELL_ORDER)
-            return (kind_rank, cell["name"].lower())
+            return (manual, kind_rank, cell["name"].lower())
         rank = chamber_rank.get(cell["chamber"], len(chamber_rank) + 1) if cell["chamber"] else len(chamber_rank) + 2
-        return (rank, cell["name"].lower())
+        return (manual, rank, cell["name"].lower())
 
     out = sorted(groups.values(), key=group_sort)
     for g in out:
@@ -395,3 +420,134 @@ def build_auto_frame(
         "groups": out,
         "total": len(cells),
     }
+
+
+# ── saved frames ────────────────────────────────────────────────────
+
+MAX_FRAMES = 50
+MAX_FRAME_NAME = 64
+
+
+def clean_frame(raw: Any, existing_ids: Optional[set] = None) -> Optional[dict]:
+    """
+    Normalise one saved frame definition.
+
+    Shape::
+
+        {id, name, split, chambers[], kinds[], devices[], order[]}
+
+    ``chambers`` / ``kinds`` / ``devices`` are filters — empty means "no filter",
+    NOT "nothing". A frame with every list empty is the auto frame, which is a
+    perfectly reasonable thing to save under a name.
+
+    Returns None when there is nothing usable (no name/id). Unknown chamber ids
+    and ieees are kept rather than validated away: a device can be offline or
+    renamed mid-edit, and silently dropping it from a saved frame would be a
+    nasty surprise. build_auto_frame simply won't match them.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    name = str(raw.get("name") or "").strip()[:MAX_FRAME_NAME]
+    fid = valid_id(raw.get("id")) or (valid_id(slugify(name)) if name else None)
+    if not fid:
+        return None
+    if existing_ids is not None:
+        if fid in existing_ids:
+            return None
+        existing_ids.add(fid)
+
+    split = raw.get("split")
+    if split not in VALID_SPLITS:
+        split = SPLIT_CHAMBER
+
+    def _strs(key: str) -> List[str]:
+        v = raw.get(key)
+        if not isinstance(v, list):
+            return []
+        out, seen = [], set()
+        for item in v:
+            s = str(item or "").strip().lower()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    return {
+        "id": fid,
+        "name": name or fid,
+        "split": split,
+        "chambers": _strs("chambers"),
+        "kinds": [k for k in _strs("kinds") if k in CELL_ORDER],
+        "devices": _strs("devices"),
+        "order": _strs("order"),
+    }
+
+
+def clean_frames(raw: Any) -> List[dict]:
+    """Normalise a whole frames file. Invalid entries are dropped."""
+    if not isinstance(raw, list):
+        return []
+    seen: set = set()
+    out: List[dict] = []
+    for entry in raw:
+        f = clean_frame(entry, seen)
+        if f:
+            out.append(f)
+        else:
+            logger.debug("frames: dropped invalid entry %r", entry)
+    return out[:MAX_FRAMES]
+
+
+def render_saved_frame(
+    saved: Dict[str, Any],
+    devices: List[Dict[str, Any]],
+    chambers: Optional[List[dict]] = None,
+) -> Dict[str, Any]:
+    """Build a saved frame's layout. Thin wrapper — a saved frame is just filters."""
+    frame = build_auto_frame(
+        devices,
+        split=saved.get("split", SPLIT_CHAMBER),
+        chambers=chambers,
+        include_chambers=saved.get("chambers"),
+        include_kinds=saved.get("kinds"),
+        include_devices=saved.get("devices"),
+        order=saved.get("order"),
+    )
+    frame["id"] = saved.get("id")
+    frame["name"] = saved.get("name")
+    return frame
+
+
+def upsert_frame(frames: List[dict], raw: Any) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Add or update a frame in ``frames`` (mutated in place).
+
+    Returns ``(frame, None)`` or ``(None, error)``.
+    """
+    frame = clean_frame(raw)
+    if not frame:
+        return None, "frame needs a name"
+
+    for i, f in enumerate(frames):
+        if f["id"] == frame["id"]:
+            frames[i] = frame
+            return frame, None
+
+    if len(frames) >= MAX_FRAMES:
+        return None, f"too many frames (max {MAX_FRAMES})"
+
+    frames.append(frame)
+    return frame, None
+
+
+def delete_frame(frames: List[dict], frame_id: Any) -> Tuple[bool, Optional[str]]:
+    """Remove a frame from ``frames`` (mutated in place)."""
+    fid = valid_id(frame_id)
+    if not fid:
+        return False, "invalid frame id"
+    for i, f in enumerate(frames):
+        if f["id"] == fid:
+            frames.pop(i)
+            return True, None
+    return False, f"no frame '{fid}'"

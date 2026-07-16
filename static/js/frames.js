@@ -22,6 +22,15 @@ let frame = null;
 let split = 'chamber';
 let loading = false;
 
+/** What's on screen: an auto layout, or a saved frame. */
+let current = { type: 'auto', split: 'chamber' };
+let savedFrames = [];
+let allChambers = [];
+let allKinds = [];
+
+/** Builder working copy — only live while the modal is open. */
+let draft = null;
+
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -289,10 +298,14 @@ export async function loadFrame() {
     if (loading) return;
     loading = true;
     try {
-        const res = await fetch(`/api/frames/auto?split=${encodeURIComponent(split)}`);
+        const url = current.type === 'saved'
+            ? `/api/frames/${encodeURIComponent(current.id)}`
+            : `/api/frames/auto?split=${encodeURIComponent(current.split)}`;
+        const res = await fetch(url);
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'failed to build frame');
         frame = data;
+        split = data.split || split;
         renderFrame();
     } catch (e) {
         log.warn('failed to load frame:', e.message);
@@ -313,10 +326,15 @@ export function renderFrame() {
     if (!grid || !frame) return;
 
     if (!frame.groups?.length) {
+        // A saved frame that filters everything out is a different problem from
+        // a hive with nothing assigned yet — say which one it is.
+        const custom = current.type === 'saved';
         grid.innerHTML = `<div class="frame-empty">
             <i class="fas fa-border-none fa-2x mb-2"></i>
-            <div>No devices to show yet.</div>
-            <div class="small mt-1">Assign devices to chambers from the Devices tab.</div>
+            <div>${custom ? 'This frame has nothing in it.' : 'No devices to show yet.'}</div>
+            <div class="small mt-1">${custom
+                ? 'Edit the frame to widen what it includes.'
+                : 'Assign devices to chambers from the Devices tab.'}</div>
         </div>`;
         return;
     }
@@ -359,13 +377,308 @@ export function framesHandleDeviceUpdate(ieee) {
 export function setSplit(next) {
     if (next !== 'chamber' && next !== 'type') return;
     split = next;
-    document.querySelectorAll('[data-frames-split]').forEach(b => {
-        const on = b.dataset.framesSplit === split;
-        b.classList.toggle('btn-warning', on);
-        b.classList.toggle('btn-outline-secondary', !on);
-        b.setAttribute('aria-pressed', on);
+    current = { type: 'auto', split: next };
+    syncSelect();
+    return loadFrame();
+}
+
+// ── frame selector ──────────────────────────────────────────────────
+
+function selectValue() {
+    return current.type === 'saved' ? `saved:${current.id}` : `auto:${current.split}`;
+}
+
+function syncSelect() {
+    const sel = document.getElementById('framesSelect');
+    if (sel) sel.value = selectValue();
+    // Auto frames aren't editable — they're derived, not authored.
+    const isSaved = current.type === 'saved';
+    document.getElementById('framesEdit')?.toggleAttribute('disabled', !isSaved);
+    document.getElementById('framesDelete')?.toggleAttribute('disabled', !isSaved);
+}
+
+export async function loadSavedFrames() {
+    try {
+        const data = await (await fetch('/api/frames')).json();
+        savedFrames = data.success ? (data.frames || []) : [];
+    } catch (e) {
+        log.warn('failed to load saved frames:', e.message);
+        savedFrames = [];
+    }
+    renderFrameSelect();
+    return savedFrames;
+}
+
+function renderFrameSelect() {
+    const sel = document.getElementById('framesSelect');
+    if (!sel) return;
+    sel.innerHTML = `
+        <optgroup label="Automatic">
+            <option value="auto:chamber">By chamber</option>
+            <option value="auto:type">By device type</option>
+        </optgroup>
+        ${savedFrames.length ? `<optgroup label="Saved frames">${
+            savedFrames.map(f => `<option value="saved:${esc(f.id)}">${esc(f.name)}</option>`).join('')
+        }</optgroup>` : ''}
+    `;
+    syncSelect();
+}
+
+export function selectFrame(value) {
+    const [type, rest] = String(value || '').split(':');
+    if (type === 'saved' && rest) current = { type: 'saved', id: rest };
+    else current = { type: 'auto', split: rest === 'type' ? 'type' : 'chamber' };
+    syncSelect();
+    return loadFrame();
+}
+
+// ── builder ─────────────────────────────────────────────────────────
+
+/**
+ * Open the frame builder.
+ *
+ * With no id, starts from what's on screen — if you're looking at "By type" and
+ * hit New, the draft starts as "By type". Building from the thing you were
+ * already looking at beats starting from a blank slate.
+ */
+export async function openFrameBuilder(id = null) {
+    const [chRes, kRes, cRes] = await Promise.all([
+        fetch('/api/chambers').then(r => r.json()).catch(() => ({})),
+        fetch('/api/frames/kinds').then(r => r.json()).catch(() => ({})),
+        fetch('/api/frames/cells').then(r => r.json()).catch(() => ({})),
+    ]);
+    allChambers = chRes.chambers || [];
+    allKinds = kRes.kinds || [];
+    const cells = cRes.cells || [];
+
+    const existing = id ? savedFrames.find(f => f.id === id) : null;
+    draft = existing
+        ? JSON.parse(JSON.stringify(existing))
+        : { id: null, name: '', split: current.type === 'auto' ? current.split : 'chamber',
+            chambers: [], kinds: [], devices: [], order: [] };
+    draft._cells = cells;
+
+    document.getElementById('frameBuilderModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="modal fade" id="frameBuilderModal" tabindex="-1" aria-labelledby="frameBuilderTitle" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="frameBuilderTitle">
+                            <i class="fas fa-border-all"></i> ${existing ? 'Edit frame' : 'New frame'}
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-7">
+                                <label class="form-label small fw-bold" for="frameName">Name</label>
+                                <input type="text" class="form-control form-control-sm" id="frameName"
+                                       value="${esc(draft.name)}" placeholder="e.g. Downstairs, Evening">
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label small fw-bold" for="frameSplit">Group by</label>
+                                <select class="form-select form-select-sm" id="frameSplit">
+                                    <option value="chamber" ${draft.split === 'chamber' ? 'selected' : ''}>Chamber</option>
+                                    <option value="type" ${draft.split === 'type' ? 'selected' : ''}>Device type</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="text-muted small mb-3">
+                            Leave a section empty to include everything in it.
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label small fw-bold">Chambers</label>
+                                <div id="frameChambers" class="border rounded p-2" style="max-height:150px;overflow:auto"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small fw-bold">Device types</label>
+                                <div id="frameKinds" class="border rounded p-2" style="max-height:150px;overflow:auto"></div>
+                            </div>
+                        </div>
+                        <hr>
+                        <label class="form-label small fw-bold">Specific devices</label>
+                        <div class="text-muted small mb-2">
+                            Pick devices to pin this frame to exactly those. Picked devices can be
+                            arranged; everything else keeps its natural order.
+                        </div>
+                        <input type="search" id="frameDeviceSearch" class="form-control form-control-sm mb-2"
+                               placeholder="Filter devices…" aria-label="Filter devices">
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <div id="frameDevices" class="border rounded p-2" style="max-height:200px;overflow:auto"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="small text-muted mb-1">Arrangement</div>
+                                <div id="frameOrder" class="border rounded p-2" style="max-height:200px;overflow:auto"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button class="btn btn-sm btn-primary" id="frameSave" onclick="window.saveFrame()">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    renderBuilder();
+
+    document.getElementById('frameSplit').addEventListener('change', e => { draft.split = e.target.value; });
+    document.getElementById('frameName').addEventListener('input', e => { draft.name = e.target.value; });
+    document.getElementById('frameDeviceSearch').addEventListener('input', e => {
+        const q = e.target.value.trim().toLowerCase();
+        document.querySelectorAll('#frameDevices label').forEach(el => {
+            el.classList.toggle('d-none', q && !el.dataset.name.includes(q));
+        });
     });
-    loadFrame();
+
+    new bootstrap.Modal(document.getElementById('frameBuilderModal')).show();
+}
+
+function checkList(items, picked, handler) {
+    if (!items.length) return '<div class="text-muted small">None available.</div>';
+    return items.map(i => `
+        <label class="d-block small" data-name="${esc(i.label.toLowerCase())}">
+            <input class="form-check-input me-1" type="checkbox" value="${esc(i.value)}"
+                   ${picked.includes(i.value) ? 'checked' : ''}
+                   onchange="${handler}('${esc(i.value)}', this.checked)">
+            ${esc(i.label)}
+        </label>`).join('');
+}
+
+function renderBuilder() {
+    document.getElementById('frameChambers').innerHTML = checkList(
+        allChambers.map(c => ({ value: c.id, label: c.name })), draft.chambers, 'window.frameToggleChamber');
+    document.getElementById('frameKinds').innerHTML = checkList(
+        allKinds.map(k => ({ value: k.kind, label: k.label })), draft.kinds, 'window.frameToggleKind');
+    document.getElementById('frameDevices').innerHTML = checkList(
+        draft._cells.map(c => ({ value: c.ieee, label: c.name })), draft.devices, 'window.frameToggleDevice');
+    renderOrderList();
+}
+
+function renderOrderList() {
+    const el = document.getElementById('frameOrder');
+    if (!el) return;
+    if (!draft.devices.length) {
+        el.innerHTML = '<div class="text-muted small">Pick devices to arrange them.</div>';
+        return;
+    }
+    const nameOf = ieee => draft._cells.find(c => c.ieee === ieee)?.name || ieee;
+    el.innerHTML = orderedPicks().map((ieee, i, arr) => `
+        <div class="d-flex align-items-center gap-1 small mb-1" data-order-ieee="${esc(ieee)}">
+            <span class="flex-grow-1 text-truncate">${esc(nameOf(ieee))}</span>
+            <button class="btn btn-sm btn-outline-secondary py-0 px-1" ${i === 0 ? 'disabled' : ''}
+                    onclick="window.frameMoveDevice('${esc(ieee)}', -1)" aria-label="Move up">
+                <i class="fas fa-chevron-up"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-secondary py-0 px-1" ${i === arr.length - 1 ? 'disabled' : ''}
+                    onclick="window.frameMoveDevice('${esc(ieee)}', 1)" aria-label="Move down">
+                <i class="fas fa-chevron-down"></i>
+            </button>
+        </div>`).join('');
+}
+
+/** Picked devices in saved order, with any not-yet-ordered picks appended. */
+function orderedPicks() {
+    const picked = new Set(draft.devices);
+    const out = draft.order.filter(i => picked.has(i));
+    for (const ieee of draft.devices) if (!out.includes(ieee)) out.push(ieee);
+    return out;
+}
+
+export function frameToggleChamber(id, on) {
+    draft.chambers = on ? [...draft.chambers, id] : draft.chambers.filter(x => x !== id);
+}
+
+export function frameToggleKind(kind, on) {
+    draft.kinds = on ? [...draft.kinds, kind] : draft.kinds.filter(x => x !== kind);
+}
+
+export function frameToggleDevice(ieee, on) {
+    draft.devices = on ? [...draft.devices, ieee] : draft.devices.filter(x => x !== ieee);
+    if (!on) draft.order = draft.order.filter(x => x !== ieee);
+    renderOrderList();
+}
+
+export function frameMoveDevice(ieee, delta) {
+    const order = orderedPicks();
+    const i = order.indexOf(ieee);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    draft.order = order;
+    renderOrderList();
+}
+
+export async function saveFrame() {
+    if (!draft) return;
+    const name = (draft.name || '').trim();
+    if (!name) {
+        window.toast.error('Give the frame a name');
+        document.getElementById('frameName')?.focus();
+        return;
+    }
+
+    const btn = document.getElementById('frameSave');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+    try {
+        const body = {
+            name,
+            split: draft.split,
+            chambers: draft.chambers,
+            kinds: draft.kinds,
+            devices: draft.devices,
+            order: orderedPicks(),
+        };
+        // Only send id when editing — a new frame derives its id from the name.
+        if (draft.id) body.id = draft.id;
+
+        const data = await (await fetch('/api/frames', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })).json();
+        if (!data.success) throw new Error(data.error || 'save failed');
+
+        savedFrames = data.frames || savedFrames;
+        renderFrameSelect();
+        bootstrap.Modal.getInstance(document.getElementById('frameBuilderModal'))?.hide();
+        draft = null;
+        window.toast.success(`Frame "${data.frame.name}" saved`);
+        await selectFrame(`saved:${data.frame.id}`);
+    } catch (e) {
+        window.toast.error('Could not save frame: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Save'; }
+    }
+}
+
+export async function deleteCurrentFrame() {
+    if (current.type !== 'saved') return;
+    const f = savedFrames.find(x => x.id === current.id);
+    const ok = await window.zbmConfirm({
+        title: 'Delete frame',
+        message: `Delete "${f?.name || current.id}"? The devices in it are not affected.`,
+        confirmText: 'Delete',
+        variant: 'danger',
+    });
+    if (!ok) return;
+
+    try {
+        const data = await (await fetch(`/api/frames/${encodeURIComponent(current.id)}`, {
+            method: 'DELETE',
+        })).json();
+        if (!data.success) throw new Error(data.error || 'delete failed');
+        savedFrames = data.frames || [];
+        renderFrameSelect();
+        window.toast.success('Frame deleted');
+        await selectFrame('auto:chamber');
+    } catch (e) {
+        window.toast.error('Could not delete frame: ' + e.message);
+    }
 }
 
 // ── quick actions ───────────────────────────────────────────────────
@@ -403,11 +716,18 @@ export function initFrames() {
     const tab = document.querySelector('[data-bs-target="#frames"]');
     if (!tab) return;
 
-    tab.addEventListener('shown.bs.tab', () => loadFrame());
-
-    document.querySelectorAll('[data-frames-split]').forEach(btn => {
-        btn.addEventListener('click', () => setSplit(btn.dataset.framesSplit));
+    tab.addEventListener('shown.bs.tab', async () => {
+        await loadSavedFrames();
+        loadFrame();
     });
 
+    document.getElementById('framesSelect')?.addEventListener('change', e => selectFrame(e.target.value));
+    document.getElementById('framesNew')?.addEventListener('click', () => openFrameBuilder());
+    document.getElementById('framesEdit')?.addEventListener('click', () => {
+        if (current.type === 'saved') openFrameBuilder(current.id);
+    });
+    document.getElementById('framesDelete')?.addEventListener('click', () => deleteCurrentFrame());
     document.getElementById('framesRefresh')?.addEventListener('click', () => loadFrame());
+
+    syncSelect();
 }

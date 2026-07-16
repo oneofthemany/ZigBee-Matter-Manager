@@ -62,9 +62,17 @@ import {
     initFrames,
     loadFrame,
     setSplit,
+    selectFrame,
     frameCommand,
     frameSetpoint,
-    framesHandleDeviceUpdate
+    framesHandleDeviceUpdate,
+    openFrameBuilder,
+    saveFrame,
+    deleteCurrentFrame,
+    frameToggleChamber,
+    frameToggleKind,
+    frameToggleDevice,
+    frameMoveDevice
 } from './frames.js';
 
 import {
@@ -268,8 +276,17 @@ window.viewZoneDetails = viewZoneDetails;
 // Frames
 window.loadFrame = loadFrame;
 window.setFramesSplit = setSplit;
+window.selectFrame = selectFrame;
 window.frameCommand = frameCommand;
 window.frameSetpoint = frameSetpoint;
+// Frame builder
+window.openFrameBuilder = openFrameBuilder;
+window.saveFrame = saveFrame;
+window.deleteCurrentFrame = deleteCurrentFrame;
+window.frameToggleChamber = frameToggleChamber;
+window.frameToggleKind = frameToggleKind;
+window.frameToggleDevice = frameToggleDevice;
+window.frameMoveDevice = frameMoveDevice;
 // Hook read by devices.js:handleDeviceUpdate on every websocket state change.
 window.framesHandleDeviceUpdate = framesHandleDeviceUpdate;
 

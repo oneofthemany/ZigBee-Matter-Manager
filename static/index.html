@@ -218,12 +218,22 @@
                         <small class="text-muted">Your hive, laid out by chamber or by device type</small>
                     </div>
                     <div class="ms-auto d-flex gap-2 align-items-center">
-                        <div class="btn-group btn-group-sm" role="group" aria-label="Frame layout">
-                            <button type="button" class="btn btn-warning" data-frames-split="chamber" aria-pressed="true">
-                                <i class="fas fa-location-dot"></i> By chamber
+                        <label class="visually-hidden" for="framesSelect">Frame</label>
+                        <select id="framesSelect" class="form-select form-select-sm" style="min-width: 180px;">
+                            <optgroup label="Automatic">
+                                <option value="auto:chamber">By chamber</option>
+                                <option value="auto:type">By device type</option>
+                            </optgroup>
+                        </select>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" id="framesNew" title="New frame">
+                                <i class="fas fa-plus"></i>
                             </button>
-                            <button type="button" class="btn btn-outline-secondary" data-frames-split="type" aria-pressed="false">
-                                <i class="fas fa-shapes"></i> By type
+                            <button class="btn btn-outline-secondary" id="framesEdit" title="Edit frame" disabled>
+                                <i class="fas fa-pen"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" id="framesDelete" title="Delete frame" disabled>
+                                <i class="fas fa-trash"></i>
                             </button>
                         </div>
                         <button class="btn btn-sm btn-outline-secondary" id="framesRefresh" aria-label="Refresh frame">
