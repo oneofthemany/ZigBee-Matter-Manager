@@ -36,6 +36,7 @@ from routes.alert_routes import register_alert_routes
 from routes.signal_routes import register_signal_routes
 from routes.ac_routes import register_ac_routes
 from routes.security_routes import register_security_routes
+from routes.chamber_routes import register_chamber_routes
 
 
 
@@ -74,6 +75,7 @@ __all__ = [
     'register_wiki_routes',
     'register_ac_routes',
     'register_security_routes',
+    'register_chamber_routes',
     'manager',
     'broadcast_event',
 ]

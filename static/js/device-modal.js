@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { hasCluster } from './modal/config.js';
+import { renderChamberPicker, ensureChambers } from './chambers.js';
 import { renderOverviewTab, saveConfig } from './modal/overview.js';
 import { renderControlTab, updateControlValues, refreshHeatingManaged } from './modal/control.js';
 import { renderBindingTab } from './modal/binding.js';
@@ -42,6 +43,8 @@ export async function openDeviceModal(d) {
     // Refresh heating-controller managed set so the Control tab can disable
     // direct heating controls for managed devices. Non-blocking failure.
     await refreshHeatingManaged().catch(() => {});
+    // The chamber picker renders synchronously from the cached registry.
+    await ensureChambers().catch(() => {});
     const cachedDev = (d && d.ieee && state.deviceCache[d.ieee]) ? state.deviceCache[d.ieee] : d;
     const isZigbee = !cachedDev.protocol || cachedDev.protocol === 'zigbee';
     state.currentDeviceIeee = cachedDev.ieee;
@@ -60,6 +63,7 @@ export async function openDeviceModal(d) {
                         : `Node ${cachedDev.state?.node_id || '?'}`)
                         : cachedDev.ieee
                 }</div>
+                ${renderChamberPicker(cachedDev)}
             </div>
             <div>
                 ${!isZigbee ? `<span class="badge bg-info me-1">${cachedDev.network_type === 'thread' ? 'Thread' : cachedDev.network_type === 'wifi' ? 'WiFi' : 'Matter'}</span>` : ''}

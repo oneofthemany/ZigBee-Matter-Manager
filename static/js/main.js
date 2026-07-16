@@ -58,6 +58,18 @@ import {
     viewZoneDetails
 } from './zones.js';
 
+import {
+    initChambers,
+    loadChambers,
+    openChamberManager,
+    createChamber,
+    renameChamber,
+    deleteChamber,
+    assignChamberDevices,
+    saveChamberDevices,
+    assignDeviceChamber
+} from './chambers.js';
+
 import { initHeating } from './heating.js';
 
 import { initSystemTab } from './system-telemetry.js';
@@ -244,6 +256,16 @@ window.recalibrateZone = recalibrateZone;
 window.deleteZone = deleteZone;
 window.viewZoneDetails = viewZoneDetails;
 
+// Chambers (Frames room registry)
+window.openChamberManager = openChamberManager;
+window.createChamber = createChamber;
+window.renameChamber = renameChamber;
+window.deleteChamber = deleteChamber;
+window.assignChamberDevices = assignChamberDevices;
+window.saveChamberDevices = saveChamberDevices;
+window.assignDeviceChamber = assignDeviceChamber;
+window.loadChambers = loadChambers;
+
 // Tabs Management
 window.loadTabs = loadTabs;
 window.filterByTab = filterByTab;
@@ -313,6 +335,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initTables();          // delegated table sort/filter (once)
         initOtbr();
         loadTabs();
+        initChambers();
         initMesh();
         initGroups();
         initMQTTExplorer();

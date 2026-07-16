@@ -187,6 +187,7 @@ try:
         register_remote_access_routes,
         register_sun_routes,
         register_floor_plan_routes,
+        register_chamber_routes,
         register_ac_routes,
         register_security_routes,
         register_media_routes,
@@ -1036,6 +1037,7 @@ register_tts_routes(app, lambda: therapy_tts)
 register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher)
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)
+register_chamber_routes(app, get_zigbee_service)
 register_ac_routes(app)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
