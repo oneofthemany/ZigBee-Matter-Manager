@@ -255,6 +255,31 @@ class ConfigBuilderMixin:
     # CONFIG BUILDERS
     # =====================================================================
 
+    def _build_network_conf(self, network_key) -> dict:
+        """
+        zigpy `network` section. zigpy applies these values when it FORMS a
+        network (blank radio, wizard import, credential-enforcement re-form);
+        passing pan_id/extended_pan_id here is what makes formation honour
+        config.yaml instead of picking random identifiers. Placeholder or
+        malformed values normalise to None and are skipped.
+        """
+        from modules.network_init import (
+            normalize_network_key, pan_id_to_int, epid_to_colon_str,
+        )
+
+        net = {
+            "channel": self._config.get('channel', 25),
+            "key": normalize_network_key(network_key),
+            "update_id": True,
+        }
+        pan_id = pan_id_to_int(self._config.get('pan_id'))
+        if pan_id is not None:
+            net["pan_id"] = pan_id
+        epid = epid_to_colon_str(self._config.get('extended_pan_id'))
+        if epid is not None:
+            net["extended_pan_id"] = epid
+        return net
+
     def _build_ezsp_config(self, ezsp_conf: dict, network_key,
                            detected: dict = None) -> dict:
         """Build EZSP config from zigbee.ezsp section + probe results."""
@@ -278,11 +303,7 @@ class ConfigBuilderMixin:
             "device": device_conf,
             "database_path": "./data/zigbee.db",
             "ezsp_config": ezsp_conf,
-            "network": {
-                "channel": self._config.get('channel', 25),
-                "key": network_key,
-                "update_id": True,
-            },
+            "network": self._build_network_conf(network_key),
             "topology_scan_period": self._config.get('topology_scan_interval', 120) or 120,
         }
 
@@ -306,11 +327,7 @@ class ConfigBuilderMixin:
                 "baudrate": baud,
             },
             "database_path": "./data/zigbee.db",
-            "network": {
-                "channel": self._config.get('channel', 25),
-                "key": network_key,
-                "update_id": True,
-            },
+            "network": self._build_network_conf(network_key),
             "topology_scan_period": self._config.get('topology_scan_interval', 120) or 120,
         }
 
@@ -334,11 +351,7 @@ class ConfigBuilderMixin:
                 "baudrate": baud,
             },
             "database_path": "./data/zigbee.db",
-            "network": {
-                "channel": self._config.get('channel', 25),
-                "key": network_key,
-                "update_id": True,
-            },
+            "network": self._build_network_conf(network_key),
             "topology_scan_period": self._config.get('topology_scan_interval', 120) or 120,
         }
 

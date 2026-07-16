@@ -536,8 +536,13 @@ async def lifespan(app: FastAPI):
             else:
                 logger.info("MQTT disabled (standalone mode)")
 
-            # Start Zigbee
-            ensure_network_credentials("./config/config.yaml")
+            # Start Zigbee — pick up the config returned by the credential
+            # auto-fill; the module-level CONFIG predates it and would feed
+            # the radio stale placeholders on first boot.
+            updated_cfg = ensure_network_credentials("./config/config.yaml")
+            if updated_cfg:
+                CONFIG['zigbee'] = updated_cfg.get('zigbee', {})
+            zigbee_service._config = CONFIG.get('zigbee', {})
             network_key = get_conf('zigbee', 'network_key', None)
             await zigbee_service.start(network_key=network_key)
             logger.info("Zigbee network started")
@@ -1099,10 +1104,12 @@ async def start_services_after_setup():
 
         new_port = get_conf('zigbee', 'port', '/dev/ttyACM0')
         zigbee_service.port = new_port
-        zigbee_service._config = CONFIG.get('zigbee', {})
 
         ensure_network_credentials("./config/config.yaml")
         CONFIG = load_config()
+        # Assign AFTER the reload so freshly generated/imported credentials
+        # (not the template placeholders) reach the radio config builder
+        zigbee_service._config = CONFIG.get('zigbee', {})
         network_key = get_conf('zigbee', 'network_key', None)
 
         # Progress callback that broadcasts Dongle Jedi events to frontend

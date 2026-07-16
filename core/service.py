@@ -380,6 +380,20 @@ class ZigbeeService(
         elif radio_type == "DECONZ":
             conf = self._build_deconz_config(network_key, detected=probe_result)
 
+        # Imported credentials staged by the setup wizard? Write them to the
+        # radio before the stack starts — zigpy never applies config
+        # credentials to an already-formed radio on its own.
+        try:
+            from modules.network_migrate import apply_pending_restore
+            await apply_pending_restore(ControllerApplication, conf)
+        except Exception as e:
+            logger.error(
+                f"Pending network restore failed: {e} — "
+                f"starting with the radio's current network"
+            )
+
+        self._network_reformed = False
+
         # Robust startup with retries
         for attempt in range(12):
             try:
@@ -401,6 +415,14 @@ class ZigbeeService(
 
                 self.app = await ControllerApplication.new(
                     config=conf, auto_form=True, start_radio=True
+                )
+
+                # zigpy only applies network.key/pan_id when it FORMS a
+                # network; a pre-formed radio keeps its old credentials
+                # silently. Re-form a virgin network so the coordinator
+                # actually carries the credentials in config.yaml.
+                self.app = await self._enforce_network_credentials(
+                    ControllerApplication, conf
                 )
 
                 # MultiPAN: also cancel the watchdog task and restore the original method
@@ -545,6 +567,62 @@ class ZigbeeService(
                 await asyncio.sleep(2)
 
         raise RuntimeError("Failed to start Zigbee Radio after 12 attempts. Check hardware.")
+
+    async def _enforce_network_credentials(self, app_cls, conf):
+        """
+        Ensure the radio's active network matches conf['network'].
+
+        zigpy applies the configured key/PAN only when forming (blank radio).
+        A coordinator with a factory or leftover network keeps its old
+        credentials silently — on a virgin install (no joined devices) we
+        re-form it with the configured credentials; with devices present we
+        only warn, since re-forming would orphan the whole mesh.
+
+        Returns the app to continue with (a fresh one after a re-form).
+        """
+        app = self.app
+        try:
+            from modules.network_migrate import network_mismatches
+            ni = app.state.network_info
+            diffs = network_mismatches(ni, conf.get("network") or {})
+        except Exception as e:
+            logger.debug(f"Network credential verification skipped: {e}")
+            return app
+
+        if not diffs:
+            logger.info("✅ Coordinator network credentials match config.yaml")
+            return app
+
+        joined = [
+            d for d in app.devices.values()
+            if getattr(d, "nwk", None) not in (None, 0x0000)
+        ]
+        if joined:
+            logger.warning(
+                f"⚠️ Coordinator network differs from config.yaml on "
+                f"{', '.join(diffs)}, but {len(joined)} devices are joined — "
+                f"keeping the radio's live network. Align config.yaml with "
+                f"the live network, or regenerate credentials and re-pair."
+            )
+            return app
+        if self._network_reformed:
+            logger.error(
+                f"Network still differs from config.yaml on "
+                f"{', '.join(diffs)} after re-forming — leaving radio as-is"
+            )
+            return app
+
+        self._network_reformed = True
+        logger.warning(
+            f"Virgin network with credential mismatch ({', '.join(diffs)}) — "
+            f"re-forming coordinator with config.yaml credentials"
+        )
+        from modules.network_migrate import form_network_with_config
+        await app.shutdown()
+        await form_network_with_config(app_cls, conf)
+        new_app = await app_cls.new(config=conf, auto_form=True, start_radio=True)
+        logger.info("✅ Coordinator re-formed with configured network credentials")
+        return new_app
 
     async def _init_zones_internal(self):
         try:

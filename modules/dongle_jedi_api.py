@@ -13,6 +13,7 @@ Endpoints:
   POST /api/setup/scan       — Start full dongle scan
   GET  /api/setup/scan/status — Get current scan state / last results
   POST /api/setup/apply      — Write detected config to config.yaml
+  POST /api/setup/network    — Generate or import Zigbee network credentials
   POST /api/setup/skip       — Skip setup (user will configure manually)
 
 Registration:
@@ -224,6 +225,55 @@ async def apply_config(request: ApplyRequest):
     except Exception as e:
         logger.error(f"Failed to apply config: {e}", exc_info=True)
         raise HTTPException(500, f"Failed to save configuration: {e}")
+
+
+class NetworkSetupRequest(BaseModel):
+    """Wizard network step — generate fresh credentials or import existing."""
+    mode: str = Field(..., description="'generate' or 'import'")
+    # Manual import fields (hex strings; separators tolerated)
+    network_key: str = ""
+    pan_id: str = ""
+    extended_pan_id: str = ""
+    channel: int = 0
+    frame_counter: int = 0
+    # Or a full coordinator backup: zigpy/ZHA backup JSON or Zigbee2MQTT's
+    # coordinator_backup.json (Open Coordinator Backup format)
+    backup_json: Optional[dict] = None
+    overwrite_ieee: bool = False
+
+
+@router.post("/network")
+async def setup_network(request: NetworkSetupRequest):
+    """
+    Configure Zigbee network credentials (setup wizard network step).
+
+    mode=generate — mint fresh secure credentials into config.yaml.
+    mode=import   — reuse credentials from a previous Zigbee manager, either
+                    entered manually or parsed from a coordinator backup
+                    JSON; they are staged and written to the radio when the
+                    Zigbee service starts.
+    """
+    from modules.network_migrate import apply_network_setup
+
+    try:
+        summary = apply_network_setup(
+            request.mode,
+            credentials={
+                "network_key": request.network_key,
+                "pan_id": request.pan_id,
+                "extended_pan_id": request.extended_pan_id,
+                "channel": request.channel,
+                "frame_counter": request.frame_counter,
+            },
+            backup_json=request.backup_json,
+            overwrite_ieee=request.overwrite_ieee,
+        )
+        return {"success": True, "network": summary}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"Failed to apply network setup: {e}", exc_info=True)
+        raise HTTPException(500, f"Failed to save network settings: {e}")
 
 
 @router.post("/skip")

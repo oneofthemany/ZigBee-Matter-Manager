@@ -6,10 +6,12 @@
    LAN + no-admin-yet, so creating the admin first would lock the coordinator
    scan out on any resume):
      1. Coordinator Detection  — auto-detect Zigbee USB adapter
-     2. Integration Mode       — Standalone vs Home Assistant
-     3. MQTT Configuration     — broker details (HA mode only)
-     4. Summary & Apply        — review and write config (sets setup_completed)
-     5. Admin Account          — create the first admin (deferred to the end)
+     2. Network Security       — generate fresh credentials or import from a
+                                 previous Zigbee manager (ZHA / Zigbee2MQTT)
+     3. Integration Mode       — Standalone vs Home Assistant
+     4. MQTT Configuration     — broker details (HA mode only)
+     5. Summary & Apply        — review and write config (sets setup_completed)
+     6. Admin Account          — create the first admin (deferred to the end)
 
    Listens for WebSocket events: "setup_scan_progress"
    API endpoints:
@@ -17,6 +19,7 @@
      GET  /api/setup/ports
      POST /api/setup/scan
      POST /api/setup/apply
+     POST /api/setup/network
      POST /api/setup/apply-integration
      POST /api/setup/skip
    ============================================================================ */
@@ -30,7 +33,7 @@
     let selectedResult = null;
     let scanResults = [];
     let currentStep = 1;
-    const TOTAL_STEPS = 4;
+    const TOTAL_STEPS = 6;
     // When set, the wizard exits after the Account step instead of walking
     // the user through coordinator/integration/MQTT again. Used for the
     // recovery scenario where everything is configured but no admin user
@@ -47,6 +50,17 @@
     // Collected config across steps
     let wizardConfig = {
         coordinator: null,      // selected adapter result
+        network: {              // network credentials step
+            mode: 'generate',   // 'generate' | 'import'
+            network_key: '',
+            pan_id: '',
+            extended_pan_id: '',
+            channel: '',
+            frame_counter: '',
+            backup_text: '',
+            overwrite_ieee: false,
+        },
+        networkApplied: null,   // summary returned by POST /api/setup/network
         integrationMode: null,  // 'standalone' | 'homeassistant'
         mqtt: {
             broker_host: '',
@@ -133,19 +147,20 @@
         }
 
         // Coordinator first, Account last. `num` matches the internal currentStep
-        // value each screen sets (coordinator=2 … summary=5, account=6); the dot
+        // value each screen sets (coordinator=2 … summary=6, account=7); the dot
         // shows the sequential position so the user still sees 1..N.
         const steps = [
             { num: 2, label: 'Coordinator' },
-            { num: 3, label: 'Integration' },
-            { num: 4, label: 'MQTT' },
-            { num: 5, label: 'Summary' },
-            { num: 6, label: 'Account' },
+            { num: 3, label: 'Network' },
+            { num: 4, label: 'Integration' },
+            { num: 5, label: 'MQTT' },
+            { num: 6, label: 'Summary' },
+            { num: 7, label: 'Account' },
         ];
 
         // Skip the MQTT indicator in standalone mode.
         const visible = steps.filter(s =>
-            !(s.num === 4 && wizardConfig.integrationMode === 'standalone'));
+            !(s.num === 5 && wizardConfig.integrationMode === 'standalone'));
 
         return `
             <div class="setup-steps mb-4">
@@ -421,11 +436,205 @@
     }
 
     // =====================================================================
-    // STEP 3: INTEGRATION MODE
+    // STEP 3: NETWORK SECURITY (encryption key / PAN — generate or import)
+    // =====================================================================
+
+    function renderStepNetwork() {
+        currentStep = 3;
+        const el = getContent();
+        const n = wizardConfig.network;
+
+        el.innerHTML = `
+            ${renderStepIndicator()}
+            <h4><i class="fas fa-key me-2 text-primary"></i>Network Security</h4>
+            <p class="subtitle">
+                Every Zigbee network is protected by a 128-bit encryption key.
+                Create a fresh network, or reuse the credentials from a previous
+                Zigbee manager so already-paired devices keep working.
+            </p>
+
+            <div class="integration-options mb-3">
+                <div class="integration-option ${n.mode === 'generate' ? 'selected' : ''}"
+                     onclick="window._setupWizard.selectNetworkMode('generate')">
+                    <div class="d-flex align-items-start">
+                        <div class="integration-icon text-success">
+                            <i class="fas fa-shield-halved"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="fw-bold">Create a new network <span class="badge bg-success-subtle text-success ms-1">Recommended</span></div>
+                            <div class="small text-muted mt-1">
+                                Generate a secure encryption key, PAN ID and extended
+                                PAN ID automatically. Devices will need to be paired.
+                            </div>
+                        </div>
+                        <div class="integration-check">
+                            ${n.mode === 'generate'
+                                ? '<i class="fas fa-check-circle text-success"></i>'
+                                : '<i class="far fa-circle text-muted"></i>'}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="integration-option ${n.mode === 'import' ? 'selected' : ''}"
+                     onclick="window._setupWizard.selectNetworkMode('import')">
+                    <div class="d-flex align-items-start">
+                        <div class="integration-icon text-info">
+                            <i class="fas fa-file-import"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="fw-bold">Restore a previous network</div>
+                            <div class="small text-muted mt-1">
+                                Reuse credentials from another installation
+                                (ZHA, Zigbee2MQTT or a ZMM backup) so existing
+                                devices reconnect without re-pairing.
+                            </div>
+                        </div>
+                        <div class="integration-check">
+                            ${n.mode === 'import'
+                                ? '<i class="fas fa-check-circle text-info"></i>'
+                                : '<i class="far fa-circle text-muted"></i>'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="wizNetImport" style="display:${n.mode === 'import' ? 'block' : 'none'};">
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">
+                        Coordinator backup JSON <span class="text-muted fw-normal">(recommended)</span>
+                    </label>
+                    <textarea id="wizNetBackup" class="form-control font-monospace" rows="3"
+                        placeholder='Paste coordinator_backup.json (Zigbee2MQTT) or a zigpy/ZHA network backup here...'>${n.backup_text || ''}</textarea>
+                    <div class="form-text">
+                        If provided, the fields below are ignored — key, identifiers
+                        and frame counter all come from the backup.
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="wizNetOverwriteIeee"
+                           ${n.overwrite_ieee ? 'checked' : ''}>
+                    <label class="form-check-label small" for="wizNetOverwriteIeee">
+                        Also write the backup's coordinator IEEE address to the adapter
+                        <div class="form-text mt-0">
+                            Gives a perfect migration, but on Silicon Labs adapters it is
+                            a one-time, irreversible write. Leave off unless devices fail
+                            to reconnect.
+                        </div>
+                    </label>
+                </div>
+
+                <div class="text-center text-muted small mb-2">— or enter manually —</div>
+
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Network key <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control font-monospace" id="wizNetKey"
+                           value="${n.network_key}" placeholder="32 hex characters, e.g. 01:23:45:… or 0123…" autocomplete="off">
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-4">
+                        <label class="form-label small fw-semibold">PAN ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control font-monospace" id="wizNetPan"
+                               value="${n.pan_id}" placeholder="1A2B">
+                    </div>
+                    <div class="col-8">
+                        <label class="form-label small fw-semibold">Extended PAN ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control font-monospace" id="wizNetEpid"
+                               value="${n.extended_pan_id}" placeholder="16 hex characters">
+                    </div>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small fw-semibold">Channel <span class="text-danger">*</span></label>
+                        <input type="number" class="form-control" id="wizNetChannel" min="11" max="26"
+                               value="${n.channel}" placeholder="11–26">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small fw-semibold">Frame counter <span class="text-muted fw-normal">(optional)</span></label>
+                        <input type="number" class="form-control" id="wizNetCounter" min="0"
+                               value="${n.frame_counter}" placeholder="0">
+                        <div class="form-text">From the old system if known — a safety margin is added automatically.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="wizNetError" class="alert alert-danger small" style="display:none;"></div>
+
+            <div class="setup-actions">
+                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(2)">
+                    <i class="fas fa-arrow-left me-1"></i> Back
+                </button>
+                <button class="btn btn-primary" onclick="window._setupWizard.nextFromNetwork()">
+                    Next <i class="fas fa-arrow-right ms-1"></i>
+                </button>
+            </div>
+        `;
+    }
+
+    function saveNetworkFields() {
+        const n = wizardConfig.network;
+        const val = id => (document.getElementById(id)?.value || '').trim();
+        if (document.getElementById('wizNetKey')) {
+            n.network_key = val('wizNetKey');
+            n.pan_id = val('wizNetPan');
+            n.extended_pan_id = val('wizNetEpid');
+            n.channel = val('wizNetChannel');
+            n.frame_counter = val('wizNetCounter');
+            n.backup_text = document.getElementById('wizNetBackup')?.value || '';
+            n.overwrite_ieee = !!document.getElementById('wizNetOverwriteIeee')?.checked;
+        }
+    }
+
+    function selectNetworkMode(mode) {
+        saveNetworkFields();
+        wizardConfig.network.mode = mode;
+        renderStepNetwork();
+    }
+
+    function netError(msg) {
+        const el = document.getElementById('wizNetError');
+        if (el) {
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+    }
+
+    function nextFromNetwork() {
+        saveNetworkFields();
+        const n = wizardConfig.network;
+
+        if (n.mode === 'import') {
+            if (n.backup_text.trim()) {
+                try {
+                    const parsed = JSON.parse(n.backup_text);
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                        return netError('The backup must be a JSON object.');
+                    }
+                } catch (e) {
+                    return netError('That is not valid JSON: ' + e.message);
+                }
+            } else {
+                const hex = s => s.replace(/0x|[:\s-]/gi, '');
+                if (!/^[0-9a-f]{32}$/i.test(hex(n.network_key)))
+                    return netError('Network key must be 32 hex characters (16 bytes).');
+                if (!/^[0-9a-f]{1,4}$/i.test(hex(n.pan_id)))
+                    return netError('PAN ID must be a hex value like 1A2B.');
+                if (!/^[0-9a-f]{16}$/i.test(hex(n.extended_pan_id)))
+                    return netError('Extended PAN ID must be 16 hex characters (8 bytes).');
+                const ch = parseInt(n.channel, 10);
+                if (!(ch >= 11 && ch <= 26))
+                    return netError('Channel must be between 11 and 26.');
+            }
+        }
+
+        goToStep(4);
+    }
+
+    // =====================================================================
+    // STEP 4: INTEGRATION MODE
     // =====================================================================
 
     function renderStep3() {
-        currentStep = 3;
+        currentStep = 4;
         const el = getContent();
 
         el.innerHTML = `
@@ -480,7 +689,7 @@
             </div>
 
             <div class="setup-actions">
-                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(2)">
+                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(3)">
                     <i class="fas fa-arrow-left me-1"></i> Back
                 </button>
                 <button class="btn btn-primary" onclick="window._setupWizard.nextFromStep3()"
@@ -499,19 +708,19 @@
     function nextFromStep3() {
         if (!wizardConfig.integrationMode) return;
         if (wizardConfig.integrationMode === 'homeassistant') {
-            goToStep(4);
+            goToStep(5);
         } else {
             // Standalone — skip MQTT, go to summary
-            goToStep(5);
+            goToStep(6);
         }
     }
 
     // =====================================================================
-    // STEP 4: MQTT CONFIGURATION (HA mode only)
+    // STEP 5: MQTT CONFIGURATION (HA mode only)
     // =====================================================================
 
     function renderStep4() {
-        currentStep = 4;
+        currentStep = 5;
         const el = getContent();
         const m = wizardConfig.mqtt;
 
@@ -567,7 +776,7 @@
             <div id="wizMqttTestResult" class="mb-3" style="display:none;"></div>
 
             <div class="setup-actions">
-                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(3)">
+                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(4)">
                     <i class="fas fa-arrow-left me-1"></i> Back
                 </button>
                 <button class="btn btn-outline-info" onclick="window._setupWizard.testMqtt()">
@@ -605,7 +814,7 @@
             return;
         }
 
-        goToStep(5);
+        goToStep(6);
     }
 
     async function testMqtt() {
@@ -643,13 +852,14 @@
     }
 
     // =====================================================================
-    // STEP 5: SUMMARY & APPLY
+    // STEP 6: SUMMARY & APPLY
     // =====================================================================
 
     function renderStep5() {
-        currentStep = 5;
+        currentStep = 6;
         const el = getContent();
         const coord = wizardConfig.coordinator || selectedResult || {};
+        const net = wizardConfig.network;
         const mode = wizardConfig.integrationMode;
         const m = wizardConfig.mqtt;
 
@@ -687,6 +897,29 @@
                     <div class="row small">
                         <div class="col-4 text-muted">Firmware</div>
                         <div class="col-8">${coord.firmware_version}</div>
+                    </div>` : ''}
+                </div>
+            </div>
+
+            <div class="summary-section mb-3">
+                <div class="summary-header">
+                    <i class="fas fa-key me-1"></i> Network Security
+                </div>
+                <div class="summary-body">
+                    <div class="row small">
+                        <div class="col-4 text-muted">Credentials</div>
+                        <div class="col-8 fw-semibold">
+                            ${net.mode === 'import'
+                                ? '<i class="fas fa-file-import text-info me-1"></i>Restored from previous installation'
+                                : '<i class="fas fa-shield-halved text-success me-1"></i>New network — secure key generated on apply'}
+                        </div>
+                    </div>
+                    ${net.mode === 'import' ? `
+                    <div class="row small">
+                        <div class="col-4 text-muted">Source</div>
+                        <div class="col-8">${net.backup_text.trim()
+                            ? 'Coordinator backup file'
+                            : `Manual — channel ${net.channel}, PAN <code>${net.pan_id}</code>`}</div>
                     </div>` : ''}
                 </div>
             </div>
@@ -738,7 +971,7 @@
             </div>` : ''}
 
             <div class="setup-actions">
-                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(${mode === 'homeassistant' ? 4 : 3})">
+                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(${mode === 'homeassistant' ? 5 : 4})">
                     <i class="fas fa-arrow-left me-1"></i> Back
                 </button>
                 <button class="btn btn-success" onclick="window._setupWizard.applyAll()" id="setupApplyBtn">
@@ -778,9 +1011,39 @@
             }
 
             // Update progress
-            el.querySelector('.scan-progress-fill').style.width = '60%';
+            el.querySelector('.scan-progress-fill').style.width = '50%';
 
-            // Step B: Apply integration mode + MQTT
+            // Step B: Network credentials — generate fresh ones or stage the
+            // imported network for the radio restore at service start
+            const n = wizardConfig.network;
+            const netBody = { mode: n.mode };
+            if (n.mode === 'import') {
+                if (n.backup_text.trim()) {
+                    netBody.backup_json = JSON.parse(n.backup_text);
+                    netBody.overwrite_ieee = !!n.overwrite_ieee;
+                } else {
+                    netBody.network_key = n.network_key;
+                    netBody.pan_id = n.pan_id;
+                    netBody.extended_pan_id = n.extended_pan_id;
+                    netBody.channel = parseInt(n.channel, 10) || 0;
+                    netBody.frame_counter = parseInt(n.frame_counter, 10) || 0;
+                }
+            }
+            const netRes = await fetch('/api/setup/network', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(netBody),
+            });
+            const netData = await netRes.json().catch(() => ({}));
+            if (!netRes.ok || !netData.success) {
+                throw new Error(netData.detail || netData.error || 'Failed to save network credentials');
+            }
+            wizardConfig.networkApplied = netData.network || null;
+
+            // Update progress
+            el.querySelector('.scan-progress-fill').style.width = '75%';
+
+            // Step C: Apply integration mode + MQTT
             const integrationRes = await fetch('/api/setup/apply-integration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -807,12 +1070,52 @@
         }
     }
 
+    function renderNetworkCredentialsCard() {
+        const na = wizardConfig.networkApplied;
+        if (!na) return '';
+        return `
+            <div class="summary-section mb-3 text-start">
+                <div class="summary-header">
+                    <i class="fas fa-key me-1"></i> Network Credentials
+                    (${na.source === 'imported' ? 'imported' : 'generated'})
+                </div>
+                <div class="summary-body">
+                    <div class="row small">
+                        <div class="col-4 text-muted">Channel</div>
+                        <div class="col-8"><code>${na.channel}</code></div>
+                    </div>
+                    <div class="row small">
+                        <div class="col-4 text-muted">PAN ID</div>
+                        <div class="col-8"><code>${na.pan_id}</code></div>
+                    </div>
+                    <div class="row small">
+                        <div class="col-4 text-muted">Ext. PAN ID</div>
+                        <div class="col-8"><code>${na.extended_pan_id_hex}</code></div>
+                    </div>
+                    <div class="row small">
+                        <div class="col-4 text-muted">Network key</div>
+                        <div class="col-8">
+                            <code id="wizNetKeyReveal">••••••••••••••••••••••••••••••••</code>
+                            <a href="#" class="small ms-1" onclick="
+                                document.getElementById('wizNetKeyReveal').textContent='${na.network_key_hex}';
+                                this.remove(); return false;">show</a>
+                        </div>
+                    </div>
+                    <div class="form-text mt-1">
+                        Saved in config.yaml — keep a copy somewhere safe; you'll
+                        need it to migrate or rebuild this network.
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
     function renderApplySuccess() {
         // Config is written (setup_completed=true). If we still owe an admin
         // account, that is the FINAL step — do it now, while the app is
         // configured but before handing over to the dashboard.
         if (accountPending) {
-            currentStep = 6;
+            currentStep = 7;
             renderStep1Account();
             return;
         }
@@ -827,6 +1130,7 @@
                         ? 'Devices will appear in Home Assistant via MQTT Discovery.'
                         : 'Running in standalone mode — control devices from the web UI.'}
                 </p>
+                ${renderNetworkCredentialsCard()}
                 <button class="btn btn-success btn-lg" onclick="window._setupWizard.finish()">
                     <i class="fas fa-play me-1"></i> Start Application
                 </button>
@@ -841,7 +1145,7 @@
             <p class="subtitle text-danger">${error}</p>
 
             <div class="setup-actions">
-                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(5)">
+                <button class="btn btn-outline-secondary" onclick="window._setupWizard.goToStep(6)">
                     <i class="fas fa-redo me-1"></i> Try Again
                 </button>
                 <button class="btn btn-outline-secondary" onclick="window._setupWizard.skip()">
@@ -870,12 +1174,15 @@
                 break;
             case 3:
                 wizardConfig.coordinator = selectedResult;
-                renderStep3();
+                renderStepNetwork();
                 break;
             case 4:
-                renderStep4();
+                renderStep3();
                 break;
             case 5:
+                renderStep4();
+                break;
+            case 6:
                 renderStep5();
                 break;
         }
@@ -1263,7 +1570,7 @@
             // and exit — no need to redo coordinator, integration or MQTT.
             if (needsAdmin && data.reason === 'no_admin_user') {
                 recoveryMode = true;
-                currentStep = 6;
+                currentStep = 7;
                 renderStep1Account();
                 return;
             }
@@ -1277,7 +1584,7 @@
                 // Pre-fill coordinator info, jump to integration step
                 wizardConfig.coordinator = { port: data.current_port };
                 selectedResult = wizardConfig.coordinator;
-                currentStep = 3;
+                currentStep = 4;
                 renderStep3();
             } else {
                 currentStep = 2;
@@ -1299,6 +1606,8 @@
         cancelScan,
         refreshPorts,
         selectResult,
+        selectNetworkMode,
+        nextFromNetwork,
         selectIntegration,
         nextFromStep3,
         saveMqttAndNext,
