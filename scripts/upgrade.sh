@@ -242,6 +242,51 @@ detect_health_urls() {
     echo "http://127.0.0.1:${port}/api/system/health"
 }
 
+# ── SSL CERT ASSURANCE ──────────────────────────────────────────────────────
+# HTTPS is always on. Installs that predate always-on SSL (or ran http-only)
+# may have no cert pair in DATA_DIR — ensure one exists BEFORE the upgraded
+# container starts, so the post-swap https health probe and the launcher's
+# recovery standby find a cert immediately. Same rules as build.sh /
+# ssl_bootstrap.py: NEVER regenerate an existing pair (browser trust must
+# survive upgrades), host-side SANs (hostname + LAN IP), key locked to 0600.
+# The in-app generator remains the fallback if openssl is missing here.
+ensure_ssl_cert() {
+    local cert_dir="${DATA_DIR}/data/certs"
+    local cert="${cert_dir}/cert.pem"
+    local key="${cert_dir}/key.pem"
+
+    if [[ -f "$cert" && -f "$key" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$cert_dir" 2>/dev/null || true
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        log "Cert: openssl not on host — app will self-generate on first boot"
+        return 0
+    fi
+
+    local host_name lan_ip san
+    host_name="$(hostname 2>/dev/null || true)"
+    host_name="${host_name:-zigbee-manager}"
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    san="subjectAltName=DNS:localhost,DNS:${host_name},IP:127.0.0.1"
+    [[ -n "$lan_ip" ]] && san+=",IP:${lan_ip}"
+
+    log "Cert: none found — generating self-signed pair at ${cert_dir}"
+    if openssl req -x509 -newkey rsa:2048 \
+            -keyout "$key" -out "$cert" \
+            -days 3650 -nodes \
+            -subj "/CN=${host_name}" \
+            -addext "$san" >/dev/null 2>&1; then
+        chmod 600 "$key"
+        log "Cert: self-signed pair written (valid 10 years)"
+    else
+        rm -f "$cert" "$key"
+        log "Cert: openssl generation failed — app will self-generate on first boot"
+    fi
+}
+
 # Try each candidate URL once. Returns 0 if any succeeds, prints the URL that
 # worked to stdout (so caller can log it).
 is_app_healthy() {
@@ -1043,6 +1088,10 @@ do_swap() {
         log "Swap: ports still busy after wait — killing squatters before start"
         kill_port_squatters 8000 5580
     fi
+
+    # Installs upgrading from an http-only era need a cert pair in place
+    # before the new (always-HTTPS) container boots.
+    ensure_ssl_cert
 
     write_status "swapping" "$target_version" 60 "Starting new container"
     log "Swap: starting new container from $new_tag via $run_helper"
