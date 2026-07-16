@@ -72,9 +72,10 @@ export function initMedia() {
         onChange: _localChanged,
         onError: (msg) => toast(msg, 'error'),
     });
+    autoPane();   // in case the media tab is already the visible one on load
     const tab = document.querySelector('[data-bs-target="#media"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); loadKaraoke(); });
+        tab.addEventListener('shown.bs.tab', () => { loadPlayers(); refreshTidalNotice(); loadRecent(); loadRadioFavourites(); loadKaraoke(); autoPane(); });
     }
     // The therapy iframe asks for the current player selection when it mounts
     // (it may load after a player was already selected).
@@ -90,6 +91,7 @@ export function initMedia() {
     window.mediaControl = control;
     window.mediaSetVolume = setVolume;
     window.mediaSelect = selectPlayer;
+    window.mediaPane = setPane;
     window.mediaUngroup = ungroup;
     window.mediaSubmitGroup = submitGroup;
     // Speaker-sync groups (group-builder sub-tab)
@@ -390,6 +392,62 @@ function selectPlayer(id) {
     const p = _players.find(x => x.player_id === id);
     if (p) toast(`Selected ${p.name} — playback targets this player`, 'info');
     updateSearchTarget();
+    // On a phone, picking a target is the cue that Browse is what's next.
+    if (_pane === 'players' && window.matchMedia('(max-width: 991.98px)').matches) setPane('browse');
+}
+
+// ---------------------------------------------------------------------------
+// Mobile panes — below lg only one of Players/Browse is shown at a time.
+// The CSS class is a no-op at lg and up, so desktop always shows both.
+// ---------------------------------------------------------------------------
+function setPane(p) {
+    _pane = p;
+    document.getElementById('mediaPanePlayers')?.classList.toggle('zmm-pane-hidden', p !== 'players');
+    document.getElementById('mediaPaneBrowse')?.classList.toggle('zmm-pane-hidden', p !== 'browse');
+    for (const [id, on] of [['mediaPaneBtnPlayers', p === 'players'], ['mediaPaneBtnBrowse', p === 'browse']]) {
+        const b = document.getElementById(id);
+        if (!b) continue;
+        b.classList.toggle('btn-primary', on);
+        b.classList.toggle('btn-outline-primary', !on);
+    }
+}
+
+// Land on whichever pane still has work to do: pick a target first, then
+// search. Only applies until the user taps the switch themselves.
+function autoPane() {
+    if (_pane) return;
+    setPane(_selectedId ? 'browse' : 'players');
+}
+
+// Sticky mobile bar: where audio is going, and what's on.
+function renderNowBar() {
+    const el = document.getElementById('mediaNowBar');
+    if (!el) return;
+    const p = _players.find(x => x.player_id === _selectedId);
+    if (!p) {
+        el.classList.remove('d-none');
+        el.innerHTML = '<span class="text-muted"><i class="fas fa-circle-exclamation me-1"></i>No player selected</span>';
+        return;
+    }
+    el.classList.remove('d-none');
+    const playing = p.state === 'playing';
+    const what = (p.title || p.artist)
+        ? `${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}`
+        : '<span class="text-muted fst-italic">Nothing playing</span>';
+    el.innerHTML = `
+      <div class="d-flex align-items-center gap-2">
+        <i class="${iconFor(p)} text-muted"></i>
+        <div class="flex-grow-1 text-truncate">
+          <div class="text-truncate">${what}</div>
+          <div class="text-muted" style="font-size:.72rem">→ ${esc(p.name)}</div>
+        </div>
+        ${p.available ? `
+        <button class="btn btn-sm btn-outline-secondary"
+                onclick="window.mediaControl('${esc(p.player_id)}','${playing ? 'pause' : 'resume'}')"
+                aria-label="${playing ? 'Pause' : 'Play'}">
+          <i class="fas ${playing ? 'fa-pause' : 'fa-play'}"></i>
+        </button>` : ''}
+      </div>`;
 }
 
 function updateSearchTarget() {
@@ -397,6 +455,7 @@ function updateSearchTarget() {
     if (!el) return;
     const p = _players.find(x => x.player_id === _selectedId);
     el.textContent = p ? `→ ${p.name}` : 'select a player';
+    renderNowBar();
     notifyTherapyFrame();
 }
 

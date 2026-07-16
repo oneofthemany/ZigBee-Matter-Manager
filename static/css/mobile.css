@@ -883,3 +883,34 @@ body.controlling {
         min-height: 40px;
     }
 }
+
+/* ----------------------------------------------------------
+   MEDIA TAB — one pane at a time below lg
+   ----------------------------------------------------------
+   The Players and Browse cards stack on a phone, so reaching the
+   search box meant scrolling past every player card. A segmented
+   switch shows one pane at a time instead. Scoped to <lg so the
+   desktop 7/5 split is never affected — .zmm-pane-hidden simply
+   does nothing at lg and up, whatever JS puts on the element.     */
+
+@media (max-width: 991.98px) {
+    .zmm-pane-hidden {
+        display: none !important;
+    }
+
+    /* Target + now-playing stays put while the pane below scrolls. */
+    #mediaMobileHead {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--bs-body-bg);
+        padding-top: .5rem;
+        padding-bottom: .5rem;
+    }
+
+    /* The iframe carries an inline height:75vh, so this needs !important
+       to win — trimmed a little to allow for the sticky header above. */
+    #mediaTherapyFrame {
+        height: 70vh !important;
+    }
+}
