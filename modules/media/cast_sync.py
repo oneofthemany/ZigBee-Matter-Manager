@@ -774,7 +774,7 @@ class CastSyncPoc:
         cast.wait(timeout=10)
         mc = cast.media_controller
         mc.play_media(url, "audio/wav", stream_type="LIVE",
-                      title="ZMM speaker-sync test")
+                      title="ZMM OpenZone test")
         mc.block_until_active(timeout=15)
         deadline = time.time() + 8
         while time.time() < deadline:

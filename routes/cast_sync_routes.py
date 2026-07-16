@@ -95,7 +95,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         sync = _sync()
         if sync is None:
             return {"success": False,
-                    "error": "Speaker sync is disabled — enable it under Settings → Speakers"}
+                    "error": "OpenZone is disabled — enable it under Settings → Speakers"}
         return sync.save_group(body.name, body.members, body.id)
 
     @app.post("/api/media/sync/groups/delete")

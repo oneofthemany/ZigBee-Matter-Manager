@@ -50,7 +50,7 @@ async function render() {
     host.innerHTML = `
     <div class="card shadow-sm mb-3">
       <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-        <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> Speaker Sync</span>
+        <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> OpenZone</span>
         <div>
           <button class="btn btn-success btn-sm" onclick="speakerSyncSave()">
             <i class="fas fa-save me-1"></i> Save
@@ -132,7 +132,7 @@ async function render() {
               once after registering.</span></li>
           <li>Paste the generated <strong>Application ID</strong> into the field above and
             <em>Save &amp; Restart</em>. Then build a sync group under
-            <strong>Media → Group → Speaker sync</strong> and start a test — drag each
+            <strong>Media → Group → OpenZone</strong> and start a test — drag each
             speaker's trim until the clicks land together.</li>
         </ol>
       </div>

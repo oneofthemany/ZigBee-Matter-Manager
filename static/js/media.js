@@ -1059,7 +1059,7 @@ function renderGroupBuilder() {
             <li class="nav-item">
               <button class="nav-link py-1 px-3" id="mediaGroupTabSync"
                       onclick="window.mediaGroupTab('sync')">
-                <i class="fab fa-chromecast me-1"></i>Speaker sync <span class="badge bg-warning text-dark ms-1">beta</span></button>
+                <i class="fab fa-chromecast me-1"></i>OpenZone <span class="badge bg-warning text-dark ms-1">beta</span></button>
             </li>
             <li class="nav-item ms-auto">
               <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">
@@ -1089,7 +1089,7 @@ function renderWiimBuilder() {
     if (wiim.length < 2) {
         el.innerHTML = `<div class="alert alert-info mb-0">
             Native grouping here needs at least two available WiiM players.
-            <div class="small mt-1">Google Cast speakers: use the <em>Speaker sync</em> tab
+            <div class="small mt-1">Google Cast speakers: use the <em>OpenZone</em> tab
             (no Google Home needed), or a Google-Home group (appears automatically).</div></div>`;
         return;
     }
@@ -1227,7 +1227,7 @@ async function renderSyncPane() {
     const running = !disabled && _syncStatus.running;
 
     const banner = disabled
-        ? `<div class="alert alert-info small py-2">Speaker sync is disabled — enable it under
+        ? `<div class="alert alert-info small py-2">OpenZone is disabled — enable it under
              <strong>Settings → Speakers</strong>.</div>`
         : unregistered
             ? `<div class="alert alert-info small py-2">Running in <strong>built-in receiver
