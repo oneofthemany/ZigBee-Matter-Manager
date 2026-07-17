@@ -41,6 +41,97 @@ def _friendly_name(dev, ieee: str) -> str:
     return getattr(dev, "friendly_name", None) or getattr(dev, "name", None) or ieee
 
 
+def _device_state(dev) -> dict:
+    """Device state dict — tolerant of dict-of-dicts and dict-of-objects."""
+    state = dev.get("state") if isinstance(dev, dict) else getattr(dev, "state", None)
+    return state if isinstance(state, dict) else {}
+
+
+def _live_power_w(dev) -> Optional[float]:
+    """Instantaneous power (W) from a socket's reported attributes."""
+    state = _device_state(dev)
+    for key in ("power", "active_power"):
+        try:
+            v = state.get(key)
+            if v is not None:
+                return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+# Appliance-name heuristics for targeted saving tips
+_SHIFTABLE_RE = ("wash", "dish", "dryer", "tumble", "dehumid")
+_SCREEN_RE = ("tv", "telly", "television", "media", "entertainment")
+
+
+def _socket_tips(sockets: list, rate_p: Optional[float],
+                 cheap_window: Optional[dict], range_label: str) -> list:
+    """
+    Rule-based saving tips from real socket usage. Same {icon, title, detail}
+    shape as the heating advisor's tips so the UI renders them alike.
+    """
+    tips = []
+    by_kwh = [s for s in sockets if (s.get("kwh") or 0) > 0.05]
+    by_kwh.sort(key=lambda s: s["kwh"], reverse=True)
+
+    if by_kwh:
+        top = by_kwh[0]
+        cost = f" (~£{top['cost_gbp']:.2f})" if top.get("cost_gbp") is not None else ""
+        tips.append({
+            "icon": "trophy", "category": "usage",
+            "title": f"{top['name']} is your biggest socket load",
+            "detail": f"{top['kwh']:.1f} kWh{cost} over the last {range_label}. "
+                      f"Worth checking its settings or schedule first — small "
+                      f"changes here beat big changes anywhere else.",
+        })
+
+    # Load-shift advice only when the tariff actually varies (Agile/E7)
+    if cheap_window:
+        for s in by_kwh:
+            if any(k in s["name"].lower() for k in _SHIFTABLE_RE):
+                tips.append({
+                    "icon": "clock", "category": "shift",
+                    "title": f"Run {s['name']} off-peak",
+                    "detail": f"Cheapest upcoming window is "
+                              f"{cheap_window['off_peak_start']}–{cheap_window['off_peak_end']} "
+                              f"(~{cheap_window['off_peak_rate_p']:.1f}p/kWh). Delay-start "
+                              f"timers put its {s['kwh']:.1f} kWh into the cheap slots.",
+                })
+                if sum(1 for t in tips if t["category"] == "shift") >= 2:
+                    break
+
+    # Standby drains: sockets drawing a constant trickle right now
+    for s in by_kwh:
+        p = s.get("power_w")
+        if p is not None and 2 <= p <= 25:
+            yearly = None
+            if rate_p is not None:
+                yearly = p / 1000 * 24 * 365 * rate_p / 100
+            tips.append({
+                "icon": "moon", "category": "standby",
+                "title": f"{s['name']} is drawing {p:.0f} W right now",
+                "detail": "If that's standby, a schedule or smart-plug off state "
+                          + (f"saves ~£{yearly:.0f}/year." if yearly is not None
+                             else "eliminates the drain."),
+            })
+            if sum(1 for t in tips if t["category"] == "standby") >= 2:
+                break
+
+    for s in by_kwh:
+        if any(k in s["name"].lower() for k in _SCREEN_RE):
+            tips.append({
+                "icon": "tv", "category": "usage",
+                "title": f"Trim {s['name']}'s appetite",
+                "detail": f"{s['kwh']:.1f} kWh over the last {range_label}. Dropping "
+                          f"screen brightness or enabling eco mode typically cuts "
+                          f"TV energy 20–30% with no visible difference in daylight.",
+            })
+            break
+
+    return tips[:5]
+
+
 def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_service=None):
 
     def _svc():
@@ -199,40 +290,107 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
     @app.get("/api/octopus/breakdown")
     async def octopus_breakdown(range: str = "week"):
         """
-        Where the grid electricity goes: per-smart-plug kWh vs the metered
-        total. Works with Octopus disabled — plug data is local — in which
-        case grid_kwh/unmetered are null.
+        Where the grid electricity goes: per-socket kWh (+ live watts, cost,
+        a stacked per-day series and saving tips) vs the metered total.
+        Works with Octopus disabled — plug data is local — in which case
+        grid/rest-of-home and £ figures are null.
         """
         days, _ = _RANGES.get(range, _RANGES["week"])
         plug_rows = await _q(telemetry_db.query_plug_energy_by_day, days=days)
 
-        names = {}
+        names, live_power = {}, {}
         if get_zigbee_service:
             try:
                 zs = get_zigbee_service()
                 devices = zs.get_all_devices_json() or {} if zs and hasattr(zs, "get_all_devices_json") else {}
-                names = {ieee: _friendly_name(dev, ieee) for ieee, dev in devices.items()}
+                for ieee, dev in devices.items():
+                    names[str(ieee)] = _friendly_name(dev, str(ieee))
+                    p = _live_power_w(dev)
+                    if p is not None:
+                        live_power[str(ieee)] = p
             except Exception as e:
-                logger.debug(f"Device name lookup failed: {e}")
+                logger.debug(f"Device lookup failed: {e}")
 
-        per_device = {}
+        svc = _svc()
+        rate_p = svc.current_unit_rate("electricity") if svc else None
+        if rate_p is None:
+            rate_p = await _q(telemetry_db.query_octopus_current_rate,
+                              "electricity", "unit")
+
+        # Per-socket totals + per-day matrix for the stacked view
+        per_device: dict = {}
+        per_day: dict = {}          # ieee → {day: kwh}
+        day_set = set()
         for r in plug_rows:
             if r["kwh"] is None:
                 continue
-            per_device[r["ieee"]] = per_device.get(r["ieee"], 0.0) + float(r["kwh"])
-        devices_out = sorted(
-            ({"ieee": ieee, "name": names.get(ieee, ieee), "kwh": round(kwh, 3)}
+            ieee = r["ieee"]
+            day = r["day"].strftime("%Y-%m-%d") if hasattr(r["day"], "strftime") else str(r["day"])[:10]
+            per_device[ieee] = per_device.get(ieee, 0.0) + float(r["kwh"])
+            per_day.setdefault(ieee, {})[day] = per_day.get(ieee, {}).get(day, 0.0) + float(r["kwh"])
+            day_set.add(day)
+
+        def _cost(kwh):
+            return round(kwh * rate_p / 100, 2) if rate_p is not None else None
+
+        sockets = sorted(
+            ({"ieee": ieee, "name": names.get(ieee, ieee),
+              "kwh": round(kwh, 3), "cost_gbp": _cost(kwh),
+              "power_w": live_power.get(ieee)}
              for ieee, kwh in per_device.items() if kwh > 0),
             key=lambda d: d["kwh"], reverse=True)
+        # Energy-reporting sockets that show live power but no stored usage yet
+        for ieee, p in live_power.items():
+            if ieee not in per_device:
+                sockets.append({"ieee": ieee, "name": names.get(ieee, ieee),
+                                "kwh": 0.0, "cost_gbp": _cost(0.0) if rate_p is not None else None,
+                                "power_w": p})
 
         grid = await _q(telemetry_db.query_octopus_consumption_buckets,
                         "electricity", days=days, group_by="day")
-        grid_kwh = sum(r["kwh"] for r in grid if r["kwh"] is not None) if grid else None
-        plugs_kwh = round(sum(d["kwh"] for d in devices_out), 3)
+        grid_by_day = {_fmt_ts(r["ts"], "day"): r["kwh"] for r in grid
+                       if r["kwh"] is not None}
+        day_set |= set(grid_by_day)
+        days_sorted = sorted(day_set)
+
+        # Stacked series: top sockets individually, the rest folded, plus
+        # "rest of home" so the stack totals the metered grid figure.
+        MAX_STACK = 6
+        top = sockets[:MAX_STACK]
+        other_ieee = {s["ieee"] for s in sockets[MAX_STACK:]}
+        stacks = [{
+            "name": s["name"], "ieee": s["ieee"],
+            "kwh": [round(per_day.get(s["ieee"], {}).get(d, 0.0), 3) for d in days_sorted],
+        } for s in top if s["kwh"] > 0]
+        if other_ieee:
+            stacks.append({"name": f"Other sockets ({len(other_ieee)})", "ieee": None,
+                           "kwh": [round(sum(per_day.get(i, {}).get(d, 0.0)
+                                             for i in other_ieee), 3)
+                                   for d in days_sorted]})
+        rest = []
+        for d in days_sorted:
+            g = grid_by_day.get(d)
+            plugs_day = sum(per_day.get(i, {}).get(d, 0.0) for i in per_device)
+            rest.append(round(max(0.0, g - plugs_day), 3) if g is not None else None)
+
+        grid_kwh = sum(v for v in grid_by_day.values()) if grid_by_day else None
+        plugs_kwh = round(sum(d["kwh"] for d in sockets), 3)
+
+        cheap_window = None
+        if svc:
+            t = svc.heating_tariff("electricity")
+            if t and t.get("off_peak_start"):
+                cheap_window = t
+        tips = _socket_tips(sockets, rate_p, cheap_window,
+                            {"day": "day", "week": "week", "month": "month"}.get(range, "week"))
+
         return {
             "success": True,
             "range": range,
-            "devices": devices_out,
+            "rate_p": rate_p,
+            "sockets": sockets,
+            "series": {"days": days_sorted, "stacks": stacks, "rest": rest},
+            "tips": tips,
             "plugs_kwh": plugs_kwh,
             "grid_kwh": round(grid_kwh, 3) if grid_kwh is not None else None,
             "unmetered_kwh": round(max(0.0, grid_kwh - plugs_kwh), 3) if grid_kwh is not None else None,

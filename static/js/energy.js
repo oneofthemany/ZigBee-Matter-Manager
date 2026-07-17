@@ -33,6 +33,15 @@ function fuelColours() {
         : { electricity: '#1d4ed8', gas: '#c2410c', muted: '#53687a' };
 }
 
+// Categorical palette for per-socket series — same fixed order as the
+// heating charts; assigned by rank once per load, never re-cycled.
+function socketPalette() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    return isDark
+        ? ['#60a5fa', '#4ade80', '#fbbf24', '#a78bfa', '#2dd4bf', '#f472b6']
+        : ['#1d4ed8', '#15803d', '#b45309', '#6d28d9', '#0e7490', '#be185d'];
+}
+
 // ============================================================================
 // STATE
 // ============================================================================
@@ -42,6 +51,7 @@ let charts = {};            // name → createChart wrapper
 let currentRange = 'week';  // day | week | month
 let currentMetric = 'kwh';  // kwh | cost
 let customDates = null;     // {from, to} 'YYYY-MM-DD' — calendar search mode
+let breakdownView = 'daily'; // daily (stacked) | totals
 let consumptionCache = {};  // fuel → series (for metric re-render without refetch)
 let ratesCache = null;
 let breakdownCache = null;
@@ -240,14 +250,22 @@ function renderScaffold(status, summary) {
       ${kpis}
       ${octopusCards}
       <div class="card mb-3">
-        <div class="card-header fw-semibold">
-          <i class="fas fa-plug me-1"></i> Where it goes — smart-plug breakdown
-          <span class="text-muted small ms-2">(${esc(currentRange)})</span>
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+          <span class="fw-semibold"><i class="fas fa-plug me-1"></i> Where it goes — energy-reporting sockets</span>
+          <span class="text-muted small">(${esc(currentRange)})</span>
+          <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Breakdown view">
+            <button type="button" class="btn btn-outline-secondary ${breakdownView === 'daily' ? 'active' : ''}"
+                    onclick="window.energySetBreakdownView('daily')">Daily stack</button>
+            <button type="button" class="btn btn-outline-secondary ${breakdownView === 'totals' ? 'active' : ''}"
+                    onclick="window.energySetBreakdownView('totals')">Totals</button>
+          </div>
         </div>
         <div class="card-body">
           <div id="energyBreakdownChart" style="height: 300px;"></div>
+          ${renderSocketsTable()}
         </div>
-      </div>`;
+      </div>
+      ${renderTipsCard()}`;
 }
 
 function renderKpiRow(status, summary) {
@@ -508,26 +526,79 @@ function renderRatesChart() {
     });
 }
 
+function renderSocketsTable() {
+    const b = breakdownCache;
+    const sockets = b?.sockets || [];
+    if (!sockets.length) return '';
+    const hasCost = sockets.some(s => s.cost_gbp != null);
+    const rows = [...sockets]
+        .sort((a, z) => (z.cost_gbp ?? z.kwh) - (a.cost_gbp ?? a.kwh))
+        .map(s => `
+          <tr>
+            <td>${esc(s.name)}</td>
+            <td class="text-end">${s.power_w != null ? Math.round(s.power_w) + ' W' : '<span class="text-muted">—</span>'}</td>
+            <td class="text-end">${s.kwh.toFixed(2)}</td>
+            ${hasCost ? `<td class="text-end">${s.cost_gbp != null ? '£' + s.cost_gbp.toFixed(2) : '—'}</td>` : ''}
+          </tr>`).join('');
+    return `
+      <div class="table-responsive mt-3">
+        <table class="table table-sm small align-middle mb-0">
+          <thead><tr>
+            <th>Socket</th><th class="text-end">Now</th>
+            <th class="text-end">kWh (${esc(currentRange)})</th>
+            ${hasCost ? '<th class="text-end">Est. cost</th>' : ''}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${hasCost ? `<div class="text-muted small mt-1">Costs estimated at the current unit rate (${breakdownCache.rate_p?.toFixed(2)}p/kWh), sorted most-expensive first.</div>` : ''}
+      </div>`;
+}
+
+function renderTipsCard() {
+    const tips = breakdownCache?.tips || [];
+    if (!tips.length) return '';
+    return `
+      <div class="card mb-3">
+        <div class="card-header fw-semibold"><i class="fas fa-lightbulb me-1"></i> Saving opportunities</div>
+        <div class="card-body py-2">
+          ${tips.map(t => `
+            <div class="d-flex gap-2 py-2 border-bottom-0">
+              <i class="fas fa-${esc(t.icon || 'lightbulb')} mt-1 text-warning"></i>
+              <div>
+                <div class="fw-semibold small">${esc(t.title)}</div>
+                <div class="text-muted small">${esc(t.detail)}</div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+}
+
 function renderBreakdownChart() {
     const el = document.getElementById('energyBreakdownChart');
     if (!el) return;
-    const colours = fuelColours();
     const b = breakdownCache;
-    if (!b || (!b.devices?.length && b.grid_kwh == null)) {
-        el.innerHTML = '<div class="text-muted text-center py-5">No smart-plug energy readings in this range.</div>';
+    if (!b || (!b.sockets?.length && b.grid_kwh == null)) {
+        el.innerHTML = '<div class="text-muted text-center py-5">No socket energy readings in this range.</div>';
         return;
     }
+    if (breakdownView === 'daily' && b.series?.days?.length) {
+        renderBreakdownDaily(el, b);
+    } else {
+        renderBreakdownTotals(el, b);
+    }
+}
 
-    // Top devices + "Other plugs" + "Rest of home" (grid minus all plugs).
+function renderBreakdownTotals(el, b) {
+    const colours = fuelColours();
+    const sockets = (b.sockets || []).filter(s => s.kwh > 0);
     const MAX_BARS = 8;
-    const devices = b.devices || [];
-    const top = devices.slice(0, MAX_BARS);
-    const otherKwh = devices.slice(MAX_BARS).reduce((s, d) => s + d.kwh, 0);
+    const top = sockets.slice(0, MAX_BARS);
+    const otherKwh = sockets.slice(MAX_BARS).reduce((s, d) => s + d.kwh, 0);
 
     const rows = top.map(d => ({ name: d.name, kwh: d.kwh, colour: colours.electricity }));
-    if (otherKwh > 0) rows.push({ name: `Other plugs (${devices.length - MAX_BARS})`, kwh: otherKwh, colour: colours.electricity });
+    if (otherKwh > 0) rows.push({ name: `Other sockets (${sockets.length - MAX_BARS})`, kwh: otherKwh, colour: colours.electricity });
     if (b.unmetered_kwh != null && b.unmetered_kwh > 0) {
-        rows.push({ name: 'Rest of home (grid − plugs)', kwh: b.unmetered_kwh, colour: colours.muted });
+        rows.push({ name: 'Rest of home (grid − sockets)', kwh: b.unmetered_kwh, colour: colours.muted });
     }
     rows.reverse(); // horizontal bars read bottom-up
 
@@ -537,7 +608,11 @@ function renderBreakdownChart() {
         grid: { left: 8, right: 60, top: 8, bottom: 28, containLabel: true },
         tooltip: {
             trigger: 'item',
-            formatter: p => `${esc(p.name)}: ${Number(p.value).toFixed(2)} kWh`,
+            formatter: p => {
+                const cost = b.rate_p != null
+                    ? ` · £${(p.value * b.rate_p / 100).toFixed(2)}` : '';
+                return `${esc(p.name)}: ${Number(p.value).toFixed(2)} kWh${cost}`;
+            },
         },
         xAxis: { type: 'value', name: 'kWh' },
         yAxis: {
@@ -558,6 +633,52 @@ function renderBreakdownChart() {
                 formatter: p => `${Number(p.value).toFixed(1)}`,
             },
         }],
+    });
+}
+
+function renderBreakdownDaily(el, b) {
+    const palette = socketPalette();
+    const muted = fuelColours().muted;
+    const days = b.series.days;
+    const labels = days.map(d => fmtBucketLabel(d, 'day'));
+
+    const mkStack = (name, data, colour) => ({
+        name,
+        type: 'bar',
+        stack: 'home',
+        barMaxWidth: 30,
+        itemStyle: { color: colour, borderWidth: 1, borderColor: 'transparent' },
+        data,
+    });
+    const series = b.series.stacks.map((s, i) =>
+        mkStack(s.name, s.kwh, palette[i % palette.length]));
+    if (b.series.rest.some(v => v != null && v > 0)) {
+        series.push(mkStack('Rest of home', b.series.rest, muted));
+    }
+
+    charts.breakdown?.dispose();
+    charts.breakdown = createChart(el);
+    charts.breakdown.setOption({
+        grid: { left: 48, right: 16, top: 34, bottom: 42 },
+        legend: { top: 0, type: 'scroll' },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            formatter: params => {
+                const lines = params
+                    .filter(p => p.value != null && p.value > 0)
+                    .map(p => {
+                        const cost = b.rate_p != null
+                            ? ` · £${(p.value * b.rate_p / 100).toFixed(2)}` : '';
+                        return `${p.marker} ${esc(p.seriesName)}: ${Number(p.value).toFixed(2)} kWh${cost}`;
+                    });
+                const total = params.reduce((s, p) => s + (p.value || 0), 0);
+                return `<strong>${params[0]?.axisValueLabel ?? ''}</strong> — ${total.toFixed(2)} kWh total<br>${lines.join('<br>')}`;
+            },
+        },
+        xAxis: { type: 'category', data: labels, axisLabel: { hideOverlap: true } },
+        yAxis: { type: 'value', name: 'kWh', nameTextStyle: { align: 'left' } },
+        series,
     });
 }
 
@@ -583,6 +704,16 @@ window.energyApplyDates = function() {
 window.energyClearDates = function() {
     customDates = null;
     loadEnergyDashboard();
+};
+
+window.energySetBreakdownView = function(view) {
+    if (!['daily', 'totals'].includes(view) || view === breakdownView) return;
+    breakdownView = view;
+    document.querySelectorAll('[aria-label="Breakdown view"] .btn').forEach(btn => {
+        btn.classList.toggle('active',
+            (view === 'daily') === (btn.textContent.trim() === 'Daily stack'));
+    });
+    renderBreakdownChart();
 };
 
 window.energySetMetric = function(metric) {
