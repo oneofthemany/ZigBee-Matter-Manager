@@ -71,11 +71,26 @@ html, body {
         margin-bottom: 0.25rem;
     }
 
-    /* Hide button text, show just icons on very small screens */
-    #pairBtn .fas { margin-right: 0 !important; }
+    /* Logo + title only — drop the subtitle
+       (hive-components.css loads later and sets display: block) */
+    .navbar-brand .brand-sub {
+        display: none;
+    }
 
-    .navbar .col-auto.ms-auto .btn .fas {
-        margin-right: 0 !important;
+    /* Badges and buttons are icon-only here (labels carry
+       d-none d-sm-inline), so everything fits one row:
+       status pills left, action buttons pushed right */
+    .navbar .d-flex.align-items-center.gap-3 {
+        flex-wrap: nowrap;
+    }
+
+    .navbar .col-auto.ms-auto {
+        margin-left: auto !important;
+    }
+
+    .navbar .col-auto.ms-auto .btn {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
     }
 }
 

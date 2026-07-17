@@ -28,7 +28,7 @@ export function initWS() {
 
     state.socket.onopen = () => {
         document.getElementById('connection-status').innerHTML =
-            '<i class="fas fa-circle text-success"></i> Connected';
+            '<i class="fas fa-circle text-success"></i><span class="d-none d-sm-inline"> Connected</span>';
 
         // Skip the refresh fetches while anonymous (first-run setup wizard —
         // the WS itself is allowed, but /api/devices etc. would just 401).
@@ -44,7 +44,7 @@ export function initWS() {
 
     state.socket.onclose = () => {
         document.getElementById('connection-status').innerHTML =
-            '<i class="fas fa-circle text-danger"></i> Disconnected';
+            '<i class="fas fa-circle text-danger"></i><span class="d-none d-sm-inline"> Disconnected</span>';
         updateHAStatus("unknown");
         state.socket = null;  // ← clear so the auth-gated reconnect can fire
 
@@ -317,13 +317,13 @@ function updateHAStatus(status) {
 
     if (s === 'online') {
         badge.className = 'badge rounded-pill bg-success';
-        badge.innerHTML = '<i class="fas fa-home"></i> HA: Online';
+        badge.innerHTML = '<i class="fas fa-home"></i><span class="d-none d-sm-inline"> HA: Online</span>';
     } else if (s === 'offline') {
         badge.className = 'badge rounded-pill bg-warning text-dark';
-        badge.innerHTML = '<i class="fas fa-exclamation-triangle"></i> HA: Offline';
+        badge.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span class="d-none d-sm-inline"> HA: Offline</span>';
     } else {
         badge.className = 'badge rounded-pill bg-secondary';
-        badge.innerHTML = '<i class="fas fa-question"></i> HA: Unknown';
+        badge.innerHTML = '<i class="fas fa-question"></i><span class="d-none d-sm-inline"> HA: Unknown</span>';
     }
 }
 

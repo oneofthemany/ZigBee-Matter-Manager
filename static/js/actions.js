@@ -482,7 +482,7 @@ function resetPairingUI() {
     // Restore button state
     btn.classList.remove('btn-danger');
     btn.classList.add('btn-success');
-    btn.innerHTML = `<i class="fas fa-plus-circle"></i> Enable Pairing (All)`;
+    btn.innerHTML = `<i class="fas fa-plus-circle"></i><span class="d-none d-sm-inline"> Enable Pairing (All)</span><span class="d-sm-none"> Pair</span>`;
 }
 
 /**
@@ -502,14 +502,14 @@ export function updatePairingUI(time) {
     let timeLeft = time;
 
     // Initial render
-    btn.innerHTML = `<i class="fas fa-stop-circle"></i> Stop Pairing (${timeLeft}s)`;
+    btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-sm-inline"> Stop Pairing</span> (${timeLeft}s)`;
 
     state.pairingInterval = setInterval(() => {
         timeLeft--;
         if (timeLeft <= 0) {
             resetPairingUI();
         } else {
-            btn.innerHTML = `<i class="fas fa-stop-circle"></i> Stop Pairing (${timeLeft}s)`;
+            btn.innerHTML = `<i class="fas fa-stop-circle"></i><span class="d-none d-sm-inline"> Stop Pairing</span> (${timeLeft}s)`;
         }
     }, 1000);
 }
@@ -1143,13 +1143,13 @@ export async function checkMatterStatus() {
         if (badge) {
             if (!data.enabled) {
                 badge.className = 'badge bg-secondary ms-1';
-                badge.textContent = 'Not configured';
+                badge.innerHTML = '<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Not configured</span>';
             } else if (data.connected) {
                 badge.className = 'badge bg-success ms-1';
-                badge.textContent = `Matter: ${data.device_count} devices`;
+                badge.innerHTML = `<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: ${data.device_count} devices</span>`;
             } else {
                 badge.className = 'badge bg-warning ms-1';
-                badge.textContent = 'Matter: Disconnected';
+                badge.innerHTML = '<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: Disconnected</span>';
             }
         }
 
@@ -1179,7 +1179,7 @@ export async function checkMatterStatus() {
     } catch (e) {
         if (badge) {
             badge.className = 'badge bg-secondary ms-1';
-            badge.textContent = 'Matter: N/A';
+            badge.innerHTML = '<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: N/A</span>';
         }
     }
 }
