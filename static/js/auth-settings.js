@@ -38,6 +38,9 @@
                 state.groups = g.groups || [];
                 state.scopes = s.scopes || [];
                 state.tokens = t.tokens || [];
+                // Presence lives in its own registry; we need it to show whether
+                // each user's phone reporting is wired up.
+                await loadPresenceUsers();
             } else {
                 // Non-admins see only their own tokens + scope reference
                 var [s2, t2] = await Promise.all([
@@ -114,6 +117,14 @@
               '<td><strong>' + escape(u.username) + '</strong>' +
                 (u.disabled ? ' <span class="badge bg-secondary">disabled</span>' : '') +
                 (u.has_password ? '' : ' <span class="badge bg-warning text-dark">no password</span>') +
+                (u.landing === 'frames'
+                    ? ' <span class="badge bg-primary" title="Opens on the Frames UI">' +
+                      '<i class="fas fa-mobile-screen"></i> Frames</span>'
+                    : '') +
+                (hasPresenceUser(u.username)
+                    ? ' <span class="badge bg-success" title="Phone reports presence">' +
+                      '<i class="fas fa-location-arrow"></i> Presence</span>'
+                    : '') +
               '</td>' +
               '<td>' + (u.groups || []).map(function (g) {
                   return '<span class="badge bg-info me-1">' + escape(g) + '</span>';
@@ -286,6 +297,36 @@
     // ----------------------------------------------------------
     // User modal
     // ----------------------------------------------------------
+    // Presence users are a SEPARATE registry (/api/presence/users) keyed by
+    // user_id. An auth user and a presence user are different records that
+    // happen to share a name; this is the only place we link them.
+    var presenceUsers = [];
+
+    function presenceScope(username) {
+        return 'presence:write:' + username;
+    }
+
+    function hasPresenceUser(username) {
+        return presenceUsers.some(function (p) { return p.user_id === username; });
+    }
+
+    // presence_users.py requires user_id to be alphanumeric/underscore, but auth
+    // usernames also allow '-'. Rather than silently mangle the id (and create a
+    // presence record that never matches), refuse and say why.
+    function presenceIdOk(username) {
+        return /^[A-Za-z0-9_]+$/.test(username || '');
+    }
+
+    async function loadPresenceUsers() {
+        try {
+            var r = await fetch('/api/presence/users', { credentials: 'same-origin' });
+            presenceUsers = r.ok ? (await r.json()) : [];
+            if (!Array.isArray(presenceUsers)) presenceUsers = presenceUsers.users || [];
+        } catch (e) {
+            presenceUsers = [];
+        }
+    }
+
     function openUserModal(username) {
         var existing = username
             ? state.users.find(function (u) { return u.username === username; })
@@ -293,6 +334,7 @@
         var u = existing || {
             username: '', groups: [], extra_scopes: [],
             disabled: false, description: '', has_password: false,
+            landing: 'manager',
         };
 
         var groupCheckboxes = state.groups.map(function (g) {
@@ -329,6 +371,30 @@
                   '<div class="form-text">Direct grants beyond group membership.</div></div>' +
                 '<div class="mb-3"><label class="form-label">Description</label>' +
                   '<input id="udesc" class="form-control" value="' + escape(u.description || '') + '"></div>' +
+                '<div class="mb-3"><label class="form-label" for="ulanding">Opens on</label>' +
+                  '<select id="ulanding" class="form-select">' +
+                    '<option value="manager"' + (u.landing !== 'frames' ? ' selected' : '') + '>' +
+                      'Manager — the full dashboard</option>' +
+                    '<option value="frames"' + (u.landing === 'frames' ? ' selected' : '') + '>' +
+                      'Frames — the mobile UI</option>' +
+                  '</select>' +
+                  '<div class="form-text">Where this user lands when they open the app. ' +
+                    'A convenience, not a restriction — both stay reachable.</div></div>' +
+                '<div class="mb-3">' +
+                  '<div class="form-check">' +
+                    '<input id="upresence" type="checkbox" class="form-check-input"' +
+                      (existing && hasPresenceUser(u.username) ? ' checked' : '') +
+                      (existing ? '' : ' disabled') + '>' +
+                    '<label class="form-check-label" for="upresence">Mobile presence</label>' +
+                  '</div>' +
+                  '<div class="form-text">' +
+                    (existing
+                      ? 'Lets this user\'s phone report its location. Creates a presence ' +
+                        'user and grants <code>' + escape(presenceScope(u.username)) + '</code>. ' +
+                        'Home location and radius are set in the Presence tab.'
+                      : 'Save the user first, then re-open to enable presence.') +
+                  '</div>' +
+                '</div>' +
                 (existing ? '<div class="form-check"><input id="udisabled" type="checkbox" class="form-check-input"' +
                     (u.disabled ? ' checked' : '') + '><label class="form-check-label">Disabled</label></div>' : '') +
                 '<div id="user-edit-error" class="alert alert-danger mt-3" style="display:none;"></div>' +
@@ -356,10 +422,30 @@
             var scopes = document.getElementById('uscopes').value
                 .split(',').map(function (s) { return s.trim(); })
                 .filter(Boolean);
+
+            // Mobile presence: keep the per-user presence scope in step with the
+            // tick, without disturbing any other scope the admin typed in.
+            var presenceBox = document.getElementById('upresence');
+            var wantPresence = !!(presenceBox && presenceBox.checked && existing);
+            if (existing) {
+                var pScope = presenceScope(u.username);
+                scopes = scopes.filter(function (s) { return s !== pScope; });
+                if (wantPresence) {
+                    if (!presenceIdOk(u.username)) {
+                        showErr('user-edit-error',
+                            'Presence needs a username of letters, numbers or underscores — ' +
+                            '"' + u.username + '" can\'t be used as a presence id.');
+                        return;
+                    }
+                    scopes.push(pScope);
+                }
+            }
+
             var body = {
                 groups: groups,
                 extra_scopes: scopes,
                 description: document.getElementById('udesc').value,
+                landing: document.getElementById('ulanding').value,
             };
             var pw = document.getElementById('upass').value;
             if (pw) body.password = pw;
@@ -374,6 +460,42 @@
                     showErr('user-edit-error', e.detail || 'Update failed');
                     return;
                 }
+
+                var hadPresence = hasPresenceUser(u.username);
+                if (wantPresence && !hadPresence) {
+                    // Create ONLY when missing. upsert_user replaces the whole
+                    // config from the payload, so re-sending {user_id, name} for
+                    // an existing user would wipe their home location/radius.
+                    var pr = await fetch('/api/presence/users', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({
+                            user_id: u.username,
+                            display_name: u.username,
+                            enabled: true,
+                        }),
+                    });
+                    if (!pr.ok) {
+                        var pe = await pr.json().catch(function () { return {}; });
+                        showErr('user-edit-error',
+                            'User saved, but presence setup failed: ' +
+                            (pe.detail || 'unknown error') +
+                            '. The scope was granted; add the presence user in the Presence tab.');
+                        await loadPresenceUsers();
+                        return;
+                    }
+                } else if (!wantPresence && hadPresence) {
+                    var dr = await fetch('/api/presence/users/' + encodeURIComponent(u.username),
+                        { method: 'DELETE', credentials: 'same-origin' });
+                    if (!dr.ok) {
+                        showErr('user-edit-error',
+                            'User saved, but removing the presence user failed. ' +
+                            'Remove it in the Presence tab.');
+                        await loadPresenceUsers();
+                        return;
+                    }
+                }
+                await loadPresenceUsers();
             } else {
                 body.username = document.getElementById('uname').value.trim();
                 if (pw) body.password = pw;

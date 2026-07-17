@@ -57,8 +57,10 @@
            </span>
 
             <!-- Switch to the Frames UI. Plain /frames (no ?view=) so the server
-                 clears any "I want the manager" override for this session. -->
-           <a href="/frames" class="btn btn-outline-light btn-sm" title="Open Frames">
+                 clears any "I want the manager" override for this session.
+                 Mobile-only (d-lg-none): on a desktop, Frames is already a tab
+                 in this dashboard, so a second route to it is just clutter. -->
+           <a href="/frames" class="btn btn-outline-light btn-sm d-lg-none" title="Open Frames">
                <i class="fas fa-border-all"></i><span class="d-none d-sm-inline"> Frames</span>
            </a>
 
