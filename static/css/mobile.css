@@ -135,6 +135,39 @@ html, body {
         margin-left: 0 !important;
     }
 
+    /* Devices card header — single-line strip, tap to expand.
+       Hides everything but "Devices [n]": the two filter selects,
+       the search box device-search.js injects, and the
+       Chambers / Manage Tabs buttons reappear on tap. */
+    .device-list-card .card-header {
+        cursor: pointer;
+    }
+
+    .device-list-card .card-header .row > .col-auto:first-child {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
+    .device-list-card .card-header .row > .col-auto:not(:first-child) {
+        display: none;
+    }
+
+    .device-list-card .card-header.expanded .row > .col-auto:not(:first-child) {
+        display: block;
+    }
+
+    .device-list-card .card-header .devices-chevron {
+        margin-left: auto;
+        font-size: 0.8rem;
+        color: #6c757d;
+        transition: transform 0.2s ease;
+    }
+
+    .device-list-card .card-header.expanded .devices-chevron {
+        transform: rotate(180deg);
+    }
+
     /* Table — smaller text, horizontal scroll */
     #devices .table th,
     #devices .table td {
@@ -153,10 +186,67 @@ html, body {
         display: none;
     }
 
-    /* Coordinator info card */
+    /* Coordinator info card — single-line strip, tap to expand */
+    .coordinator-card {
+        cursor: pointer;
+    }
+
+    .coordinator-card .card-body {
+        padding: 0.35rem 0.75rem;
+    }
+
     .coordinator-card .row {
-        flex-direction: column;
-        text-align: center;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        text-align: left;
+    }
+
+    .coordinator-card .row > [class*="col-md-"] {
+        width: auto;
+        flex: 0 0 auto;
+    }
+
+    .coordinator-card .fa-2x {
+        font-size: 1.1rem;
+    }
+
+    .coordinator-card h6 {
+        font-size: 0.85rem;
+    }
+
+    /* Collapsed: hide IEEE, model and manufacturer */
+    .coordinator-card .row > div:nth-child(2) small,
+    .coordinator-card .row > div:nth-child(3),
+    .coordinator-card .row > div:nth-child(4) {
+        display: none;
+    }
+
+    /* Status badge pushed to the right, chevron after it */
+    .coordinator-card .row > div:nth-child(5) {
+        margin-left: auto;
+    }
+
+    .coordinator-card .coord-chevron i {
+        font-size: 0.8rem;
+        color: #6c757d;
+        transition: transform 0.2s ease;
+    }
+
+    .coordinator-card.expanded .coord-chevron i {
+        transform: rotate(180deg);
+    }
+
+    /* Expanded: details reappear below the strip */
+    .coordinator-card.expanded .row > div:nth-child(2) small {
+        display: block;
+    }
+
+    .coordinator-card.expanded .row > div:nth-child(3),
+    .coordinator-card.expanded .row > div:nth-child(4) {
+        display: block;
+        flex: 0 0 100%;
+        padding-top: 0.35rem;
     }
 }
 

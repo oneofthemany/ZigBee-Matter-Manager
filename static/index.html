@@ -43,23 +43,23 @@
             <!-- Home Assistant Status Badge -->
             <!-- Hidden until the first status check; stays hidden when HA is disabled -->
             <span class="badge rounded-pill bg-secondary" id="ha-status-badge" title="Home Assistant Connection" style="display: none">
-                <i class="fas fa-home"></i> HA: Unknown
+                <i class="fas fa-home"></i><span class="d-none d-sm-inline"> HA: Unknown</span>
             </span>
 
             <!-- Matter status badge -->
            <span class="badge rounded-pill bg-secondary" id="matterStatusBadge" title="Matter Bridge Status">
-               <i class="fas fa-atom"></i> Matter: N/A
+               <i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: N/A</span>
            </span>
 
             <!-- Zigbee Status -->
            <span class="navbar-text" id="connection-status">
-               <i class="fas fa-circle text-danger"></i> Disconnected
+               <i class="fas fa-circle text-danger"></i><span class="d-none d-sm-inline"> Disconnected</span>
            </span>
 
             <!-- Pairing Dropdown Group -->
            <div class="btn-group">
                <button id="pairBtn" class="btn btn-success btn-sm" onclick="withBusy(this, () => togglePairing())">
-                   <i class="fas fa-plus-circle"></i> Enable Pairing (All)
+                   <i class="fas fa-plus-circle"></i><span class="d-none d-sm-inline"> Enable Pairing (All)</span><span class="d-sm-none"> Pair</span>
                </button>
                <button type="button" class="btn btn-success btn-sm dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
                    <span class="visually-hidden">Toggle Dropdown</span>
@@ -93,15 +93,15 @@
 
             <div class="col-auto ms-auto">
                 <button class="btn btn-sm btn-outline-info me-2" id="otaCheckAllBtn" onclick="window.otaCheckAll()">
-                    <i class="fas fa-microchip"></i> Check OTA
+                    <i class="fas fa-microchip"></i><span class="d-none d-sm-inline"> Check OTA</span>
                 </button>
                 <button class="btn btn-sm btn-warning me-2" onclick="withBusy(this, () => cleanupOrphans())">
-                    <i class="fas fa-broom"></i> Clean DB
+                    <i class="fas fa-broom"></i><span class="d-none d-sm-inline"> Clean DB</span>
                 </button>
             </div>
             <!-- API -->
             <a href="/api-docs" target="_blank" class="btn btn-sm btn-outline-light">
-                <i class="fas fa-book"></i> API Docs
+                <i class="fas fa-book"></i><span class="d-none d-sm-inline"> API Docs</span>
             </a>
 
        </div>
@@ -131,7 +131,7 @@
     <div class="tab-pane fade show active" id="devices">
 
         <!-- COORDINATOR INFO CARD -->
-        <div class="card shadow-sm mb-3 coordinator-card">
+        <div class="card shadow-sm mb-3 coordinator-card" onclick="this.classList.toggle('expanded')">
             <div class="card-body py-2">
                 <div class="row align-items-center" id="coordinator-info" aria-busy="true">
                     <div class="col-md-1 text-center"><span class="skel" style="width:2.2rem;height:2.2rem;border-radius:50%"></span></div>
@@ -148,12 +148,13 @@
         </div>
 
         <!-- Main Device List -->
-        <div class="card shadow-sm device-list-card">
-            <div class="card-header bg-light py-2">
+        <div class="card shadow-sm device-list-card" onclick="this.classList.toggle('expanded')">
+            <div class="card-header bg-light py-2" onclick="if(!event.target.closest('select,button,input,a,label')) this.classList.toggle('expanded')">
                 <div class="row g-2 align-items-center">
                     <div class="col-auto">
                         <span class="fw-bold">Devices</span>
                         <span class="badge bg-secondary ms-2" id="deviceCount">0</span>
+                        <i class="fas fa-chevron-down d-md-none devices-chevron"></i>
                     </div>
                     <div class="col-auto">
                         <select id="tabFilter" class="form-select form-select-sm" onchange="filterByTab()" style="min-width: 150px;">

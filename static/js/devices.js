@@ -105,6 +105,9 @@ export function renderDeviceTable() {
             <div class="col-md-2 text-end">
                 <span class="badge bg-success">Online</span>
             </div>
+            <div class="col-auto d-md-none coord-chevron">
+                <i class="fas fa-chevron-down"></i>
+            </div>
         `;
     } else if (coordContainer) {
         coordContainer.innerHTML = `<div class="col-12 text-center text-muted small">Coordinator not found</div>`;
