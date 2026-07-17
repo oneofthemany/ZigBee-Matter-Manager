@@ -128,7 +128,7 @@ html, body {
             padding: 0.5rem 0.75rem;
             font-size: 0.9rem;
         }
-        #mainTabs .nav-link .fas {
+        #mainTabs:not(.labels-expanded) .nav-link .fas {
             margin-right: 0 !important;
         }
     }
@@ -139,6 +139,32 @@ html, body {
     #mainTabs .nav-link[data-bs-target="#editor-tab"],
     #editor-tab {
         display: none !important;
+    }
+
+    /* Tab rail — icon-only so all tabs fit without a long scroll;
+       the text-width toggle expands the labels back */
+    #mainTabs .tab-label {
+        display: none;
+    }
+
+    #mainTabs.labels-expanded .tab-label {
+        display: inline;
+    }
+
+    /* Toggle stays reachable while the rail scrolls */
+    #mainTabsToggleItem {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: var(--bs-body-bg);
+    }
+
+    #mainTabsLabelToggle {
+        color: #6c757d;
+    }
+
+    #mainTabs.labels-expanded #mainTabsLabelToggle {
+        color: inherit;
     }
 }
 
