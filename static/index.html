@@ -1282,8 +1282,10 @@
                 <div class="tab-pane fade" id="debugPackets">
                     <div class="card shadow-sm">
                         <div class="card-body">
-                            <!-- Packet capture enablement — controls whether packets are recorded -->
-                            <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
+                            <!-- Packet capture enablement — controls whether packets are recorded.
+                                 On mobile this collapses to a strip; tap reveals the debug
+                                 toggle buttons and the filter row below. -->
+                            <div class="d-flex align-items-center flex-wrap gap-2 mb-3 packets-head" onclick="if(!event.target.closest('select,button,input,a,label')) this.classList.toggle('expanded')">
                                 <span class="fw-bold">Packet Capture</span>
                                 <span id="debugStatusBadge" class="badge bg-secondary">Disabled</span>
                                 <div class="btn-group btn-group-sm ms-2" role="group">
@@ -1297,6 +1299,7 @@
                                 <button id="verboseLogBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleVerboseLogging()">
                                     <i class="fas fa-eye-slash"></i> Standard
                                 </button>
+                                <i class="fas fa-chevron-down d-md-none packets-chevron"></i>
                             </div>
                             <div class="row mb-3 g-2">
                                 <div class="col-md-2">

@@ -923,6 +923,34 @@ body.controlling {
         max-width: 100%;
         margin-bottom: 0.5rem;
     }
+
+    /* Packet capture controls — single-line strip, tap to expand.
+       Collapsed shows "Packet Capture [status]"; the debug toggle
+       buttons and the filter row (importance/direction/device/
+       cluster/limit + Refresh/Export) reappear on tap. */
+    #debugPackets .packets-head {
+        cursor: pointer;
+    }
+
+    #debugPackets .packets-head .packets-chevron {
+        margin-left: auto;
+        font-size: 0.8rem;
+        color: #6c757d;
+        transition: transform 0.2s ease;
+    }
+
+    #debugPackets .packets-head.expanded .packets-chevron {
+        transform: rotate(180deg);
+    }
+
+    #debugPackets .packets-head:not(.expanded) .btn-group,
+    #debugPackets .packets-head:not(.expanded) #verboseLogBtn {
+        display: none;
+    }
+
+    #debugPackets .packets-head:not(.expanded) + .row {
+        display: none;
+    }
 }
 
 
