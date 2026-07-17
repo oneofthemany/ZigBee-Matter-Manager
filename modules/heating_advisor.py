@@ -53,8 +53,9 @@ Config (config.yaml):
 """
 import asyncio
 import logging
-import time
 import math
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -131,6 +132,11 @@ class HeatingAdvisor:
         # Live tariff source (Octopus). Called with the boiler fuel; returning
         # None (disabled, no data, API down) falls back to the manual tariff.
         self._tariff_provider = tariff_provider
+        # Actual gas-meter kWh cache, refreshed in a worker thread — the
+        # analysis loop runs on the event loop and must never touch DuckDB
+        # directly (first touch even opens/migrates octopus.duckdb: seconds).
+        self._gas_actual: Dict[str, Any] = {"ts": 0.0, "kwh": None, "day": None}
+        self._gas_refreshing = False
 
         # Property profile
         prop = config.get("property") or {}
@@ -1130,6 +1136,11 @@ class HeatingAdvisor:
         integration is live and the boiler burns gas. Smart-meter data lags,
         so yesterday stands in until today's intervals arrive. None → caller
         uses the kW×hours estimate (pre-integration behaviour).
+
+        The DuckDB lookup runs in a worker thread and lands in a 5-minute
+        cache: this method is called from the loop-bound analysis loop, so
+        it must return instantly. The first dashboard after a restart shows
+        the estimate; the actual figure appears on the next refresh.
         """
         if self._boiler_fuel() != "gas":
             return None
@@ -1137,23 +1148,41 @@ class HeatingAdvisor:
         # "actual" after the integration is disabled.
         if not self._live_tariff():
             return None
+
+        if time.time() - self._gas_actual["ts"] > 300 and not self._gas_refreshing:
+            self._gas_refreshing = True
+            threading.Thread(target=self._refresh_gas_actual,
+                             name="gas-actual-refresh", daemon=True).start()
+
+        kwh = self._gas_actual.get("kwh")
+        if not kwh:
+            return None
+        daily_cost = kwh * self.unit_rate + self.standing_charge
+        return {
+            "daily_gbp": round(daily_cost, 2),
+            "monthly_gbp": round(daily_cost * 30, 0),
+            "daily_kwh": round(kwh, 1),
+            "source": "octopus_actual",
+            "actual_day": self._gas_actual.get("day"),
+        }
+
+    def _refresh_gas_actual(self):
+        """Worker-thread refresh of the actual gas-meter kWh cache."""
         try:
             from modules.telemetry_db import query_octopus_kwh_for_day
             today = datetime.now().date()
             for day in (today, today - timedelta(days=1)):
                 kwh = query_octopus_kwh_for_day("gas", day)
                 if kwh:
-                    daily_cost = kwh * self.unit_rate + self.standing_charge
-                    return {
-                        "daily_gbp": round(daily_cost, 2),
-                        "monthly_gbp": round(daily_cost * 30, 0),
-                        "daily_kwh": round(kwh, 1),
-                        "source": "octopus_actual",
-                        "actual_day": day.isoformat(),
-                    }
+                    self._gas_actual = {"ts": time.time(), "kwh": kwh,
+                                        "day": day.isoformat()}
+                    return
+            self._gas_actual = {"ts": time.time(), "kwh": None, "day": None}
         except Exception as e:
             logger.debug(f"Octopus actual-cost lookup failed: {e}")
-        return None
+            self._gas_actual = {"ts": time.time(), "kwh": None, "day": None}
+        finally:
+            self._gas_refreshing = False
 
     # ── Historical Analysis ────────────────────────────────────────
     def get_heating_history(self, hours: int = 24) -> Dict:
