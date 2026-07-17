@@ -302,8 +302,14 @@
     // happen to share a name; this is the only place we link them.
     var presenceUsers = [];
 
-    function presenceScope(username) {
-        return 'presence:write:' + username;
+    // Both per-user scopes a phone needs. BOTH matter: the companion app fetches
+    // its own home (read) to arm the geofence AND reports fixes (write). And they
+    // must be granted EXPLICITLY on the user, because the built-in "users" group
+    // grants blanket "presence:read" (which does not scope-match the per-user
+    // "presence:read:<u>") and "presence:write:*" — so without these a minimal
+    // per-user token can't even be issued.
+    function presenceScopes(username) {
+        return ['presence:read:' + username, 'presence:write:' + username];
     }
 
     function hasPresenceUser(username) {
@@ -389,8 +395,9 @@
                   '</div>' +
                   '<div class="form-text">' +
                     (existing
-                      ? 'Lets this user\'s phone report its location. Creates a presence ' +
-                        'user and grants <code>' + escape(presenceScope(u.username)) + '</code>. ' +
+                      ? 'Lets this user\'s phone report its location. Creates a presence user and ' +
+                        'grants <code>' + escape(presenceScopes(u.username).join('</code> + <code>')) +
+                        '</code> — issue the phone\'s token with exactly those two scopes. ' +
                         'Home location and radius are set in the Presence tab.'
                       : 'Save the user first, then re-open to enable presence.') +
                   '</div>' +
@@ -428,8 +435,8 @@
             var presenceBox = document.getElementById('upresence');
             var wantPresence = !!(presenceBox && presenceBox.checked && existing);
             if (existing) {
-                var pScope = presenceScope(u.username);
-                scopes = scopes.filter(function (s) { return s !== pScope; });
+                var pScopes = presenceScopes(u.username);
+                scopes = scopes.filter(function (s) { return pScopes.indexOf(s) === -1; });
                 if (wantPresence) {
                     if (!presenceIdOk(u.username)) {
                         showErr('user-edit-error',
@@ -437,7 +444,7 @@
                             '"' + u.username + '" can\'t be used as a presence id.');
                         return;
                     }
-                    scopes.push(pScope);
+                    pScopes.forEach(function (s) { scopes.push(s); });
                 }
             }
 
@@ -634,13 +641,17 @@
                   '<div class="col-md-6"><label class="form-label">Expires in (days)</label>' +
                     '<input id="texp" type="number" min="1" max="3650" class="form-control" placeholder="leave blank for no expiry"></div>' +
                   '<div class="col-12"><label class="form-label">Scopes</label>' +
-                    '<div class="form-text">Leave all unchecked to inherit the user\'s full scope set.</div>' +
+                    '<div class="form-text">Leave all unchecked to inherit the user\'s full scope set. ' +
+                      'A token can never hold a scope its user lacks.</div>' +
                     '<div>' + scopeOpts + '</div>' +
-                    '<div class="mt-2 alert alert-info small">' +
-                      '<strong>Mobile presence app:</strong> only check ' +
-                      '<code>presence:write</code> AND set custom scope <code>presence:write:&lt;user_id&gt;</code> below for the tightest token.' +
+                    '<div class="mt-2 alert alert-info small mb-1">' +
+                      '<strong>Mobile presence app:</strong> don\'t tick the boxes above — ' +
+                      'use the button for a token scoped to just this one user\'s presence.' +
                     '</div>' +
-                    '<input id="tcustom" class="form-control mt-2" placeholder="custom scope, e.g. presence:write:sean">' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary mb-2" id="tmobile">' +
+                      '<i class="fas fa-mobile-screen"></i> Fill for mobile presence</button>' +
+                    '<input id="tcustom" class="form-control" ' +
+                      'placeholder="custom scopes, comma-separated (e.g. presence:read:sean, presence:write:sean)">' +
                   '</div>' +
                 '</div>' +
                 '<div id="token-issue-error" class="alert alert-danger mt-3" style="display:none;"></div>' +
@@ -661,13 +672,32 @@
         var modal = new bootstrap.Modal(modalEl);
         modal.show();
 
+        // One click fills exactly the two per-user scopes the phone needs, for
+        // whichever user is selected, and clears any ticked boxes so the token
+        // stays minimal. Requires that user to have the matching presence scopes
+        // (tick Mobile presence on the user first).
+        document.getElementById('tmobile').onclick = function () {
+            var u = document.getElementById('tuser').value;
+            document.querySelectorAll('#tokenIssueModal input[id^=tscp-]').forEach(function (cb) {
+                cb.checked = false;
+            });
+            document.getElementById('tcustom').value =
+                'presence:read:' + u + ', presence:write:' + u;
+            if (!document.getElementById('tlabel').value.trim()) {
+                document.getElementById('tlabel').value = u + "'s phone";
+            }
+        };
+
         document.getElementById('token-issue-btn').onclick = async function () {
             var scopes = [];
             document.querySelectorAll('#tokenIssueModal input[id^=tscp-]').forEach(function (cb) {
                 if (cb.checked) scopes.push(cb.value);
             });
-            var custom = document.getElementById('tcustom').value.trim();
-            if (custom) scopes.push(custom);
+            // Custom field is comma-separated: a mobile-presence token needs TWO
+            // per-user scopes (read + write), and a single field can't express that.
+            document.getElementById('tcustom').value
+                .split(',').map(function (s) { return s.trim(); }).filter(Boolean)
+                .forEach(function (s) { if (scopes.indexOf(s) === -1) scopes.push(s); });
 
             var body = {
                 username: document.getElementById('tuser').value,
