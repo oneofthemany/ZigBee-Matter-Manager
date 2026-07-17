@@ -1157,3 +1157,22 @@ body.controlling {
         height: 70vh !important;
     }
 }
+
+
+/* ----------------------------------------------------------
+   DOCS TAB — one pane at a time on phones
+   ----------------------------------------------------------
+   Stacked, the 75vh doc list buried the article below the fold,
+   so a tapped doc looked like nothing happened. Tapping a doc now
+   swaps to the article (wiki.js adds .wiki-doc-open); the
+   "All documents" back button (d-md-none) swaps back.            */
+
+@media (max-width: 767.98px) {
+    #wiki.wiki-doc-open #wikiListPane {
+        display: none;
+    }
+
+    #wiki:not(.wiki-doc-open) #wikiContentPane {
+        display: none;
+    }
+}

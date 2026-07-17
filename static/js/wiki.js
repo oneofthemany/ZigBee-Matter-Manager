@@ -32,9 +32,9 @@
                          data-slug="${escapeHtml(d.slug)}">${escapeHtml(d.title)}</button>`
             ).join('');
             listEl.querySelectorAll('.wiki-doc-link').forEach(btn => {
-                btn.addEventListener('click', () => openDoc(btn.dataset.slug));
+                btn.addEventListener('click', () => openDoc(btn.dataset.slug, true));
             });
-            // Open the first doc by default.
+            // Open the first doc by default (without leaving the list on mobile).
             openDoc(docs[0].slug);
         } catch (e) {
             listEl.innerHTML =
@@ -42,10 +42,20 @@
         }
     }
 
-    async function openDoc(slug) {
+    // On phones the list and the article are shown one at a time
+    // (mobile.css hides the inactive pane via .wiki-doc-open).
+    function showList() {
+        document.getElementById('wiki')?.classList.remove('wiki-doc-open');
+    }
+
+    async function openDoc(slug, fromUser) {
         const contentEl = document.getElementById('wikiContent');
         if (!contentEl) return;
         currentSlug = slug;
+
+        if (fromUser) {
+            document.getElementById('wiki')?.classList.add('wiki-doc-open');
+        }
 
         document.querySelectorAll('#wikiList .wiki-doc-link').forEach(b => {
             b.classList.toggle('active', b.dataset.slug === slug);
@@ -83,5 +93,5 @@
         });
     });
 
-    window.zmmWiki = { reload: () => { loaded = true; loadList(); }, openDoc };
+    window.zmmWiki = { reload: () => { loaded = true; loadList(); }, openDoc, showList };
 })();

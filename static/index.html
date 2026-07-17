@@ -1446,12 +1446,16 @@
 
         <div class="tab-pane fade" id="wiki">
             <div class="row g-3">
-                <div class="col-12 col-md-3">
+                <div class="col-12 col-md-3" id="wikiListPane">
                     <div class="list-group" id="wikiList" style="max-height:75vh;overflow-y:auto;">
                         <div class="text-muted small p-3">Loading…</div>
                     </div>
                 </div>
-                <div class="col-12 col-md-9">
+                <div class="col-12 col-md-9" id="wikiContentPane">
+                    <button type="button" class="btn btn-sm btn-outline-secondary d-md-none mb-2"
+                            onclick="zmmWiki.showList()">
+                        <i class="fas fa-arrow-left me-1"></i> All documents
+                    </button>
                     <div id="wikiContent" class="wiki-article border rounded p-3"
                          style="max-height:75vh;overflow-y:auto;"></div>
                 </div>
