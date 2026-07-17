@@ -22,6 +22,7 @@ DuckDB was chosen over SQLite because:
 import asyncio
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -68,25 +69,36 @@ except ImportError as _imp_err:
 
 _appender = None  # zmm_telemetry.Appender singleton
 
+_db_lock = threading.Lock()
+
+
 def _get_db():
     """Get or create the DuckDB connection (lazy singleton)."""
     global _db
     if _db is None:
-        import duckdb
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        _db = duckdb.connect(DB_PATH)
-        _init_tables(_db)
-        # Initialise Rust appender against the now-existing tables
-        global _appender
-        if _USE_RUST and _appender is None:
-            try:
-                _appender = _zt.Appender(DB_PATH)
-                logger.info(f"Telemetry: zmm_telemetry appender active ({DB_PATH})")
-            except Exception as e:
-                logger.warning(f"zmm_telemetry init failed, falling back to INSERT: {e}")
-                _appender = None
-        logger.info(f"Telemetry database opened: {DB_PATH}")
+        with _db_lock:
+            if _db is not None:
+                return _db
+            import duckdb
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            db = duckdb.connect(DB_PATH)
+            _init_tables(db)
+            _db = db
+            _finish_db_init()
     return _db
+
+
+def _finish_db_init():
+    # Initialise Rust appender against the now-existing tables
+    global _appender
+    if _USE_RUST and _appender is None:
+        try:
+            _appender = _zt.Appender(DB_PATH)
+            logger.info(f"Telemetry: zmm_telemetry appender active ({DB_PATH})")
+        except Exception as e:
+            logger.warning(f"zmm_telemetry init failed, falling back to INSERT: {e}")
+            _appender = None
+    logger.info(f"Telemetry database opened: {DB_PATH}")
 
 
 def _init_tables(db):
@@ -183,19 +195,34 @@ def _init_tables(db):
 # ── Octopus database (separate file) ──
 
 _octopus_db = None
+_octopus_db_lock = threading.Lock()
 
 
 def _get_octopus_db():
     """Get or create the Octopus DuckDB connection (lazy singleton)."""
     global _octopus_db
     if _octopus_db is None:
-        import duckdb
-        os.makedirs(os.path.dirname(OCTOPUS_DB_PATH), exist_ok=True)
-        _octopus_db = duckdb.connect(OCTOPUS_DB_PATH)
-        _init_octopus_tables(_octopus_db)
-        _migrate_octopus_from_telemetry(_octopus_db)
-        logger.info(f"Octopus database opened: {OCTOPUS_DB_PATH}")
+        with _octopus_db_lock:
+            if _octopus_db is not None:
+                return _octopus_db
+            import duckdb
+            os.makedirs(os.path.dirname(OCTOPUS_DB_PATH), exist_ok=True)
+            db = duckdb.connect(OCTOPUS_DB_PATH)
+            _init_octopus_tables(db)
+            _migrate_octopus_from_telemetry(db)
+            _octopus_db = db
+            logger.info(f"Octopus database opened: {OCTOPUS_DB_PATH}")
     return _octopus_db
+
+
+def _octopus_cursor():
+    """
+    Per-call cursor. The Octopus helpers run in asyncio.to_thread workers,
+    so several can execute CONCURRENTLY — DuckDBPyConnection must not be
+    shared across threads like that (crashes the process); a cursor() is a
+    cheap per-thread clone and is the documented-safe pattern.
+    """
+    return _get_octopus_db().cursor()
 
 
 def _init_octopus_tables(db):
@@ -323,6 +350,35 @@ def write_device_state(ieee: str, attribute: str, value: Any):
         INSERT INTO device_states (ieee, attribute, value, numeric_val)
         VALUES (?, ?, ?, ?)
     """, [(ieee, attribute, str_val, num_val)])
+
+
+def write_device_states_batch(rows: List[tuple]) -> int:
+    """
+    Bulk device-state rows [(ieee, attribute, value), ...] in ONE commit.
+
+    For worker-thread callers (the collector's keep-alive snapshot): uses a
+    per-call cursor — never the shared connection, which is not safe across
+    threads — and always the Python path, since the Rust appender must only
+    be driven from the event-loop thread. One executemany replaces hundreds
+    of per-row commits, which is what stalled the loop for seconds.
+    """
+    if not rows:
+        return 0
+    _get_db()  # ensure init
+    cur = _get_db().cursor()
+    data = []
+    for ieee, attribute, value in rows:
+        str_val = str(value) if value is not None else None
+        try:
+            num_val = float(value)
+        except (TypeError, ValueError):
+            num_val = None
+        data.append((ieee, attribute, str_val, num_val))
+    cur.executemany("""
+        INSERT INTO device_states (ieee, attribute, value, numeric_val)
+        VALUES (?, ?, ?, ?)
+    """, data)
+    return len(data)
 
 
 def write_spectrum_scan(results: Dict[int, int]):
@@ -710,7 +766,7 @@ def get_db_stats() -> Dict[str, Any]:
 
     # Octopus lives in its own file — count via its own connection.
     try:
-        odb = _get_octopus_db()
+        odb = _octopus_cursor()
         for table in ["octopus_consumption", "octopus_rates"]:
             stats[table] = odb.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats["octopus_file_size_mb"] = round(
@@ -796,7 +852,7 @@ def write_octopus_consumption(fuel: str, rows: List[Dict[str, Any]]) -> int:
     """Upsert half-hourly consumption intervals (idempotent on re-poll)."""
     if not rows:
         return 0
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     db.executemany("""
         INSERT OR REPLACE INTO octopus_consumption
             (fuel, interval_start, interval_end, consumption, consumption_kwh)
@@ -814,7 +870,7 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
     """Upsert tariff rates. Agile rates can be republished, hence REPLACE."""
     if not rows:
         return 0
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     db.executemany("""
         INSERT OR REPLACE INTO octopus_rates
             (fuel, rate_type, tariff_code, valid_from, valid_to, value_inc_vat_p)
@@ -829,7 +885,7 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
 
 def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
     """Latest stored interval_end (UTC-naive) — start point for incremental polls."""
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     row = db.execute(
         "SELECT max(interval_end) FROM octopus_consumption WHERE fuel = ?", [fuel]
     ).fetchone()
@@ -853,7 +909,7 @@ def query_octopus_consumption_buckets(fuel: str, days: int = 30,
     """
     if group_by not in _OCTOPUS_GROUPS:
         group_by = "day"
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     days = int(days)
     local_day = _LONDON_DAY.format(col="c.interval_start")
 
@@ -919,7 +975,7 @@ def query_octopus_rates_window(fuel: str, start_utc: datetime,
                                end_utc: datetime,
                                rate_type: str = "unit") -> List[Dict]:
     """Rates overlapping [start_utc, end_utc) — feeds the Agile rate chart."""
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     rows = db.execute("""
         SELECT valid_from, valid_to, value_inc_vat_p, tariff_code
         FROM octopus_rates
@@ -935,7 +991,7 @@ def query_octopus_rates_window(fuel: str, start_utc: datetime,
 def query_octopus_current_rate(fuel: str, rate_type: str,
                                at_utc: Optional[datetime] = None) -> Optional[float]:
     """Rate (p) in force at a UTC instant, or None. Survives app restarts."""
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     at_utc = at_utc or datetime.now(timezone.utc).replace(tzinfo=None)
     row = db.execute("""
         SELECT value_inc_vat_p FROM octopus_rates
@@ -953,7 +1009,7 @@ def query_octopus_kwh_for_day(fuel: str, local_date) -> Optional[float]:
     Total kWh for one Europe/London calendar day (datetime.date).
     None when no intervals are stored for that day (data lag, no meter).
     """
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     local_day = _LONDON_DAY.format(col="c.interval_start")
     row = db.execute(f"""
         SELECT sum(c.consumption_kwh)
@@ -970,8 +1026,9 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
     (device rejoin, factory reset) don't produce negative usage.
     device_states.ts is session-local like every other table here, so days
     bucket on ts directly, consistent with the existing history queries.
+    Runs in worker threads → per-call cursor, never the shared connection.
     """
-    db = _get_db()
+    db = _get_db().cursor()
     days = int(days)
     rows = db.execute(f"""
         WITH deltas AS (
@@ -1014,7 +1071,7 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
 def prune_octopus(retention_days: int = OCTOPUS_RETENTION_DAYS):
     """Trim the Octopus DB to the configured local-history window."""
     retention_days = max(7, int(retention_days))
-    db = _get_octopus_db()
+    db = _octopus_cursor()
     cutoff = f"{retention_days} days"
     db.execute(
         f"DELETE FROM octopus_consumption WHERE interval_start < now() - INTERVAL '{cutoff}'"

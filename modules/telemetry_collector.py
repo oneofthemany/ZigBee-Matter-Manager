@@ -123,7 +123,10 @@ class TelemetryCollector:
 
         while self._running:
             try:
-                self._snapshot_states()
+                # Worker thread: the snapshot writes hundreds of rows, and a
+                # blocking DB write on the event loop stalls the whole app
+                # (seen as 5s+ loop-monitor stalls / watchdog restarts).
+                await asyncio.to_thread(self._snapshot_states)
             except Exception as e:
                 logger.debug(f"State snapshot error: {e}")
 
@@ -133,14 +136,19 @@ class TelemetryCollector:
                 break
 
     def _snapshot_states(self):
-        """Write keep-alive rows for attributes with no recent write."""
-        from modules.telemetry_db import write_device_state
+        """Write keep-alive rows for attributes with no recent write.
+
+        Runs in a worker thread (see _snapshot_loop) and batches every row
+        into a single commit — per-row commits took seconds for a full house
+        of devices.
+        """
+        from modules.telemetry_db import write_device_states_batch
 
         if not hasattr(self, '_dedup_state'):
             self._dedup_state: Dict[tuple, tuple] = {}
 
         now = time.time()
-        written = 0
+        batch = []
 
         for ieee, dev in (self._get_devices() or {}).items():
             try:
@@ -162,14 +170,14 @@ class TelemetryCollector:
                     if prev is not None and (now - prev[1]) < SNAPSHOT_INTERVAL:
                         continue  # written recently — no keep-alive needed
 
-                    write_device_state(ieee, attr, value)
+                    batch.append((ieee, attr, value))
                     self._dedup_state[(ieee, attr)] = (value, now)
-                    written += 1
             except Exception as e:
                 logger.debug(f"[{ieee}] state snapshot error: {e}")
 
-        if written:
-            logger.debug(f"State snapshot: {written} keep-alive rows written")
+        if batch:
+            write_device_states_batch(batch)
+            logger.debug(f"State snapshot: {len(batch)} keep-alive rows written")
 
     async def _link_sample_loop(self):
         """
