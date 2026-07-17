@@ -97,6 +97,29 @@ body > .container-fluid {
     --bs-btn-focus-shadow-rgb: 242, 169, 59;
 }
 
+/* The header is navy in both themes (--bg-nav), so its quiet buttons
+   must stay light — the group above would give them --text-primary,
+   which is near-black in the light theme */
+.hive-header .btn-outline-light,
+.hive-header .btn-outline-info,
+.hive-header .btn-outline-secondary {
+    --bs-btn-color: #d7e0ea;
+    --bs-btn-border-color: rgba(215, 224, 234, 0.35);
+    --bs-btn-hover-bg: transparent;
+    --bs-btn-hover-color: var(--honey);
+    --bs-btn-hover-border-color: var(--honey);
+}
+
+/* Explicit hover — dark-mode.css sets color/border-color directly on
+   .btn-outline-info, which outlasts Bootstrap's :hover var mechanism */
+.hive-header .btn-outline-light:hover,
+.hive-header .btn-outline-info:hover,
+.hive-header .btn-outline-secondary:hover {
+    color: var(--honey);
+    border-color: var(--honey);
+    background-color: transparent;
+}
+
 /* Quiet with a success-tinted voice (used for "online/confirm" affordances) */
 .btn-outline-success {
     --bs-btn-bg: transparent;
