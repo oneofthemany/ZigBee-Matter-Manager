@@ -444,6 +444,15 @@ async def lifespan(app: FastAPI):
     log_listener.start()
     logger.info("Starting Zigbee Gateway (Threaded Logging Enabled)...")
 
+    # Event-loop responsiveness monitor: dumps the blocking stack on a stall
+    # and self-restarts on a hard wedge, so the launcher (seconds) — not the
+    # manager watchdog (minutes) — handles a blocked loop. Started first so
+    # even a stall during bring-up is caught.
+    from modules.loop_monitor import LoopMonitor
+    loop_monitor = LoopMonitor()
+    loop_monitor.start()
+    app.state.loop_monitor = loop_monitor
+
     # Application alert center: capture ERROR-level logs as user-visible
     # alerts and push them over the WebSocket hub
     try:
@@ -881,6 +890,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Zigbee Matter Manager...")
+
+    # First stop the loop monitor — a shutting-down loop must not be
+    # mistaken for a stall (its self-restart would fight the shutdown).
+    loop_monitor.stop()
 
     # 0. stop the background bring-up if it's still in flight
     bringup_task = getattr(app.state, "bringup_task", None)

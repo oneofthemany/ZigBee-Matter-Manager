@@ -376,6 +376,13 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         """
         bringup = getattr(app.state, "bringup_status", "ready")
         payload = {"status": "ok", "version": _APP_VERSION, "bringup": bringup}
+        # Loop-stall history from the responsiveness monitor. If the loop is
+        # stalled right now this handler can't run at all — the monitor's
+        # stack-dump/self-restart handles that case; these stats make past
+        # incidents visible after recovery.
+        monitor = getattr(app.state, "loop_monitor", None)
+        if monitor is not None:
+            payload["loop"] = monitor.get_stats()
         if bringup == "failed":
             from fastapi.responses import JSONResponse
             payload["status"] = "error"
