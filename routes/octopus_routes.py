@@ -49,6 +49,11 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         except Exception:
             return None
 
+    # DuckDB queries run in worker threads: a slow scan on the event loop
+    # would hang every request incl. /api/system/health (watchdog restart).
+    async def _q(fn, *args, **kw):
+        return await asyncio.to_thread(fn, *args, **kw)
+
     @app.get("/api/octopus/status")
     async def octopus_status():
         svc = _svc()
@@ -78,7 +83,8 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         status = svc.get_status() if svc else {}
         fuels = {}
         for fuel in ("electricity", "gas"):
-            days = telemetry_db.query_octopus_consumption_buckets(fuel, days=3, group_by="day")
+            days = await _q(telemetry_db.query_octopus_consumption_buckets,
+                            fuel, days=3, group_by="day")
             latest = days[-1] if days else None
             previous = days[-2] if len(days) > 1 else None
 
@@ -93,10 +99,10 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
 
             current_rate = svc.current_unit_rate(fuel) if svc else None
             if current_rate is None:
-                current_rate = telemetry_db.query_octopus_current_rate(fuel, "unit")
+                current_rate = await _q(telemetry_db.query_octopus_current_rate, fuel, "unit")
             standing = svc.current_standing_charge(fuel) if svc else None
             if standing is None:
-                standing = telemetry_db.query_octopus_current_rate(fuel, "standing")
+                standing = await _q(telemetry_db.query_octopus_current_rate, fuel, "standing")
             fuels[fuel] = {
                 "latest_day": _day(latest),
                 "previous_day": _day(previous),
@@ -113,15 +119,41 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         }
 
     @app.get("/api/octopus/consumption")
-    async def octopus_consumption(fuel: str = "electricity", range: str = "week"):
+    async def octopus_consumption(fuel: str = "electricity", range: str = "week",
+                                  date_from: Optional[str] = None,
+                                  date_to: Optional[str] = None):
+        """
+        range=day|week|month for rolling windows, or an explicit calendar
+        window via date_from/date_to (YYYY-MM-DD, inclusive, local days) —
+        a single day comes back half-hourly, anything longer daily.
+        """
         if fuel not in ("electricity", "gas"):
             return {"success": False, "error": f"Unknown fuel '{fuel}'"}
-        days, group_by = _RANGES.get(range, _RANGES["week"])
-        rows = telemetry_db.query_octopus_consumption_buckets(fuel, days=days, group_by=group_by)
+        if date_from and date_to:
+            try:
+                d0 = datetime.strptime(date_from, "%Y-%m-%d")
+                d1 = datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                return {"success": False, "error": "Dates must be YYYY-MM-DD"}
+            if d1 < d0:
+                d0, d1 = d1, d0
+                date_from, date_to = date_to, date_from
+            span_days = (d1 - d0).days + 1
+            group_by = "halfhour" if span_days == 1 else ("day" if span_days <= 92 else "week")
+            rows = await _q(telemetry_db.query_octopus_consumption_buckets,
+                            fuel, group_by=group_by,
+                            day_from=date_from, day_to=date_to)
+            range = "custom"
+        else:
+            days, group_by = _RANGES.get(range, _RANGES["week"])
+            rows = await _q(telemetry_db.query_octopus_consumption_buckets,
+                            fuel, days=days, group_by=group_by)
         return {
             "success": True,
             "fuel": fuel,
             "range": range,
+            "date_from": date_from,
+            "date_to": date_to,
             "group_by": group_by,
             "series": [{
                 "ts": _fmt_ts(r["ts"], group_by),
@@ -145,8 +177,8 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
             # Cache empty (e.g. just restarted) — serve from DuckDB
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             start = now - timedelta(hours=now.hour + 1)
-            stored = telemetry_db.query_octopus_rates_window(
-                fuel, start, now + timedelta(days=2))
+            stored = await _q(telemetry_db.query_octopus_rates_window,
+                              fuel, start, now + timedelta(days=2))
             series = [{
                 "from": r["valid_from"].isoformat() + "Z",
                 "to": r["valid_to"].isoformat() + "Z" if r["valid_to"] else None,
@@ -154,7 +186,7 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
             } for r in stored]
         standing = svc.current_standing_charge(fuel) if svc else None
         if standing is None:
-            standing = telemetry_db.query_octopus_current_rate(fuel, "standing")
+            standing = await _q(telemetry_db.query_octopus_current_rate, fuel, "standing")
         now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
         return {
             "success": True,
@@ -172,7 +204,7 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         case grid_kwh/unmetered are null.
         """
         days, _ = _RANGES.get(range, _RANGES["week"])
-        plug_rows = telemetry_db.query_plug_energy_by_day(days=days)
+        plug_rows = await _q(telemetry_db.query_plug_energy_by_day, days=days)
 
         names = {}
         if get_zigbee_service:
@@ -193,8 +225,8 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
              for ieee, kwh in per_device.items() if kwh > 0),
             key=lambda d: d["kwh"], reverse=True)
 
-        grid = telemetry_db.query_octopus_consumption_buckets(
-            "electricity", days=days, group_by="day")
+        grid = await _q(telemetry_db.query_octopus_consumption_buckets,
+                        "electricity", days=days, group_by="day")
         grid_kwh = sum(r["kwh"] for r in grid if r["kwh"] is not None) if grid else None
         plugs_kwh = round(sum(d["kwh"] for d in devices_out), 3)
         return {
@@ -205,6 +237,14 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
             "grid_kwh": round(grid_kwh, 3) if grid_kwh is not None else None,
             "unmetered_kwh": round(max(0.0, grid_kwh - plugs_kwh), 3) if grid_kwh is not None else None,
         }
+
+    @app.get("/api/octopus/telemetry")
+    async def octopus_telemetry():
+        """Home Mini near-real-time demand samples (in-memory, ~5-min grain)."""
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Octopus service unavailable"}
+        return {"success": True, **svc.get_live_telemetry()}
 
     @app.post("/api/octopus/backfill")
     async def octopus_backfill(request: Request):

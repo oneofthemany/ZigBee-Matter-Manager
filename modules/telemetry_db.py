@@ -30,8 +30,12 @@ logger = logging.getLogger("modules.telemetry_db")
 
 DB_PATH = "./data/telemetry.duckdb"
 DEFAULT_RETENTION_DAYS = 90
-# Octopus data is tiny (≤ ~50 rows/day/fuel) and useful for year-on-year
-# comparisons, so it outlives the general telemetry retention.
+# Octopus data lives in its OWN database file: it write-collides with the
+# high-frequency telemetry writers (Rust appender) otherwise, and a corrupted
+# telemetry.duckdb must not take a year of energy history with it. Tiny
+# (≤ ~50 rows/day/fuel) and useful year-on-year, so default retention is long
+# and user-configurable (octopus.retention_days → prune_octopus()).
+OCTOPUS_DB_PATH = "./data/octopus.duckdb"
 OCTOPUS_RETENTION_DAYS = 400
 
 # Lazy import — duckdb is only needed when this module is used
@@ -173,30 +177,74 @@ def _init_tables(db):
             )
         """)
 
-    db.execute("""
-            CREATE TABLE IF NOT EXISTS octopus_consumption (
-                fuel            VARCHAR NOT NULL,
-                interval_start  TIMESTAMP NOT NULL,
-                interval_end    TIMESTAMP NOT NULL,
-                consumption     DOUBLE,
-                consumption_kwh DOUBLE,
-                PRIMARY KEY (fuel, interval_start)
-            )
-        """)
-
-    db.execute("""
-            CREATE TABLE IF NOT EXISTS octopus_rates (
-                fuel            VARCHAR NOT NULL,
-                rate_type       VARCHAR NOT NULL,
-                tariff_code     VARCHAR,
-                valid_from      TIMESTAMP NOT NULL,
-                valid_to        TIMESTAMP,
-                value_inc_vat_p DOUBLE,
-                PRIMARY KEY (fuel, rate_type, valid_from)
-            )
-        """)
-
     logger.debug("Telemetry tables initialised")
+
+
+# ── Octopus database (separate file) ──
+
+_octopus_db = None
+
+
+def _get_octopus_db():
+    """Get or create the Octopus DuckDB connection (lazy singleton)."""
+    global _octopus_db
+    if _octopus_db is None:
+        import duckdb
+        os.makedirs(os.path.dirname(OCTOPUS_DB_PATH), exist_ok=True)
+        _octopus_db = duckdb.connect(OCTOPUS_DB_PATH)
+        _init_octopus_tables(_octopus_db)
+        _migrate_octopus_from_telemetry(_octopus_db)
+        logger.info(f"Octopus database opened: {OCTOPUS_DB_PATH}")
+    return _octopus_db
+
+
+def _init_octopus_tables(db):
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS octopus_consumption (
+            fuel            VARCHAR NOT NULL,
+            interval_start  TIMESTAMP NOT NULL,
+            interval_end    TIMESTAMP NOT NULL,
+            consumption     DOUBLE,
+            consumption_kwh DOUBLE,
+            PRIMARY KEY (fuel, interval_start)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS octopus_rates (
+            fuel            VARCHAR NOT NULL,
+            rate_type       VARCHAR NOT NULL,
+            tariff_code     VARCHAR,
+            valid_from      TIMESTAMP NOT NULL,
+            valid_to        TIMESTAMP,
+            value_inc_vat_p DOUBLE,
+            PRIMARY KEY (fuel, rate_type, valid_from)
+        )
+    """)
+
+
+def _migrate_octopus_from_telemetry(odb):
+    """
+    One-time move: the octopus tables briefly lived inside telemetry.duckdb.
+    Copy any rows across and drop the old tables so the main DB stays clean.
+    Best-effort — the data is re-fetchable from the API via backfill.
+    """
+    try:
+        tdb = _get_db()
+        tables = {r[0] for r in tdb.execute(
+            "SELECT table_name FROM information_schema.tables"
+        ).fetchall()}
+        for table, ncols in (("octopus_consumption", 5), ("octopus_rates", 6)):
+            if table not in tables:
+                continue
+            rows = tdb.execute(f"SELECT * FROM {table}").fetchall()
+            if rows:
+                ph = ", ".join(["?"] * ncols)
+                odb.executemany(
+                    f"INSERT OR REPLACE INTO {table} VALUES ({ph})", rows)
+            tdb.execute(f"DROP TABLE {table}")
+            logger.info(f"Migrated {len(rows)} {table} rows into {OCTOPUS_DB_PATH}")
+    except Exception as e:
+        logger.warning(f"Octopus table migration skipped: {e}")
 
 
 # ============================================================================
@@ -656,10 +704,19 @@ def get_db_stats() -> Dict[str, Any]:
     """Get database size and row counts per table."""
     db = _get_db()
     stats = {}
-    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans",
-                  "octopus_consumption", "octopus_rates"]:
+    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
         count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = count
+
+    # Octopus lives in its own file — count via its own connection.
+    try:
+        odb = _get_octopus_db()
+        for table in ["octopus_consumption", "octopus_rates"]:
+            stats[table] = odb.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        stats["octopus_file_size_mb"] = round(
+            os.path.getsize(OCTOPUS_DB_PATH) / (1024 * 1024), 2)
+    except Exception:
+        pass
 
     # File size
     try:
@@ -730,11 +787,16 @@ _LONDON_DAY = "date_trunc('day', timezone('Europe/London', {col}::TIMESTAMP AT T
 _OCTOPUS_GROUPS = {"halfhour", "day", "week", "month"}
 
 
+def _as_day(s: str) -> datetime:
+    """'YYYY-MM-DD' → midnight datetime, comparable to the _LONDON_DAY bucket."""
+    return datetime.strptime(str(s), "%Y-%m-%d")
+
+
 def write_octopus_consumption(fuel: str, rows: List[Dict[str, Any]]) -> int:
     """Upsert half-hourly consumption intervals (idempotent on re-poll)."""
     if not rows:
         return 0
-    db = _get_db()
+    db = _get_octopus_db()
     db.executemany("""
         INSERT OR REPLACE INTO octopus_consumption
             (fuel, interval_start, interval_end, consumption, consumption_kwh)
@@ -752,7 +814,7 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
     """Upsert tariff rates. Agile rates can be republished, hence REPLACE."""
     if not rows:
         return 0
-    db = _get_db()
+    db = _get_octopus_db()
     db.executemany("""
         INSERT OR REPLACE INTO octopus_rates
             (fuel, rate_type, tariff_code, valid_from, valid_to, value_inc_vat_p)
@@ -767,7 +829,7 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
 
 def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
     """Latest stored interval_end (UTC-naive) — start point for incremental polls."""
-    db = _get_db()
+    db = _get_octopus_db()
     row = db.execute(
         "SELECT max(interval_end) FROM octopus_consumption WHERE fuel = ?", [fuel]
     ).fetchone()
@@ -775,7 +837,9 @@ def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
 
 
 def query_octopus_consumption_buckets(fuel: str, days: int = 30,
-                                      group_by: str = "day") -> List[Dict]:
+                                      group_by: str = "day",
+                                      day_from: Optional[str] = None,
+                                      day_to: Optional[str] = None) -> List[Dict]:
     """
     Bucketed consumption + cost for chart rendering.
 
@@ -783,12 +847,22 @@ def query_octopus_consumption_buckets(fuel: str, days: int = 30,
     'day'/'week'/'month' bucket on Europe/London day boundaries and add
     one standing charge per local day. cost_p is pence including VAT and
     is NULL-safe (0 contribution) when no rate covers an interval.
+
+    day_from/day_to ('YYYY-MM-DD', inclusive, Europe/London days) select an
+    explicit calendar window instead of the rolling `days` one.
     """
     if group_by not in _OCTOPUS_GROUPS:
         group_by = "day"
-    db = _get_db()
+    db = _get_octopus_db()
     days = int(days)
     local_day = _LONDON_DAY.format(col="c.interval_start")
+
+    if day_from and day_to:
+        window_sql = f"{local_day} BETWEEN ? AND ?"
+        window_args = [_as_day(day_from), _as_day(day_to)]
+    else:
+        window_sql = f"c.interval_start >= now() - INTERVAL '{days} days'"
+        window_args = []
 
     if group_by == "halfhour":
         rows = db.execute(f"""
@@ -800,9 +874,9 @@ def query_octopus_consumption_buckets(fuel: str, days: int = 30,
              AND r.valid_from <= c.interval_start
              AND (r.valid_to IS NULL OR r.valid_to > c.interval_start)
             WHERE c.fuel = ?
-              AND c.interval_start >= now() - INTERVAL '{days} days'
+              AND {window_sql}
             ORDER BY c.interval_start ASC
-        """, [fuel]).fetchall()
+        """, [fuel] + window_args).fetchall()
         return [{"ts": r[0], "kwh": r[1], "cost_p": r[2]} for r in rows]
 
     rows = db.execute(f"""
@@ -817,7 +891,7 @@ def query_octopus_consumption_buckets(fuel: str, days: int = 30,
              AND r.valid_from <= c.interval_start
              AND (r.valid_to IS NULL OR r.valid_to > c.interval_start)
             WHERE c.fuel = ?
-              AND c.interval_start >= now() - INTERVAL '{days} days'
+              AND {window_sql}
         ),
         by_day AS (
             SELECT local_day,
@@ -837,7 +911,7 @@ def query_octopus_consumption_buckets(fuel: str, days: int = 30,
          AND (s.valid_to IS NULL OR s.valid_to > d.first_start)
         GROUP BY bucket
         ORDER BY bucket ASC
-    """, [fuel, fuel]).fetchall()
+    """, [fuel] + window_args + [fuel]).fetchall()
     return [{"ts": r[0], "kwh": r[1], "cost_p": r[2]} for r in rows]
 
 
@@ -845,7 +919,7 @@ def query_octopus_rates_window(fuel: str, start_utc: datetime,
                                end_utc: datetime,
                                rate_type: str = "unit") -> List[Dict]:
     """Rates overlapping [start_utc, end_utc) — feeds the Agile rate chart."""
-    db = _get_db()
+    db = _get_octopus_db()
     rows = db.execute("""
         SELECT valid_from, valid_to, value_inc_vat_p, tariff_code
         FROM octopus_rates
@@ -861,7 +935,7 @@ def query_octopus_rates_window(fuel: str, start_utc: datetime,
 def query_octopus_current_rate(fuel: str, rate_type: str,
                                at_utc: Optional[datetime] = None) -> Optional[float]:
     """Rate (p) in force at a UTC instant, or None. Survives app restarts."""
-    db = _get_db()
+    db = _get_octopus_db()
     at_utc = at_utc or datetime.now(timezone.utc).replace(tzinfo=None)
     row = db.execute("""
         SELECT value_inc_vat_p FROM octopus_rates
@@ -879,7 +953,7 @@ def query_octopus_kwh_for_day(fuel: str, local_date) -> Optional[float]:
     Total kWh for one Europe/London calendar day (datetime.date).
     None when no intervals are stored for that day (data lag, no meter).
     """
-    db = _get_db()
+    db = _get_octopus_db()
     local_day = _LONDON_DAY.format(col="c.interval_start")
     row = db.execute(f"""
         SELECT sum(c.consumption_kwh)
@@ -934,15 +1008,21 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
         ).fetchone()
         logger.debug(f"Pruned {table}: retention={retention_days}d")
 
-    octopus_cutoff = f"{OCTOPUS_RETENTION_DAYS} days"
-    db.execute(
-        f"DELETE FROM octopus_consumption WHERE interval_start < now() - INTERVAL '{octopus_cutoff}'"
-    )
-    db.execute(
-        f"DELETE FROM octopus_rates WHERE valid_to IS NOT NULL AND valid_to < now() - INTERVAL '{octopus_cutoff}'"
-    )
-
     logger.info(f"Telemetry pruned (retention={retention_days} days)")
+
+
+def prune_octopus(retention_days: int = OCTOPUS_RETENTION_DAYS):
+    """Trim the Octopus DB to the configured local-history window."""
+    retention_days = max(7, int(retention_days))
+    db = _get_octopus_db()
+    cutoff = f"{retention_days} days"
+    db.execute(
+        f"DELETE FROM octopus_consumption WHERE interval_start < now() - INTERVAL '{cutoff}'"
+    )
+    db.execute(
+        f"DELETE FROM octopus_rates WHERE valid_to IS NOT NULL AND valid_to < now() - INTERVAL '{cutoff}'"
+    )
+    logger.info(f"Octopus data pruned (retention={retention_days} days)")
 
 
 def flush_appender():
@@ -954,14 +1034,18 @@ def flush_appender():
             logger.warning(f"Appender flush failed: {e}")
 
 def close():
-    """Close the database connection."""
-    global _db, _appender
+    """Close the database connections."""
+    global _db, _appender, _octopus_db
     if _appender is not None:
         try:
             _appender.flush()
         except Exception as e:
             logger.warning(f"Final appender flush failed: {e}")
         _appender = None
+    if _octopus_db:
+        _octopus_db.close()
+        _octopus_db = None
+        logger.info("Octopus database closed")
     if _db:
         _db.close()
         _db = None

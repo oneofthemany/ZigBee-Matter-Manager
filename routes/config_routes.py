@@ -79,6 +79,9 @@ OCTOPUS_DEFAULTS = {
     "consumption_poll_minutes": 30,
     "rates_poll_minutes": 60,
     "backfill_days": 90,
+    "home_mini": False,
+    "telemetry_poll_minutes": 5,
+    "retention_days": 400,
 }
 
 
@@ -356,6 +359,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     octopus_cfg["rates_poll_minutes"] = int(o["rates_poll_minutes"])
                 if o.get("backfill_days"):
                     octopus_cfg["backfill_days"] = int(o["backfill_days"])
+                if "home_mini" in o:
+                    octopus_cfg["home_mini"] = bool(o["home_mini"])
+                if o.get("telemetry_poll_minutes"):
+                    octopus_cfg["telemetry_poll_minutes"] = int(o["telemetry_poll_minutes"])
+                if o.get("retention_days"):
+                    octopus_cfg["retention_days"] = max(7, int(o["retention_days"]))
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

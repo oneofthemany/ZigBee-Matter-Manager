@@ -585,7 +585,7 @@ function renderApisTab(config) {
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneEnergy" type="button">
-          <i class="fas fa-plug-circle-bolt me-1"></i> <span class="tab-label">Energy</span>
+          <i class="fas fa-plug me-1"></i> <span class="tab-label">Energy</span>
         </button>
       </li>
       <li class="nav-item">
@@ -719,6 +719,28 @@ function renderOctopusSection(config) {
         <input type="number" class="form-control" id="cfg_octopus_backfill"
                value="${o.backfill_days ?? 90}" min="1" max="730">
         <small class="text-muted">History fetched on first run.</small>
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Home Mini live demand</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_octopus_home_mini"
+                 ${o.home_mini ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Near-real-time watts</label>
+        </div>
+        <small class="text-muted">Needs an Octopus Home Mini paired to your meter.</small>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Live sample every (min)</label>
+        <input type="number" class="form-control" id="cfg_octopus_tele_poll"
+               value="${o.telemetry_poll_minutes ?? 5}" min="1" max="30">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Keep local history (days)</label>
+        <input type="number" class="form-control" id="cfg_octopus_retention"
+               value="${o.retention_days ?? 400}" min="7" max="3650">
+        <small class="text-muted">Older data is pruned from data/octopus.duckdb daily.</small>
       </div>
     </div>
 
@@ -2162,6 +2184,9 @@ function collectFormValues() {
             gas_calorific_value: getNum('cfg_octopus_cv') || 39.5,
             consumption_poll_minutes: getNum('cfg_octopus_cons_poll') || 30,
             backfill_days: getNum('cfg_octopus_backfill') || 90,
+            home_mini: document.getElementById('cfg_octopus_home_mini')?.checked ?? false,
+            telemetry_poll_minutes: getNum('cfg_octopus_tele_poll') || 5,
+            retention_days: getNum('cfg_octopus_retention') || 400,
         },
         security: {
             nuki: {

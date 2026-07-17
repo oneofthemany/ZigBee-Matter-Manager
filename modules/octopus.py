@@ -20,6 +20,9 @@ Config (config.yaml):
     consumption_poll_minutes: 30
     rates_poll_minutes: 60
     backfill_days: 90
+    home_mini: true             # near-real-time demand via the GraphQL API
+    telemetry_poll_minutes: 5   # Home Mini sampling cadence (5–10 min typical)
+    retention_days: 400         # local history kept in data/octopus.duckdb
 
 Smart-meter consumption lags by several hours to a day — "today" is usually
 partial. Rates never break heating: heating_tariff() returns None on any
@@ -36,6 +39,43 @@ from modules import telemetry_db
 logger = logging.getLogger("modules.octopus")
 
 API_BASE = "https://api.octopus.energy/v1"
+GRAPHQL_URL = "https://api.octopus.energy/v1/graphql/"
+
+# GraphQL (Kraken) documents — shapes match the proven BottlecapDave
+# HomeAssistant-OctopusEnergy integration. The Kraken token lives ~1h.
+KRAKEN_TOKEN_MUTATION = """mutation {
+  obtainKrakenToken(input: { APIKey: "%s" }) { token refreshToken refreshExpiresIn }
+}"""
+
+MINI_DEVICE_QUERY = """query {
+  account(accountNumber: "%s") {
+    electricityAgreements(active: true) {
+      meterPoint {
+        mpan
+        meters(includeInactive: false) {
+          serialNumber
+          smartImportElectricityMeter { deviceId }
+        }
+      }
+    }
+  }
+}"""
+
+# The last returned point covers the in-progress half hour: its `demand` is
+# the meter's current instantaneous demand (W) and `consumption` the running
+# cumulative total (Wh). Polling this frequently yields a fine-grained demand
+# series even though the grouping is half-hourly.
+TELEMETRY_QUERY = """query {
+  smartMeterTelemetry(
+    deviceId: "%s"
+    grouping: HALF_HOURLY
+    start: "%s"
+    end: "%s"
+  ) { readAt consumption consumptionDelta demand }
+}"""
+
+KRAKEN_TOKEN_TTL = 55 * 60          # re-obtain before the ~1h expiry
+LIVE_BUFFER_MAX = 576               # 48h of 5-min samples
 
 # Europe/London for UK-local day boundaries and the 16:00 Agile publish time.
 # Must never crash the app at import: on hosts without tz data (no OS tzdata
@@ -107,6 +147,9 @@ class OctopusEnergyService:
         self.consumption_poll = max(5, int(config.get("consumption_poll_minutes") or 30)) * 60
         self.rates_poll = max(15, int(config.get("rates_poll_minutes") or 60)) * 60
         self.backfill_days = min(730, max(1, int(config.get("backfill_days") or 90)))
+        self.home_mini = bool(config.get("home_mini", False))
+        self.telemetry_poll = max(1, int(config.get("telemetry_poll_minutes") or 5)) * 60
+        self.retention_days = max(7, int(config.get("retention_days") or 400))
 
         # Discovered at startup from /accounts/ — never cached to YAML so a
         # meter swap is picked up on the next restart.
@@ -122,6 +165,13 @@ class OctopusEnergyService:
         self._task: Optional[asyncio.Task] = None
         self._client = None
         self._last_agile_retry = 0.0
+        # Home Mini live telemetry (in-memory only — the half-hourly REST
+        # data in DuckDB is the durable record, this is the live view)
+        self._kraken_token: Optional[str] = None
+        self._kraken_expires = 0.0
+        self._mini_device_id: Optional[str] = None
+        self._mini_last_discovery = 0.0
+        self._live_buffer: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -217,6 +267,17 @@ class OctopusEnergyService:
         return [r for r in cache.get("unit_rates", [])
                 if r["from"] < end and (r["to"] is None or r["to"] > start)]
 
+    def get_live_telemetry(self) -> Dict[str, Any]:
+        """Home Mini demand samples (W) + running consumption, oldest first."""
+        return {
+            "enabled": self.enabled and self.home_mini,
+            "device_id": self._mini_device_id,
+            "poll_minutes": self.telemetry_poll // 60,
+            "series": list(self._live_buffer),
+            "latest": self._live_buffer[-1] if self._live_buffer else None,
+            "error": self._status["errors"].get("telemetry"),
+        }
+
     def get_status(self) -> Dict[str, Any]:
         gas_meter = self._meters.get("gas") or {}
         return {
@@ -242,6 +303,12 @@ class OctopusEnergyService:
                 for fuel, c in self._rates_cache.items()
             },
             "tomorrow_agile_published": self._tomorrow_rates_present("electricity"),
+            "home_mini": {
+                "enabled": self.home_mini,
+                "device_id": self._mini_device_id,
+                "samples": len(self._live_buffer),
+                "latest": self._live_buffer[-1] if self._live_buffer else None,
+            },
             "last_poll": dict(self._status["last_poll"]),
             "errors": {k: v for k, v in self._status["errors"].items() if v},
             "latest_data": dict(self._status["latest_data"]),
@@ -312,6 +379,15 @@ class OctopusEnergyService:
         return self._client
 
     async def _poll_loop(self):
+        # Let boot finish before the first pull — the initial backfill is the
+        # heaviest cycle and must not compete with bring-up (a wedged event
+        # loop here fails /api/system/health and gets the container restarted
+        # by the manager watchdog).
+        try:
+            await asyncio.sleep(15)
+        except asyncio.CancelledError:
+            return
+
         # Account discovery first — nothing works without meter points.
         while True:
             try:
@@ -327,8 +403,29 @@ class OctopusEnergyService:
 
         last_rates = 0.0
         last_cons = 0.0
+        last_tele = 0.0
+        last_prune = time.time()
         while True:
             now = time.time()
+            if now - last_prune >= 24 * 3600:
+                try:
+                    await asyncio.to_thread(telemetry_db.prune_octopus, self.retention_days)
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    logger.warning(f"Octopus prune failed: {e}")
+                last_prune = now
+            if self.home_mini and now - last_tele >= self.telemetry_poll:
+                try:
+                    await self._fetch_telemetry()
+                    self._status["errors"]["telemetry"] = None
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    logger.error(f"Octopus Home Mini telemetry fetch failed: {e}")
+                    self._status["errors"]["telemetry"] = str(e)
+                last_tele = now
+                self._status["last_poll"]["telemetry"] = now
             if now - last_rates >= self.rates_poll or self._agile_retry_due():
                 try:
                     for fuel in self._meters:
@@ -477,7 +574,8 @@ class OctopusEnergyService:
         if period_from is None:
             # First run (no stored rates): cover the consumption backfill so
             # historical cost joins work; afterwards just refresh recent+future.
-            have_rates = telemetry_db.query_octopus_rates_window(
+            have_rates = await asyncio.to_thread(
+                telemetry_db.query_octopus_rates_window,
                 fuel, _utc_now_naive() - timedelta(days=2), _utc_now_naive())
             period_from = (_utc_now_naive() - timedelta(days=self.backfill_days)
                            if not have_rates else _utc_now_naive() - timedelta(days=2))
@@ -506,8 +604,10 @@ class OctopusEnergyService:
 
         unit_rates = _norm(unit_raw)
         standing = _norm(standing_raw)
-        telemetry_db.write_octopus_rates(fuel, "unit", tariff_code, unit_rates)
-        telemetry_db.write_octopus_rates(fuel, "standing", tariff_code, standing)
+        await self._write_chunked(
+            telemetry_db.write_octopus_rates, fuel, "unit", tariff_code, unit_rates)
+        await self._write_chunked(
+            telemetry_db.write_octopus_rates, fuel, "standing", tariff_code, standing)
 
         now = _utc_now_naive()
         standing_now = next(
@@ -530,7 +630,7 @@ class OctopusEnergyService:
         if not meter:
             return
         if period_from is None:
-            last = telemetry_db.query_octopus_last_interval(fuel)
+            last = await asyncio.to_thread(telemetry_db.query_octopus_last_interval, fuel)
             period_from = last or (_utc_now_naive() - timedelta(days=self.backfill_days))
 
         point_id = meter.get("mpan") or meter.get("mprn")
@@ -564,11 +664,96 @@ class OctopusEnergyService:
             except (KeyError, TypeError, ValueError):
                 continue
         if rows:
-            telemetry_db.write_octopus_consumption(fuel, rows)
+            await self._write_chunked(telemetry_db.write_octopus_consumption, fuel, rows)
             newest = max(r["interval_end"] for r in rows)
             self._status["latest_data"][fuel] = newest.isoformat() + "Z"
             logger.info(f"Octopus consumption updated: {fuel} +{len(rows)} intervals "
                         f"(latest {newest.isoformat()}Z)")
+
+    @staticmethod
+    async def _write_chunked(write_fn, *lead_args, chunk: int = 500):
+        """
+        Run a telemetry_db writer in worker threads, in small chunks.
+
+        DuckDB access must never run on the event loop: a slow or
+        lock-contended write there hangs every HTTP request (including
+        /api/system/health) and the manager watchdog restarts the app.
+        Chunking keeps each connection-lock hold short so concurrent
+        telemetry writes/queries interleave instead of stalling behind a
+        multi-thousand-row backfill batch.
+        """
+        *head, rows = lead_args
+        for i in range(0, len(rows), chunk):
+            await asyncio.to_thread(write_fn, *head, rows[i:i + chunk])
+
+    # ------------------------------------------------------------------
+    # Internal — Home Mini live telemetry (GraphQL / Kraken API)
+    # ------------------------------------------------------------------
+
+    async def _graphql(self, query: str, authed: bool = True) -> dict:
+        headers = {}
+        if authed:
+            await self._ensure_kraken_token()
+            headers["Authorization"] = f"JWT {self._kraken_token}"
+        resp = await self._get_client().post(
+            GRAPHQL_URL, json={"query": query}, headers=headers)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            msgs = "; ".join(e.get("message", "?") for e in body["errors"])
+            raise RuntimeError(f"GraphQL error: {msgs}")
+        return body.get("data") or {}
+
+    async def _ensure_kraken_token(self):
+        if self._kraken_token and time.time() < self._kraken_expires:
+            return
+        data = await self._graphql(KRAKEN_TOKEN_MUTATION % self.api_key, authed=False)
+        token = (data.get("obtainKrakenToken") or {}).get("token")
+        if not token:
+            raise RuntimeError("obtainKrakenToken returned no token")
+        self._kraken_token = token
+        self._kraken_expires = time.time() + KRAKEN_TOKEN_TTL
+
+    async def _ensure_mini_device(self) -> Optional[str]:
+        """Find the Home Mini's smart-import-meter deviceId (hourly retry)."""
+        if self._mini_device_id:
+            return self._mini_device_id
+        if time.time() - self._mini_last_discovery < 3600:
+            return None
+        self._mini_last_discovery = time.time()
+        data = await self._graphql(MINI_DEVICE_QUERY % self.account_number)
+        for agreement in (data.get("account") or {}).get("electricityAgreements") or []:
+            for meter in ((agreement.get("meterPoint") or {}).get("meters")) or []:
+                device = meter.get("smartImportElectricityMeter") or {}
+                if device.get("deviceId"):
+                    self._mini_device_id = device["deviceId"]
+                    logger.info(f"Octopus Home Mini device found: {self._mini_device_id}")
+                    return self._mini_device_id
+        raise RuntimeError("No Home Mini (smart import meter device) on this account")
+
+    async def _fetch_telemetry(self):
+        device_id = await self._ensure_mini_device()
+        if not device_id:
+            return
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(minutes=35)).strftime("%Y-%m-%dT%H:%M:%S%z")
+        end = now.strftime("%Y-%m-%dT%H:%M:%S%z")
+        data = await self._graphql(TELEMETRY_QUERY % (device_id, start, end))
+        points = data.get("smartMeterTelemetry") or []
+        if not points:
+            return
+        last = points[-1]
+        sample = {
+            "ts": _utc_now_naive().isoformat() + "Z",
+            "read_at": last.get("readAt"),
+            "demand_w": float(last["demand"]) if last.get("demand") is not None else None,
+            # Kraken reports Wh — normalise to kWh like the REST data
+            "consumption_kwh": (float(last["consumption"]) / 1000
+                                if last.get("consumption") is not None else None),
+        }
+        self._live_buffer.append(sample)
+        if len(self._live_buffer) > LIVE_BUFFER_MAX:
+            del self._live_buffer[:len(self._live_buffer) - LIVE_BUFFER_MAX]
 
     def _to_kwh(self, fuel: str, value: float, meter: dict) -> float:
         if fuel != "gas":

@@ -41,9 +41,11 @@ let refreshTimer = null;
 let charts = {};            // name → createChart wrapper
 let currentRange = 'week';  // day | week | month
 let currentMetric = 'kwh';  // kwh | cost
+let customDates = null;     // {from, to} 'YYYY-MM-DD' — calendar search mode
 let consumptionCache = {};  // fuel → series (for metric re-render without refetch)
 let ratesCache = null;
 let breakdownCache = null;
+let telemetryCache = null;  // Home Mini live demand samples
 let octopusEnabled = false;
 
 function esc(s) {
@@ -116,16 +118,20 @@ async function loadEnergyDashboard(opts = {}) {
         const status = statusRes.status || {};
         octopusEnabled = !!status.enabled;
 
+        const consQuery = customDates
+            ? `date_from=${customDates.from}&date_to=${customDates.to}`
+            : `range=${currentRange}`;
         const wants = [fetchJson(`/api/octopus/breakdown?range=${currentRange}`)];
         if (octopusEnabled) {
             wants.push(
                 fetchJson('/api/octopus/summary'),
-                fetchJson(`/api/octopus/consumption?fuel=electricity&range=${currentRange}`),
-                fetchJson(`/api/octopus/consumption?fuel=gas&range=${currentRange}`),
+                fetchJson(`/api/octopus/consumption?fuel=electricity&${consQuery}`),
+                fetchJson(`/api/octopus/consumption?fuel=gas&${consQuery}`),
                 fetchJson('/api/octopus/rates?fuel=electricity'),
+                fetchJson('/api/octopus/telemetry'),
             );
         }
-        const [breakdown, summary, elec, gas, rates] = await Promise.all(wants);
+        const [breakdown, summary, elec, gas, rates, telemetry] = await Promise.all(wants);
 
         breakdownCache = breakdown?.success ? breakdown : null;
         consumptionCache = {
@@ -133,6 +139,7 @@ async function loadEnergyDashboard(opts = {}) {
             gas: gas?.success ? gas : null,
         };
         ratesCache = rates?.success ? rates : null;
+        telemetryCache = telemetry?.success && telemetry.enabled ? telemetry : null;
 
         disposeCharts();
         root.innerHTML = renderScaffold(status, summary?.success ? summary : null);
@@ -155,7 +162,7 @@ async function loadEnergyDashboard(opts = {}) {
 function renderScaffold(status, summary) {
     const disabledBanner = octopusEnabled ? '' : `
       <div class="alert alert-info d-flex align-items-center gap-2 mb-3">
-        <i class="fas fa-plug-circle-bolt fa-lg"></i>
+        <i class="fas fa-plug fa-lg"></i>
         <div>
           <strong>Octopus Energy is not connected.</strong>
           Grid consumption, tariff rates and costs appear once the integration is enabled
@@ -173,14 +180,38 @@ function renderScaffold(status, summary) {
 
     const kpis = octopusEnabled ? renderKpiRow(status, summary) : '';
 
+    const latestW = telemetryCache?.latest?.demand_w;
+    const liveCard = (octopusEnabled && telemetryCache) ? `
+      <div class="card mb-3">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+          <span class="fw-semibold"><i class="fas fa-gauge-high me-1"></i> Live demand — Home Mini</span>
+          ${latestW != null ? `<span class="badge bg-success ms-1">${Math.round(latestW)} W now</span>` : ''}
+          <span class="text-muted small ms-auto">sampled every ${telemetryCache.poll_minutes} min</span>
+        </div>
+        <div class="card-body">
+          ${telemetryCache.series?.length
+            ? '<div id="energyLiveChart" style="height: 220px;"></div>'
+            : `<div class="text-muted text-center py-4">Waiting for the first Home Mini sample${telemetryCache.error ? ` — ${esc(telemetryCache.error)}` : ' (up to a few minutes after startup)'}…</div>`}
+        </div>
+      </div>` : '';
+
     const octopusCards = octopusEnabled ? `
+      ${liveCard}
       <div class="card mb-3">
         <div class="card-header d-flex flex-wrap align-items-center gap-2">
           <span class="fw-semibold"><i class="fas fa-chart-column me-1"></i> Consumption</span>
           <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Range">
             ${['day', 'week', 'month'].map(r => `
-              <button type="button" class="btn btn-outline-secondary ${currentRange === r ? 'active' : ''}"
+              <button type="button" class="btn btn-outline-secondary ${!customDates && currentRange === r ? 'active' : ''}"
                       onclick="window.energySetRange('${r}')">${r[0].toUpperCase() + r.slice(1)}</button>`).join('')}
+          </div>
+          <div class="input-group input-group-sm" style="width: auto;" aria-label="Calendar search">
+            <input type="date" class="form-control" id="energyDateFrom" value="${customDates?.from ?? ''}" title="From">
+            <input type="date" class="form-control" id="energyDateTo" value="${customDates?.to ?? ''}" title="To">
+            <button class="btn btn-outline-secondary ${customDates ? 'active' : ''}" title="Show this date range"
+                    onclick="window.energyApplyDates()"><i class="fas fa-calendar-day"></i></button>
+            ${customDates ? `<button class="btn btn-outline-secondary" title="Back to rolling ranges"
+                    onclick="window.energyClearDates()"><i class="fas fa-times"></i></button>` : ''}
           </div>
           <div class="btn-group btn-group-sm" role="group" aria-label="Metric">
             <button type="button" class="btn btn-outline-secondary ${currentMetric === 'kwh' ? 'active' : ''}"
@@ -278,10 +309,53 @@ function renderKpiRow(status, summary) {
 // ============================================================================
 function renderAllCharts() {
     if (octopusEnabled) {
+        renderLiveChart();
         renderConsumptionChart();
         renderRatesChart();
     }
     renderBreakdownChart();
+}
+
+function renderLiveChart() {
+    const el = document.getElementById('energyLiveChart');
+    if (!el || !telemetryCache?.series?.length) return;
+    const colours = fuelColours();
+    const points = telemetryCache.series
+        .filter(s => s.demand_w != null)
+        .map(s => [s.ts, Math.round(s.demand_w)]);
+    if (!points.length) return;
+
+    charts.live?.dispose();
+    charts.live = createChart(el);
+    charts.live.setOption({
+        grid: { left: 56, right: 16, top: 20, bottom: 32 },
+        tooltip: {
+            trigger: 'axis',
+            formatter: params => {
+                const p = params[0];
+                if (!p) return '';
+                return `${new Date(p.data[0]).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    + `<br>${p.marker} ${p.data[1]} W`;
+            },
+        },
+        xAxis: { type: 'time', axisLabel: { hideOverlap: true } },
+        yAxis: {
+            type: 'value',
+            name: 'W',
+            nameTextStyle: { align: 'left' },
+            min: 0,
+        },
+        series: [{
+            name: 'Demand',
+            type: 'line',
+            symbol: 'none',
+            smooth: 0.2,
+            lineStyle: { width: 2, color: colours.electricity },
+            itemStyle: { color: colours.electricity },
+            areaStyle: { opacity: 0.12, color: colours.electricity },
+            data: points,
+        }],
+    });
 }
 
 function fmtBucketLabel(ts, groupBy) {
@@ -491,8 +565,23 @@ function renderBreakdownChart() {
 // CONTROLS (inline onclick handlers)
 // ============================================================================
 window.energySetRange = function(range) {
-    if (!['day', 'week', 'month'].includes(range) || range === currentRange) return;
+    if (!['day', 'week', 'month'].includes(range)) return;
+    if (range === currentRange && !customDates) return;
     currentRange = range;
+    customDates = null;
+    loadEnergyDashboard();
+};
+
+window.energyApplyDates = function() {
+    const from = document.getElementById('energyDateFrom')?.value;
+    const to = document.getElementById('energyDateTo')?.value || from;
+    if (!from) return;
+    customDates = from <= to ? { from, to } : { from: to, to: from };
+    loadEnergyDashboard();
+};
+
+window.energyClearDates = function() {
+    customDates = null;
     loadEnergyDashboard();
 };
 
