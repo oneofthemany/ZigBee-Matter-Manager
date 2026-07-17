@@ -393,10 +393,14 @@ html, body {
         padding: 0.4rem 0.6rem;
     }
 
-    /* Config card header buttons — wrap the Save + Restart buttons */
+    /* Config card header buttons — wrap the Save + Restart buttons.
+       #settingsApis is scoped to its top card only: the panes inside
+       hold nested card-headers (Nuki bridge/Matter toggles) that must
+       keep their inline title + switch layout. */
     #settingsConfig .card-header,
     #settingsSecurity .card-header,
-    #settingsAdvanced .card-header {
+    #settingsAdvanced .card-header,
+    #settingsApis > .card > .card-header {
         flex-direction: column;
         gap: 0.5rem;
         align-items: flex-start !important;
@@ -404,7 +408,8 @@ html, body {
 
     #settingsConfig .card-header > div,
     #settingsSecurity .card-header > div,
-    #settingsAdvanced .card-header > div {
+    #settingsAdvanced .card-header > div,
+    #settingsApis > .card > .card-header > div {
         width: 100%;
         display: flex;
         gap: 0.5rem;
@@ -412,7 +417,8 @@ html, body {
 
     #settingsConfig .card-header .btn,
     #settingsSecurity .card-header .btn,
-    #settingsAdvanced .card-header .btn {
+    #settingsAdvanced .card-header .btn,
+    #settingsApis > .card > .card-header .btn {
         flex: 1;
         font-size: 0.8rem;
     }
