@@ -86,8 +86,11 @@ export function withBusy(btn, fn) {
     const wasDisabled = btn.disabled;
     btn.disabled = true;
     btn.setAttribute('aria-busy', 'true');
+    // Reuse the button's own markup (minus a leading icon) so responsive
+    // label spans keep working — textContent would surface hidden spans too
+    const busyLabel = saved.replace(/^\s*<i\b[^>]*><\/i>/, '').trim();
     const busyHtml = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> '
-        + (btn.textContent.trim() || '…');
+        + (busyLabel || '…');
     btn.innerHTML = busyHtml;
     return Promise.resolve()
         .then(fn)

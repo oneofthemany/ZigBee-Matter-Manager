@@ -7,7 +7,11 @@
    0. GLOBAL — prevent horizontal overflow
    ---------------------------------------------------------- */
 html, body {
+    /* clip forbids horizontal scrolling entirely (hidden still allows
+       focus/anchor scrolling, which could strand content off-screen);
+       hidden stays first as the fallback for older browsers */
     overflow-x: hidden;
+    overflow-x: clip;
 }
 
 /* ----------------------------------------------------------
@@ -91,6 +95,20 @@ html, body {
     .navbar .col-auto.ms-auto .btn {
         font-size: 0.75rem;
         padding: 0.25rem 0.5rem;
+    }
+
+    /* Pairing dropdown — right-aligned to the caret it would extend
+       past the left screen edge (the Pair button sits near the left).
+       With data-bs-display="static" on the toggle (no Popper inline
+       positioning), pin it to the full viewport width instead.
+       top: auto keeps it at its static position, just under the row. */
+    .navbar .btn-group .dropdown-menu {
+        position: fixed;
+        top: auto;
+        left: 0.5rem;
+        right: 0.5rem;
+        max-height: 65vh;
+        overflow-y: auto;
     }
 }
 
