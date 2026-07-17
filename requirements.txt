@@ -12,6 +12,7 @@ python-matter-server[server]
 python-multipart
 duckdb
 httpx
+tzdata
 aiohttp>=3.9
 pychromecast~=14.0
 zeroconf>=0.131,<1.0

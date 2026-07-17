@@ -30,14 +30,27 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 from modules import telemetry_db
 
 logger = logging.getLogger("modules.octopus")
 
 API_BASE = "https://api.octopus.energy/v1"
-LONDON = ZoneInfo("Europe/London")
+
+# Europe/London for UK-local day boundaries and the 16:00 Agile publish time.
+# Must never crash the app at import: on hosts without tz data (no OS tzdata
+# and no `tzdata` pip package) fall back to UTC — UK-local labelling shifts by
+# an hour in summer but everything keeps working.
+try:
+    from zoneinfo import ZoneInfo
+    LONDON = ZoneInfo("Europe/London")
+except Exception as _tz_err:  # noqa: BLE001
+    logging.getLogger("modules.octopus").warning(
+        f"Europe/London tz data unavailable ({_tz_err}) — falling back to UTC. "
+        f"Install the 'tzdata' package for correct UK-local day boundaries."
+    )
+    LONDON = timezone.utc
+
 
 # m³ → kWh: volume correction × calorific value (MJ/m³) / 3.6 MJ per kWh
 GAS_VOLUME_CORRECTION = 1.02264
