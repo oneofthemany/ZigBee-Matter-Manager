@@ -70,8 +70,26 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
     @app.get("/api/presence/users/{user_id}")
     async def get_user(
             user_id: str,
-            _=Depends(require_scope("presence:read")),
+            request: Request,
     ):
+        # Per-user scope check, mirroring report_fix below: a companion phone
+        # needs its OWN home lat/lon/radius to arm a geofence, but "presence:read"
+        # means "read EVERY user's location". Handing that to a phone would let a
+        # stolen device token track the whole household. presence:read:<user_id>
+        # keeps the phone's token to exactly one person — itself.
+        principal: Optional[Principal] = getattr(request.state, "principal", None)
+        if principal is None:
+            raise HTTPException(401, "Authentication required",
+                                headers={"WWW-Authenticate": "Bearer"})
+
+        from modules.auth import scope_matches
+        if not (
+                scope_matches(f"presence:read:{user_id}", principal.scopes)
+                or scope_matches("presence:read", principal.scopes)
+                or scope_matches("admin", principal.scopes)
+        ):
+            raise HTTPException(403, f"Token lacks scope: presence:read:{user_id}")
+
         dev = _mgr().get_user(user_id)
         if not dev:
             raise HTTPException(404, "User not found")

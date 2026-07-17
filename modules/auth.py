@@ -85,7 +85,9 @@ KNOWN_SCOPES: Dict[str, str] = {
     "presence:read":          "Read all presence users' state.",
     "presence:write":         "Update any presence user's location.",
     # Per-user presence scopes are checked dynamically as
-    # presence:write:<user_id>.  e.g. "presence:write:sean".
+    # presence:read:<user_id> / presence:write:<user_id>, e.g. "presence:read:sean".
+    # A companion phone should hold ONLY the per-user pair — the unscoped
+    # presence:read would let a stolen device token track the whole household.
 }
 
 # Built-in groups created on first run if no auth.yaml exists.
