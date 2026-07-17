@@ -713,10 +713,10 @@ export async function frameSetpoint(ieee, delta) {
 // ── init ────────────────────────────────────────────────────────────
 
 export function initFrames() {
+    // The dashboard renders Frames inside a tab and only loads it when shown.
+    // The standalone /frames page has no tab — everything below still wires up.
     const tab = document.querySelector('[data-bs-target="#frames"]');
-    if (!tab) return;
-
-    tab.addEventListener('shown.bs.tab', async () => {
+    tab?.addEventListener('shown.bs.tab', async () => {
         await loadSavedFrames();
         loadFrame();
     });

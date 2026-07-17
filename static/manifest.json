@@ -3,7 +3,7 @@
   "name": "ZigBee & Matter Manager",
   "short_name": "ZBM Manager",
   "description": "ZigBee & Matter Manager with real-time device management, automation, and Home Assistant integration",
-  "start_url": "/",
+  "start_url": "/frames",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
@@ -29,5 +29,13 @@
       "purpose": "any"
     }
   ],
-  "categories": ["utilities", "productivity"]
+  "categories": ["utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Manager",
+      "short_name": "Manager",
+      "description": "Open the full device manager",
+      "url": "/"
+    }
+  ]
 }

@@ -147,6 +147,7 @@ try:
     from modules.matter_definitions import get_definition_store
     from modules.rotary_bindings import get_rotary_binding_manager
     from modules.weather import WeatherService
+    from modules.octopus import OctopusEnergyService
     from modules.media import MediaService
     from modules.media.therapy_tts import create_therapy_tts
     from modules.heating_advisor import HeatingAdvisor
@@ -181,6 +182,7 @@ try:
         register_test_recovery_routes,
         register_websocket_routes,
         register_weather_routes,
+        register_octopus_routes,
         register_heating_routes,
         register_heating_controller_routes,
         register_presence_routes,
@@ -313,6 +315,11 @@ media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
 
+# Octopus Energy — built before the heating advisor so live tariff rates can
+# be injected into it. Config is read at construction (WeatherService-style):
+# settings changes need a service restart.
+octopus_service = OctopusEnergyService(config=CONFIG.get("octopus", {}))
+
 # Neural TTS for the therapy page. Default engine is in-process Kokoro-82M
 # (model downloads on demand from the therapy UI); set media.therapy.engine
 # to "wyoming" to use an external wyoming-piper server instead.
@@ -327,6 +334,7 @@ heating_advisor = HeatingAdvisor(
     config=CONFIG.get("heating", {}),
     weather_service=weather_service,
     device_getter=lambda: (zigbee_service.devices if zigbee_service else {}),
+    tariff_provider=lambda fuel: octopus_service.heating_tariff(fuel),
 )
 
 heating_controller = HeatingController(
@@ -687,6 +695,10 @@ async def lifespan(app: FastAPI):
         weather_service.start()
         logger.info("Weather service initialised")
 
+        # octopus energy (tariffs + smart-meter consumption)
+        octopus_service.start()
+        logger.info("Octopus Energy service initialised")
+
         # media (multi-room audio: Cast / WiiM / radio)
         media_service.start()
         logger.info("Media service initialised")
@@ -888,6 +900,7 @@ async def lifespan(app: FastAPI):
     if telemetry_collector:
         telemetry_collector.stop()
     weather_service.stop()
+    octopus_service.stop()
     media_service.stop()
     heating_advisor.stop()
     heating_controller.stop()
@@ -977,6 +990,20 @@ async def read_index():
     """Serve the main UI."""
     return FileResponse('static/index.html')
 
+@app.get("/frames")
+async def read_frames():
+    """
+    Serve the Frames UI — the mobile-first front end.
+
+    A separate, deliberately lightweight page: it must not pull in the admin
+    dashboard's module graph (websocket.js alone imports 13 modules, and
+    actions.js drags the whole device-modal set). See static/js/frames-page.js.
+
+    This is the PWA's start_url, so a phone-installed app opens here; the header
+    switcher goes to '/' for the manager.
+    """
+    return FileResponse('static/frames.html')
+
 @app.get("/sw.js")
 async def service_worker():
     """Serve service worker from root scope for PWA support."""
@@ -1031,11 +1058,13 @@ register_automation_routes(app,
 )
 register_backup_routes(app, get_zigbee_service)
 register_weather_routes(app, lambda: weather_service)
+register_octopus_routes(app, lambda: octopus_service, get_zigbee_service)
 register_sun_routes(app, lambda: weather_service)
 register_media_routes(app, lambda: media_service)
 register_cast_sync_routes(app, lambda: media_service)
 register_tts_routes(app, lambda: therapy_tts)
-register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher)
+register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher,
+                        get_octopus=lambda: octopus_service)
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
 register_floor_plan_routes(app, lambda: heating_controller)
 register_chamber_routes(app, get_zigbee_service)

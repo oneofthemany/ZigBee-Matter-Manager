@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#16283a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Frames — ZigBee &amp; Matter Manager</title>
+
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/static/images/zigbee-manager-logo.png">
+    <link rel="apple-touch-icon" href="/static/images/zigbee-manager-logo.png">
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+
+    <!-- Token order matters: dark-mode first, then hive-tokens re-points the
+         semantic tokens at the hive palette (see hive-tokens.css). -->
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/hive-tokens.css">
+    <link rel="stylesheet" href="/static/css/hive-components.css">
+    <link rel="stylesheet" href="/static/css/toasts.css">
+    <link rel="stylesheet" href="/static/css/frames.css">
+    <link rel="stylesheet" href="/static/css/frames-page.css">
+</head>
+<body class="frames-page">
+
+<header class="frames-page-header">
+    <div class="frames-page-brand">
+        <img src="/static/images/zigbee-manager-logo.png" alt="" class="frames-page-logo">
+        <div>
+            <div class="frames-page-title">Frames</div>
+            <div class="frames-page-sub">
+                <span id="framesConnection" class="frames-conn is-down" title="Connecting…"></span>
+                <span id="framesSubtitle">Your hive</span>
+            </div>
+        </div>
+    </div>
+    <a href="/" class="btn btn-sm btn-outline-light frames-page-switch" title="Open the manager">
+        <i class="fas fa-sliders"></i>
+        <span class="d-none d-sm-inline ms-1">Manager</span>
+    </a>
+</header>
+
+<main class="frames-page-main">
+    <div class="frames-toolbar">
+        <label class="visually-hidden" for="framesSelect">Frame</label>
+        <select id="framesSelect" class="form-select form-select-sm"></select>
+        <div class="btn-group btn-group-sm ms-auto">
+            <button class="btn btn-outline-primary" id="framesNew" title="New frame" aria-label="New frame">
+                <i class="fas fa-plus"></i>
+            </button>
+            <button class="btn btn-outline-secondary" id="framesEdit" title="Edit frame" aria-label="Edit frame" disabled>
+                <i class="fas fa-pen"></i>
+            </button>
+            <button class="btn btn-outline-danger" id="framesDelete" title="Delete frame" aria-label="Delete frame" disabled>
+                <i class="fas fa-trash"></i>
+            </button>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" id="framesRefresh" aria-label="Refresh frame">
+            <i class="fas fa-arrows-rotate"></i>
+        </button>
+    </div>
+
+    <div id="framesGrid"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/log.js"></script>
+<script src="/static/js/toasts.js"></script>
+<script src="/static/js/auth.js"></script>
+<script type="module" src="/static/js/dialogs.js"></script>
+<script src="/static/js/theme-toggle.js"></script>
+<script src="/static/js/mobile-helpers.js"></script>
+<script type="module" src="/static/js/frames-page.js"></script>
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+            navigator.serviceWorker.register('/sw.js').catch(function () { /* non-fatal */ });
+        });
+    }
+</script>
+</body>
+</html>

@@ -4,12 +4,14 @@
 
 // Bump this on every frontend change — the `activate` handler purges any
 // cache whose name != CACHE_NAME, so a new version wipes stale cached assets.
-var CACHE_NAME = 'zbm-v5';
+var CACHE_NAME = 'zbm-v6';
 
 // App shell files to cache on install
 var APP_SHELL = [
     '/',
+    '/frames',
     '/static/index.html',
+    '/static/frames.html',
     '/static/css/hive-tokens.css',
     '/static/css/hive-components.css',
     '/static/css/mesh.css',
@@ -20,6 +22,8 @@ var APP_SHELL = [
     '/static/css/dark-mode.css',
     '/static/css/toasts.css',
     '/static/css/device-status.css',
+    '/static/css/frames.css',
+    '/static/css/frames-page.css',
     '/static/images/zigbee-manager-logo.png',
     '/static/js/presence.js',
     '/static/js/presence-settings.js'
@@ -103,10 +107,15 @@ self.addEventListener('fetch', function (event) {
         return;
     }
 
-    // Main page: network-first
+    // Main page: network-first.
+    // Offline, fall back to the page that was actually asked for — /frames must
+    // not resolve to the dashboard, or a phone offline lands in the wrong app.
+    var isFrames = url.pathname === '/frames';
     event.respondWith(
         fetch(event.request).catch(function () {
-            return caches.match('/') || caches.match('/static/index.html');
+            return isFrames
+                ? caches.match('/frames').then(function (r) { return r || caches.match('/static/frames.html'); })
+                : caches.match('/').then(function (r) { return r || caches.match('/static/index.html'); });
         })
     );
 });

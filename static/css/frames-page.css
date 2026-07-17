@@ -1,0 +1,140 @@
+/* ============================================================
+   ZigBee Matter Manager — Frames page chrome (/frames)
+   ============================================================
+   Chrome for the standalone mobile surface only. The comb itself
+   is styled by frames.css, which the dashboard tab shares.
+
+   Mobile-first: the base rules target a phone, and the only
+   media query widens things for a desktop browser.
+   ============================================================ */
+
+.frames-page {
+    background: var(--bg-body);
+    color: var(--text-primary);
+    min-height: 100dvh;      /* dvh, not vh — vh sits under mobile browser chrome */
+    margin: 0;
+    /* Never bounce the page; sliders and toggles handle their own gestures. */
+    overscroll-behavior-y: contain;
+}
+
+/* ---------- header ---------- */
+
+.frames-page-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    background: var(--bg-nav);
+    color: #fff;
+    padding: .55rem .75rem;
+    /* Clear the notch / status bar when installed as a PWA. */
+    padding-top: calc(.55rem + env(safe-area-inset-top));
+    padding-left: calc(.75rem + env(safe-area-inset-left));
+    padding-right: calc(.75rem + env(safe-area-inset-right));
+}
+
+.frames-page-brand {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+}
+
+.frames-page-logo {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+}
+
+.frames-page-title {
+    font-weight: 600;
+    line-height: 1.1;
+}
+
+.frames-page-sub {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    font-size: .7rem;
+    opacity: .75;
+}
+
+.frames-page-switch {
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+/* Connection dot. Shape doesn't change, only colour — it's decorative; the
+   authoritative signal is each cell dimming when its device is unreachable. */
+.frames-conn {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    flex: 0 0 auto;
+    background: var(--muted);
+}
+
+.frames-conn.is-up {
+    background: var(--ok);
+}
+
+.frames-conn.is-down {
+    background: var(--bad);
+}
+
+/* ---------- main ---------- */
+
+.frames-page-main {
+    padding: .75rem;
+    padding-left: calc(.75rem + env(safe-area-inset-left));
+    padding-right: calc(.75rem + env(safe-area-inset-right));
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+}
+
+.frames-page .frames-toolbar {
+    position: sticky;
+    /* Sits directly under the header, which is also sticky. */
+    top: calc(44px + env(safe-area-inset-top));
+    z-index: 10;
+    background: var(--bg-body);
+    padding: .5rem 0;
+    margin-bottom: .5rem;
+}
+
+.frames-page #framesSelect {
+    max-width: 190px;
+}
+
+/* Touch targets: 44px is the accessible minimum, and these are the controls
+   you hit one-handed while walking through the house. */
+.frames-page .frames-toolbar .btn,
+.frames-page .cell-controls .btn {
+    min-height: 40px;
+}
+
+.frames-page .cell-setpoint .btn {
+    min-width: 40px;
+}
+
+/* A slightly taller slider track is far easier to hit with a thumb. */
+.frames-page .cell-slider {
+    height: 1.6rem;
+}
+
+/* ---------- wider screens ---------- */
+
+@media (min-width: 768px) {
+    .frames-page-main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 1rem;
+    }
+
+    .frames-page-header {
+        padding-left: max(1rem, env(safe-area-inset-left));
+        padding-right: max(1rem, env(safe-area-inset-right));
+    }
+}
