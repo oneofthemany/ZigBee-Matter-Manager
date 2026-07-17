@@ -695,8 +695,11 @@ class OctopusEnergyService:
         if authed:
             await self._ensure_kraken_token()
             headers["Authorization"] = f"JWT {self._kraken_token}"
+        # auth=None is essential: the shared client carries HTTP Basic auth for
+        # the REST API, and httpx client-level auth would overwrite the JWT
+        # Authorization header — Kraken then rejects the Basic credential.
         resp = await self._get_client().post(
-            GRAPHQL_URL, json={"query": query}, headers=headers)
+            GRAPHQL_URL, json={"query": query}, headers=headers, auth=None)
         resp.raise_for_status()
         body = resp.json()
         if body.get("errors"):
