@@ -266,50 +266,56 @@
             <div id="settingsAlert" class="alert small mt-2 mx-3" style="display:none;"></div>
 
             <!-- Settings Sub-Nav -->
-            <ul class="nav nav-tabs px-3 pt-2 bg-white border-bottom" id="settingsSubNav">
+            <ul class="nav nav-tabs px-3 pt-2 bg-white border-bottom zmm-icon-rail" id="settingsSubNav">
+                <li class="nav-item d-md-none rail-toggle-item">
+                    <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                            onclick="this.closest('ul').classList.toggle('labels-expanded')">
+                        <i class="fas fa-text-width"></i>
+                    </button>
+                </li>
                 <li class="nav-item">
                     <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#settingsConfig">
-                        <i class="fas fa-sliders-h me-1"></i> Configuration
+                        <i class="fas fa-sliders-h me-1"></i> <span class="tab-label">Configuration</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsNotifications">
-                        <i class="fas fa-bell me-1"></i> Notifications
+                        <i class="fas fa-bell me-1"></i> <span class="tab-label">Notifications</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsApis">
-                        <i class="fas fa-plug me-1"></i> API
+                        <i class="fas fa-plug me-1"></i> <span class="tab-label">API</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSpeakers">
-                        <i class="fas fa-volume-up me-1"></i> Speakers
+                        <i class="fas fa-volume-up me-1"></i> <span class="tab-label">Speakers</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsNetwork">
-                        <i class="fas fa-network-wired me-1"></i> Network
+                        <i class="fas fa-network-wired me-1"></i> <span class="tab-label">Network</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsAuth">
-                        <i class="far fa-user me-1"></i> User Accounts
+                        <i class="far fa-user me-1"></i> <span class="tab-label">User Accounts</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#securityRemoteAccess">
-                        <i class="fas fa-globe me-1"></i> Remote Access
+                        <i class="fas fa-globe me-1"></i> <span class="tab-label">Remote Access</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsAI">
-                        <i class="fas fa-brain me-1"></i> AI
+                        <i class="fas fa-brain me-1"></i> <span class="tab-label">AI</span>
                     </button>
                 </li>
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsUpgrade">
-                        <i class="fas fa-cloud-arrow-down me-1"></i> Upgrade
+                        <i class="fas fa-cloud-arrow-down me-1"></i> <span class="tab-label">Upgrade</span>
                     </button>
                 </li>
             </ul>
@@ -415,20 +421,26 @@
                 <div class="tab-pane fade p-3" id="settingsNetwork">
 
                     <!-- Network sub-nav -->
-                    <ul class="nav nav-pills mb-3" id="networkSubNav">
+                    <ul class="nav nav-pills mb-3 zmm-icon-rail" id="networkSubNav">
+                        <li class="nav-item d-md-none rail-toggle-item">
+                            <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                                    onclick="this.closest('ul').classList.toggle('labels-expanded')">
+                                <i class="fas fa-text-width"></i>
+                            </button>
+                        </li>
                         <li class="nav-item">
                             <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#settingsThread">
-                                <i class="fas fa-project-diagram me-1"></i> Thread
+                                <i class="fas fa-project-diagram me-1"></i> <span class="tab-label">Thread</span>
                             </button>
                         </li>
                         <li class="nav-item">
                             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSpectrum">
-                                <i class="fas fa-wave-square me-1"></i> Spectrum Analysis
+                                <i class="fas fa-wave-square me-1"></i> <span class="tab-label">Spectrum Analysis</span>
                             </button>
                         </li>
                         <li class="nav-item">
                             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#settingsSecurity">
-                                <i class="fas fa-shield-alt me-1"></i> Security
+                                <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
                             </button>
                         </li>
                     </ul>

@@ -159,6 +159,58 @@ html, body {
         display: none !important;
     }
 
+    /* Shared icon-rail pattern for sub-tab bars (settings, config, API,
+       network) — icon-only with a sticky text-width toggle that expands
+       the labels, same behaviour as the main tab rail below */
+    .zmm-icon-rail {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .zmm-icon-rail::-webkit-scrollbar {
+        display: none;
+    }
+
+    .zmm-icon-rail .nav-item {
+        flex-shrink: 0;
+    }
+
+    .zmm-icon-rail .nav-link {
+        white-space: nowrap;
+    }
+
+    .zmm-icon-rail .tab-label {
+        display: none;
+    }
+
+    .zmm-icon-rail.labels-expanded .tab-label {
+        display: inline;
+    }
+
+    /* me-1 on the icons is !important (Bootstrap utility) — needs
+       !important back, but only while the labels are hidden */
+    .zmm-icon-rail:not(.labels-expanded) .nav-link .fas,
+    .zmm-icon-rail:not(.labels-expanded) .nav-link .far {
+        margin-right: 0 !important;
+    }
+
+    .zmm-icon-rail .rail-toggle-item {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: var(--bs-body-bg);
+    }
+
+    .zmm-icon-rail .rail-toggle {
+        color: #6c757d;
+    }
+
+    .zmm-icon-rail.labels-expanded .rail-toggle {
+        color: inherit;
+    }
+
     /* Tab rail — icon-only so all tabs fit without a long scroll;
        the text-width toggle expands the labels back */
     #mainTabs .tab-label {

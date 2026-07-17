@@ -99,35 +99,41 @@ function renderConfigTab(config) {
     // Internal tabs — one pane per section instead of one long scroll.
     // All panes stay in the DOM, so Save (collectFormValues) sees every field.
     el.innerHTML = `
-    <ul class="nav nav-tabs mb-3" role="tablist">
+    <ul class="nav nav-tabs mb-3 zmm-icon-rail" role="tablist">
+      <li class="nav-item d-md-none rail-toggle-item">
+        <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                onclick="this.closest('ul').classList.toggle('labels-expanded')">
+          <i class="fas fa-text-width"></i>
+        </button>
+      </li>
       <li class="nav-item">
         <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#cfgPaneZigbee" type="button">
-          <i class="fas fa-broadcast-tower me-1"></i> Zigbee Radio
+          <i class="fas fa-broadcast-tower me-1"></i> <span class="tab-label">Zigbee Radio</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneMqtt" type="button">
-          <i class="fas fa-network-wired me-1"></i> MQTT
+          <i class="fas fa-network-wired me-1"></i> <span class="tab-label">MQTT</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneHa" type="button">
-          <i class="fas fa-home me-1"></i> Home Assistant
+          <i class="fas fa-home me-1"></i> <span class="tab-label">Home Assistant</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneWeb" type="button">
-          <i class="fas fa-globe me-1"></i> Web
+          <i class="fas fa-globe me-1"></i> <span class="tab-label">Web</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneOta" type="button">
-          <i class="fas fa-cloud-arrow-down me-1"></i> OTA
+          <i class="fas fa-cloud-arrow-down me-1"></i> <span class="tab-label">OTA</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfgPaneBackup" type="button">
-          <i class="fas fa-database me-1"></i> Backup
+          <i class="fas fa-database me-1"></i> <span class="tab-label">Backup</span>
         </button>
       </li>
     </ul>
@@ -550,30 +556,36 @@ function renderApisTab(config) {
 
     // Internal tabs so each provider group is its own pane (no long scroll).
     el.innerHTML = `
-    <ul class="nav nav-tabs mb-3" role="tablist">
+    <ul class="nav nav-tabs mb-3 zmm-icon-rail" role="tablist">
+      <li class="nav-item d-md-none rail-toggle-item">
+        <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                onclick="this.closest('ul').classList.toggle('labels-expanded')">
+          <i class="fas fa-text-width"></i>
+        </button>
+      </li>
       <li class="nav-item">
         <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#apiPaneWeather" type="button">
-          <i class="fas fa-cloud-sun me-1"></i> Weather
+          <i class="fas fa-cloud-sun me-1"></i> <span class="tab-label">Weather</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneMedia" type="button">
-          <i class="fas fa-volume-up me-1"></i> Media
+          <i class="fas fa-volume-up me-1"></i> <span class="tab-label">Media</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneTidal" type="button">
-          <i class="fas fa-music me-1"></i> Tidal
+          <i class="fas fa-music me-1"></i> <span class="tab-label">Tidal</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneAc" type="button">
-          <i class="fas fa-snowflake me-1"></i> Air Con
+          <i class="fas fa-snowflake me-1"></i> <span class="tab-label">Air Con</span>
         </button>
       </li>
       <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneSecurity" type="button">
-          <i class="fas fa-shield-halved me-1"></i> Security
+          <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
         </button>
       </li>
     </ul>
