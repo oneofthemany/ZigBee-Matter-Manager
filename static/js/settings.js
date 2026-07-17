@@ -1544,6 +1544,81 @@ async function loadWeatherStatus() {
     }
 }
 
+async function loadOctopusStatus() {
+    const el = document.getElementById('octopusStatusRow');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/octopus/status');
+        const data = await res.json();
+        if (!data.success) {
+            el.innerHTML = `<div class="text-muted small">${w_escape(data.error || 'Status unavailable')}</div>`;
+            return;
+        }
+        const st = data.status || {};
+        if (!st.enabled) {
+            el.innerHTML = '<div class="text-muted small">Integration disabled.</div>';
+            return;
+        }
+        const errs = Object.entries(st.errors || {});
+        const meterBits = Object.entries(st.meters || {}).map(([fuel, m]) =>
+            `${fuel === 'electricity' ? '⚡' : '🔥'} ${w_escape(m.tariff_code || '?')}`);
+        const latest = Object.entries(st.latest_data || {}).map(([fuel, ts]) =>
+            `${fuel}: ${new Date(ts).toLocaleString()}`);
+        el.innerHTML = `
+          <div class="alert ${errs.length ? 'alert-warning' : 'alert-info'} py-2 small mb-2">
+            <i class="fas fa-bolt me-1"></i>
+            ${st.running ? 'Polling' : 'Not running (restart required?)'}
+            ${meterBits.length ? ' &nbsp;·&nbsp; ' + meterBits.join(' &nbsp; ') : ''}
+            ${st.meters?.gas ? ` &nbsp;·&nbsp; gas unit: <strong>${w_escape(st.gas_unit_effective || st.gas_unit)}</strong>` : ''}
+            ${latest.length ? `<br><span class="text-muted">Latest smart-meter data — ${w_escape(latest.join(' · '))}</span>` : ''}
+            ${errs.map(([k, v]) => `<br><span class="text-danger">${w_escape(k)}: ${w_escape(v)}</span>`).join('')}
+          </div>`;
+    } catch (_) {
+        el.innerHTML = '<div class="text-muted small">Octopus status unavailable</div>';
+    }
+}
+
+window.testOctopusConnection = async function() {
+    const el = document.getElementById('octopusTestResult');
+    if (el) el.innerHTML = '<span class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Testing…</span>';
+    try {
+        const res = await fetch('/api/octopus/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                // Blank api_key = test with the stored key
+                api_key: document.getElementById('cfg_octopus_api_key')?.value?.trim() || '',
+                account_number: document.getElementById('cfg_octopus_account')?.value?.trim() || '',
+            }),
+        });
+        const data = await res.json();
+        if (!el) return;
+        if (!data.success) {
+            el.innerHTML = `<div class="alert alert-danger py-2 small mb-0">${w_escape(data.error || 'Test failed')}</div>`;
+            return;
+        }
+        const rows = Object.entries(data.meters || {}).map(([fuel, m]) => `
+            <tr>
+              <td class="text-capitalize">${w_escape(fuel)}</td>
+              <td><code>${w_escape(m.mpan || m.mprn || '')}</code></td>
+              <td><code>${w_escape(m.serial || '')}</code></td>
+              <td><code>${w_escape(m.tariff_code || 'no active tariff')}</code>${m.is_agile ? ' <span class="badge bg-success">Agile</span>' : ''}</td>
+            </tr>`).join('');
+        el.innerHTML = `
+          <div class="alert alert-success py-2 small mb-0">
+            <i class="fas fa-check-circle me-1"></i> Connected to <strong>${w_escape(data.account_number)}</strong>
+            <div class="table-responsive mt-1">
+              <table class="table table-sm small mb-0">
+                <thead><tr><th>Fuel</th><th>MPAN/MPRN</th><th>Serial</th><th>Tariff</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>`;
+    } catch (e) {
+        if (el) el.innerHTML = `<div class="alert alert-danger py-2 small mb-0">Error: ${w_escape(e.message)}</div>`;
+    }
+};
+
 window.refreshWeatherNow = async function() {
     const el = document.getElementById('weatherStatusRow');
     if (el) el.innerHTML = '<span class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Fetching…</span>';
@@ -2077,6 +2152,16 @@ function collectFormValues() {
             enabled: document.getElementById('cfg_ota_enabled')?.checked ?? true,
             extra_providers: collectOtaProviderRows(),
             disable_default_providers: disableDefaults,
+        },
+        octopus: {
+            enabled: document.getElementById('cfg_octopus_enabled')?.checked ?? false,
+            // Blank = keep the stored key (backend skips falsy)
+            api_key: get('cfg_octopus_api_key') || '',
+            account_number: get('cfg_octopus_account') ?? '',
+            gas_unit: get('cfg_octopus_gas_unit') || 'auto',
+            gas_calorific_value: getNum('cfg_octopus_cv') || 39.5,
+            consumption_poll_minutes: getNum('cfg_octopus_cons_poll') || 30,
+            backfill_days: getNum('cfg_octopus_backfill') || 90,
         },
         security: {
             nuki: {

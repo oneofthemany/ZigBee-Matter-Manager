@@ -66,6 +66,7 @@ let lastDashboard = null;
 
 let configCache = null;
 let schemaCache = null;
+let octopusTariffCache = null;  // live Octopus tariff (null = manual mode)
 let thermostatsCache = [];
 let workingZones = [];   // zones being edited in the modal
 let sessionAnomalies = new Map(); // Accumulates anomaly history while the tab is open
@@ -612,19 +613,27 @@ function renderTemperatureCard(outdoor, indoor, heating) {
 
 function renderCostCard(cost, tariff, epc) {
     const daily = cost?.daily_gbp, monthly = cost?.monthly_gbp;
+    const isActual = cost?.source === 'octopus_actual';
+    const sourceBadge = isActual
+        ? `<span class="badge bg-success ms-1" title="Real gas-meter consumption from Octopus Energy${cost?.actual_day ? ' for ' + cost.actual_day : ''}">Actual · Octopus</span>`
+        : `<span class="badge bg-secondary ms-1" title="Estimated from boiler output × heating hours">Estimated</span>`;
+    const tariffLabel = tariff?.source === 'octopus'
+        ? `${escapeHtml(tariff?.type || 'fixed')} <span class="badge bg-success">Octopus</span>`
+        : escapeHtml(tariff?.type || 'fixed');
+    const dayLabel = isActual && cost?.actual_day ? `${cost.actual_day} kWh` : "Today's kWh";
     return `
         <div class="card h-100">
-            <div class="card-header"><i class="fas fa-pound-sign me-2"></i>Running Cost</div>
+            <div class="card-header"><i class="fas fa-pound-sign me-2"></i>Running Cost ${sourceBadge}</div>
             <div class="card-body">
                 <div class="row text-center g-2">
-                    <div class="col-6"><div class="text-muted small">Today</div><div class="fs-3 fw-bold">${daily != null ? '£' + daily.toFixed(2) : '—'}</div></div>
+                    <div class="col-6"><div class="text-muted small">${isActual ? 'Daily' : 'Today'}</div><div class="fs-3 fw-bold">${daily != null ? '£' + daily.toFixed(2) : '—'}</div></div>
                     <div class="col-6"><div class="text-muted small">This month</div><div class="fs-3 fw-bold">${monthly != null ? '£' + formatNumber(monthly) : '—'}</div></div>
                 </div>
                 <hr class="my-2">
                 <div class="small">
-                    ${kvRow('Tariff', escapeHtml(tariff?.type || 'fixed'))}
+                    ${kvRow('Tariff', tariffLabel)}
                     ${kvRow('Unit rate', `${tariff?.unit_rate_p ?? '—'}p/kWh`)}
-                    ${kvRow("Today's kWh", cost?.daily_kwh ?? '—')}
+                    ${kvRow(dayLabel, cost?.daily_kwh ?? '—')}
                     ${kvRow('Est. annual', `£${epc?.annual_cost_gbp != null ? formatNumber(epc.annual_cost_gbp) : '—'}`)}
                 </div>
             </div>
@@ -1183,6 +1192,7 @@ async function openSettingsModal() {
 
         configCache = cfgRes.config;
         schemaCache = cfgRes.schema || {};
+        octopusTariffCache = cfgRes.tariff_source === 'octopus' ? (cfgRes.octopus_tariff || null) : null;
         thermostatsCache = thermRes.success ? (thermRes.thermostats || []) : [];
         workingZones = deepClone(configCache.zones || []);
 
@@ -1244,32 +1254,47 @@ function renderPropertyForm(p, schema) {
 }
 
 function renderTariffBoilerForm(t, b, schema) {
+    const oct = octopusTariffCache;
+    const octBanner = oct ? `
+        <div class="alert alert-success py-2 small mb-3">
+            <i class="fas fa-plug-circle-bolt me-1"></i>
+            <strong>Rates supplied live by Octopus Energy</strong>
+            ${oct.tariff_code ? `— tariff <code>${escapeHtml(oct.tariff_code)}</code>` : ''}
+            ${oct.is_agile ? '<span class="badge bg-success ms-1">Agile</span>' : ''}
+            <br>Current unit rate <strong>${oct.unit_rate_p != null ? oct.unit_rate_p.toFixed(2) : '—'}p/kWh</strong>
+            &nbsp;·&nbsp; standing charge <strong>${oct.standing_charge_p != null ? oct.standing_charge_p.toFixed(2) : '—'}p/day</strong>
+            ${oct.off_peak_start ? `&nbsp;·&nbsp; cheapest window ${escapeHtml(oct.off_peak_start)}–${escapeHtml(oct.off_peak_end)} @ ${oct.off_peak_rate_p}p` : ''}
+            <br><span class="text-muted">The manual values below are kept as a fallback and apply automatically
+            if Octopus is disabled or unreachable. Disable the integration in Settings → APIs → Energy to edit them.</span>
+        </div>` : '';
+    const dis = oct ? 'disabled' : '';
     return `
         <h6 class="text-muted">Electricity / Gas Tariff</h6>
+        ${octBanner}
         <div class="row g-3 mb-3">
             <div class="col-md-6">
                 <label class="form-label">Tariff type</label>
-                ${selectEl('tariffType', t.type, schema.tariff_types)}
+                ${selectEl('tariffType', t.type, schema.tariff_types).replace('<select ', `<select ${dis} `)}
             </div>
             <div class="col-md-3">
                 <label class="form-label">Unit rate (p/kWh)</label>
-                <input type="number" step="0.01" class="form-control" id="tariffUnit" value="${t.unit_rate_p}">
+                <input type="number" step="0.01" class="form-control" id="tariffUnit" value="${t.unit_rate_p}" ${dis}>
             </div>
             <div class="col-md-3">
                 <label class="form-label">Standing charge (p/day)</label>
-                <input type="number" step="0.01" class="form-control" id="tariffStanding" value="${t.standing_charge_p}">
+                <input type="number" step="0.01" class="form-control" id="tariffStanding" value="${t.standing_charge_p}" ${dis}>
             </div>
             <div class="col-md-3">
                 <label class="form-label">Off-peak start</label>
-                <input type="time" class="form-control" id="tariffOpStart" value="${t.off_peak_start}">
+                <input type="time" class="form-control" id="tariffOpStart" value="${t.off_peak_start}" ${dis}>
             </div>
             <div class="col-md-3">
                 <label class="form-label">Off-peak end</label>
-                <input type="time" class="form-control" id="tariffOpEnd" value="${t.off_peak_end}">
+                <input type="time" class="form-control" id="tariffOpEnd" value="${t.off_peak_end}" ${dis}>
             </div>
             <div class="col-md-3">
                 <label class="form-label">Off-peak rate (p/kWh)</label>
-                <input type="number" step="0.01" class="form-control" id="tariffOpRate" value="${t.off_peak_rate_p}">
+                <input type="number" step="0.01" class="form-control" id="tariffOpRate" value="${t.off_peak_rate_p}" ${dis}>
             </div>
         </div>
         <hr>
@@ -1605,7 +1630,7 @@ function gatherFormValues() {
         const el = document.getElementById(id);
         return el ? coerce(el.value) : undefined;
     };
-    return {
+    const payload = {
         enabled: document.getElementById('heatEnabled')?.checked ?? false,
         property: {
             type: val('propType'),
@@ -1636,6 +1661,10 @@ function gatherFormValues() {
         },
         zones: workingZones,
     };
+    // Octopus mode: tariff inputs are disabled — omit the section entirely so
+    // the backend's partial merge keeps the stored manual fallback untouched.
+    if (octopusTariffCache) delete payload.tariff;
+    return payload;
 }
 
 async function saveSettings() {

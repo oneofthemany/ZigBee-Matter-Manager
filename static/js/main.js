@@ -94,6 +94,7 @@ import {
 } from './chambers.js';
 
 import { initHeating } from './heating.js';
+import { initEnergy } from './energy.js';
 
 import { initSystemTab } from './system-telemetry.js';
 import { initTables } from './table-utils.js';
@@ -390,6 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initAutomationsPage();
         initZones();
         initHeating();
+        initEnergy();
         initSystemTab();
         initPacketFlow();
 

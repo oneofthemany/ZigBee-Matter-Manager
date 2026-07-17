@@ -23,7 +23,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("modules.telemetry_db")
@@ -862,7 +862,7 @@ def query_octopus_current_rate(fuel: str, rate_type: str,
                                at_utc: Optional[datetime] = None) -> Optional[float]:
     """Rate (p) in force at a UTC instant, or None. Survives app restarts."""
     db = _get_db()
-    at_utc = at_utc or datetime.utcnow()
+    at_utc = at_utc or datetime.now(timezone.utc).replace(tzinfo=None)
     row = db.execute("""
         SELECT value_inc_vat_p FROM octopus_rates
         WHERE fuel = ? AND rate_type = ?
