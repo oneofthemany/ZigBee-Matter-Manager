@@ -31,6 +31,9 @@ let allKinds = [];
 /** Builder working copy — only live while the modal is open. */
 let draft = null;
 
+/** Active frame tab id, or null when the frame has no tabs. */
+let activeTab = null;
+
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -306,6 +309,10 @@ export async function loadFrame() {
         if (!data.success) throw new Error(data.error || 'failed to build frame');
         frame = data;
         split = data.split || split;
+        // Keep the open tab across a refresh if it still exists, so a websocket
+        // reload doesn't bounce you back to the first tab mid-tap.
+        const tabs = frame.tabs || [];
+        activeTab = tabs.some(t => t.id === activeTab) ? activeTab : (tabs[0]?.id ?? null);
         renderFrame();
     } catch (e) {
         log.warn('failed to load frame:', e.message);
@@ -339,7 +346,28 @@ export function renderFrame() {
         return;
     }
 
-    grid.innerHTML = frame.groups.map(g => `
+    const tabs = frame.tabs || [];
+    // Only the active tab's groups are rendered — the point of tabs is to not
+    // scroll past everything else.
+    const shown = tabs.length
+        ? (tabs.find(t => t.id === activeTab)?.groups || []).map(k => frame.groups.find(g => g.key === k)).filter(Boolean)
+        : frame.groups;
+
+    const tabBar = tabs.length ? `
+        <div class="frame-tabs" role="tablist" aria-label="Frame sections">
+            ${tabs.map(t => {
+                const on = t.id === activeTab;
+                const count = t.groups.reduce(
+                    (n, k) => n + (frame.groups.find(g => g.key === k)?.cells.length || 0), 0);
+                return `<button class="frame-tab ${on ? 'is-active' : ''}" role="tab"
+                                aria-selected="${on}" data-frame-tab="${esc(t.id)}"
+                                onclick="window.setFrameTab('${esc(t.id)}')">
+                            ${esc(t.name)} <span class="frame-tab-count">${count}</span>
+                        </button>`;
+            }).join('')}
+        </div>` : '';
+
+    grid.innerHTML = tabBar + shown.map(g => `
         <section class="frame-group" data-group="${esc(g.key)}">
             <div class="frame-group-head">
                 <h6 class="frame-group-title">${esc(g.label)}</h6>
@@ -350,6 +378,12 @@ export function renderFrame() {
             </div>
         </section>
     `).join('');
+}
+
+export function setFrameTab(id) {
+    if (!frame?.tabs?.some(t => t.id === id)) return;
+    activeTab = id;
+    renderFrame();
 }
 
 /** Re-render only the cells for one device. Called on every websocket update. */
@@ -455,7 +489,8 @@ export async function openFrameBuilder(id = null) {
     draft = existing
         ? JSON.parse(JSON.stringify(existing))
         : { id: null, name: '', split: current.type === 'auto' ? current.split : 'chamber',
-            chambers: [], kinds: [], devices: [], order: [] };
+            chambers: [], kinds: [], devices: [], order: [], tabs: [] };
+    draft.tabs = draft.tabs || [];
     draft._cells = cells;
 
     document.getElementById('frameBuilderModal')?.remove();
@@ -498,6 +533,17 @@ export async function openFrameBuilder(id = null) {
                             </div>
                         </div>
                         <hr>
+                        <div class="d-flex align-items-center mb-1">
+                            <label class="form-label small fw-bold mb-0">Tabs</label>
+                            <button class="btn btn-sm btn-outline-secondary py-0 px-2 ms-auto"
+                                    onclick="window.frameAddTab()">
+                                <i class="fas fa-plus"></i> Add tab
+                            </button>
+                        </div>
+                        <div class="text-muted small mb-2" id="frameTabsHint"></div>
+                        <div id="frameTabs" class="mb-3"></div>
+
+                        <hr>
                         <label class="form-label small fw-bold">Specific devices</label>
                         <div class="text-muted small mb-2">
                             Pick devices to pin this frame to exactly those. Picked devices can be
@@ -526,7 +572,17 @@ export async function openFrameBuilder(id = null) {
 
     renderBuilder();
 
-    document.getElementById('frameSplit').addEventListener('change', e => { draft.split = e.target.value; });
+    document.getElementById('frameSplit').addEventListener('change', e => {
+        draft.split = e.target.value;
+        // Chamber ids and cell kinds are different group vocabularies, so tab
+        // assignments can't survive a split change. Clear them rather than
+        // leave tabs silently holding keys that will never match.
+        if (draft.tabs.some(t => t.groups.length)) {
+            draft.tabs.forEach(t => { t.groups = []; });
+            window.toast.info('Tab contents cleared — chambers and device types group differently');
+        }
+        renderTabsEditor();
+    });
     document.getElementById('frameName').addEventListener('input', e => { draft.name = e.target.value; });
     document.getElementById('frameDeviceSearch').addEventListener('input', e => {
         const q = e.target.value.trim().toLowerCase();
@@ -556,7 +612,107 @@ function renderBuilder() {
         allKinds.map(k => ({ value: k.kind, label: k.label })), draft.kinds, 'window.frameToggleKind');
     document.getElementById('frameDevices').innerHTML = checkList(
         draft._cells.map(c => ({ value: c.ieee, label: c.name })), draft.devices, 'window.frameToggleDevice');
+    renderTabsEditor();
     renderOrderList();
+}
+
+/** The groups this frame can produce — what a tab is allowed to hold. */
+function availableGroups() {
+    if (draft.split === 'type') {
+        const wanted = draft.kinds.length ? draft.kinds : allKinds.map(k => k.kind);
+        return allKinds.filter(k => wanted.includes(k.kind)).map(k => ({ value: k.kind, label: k.label }));
+    }
+    const wanted = draft.chambers.length ? draft.chambers : allChambers.map(c => c.id);
+    const out = allChambers.filter(c => wanted.includes(c.id)).map(c => ({ value: c.id, label: c.name }));
+    // Unassigned is a real group you can put in a tab, not a special case.
+    if (!draft.chambers.length) out.push({ value: '__unassigned__', label: 'Unassigned' });
+    return out;
+}
+
+function renderTabsEditor() {
+    const hint = document.getElementById('frameTabsHint');
+    const el = document.getElementById('frameTabs');
+    if (!el || !hint) return;
+
+    hint.textContent = draft.tabs.length
+        ? 'Groups you don\'t place land in the first tab.'
+        : draft.split === 'chamber'
+            ? 'No tabs: sections are grouped by floor automatically, if your floor plan has levels.'
+            : 'No tabs: every section is shown in one list.';
+
+    if (!draft.tabs.length) { el.innerHTML = ''; return; }
+
+    const groups = availableGroups();
+    el.innerHTML = draft.tabs.map((t, i) => `
+        <div class="card mb-2" data-tab-id="${esc(t.id)}">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-center gap-1 mb-2">
+                    <input type="text" class="form-control form-control-sm" value="${esc(t.name)}"
+                           aria-label="Tab name" placeholder="Tab name"
+                           onchange="window.frameRenameTab('${esc(t.id)}', this.value)">
+                    <button class="btn btn-sm btn-outline-secondary py-0 px-1" ${i === 0 ? 'disabled' : ''}
+                            onclick="window.frameMoveTab('${esc(t.id)}', -1)" aria-label="Move tab left">
+                        <i class="fas fa-chevron-up"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary py-0 px-1"
+                            ${i === draft.tabs.length - 1 ? 'disabled' : ''}
+                            onclick="window.frameMoveTab('${esc(t.id)}', 1)" aria-label="Move tab right">
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger py-0 px-1"
+                            onclick="window.frameRemoveTab('${esc(t.id)}')" aria-label="Remove tab">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+                <div class="d-flex flex-wrap gap-2">
+                    ${groups.map(g => `
+                        <label class="small">
+                            <input class="form-check-input me-1" type="checkbox"
+                                   ${t.groups.includes(g.value) ? 'checked' : ''}
+                                   onchange="window.frameToggleTabGroup('${esc(t.id)}', '${esc(g.value)}', this.checked)">
+                            ${esc(g.label)}
+                        </label>`).join('')}
+                </div>
+            </div>
+        </div>`).join('');
+}
+
+export function frameAddTab() {
+    const n = draft.tabs.length + 1;
+    draft.tabs.push({ id: `tab_${Date.now().toString(36)}`, name: `Tab ${n}`, groups: [] });
+    renderTabsEditor();
+}
+
+export function frameRenameTab(id, name) {
+    const t = draft.tabs.find(x => x.id === id);
+    if (t) t.name = name;
+}
+
+export function frameRemoveTab(id) {
+    draft.tabs = draft.tabs.filter(t => t.id !== id);
+    renderTabsEditor();
+}
+
+export function frameMoveTab(id, delta) {
+    const i = draft.tabs.findIndex(t => t.id === id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= draft.tabs.length) return;
+    [draft.tabs[i], draft.tabs[j]] = [draft.tabs[j], draft.tabs[i]];
+    renderTabsEditor();
+}
+
+export function frameToggleTabGroup(tabId, group, on) {
+    const t = draft.tabs.find(x => x.id === tabId);
+    if (!t) return;
+    if (on) {
+        // A group lives in exactly one tab — claiming it here removes it elsewhere,
+        // rather than silently rendering it in whichever tab happens to win.
+        for (const other of draft.tabs) other.groups = other.groups.filter(g => g !== group);
+        t.groups.push(group);
+    } else {
+        t.groups = t.groups.filter(g => g !== group);
+    }
+    renderTabsEditor();
 }
 
 function renderOrderList() {
@@ -591,10 +747,13 @@ function orderedPicks() {
 
 export function frameToggleChamber(id, on) {
     draft.chambers = on ? [...draft.chambers, id] : draft.chambers.filter(x => x !== id);
+    // Which chambers are in play decides what a tab can hold.
+    renderTabsEditor();
 }
 
 export function frameToggleKind(kind, on) {
     draft.kinds = on ? [...draft.kinds, kind] : draft.kinds.filter(x => x !== kind);
+    renderTabsEditor();
 }
 
 export function frameToggleDevice(ieee, on) {
@@ -632,6 +791,7 @@ export async function saveFrame() {
             kinds: draft.kinds,
             devices: draft.devices,
             order: orderedPicks(),
+            tabs: draft.tabs,
         };
         // Only send id when editing — a new frame derives its id from the name.
         if (draft.id) body.id = draft.id;

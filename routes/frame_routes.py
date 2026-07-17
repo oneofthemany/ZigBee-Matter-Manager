@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 from fastapi import FastAPI, Request
 
-from modules.chambers import build_registry
+from modules.chambers import build_registry, levels as chamber_levels
 from modules.frames import (
     CELL_LABELS,
     CELL_ORDER,
@@ -113,13 +113,14 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
         query param shouldn't leave the user staring at a blank dashboard.
         """
         try:
-            registry = build_registry(_load_config())
+            cfg = _load_config()
             frame = build_auto_frame(
                 _devices(),
                 split=split,
-                chambers=registry,
+                chambers=build_registry(cfg),
                 include_chambers=_csv(chambers),
                 include_kinds=_csv(kinds),
+                levels=chamber_levels(cfg),
             )
             return {"success": True, **frame}
         except Exception as e:
@@ -206,8 +207,9 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             frame = next((f for f in _load_frames() if f["id"] == (frame_id or "").strip().lower()), None)
             if not frame:
                 return {"success": False, "error": f"no frame '{frame_id}'", "groups": [], "total": 0}
-            registry = build_registry(_load_config())
-            return {"success": True, **render_saved_frame(frame, _devices(), registry), "frame": frame}
+            cfg = _load_config()
+            rendered = render_saved_frame(frame, _devices(), build_registry(cfg), chamber_levels(cfg))
+            return {"success": True, **rendered, "frame": frame}
         except Exception as e:
             logger.error(f"Failed to render frame {frame_id}: {e}")
             return {"success": False, "error": str(e), "groups": [], "total": 0}

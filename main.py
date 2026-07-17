@@ -27,9 +27,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 import time
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import random
 
@@ -985,10 +985,33 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # STATIC FILE ROUTES
 # ============================================================================
 
+# Session cookie recording an explicit "I want the manager" choice, so the
+# per-user `landing` preference doesn't bounce the user straight back to /frames.
+VIEW_COOKIE = "zmm_view"
+
+
 @app.get("/")
-async def read_index():
-    """Serve the main UI."""
+async def read_index(request: Request):
+    """
+    Serve the main UI, honouring the user's `landing` preference.
+
+    A user with landing="frames" (a "mobile user") gets redirected to /frames.
+    This is a convenience, never a permission — the manager stays fully
+    reachable via the switcher, which arrives here as ?view=manager and is
+    remembered for the session.
+    """
+    if request.query_params.get("view") == "manager":
+        resp = FileResponse('static/index.html')
+        resp.set_cookie(VIEW_COOKIE, "manager", httponly=True, samesite="lax", path="/")
+        return resp
+
+    principal = getattr(request.state, "principal", None)
+    landing = getattr(getattr(principal, "user", None), "landing", "manager")
+    if principal and landing == "frames" and request.cookies.get(VIEW_COOKIE) != "manager":
+        return RedirectResponse("/frames", status_code=302)
+
     return FileResponse('static/index.html')
+
 
 @app.get("/frames")
 async def read_frames():
@@ -1001,8 +1024,14 @@ async def read_frames():
 
     This is the PWA's start_url, so a phone-installed app opens here; the header
     switcher goes to '/' for the manager.
+
+    Coming here is an explicit "I want Frames", so it clears the manager
+    override — otherwise a mobile user who visited the manager once would never
+    be redirected here again.
     """
-    return FileResponse('static/frames.html')
+    resp = FileResponse('static/frames.html')
+    resp.delete_cookie(VIEW_COOKIE, path="/")
+    return resp
 
 @app.get("/sw.js")
 async def service_worker():

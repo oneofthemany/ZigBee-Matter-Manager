@@ -72,7 +72,13 @@ import {
     frameToggleChamber,
     frameToggleKind,
     frameToggleDevice,
-    frameMoveDevice
+    frameMoveDevice,
+    setFrameTab,
+    frameAddTab,
+    frameRenameTab,
+    frameRemoveTab,
+    frameMoveTab,
+    frameToggleTabGroup
 } from './frames.js';
 
 import {
@@ -287,6 +293,13 @@ window.frameToggleChamber = frameToggleChamber;
 window.frameToggleKind = frameToggleKind;
 window.frameToggleDevice = frameToggleDevice;
 window.frameMoveDevice = frameMoveDevice;
+// Frame tabs
+window.setFrameTab = setFrameTab;
+window.frameAddTab = frameAddTab;
+window.frameRenameTab = frameRenameTab;
+window.frameRemoveTab = frameRemoveTab;
+window.frameMoveTab = frameMoveTab;
+window.frameToggleTabGroup = frameToggleTabGroup;
 // Hook read by devices.js:handleDeviceUpdate on every websocket state change.
 window.framesHandleDeviceUpdate = framesHandleDeviceUpdate;
 

@@ -81,6 +81,8 @@ class CreateUserRequest(BaseModel):
     groups: List[str] = Field(default_factory=list)
     extra_scopes: List[str] = Field(default_factory=list)
     description: str = ""
+    # "manager" (default) | "frames" — where this user lands on '/'.
+    landing: Optional[str] = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -89,6 +91,7 @@ class UpdateUserRequest(BaseModel):
     extra_scopes: Optional[List[str]] = None
     disabled: Optional[bool] = None
     description: Optional[str] = None
+    landing: Optional[str] = None
 
 
 class CreateGroupRequest(BaseModel):
@@ -394,6 +397,7 @@ def register_auth_routes(
                 groups=req.groups,
                 extra_scopes=req.extra_scopes,
                 description=req.description,
+                landing=req.landing,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))

@@ -21,6 +21,54 @@
     margin-bottom: 1rem;
 }
 
+/* ---------- frame tabs (a floor, or a user-made section) ---------- */
+
+.frame-tabs {
+    display: flex;
+    gap: .3rem;
+    overflow-x: auto;
+    /* The tab strip scrolls sideways rather than wrapping into a growing block
+       that eats the screen it exists to save. */
+    scrollbar-width: none;
+    margin-bottom: .9rem;
+    padding-bottom: .2rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.frame-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.frame-tab {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: .82rem;
+    font-weight: 600;
+    padding: .35rem .6rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.frame-tab:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-sunken);
+}
+
+.frame-tab.is-active {
+    color: var(--text-primary);
+    border-bottom-color: var(--honey);
+}
+
+.frame-tab-count {
+    font-size: .7rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
 /* ---------- groups (a chamber, or a device type) ---------- */
 
 .frame-group {

@@ -226,6 +226,13 @@ class TokenRecord:
         return d
 
 
+#: Where a user lands when they open '/'. A convenience, NOT a permission —
+#: everyone keeps full access and the header switcher flips between the two.
+#: "frames" is the mobile-first Frames UI; "manager" is the full dashboard.
+VALID_LANDINGS = ("manager", "frames")
+DEFAULT_LANDING = "manager"
+
+
 @dataclass
 class User:
     username: str
@@ -235,6 +242,7 @@ class User:
     disabled: bool = False
     created_at: float = field(default_factory=time.time)
     description: str = ""
+    landing: str = DEFAULT_LANDING
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -282,6 +290,10 @@ class AuthManager:
                         disabled=bool(u.get("disabled", False)),
                         created_at=float(u.get("created_at", time.time())),
                         description=u.get("description") or "",
+                        # Unknown/absent -> manager, so an old auth file or a
+                        # hand-typo can never strand someone somewhere odd.
+                        landing=(u.get("landing") if u.get("landing") in VALID_LANDINGS
+                                 else DEFAULT_LANDING),
                     )
                     self.users[user.username] = user
                 for t in raw.get("tokens", []) or []:
@@ -358,6 +370,7 @@ class AuthManager:
             groups: Optional[List[str]] = None,
             extra_scopes: Optional[List[str]] = None,
             description: str = "",
+            landing: Optional[str] = None,
     ) -> User:
         async with self._lock:
             if username in self.users:
@@ -365,12 +378,15 @@ class AuthManager:
             if not _is_valid_id(username):
                 raise ValueError(
                     "Username must be 2-32 chars, alphanumeric/_/-")
+            if landing is not None and landing not in VALID_LANDINGS:
+                raise ValueError(f"landing must be one of {VALID_LANDINGS}")
             user = User(
                 username=username,
                 password_hash=hash_password(password) if password else None,
                 groups=list(groups or []),
                 extra_scopes=list(extra_scopes or []),
                 description=description,
+                landing=landing or DEFAULT_LANDING,
             )
             for g in user.groups:
                 if g not in self.groups:
@@ -387,7 +403,9 @@ class AuthManager:
             if "password" in changes:
                 pw = changes.pop("password")
                 user.password_hash = hash_password(pw) if pw else None
-            for key in ("groups", "extra_scopes", "disabled", "description"):
+            if changes.get("landing") is not None and changes["landing"] not in VALID_LANDINGS:
+                raise ValueError(f"landing must be one of {VALID_LANDINGS}")
+            for key in ("groups", "extra_scopes", "disabled", "description", "landing"):
                 if key in changes:
                     setattr(user, key, changes[key])
             for g in user.groups:

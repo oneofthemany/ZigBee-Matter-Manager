@@ -26,6 +26,7 @@
 </head>
 <body class="frames-page">
 
+<div class="frames-page-top">
 <header class="frames-page-header">
     <div class="frames-page-brand">
         <img src="/static/images/zigbee-manager-logo.png" alt="" class="frames-page-logo">
@@ -37,32 +38,35 @@
             </div>
         </div>
     </div>
-    <a href="/" class="btn btn-sm btn-outline-light frames-page-switch" title="Open the manager">
+    <!-- ?view=manager tells the server this is a deliberate switch, so a user
+         whose landing is "frames" isn't redirected straight back here. -->
+    <a href="/?view=manager" class="btn btn-sm btn-outline-light frames-page-switch" title="Open the manager">
         <i class="fas fa-sliders"></i>
         <span class="d-none d-sm-inline ms-1">Manager</span>
     </a>
 </header>
 
-<main class="frames-page-main">
-    <div class="frames-toolbar">
-        <label class="visually-hidden" for="framesSelect">Frame</label>
-        <select id="framesSelect" class="form-select form-select-sm"></select>
-        <div class="btn-group btn-group-sm ms-auto">
-            <button class="btn btn-outline-primary" id="framesNew" title="New frame" aria-label="New frame">
-                <i class="fas fa-plus"></i>
-            </button>
-            <button class="btn btn-outline-secondary" id="framesEdit" title="Edit frame" aria-label="Edit frame" disabled>
-                <i class="fas fa-pen"></i>
-            </button>
-            <button class="btn btn-outline-danger" id="framesDelete" title="Delete frame" aria-label="Delete frame" disabled>
-                <i class="fas fa-trash"></i>
-            </button>
-        </div>
-        <button class="btn btn-sm btn-outline-secondary" id="framesRefresh" aria-label="Refresh frame">
-            <i class="fas fa-arrows-rotate"></i>
+<div class="frames-toolbar">
+    <label class="visually-hidden" for="framesSelect">Frame</label>
+    <select id="framesSelect" class="form-select form-select-sm"></select>
+    <div class="btn-group btn-group-sm ms-auto">
+        <button class="btn btn-outline-primary" id="framesNew" title="New frame" aria-label="New frame">
+            <i class="fas fa-plus"></i>
+        </button>
+        <button class="btn btn-outline-secondary" id="framesEdit" title="Edit frame" aria-label="Edit frame" disabled>
+            <i class="fas fa-pen"></i>
+        </button>
+        <button class="btn btn-outline-danger" id="framesDelete" title="Delete frame" aria-label="Delete frame" disabled>
+            <i class="fas fa-trash"></i>
         </button>
     </div>
+    <button class="btn btn-sm btn-outline-secondary" id="framesRefresh" aria-label="Refresh frame">
+        <i class="fas fa-arrows-rotate"></i>
+    </button>
+</div>
+</div>
 
+<main class="frames-page-main">
     <div id="framesGrid"></div>
 </main>
 

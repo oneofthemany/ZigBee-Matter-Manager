@@ -20,7 +20,21 @@
  */
 
 import { state } from './state.js';
-import { initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate } from './frames.js';
+import {
+    initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate, setFrameTab,
+    openFrameBuilder, saveFrame, deleteCurrentFrame, frameCommand, frameSetpoint,
+    frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
+    frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
+} from './frames.js';
+
+// frames.js renders inline onclick= handlers, so its callbacks must be globals
+// here exactly as main.js does for the dashboard.
+Object.assign(window, {
+    setFrameTab, openFrameBuilder, saveFrame, deleteCurrentFrame,
+    frameCommand, frameSetpoint,
+    frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
+    frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
+});
 
 const log = zmmLog('frames-page');
 

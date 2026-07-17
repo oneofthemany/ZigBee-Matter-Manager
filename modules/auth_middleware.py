@@ -170,7 +170,11 @@ def _is_anonymous_path(path: str, no_admin_yet: bool = False,
     for p in ANONYMOUS_PREFIXES:
         if path.startswith(p):
             return True
-    if path == "/" or path == "/index.html":
+    # UI shells only. Both are empty pages whose auth.js pops the login modal
+    # and whose data comes from /api/*, which is still gated. /frames is also
+    # the PWA start_url — 401ing it would open the installed app on a dead page
+    # instead of a login prompt.
+    if path in ("/", "/index.html", "/frames"):
         return True
     if is_lan:
         if path in LAN_ANONYMOUS_PATHS:

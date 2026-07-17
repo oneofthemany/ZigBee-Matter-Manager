@@ -104,6 +104,12 @@ CELL_ORDER = (CELL_LIGHT, CELL_SWITCH, CELL_COVER, CELL_CLIMATE, CELL_LOCK, CELL
 UNASSIGNED_KEY = "__unassigned__"
 UNASSIGNED_LABEL = "Unassigned"
 
+#: Catch-all tab keys. Chambers the floor plan doesn't place, and devices with
+#: no chamber at all, are different problems and get different tabs.
+TAB_OTHER_KEY = "__other__"
+TAB_OTHER_LABEL = "Other"
+TAB_UNASSIGNED_KEY = "__unassigned__"
+
 # ── sensor readouts ─────────────────────────────────────────────────
 
 #: Read-only sensor kinds → the state keys that carry them, in display order.
@@ -329,6 +335,8 @@ def build_auto_frame(
     include_kinds: Optional[List[str]] = None,
     include_devices: Optional[List[str]] = None,
     order: Optional[List[str]] = None,
+    levels: Optional[List[dict]] = None,
+    tabs: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """
     Group devices into a frame.
@@ -414,12 +422,99 @@ def build_auto_frame(
     for g in out:
         g["cells"].sort(key=cell_sort)
 
+    # The user's own tabs win; otherwise fall back to floor-derived tabs, which
+    # only apply to a chamber split (a type split has no levels to group by).
+    if tabs:
+        frame_tabs = apply_saved_tabs(out, tabs)
+    elif split == SPLIT_CHAMBER:
+        frame_tabs = auto_tabs(out, chambers, levels)
+    else:
+        frame_tabs = []
+
     return {
         "version": SCHEMA_VERSION,
         "split": split,
         "groups": out,
+        "tabs": frame_tabs,
         "total": len(cells),
     }
+
+
+# ── tabs ────────────────────────────────────────────────────────────
+
+MAX_TABS = 12
+
+
+def auto_tabs(
+    groups: List[dict],
+    chambers: Optional[List[dict]] = None,
+    levels: Optional[List[dict]] = None,
+) -> List[dict]:
+    """
+    Derive tabs from the floor a chamber is on — free, no configuration.
+
+    Only meaningful for a chamber split: a type split has no levels to group by.
+
+    Returns ``[]`` unless this produces at least two tabs AND at least one real
+    level tab. A single tab is a tab bar that does nothing, and [Other] +
+    [Unassigned] alone (no floor plan drawn) is noise pretending to be structure.
+    """
+    level_of = {c["id"]: c.get("level") for c in (chambers or [])}
+    level_names = {l["id"]: l["name"] for l in (levels or [])}
+    level_order = [l["id"] for l in (levels or [])]
+
+    buckets: Dict[str, List[str]] = {}
+    for g in groups:
+        key = g["key"]
+        if key == UNASSIGNED_KEY:
+            bucket = TAB_UNASSIGNED_KEY
+        else:
+            bucket = level_of.get(key) or TAB_OTHER_KEY
+        buckets.setdefault(bucket, []).append(key)
+
+    out: List[dict] = []
+    for lid in level_order:
+        if lid in buckets:
+            out.append({"id": lid, "name": level_names.get(lid, lid), "groups": buckets[lid]})
+    real_level_tabs = len(out)
+
+    if TAB_OTHER_KEY in buckets:
+        out.append({"id": TAB_OTHER_KEY, "name": TAB_OTHER_LABEL, "groups": buckets[TAB_OTHER_KEY]})
+    if TAB_UNASSIGNED_KEY in buckets:
+        out.append({"id": TAB_UNASSIGNED_KEY, "name": UNASSIGNED_LABEL, "groups": buckets[TAB_UNASSIGNED_KEY]})
+
+    if real_level_tabs == 0 or len(out) < 2:
+        return []
+    return out
+
+
+def apply_saved_tabs(groups: List[dict], saved: List[dict]) -> List[dict]:
+    """
+    Lay groups out across the user's own tabs.
+
+    Any group not named by a tab lands in the FIRST tab rather than vanishing —
+    a chamber you add next month must show up somewhere without you having to
+    remember to edit every frame. Tabs that end up empty are dropped.
+    """
+    present = {g["key"] for g in groups}
+    claimed: set = set()
+    out: List[dict] = []
+
+    for t in saved:
+        keys = [k for k in t.get("groups", []) if k in present and k not in claimed]
+        claimed.update(keys)
+        out.append({"id": t["id"], "name": t["name"], "groups": keys})
+
+    if not out:
+        return []
+
+    # Appended, not prepended: a chamber added months later must show up, but it
+    # shouldn't shove itself to the top of an arrangement the user built by hand.
+    leftover = [g["key"] for g in groups if g["key"] not in claimed]
+    out[0]["groups"] = out[0]["groups"] + leftover
+
+    out = [t for t in out if t["groups"]]
+    return out if len(out) > 1 else []
 
 
 # ── saved frames ────────────────────────────────────────────────────
@@ -481,7 +576,37 @@ def clean_frame(raw: Any, existing_ids: Optional[set] = None) -> Optional[dict]:
         "kinds": [k for k in _strs("kinds") if k in CELL_ORDER],
         "devices": _strs("devices"),
         "order": _strs("order"),
+        "tabs": _clean_tabs(raw.get("tabs")),
     }
+
+
+def _clean_tabs(raw: Any) -> List[dict]:
+    """
+    Normalise a frame's tabs. Empty means "no tabs" — fall back to auto.
+
+    A tab with no name is dropped; a tab with no groups is kept, because the
+    builder legitimately creates an empty tab a moment before you fill it.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: List[dict] = []
+    seen: set = set()
+    for t in raw[:MAX_TABS]:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name") or "").strip()[:MAX_FRAME_NAME]
+        tid = valid_id(t.get("id")) or (valid_id(slugify(name)) if name else None)
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        groups = t.get("groups")
+        out.append({
+            "id": tid,
+            "name": name or tid,
+            "groups": [str(g).strip().lower() for g in groups if str(g or "").strip()]
+                      if isinstance(groups, list) else [],
+        })
+    return out
 
 
 def clean_frames(raw: Any) -> List[dict]:
@@ -503,6 +628,7 @@ def render_saved_frame(
     saved: Dict[str, Any],
     devices: List[Dict[str, Any]],
     chambers: Optional[List[dict]] = None,
+    levels: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """Build a saved frame's layout. Thin wrapper — a saved frame is just filters."""
     frame = build_auto_frame(
@@ -513,6 +639,8 @@ def render_saved_frame(
         include_kinds=saved.get("kinds"),
         include_devices=saved.get("devices"),
         order=saved.get("order"),
+        levels=levels,
+        tabs=saved.get("tabs"),
     )
     frame["id"] = saved.get("id")
     frame["name"] = saved.get("name")
