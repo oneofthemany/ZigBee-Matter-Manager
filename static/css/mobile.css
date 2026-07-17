@@ -134,6 +134,14 @@ html, body {
     }
 }
 
+@media (max-width: 767.98px) {
+    /* Code editor is unusable at phone size — remove the tab and its pane */
+    #mainTabs .nav-link[data-bs-target="#editor-tab"],
+    #editor-tab {
+        display: none !important;
+    }
+}
+
 
 /* ----------------------------------------------------------
    3. DEVICES TAB
