@@ -584,6 +584,11 @@ function renderApisTab(config) {
         </button>
       </li>
       <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneEnergy" type="button">
+          <i class="fas fa-plug-circle-bolt me-1"></i> <span class="tab-label">Energy</span>
+        </button>
+      </li>
+      <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneSecurity" type="button">
           <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
         </button>
@@ -594,6 +599,7 @@ function renderApisTab(config) {
       <div class="tab-pane fade" id="apiPaneMedia">${renderMediaSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
+      <div class="tab-pane fade" id="apiPaneEnergy">${renderOctopusSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneSecurity">${renderSecuritySection(config)}</div>
     </div>
     `;
@@ -601,6 +607,7 @@ function renderApisTab(config) {
     loadWeatherStatus();
     loadTidalStatus();
     loadAcUnits();
+    loadOctopusStatus();
     SECURITY_PROVIDERS.forEach(p => p.onShow?.());
 }
 
@@ -649,6 +656,77 @@ function renderWeatherSection(config) {
     <button class="btn btn-outline-secondary btn-sm" onclick="window.refreshWeatherNow()">
       <i class="fas fa-sync-alt me-1"></i> Fetch Now
     </button>
+    `;
+}
+
+// ============================================================================
+// OCTOPUS ENERGY SECTION — lives in the External APIs tab
+// ============================================================================
+
+function renderOctopusSection(config) {
+    const o = config.octopus || {};
+    return `
+    <p class="text-muted small mb-3">
+      Octopus Energy smart-meter integration — half-hourly electricity &amp; gas consumption,
+      live tariff rates (including Agile), and real running costs in the Energy tab and heating dashboard.
+      Your API key is under Account → API access on
+      <a href="https://octopus.energy/dashboard/" target="_blank" rel="noopener" class="ms-1">octopus.energy <i class="fas fa-external-link-alt fa-xs"></i></a>.
+      Changes take effect after a service restart.
+    </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-2">
+        <label class="form-label small fw-semibold">Enabled</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_octopus_enabled"
+                 ${o.enabled ? 'checked' : ''}>
+        </div>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">API Key</label>
+        <input type="password" class="form-control" id="cfg_octopus_api_key" autocomplete="off"
+               placeholder="${o.api_key_set ? 'Saved — leave blank to keep current' : 'sk_live_…'}">
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Account Number</label>
+        <input type="text" class="form-control" id="cfg_octopus_account"
+               value="${w_escape(o.account_number || '')}" placeholder="A-XXXXXXXX">
+        <small class="text-muted">Top of any Octopus bill or dashboard page. Meters are auto-discovered.</small>
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Gas Meter Units</label>
+        <select class="form-select" id="cfg_octopus_gas_unit">
+          <option value="auto" ${(o.gas_unit ?? 'auto') === 'auto' ? 'selected' : ''}>Auto (assume m³ / SMETS2)</option>
+          <option value="m3" ${o.gas_unit === 'm3' ? 'selected' : ''}>m³ (SMETS2)</option>
+          <option value="kwh" ${o.gas_unit === 'kwh' ? 'selected' : ''}>kWh (SMETS1)</option>
+        </select>
+        <small class="text-muted">If gas figures look ~11× out, switch this.</small>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Calorific Value (MJ/m³)</label>
+        <input type="number" step="0.1" class="form-control" id="cfg_octopus_cv"
+               value="${o.gas_calorific_value ?? 39.5}" min="37" max="43">
+        <small class="text-muted">Printed on your gas bill; ~39.5 is typical.</small>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Consumption Poll (min)</label>
+        <input type="number" class="form-control" id="cfg_octopus_cons_poll"
+               value="${o.consumption_poll_minutes ?? 30}" min="5">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Backfill (days)</label>
+        <input type="number" class="form-control" id="cfg_octopus_backfill"
+               value="${o.backfill_days ?? 90}" min="1" max="730">
+        <small class="text-muted">History fetched on first run.</small>
+      </div>
+    </div>
+
+    <div id="octopusStatusRow" class="mb-2"></div>
+    <button class="btn btn-outline-primary btn-sm" onclick="window.testOctopusConnection()">
+      <i class="fas fa-plug me-1"></i> Test Connection
+    </button>
+    <div id="octopusTestResult" class="mt-2"></div>
     `;
 }
 

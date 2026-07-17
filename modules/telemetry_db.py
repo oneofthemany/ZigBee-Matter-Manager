@@ -30,6 +30,9 @@ logger = logging.getLogger("modules.telemetry_db")
 
 DB_PATH = "./data/telemetry.duckdb"
 DEFAULT_RETENTION_DAYS = 90
+# Octopus data is tiny (≤ ~50 rows/day/fuel) and useful for year-on-year
+# comparisons, so it outlives the general telemetry retention.
+OCTOPUS_RETENTION_DAYS = 400
 
 # Lazy import — duckdb is only needed when this module is used
 _db = None
@@ -167,6 +170,29 @@ def _init_tables(db):
                 rooms_hot           INTEGER DEFAULT 0,
                 receiver_command    VARCHAR,
                 dry_run             BOOLEAN DEFAULT FALSE
+            )
+        """)
+
+    db.execute("""
+            CREATE TABLE IF NOT EXISTS octopus_consumption (
+                fuel            VARCHAR NOT NULL,
+                interval_start  TIMESTAMP NOT NULL,
+                interval_end    TIMESTAMP NOT NULL,
+                consumption     DOUBLE,
+                consumption_kwh DOUBLE,
+                PRIMARY KEY (fuel, interval_start)
+            )
+        """)
+
+    db.execute("""
+            CREATE TABLE IF NOT EXISTS octopus_rates (
+                fuel            VARCHAR NOT NULL,
+                rate_type       VARCHAR NOT NULL,
+                tariff_code     VARCHAR,
+                valid_from      TIMESTAMP NOT NULL,
+                valid_to        TIMESTAMP,
+                value_inc_vat_p DOUBLE,
+                PRIMARY KEY (fuel, rate_type, valid_from)
             )
         """)
 
@@ -630,7 +656,8 @@ def get_db_stats() -> Dict[str, Any]:
     """Get database size and row counts per table."""
     db = _get_db()
     stats = {}
-    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
+    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans",
+                  "octopus_consumption", "octopus_rates"]:
         count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = count
 
@@ -691,6 +718,209 @@ def query_room_heating_state(
     return [dict(zip(cols, r)) for r in rows]
 
 # ============================================================================
+# OCTOPUS ENERGY
+# ============================================================================
+# Timestamps in octopus_consumption / octopus_rates are UTC-naive: the API
+# returns ISO8601 with offsets (BST intervals arrive as +01:00), so callers
+# must normalise to UTC and strip tzinfo before writing. Local-day bucketing
+# converts back to Europe/London inside the query.
+
+_LONDON_DAY = "date_trunc('day', timezone('Europe/London', {col}::TIMESTAMP AT TIME ZONE 'UTC'))"
+
+_OCTOPUS_GROUPS = {"halfhour", "day", "week", "month"}
+
+
+def write_octopus_consumption(fuel: str, rows: List[Dict[str, Any]]) -> int:
+    """Upsert half-hourly consumption intervals (idempotent on re-poll)."""
+    if not rows:
+        return 0
+    db = _get_db()
+    db.executemany("""
+        INSERT OR REPLACE INTO octopus_consumption
+            (fuel, interval_start, interval_end, consumption, consumption_kwh)
+        VALUES (?, ?, ?, ?, ?)
+    """, [
+        (fuel, r["interval_start"], r["interval_end"],
+         r.get("consumption"), r.get("consumption_kwh"))
+        for r in rows
+    ])
+    return len(rows)
+
+
+def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
+                        rows: List[Dict[str, Any]]) -> int:
+    """Upsert tariff rates. Agile rates can be republished, hence REPLACE."""
+    if not rows:
+        return 0
+    db = _get_db()
+    db.executemany("""
+        INSERT OR REPLACE INTO octopus_rates
+            (fuel, rate_type, tariff_code, valid_from, valid_to, value_inc_vat_p)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, [
+        (fuel, rate_type, tariff_code, r["valid_from"], r.get("valid_to"),
+         r.get("value_inc_vat_p"))
+        for r in rows
+    ])
+    return len(rows)
+
+
+def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
+    """Latest stored interval_end (UTC-naive) — start point for incremental polls."""
+    db = _get_db()
+    row = db.execute(
+        "SELECT max(interval_end) FROM octopus_consumption WHERE fuel = ?", [fuel]
+    ).fetchone()
+    return row[0] if row else None
+
+
+def query_octopus_consumption_buckets(fuel: str, days: int = 30,
+                                      group_by: str = "day") -> List[Dict]:
+    """
+    Bucketed consumption + cost for chart rendering.
+
+    group_by 'halfhour' returns raw intervals with per-slot unit cost;
+    'day'/'week'/'month' bucket on Europe/London day boundaries and add
+    one standing charge per local day. cost_p is pence including VAT and
+    is NULL-safe (0 contribution) when no rate covers an interval.
+    """
+    if group_by not in _OCTOPUS_GROUPS:
+        group_by = "day"
+    db = _get_db()
+    days = int(days)
+    local_day = _LONDON_DAY.format(col="c.interval_start")
+
+    if group_by == "halfhour":
+        rows = db.execute(f"""
+            SELECT c.interval_start, c.consumption_kwh,
+                   c.consumption_kwh * r.value_inc_vat_p AS cost_p
+            FROM octopus_consumption c
+            LEFT JOIN octopus_rates r
+              ON r.fuel = c.fuel AND r.rate_type = 'unit'
+             AND r.valid_from <= c.interval_start
+             AND (r.valid_to IS NULL OR r.valid_to > c.interval_start)
+            WHERE c.fuel = ?
+              AND c.interval_start >= now() - INTERVAL '{days} days'
+            ORDER BY c.interval_start ASC
+        """, [fuel]).fetchall()
+        return [{"ts": r[0], "kwh": r[1], "cost_p": r[2]} for r in rows]
+
+    rows = db.execute(f"""
+        WITH hh AS (
+            SELECT {local_day} AS local_day,
+                   c.interval_start,
+                   c.consumption_kwh AS kwh,
+                   COALESCE(c.consumption_kwh * r.value_inc_vat_p, 0) AS unit_cost_p
+            FROM octopus_consumption c
+            LEFT JOIN octopus_rates r
+              ON r.fuel = c.fuel AND r.rate_type = 'unit'
+             AND r.valid_from <= c.interval_start
+             AND (r.valid_to IS NULL OR r.valid_to > c.interval_start)
+            WHERE c.fuel = ?
+              AND c.interval_start >= now() - INTERVAL '{days} days'
+        ),
+        by_day AS (
+            SELECT local_day,
+                   sum(kwh) AS kwh,
+                   sum(unit_cost_p) AS unit_cost_p,
+                   min(interval_start) AS first_start
+            FROM hh
+            GROUP BY local_day
+        )
+        SELECT date_trunc('{group_by}', d.local_day) AS bucket,
+               sum(d.kwh) AS kwh,
+               sum(d.unit_cost_p + COALESCE(s.value_inc_vat_p, 0)) AS cost_p
+        FROM by_day d
+        LEFT JOIN octopus_rates s
+          ON s.fuel = ? AND s.rate_type = 'standing'
+         AND s.valid_from <= d.first_start
+         AND (s.valid_to IS NULL OR s.valid_to > d.first_start)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+    """, [fuel, fuel]).fetchall()
+    return [{"ts": r[0], "kwh": r[1], "cost_p": r[2]} for r in rows]
+
+
+def query_octopus_rates_window(fuel: str, start_utc: datetime,
+                               end_utc: datetime,
+                               rate_type: str = "unit") -> List[Dict]:
+    """Rates overlapping [start_utc, end_utc) — feeds the Agile rate chart."""
+    db = _get_db()
+    rows = db.execute("""
+        SELECT valid_from, valid_to, value_inc_vat_p, tariff_code
+        FROM octopus_rates
+        WHERE fuel = ? AND rate_type = ?
+          AND valid_from < ?
+          AND (valid_to IS NULL OR valid_to > ?)
+        ORDER BY valid_from ASC
+    """, [fuel, rate_type, end_utc, start_utc]).fetchall()
+    return [{"valid_from": r[0], "valid_to": r[1],
+             "value_inc_vat_p": r[2], "tariff_code": r[3]} for r in rows]
+
+
+def query_octopus_current_rate(fuel: str, rate_type: str,
+                               at_utc: Optional[datetime] = None) -> Optional[float]:
+    """Rate (p) in force at a UTC instant, or None. Survives app restarts."""
+    db = _get_db()
+    at_utc = at_utc or datetime.utcnow()
+    row = db.execute("""
+        SELECT value_inc_vat_p FROM octopus_rates
+        WHERE fuel = ? AND rate_type = ?
+          AND valid_from <= ?
+          AND (valid_to IS NULL OR valid_to > ?)
+        ORDER BY valid_from DESC
+        LIMIT 1
+    """, [fuel, rate_type, at_utc, at_utc]).fetchone()
+    return row[0] if row else None
+
+
+def query_octopus_kwh_for_day(fuel: str, local_date) -> Optional[float]:
+    """
+    Total kWh for one Europe/London calendar day (datetime.date).
+    None when no intervals are stored for that day (data lag, no meter).
+    """
+    db = _get_db()
+    local_day = _LONDON_DAY.format(col="c.interval_start")
+    row = db.execute(f"""
+        SELECT sum(c.consumption_kwh)
+        FROM octopus_consumption c
+        WHERE c.fuel = ? AND {local_day} = ?
+    """, [fuel, datetime(local_date.year, local_date.month, local_date.day)]).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
+    """
+    Per-device daily kWh from cumulative smart-plug 'energy' counters.
+    Deltas between consecutive readings are clamped at 0 so counter resets
+    (device rejoin, factory reset) don't produce negative usage.
+    device_states.ts is session-local like every other table here, so days
+    bucket on ts directly, consistent with the existing history queries.
+    """
+    db = _get_db()
+    days = int(days)
+    rows = db.execute(f"""
+        WITH deltas AS (
+            SELECT ieee, ts,
+                   numeric_val - lag(numeric_val) OVER (
+                       PARTITION BY ieee ORDER BY ts
+                   ) AS delta
+            FROM device_states
+            WHERE attribute = 'energy' AND numeric_val IS NOT NULL
+              AND ts >= now() - INTERVAL '{days + 1} days'
+        )
+        SELECT ieee, date_trunc('day', ts) AS day,
+               sum(greatest(delta, 0)) AS kwh
+        FROM deltas
+        WHERE delta IS NOT NULL
+          AND ts >= now() - INTERVAL '{days} days'
+        GROUP BY ieee, day
+        ORDER BY ieee, day ASC
+    """).fetchall()
+    return [{"ieee": r[0], "day": r[1], "kwh": r[2]} for r in rows]
+
+
+# ============================================================================
 # MAINTENANCE
 # ============================================================================
 
@@ -703,6 +933,14 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
             f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
         ).fetchone()
         logger.debug(f"Pruned {table}: retention={retention_days}d")
+
+    octopus_cutoff = f"{OCTOPUS_RETENTION_DAYS} days"
+    db.execute(
+        f"DELETE FROM octopus_consumption WHERE interval_start < now() - INTERVAL '{octopus_cutoff}'"
+    )
+    db.execute(
+        f"DELETE FROM octopus_rates WHERE valid_to IS NOT NULL AND valid_to < now() - INTERVAL '{octopus_cutoff}'"
+    )
 
     logger.info(f"Telemetry pruned (retention={retention_days} days)")
 

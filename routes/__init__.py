@@ -38,11 +38,13 @@ from routes.ac_routes import register_ac_routes
 from routes.security_routes import register_security_routes
 from routes.chamber_routes import register_chamber_routes
 from routes.frame_routes import register_frame_routes
+from routes.octopus_routes import register_octopus_routes
 
 
 
 __all__ = [
     'register_alert_routes',
+    'register_octopus_routes',
     'register_signal_routes',
     'register_backup_routes',
     'register_config_routes',

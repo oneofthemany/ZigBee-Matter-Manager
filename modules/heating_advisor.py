@@ -122,11 +122,15 @@ def _as_int(v, default: int) -> int:
 class HeatingAdvisor:
     """Weather-aware heating intelligence engine."""
 
-    def __init__(self, config: dict, weather_service, device_getter: Callable):
+    def __init__(self, config: dict, weather_service, device_getter: Callable,
+                 tariff_provider: Optional[Callable[[str], Optional[dict]]] = None):
         config = config or {}
         self.enabled = bool(_get_or(config, "enabled", False))
         self.weather = weather_service
         self._get_devices = device_getter
+        # Live tariff source (Octopus). Called with the boiler fuel; returning
+        # None (disabled, no data, API down) falls back to the manual tariff.
+        self._tariff_provider = tariff_provider
 
         # Property profile
         prop = config.get("property") or {}
@@ -137,14 +141,16 @@ class HeatingAdvisor:
         self.floor_area = _as_float(_get_or(prop, "floor_area_m2", 85), 85.0)
         self.floors = _as_int(_get_or(prop, "floors", 2), 2)
 
-        # Tariff
+        # Tariff (manual config — the fallback when no live provider answers).
+        # The public names are properties below so every read site transparently
+        # prefers live Octopus rates when available.
         tariff = config.get("tariff") or {}
-        self.tariff_type = _get_or(tariff, "type", "fixed")
-        self.unit_rate = _as_float(_get_or(tariff, "unit_rate_p", 24.5), 24.5) / 100
-        self.standing_charge = _as_float(_get_or(tariff, "standing_charge_p", 46.36), 46.36) / 100
-        self.off_peak_start = str(_get_or(tariff, "off_peak_start", "00:00"))
-        self.off_peak_end = str(_get_or(tariff, "off_peak_end", "07:00"))
-        self.off_peak_rate = _as_float(_get_or(tariff, "off_peak_rate_p", 7.5), 7.5) / 100
+        self._manual_tariff_type = _get_or(tariff, "type", "fixed")
+        self._manual_unit_rate = _as_float(_get_or(tariff, "unit_rate_p", 24.5), 24.5) / 100
+        self._manual_standing_charge = _as_float(_get_or(tariff, "standing_charge_p", 46.36), 46.36) / 100
+        self._manual_off_peak_start = str(_get_or(tariff, "off_peak_start", "00:00"))
+        self._manual_off_peak_end = str(_get_or(tariff, "off_peak_end", "07:00"))
+        self._manual_off_peak_rate = _as_float(_get_or(tariff, "off_peak_rate_p", 7.5), 7.5) / 100
 
         # Boiler
         boiler = config.get("boiler") or {}
@@ -193,6 +199,63 @@ class HeatingAdvisor:
             )
 
     # ── Zone normalisation ─────────────────────────────────────────
+    # ── Tariff resolution ──────────────────────────────────────────
+    # Every tariff read below prefers the live provider (Octopus) and falls
+    # back to the manual config snapshot, so a provider outage can only ever
+    # degrade to the pre-integration behaviour.
+
+    def _boiler_fuel(self) -> str:
+        return "electricity" if self.boiler_type in ("electric", "heat_pump") else "gas"
+
+    def _live_tariff(self) -> Optional[dict]:
+        if not self._tariff_provider:
+            return None
+        try:
+            return self._tariff_provider(self._boiler_fuel())
+        except Exception as e:
+            logger.debug(f"Tariff provider failed: {e}")
+            return None
+
+    @property
+    def tariff_source(self) -> str:
+        return "octopus" if self._live_tariff() else "manual"
+
+    @property
+    def tariff_type(self) -> str:
+        t = self._live_tariff()
+        return t["type"] if t and t.get("type") else self._manual_tariff_type
+
+    @property
+    def unit_rate(self) -> float:
+        t = self._live_tariff()
+        if t and t.get("unit_rate_p") is not None:
+            return float(t["unit_rate_p"]) / 100
+        return self._manual_unit_rate
+
+    @property
+    def standing_charge(self) -> float:
+        t = self._live_tariff()
+        if t and t.get("standing_charge_p") is not None:
+            return float(t["standing_charge_p"]) / 100
+        return self._manual_standing_charge
+
+    @property
+    def off_peak_start(self) -> str:
+        t = self._live_tariff()
+        return t["off_peak_start"] if t and t.get("off_peak_start") else self._manual_off_peak_start
+
+    @property
+    def off_peak_end(self) -> str:
+        t = self._live_tariff()
+        return t["off_peak_end"] if t and t.get("off_peak_end") else self._manual_off_peak_end
+
+    @property
+    def off_peak_rate(self) -> float:
+        t = self._live_tariff()
+        if t and t.get("off_peak_rate_p") is not None:
+            return float(t["off_peak_rate_p"]) / 100
+        return self._manual_off_peak_rate
+
     def _clean_zones(self, zones: list) -> List[Dict]:
         """Normalise + default zone definitions."""
         if not isinstance(zones, list):
@@ -303,6 +366,7 @@ class HeatingAdvisor:
                     "type": self.tariff_type,
                     "unit_rate_p": round(self.unit_rate * 100, 1),
                     "off_peak_rate_p": round(self.off_peak_rate * 100, 1),
+                    "source": self.tariff_source,
                 },
                 "ts": time.time(),
             }
@@ -500,6 +564,7 @@ class HeatingAdvisor:
                 "type": self.tariff_type,
                 "unit_rate_p": round(self.unit_rate * 100, 1),
                 "off_peak_rate_p": round(self.off_peak_rate * 100, 1),
+                "source": self.tariff_source,
             },
             "ts": time.time(),
         }
@@ -1040,6 +1105,10 @@ class HeatingAdvisor:
 
     # ── Cost Estimation ────────────────────────────────────────────
     def _estimate_daily_cost(self, avg_demand: float, outdoor: Optional[float]) -> Dict:
+        actual = self._actual_gas_cost()
+        if actual:
+            return actual
+
         if outdoor is None:
             return {"daily_gbp": None, "monthly_gbp": None}
 
@@ -1052,7 +1121,39 @@ class HeatingAdvisor:
             "monthly_gbp": round(daily_cost * 30, 0),
             "daily_kwh": round(daily_kwh, 1),
             "heating_hours": round(heating_hours, 1),
+            "source": "estimated",
         }
+
+    def _actual_gas_cost(self) -> Optional[Dict]:
+        """
+        Real running cost from Octopus gas-meter consumption, when the
+        integration is live and the boiler burns gas. Smart-meter data lags,
+        so yesterday stands in until today's intervals arrive. None → caller
+        uses the kW×hours estimate (pre-integration behaviour).
+        """
+        if self._boiler_fuel() != "gas":
+            return None
+        # Gate on a live tariff so stale DuckDB rows can't masquerade as
+        # "actual" after the integration is disabled.
+        if not self._live_tariff():
+            return None
+        try:
+            from modules.telemetry_db import query_octopus_kwh_for_day
+            today = datetime.now().date()
+            for day in (today, today - timedelta(days=1)):
+                kwh = query_octopus_kwh_for_day("gas", day)
+                if kwh:
+                    daily_cost = kwh * self.unit_rate + self.standing_charge
+                    return {
+                        "daily_gbp": round(daily_cost, 2),
+                        "monthly_gbp": round(daily_cost * 30, 0),
+                        "daily_kwh": round(kwh, 1),
+                        "source": "octopus_actual",
+                        "actual_day": day.isoformat(),
+                    }
+        except Exception as e:
+            logger.debug(f"Octopus actual-cost lookup failed: {e}")
+        return None
 
     # ── Historical Analysis ────────────────────────────────────────
     def get_heating_history(self, hours: int = 24) -> Dict:

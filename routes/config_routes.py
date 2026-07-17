@@ -68,6 +68,19 @@ SECURITY_DEFAULTS = {
     },
 }
 
+# api_key is deliberately absent: the stored key is never echoed back to the
+# frontend — the GET handler sends api_key="" + api_key_set instead, and the
+# save path only overwrites it when a non-blank value arrives.
+OCTOPUS_DEFAULTS = {
+    "enabled": False,
+    "account_number": "",
+    "gas_calorific_value": 39.5,
+    "gas_unit": "auto",
+    "consumption_poll_minutes": 30,
+    "rates_poll_minutes": 60,
+    "backfill_days": 90,
+}
+
 
 def _with_defaults(value, defaults: dict) -> dict:
     """Recursive dict merge — configured values win, defaults fill the gaps."""
@@ -151,6 +164,14 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "weather": _with_defaults(cfg.get("weather"), WEATHER_DEFAULTS),
                     "media": _with_defaults(cfg.get("media"), MEDIA_DEFAULTS),
                     "security": _with_defaults(cfg.get("security"), SECURITY_DEFAULTS),
+                    "octopus": {
+                        **_with_defaults(
+                            {k: v for k, v in (cfg.get("octopus") or {}).items()
+                             if k != "api_key"},
+                            OCTOPUS_DEFAULTS),
+                        "api_key": "",
+                        "api_key_set": bool((cfg.get("octopus") or {}).get("api_key")),
+                    },
                     "ota": {
                         "enabled": bool(ota.get("enabled", True)),
                         # `providers` is the explicit override list (rarely used).
@@ -313,6 +334,28 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         m_cfg = yale_cfg.setdefault("matter", {})
                         if "enabled" in m_in:
                             m_cfg["enabled"] = bool(m_in["enabled"])
+
+            # ---- Octopus Energy ----
+            if "octopus" in incoming:
+                o = incoming["octopus"] or {}
+                octopus_cfg = cfg.setdefault("octopus", {})
+                if "enabled" in o:
+                    octopus_cfg["enabled"] = bool(o["enabled"])
+                if "account_number" in o:
+                    octopus_cfg["account_number"] = str(o.get("account_number") or "").strip()
+                # Blank key = keep the stored one (mqtt-password rule)
+                if o.get("api_key"):
+                    octopus_cfg["api_key"] = str(o["api_key"]).strip()
+                if o.get("gas_calorific_value"):
+                    octopus_cfg["gas_calorific_value"] = float(o["gas_calorific_value"])
+                if o.get("gas_unit") in ("auto", "kwh", "m3"):
+                    octopus_cfg["gas_unit"] = o["gas_unit"]
+                if o.get("consumption_poll_minutes"):
+                    octopus_cfg["consumption_poll_minutes"] = int(o["consumption_poll_minutes"])
+                if o.get("rates_poll_minutes"):
+                    octopus_cfg["rates_poll_minutes"] = int(o["rates_poll_minutes"])
+                if o.get("backfill_days"):
+                    octopus_cfg["backfill_days"] = int(o["backfill_days"])
 
             if "zigbee" in incoming:
                 z = incoming["zigbee"]

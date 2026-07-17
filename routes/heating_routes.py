@@ -728,7 +728,8 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
     return tips
 
 # ═══════════════════════════════════════════════════════════════════
-def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_service,get_anomaly_watcher=None):
+def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_service,get_anomaly_watcher=None,
+                            get_octopus=None):
     """
     Register heating routes.
 
@@ -737,7 +738,25 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         get_heating_advisor: callable returning the HeatingAdvisor instance
         get_zigbee_service: optional callable returning the zigbee service
                             (used for thermostat device listing)
+        get_octopus: optional callable returning the OctopusEnergyService,
+                     used to report the live tariff in /api/heating/config
     """
+
+    def _octopus_tariff():
+        """Live Octopus tariff for the boiler fuel, or None (manual mode)."""
+        if not get_octopus:
+            return None
+        try:
+            svc = get_octopus()
+            if not svc:
+                return None
+            cfg = _load_config()
+            boiler_type = ((cfg.get("heating") or {}).get("boiler") or {}).get("type", "gas")
+            fuel = "electricity" if boiler_type in ("electric", "heat_pump") else "gas"
+            return svc.heating_tariff(fuel)
+        except Exception as e:
+            logger.debug(f"Octopus tariff lookup failed: {e}")
+            return None
 
     def _resolve_advisor():
         """Unwrap advisor; tolerates `lambda: advisor_ref` or `lambda: lambda: advisor_ref`."""
@@ -888,16 +907,21 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         try:
             cfg = _load_config()
             heating = cfg.get("heating") or {}
+            live = _octopus_tariff()
             return {
                 "success": True,
                 "config": {
                     "enabled": bool(heating.get("enabled", False)),
                     "property": _with_defaults(heating.get("property"), _PROPERTY_DEFAULTS),
+                    # Manual tariff is always returned — it's the fallback the
+                    # user can still edit while Octopus is merely unreachable.
                     "tariff": _with_defaults(heating.get("tariff"), _TARIFF_DEFAULTS),
                     "boiler": _with_defaults(heating.get("boiler"), _BOILER_DEFAULTS),
                     "comfort": _with_defaults(heating.get("comfort"), _COMFORT_DEFAULTS),
                     "zones": _clean_zones(heating.get("zones") or []),
                 },
+                "tariff_source": "octopus" if live else "manual",
+                "octopus_tariff": live,
                 "schema": {
                     "property_types": sorted(_PROPERTY_TYPES),
                     "insulation": sorted(_INSULATION),
