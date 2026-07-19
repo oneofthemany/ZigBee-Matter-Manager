@@ -7,6 +7,7 @@
  *   GET /api/octopus/summary
  *   GET /api/octopus/consumption?fuel=&range=
  *   GET /api/octopus/rates?fuel=
+ *   GET /api/octopus/insights
  *   GET /api/octopus/breakdown?range=
  *
  * Integration:
@@ -56,7 +57,28 @@ let consumptionCache = {};  // fuel → series (for metric re-render without ref
 let ratesCache = null;
 let breakdownCache = null;
 let telemetryCache = null;  // Home Mini live demand samples
+let insightsCache = null;   // percentiles / trend / rate position / recommendations
 let octopusEnabled = false;
+
+// Price-band colours (diverging: cheap=blue pole, typical=neutral midpoint,
+// peak=warm pole). Validated for CVD separation + contrast against both card
+// surfaces (dataviz six-checks); band names always appear as text too.
+function bandColours() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    return isDark
+        ? { cheap: '#3b82f6', typical: '#64748b', peak: '#ea580c' }
+        : { cheap: '#2563eb', typical: '#64748b', peak: '#ea580c' };
+}
+
+// Band thresholds over the displayed rate window (terciles): cheap ≤ lo,
+// peak ≥ hi. Shared by the header chips and the chart so they never disagree.
+function rateBands() {
+    const vals = (ratesCache?.unit_rates || []).map(r => r.p_per_kwh)
+        .filter(v => v != null).sort((a, b) => a - b);
+    if (vals.length < 6) return null;
+    const q = p => vals[Math.min(vals.length - 1, Math.floor(vals.length * p))];
+    return { lo: q(1 / 3), hi: q(2 / 3) };
+}
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g,
@@ -139,9 +161,10 @@ async function loadEnergyDashboard(opts = {}) {
                 fetchJson(`/api/octopus/consumption?fuel=gas&${consQuery}`),
                 fetchJson('/api/octopus/rates?fuel=electricity'),
                 fetchJson('/api/octopus/telemetry'),
+                fetchJson('/api/octopus/insights'),
             );
         }
-        const [breakdown, summary, elec, gas, rates, telemetry] = await Promise.all(wants);
+        const [breakdown, summary, elec, gas, rates, telemetry, insights] = await Promise.all(wants);
 
         breakdownCache = breakdown?.success ? breakdown : null;
         consumptionCache = {
@@ -150,6 +173,7 @@ async function loadEnergyDashboard(opts = {}) {
         };
         ratesCache = rates?.success ? rates : null;
         telemetryCache = telemetry?.success && telemetry.enabled ? telemetry : null;
+        insightsCache = insights?.success ? insights : null;
 
         disposeCharts();
         root.innerHTML = renderScaffold(status, summary?.success ? summary : null);
@@ -235,14 +259,8 @@ function renderScaffold(status, summary) {
         </div>
       </div>
 
-      <div class="card mb-3">
-        <div class="card-header fw-semibold">
-          <i class="fas fa-wave-square me-1"></i> Electricity Unit Rate — today &amp; tomorrow
-        </div>
-        <div class="card-body">
-          <div id="energyRatesChart" style="height: 260px;"></div>
-        </div>
-      </div>` : '';
+      ${renderRatesCard(status, summary)}
+      ${renderInsightsCard()}` : '';
 
     return `
       ${disabledBanner}
@@ -271,13 +289,14 @@ function renderScaffold(status, summary) {
 function renderKpiRow(status, summary) {
     if (!summary) return '';
     const f = summary.fuels || {};
+    const colours = fuelColours();
 
-    const card = (title, icon, body, foot) => `
+    const card = (title, icon, body, foot, accent) => `
       <div class="col-6 col-lg-3">
-        <div class="card h-100">
+        <div class="card h-100"${accent ? ` style="border-left:3px solid ${accent}"` : ''}>
           <div class="card-body py-2">
             <div class="text-muted small">${icon} ${title}</div>
-            <div class="fs-5 fw-semibold">${body}</div>
+            <div class="fs-5 fw-semibold" style="font-variant-numeric: tabular-nums">${body}</div>
             ${foot ? `<div class="text-muted small">${foot}</div>` : ''}
           </div>
         </div>
@@ -286,12 +305,13 @@ function renderKpiRow(status, summary) {
     const fuelCard = (fuel, label, icon) => {
         const d = f[fuel] || {};
         const day = d.latest_day;
-        if (!day) return card(label, icon, '<span class="text-muted">no data yet</span>', '');
+        if (!day) return card(label, icon, '<span class="text-muted">no data yet</span>', '', colours[fuel]);
         const cost = day.cost_gbp !== null && day.cost_gbp !== undefined
             ? ` · £${day.cost_gbp.toFixed(2)}` : '';
         return card(label, icon,
             `${day.kwh ?? '—'} kWh${cost}`,
-            `${esc(day.date)}${d.latest_data ? ' · meter data to ' + new Date(d.latest_data).toLocaleString() : ''}`);
+            `${esc(day.date)}${d.latest_data ? ' · meter data to ' + new Date(d.latest_data).toLocaleString() : ''}`,
+            colours[fuel]);
     };
 
     const elecRate = f.electricity?.current_unit_rate_p;
@@ -322,6 +342,144 @@ function renderKpiRow(status, summary) {
       </div>`;
 }
 
+function ordinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) ? 0 : Math.min(n % 10, 4)] || 'th';
+    return `${n}${s}`;
+}
+
+const swatch = colour =>
+    `<span style="width:10px;height:10px;border-radius:3px;background:${colour};display:inline-block;flex-shrink:0"></span>`;
+
+/**
+ * Unit-rate card, adaptive to the tariff's shape:
+ *  - flat tariff → one text line (a 260px chart of a flat line says nothing)
+ *  - varying tariff (Agile/E7) → now→next strip + half-hourly bars coloured
+ *    by price band (terciles of the visible window)
+ */
+function renderRatesCard(status, summary) {
+    const unitRates = ratesCache?.unit_rates || [];
+    if (!unitRates.length) return '';
+
+    const rc = insightsCache?.rate_context;
+    const distinct = new Set(unitRates.map(r => r.p_per_kwh)).size;
+    const isAgile = rc ? rc.is_agile : distinct > 4;
+    const standing = ratesCache?.standing_charge_p;
+
+    const fmtT = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const next = rc?.next_change;
+    const strip = rc?.current_p != null ? `
+        <span class="fs-5 fw-semibold">${rc.current_p.toFixed(2)}p</span><span class="text-muted small">/kWh now</span>
+        ${next ? `<span class="text-muted small"><i class="fas fa-arrow-right-long mx-1"></i>${next.p.toFixed(2)}p at ${fmtT(next.at)}</span>` : ''}` : '';
+
+    if (!isAgile) {
+        const rate = rc?.current_p ?? unitRates[unitRates.length - 1]?.p_per_kwh;
+        return `
+      <div class="card mb-3">
+        <div class="card-body py-2 d-flex flex-wrap align-items-baseline gap-2">
+          <span class="text-muted small"><i class="fas fa-tag me-1"></i> Electricity unit rate</span>
+          ${strip || `<span class="fs-5 fw-semibold">${rate != null ? rate.toFixed(2) : '—'}p</span><span class="text-muted small">/kWh</span>`}
+          ${!next && distinct === 1 ? '<span class="text-muted small">· same price all day</span>' : ''}
+          ${standing != null ? `<span class="text-muted small ms-auto">standing ${standing.toFixed(1)}p/day</span>` : ''}
+        </div>
+      </div>`;
+    }
+
+    const bands = rateBands();
+    const bc = bandColours();
+    const chip = (colour, label) =>
+        `<span class="d-inline-flex align-items-center gap-1 small text-muted">${swatch(colour)}${label}</span>`;
+    const agileBadge = summary?.tomorrow_agile_published
+        ? '<span class="badge bg-success">Tomorrow’s rates in</span>'
+        : '<span class="badge bg-secondary">Tomorrow ~16:00</span>';
+
+    return `
+      <div class="card mb-3">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+          <span class="fw-semibold"><i class="fas fa-wave-square me-1"></i> Electricity Unit Rate — today &amp; tomorrow</span>
+          ${agileBadge}
+          <span class="ms-auto d-flex align-items-baseline gap-1">${strip}</span>
+        </div>
+        <div class="card-body">
+          ${bands ? `
+          <div class="d-flex flex-wrap align-items-center gap-3 mb-1">
+            ${chip(bc.cheap, `cheap ≤ ${bands.lo.toFixed(1)}p`)}
+            ${chip(bc.typical, 'typical')}
+            ${chip(bc.peak, `peak ≥ ${bands.hi.toFixed(1)}p`)}
+            ${rc?.percentile_today != null
+                ? `<span class="small text-muted ms-auto">now is cheaper than ${100 - rc.percentile_today}% of today's slots</span>` : ''}
+          </div>` : ''}
+          <div id="energyRatesChart" style="height: 240px;"></div>
+        </div>
+      </div>`;
+}
+
+/**
+ * Analysis card: where each fuel's latest full day sits in its own 30-day
+ * distribution (p10–p90 band + median + latest marker), weekly trend, base
+ * load / Agile-timing chips, and the server's rule-based recommendations.
+ */
+function renderInsightsCard() {
+    const ins = insightsCache;
+    if (!ins) return '';
+    const elecS = ins.fuels?.electricity;
+    const gasS = ins.fuels?.gas;
+    const recs = ins.recommendations || [];
+    if (!elecS && !gasS && !recs.length) return '';
+
+    const colours = fuelColours();
+    const fuelLine = (s, label, colour) => {
+        if (!s) return '';
+        const ld = s.latest_day;
+        const trend = s.week_trend_pct;
+        return `
+          <div class="d-flex align-items-center flex-wrap gap-2">
+            ${swatch(colour)}
+            <span class="fw-semibold small">${label}</span>
+            <span class="small">${ld.kwh} kWh on ${esc(ld.date)}${ld.cost_gbp != null ? ` · £${ld.cost_gbp.toFixed(2)}` : ''}</span>
+            <span class="small text-muted">— ${ordinal(ld.percentile)} percentile of your last ${s.days_analysed} days</span>
+            ${trend != null ? `<span class="small text-muted"><i class="fas fa-arrow-trend-${trend >= 0 ? 'up' : 'down'} me-1"></i>${trend >= 0 ? '+' : ''}${trend}% wk-on-wk</span>` : ''}
+          </div>`;
+    };
+
+    const bl = ins.base_load;
+    const timing = ins.timing;
+    const chips = [
+        bl ? `<span class="small text-muted"><i class="fas fa-moon me-1"></i>base load ~${bl.w} W (${bl.kwh_day} kWh/day${bl.cost_month_gbp != null ? ` · £${bl.cost_month_gbp.toFixed(0)}/mo` : ''})</span>` : '',
+        timing?.saving_pct != null
+            ? `<span class="small text-muted"><i class="fas fa-clock me-1"></i>Agile timing ${timing.saving_pct >= 0 ? 'saves' : 'costs'} you ${Math.abs(timing.saving_pct)}% vs flat usage</span>` : '',
+    ].filter(Boolean);
+
+    const recsHtml = recs.length ? `
+        <div class="mt-2 pt-2 border-top">
+          ${recs.map(t => `
+            <div class="d-flex gap-2 py-2">
+              <i class="fas fa-${esc(t.icon || 'lightbulb')} mt-1 text-warning"></i>
+              <div>
+                <div class="fw-semibold small">${esc(t.title)}</div>
+                <div class="text-muted small">${esc(t.detail)}</div>
+              </div>
+            </div>`).join('')}
+        </div>` : '';
+
+    return `
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">
+          <i class="fas fa-magnifying-glass-chart me-1"></i> Analysis — your last 30 days
+        </div>
+        <div class="card-body">
+          <div class="d-flex flex-column gap-1 mb-2">
+            ${fuelLine(elecS, 'Electricity', colours.electricity)}
+            ${fuelLine(gasS, 'Gas', colours.gas)}
+          </div>
+          ${(elecS || gasS) ? `
+          <div id="energyInsightsChart" style="height: ${elecS && gasS ? 120 : 90}px;"></div>
+          <div class="text-muted small">Shaded band = middle 80% of your daily usage · <strong>|</strong> median · <strong>●</strong> latest full day</div>` : ''}
+          ${chips.length ? `<div class="d-flex flex-wrap gap-3 mt-2">${chips.join('')}</div>` : ''}
+          ${recsHtml}
+        </div>
+      </div>`;
+}
+
 // ============================================================================
 // CHARTS
 // ============================================================================
@@ -330,6 +488,7 @@ function renderAllCharts() {
         renderLiveChart();
         renderConsumptionChart();
         renderRatesChart();
+        renderInsightsChart();
     }
     renderBreakdownChart();
 }
@@ -455,74 +614,144 @@ function renderConsumptionChart() {
 }
 
 function renderRatesChart() {
+    // Only exists in Agile mode — the flat-tariff card renders no chart div.
     const el = document.getElementById('energyRatesChart');
     if (!el) return;
-    const colours = fuelColours();
-    const rates = ratesCache;
-    const unitRates = rates?.unit_rates || [];
-    if (!unitRates.length) {
+    const unitRates = ratesCache?.unit_rates || [];
+    const bands = rateBands();
+    if (!unitRates.length || !bands) {
         el.innerHTML = '<div class="text-muted text-center py-5">No rate data yet.</div>';
         return;
     }
 
-    // Step line: one point per slot start (+ closing point for the last slot)
-    const points = unitRates.map(r => [r.from, r.p_per_kwh]);
-    const last = unitRates[unitRates.length - 1];
-    if (last?.to) points.push([last.to, last.p_per_kwh]);
-
-    const values = unitRates.map(r => r.p_per_kwh);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const isAgile = unitRates.length > 4;
+    const bc = bandColours();
+    const bandOf = p => p <= bands.lo ? 'cheap' : (p >= bands.hi ? 'peak' : 'typical');
+    const nowMs = new Date(ratesCache.now).getTime();
+    const nowIdx = unitRates.findIndex(r =>
+        new Date(r.from).getTime() <= nowMs && (!r.to || nowMs < new Date(r.to).getTime()));
 
     charts.rates?.dispose();
     charts.rates = createChart(el);
     charts.rates.setOption({
-        grid: { left: 48, right: 16, top: 20, bottom: 42 },
+        grid: { left: 48, right: 16, top: 30, bottom: 32 },
         tooltip: {
             trigger: 'axis',
+            axisPointer: { type: 'shadow' },
             formatter: params => {
                 const p = params[0];
-                if (!p) return '';
-                return `${new Date(p.data[0]).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
-                    + `<br>${p.marker} ${Number(p.data[1]).toFixed(2)} p/kWh`;
+                const r = p ? unitRates[p.dataIndex] : null;
+                if (!r) return '';
+                const t0 = new Date(r.from);
+                const t1 = r.to ? new Date(r.to) : null;
+                return `${t0.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
+                    + `${t1 ? '–' + t1.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}`
+                    + `<br>${p.marker} ${r.p_per_kwh.toFixed(2)} p/kWh · ${bandOf(r.p_per_kwh)}`;
             },
         },
-        xAxis: { type: 'time', axisLabel: { hideOverlap: true } },
+        xAxis: {
+            type: 'category',
+            data: unitRates.map(r => r.from),
+            axisTick: { show: false },
+            axisLabel: {
+                // Label every 6h; midnight becomes the day name so the
+                // today/tomorrow boundary is obvious without a legend.
+                interval: i => {
+                    const d = new Date(unitRates[i].from);
+                    return d.getMinutes() === 0 && d.getHours() % 6 === 0;
+                },
+                formatter: iso => {
+                    const d = new Date(iso);
+                    return d.getHours() === 0
+                        ? d.toLocaleDateString([], { weekday: 'short' })
+                        : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                },
+            },
+        },
         yAxis: {
             type: 'value',
             name: 'p/kWh',
             nameTextStyle: { align: 'left' },
-            scale: true,
         },
         series: [{
             name: 'Unit rate',
-            type: 'line',
-            step: 'end',
-            symbol: 'none',
-            lineStyle: { width: 2, color: colours.electricity },
-            itemStyle: { color: colours.electricity },
-            data: points,
+            type: 'bar',
+            barCategoryGap: '25%',
+            data: unitRates.map(r => ({
+                value: r.p_per_kwh,
+                itemStyle: {
+                    color: bc[bandOf(r.p_per_kwh)],
+                    borderRadius: r.p_per_kwh >= 0 ? [2, 2, 0, 0] : [0, 0, 2, 2],
+                },
+            })),
             markLine: {
                 symbol: 'none',
-                data: [
-                    {
-                        xAxis: rates.now,
-                        label: { formatter: 'now' },
-                        lineStyle: { type: 'solid', width: 2 },
-                    },
-                    ...(isAgile ? [{
-                        yAxis: min,
-                        label: { formatter: `min ${min.toFixed(1)}p`, position: 'insideEndTop' },
-                        lineStyle: { type: 'dashed', opacity: 0.5 },
-                    }, {
-                        yAxis: max,
-                        label: { formatter: `max ${max.toFixed(1)}p`, position: 'insideEndTop' },
-                        lineStyle: { type: 'dashed', opacity: 0.5 },
-                    }] : []),
-                ],
+                data: nowIdx >= 0 ? [{
+                    xAxis: nowIdx,
+                    label: { formatter: 'now' },
+                    lineStyle: { type: 'solid', width: 2 },
+                }] : [],
             },
         }],
+    });
+}
+
+function renderInsightsChart() {
+    const el = document.getElementById('energyInsightsChart');
+    if (!el || !insightsCache) return;
+    const colours = fuelColours();
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const surface = isDark ? '#101e2b' : '#ffffff';
+
+    const rows = [];
+    for (const [fuel, label] of [['electricity', 'Electricity'], ['gas', 'Gas']]) {
+        const s = insightsCache.fuels?.[fuel];
+        if (s) rows.push({ label, s, colour: colours[fuel] });
+    }
+    if (!rows.length) return;
+
+    const fmt = p => {
+        const r = rows[p.dataIndex ?? (Array.isArray(p.value) ? p.value[1] : 0)];
+        if (!r) return '';
+        return `<strong>${r.label}</strong> — daily kWh, last ${r.s.days_analysed} days`
+            + `<br>p10 ${r.s.p10} · median ${r.s.p50} · p90 ${r.s.p90}`
+            + `<br>● latest full day: ${r.s.latest_day.kwh} (${ordinal(r.s.latest_day.percentile)} pct)`;
+    };
+
+    charts.insights?.dispose();
+    charts.insights = createChart(el);
+    charts.insights.setOption({
+        grid: { left: 8, right: 64, top: 4, bottom: 22, containLabel: true },
+        tooltip: { trigger: 'item', formatter: fmt },
+        xAxis: { type: 'value', name: 'kWh/day', nameGap: 8 },
+        yAxis: { type: 'category', data: rows.map(r => r.label), axisTick: { show: false } },
+        series: [
+            {   // invisible offset so the band starts at p10
+                type: 'bar', stack: 'band', barWidth: 14, silent: true,
+                itemStyle: { color: 'transparent' },
+                data: rows.map(r => r.s.p10),
+            },
+            {   // p10–p90 band
+                type: 'bar', stack: 'band', barWidth: 14,
+                data: rows.map(r => ({
+                    value: Math.max(0, +(r.s.p90 - r.s.p10).toFixed(2)),
+                    itemStyle: { color: r.colour, opacity: 0.25, borderRadius: 4 },
+                })),
+            },
+            {   // median tick
+                type: 'scatter', symbol: 'rect', symbolSize: [3, 20],
+                data: rows.map((r, i) => ({
+                    value: [r.s.p50, i],
+                    itemStyle: { color: r.colour },
+                })),
+            },
+            {   // latest full day, with a surface ring so it reads over the band
+                type: 'scatter', symbolSize: 11,
+                data: rows.map((r, i) => ({
+                    value: [r.s.latest_day.kwh, i],
+                    itemStyle: { color: r.colour, borderColor: surface, borderWidth: 2 },
+                })),
+            },
+        ],
     });
 }
 

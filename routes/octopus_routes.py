@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import FastAPI, Request
 
 from modules import telemetry_db
+from modules.octopus import LONDON
 
 logger = logging.getLogger("routes.octopus")
 
@@ -130,6 +131,104 @@ def _socket_tips(sockets: list, rate_p: Optional[float],
             break
 
     return tips[:5]
+
+
+def _insight_recommendations(fuels: dict, rate_context: Optional[dict],
+                             timing: Optional[dict],
+                             base_load: Optional[dict]) -> list:
+    """
+    Rule-based findings from the insights data — same {icon, title, detail}
+    shape as the socket/heating tips so the UI renders them alike. Only
+    speaks when the data actually supports a claim; silence otherwise.
+    """
+    recs = []
+    labels = {"electricity": "Electricity", "gas": "Gas"}
+
+    for fuel, label in labels.items():
+        s = fuels.get(fuel)
+        if not s:
+            continue
+        latest = s["latest_day"]
+        if latest["percentile"] >= 90 and s["p50"]:
+            recs.append({
+                "icon": "arrow-trend-up", "category": "usage",
+                "title": f"{label}: {latest['date']} was a top-10% day",
+                "detail": f"{latest['kwh']} kWh against a typical (median) "
+                          f"{s['p50']} kWh. Worth remembering what ran that day "
+                          f"— it's your expensive pattern.",
+            })
+        trend = s.get("week_trend_pct")
+        if trend is not None and abs(trend) >= 15:
+            up = trend > 0
+            recs.append({
+                "icon": "arrow-trend-up" if up else "arrow-trend-down",
+                "category": "trend",
+                "title": f"{label} is trending {'up' if up else 'down'} "
+                         f"{abs(trend)}% week-on-week",
+                "detail": ("Last 7 full days vs the 7 before. "
+                           + ("If nothing changed on purpose, something is "
+                              "running more than it used to."
+                              if up else "Whatever changed, it's working — "
+                              "that's the direction you want.")),
+            })
+        wd, we = s.get("weekday_median_kwh"), s.get("weekend_median_kwh")
+        if wd and we and we > wd * 1.3:
+            recs.append({
+                "icon": "calendar-week", "category": "pattern",
+                "title": f"{label}: weekends run {round(100 * (we - wd) / wd)}% "
+                         f"higher than weekdays",
+                "detail": f"Median {we} kWh vs {wd} kWh. Normal if you're home "
+                          f"more — but it makes weekends the days where habit "
+                          f"changes pay most.",
+            })
+
+    if timing and timing.get("saving_pct") is not None:
+        sp = timing["saving_pct"]
+        if sp >= 5:
+            recs.append({
+                "icon": "clock", "category": "timing",
+                "title": f"Your Agile timing is saving you ~{sp}%",
+                "detail": f"Over 14 days you paid {timing['effective_paid_p']}p/kWh "
+                          f"against a time-flat average of {timing['flat_avg_p']}p "
+                          f"— load is already landing in the cheap slots.",
+            })
+        elif sp <= -5:
+            window = (rate_context or {}).get("cheapest_window")
+            hint = (f" Tonight's cheapest window is {window['start']}–{window['end']} "
+                    f"(~{window['avg_p']}p/kWh)." if window else "")
+            recs.append({
+                "icon": "clock", "category": "timing",
+                "title": f"Your usage lands in expensive Agile slots (+{-sp}%)",
+                "detail": f"Over 14 days you paid {timing['effective_paid_p']}p/kWh "
+                          f"vs a time-flat {timing['flat_avg_p']}p. Shifting "
+                          f"flexible loads would claw that back.{hint}",
+            })
+
+    if base_load and base_load.get("share_pct") is not None and base_load["share_pct"] >= 30:
+        cost = (f" ≈ £{base_load['cost_month_gbp']:.0f}/month"
+                if base_load.get("cost_month_gbp") is not None else "")
+        recs.append({
+            "icon": "moon", "category": "standby",
+            "title": f"~{base_load['w']} W never switches off",
+            "detail": f"Your overnight base load is {base_load['kwh_day']} kWh/day"
+                      f"{cost} — {base_load['share_pct']}% of a typical day. The "
+                      f"socket table below shows what's drawing right now.",
+        })
+
+    return recs[:5]
+
+
+def _percentile(sorted_vals: list, q: float) -> Optional[float]:
+    """Linear-interpolated percentile of an ascending list (q in 0..1)."""
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    pos = (len(sorted_vals) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
 
 
 def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_service=None):
@@ -394,6 +493,189 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
             "plugs_kwh": plugs_kwh,
             "grid_kwh": round(grid_kwh, 3) if grid_kwh is not None else None,
             "unmetered_kwh": round(max(0.0, grid_kwh - plugs_kwh), 3) if grid_kwh is not None else None,
+        }
+
+    @app.get("/api/octopus/insights")
+    async def octopus_insights():
+        """
+        Percentile analysis + recommendations for the Energy tab.
+
+        Everything is derived from data already in DuckDB / service caches:
+        30 days of daily buckets per fuel (percentile band, latest-day rank,
+        weekly trend, weekday/weekend split), 14 days of half-hourly cost
+        (effective paid rate vs the tariff's flat average — the "is my
+        timing good" number), today's rate position, and base load from the
+        Home Mini demand buffer. Each block is None when its data isn't
+        there yet; nothing here ever raises.
+        """
+        svc = _svc()
+        status = svc.get_status() if svc else {}
+        today_local = datetime.now(LONDON).strftime("%Y-%m-%d")
+
+        async def fuel_stats(fuel: str):
+            rows = await _q(telemetry_db.query_octopus_consumption_buckets,
+                            fuel, days=32, group_by="day")
+            complete = [
+                {"date": _fmt_ts(r["ts"], "day"), "kwh": r["kwh"],
+                 "cost_p": r["cost_p"]}
+                for r in rows
+                if r["kwh"] is not None and _fmt_ts(r["ts"], "day") < today_local
+            ]
+            if len(complete) < 5:
+                return None
+            vals = sorted(d["kwh"] for d in complete)
+            latest = complete[-1]
+            rank = round(100 * sum(1 for v in vals if v <= latest["kwh"]) / len(vals))
+            week = complete[-7:]
+            prev = complete[-14:-7]
+            trend = None
+            if len(week) == 7 and len(prev) == 7 and sum(d["kwh"] for d in prev) > 0:
+                trend = round(100 * (sum(d["kwh"] for d in week)
+                                     - sum(d["kwh"] for d in prev))
+                              / sum(d["kwh"] for d in prev))
+            wd = sorted(d["kwh"] for d in complete
+                        if datetime.strptime(d["date"], "%Y-%m-%d").weekday() < 5)
+            we = sorted(d["kwh"] for d in complete
+                        if datetime.strptime(d["date"], "%Y-%m-%d").weekday() >= 5)
+            r2 = lambda v: round(v, 2) if v is not None else None
+            return {
+                "days_analysed": len(complete),
+                "p10": r2(_percentile(vals, 0.10)),
+                "p25": r2(_percentile(vals, 0.25)),
+                "p50": r2(_percentile(vals, 0.50)),
+                "p75": r2(_percentile(vals, 0.75)),
+                "p90": r2(_percentile(vals, 0.90)),
+                "latest_day": {
+                    "date": latest["date"],
+                    "kwh": r2(latest["kwh"]),
+                    "cost_gbp": (round(latest["cost_p"] / 100, 2)
+                                 if latest["cost_p"] is not None else None),
+                    "percentile": rank,
+                },
+                "week_trend_pct": trend,
+                "weekday_median_kwh": r2(_percentile(wd, 0.5)),
+                "weekend_median_kwh": r2(_percentile(we, 0.5)),
+            }
+
+        fuels = {}
+        for fuel in ("electricity", "gas"):
+            try:
+                fuels[fuel] = await fuel_stats(fuel)
+            except Exception as e:
+                logger.debug(f"Insights fuel stats failed ({fuel}): {e}")
+                fuels[fuel] = None
+
+        # ── Rate position: where "now" sits in today's price curve ──
+        rate_context = None
+        try:
+            rates = svc.rates_today("electricity") if svc else []
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            today_slots = [
+                r for r in rates
+                if r["from"].replace(tzinfo=timezone.utc).astimezone(LONDON)
+                    .strftime("%Y-%m-%d") == today_local
+            ]
+            current = next((r for r in rates
+                            if r["from"] <= now_utc
+                            and (r["to"] is None or now_utc < r["to"])), None)
+            if today_slots and current:
+                after = sorted((r for r in rates if r["from"] >= current["from"]),
+                               key=lambda r: r["from"])
+                nxt = next((r for r in after if r["p"] != current["p"]), None)
+                vals = sorted(r["p"] for r in today_slots)
+                is_agile = bool((status.get("tariffs") or {})
+                                .get("electricity", {}).get("is_agile"))
+                rate_context = {
+                    "is_agile": is_agile,
+                    "current_p": round(current["p"], 2),
+                    "current_until": (current["to"].isoformat() + "Z"
+                                      if current["to"] else None),
+                    "percentile_today": round(
+                        100 * sum(1 for v in vals if v <= current["p"]) / len(vals)),
+                    "today_min_p": round(vals[0], 2),
+                    "today_median_p": round(_percentile(vals, 0.5), 2),
+                    "today_max_p": round(vals[-1], 2),
+                    "next_change": ({
+                        "at": nxt["from"].isoformat() + "Z",
+                        "p": round(nxt["p"], 2),
+                    } if nxt else None),
+                }
+                if is_agile:
+                    t = svc.heating_tariff("electricity")
+                    if t and t.get("off_peak_start"):
+                        rate_context["cheapest_window"] = {
+                            "start": t["off_peak_start"],
+                            "end": t["off_peak_end"],
+                            "avg_p": t["off_peak_rate_p"],
+                        }
+        except Exception as e:
+            logger.debug(f"Insights rate context failed: {e}")
+
+        # ── Timing efficiency: what you actually paid per kWh over 14 days
+        # vs the tariff's time-flat average over the same window ──
+        timing = None
+        try:
+            if rate_context and rate_context["is_agile"]:
+                hh = await _q(telemetry_db.query_octopus_consumption_buckets,
+                              "electricity", days=14, group_by="halfhour")
+                paired = [(r["kwh"], r["cost_p"]) for r in hh
+                          if r["kwh"] and r["cost_p"] is not None]
+                tot_kwh = sum(k for k, _ in paired)
+                tot_cost = sum(c for _, c in paired)
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                window = await _q(telemetry_db.query_octopus_rates_window,
+                                  "electricity",
+                                  now_utc - timedelta(days=14), now_utc)
+                slot_rates = [r["value_inc_vat_p"] for r in window
+                              if r.get("value_inc_vat_p") is not None]
+                if tot_kwh > 1 and slot_rates:
+                    effective = tot_cost / tot_kwh
+                    flat = sum(slot_rates) / len(slot_rates)
+                    timing = {
+                        "effective_paid_p": round(effective, 2),
+                        "flat_avg_p": round(flat, 2),
+                        "saving_pct": round(100 * (flat - effective) / flat)
+                        if flat > 0 else None,
+                    }
+        except Exception as e:
+            logger.debug(f"Insights timing failed: {e}")
+
+        # ── Base load from the Home Mini demand buffer (needs ~2h of samples) ──
+        base_load = None
+        try:
+            tele = svc.get_live_telemetry() if svc else {}
+            demands = sorted(s["demand_w"] for s in tele.get("series") or []
+                             if s.get("demand_w") is not None)
+            if len(demands) >= 24:
+                base_w = _percentile(demands, 0.10)
+                kwh_day = base_w * 24 / 1000
+                rate_p = ((timing or {}).get("effective_paid_p")
+                          or (rate_context or {}).get("current_p"))
+                share = None
+                med = (fuels.get("electricity") or {}).get("p50")
+                if med:
+                    share = round(100 * kwh_day / med)
+                base_load = {
+                    "w": round(base_w),
+                    "kwh_day": round(kwh_day, 2),
+                    "cost_month_gbp": (round(kwh_day * 30.4 * rate_p / 100, 2)
+                                       if rate_p is not None else None),
+                    "share_pct": share,
+                }
+        except Exception as e:
+            logger.debug(f"Insights base load failed: {e}")
+
+        recommendations = _insight_recommendations(
+            fuels, rate_context, timing, base_load)
+
+        return {
+            "success": True,
+            "enabled": bool(status.get("enabled")),
+            "fuels": fuels,
+            "rate_context": rate_context,
+            "timing": timing,
+            "base_load": base_load,
+            "recommendations": recommendations,
         }
 
     @app.get("/api/octopus/telemetry")
