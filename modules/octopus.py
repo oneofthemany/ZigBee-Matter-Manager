@@ -24,6 +24,14 @@ Config (config.yaml):
     telemetry_poll_minutes: 5   # Home Mini sampling cadence (5–10 min typical)
     retention_days: 400         # local history kept in data/octopus.duckdb
 
+With home_mini the telemetry poll also persists each half-hour's
+consumptionDelta as provisional (source='mini') consumption rows, so the
+Energy chart shows today in near real time instead of trailing the REST
+data lag. The REST poll stays the settlement-grade authority — it
+overwrites provisional rows on the same interval key — but relaxes to a
+3-hourly reconcile cadence for electricity while Mini samples flow (gas
+always keeps consumption_poll_minutes; the Mini feed is electricity-only).
+
 Smart-meter consumption lags by several hours to a day — "today" is usually
 partial. Rates never break heating: heating_tariff() returns None on any
 doubt and the advisor falls back to the manual tariff config.
@@ -76,6 +84,9 @@ TELEMETRY_QUERY = """query {
 
 KRAKEN_TOKEN_TTL = 55 * 60          # re-obtain before the ~1h expiry
 LIVE_BUFFER_MAX = 576               # 48h of 5-min samples
+# While the Home Mini feeds provisional half-hours, the electricity REST pull
+# is pure reconciliation (its data lags hours anyway) — poll it gently.
+MINI_RECONCILE_SEC = 3 * 3600
 
 # Europe/London for UK-local day boundaries and the 16:00 Agile publish time.
 # Must never crash the app at import: on hosts without tz data (no OS tzdata
@@ -165,12 +176,15 @@ class OctopusEnergyService:
         self._task: Optional[asyncio.Task] = None
         self._client = None
         self._last_agile_retry = 0.0
-        # Home Mini live telemetry (in-memory only — the half-hourly REST
-        # data in DuckDB is the durable record, this is the live view)
+        # Home Mini live telemetry. The demand buffer is the in-memory live
+        # view; the half-hourly consumptionDelta is also persisted to DuckDB
+        # as provisional source='mini' rows that the REST poll later
+        # overwrites with settlement-grade data.
         self._kraken_token: Optional[str] = None
         self._kraken_expires = 0.0
         self._mini_device_id: Optional[str] = None
         self._mini_last_discovery = 0.0
+        self._mini_last_sample = 0.0
         self._live_buffer: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
@@ -308,6 +322,10 @@ class OctopusEnergyService:
                 "device_id": self._mini_device_id,
                 "samples": len(self._live_buffer),
                 "latest": self._live_buffer[-1] if self._live_buffer else None,
+                # Mini is filling provisional half-hours → electricity REST
+                # poll is relaxed to the reconcile cadence
+                "filling_consumption": self._mini_live(),
+                "electricity_rest_poll_minutes": self._consumption_interval("electricity") // 60,
             },
             "last_poll": dict(self._status["last_poll"]),
             "errors": {k: v for k, v in self._status["errors"].items() if v},
@@ -402,7 +420,7 @@ class OctopusEnergyService:
                 await asyncio.sleep(300)
 
         last_rates = 0.0
-        last_cons = 0.0
+        last_cons: Dict[str, float] = {}
         last_tele = 0.0
         last_prune = time.time()
         while True:
@@ -438,9 +456,11 @@ class OctopusEnergyService:
                     self._status["errors"]["rates"] = str(e)
                 last_rates = now
                 self._status["last_poll"]["rates"] = now
-            if now - last_cons >= self.consumption_poll:
+            due = [f for f in self._meters
+                   if now - last_cons.get(f, 0.0) >= self._consumption_interval(f)]
+            if due:
                 try:
-                    for fuel in self._meters:
+                    for fuel in due:
                         await self._fetch_consumption(fuel)
                     self._status["errors"]["consumption"] = None
                 except asyncio.CancelledError:
@@ -448,12 +468,31 @@ class OctopusEnergyService:
                 except Exception as e:
                     logger.error(f"Octopus consumption fetch failed: {e}")
                     self._status["errors"]["consumption"] = str(e)
-                last_cons = now
+                for fuel in due:
+                    last_cons[fuel] = now
                 self._status["last_poll"]["consumption"] = now
             try:
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
                 return
+
+    def _mini_live(self) -> bool:
+        """True while the Home Mini is actually delivering fresh samples."""
+        return (self.home_mini
+                and self._mini_device_id is not None
+                and not self._status["errors"].get("telemetry")
+                and time.time() - self._mini_last_sample < 3 * self.telemetry_poll)
+
+    def _consumption_interval(self, fuel: str) -> int:
+        """
+        Effective REST consumption cadence for one fuel. Electricity relaxes
+        to the reconcile interval while the Mini fills half-hours (gas has no
+        Mini feed); any telemetry stall drops it straight back to the
+        configured cadence on the next loop pass.
+        """
+        if fuel == "electricity" and self._mini_live():
+            return max(self.consumption_poll, MINI_RECONCILE_SEC)
+        return self.consumption_poll
 
     def _agile_retry_due(self) -> bool:
         """After 16:00 UK, retry every 15 min until tomorrow's Agile rates land."""
@@ -739,7 +778,10 @@ class OctopusEnergyService:
         if not device_id:
             return
         now = datetime.now(timezone.utc)
-        start = (now - timedelta(minutes=35)).strftime("%Y-%m-%dT%H:%M:%S%z")
+        # 3h window: besides the live demand point, every returned half-hour's
+        # consumptionDelta becomes a provisional consumption row, and re-covering
+        # a few completed intervals each poll heals any missed poll cycles.
+        start = (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S%z")
         end = now.strftime("%Y-%m-%dT%H:%M:%S%z")
         data = await self._graphql(TELEMETRY_QUERY % (device_id, start, end))
         points = data.get("smartMeterTelemetry") or []
@@ -757,6 +799,32 @@ class OctopusEnergyService:
         self._live_buffer.append(sample)
         if len(self._live_buffer) > LIVE_BUFFER_MAX:
             del self._live_buffer[:len(self._live_buffer) - LIVE_BUFFER_MAX]
+        self._mini_last_sample = time.time()
+
+        # Provisional consumption: each point's consumptionDelta (Wh) is one
+        # half-hour of the same series the REST API settles hours later —
+        # persisting it fills the chart's "today" gap in near real time. The
+        # readAt of a grouped point is the interval start, matching the REST
+        # interval_start PK, so the later REST poll overwrites these rows
+        # with the billing-grade values.
+        rows = []
+        for p in points:
+            if p.get("consumptionDelta") is None or not p.get("readAt"):
+                continue
+            try:
+                interval_start = _iso_to_utc_naive(p["readAt"])
+                kwh = float(p["consumptionDelta"]) / 1000
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "interval_start": interval_start,
+                "interval_end": interval_start + timedelta(minutes=30),
+                "consumption": kwh,
+                "consumption_kwh": kwh,
+            })
+        if rows:
+            await asyncio.to_thread(
+                telemetry_db.write_octopus_consumption, "electricity", rows, "mini")
 
     def _to_kwh(self, fuel: str, value: float, meter: dict) -> float:
         if fuel != "gas":

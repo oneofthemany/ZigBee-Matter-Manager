@@ -244,8 +244,15 @@ def _init_octopus_tables(db):
             interval_end    TIMESTAMP NOT NULL,
             consumption     DOUBLE,
             consumption_kwh DOUBLE,
+            source          VARCHAR DEFAULT 'meter',
             PRIMARY KEY (fuel, interval_start)
         )
+    """)
+    # 'meter' = settlement-grade REST data, 'mini' = provisional Home Mini
+    # telemetry. Pre-existing DBs predate the column; the default backfills.
+    db.execute("""
+        ALTER TABLE octopus_consumption
+        ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'meter'
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS octopus_rates (
@@ -271,14 +278,22 @@ def _migrate_octopus_from_telemetry(odb):
         tables = {r[0] for r in tdb.execute(
             "SELECT table_name FROM information_schema.tables"
         ).fetchall()}
-        for table, ncols in (("octopus_consumption", 5), ("octopus_rates", 6)):
+        # Explicit column lists: the old telemetry.duckdb tables predate the
+        # `source` column, so bare VALUES would mismatch the new schema.
+        col_lists = {
+            "octopus_consumption":
+                "fuel, interval_start, interval_end, consumption, consumption_kwh",
+            "octopus_rates":
+                "fuel, rate_type, tariff_code, valid_from, valid_to, value_inc_vat_p",
+        }
+        for table, cols in col_lists.items():
             if table not in tables:
                 continue
-            rows = tdb.execute(f"SELECT * FROM {table}").fetchall()
+            rows = tdb.execute(f"SELECT {cols} FROM {table}").fetchall()
             if rows:
-                ph = ", ".join(["?"] * ncols)
+                ph = ", ".join(["?"] * len(cols.split(",")))
                 odb.executemany(
-                    f"INSERT OR REPLACE INTO {table} VALUES ({ph})", rows)
+                    f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({ph})", rows)
             tdb.execute(f"DROP TABLE {table}")
             logger.info(f"Migrated {len(rows)} {table} rows into {OCTOPUS_DB_PATH}")
     except Exception as e:
@@ -859,18 +874,25 @@ def _as_day(s: str) -> datetime:
     return datetime.strptime(str(s), "%Y-%m-%d")
 
 
-def write_octopus_consumption(fuel: str, rows: List[Dict[str, Any]]) -> int:
-    """Upsert half-hourly consumption intervals (idempotent on re-poll)."""
+def write_octopus_consumption(fuel: str, rows: List[Dict[str, Any]],
+                              source: str = "meter") -> int:
+    """
+    Upsert half-hourly consumption intervals (idempotent on re-poll).
+
+    source='mini' rows are provisional Home Mini telemetry filling the
+    REST data lag; the next REST poll overwrites them (same PK) with the
+    settlement-grade values, so the two sources never coexist per interval.
+    """
     if not rows:
         return 0
     db = _octopus_cursor()
     db.executemany("""
         INSERT OR REPLACE INTO octopus_consumption
-            (fuel, interval_start, interval_end, consumption, consumption_kwh)
-        VALUES (?, ?, ?, ?, ?)
+            (fuel, interval_start, interval_end, consumption, consumption_kwh, source)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, [
         (fuel, r["interval_start"], r["interval_end"],
-         r.get("consumption"), r.get("consumption_kwh"))
+         r.get("consumption"), r.get("consumption_kwh"), source)
         for r in rows
     ])
     return len(rows)
@@ -895,10 +917,16 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
 
 
 def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
-    """Latest stored interval_end (UTC-naive) — start point for incremental polls."""
+    """
+    Latest meter-sourced interval_end (UTC-naive) — start point for
+    incremental REST polls. Provisional 'mini' rows are excluded on purpose:
+    the REST fetch must re-cover their window to replace them, otherwise a
+    mini-fed watermark would leave provisional data permanent.
+    """
     db = _octopus_cursor()
     row = db.execute(
-        "SELECT max(interval_end) FROM octopus_consumption WHERE fuel = ?", [fuel]
+        "SELECT max(interval_end) FROM octopus_consumption "
+        "WHERE fuel = ? AND source = 'meter'", [fuel]
     ).fetchone()
     return row[0] if row else None
 
