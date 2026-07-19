@@ -47,7 +47,36 @@ async function render() {
             : '<span class="badge bg-success">listener running · built-in receiver mode</span>')
         : '<span class="badge bg-secondary">disabled (or not yet restarted)</span>';
 
+    // render() rebuilds the whole host on every tab show — carry the active
+    // pane across re-renders.
+    const activeEl = host.querySelector('.tab-pane.active');
+    const active = activeEl?.id === 'speakersReceiverPane' ? 'speakersReceiverPane' : 'speakersZonePane';
+
     host.innerHTML = `
+    <ul class="nav nav-pills mb-3 zmm-icon-rail" id="speakersSubNav">
+      <li class="nav-item d-md-none rail-toggle-item">
+        <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                onclick="this.closest('ul').classList.toggle('labels-expanded')">
+          <i class="fas fa-text-width"></i>
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link${active === 'speakersZonePane' ? ' active' : ''}"
+                data-bs-toggle="tab" data-bs-target="#speakersZonePane">
+          <i class="fas fa-volume-up me-1"></i> <span class="tab-label">OpenZone</span>
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link${active === 'speakersReceiverPane' ? ' active' : ''}"
+                data-bs-toggle="tab" data-bs-target="#speakersReceiverPane">
+          <i class="fas fa-list-check me-1"></i> <span class="tab-label">Receiver Registration</span>
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content">
+
+    <div class="tab-pane fade${active === 'speakersZonePane' ? ' show active' : ''}" id="speakersZonePane">
     <div class="card shadow-sm mb-3">
       <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
         <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> OpenZone</span>
@@ -68,7 +97,7 @@ async function render() {
           <em>built-in</em> receiver (no Cast console account needed) with automatic lag
           correction; a per-speaker trim (±ms) lets you align them by ear. Build the groups
           themselves under <strong>Media → Group</strong>. Optionally, registering a custom
-          receiver (below) upgrades sync from ~tens of ms to sample-accurate.
+          receiver (Receiver Registration tab) upgrades sync from ~tens of ms to sample-accurate.
         </p>
         <div class="row g-3 mb-3">
           <div class="col-md-2">
@@ -90,7 +119,7 @@ async function render() {
             <input type="text" class="form-control" id="cfg_sync_appid"
                    value="${esc(_cfg.app_id)}" placeholder="blank = built-in receiver mode">
             <small class="text-muted">Leave blank to use each speaker's built-in receiver.
-              Fill from the Cast developer console (below) for sample-accurate sync.</small>
+              Fill from the Cast developer console (Receiver Registration tab) for sample-accurate sync.</small>
           </div>
           <div class="col-md-3">
             <label class="form-label small fw-semibold">Status</label>
@@ -103,7 +132,9 @@ async function render() {
         <i class="fas fa-info-circle me-1"></i> Changes take effect after a service restart.
       </div>
     </div>
+    </div>
 
+    <div class="tab-pane fade${active === 'speakersReceiverPane' ? ' show active' : ''}" id="speakersReceiverPane">
     <div class="card shadow-sm">
       <div class="card-header bg-light py-2">
         <span class="fw-bold"><i class="fas fa-list-check me-1"></i> Optional: custom-receiver registration (sample-accurate sync)</span>
@@ -112,8 +143,8 @@ async function render() {
         <p class="text-muted mb-2">Not required — sync works without it. Registration only
           buys tighter (sample-accurate) alignment via a custom Cast receiver.</p>
         <ol class="mb-2">
-          <li class="mb-2">Enable above, <em>Save &amp; Restart</em>, then check the listener
-            answers on the LAN:
+          <li class="mb-2">Enable OpenZone (previous tab), <em>Save &amp; Restart</em>, then check
+            the listener answers on the LAN:
             <code>http://${esc(location.hostname)}:${Number(_cfg.http_port) || 8010}/health</code></li>
           <li class="mb-2">In the <a href="https://cast.google.com/publish" target="_blank"
               rel="noopener">Cast developer console <i class="fas fa-external-link-alt fa-xs"></i></a>
@@ -130,12 +161,15 @@ async function render() {
             <span class="text-muted">Each test speaker's serial number must be registered for
               development in the same console (as for the lyrics receiver); reboot the speakers
               once after registering.</span></li>
-          <li>Paste the generated <strong>Application ID</strong> into the field above and
-            <em>Save &amp; Restart</em>. Then build a sync group under
+          <li>Paste the generated <strong>Application ID</strong> into the App ID field on the
+            OpenZone tab and <em>Save &amp; Restart</em>. Then build a sync group under
             <strong>Media → Group → OpenZone</strong> and start a test — drag each
             speaker's trim until the clicks land together.</li>
         </ol>
       </div>
+    </div>
+    </div>
+
     </div>`;
 }
 

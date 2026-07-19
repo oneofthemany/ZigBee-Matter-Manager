@@ -82,45 +82,79 @@ function renderUpgradeCard() {
     if (mount.dataset.rendered === 'true') return;
 
     mount.innerHTML = `
-      <div class="card shadow-sm mb-3" id="upgradeCard">
-        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-          <span class="fw-bold"><i class="fas fa-cloud-arrow-down me-1"></i> Application Upgrade</span>
-          <button class="btn btn-outline-primary btn-sm" id="upgradeCheckBtn">
-            <i class="fas fa-sync-alt me-1"></i> Check now
+      <!-- Upgrade sub-nav — one pane per section instead of a stacked scroll -->
+      <ul class="nav nav-pills mb-3 zmm-icon-rail" id="upgradeSubNav">
+        <li class="nav-item d-md-none rail-toggle-item">
+          <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                  onclick="this.closest('ul').classList.toggle('labels-expanded')">
+            <i class="fas fa-text-width"></i>
           </button>
-        </div>
-        <div class="card-body" id="upgradeCardBody">
-          <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
-        </div>
-        <div class="card-footer text-muted small" id="upgradeCardFooter"></div>
-      </div>
-
-      <!-- Upgrade settings card -->
-      <div class="card shadow-sm mb-3" id="upgradeSettingsCard">
-        <div class="card-header bg-light py-2">
-          <span class="fw-bold"><i class="fas fa-gear me-1"></i> Upgrade Settings</span>
-        </div>
-        <div class="card-body" id="upgradeSettingsBody">
-          <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
-        </div>
-      </div>
-
-      <!-- Python dependencies card (recovery / feature testing) -->
-      <div class="card shadow-sm mb-3" id="depsCard">
-        <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-          <span class="fw-bold"><i class="fab fa-python me-1"></i> Python Dependencies</span>
-          <button class="btn btn-outline-secondary btn-sm" id="depsRefreshBtn">
-            <i class="fas fa-sync-alt me-1"></i> Refresh
+        </li>
+        <li class="nav-item">
+          <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#upgradeAppPane">
+            <i class="fas fa-cloud-arrow-down me-1"></i> <span class="tab-label">Application Upgrade</span>
           </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#upgradeSettingsPane">
+            <i class="fas fa-gear me-1"></i> <span class="tab-label">Settings</span>
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#upgradeDepsPane">
+            <i class="fab fa-python me-1"></i> <span class="tab-label">Python Dependencies</span>
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+
+        <div class="tab-pane fade show active" id="upgradeAppPane">
+          <div class="card shadow-sm mb-3" id="upgradeCard">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+              <span class="fw-bold"><i class="fas fa-cloud-arrow-down me-1"></i> Application Upgrade</span>
+              <button class="btn btn-outline-primary btn-sm" id="upgradeCheckBtn">
+                <i class="fas fa-sync-alt me-1"></i> Check now
+              </button>
+            </div>
+            <div class="card-body" id="upgradeCardBody">
+              <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+            </div>
+            <div class="card-footer text-muted small" id="upgradeCardFooter"></div>
+          </div>
         </div>
-        <div class="card-body" id="depsCardBody">
-          <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+
+        <div class="tab-pane fade" id="upgradeSettingsPane">
+          <div class="card shadow-sm mb-3" id="upgradeSettingsCard">
+            <div class="card-header bg-light py-2">
+              <span class="fw-bold"><i class="fas fa-gear me-1"></i> Upgrade Settings</span>
+            </div>
+            <div class="card-body" id="upgradeSettingsBody">
+              <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+            </div>
+          </div>
         </div>
-        <div class="card-footer text-muted small">
-          Installs go into the <strong>running container only</strong> — the next
-          upgrade rebuilds from <code>requirements.lock</code>. Use this to recover a
-          missing dependency or trial a package without upgrading.
+
+        <div class="tab-pane fade" id="upgradeDepsPane">
+          <!-- Python dependencies card (recovery / feature testing) -->
+          <div class="card shadow-sm mb-3" id="depsCard">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+              <span class="fw-bold"><i class="fab fa-python me-1"></i> Python Dependencies</span>
+              <button class="btn btn-outline-secondary btn-sm" id="depsRefreshBtn">
+                <i class="fas fa-sync-alt me-1"></i> Refresh
+              </button>
+            </div>
+            <div class="card-body" id="depsCardBody">
+              <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+            </div>
+            <div class="card-footer text-muted small">
+              Installs go into the <strong>running container only</strong> — the next
+              upgrade rebuilds from <code>requirements.lock</code>. Use this to recover a
+              missing dependency or trial a package without upgrading.
+            </div>
+          </div>
         </div>
+
       </div>
 
       <!-- Build log modal -->
@@ -147,12 +181,22 @@ function renderUpgradeCard() {
       </div>
     `;
 
-    // Hook button
+    // Hook buttons
     document.getElementById('upgradeCheckBtn').addEventListener('click', () => checkForUpdates(true));
     document.getElementById('depsRefreshBtn').addEventListener('click', () => loadDependencies());
 
+    // pip queries are not free — fetch the dependency table on first visit
+    // to its pane, not on every Settings→Upgrade render.
+    document.querySelector('button[data-bs-target="#upgradeDepsPane"]')
+        .addEventListener('shown.bs.tab', () => {
+            const body = document.getElementById('depsCardBody');
+            if (body && !body.dataset.loaded) {
+                body.dataset.loaded = 'true';
+                loadDependencies();
+            }
+        });
+
     mount.dataset.rendered = 'true';
-    loadDependencies();
 }
 
 // ============================================================================

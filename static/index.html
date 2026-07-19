@@ -375,40 +375,75 @@
                 <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsAuth">
 
-                    <!-- Personal stuff first — every user sees this -->
-                    <div class="card shadow-sm mb-4">
-                        <div class="card-header bg-light py-2">
-                            <span class="fw-bold"><i class="fas fa-user me-1"></i> My Account</span>
-                        </div>
-                        <div class="card-body" id="my-account-host">
-                            <div class="text-center text-muted py-4">
-                                <i class="fas fa-spinner fa-spin"></i> Loading account details...
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Accounts sub-nav — one pane per card instead of a stacked scroll -->
+                    <ul class="nav nav-pills mb-3 zmm-icon-rail" id="accountsSubNav">
+                        <li class="nav-item d-md-none rail-toggle-item">
+                            <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                                    onclick="this.closest('ul').classList.toggle('labels-expanded')">
+                                <i class="fas fa-text-width"></i>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#accountsMyAccount">
+                                <i class="fas fa-user me-1"></i> <span class="tab-label">My Account</span>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsPresence">
+                                <i class="fas fa-eye me-1"></i> <span class="tab-label">Presence</span>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsAdmin">
+                                <i class="fas fa-lock me-1"></i> <span class="tab-label">Admin Authentication</span>
+                            </button>
+                        </li>
+                    </ul>
 
-                    <!-- Presence-tracking config -->
-                    <div class="card shadow-sm mb-4">
-                        <div class="card-header bg-light py-2">
-                            <span class="fw-bold"><i class="fas fa-eye me-1"></i> Presence Settings</span>
-                        </div>
-                        <div class="card-body" id="presence-settings-host">
-                            <div class="text-center text-muted py-4">
-                                <i class="fas fa-spinner fa-spin"></i> Loading presence config...
-                            </div>
-                        </div>
-                    </div>
+                    <div class="tab-content">
 
-                    <!-- Admin-only stuff last -->
-                    <div class="card shadow-sm border-danger">
-                        <div class="card-header bg-danger text-white py-2">
-                            <span class="fw-bold"><i class="fas fa-lock me-1"></i> Admin Authentication Settings</span>
-                        </div>
-                        <div class="card-body" id="auth-settings-host">
-                            <div class="text-center text-muted py-4">
-                                <i class="fas fa-spinner fa-spin"></i> Loading admin settings...
+                        <!-- Personal stuff first — every user sees this -->
+                        <div class="tab-pane fade show active" id="accountsMyAccount">
+                            <div class="card shadow-sm">
+                                <div class="card-header bg-light py-2">
+                                    <span class="fw-bold"><i class="fas fa-user me-1"></i> My Account</span>
+                                </div>
+                                <div class="card-body" id="my-account-host">
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-spinner fa-spin"></i> Loading account details...
+                                    </div>
+                                </div>
                             </div>
                         </div>
+
+                        <!-- Presence-tracking config -->
+                        <div class="tab-pane fade" id="accountsPresence">
+                            <div class="card shadow-sm">
+                                <div class="card-header bg-light py-2">
+                                    <span class="fw-bold"><i class="fas fa-eye me-1"></i> Presence Settings</span>
+                                </div>
+                                <div class="card-body" id="presence-settings-host">
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-spinner fa-spin"></i> Loading presence config...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Admin-only stuff last -->
+                        <div class="tab-pane fade" id="accountsAdmin">
+                            <div class="card shadow-sm border-danger">
+                                <div class="card-header bg-danger text-white py-2">
+                                    <span class="fw-bold"><i class="fas fa-lock me-1"></i> Admin Authentication Settings</span>
+                                </div>
+                                <div class="card-body" id="auth-settings-host">
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-spinner fa-spin"></i> Loading admin settings...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
 
                 </div>

@@ -64,11 +64,41 @@
         var isAdmin = auth && auth.hasScope('admin');
         var st = state.status;
 
+        // refresh() rebuilds the whole host, so carry the active pane across
+        // re-renders (fall back to Status if the pane is gone, e.g. de-admin).
+        var paneIds = ['raStatusPane'].concat(isAdmin ? ['raConfigPane'] : []).concat(['raHelpPane']);
+        var activeEl = host.querySelector('.tab-pane.active');
+        var active = activeEl && paneIds.indexOf(activeEl.id) !== -1 ? activeEl.id : 'raStatusPane';
+
+        function pill(id, icon, label) {
+            return '<li class="nav-item">' +
+              '<button class="nav-link' + (id === active ? ' active' : '') + '" ' +
+                'data-bs-toggle="tab" data-bs-target="#' + id + '">' +
+                '<i class="fas ' + icon + ' me-1"></i> <span class="tab-label">' + label + '</span>' +
+              '</button></li>';
+        }
+        function pane(id, html) {
+            return '<div class="tab-pane fade' + (id === active ? ' show active' : '') + '" id="' + id + '">' +
+                   html + '</div>';
+        }
+
         host.innerHTML =
-            renderStatusCard(st) +
-            (!st.binary_path ? renderInstallCard(st) : '') +
-            (isAdmin ? renderSettingsCard(st) : '') +
-            renderHelpCard(st);
+            '<ul class="nav nav-pills mb-3 zmm-icon-rail" id="raSubNav">' +
+              '<li class="nav-item d-md-none rail-toggle-item">' +
+                '<button class="nav-link rail-toggle" type="button" title="Toggle tab labels" ' +
+                  'aria-label="Toggle tab labels" ' +
+                  'onclick="this.closest(\'ul\').classList.toggle(\'labels-expanded\')">' +
+                  '<i class="fas fa-text-width"></i></button></li>' +
+              pill('raStatusPane', 'fa-globe', 'Status') +
+              (isAdmin ? pill('raConfigPane', 'fa-sliders-h', 'Configuration') : '') +
+              pill('raHelpPane', 'fa-question-circle', 'Setup Guide') +
+            '</ul>' +
+            '<div class="tab-content">' +
+              pane('raStatusPane',
+                   renderStatusCard(st) + (!st.binary_path ? renderInstallCard(st) : '')) +
+              (isAdmin ? pane('raConfigPane', renderSettingsCard(st)) : '') +
+              pane('raHelpPane', renderHelpCard(st)) +
+            '</div>';
 
         bindActions(isAdmin);
     }
@@ -299,10 +329,10 @@
         return '' +
         '<div class="card shadow-sm">' +
           '<div class="card-header bg-light py-2">' +
-            '<a class="fw-bold text-decoration-none" data-bs-toggle="collapse" href="#ra-help">' +
-              '<i class="fas fa-question-circle me-1"></i> Setup guide</a>' +
+            '<span class="fw-bold">' +
+              '<i class="fas fa-question-circle me-1"></i> Setup guide</span>' +
           '</div>' +
-          '<div class="collapse" id="ra-help"><div class="card-body small">' +
+          '<div id="ra-help"><div class="card-body small">' +
 
             '<p>The tunnel dials <em>out</em> to Cloudflare, so it works behind NAT/CGNAT with ' +
             'no port-forwarding. Remote users open your hostname in a browser and log in with ' +
