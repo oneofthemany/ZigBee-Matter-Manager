@@ -17,6 +17,7 @@ Endpoints:
 
   GET  /api/heating/thermostats         — HVAC-capable devices available for zone assignment
 """
+import asyncio
 import logging
 import os
 import yaml
@@ -1275,7 +1276,10 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                     if room_id is not None and str(r.get("id")) != str(room_id):
                         continue
                     try:
-                        rooms_out.append(analyse_room(
+                        # Telemetry scans + Newton fits per room take
+                        # seconds — run each analysis off the event loop.
+                        rooms_out.append(await asyncio.to_thread(
+                            analyse_room,
                             room=r, circuit_id=cid, lat=lat, lon=lon,
                             days=days, insulation=insulation,
                             floor_plan=floor_plan,

@@ -15,12 +15,15 @@ def register_matter_routes(app: FastAPI, get_zigbee_service, get_matter_server, 
     @app.get("/api/matter/ble-check")
     async def ble_check():
         """Pre-flight BLE check for Matter commissioning."""
+        import asyncio
         import subprocess
         result = {"ble_available": False, "adapter": None, "scanning": False, "tips": []}
 
         try:
-            # Check adapter via bluetoothctl
-            r = subprocess.run(
+            # Check adapter via bluetoothctl (worker thread — it can hang for
+            # its full 5s timeout and must not stall the event loop)
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["bluetoothctl", "show"],
                 capture_output=True, text=True, timeout=5
             )
@@ -80,8 +83,11 @@ def register_matter_routes(app: FastAPI, get_zigbee_service, get_matter_server, 
 
         # Thread network status for frontend gate
         try:
+            import asyncio
             import subprocess
-            r = subprocess.run(["ot-ctl", "state"], capture_output=True, text=True, timeout=5)
+            r = await asyncio.to_thread(
+                subprocess.run,
+                ["ot-ctl", "state"], capture_output=True, text=True, timeout=5)
             thread_state = r.stdout.strip().split("\n")[0].strip().lower() if r.returncode == 0 else "disabled"
             result["thread_ready"] = thread_state in ("leader", "router", "child")
             result["thread_state"] = thread_state

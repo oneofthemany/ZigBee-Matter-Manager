@@ -116,7 +116,10 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                 try:
                     from modules.telemetry_db import flush_appender, _get_db
                     flush_appender()
-                    _get_db().execute("CHECKPOINT")
+                    # WAL merge can take seconds on a grown DB — worker thread
+                    import asyncio
+                    await asyncio.to_thread(
+                        lambda: _get_db().cursor().execute("CHECKPOINT"))
                 except Exception as e:
                     logger.warning(f"Could not flush telemetry DB before backup: {e}")
 

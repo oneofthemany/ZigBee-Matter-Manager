@@ -2,6 +2,7 @@
 Configuration management routes.
 Extracted from main.py.
 """
+import asyncio
 import logging
 import os
 import yaml
@@ -542,7 +543,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
         """Return raw spectrum scan records for the past N hours."""
         hours = min(hours, 168)
         try:
-            records = get_history(hours=hours)
+            records = await asyncio.to_thread(get_history, hours=hours)
             return {"success": True, "hours": hours, "records": records}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -552,7 +553,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
         """Return average energy per channel for the past N hours."""
         hours = min(hours, 168)
         try:
-            averages = get_channel_averages(hours=hours)
+            averages = await asyncio.to_thread(get_channel_averages, hours=hours)
             return {"success": True, "hours": hours, "averages": averages}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -562,7 +563,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
         """Return per-channel statistics (min, max, mean, stddev, percentiles)."""
         hours = min(hours, 168)
         try:
-            stats = get_channel_stats(hours=hours)
+            stats = await asyncio.to_thread(get_channel_stats, hours=hours)
             return {"success": True, "hours": hours, "stats": stats}
         except Exception as e:
             return {"success": False, "error": str(e)}

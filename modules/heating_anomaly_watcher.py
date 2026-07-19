@@ -131,7 +131,15 @@ class HeatingAnomalyWatcher:
             await asyncio.sleep(SCAN_INTERVAL_SEC)
 
     async def scan_once(self) -> int:
-        """Perform one scan across all configured rooms. Returns new anomaly count."""
+        """Perform one scan across all configured rooms. Returns new anomaly count.
+
+        The scan is pure sync work — DuckDB queries (first touch after boot
+        opens/migrates the DB: seconds) plus profile math — so it runs in a
+        worker thread to keep the event loop responsive.
+        """
+        return await asyncio.to_thread(self._scan_sync)
+
+    def _scan_sync(self) -> int:
         from modules.thermal_profile import (
             detect_fast_cooling, detect_slow_heating,
             compute_profile,
@@ -164,6 +172,10 @@ class HeatingAnomalyWatcher:
 
         new_count = 0
         seen_keys = set()
+        # Work on copies; swap in atomically at the end so get_snapshot()
+        # (loop thread) never sees a half-updated scan.
+        active = dict(self._active)
+        history = list(self._history)
 
         for circuit in (heating.get("circuits") or []):
             cid = str(circuit.get("id"))
@@ -192,8 +204,6 @@ class HeatingAnomalyWatcher:
                 except Exception as e:
                     logger.debug(f"long-series fetch failed for {sensor_ieee}: {e}")
                     continue
-
-                outdoor_getter = lambda _ts, _v=outdoor: _v
 
                 # Build the heating-off gate from persisted controller ticks.
                 # If the schema/function isn't available (fresh install, old
@@ -258,7 +268,7 @@ class HeatingAnomalyWatcher:
                     key = (cid, rid, anomaly.kind)
                     seen_keys.add(key)
 
-                    existing = self._active.get(key)
+                    existing = active.get(key)
                     if existing and \
                             existing.get("window_end_ts") == anomaly.window_end_ts:
                         continue  # already reported this exact window
@@ -271,7 +281,7 @@ class HeatingAnomalyWatcher:
                         "room_name": room.get("name"),
                         **anomaly.to_dict(),
                     }
-                    self._active[key] = record
+                    active[key] = record
                     new_count += 1
                     logger.warning(
                         f"Anomaly [{anomaly.severity}] {anomaly.kind} in "
@@ -279,21 +289,23 @@ class HeatingAnomalyWatcher:
                         f"{anomaly.message}"
                     )
 
-        # Resolve: anything in _active that we didn't re-detect this pass
+        # Resolve: anything active that we didn't re-detect this pass
         now = time.time()
         resolved = []
-        for key in list(self._active.keys()):
+        for key in list(active.keys()):
             if key not in seen_keys:
-                rec = self._active.pop(key)
+                rec = active.pop(key)
                 rec["resolved_at"] = now
                 resolved.append(rec)
-                self._history.insert(0, rec)
+                history.insert(0, rec)
 
         # Trim history
         cutoff = now - HISTORY_KEEP_SEC
-        self._history = [h for h in self._history
-                         if h.get("resolved_at", now) >= cutoff][:50]
+        history = [h for h in history
+                   if h.get("resolved_at", now) >= cutoff][:50]
 
+        self._active = active
+        self._history = history
         self._last_scan_ts = now
         return new_count
 

@@ -50,7 +50,19 @@ class SGLangManager:
         from modules.llm_host import HostCapabilityAssessor
         self._assessor = assessor or HostCapabilityAssessor()
         self._job: Optional[Dict[str, Any]] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._url = os.environ.get("ZMM_SGLANG_URL", "").rstrip("/") or None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop):
+        """Remember the app loop so worker-thread calls can schedule coroutines."""
+        self._loop = loop
+
+    def _spawn(self, coro):
+        """Schedule a coroutine on the app loop from any thread."""
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     # ── Status ───────────────────────────────────────────────────────────────
 
@@ -103,9 +115,9 @@ class SGLangManager:
                              "--output=/etc/cdi/nvidia.yaml"}
 
         if mode == "cli":
-            asyncio.create_task(self._run_cli_install(detail, model, hf_token))
+            self._spawn(self._run_cli_install(detail, model, hf_token))
         else:
-            asyncio.create_task(self._run_rest_install(detail, model, hf_token))
+            self._spawn(self._run_rest_install(detail, model, hf_token))
         return {"success": True, "started": True, "mode": mode, "model": model}
 
     # ── CLI mode ─────────────────────────────────────────────────────────────

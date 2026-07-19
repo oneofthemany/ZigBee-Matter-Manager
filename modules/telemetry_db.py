@@ -88,6 +88,17 @@ def _get_db():
     return _db
 
 
+def warm():
+    """Open + migrate the DB (seconds on first touch after boot).
+
+    Call via asyncio.to_thread early in startup, before any service runs:
+    whichever thread first calls _get_db() holds _db_lock for the whole
+    open/migration, and every other caller — including loop-thread appender
+    writes — queues behind it and stalls the event loop.
+    """
+    _get_db()
+
+
 def _finish_db_init():
     # Initialise Rust appender against the now-existing tables
     global _appender
@@ -1056,8 +1067,13 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
 # ============================================================================
 
 def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
-    """Remove records older than retention period."""
-    db = _get_db()
+    """Remove records older than retention period.
+
+    Callers run this in a worker thread (multi-table DELETEs take seconds on
+    a grown DB), so use a per-call cursor rather than the shared connection.
+    """
+    _get_db()
+    db = _get_db().cursor()
     cutoff = f"{retention_days} days"
     for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
         deleted = db.execute(

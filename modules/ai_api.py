@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/ai/context          — Preview the device context sent to the LLM (debug)
 """
 
+import asyncio
 import logging
 from typing import Callable, Optional
 
@@ -304,7 +305,8 @@ async def host_capability():
     whether the install/serving UI should offer anything at all.
     """
     from modules.llm_host import HostCapabilityAssessor
-    return HostCapabilityAssessor().assess()
+    # nvidia-smi/lspci probes take seconds — keep them off the event loop.
+    return await asyncio.to_thread(HostCapabilityAssessor().assess)
 
 
 # ── Ollama enablement (privileged; UI-gated behind explicit confirm) ─────────
@@ -314,13 +316,17 @@ def _ollama():
     if _ollama_mgr is None:
         from modules.ollama_manager import OllamaManager
         _ollama_mgr = OllamaManager()
+    # Runtime probes run in worker threads; the manager needs the app loop to
+    # schedule its install/pull coroutines from there.
+    _ollama_mgr.bind_loop(asyncio.get_running_loop())
     return _ollama_mgr
 
 
 @router.get("/ollama/status")
 async def ollama_status():
     """Detect whether the local Ollama container is installed/running + models."""
-    return _ollama().status()
+    # podman/urlopen probes block for seconds — keep them off the event loop.
+    return await asyncio.to_thread(_ollama().status)
 
 
 @router.get("/ollama/job")
@@ -332,7 +338,7 @@ async def ollama_job():
 @router.post("/ollama/install")
 async def ollama_install():
     """Start (or create) the Ollama container. Privileged; runs in background."""
-    result = _ollama().install()
+    result = await asyncio.to_thread(_ollama().install)
     if not result.get("success"):
         raise HTTPException(400, result.get("error"))
     return result
@@ -341,7 +347,7 @@ async def ollama_install():
 @router.post("/ollama/pull")
 async def ollama_pull(request: OllamaPullRequest):
     """Pull a model into the running Ollama container. Runs in background."""
-    result = _ollama().pull(request.model)
+    result = await asyncio.to_thread(_ollama().pull, request.model)
     if not result.get("success"):
         raise HTTPException(400, result.get("error"))
     return result
@@ -357,13 +363,15 @@ def _sglang():
     if _sglang_mgr is None:
         from modules.sglang_manager import SGLangManager
         _sglang_mgr = SGLangManager()
+    _sglang_mgr.bind_loop(asyncio.get_running_loop())
     return _sglang_mgr
 
 
 @router.get("/sglang/status")
 async def sglang_status():
     """Detect whether the local SGLang container is installed/running + model."""
-    return _sglang().status()
+    # podman/urlopen probes block for seconds — keep them off the event loop.
+    return await asyncio.to_thread(_sglang().status)
 
 
 @router.get("/sglang/job")
@@ -379,7 +387,7 @@ async def sglang_install(request: SglangInstallRequest):
     Privileged and GPU-gated: refused unless the host assessor marks SGLang
     viable and NVIDIA CDI passthrough exists. Runs in background.
     """
-    result = _sglang().install(request.model, request.hf_token)
+    result = await asyncio.to_thread(_sglang().install, request.model, request.hf_token)
     if not result.get("success"):
         raise HTTPException(400, result.get("error"))
     return result

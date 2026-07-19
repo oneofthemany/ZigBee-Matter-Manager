@@ -101,8 +101,20 @@ class OllamaManager:
         from modules.llm_host import HostCapabilityAssessor
         self._assessor = assessor or HostCapabilityAssessor()
         self._job: Optional[Dict[str, Any]] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Where ZMM reaches the running Ollama (the sibling publishes on the host).
         self._ollama_url = os.environ.get("ZMM_OLLAMA_URL", "").rstrip("/") or None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop):
+        """Remember the app loop so worker-thread calls can schedule coroutines."""
+        self._loop = loop
+
+    def _spawn(self, coro):
+        """Schedule a coroutine on the app loop from any thread."""
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     # ── Status ───────────────────────────────────────────────────────────────
 
@@ -145,9 +157,9 @@ class OllamaManager:
                              "Use a remote provider instead."}
 
         if mode == "cli":
-            asyncio.create_task(self._run_cli_install(detail))
+            self._spawn(self._run_cli_install(detail))
         else:
-            asyncio.create_task(self._run_rest_install(detail))
+            self._spawn(self._run_rest_install(detail))
         return {"success": True, "started": True, "mode": mode}
 
     # ── Pull a model ─────────────────────────────────────────────────────────
@@ -162,7 +174,7 @@ class OllamaManager:
                     "error": "Ollama isn't running — install/start it first."}
         # Model pulls go through the Ollama API itself (works in both modes and
         # avoids needing `podman exec`).
-        asyncio.create_task(self._run_model_pull(model))
+        self._spawn(self._run_model_pull(model))
         return {"success": True, "started": True, "model": model}
 
     # ── CLI mode (native podman/docker on PATH) ──────────────────────────────

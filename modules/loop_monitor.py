@@ -113,11 +113,18 @@ class LoopMonitor:
                 return
 
     def _loop_stack(self) -> str:
+        """Loop thread's stack, innermost frame FIRST.
+
+        Alerts truncate long messages, and outermost-first ordering spends
+        that budget on uvicorn/asyncio boilerplate — the culprit frame is the
+        innermost one, so it must lead.
+        """
         try:
             frame = sys._current_frames().get(self._loop_thread_id)
             if frame is None:
                 return "<loop thread frame unavailable>"
-            return "".join(traceback.format_stack(frame))
+            lines = traceback.format_stack(frame)
+            return "".join(reversed(lines))
         except Exception as e:  # pragma: no cover
             return f"<stack capture failed: {e}>"
 
@@ -153,7 +160,8 @@ class LoopMonitor:
                 dumped = True
                 logger.error(
                     f"EVENT LOOP STALLED for {age:.1f}s — blocking call on the "
-                    f"loop thread. Current loop stack:\n{self._loop_stack()}")
+                    f"loop thread. Loop stack (innermost first):\n"
+                    f"{self._loop_stack()}")
 
             if self.exit_after and age >= self.exit_after:
                 self._die(age)
@@ -162,7 +170,8 @@ class LoopMonitor:
         stack = self._loop_stack()
         logger.critical(
             f"EVENT LOOP STALLED for {age:.0f}s — exiting so the launcher "
-            f"restarts the app (exit {STALL_EXIT_CODE}). Loop stack:\n{stack}")
+            f"restarts the app (exit {STALL_EXIT_CODE}). "
+            f"Loop stack (innermost first):\n{stack}")
         try:
             os.makedirs(os.path.dirname(CRASH_FILE), exist_ok=True)
             with open(CRASH_FILE, "w") as f:
@@ -172,7 +181,7 @@ class LoopMonitor:
                     "exc_type": "EventLoopStall",
                     "exc_value": f"asyncio loop unresponsive for {age:.0f}s "
                                  f"(threshold {self.exit_after:.0f}s)",
-                    "traceback": stack[-12000:],
+                    "traceback": stack[:12000],
                     "exit_code": STALL_EXIT_CODE,
                     "source": "loop_monitor",
                 }, f, indent=2)

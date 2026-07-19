@@ -33,6 +33,9 @@ logger = logging.getLogger("modules.app_alerts")
 
 ALERTS_FILE = Path("./data/app_alerts.json")
 MAX_ALERTS = 200
+# Long enough that a loop-stall stack dump (innermost first) keeps ~10 frames —
+# the culprit plus its call path — while keeping the persisted JSON bounded.
+MAX_MESSAGE_CHARS = 2000
 
 # Re-emit/dedupe window: identical alerts within this period bump `count`
 # on the existing alert instead of creating a new one.
@@ -109,7 +112,7 @@ class AlertCenter:
                 if a.get("dedupe_key") == key and not a.get("dismissed"):
                     a["count"] = a.get("count", 1) + 1
                     a["last_seen"] = now
-                    a["message"] = message
+                    a["message"] = message[:MAX_MESSAGE_CHARS]
                     self._save()
                     # Re-push at most once per cooldown window
                     if now - a.get("last_pushed", 0) > DEDUPE_COOLDOWN:
@@ -125,7 +128,7 @@ class AlertCenter:
                 "severity": severity if severity in ("info", "warning", "error") else "error",
                 "source": source,
                 "title": title[:150],
-                "message": message[:600],
+                "message": message[:MAX_MESSAGE_CHARS],
                 "count": 1,
                 "dismissed": False,
                 "dedupe_key": key,

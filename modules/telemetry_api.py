@@ -12,6 +12,7 @@ Endpoints:
   POST /api/telemetry/thresholds        — Update alert thresholds
 """
 
+import asyncio
 import logging
 from typing import Callable, Optional
 
@@ -58,7 +59,8 @@ async def system_history(hours: int = 1, bucket: int = 1):
 
     try:
         from modules.telemetry_db import query_system_metrics
-        data = query_system_metrics(hours=hours, bucket_minutes=bucket)
+        data = await asyncio.to_thread(
+            query_system_metrics, hours=hours, bucket_minutes=bucket)
         # Serialise timestamps to ISO strings
         for row in data:
             if row.get("ts"):
@@ -79,7 +81,7 @@ async def packet_history(ieee: Optional[str] = None, hours: int = 1):
     hours = min(max(hours, 1), 168)
     try:
         from modules.telemetry_db import query_packet_stats
-        data = query_packet_stats(ieee=ieee, hours=hours)
+        data = await asyncio.to_thread(query_packet_stats, ieee=ieee, hours=hours)
         for row in data:
             if row.get("ts"):
                 row["ts"] = str(row["ts"])
@@ -98,7 +100,8 @@ async def device_state_history(ieee: str, attribute: str = "state", hours: int =
     hours = min(max(hours, 1), 168)
     try:
         from modules.telemetry_db import query_device_state_history
-        data = query_device_state_history(ieee=ieee, attribute=attribute, hours=hours)
+        data = await asyncio.to_thread(
+            query_device_state_history, ieee=ieee, attribute=attribute, hours=hours)
         for row in data:
             if row.get("ts"):
                 row["ts"] = str(row["ts"])
@@ -113,7 +116,7 @@ async def device_attributes(ieee: str, hours: int = 720):
     hours = min(max(hours, 1), 720)
     try:
         from modules.telemetry_db import query_device_attributes
-        data = query_device_attributes(ieee=ieee, hours=hours)
+        data = await asyncio.to_thread(query_device_attributes, ieee=ieee, hours=hours)
         return {"success": True, "ieee": ieee, "attributes": data}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -127,9 +130,10 @@ async def device_history_bucketed(ieee: str, attribute: str,
     bucket = min(max(bucket, 1), 60)
     try:
         from modules.telemetry_db import query_device_state_bucketed
-        data = query_device_state_bucketed(
+        data = await asyncio.to_thread(
+            query_device_state_bucketed,
             ieee=ieee, attribute=attribute,
-            hours=hours, bucket_minutes=bucket
+            hours=hours, bucket_minutes=bucket,
         )
         for row in data:
             if row.get("ts"):
@@ -150,7 +154,7 @@ async def db_stats():
     """Get database size and row counts per table."""
     try:
         from modules.telemetry_db import get_db_stats
-        return {"success": True, **get_db_stats()}
+        return {"success": True, **await asyncio.to_thread(get_db_stats)}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -161,7 +165,7 @@ async def db_prune(days: int = 7):
     days = min(max(days, 1), 90)
     try:
         from modules.telemetry_db import prune
-        prune(retention_days=days)
+        await asyncio.to_thread(prune, retention_days=days)
         return {"success": True, "retention_days": days}
     except Exception as e:
         return {"success": False, "error": str(e)}

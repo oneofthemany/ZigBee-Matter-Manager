@@ -453,6 +453,16 @@ async def lifespan(app: FastAPI):
     loop_monitor.start()
     app.state.loop_monitor = loop_monitor
 
+    # Open/migrate the telemetry DB in a worker BEFORE any service touches it:
+    # the first _get_db() holds _db_lock for the whole open/migration
+    # (seconds), and any loop-thread write landing during that window stalls
+    # the event loop behind the lock.
+    try:
+        from modules import telemetry_db
+        await asyncio.to_thread(telemetry_db.warm)
+    except Exception as e:
+        logger.warning(f"Telemetry DB warm-up failed: {e}")
+
     # Application alert center: capture ERROR-level logs as user-visible
     # alerts and push them over the WebSocket hub
     try:
