@@ -137,9 +137,21 @@ function stopAutoRefresh() {
 // ============================================================================
 // DATA LOADING
 // ============================================================================
-async function fetchJson(url) {
-    const res = await fetch(url);
-    return res.json();
+// Never lets a single slow/failed endpoint pin the tab on the loading
+// placeholder: bounded by a timeout, resolves null on any failure, and the
+// callers all degrade per-card on null.
+async function fetchJson(url, timeoutMs = 20_000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        return await res.json();
+    } catch (e) {
+        log.warn(`fetch failed: ${url}`, e);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 async function loadEnergyDashboard(opts = {}) {
@@ -147,6 +159,20 @@ async function loadEnergyDashboard(opts = {}) {
     if (!root) return;
     try {
         const statusRes = await fetchJson('/api/octopus/status');
+        if (!statusRes) {
+            // App unreachable or still starting (common right after a
+            // reboot) — say so and retry rather than sit on the placeholder.
+            root.innerHTML = `
+              <div class="alert alert-warning m-3">
+                <i class="fas fa-hourglass-half me-1"></i>
+                Energy data is not responding yet — the app may still be
+                starting up. Retrying automatically…
+              </div>`;
+            setTimeout(() => {
+                if (energyTabActive) loadEnergyDashboard({ silent: true });
+            }, 10_000);
+            return;
+        }
         const status = statusRes.status || {};
         octopusEnabled = !!status.enabled;
 

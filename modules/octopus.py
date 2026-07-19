@@ -406,6 +406,22 @@ class OctopusEnergyService:
         except asyncio.CancelledError:
             return
 
+        # Re-seed the live demand buffer from persisted samples so the chart
+        # isn't empty for hours after every restart. _mini_last_sample stays 0:
+        # stale rows must not count as "mini is live" for the REST cadence.
+        if self.home_mini:
+            try:
+                seeded = await asyncio.to_thread(
+                    telemetry_db.query_octopus_telemetry_recent, 48)
+                if seeded and not self._live_buffer:
+                    self._live_buffer = seeded[-LIVE_BUFFER_MAX:]
+                    logger.info(f"Octopus Home Mini buffer re-seeded "
+                                f"({len(self._live_buffer)} samples)")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning(f"Octopus telemetry buffer re-seed failed: {e}")
+
         # Account discovery first — nothing works without meter points.
         while True:
             try:
@@ -778,10 +794,13 @@ class OctopusEnergyService:
         if not device_id:
             return
         now = datetime.now(timezone.utc)
-        # 3h window: besides the live demand point, every returned half-hour's
-        # consumptionDelta becomes a provisional consumption row, and re-covering
-        # a few completed intervals each poll heals any missed poll cycles.
-        start = (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S%z")
+        # Every returned half-hour's consumptionDelta becomes a provisional
+        # consumption row, so the lookback doubles as gap-healing: 3h on a
+        # steady-state poll (re-covers missed cycles), 48h on the first poll
+        # after a restart so downtime holes in "today" fill immediately
+        # instead of waiting out the REST data lag.
+        lookback_h = 3 if self._mini_last_sample else 48
+        start = (now - timedelta(hours=lookback_h)).strftime("%Y-%m-%dT%H:%M:%S%z")
         end = now.strftime("%Y-%m-%dT%H:%M:%S%z")
         data = await self._graphql(TELEMETRY_QUERY % (device_id, start, end))
         points = data.get("smartMeterTelemetry") or []
@@ -800,6 +819,18 @@ class OctopusEnergyService:
         if len(self._live_buffer) > LIVE_BUFFER_MAX:
             del self._live_buffer[:len(self._live_buffer) - LIVE_BUFFER_MAX]
         self._mini_last_sample = time.time()
+        # Persist the demand sample so the live chart survives restarts
+        try:
+            read_at = (_iso_to_utc_naive(last["readAt"])
+                       if last.get("readAt") else None)
+        except (TypeError, ValueError):
+            read_at = None
+        await asyncio.to_thread(telemetry_db.write_octopus_telemetry, [{
+            "ts": _utc_now_naive(),
+            "read_at": read_at,
+            "demand_w": sample["demand_w"],
+            "consumption_kwh": sample["consumption_kwh"],
+        }])
 
         # Provisional consumption: each point's consumptionDelta (Wh) is one
         # half-hour of the same series the REST API settles hours later —

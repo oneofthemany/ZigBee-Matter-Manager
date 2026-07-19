@@ -254,6 +254,17 @@ def _init_octopus_tables(db):
         ALTER TABLE octopus_consumption
         ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'meter'
     """)
+    # Home Mini demand samples (~5-min grain) — persisted so the live chart
+    # survives restarts instead of rebuilding from empty over 48h.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS octopus_telemetry (
+            ts              TIMESTAMP NOT NULL,
+            read_at         TIMESTAMP,
+            demand_w        DOUBLE,
+            consumption_kwh DOUBLE,
+            PRIMARY KEY (ts)
+        )
+    """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS octopus_rates (
             fuel            VARCHAR NOT NULL,
@@ -916,6 +927,42 @@ def write_octopus_rates(fuel: str, rate_type: str, tariff_code: Optional[str],
     return len(rows)
 
 
+def write_octopus_telemetry(rows: List[Dict[str, Any]]) -> int:
+    """Upsert Home Mini demand samples (idempotent on the sample timestamp)."""
+    if not rows:
+        return 0
+    db = _octopus_cursor()
+    db.executemany("""
+        INSERT OR REPLACE INTO octopus_telemetry
+            (ts, read_at, demand_w, consumption_kwh)
+        VALUES (?, ?, ?, ?)
+    """, [
+        (r["ts"], r.get("read_at"), r.get("demand_w"), r.get("consumption_kwh"))
+        for r in rows
+    ])
+    return len(rows)
+
+
+def query_octopus_telemetry_recent(hours: int = 48) -> List[Dict[str, Any]]:
+    """
+    Recent demand samples, oldest first, in the live-buffer wire shape
+    (ISO strings) so the service can seed its in-memory buffer on restart.
+    """
+    db = _octopus_cursor()
+    rows = db.execute(f"""
+        SELECT ts, read_at, demand_w, consumption_kwh
+        FROM octopus_telemetry
+        WHERE ts >= now() - INTERVAL '{int(hours)} hours'
+        ORDER BY ts ASC
+    """).fetchall()
+    return [{
+        "ts": r[0].isoformat() + "Z",
+        "read_at": r[1].isoformat() + "Z" if r[1] is not None else None,
+        "demand_w": r[2],
+        "consumption_kwh": r[3],
+    } for r in rows]
+
+
 def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
     """
     Latest meter-sourced interval_end (UTC-naive) — start point for
@@ -1122,6 +1169,10 @@ def prune_octopus(retention_days: int = OCTOPUS_RETENTION_DAYS):
     )
     db.execute(
         f"DELETE FROM octopus_rates WHERE valid_to IS NOT NULL AND valid_to < now() - INTERVAL '{cutoff}'"
+    )
+    # Demand samples only need to outlive the 48h live window + a margin
+    db.execute(
+        "DELETE FROM octopus_telemetry WHERE ts < now() - INTERVAL '7 days'"
     )
     logger.info(f"Octopus data pruned (retention={retention_days} days)")
 
