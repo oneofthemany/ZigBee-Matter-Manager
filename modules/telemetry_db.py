@@ -963,6 +963,42 @@ def query_octopus_telemetry_recent(hours: int = 48) -> List[Dict[str, Any]]:
     } for r in rows]
 
 
+def query_octopus_telemetry_consumption(hours: int = 48) -> List[Dict]:
+    """
+    Fine-grained (~5-min) electricity consumption derived from the Home
+    Mini's cumulative meter register: successive sample deltas. Deltas
+    spanning a gap larger than 30 min are dropped — that energy is lumped
+    across downtime and would render as a bogus spike; the half-hourly
+    series covers those periods. Clamped at 0 for safety, cost joined per
+    sample against the half-hourly unit-rate windows.
+    """
+    db = _octopus_cursor()
+    rows = db.execute(f"""
+        WITH d AS (
+            SELECT ts,
+                   lag(ts) OVER (ORDER BY ts) AS ts_start,
+                   consumption_kwh
+                   - lag(consumption_kwh) OVER (ORDER BY ts) AS kwh
+            FROM octopus_telemetry
+            WHERE consumption_kwh IS NOT NULL
+              AND ts >= now() - INTERVAL '{int(hours)} hours'
+        )
+        SELECT d.ts_start, d.ts, greatest(d.kwh, 0) AS kwh,
+               greatest(d.kwh, 0) * r.value_inc_vat_p AS cost_p
+        FROM d
+        LEFT JOIN octopus_rates r
+          ON r.fuel = 'electricity' AND r.rate_type = 'unit'
+         AND r.valid_from <= d.ts_start
+         AND (r.valid_to IS NULL OR r.valid_to > d.ts_start)
+        WHERE d.ts_start IS NOT NULL
+          AND d.kwh IS NOT NULL
+          AND d.ts - d.ts_start <= INTERVAL '30 minutes'
+        ORDER BY d.ts ASC
+    """).fetchall()
+    return [{"ts_start": r[0], "ts_end": r[1], "kwh": r[2], "cost_p": r[3]}
+            for r in rows]
+
+
 def query_octopus_last_interval(fuel: str) -> Optional[datetime]:
     """
     Latest meter-sourced interval_end (UTC-naive) — start point for

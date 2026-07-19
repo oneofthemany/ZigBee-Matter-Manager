@@ -51,6 +51,7 @@ let refreshTimer = null;
 let charts = {};            // name → createChart wrapper
 let currentRange = 'week';  // day | week | month
 let currentMetric = 'kwh';  // kwh | cost
+let dayGrain = '30min';     // 30min | 5min — Day view only, 5min needs the Mini
 let customDates = null;     // {from, to} 'YYYY-MM-DD' — calendar search mode
 let breakdownView = 'daily'; // daily (stacked) | totals
 let consumptionCache = {};  // fuel → series (for metric re-render without refetch)
@@ -179,11 +180,13 @@ async function loadEnergyDashboard(opts = {}) {
         const consQuery = customDates
             ? `date_from=${customDates.from}&date_to=${customDates.to}`
             : `range=${currentRange}`;
+        // 5-min grain: Mini-derived series, Day view + electricity only
+        const fineMode = currentRange === 'day' && !customDates && dayGrain === '5min';
         const wants = [fetchJson(`/api/octopus/breakdown?range=${currentRange}`)];
         if (octopusEnabled) {
             wants.push(
                 fetchJson('/api/octopus/summary'),
-                fetchJson(`/api/octopus/consumption?fuel=electricity&${consQuery}`),
+                fetchJson(`/api/octopus/consumption?fuel=electricity&${fineMode ? 'grain=fine' : consQuery}`),
                 fetchJson(`/api/octopus/consumption?fuel=gas&${consQuery}`),
                 fetchJson('/api/octopus/rates?fuel=electricity'),
                 fetchJson('/api/octopus/telemetry'),
@@ -265,6 +268,15 @@ function renderScaffold(status, summary) {
               <button type="button" class="btn btn-outline-secondary ${!customDates && currentRange === r ? 'active' : ''}"
                       onclick="window.energySetRange('${r}')">${r[0].toUpperCase() + r.slice(1)}</button>`).join('')}
           </div>
+          ${(currentRange === 'day' && !customDates && telemetryCache?.series?.length) ? `
+          <div class="btn-group btn-group-sm" role="group" aria-label="Grain"
+               title="5-min resolution comes from the Home Mini (electricity only)">
+            <button type="button" class="btn btn-outline-secondary ${dayGrain === '30min' ? 'active' : ''}"
+                    onclick="window.energySetDayGrain('30min')">30 min</button>
+            <button type="button" class="btn btn-outline-secondary ${dayGrain === '5min' ? 'active' : ''}"
+                    onclick="window.energySetDayGrain('5min')">5 min</button>
+          </div>
+          ${dayGrain === '5min' ? '<span class="text-muted small">electricity only · Home Mini</span>' : ''}` : ''}
           <div class="input-group input-group-sm" style="width: auto;" aria-label="Calendar search">
             <input type="date" class="form-control" id="energyDateFrom" value="${customDates?.from ?? ''}" title="From">
             <input type="date" class="form-control" id="energyDateTo" value="${customDates?.to ?? ''}" title="To">
@@ -576,6 +588,10 @@ function renderConsumptionChart() {
     const colours = fuelColours();
     const elec = consumptionCache.electricity;
     const gas = consumptionCache.gas;
+    if (elec?.group_by === '5min') {
+        renderFineConsumption(el, elec, colours);
+        return;
+    }
     const groupBy = elec?.group_by || gas?.group_by || 'day';
 
     // Union of bucket labels so both fuels align on one category axis
@@ -636,6 +652,64 @@ function renderConsumptionChart() {
             mkSeries('Electricity', elec, colours.electricity),
             mkSeries('Gas', gas, colours.gas),
         ],
+    });
+}
+
+/**
+ * ~5-min electricity bars from the Mini's cumulative register (last 48h).
+ * Slots are poll-to-poll, so widths vary slightly and downtime gaps are
+ * simply absent — the 30-min view remains the complete/billing-grade one.
+ */
+function renderFineConsumption(el, elec, colours) {
+    const series = (elec.series || []).filter(p => p.kwh != null);
+    if (!series.length) {
+        el.innerHTML = '<div class="text-muted text-center py-5">No Home Mini samples yet — the 5-min view builds up while the app runs.</div>';
+        return;
+    }
+    const val = p => currentMetric === 'kwh' ? p.kwh : p.cost_gbp;
+
+    charts.consumption?.dispose();
+    charts.consumption = createChart(el);
+    charts.consumption.setOption({
+        grid: { left: 48, right: 16, top: 30, bottom: 42 },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            formatter: params => {
+                const p = params[0];
+                const d = p ? series[p.dataIndex] : null;
+                if (!d) return '';
+                const t0 = new Date(d.ts);
+                const t1 = new Date(d.ts_end);
+                const avgW = Math.round(d.kwh * 1000 * 3600000 / (t1 - t0));
+                const bits = [`${d.kwh.toFixed(3)} kWh`, `≈${avgW} W avg`];
+                if (d.cost_gbp != null) bits.push(`£${d.cost_gbp.toFixed(3)}`);
+                return `${t0.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
+                    + `–${t1.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    + `<br>${p.marker} ${bits.join(' · ')}`;
+            },
+        },
+        xAxis: {
+            type: 'category',
+            data: series.map(p => p.ts),
+            axisTick: { show: false },
+            axisLabel: {
+                hideOverlap: true,
+                formatter: iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+        },
+        yAxis: {
+            type: 'value',
+            name: currentMetric === 'kwh' ? 'kWh' : '£',
+            nameTextStyle: { align: 'left' },
+        },
+        series: [{
+            name: 'Electricity',
+            type: 'bar',
+            barCategoryGap: '15%',
+            itemStyle: { color: colours.electricity, borderRadius: [2, 2, 0, 0] },
+            data: series.map(p => val(p)),
+        }],
     });
 }
 
@@ -969,6 +1043,12 @@ window.energySetBreakdownView = function(view) {
             (view === 'daily') === (btn.textContent.trim() === 'Daily stack'));
     });
     renderBreakdownChart();
+};
+
+window.energySetDayGrain = function(grain) {
+    if (!['30min', '5min'].includes(grain) || grain === dayGrain) return;
+    dayGrain = grain;
+    loadEnergyDashboard();
 };
 
 window.energySetMetric = function(metric) {

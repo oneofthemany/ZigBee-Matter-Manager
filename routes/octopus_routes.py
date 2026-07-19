@@ -311,14 +311,37 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
     @app.get("/api/octopus/consumption")
     async def octopus_consumption(fuel: str = "electricity", range: str = "week",
                                   date_from: Optional[str] = None,
-                                  date_to: Optional[str] = None):
+                                  date_to: Optional[str] = None,
+                                  grain: Optional[str] = None):
         """
         range=day|week|month for rolling windows, or an explicit calendar
         window via date_from/date_to (YYYY-MM-DD, inclusive, local days) —
         a single day comes back half-hourly, anything longer daily.
+
+        grain=fine (electricity only): ~5-min series derived from the Home
+        Mini's cumulative register over the last 48h, instead of the
+        settlement half-hours. Empty series when no Mini samples exist.
         """
         if fuel not in ("electricity", "gas"):
             return {"success": False, "error": f"Unknown fuel '{fuel}'"}
+        if grain == "fine":
+            if fuel != "electricity":
+                return {"success": False,
+                        "error": "Fine grain is only available for electricity"}
+            rows = await _q(telemetry_db.query_octopus_telemetry_consumption, 48)
+            return {
+                "success": True,
+                "fuel": fuel,
+                "range": "day",
+                "group_by": "5min",
+                "series": [{
+                    "ts": r["ts_start"].isoformat() + "Z",
+                    "ts_end": r["ts_end"].isoformat() + "Z",
+                    "kwh": round(r["kwh"], 4) if r["kwh"] is not None else None,
+                    "cost_gbp": (round(r["cost_p"] / 100, 4)
+                                 if r["cost_p"] is not None else None),
+                } for r in rows],
+            }
         if date_from and date_to:
             try:
                 d0 = datetime.strptime(date_from, "%Y-%m-%d")
