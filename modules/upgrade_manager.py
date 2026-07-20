@@ -2,7 +2,8 @@
 Upgrade Manager — blue-green container upgrades for ZMM.
 
 Architecture:
-  - App polls GitHub tags API for new versions
+  - App polls the GitHub releases API for new versions (see the CalVer
+    scheme documented above parse_version, below)
   - App writes trigger files to a shared volume directory
   - Host-side watcher (systemd-path unit OR polling fallback) picks up triggers
   - Host-side upgrade.sh executes: build new image → swap containers → rollback on failure
@@ -77,25 +78,98 @@ VALID_ACTIONS = {"install_watcher", "build", "swap", "rollback", "cancel", "gc"}
 
 # ---------------------------------------------------------------------------
 # VERSION PARSING / COMPARISON
+#
+# CalVer scheme (replaces plain semver as of the 2026-07-20 cutover):
+#   MM.YYYY           e.g. 07.2026            — "major": deliberate milestone
+#   DD.MM.YYYY         e.g. 20.07.2026         — "minor": normal dated release
+#   DD.NN.MM.YYYY       e.g. 20.01.07.2026     — "patch": same-day iteration
+#     (NN is a 1-based counter of releases published that day)
+#
+# The tag's own shape *is* its significance — there's no diff-based bump
+# math like old semver had, because a date has no inherent magnitude. Fewer
+# components = a bigger, less frequent release. "Bleeding edge" is a fully
+# separate axis: it means the GitHub release is flagged Pre-release, and
+# applies to a tag of any of the three shapes above.
+#
+# Old semver tags (e.g. "3.4.7") are still recognised for comparison so
+# existing installs cross over cleanly — they always sort older than every
+# CalVer tag, and are treated as maximally significant ("major"-equivalent)
+# so an update is offered on whatever channel the user is on.
 # ---------------------------------------------------------------------------
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
+_LEGACY_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 
-def parse_version(v: str) -> Optional[Tuple[int, int, int]]:
-    """Parse 'v1.2.3' or '1.2.3' (with optional pre-release) into (1, 2, 3)."""
+def _year_ok(y: str) -> bool:
+    return len(y) == 4 and y.isdigit() and 2000 <= int(y) <= 2099
+
+
+def parse_version(v: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a version tag into {"kind": ..., ...fields}, or None if invalid.
+
+    kind is one of "legacy", "major", "minor", "patch" — see module docstring
+    above for what each date shape means.
+    """
     if not v:
         return None
-    m = _VERSION_RE.match(v.strip())
-    if not m:
+    s = v.strip()
+    if s[:1] in ("v", "V"):
+        s = s[1:]
+    parts = s.split(".")
+
+    if len(parts) == 4:
+        d, n, m, y = parts
+        if d.isdigit() and n.isdigit() and m.isdigit() and _year_ok(y):
+            day, seq, month, year = int(d), int(n), int(m), int(y)
+            if 1 <= day <= 31 and 1 <= month <= 12 and seq >= 1:
+                return {"kind": "patch", "year": year, "month": month, "day": day, "seq": seq}
         return None
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    if len(parts) == 3:
+        a, b, c = parts
+        # CalVer minor (DD.MM.YYYY) is distinguished from legacy semver
+        # (MAJOR.MINOR.PATCH) by the last component being a plausible year.
+        if a.isdigit() and b.isdigit() and _year_ok(c):
+            day, month, year = int(a), int(b), int(c)
+            if 1 <= day <= 31 and 1 <= month <= 12:
+                return {"kind": "minor", "year": year, "month": month, "day": day, "seq": None}
+        m = _LEGACY_SEMVER_RE.match(s)
+        if m:
+            return {"kind": "legacy", "major": int(m.group(1)), "minor": int(m.group(2)),
+                    "patch": int(m.group(3))}
+        return None
+
+    if len(parts) == 2:
+        a, b = parts
+        if a.isdigit() and _year_ok(b):
+            month, year = int(a), int(b)
+            if 1 <= month <= 12:
+                return {"kind": "major", "year": year, "month": month, "day": None, "seq": None}
+        return None
+
+    return None
 
 
 def normalise_version(v: str) -> str:
-    """Strip leading 'v'. 'v1.2.3' -> '1.2.3'."""
+    """Strip leading 'v'. 'v20.07.2026' -> '20.07.2026'."""
     if not v:
         return ""
     return v.strip().lstrip("vV")
+
+
+def _sort_key(p: Dict[str, Any]) -> Tuple:
+    """
+    Chronological ordering key. Legacy semver always sorts before any CalVer
+    tag (leading 0 vs 1). Within CalVer, a missing day/seq (coarser tags —
+    "major" has no day, "minor" has no seq) sorts as the END of its period,
+    so a milestone tagged just "07.2026" ranks after every dated release
+    that shipped earlier that same month.
+    """
+    if p["kind"] == "legacy":
+        return (0, p["major"], p["minor"], p["patch"], 0)
+    day = p["day"] if p["day"] is not None else 99
+    seq = p["seq"] if p["seq"] is not None else 99
+    return (1, p["year"], p["month"], day, seq)
 
 
 def compare_versions(a: str, b: str) -> int:
@@ -108,48 +182,37 @@ def compare_versions(a: str, b: str) -> int:
         return -1
     if pb is None:
         return 1
-    if pa < pb:
+    ka, kb = _sort_key(pa), _sort_key(pb)
+    if ka < kb:
         return -1
-    if pa > pb:
+    if ka > kb:
         return 1
     return 0
 
 
-def bump_significance(current: str, latest: str) -> Optional[str]:
-    """
-    Classify the jump from current to latest: "major", "minor", "patch",
-    or None if latest is not newer.
-
-    An unparseable current version (e.g. "unknown") with a parseable latest
-    counts as "major" so an update is always offered regardless of channel.
-    """
-    pc = parse_version(current)
-    pl = parse_version(latest)
-    if pl is None:
-        return None
-    if pc is None:
-        return "major"
-    if pl <= pc:
-        return None
-    if pl[0] > pc[0]:
-        return "major"
-    if pl[1] > pc[1]:
-        return "minor"
-    return "patch"
-
-
-# Minimum bump significance required before a channel reports an update.
-# "prerelease" and "patch" take every newer release; "minor" waits for a
-# minor/major bump; "major" only reports major bumps. The target installed
-# is always the latest release — the channel only gates the notification.
-_BUMP_RANK = {None: 0, "patch": 1, "minor": 2, "major": 3}
-_CHANNEL_MIN_BUMP = {"prerelease": 1, "patch": 1, "minor": 2, "major": 3}
+# Rank of a release's own tag shape — used to gate channels. A release
+# doesn't need to be *compared* against current to know its significance
+# anymore; the tag shape declares it outright. Legacy semver counts as
+# "major" so it always clears every channel's threshold once superseded.
+_KIND_RANK = {"legacy": 3, "patch": 1, "minor": 2, "major": 3}
+_CHANNEL_MIN_RANK = {"patch": 1, "minor": 2, "major": 3}
 
 
 def meets_channel_threshold(current: str, latest: str, channel: str) -> bool:
-    """True if upgrading current→latest is significant enough for `channel`."""
-    sig = bump_significance(current, latest)
-    return _BUMP_RANK[sig] >= _CHANNEL_MIN_BUMP.get(channel, 1)
+    """
+    True if `latest` is both newer than `current` and significant enough
+    for `channel`. "prerelease" (bleeding edge) only needs to be newer —
+    its gating happens earlier, in fetch_latest_release, by including
+    GitHub Pre-release-flagged releases.
+    """
+    if compare_versions(latest, current) <= 0:
+        return False
+    if channel == "prerelease":
+        return True
+    p = parse_version(latest)
+    if p is None:
+        return False
+    return _KIND_RANK.get(p["kind"], 0) >= _CHANNEL_MIN_RANK.get(channel, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -465,17 +528,17 @@ def watcher_installed() -> bool:
 # ---------------------------------------------------------------------------
 async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
     """
-    Fetch latest release/tag info from GitHub.
+    Walk GitHub releases (newest first) and return the first one that
+    qualifies for `channel`.
 
-    channel: "prerelease" scans the tags list; every other channel
-    (major/minor/patch) uses releases/latest — the channel threshold is
-    applied later, in check_for_updates().
+    Non-prerelease channels (major/minor/patch) skip drafts and Pre-release
+    builds, then skip any release whose tag shape doesn't meet the channel's
+    rank (e.g. a "minor" channel skips same-day "patch" releases and keeps
+    looking further back for the last minor-or-bigger one). "prerelease"
+    (bleeding edge) skips only drafts and takes the very first entry,
+    including Pre-release-flagged ones — that's what makes it bleeding edge.
     """
-    if channel != "prerelease":
-        url = f"{GITHUB_API_BASE}/repos/{repo}/releases/latest"
-    else:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/tags"
-
+    url = f"{GITHUB_API_BASE}/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "zigbee-matter-manager-upgrade",
@@ -494,34 +557,36 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
         logger.warning(f"GitHub API fetch failed: {e}")
         return None
 
-    if channel != "prerelease":
-        # Single release object
-        if not isinstance(data, dict):
-            return None
-        return {
-            "version": normalise_version(data.get("tag_name") or ""),
-            "tag": data.get("tag_name"),
-            "notes": data.get("body") or "",
-            "url": data.get("html_url"),
-            "published_at": data.get("published_at"),
-            "tarball_url": data.get("tarball_url"),
-        }
-    else:
-        # List of tags — pick the first one that looks like semver
-        if not isinstance(data, list) or not data:
-            return None
-        for t in data:
-            v = normalise_version(t.get("name") or "")
-            if parse_version(v):
-                return {
-                    "version": v,
-                    "tag": t.get("name"),
-                    "notes": "",
-                    "url": f"https://github.com/{repo}/releases/tag/{t.get('name')}",
-                    "published_at": None,
-                    "tarball_url": t.get("tarball_url"),
-                }
+    if not isinstance(data, list):
         return None
+
+    for r in data:
+        if r.get("draft"):
+            continue
+        is_prerelease = bool(r.get("prerelease"))
+        if channel != "prerelease" and is_prerelease:
+            continue
+
+        v = normalise_version(r.get("tag_name") or "")
+        parsed = parse_version(v)
+        if not parsed:
+            continue
+        if channel != "prerelease":
+            rank = _KIND_RANK.get(parsed["kind"], 0)
+            if rank < _CHANNEL_MIN_RANK.get(channel, 1):
+                continue
+
+        return {
+            "version": v,
+            "tag": r.get("tag_name"),
+            "notes": r.get("body") or "",
+            "url": r.get("html_url"),
+            "published_at": r.get("published_at"),
+            "tarball_url": r.get("tarball_url"),
+            "prerelease": is_prerelease,
+        }
+
+    return None
 
 
 async def check_for_updates(force: bool = False) -> Dict[str, Any]:

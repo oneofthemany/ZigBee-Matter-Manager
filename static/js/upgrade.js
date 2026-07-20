@@ -579,12 +579,12 @@ function renderSettings(data) {
         <div class="col-md-6">
           <label class="form-label small">Release channel</label>
           <select class="form-select form-select-sm" id="upgChannel">
-            <option value="major" ${channel === 'major' ? 'selected' : ''}>Stable &mdash; major releases only (3.x &rarr; 4.0)</option>
-            <option value="minor" ${channel === 'minor' ? 'selected' : ''}>Stable &mdash; minor &amp; major (3.1 &rarr; 3.2)</option>
-            <option value="patch" ${channel === 'patch' ? 'selected' : ''}>Stable &mdash; every release (bleeding edge)</option>
-            <option value="prerelease" ${channel === 'prerelease' ? 'selected' : ''}>Pre-release (all tags)</option>
+            <option value="major" ${channel === 'major' ? 'selected' : ''}>Stable &mdash; major milestones only (e.g. 07.2026)</option>
+            <option value="minor" ${channel === 'minor' ? 'selected' : ''}>Stable &mdash; minor &amp; major (e.g. 20.07.2026)</option>
+            <option value="patch" ${channel === 'patch' ? 'selected' : ''}>Stable &mdash; every dated release (e.g. 20.01.07.2026)</option>
+            <option value="prerelease" ${channel === 'prerelease' ? 'selected' : ''}>Bleeding edge &mdash; includes pre-release builds</option>
           </select>
-          <div class="small text-muted mt-1">Updates always install the latest release &mdash; this only sets how big a version jump has to be before you're notified.</div>
+          <div class="small text-muted mt-1">Versions are dated (day.release.month.year) &mdash; fewer parts means a bigger release. This sets how big a release has to be before you're notified; bleeding edge also includes builds flagged pre-release on GitHub.</div>
         </div>
 
         <div class="col-md-6">
