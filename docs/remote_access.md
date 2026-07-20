@@ -117,6 +117,11 @@ When ZMM is remotely reachable, its own login is the wall. The
 relevant protections (see [security.md](security.md) for the full
 model):
 
+- **Push notifications need this**: browsers only allow service workers and
+  notifications in a *secure context*, and ZMM's self-signed LAN certificate is
+  not one — even over `https`, even after clicking through the warning. A
+  tunnel gives you a publicly-issued certificate, which is. See
+  [notifications.md](notifications.md).
 - **MFA**: enable TOTP for every account that is allowed in remotely
   (Settings → User Accounts → My Account). Strongly recommended —
   consider it mandatory for admins.
