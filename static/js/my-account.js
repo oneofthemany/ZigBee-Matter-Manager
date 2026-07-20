@@ -202,6 +202,7 @@
                 return;
             }
             var d2 = await r.json();
+            announceMfaChange();
             modal.hide();
             modalEl.remove();
             showRecoveryCodes(d2.recovery_codes);
@@ -306,6 +307,10 @@
             modal.hide();
             modalEl.remove();
             await refresh();
+            // Disabling matters more than enrolling: presence stops being
+            // permitted for this account, and the admin screen must not keep
+            // offering it.
+            announceMfaChange();
             if (window.toast) window.toast.info('Two-factor authentication disabled');
         };
     }
@@ -405,6 +410,20 @@
     // ----------------------------------------------------------
     // Public init
     // ----------------------------------------------------------
+
+    /**
+     * Tell the rest of the page that this account's MFA state changed.
+     *
+     * auth-settings.js caches the user list, and the Mobile presence tick is
+     * gated on mfa.enabled from that cache. Without this broadcast, enrolling
+     * MFA here leaves the tick disabled with no explanation until a full page
+     * reload — the change happened on the same screen, so the stale state
+     * looks like a bug rather than a cache.
+     */
+    function announceMfaChange() {
+        window.dispatchEvent(new CustomEvent('zmm:mfa-changed'));
+    }
+
     window.initMyAccount = function () {
         if (!window.zmmAuth || !window.zmmAuth.whoami()) {
             window.zmmAuth.onChange(function (p) {

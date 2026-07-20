@@ -23,16 +23,25 @@
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // These endpoints send no cache headers, which leaves caching to the
+    // browser's heuristics — and a heuristically cached user list is exactly
+    // the kind of staleness that only a hard reload clears. Ask for a fresh
+    // copy explicitly; this data is small and always wanted current.
+    function getJson(url) {
+        return fetch(url, { credentials: 'same-origin', cache: 'no-store' })
+            .then(function (r) { return r.json(); });
+    }
+
     async function refresh() {
         var auth = window.zmmAuth;
         var isAdmin = auth && auth.hasScope('admin');
         try {
             if (isAdmin) {
                 var [u, g, s, t] = await Promise.all([
-                    fetch('/api/auth/users').then(r => r.json()),
-                    fetch('/api/auth/groups').then(r => r.json()),
-                    fetch('/api/auth/scopes').then(r => r.json()),
-                    fetch('/api/auth/tokens').then(r => r.json()),
+                    getJson('/api/auth/users'),
+                    getJson('/api/auth/groups'),
+                    getJson('/api/auth/scopes'),
+                    getJson('/api/auth/tokens'),
                 ]);
                 state.users = u.users || [];
                 state.groups = g.groups || [];
@@ -44,8 +53,8 @@
             } else {
                 // Non-admins see only their own tokens + scope reference
                 var [s2, t2] = await Promise.all([
-                    fetch('/api/auth/scopes').then(r => r.json()),
-                    fetch('/api/auth/tokens').then(r => r.json()),
+                    getJson('/api/auth/scopes'),
+                    getJson('/api/auth/tokens'),
                 ]);
                 state.scopes = s2.scopes || [];
                 state.tokens = t2.tokens || [];
@@ -72,9 +81,14 @@
         '<div class="card mb-3">' +
           '<div class="card-header d-flex justify-content-between align-items-center">' +
             '<strong><i class="fas fa-users-cog"></i> Users, Groups & Tokens</strong>' +
-            (auth && auth.whoami() ?
-              '<span class="text-muted small">Signed in as <code>' + escape(auth.whoami().username) + '</code> ' +
-              '<button class="btn btn-link btn-sm p-0 ms-2" id="auth-logout-link">log out</button></span>' : '') +
+            '<span class="text-muted small">' +
+              '<button class="btn btn-link btn-sm p-0 me-3" id="auth-refresh-link" ' +
+                'title="Reload users, groups and tokens from the hub">' +
+                '<i class="fas fa-rotate"></i> refresh</button>' +
+              (auth && auth.whoami() ?
+                'Signed in as <code>' + escape(auth.whoami().username) + '</code> ' +
+                '<button class="btn btn-link btn-sm p-0 ms-2" id="auth-logout-link">log out</button>' : '') +
+            '</span>' +
           '</div>' +
           '<div class="card-body">' +
             '<ul class="nav nav-tabs mb-3">' +
@@ -92,11 +106,19 @@
         var ll = document.getElementById('auth-logout-link');
         if (ll) ll.onclick = function (e) { e.preventDefault(); auth.logout(); };
 
+        var rl = document.getElementById('auth-refresh-link');
+        if (rl) rl.onclick = function (e) { e.preventDefault(); refresh(); };
+
         document.querySelectorAll('[data-tab]').forEach(function (a) {
             a.onclick = function (e) {
                 e.preventDefault();
                 state.view = a.getAttribute('data-tab');
+                // Paint immediately from what we have, then reconcile. Waiting
+                // on the network would make tab switching feel broken; not
+                // refetching at all is how the panel drifts out of date while
+                // it stays open.
                 render();
+                refresh();
             };
         });
 
@@ -781,7 +803,40 @@
     // ----------------------------------------------------------
     // Public init
     // ----------------------------------------------------------
+    // Guards against double-binding: initAuthSettings runs on every Settings
+    // tab click, and listeners registered there would otherwise accumulate,
+    // firing one refresh per visit the page has ever had.
+    var listenersBound = false;
+
+    function bindStalenessListeners() {
+        if (listenersBound) return;
+        listenersBound = true;
+
+        // MFA is enrolled in My Account — a different module on the same
+        // screen. Without this, the Mobile presence tick stays disabled after
+        // enrolling and only a full reload fixes it.
+        window.addEventListener('zmm:mfa-changed', function () { refresh(); });
+
+        // Changes made in another tab, or on the phone, land while this page
+        // sits open. Re-read on return rather than trusting a snapshot taken
+        // who-knows-when.
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden && isMounted()) refresh();
+        });
+        window.addEventListener('focus', function () {
+            if (isMounted()) refresh();
+        });
+    }
+
+    // Only refresh when this panel is actually on screen; otherwise every
+    // window focus would fetch four endpoints for a hidden tab.
+    function isMounted() {
+        var host = document.getElementById(HOST_ID);
+        return !!(host && host.offsetParent !== null);
+    }
+
     window.initAuthSettings = function () {
+        bindStalenessListeners();
         if (!window.zmmAuth || !window.zmmAuth.whoami()) {
             // Wait until logged in
             window.zmmAuth.onChange(function (p) {
