@@ -41,6 +41,13 @@ class PairActivity : AppCompatActivity() {
         else explainBackgroundRefusal()
     }
 
+    private val requestBluetooth = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) showCarPicker()
+        else status(getString(R.string.car_bt_denied))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         b = ActivityPairBinding.inflate(layoutInflater)
@@ -55,6 +62,7 @@ class PairActivity : AppCompatActivity() {
         b.pairBtn.setOnClickListener { pair() }
         b.permsBtn.setOnClickListener { requestPermissions() }
         b.batteryBtn.setOnClickListener { requestBatteryExemption() }
+        b.carBtn.setOnClickListener { chooseCar() }
         b.armBtn.setOnClickListener { if (prefs.armed) disarm() else arm() }
         b.forgetBtn.setOnClickListener { forget() }
         b.discoverBtn.setOnClickListener { discover() }
@@ -350,6 +358,64 @@ class PairActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Pick which bonded Bluetooth device is "the car".
+     *
+     * Bonded devices, not nearby scan: the car is something the phone is
+     * already paired with (calls, Android Auto), a scan needs location-tinged
+     * permissions and a UI for transient strangers, and the failure mode of
+     * bonded-only is a clear message telling the user to pair with the car
+     * first — which they will have done already in practice.
+     */
+    private fun chooseCar() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestBluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            return
+        }
+        showCarPicker()
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")   // checked in chooseCar()
+    private fun showCarPicker() {
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
+        val bonded = try {
+            adapter?.bondedDevices?.toList() ?: emptyList()
+        } catch (e: SecurityException) {
+            emptyList()
+        }
+        if (bonded.isEmpty()) {
+            status(getString(R.string.car_no_bonded))
+            return
+        }
+
+        val labels = bonded.map { d ->
+            val name = d.name ?: d.address
+            if (d.address == prefs.carBtAddress) "$name  ✓" else name
+        } + getString(R.string.car_pick_none)
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.car_pick_title)
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which == bonded.size) {
+                    // "None" — turn drive mode off, and stop it if running.
+                    prefs.carBtAddress = ""
+                    prefs.carBtName = ""
+                    DriveService.stop(this)
+                    status(getString(R.string.car_cleared))
+                } else {
+                    val d = bonded[which]
+                    prefs.carBtAddress = d.address
+                    prefs.carBtName = d.name ?: d.address
+                    status(getString(R.string.car_saved, prefs.carBtName))
+                }
+                render()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun arm() {
         if (!prefs.hasHome) { status("Pair first — no home location cached."); return }
         status("Arming…")
@@ -411,8 +477,10 @@ class PairActivity : AppCompatActivity() {
             runOnUiThread {
                 prefs.armed = false
                 // Stop the heartbeat too, or a disarmed phone keeps waking up
-                // to report a position nobody asked for.
+                // to report a position nobody asked for. Same for drive mode:
+                // disarmed means "stop reporting", full stop.
                 HeartbeatWorker.cancel(this)
+                DriveService.stop(this)
                 status(if (err == null) "Disarmed." else "Disarm reported: $err")
                 render()
             }
@@ -426,6 +494,7 @@ class PairActivity : AppCompatActivity() {
             .setPositiveButton(R.string.forget_ok) { _, _ ->
                 Geofencing.disarm(this)
                 HeartbeatWorker.cancel(this)
+                DriveService.stop(this)
                 prefs.clear()
                 b.hubUrl.setText(""); b.userId.setText(""); b.token.setText("")
                 status("Forgotten. Revoke the token on the hub too.")
@@ -451,6 +520,11 @@ class PairActivity : AppCompatActivity() {
         val batteryOk = isIgnoringBatteryOptimizations()
         b.batteryState.text = getString(if (batteryOk) R.string.battery_ok else R.string.battery_none)
         b.batteryBtn.isEnabled = !batteryOk
+
+        b.carState.text = if (prefs.carBtAddress.isEmpty())
+            getString(R.string.car_none)
+        else
+            getString(R.string.car_fmt, prefs.carBtName.ifEmpty { prefs.carBtAddress })
 
         b.armBtn.isEnabled = prefs.isPaired && prefs.hasHome && fg && bg
         b.armBtn.setText(if (prefs.armed) R.string.disarm else R.string.arm)

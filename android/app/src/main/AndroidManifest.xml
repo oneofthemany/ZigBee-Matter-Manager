@@ -24,6 +24,19 @@
          function that depends on unrestricted background work. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Drive mode (DriveService.kt): while connected to the car's Bluetooth,
+         a foreground service reports position every minute — the Home
+         Assistant "high accuracy mode" pattern. The FGS pair is required on
+         Android 14+ for a location-type foreground service; BLUETOOTH_CONNECT
+         (runtime, 12+) is needed both to list bonded devices in the picker
+         and to receive the ACL connect/disconnect broadcasts that start and
+         stop the service. The legacy BLUETOOTH permission covers the same on
+         Android 11 and below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+
     <!-- Geofencing is Play Services. Declared required so the Play Store (and a
          user reading the manifest) is honest about it. -->
     <uses-feature
@@ -53,6 +66,28 @@
         <receiver
             android:name=".GeofenceReceiver"
             android:exported="false" />
+
+        <!-- Per-minute reporting while driving. exported=false: started only by
+             CarBtReceiver and PairActivity. -->
+        <service
+            android:name=".DriveService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Wakes the app when the car's Bluetooth connects/disconnects.
+             ACL_CONNECTED/DISCONNECTED are on Android's implicit-broadcast
+             exemption list, so a manifest receiver gets them even with the app
+             dead — this is what lets drive mode start without the app open.
+             exported=true is required to receive them, and safe: both are
+             protected broadcasts only the system can send. -->
+        <receiver
+            android:name=".CarBtReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".BootReceiver"

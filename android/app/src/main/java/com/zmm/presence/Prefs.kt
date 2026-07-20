@@ -126,6 +126,23 @@ class Prefs(context: Context) {
         emptyList()
     }
 
+    /**
+     * The car's Bluetooth MAC, or "" when drive mode is off.
+     *
+     * Chosen by the user from the phone's bonded devices. The MAC (not the
+     * name) is the identity: names collide ("Car Audio") and can be renamed,
+     * but CarBtReceiver must decide from a broadcast, with the app dead,
+     * whether THIS device is the car.
+     */
+    var carBtAddress: String
+        get() = sp.getString(KEY_CAR_ADDR, "") ?: ""
+        set(v) = sp.edit().putString(KEY_CAR_ADDR, v.trim()).apply()
+
+    /** Display name for the chosen car, purely for the UI and notification. */
+    var carBtName: String
+        get() = sp.getString(KEY_CAR_NAME, "") ?: ""
+        set(v) = sp.edit().putString(KEY_CAR_NAME, v).apply()
+
     fun saveMode(m: HubClient.ModeParams) {
         modeName = m.name
         heartbeatS = m.heartbeatS
@@ -160,6 +177,8 @@ class Prefs(context: Context) {
         private const val KEY_RESPONSIVENESS = "responsiveness_ms"
         private const val KEY_PRIORITY = "priority"
         private const val KEY_PLACES = "places_json"
+        private const val KEY_CAR_ADDR = "car_bt_addr"
+        private const val KEY_CAR_NAME = "car_bt_name"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"

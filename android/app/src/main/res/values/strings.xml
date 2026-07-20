@@ -49,6 +49,29 @@
     <string name="battery_ok_btn">Allow</string>
     <string name="battery_unsupported">Could not open the background-use prompt. Enable it manually: Settings → Apps → ZMM Presence → Battery → Unrestricted.</string>
 
+    <!--
+        Drive mode. Same design as Home Assistant's "high accuracy mode when
+        connected to Bluetooth": normal reporting is geofence + periodic
+        heartbeat, but while the car's Bluetooth is connected a foreground
+        service reports every minute — so arriving home is seen as it happens,
+        not on the next heartbeat. Battery cost is ~nil: the phone is charging
+        and navigation already has the GPS on.
+    -->
+    <string name="car_none">Drive mode: off — reports every minute while connected to your car</string>
+    <string name="car_fmt">Drive mode: on for %1$s — reports every minute while connected</string>
+    <string name="car_btn">Choose car (Bluetooth)</string>
+    <string name="car_pick_title">Which Bluetooth device is your car?</string>
+    <string name="car_pick_none">None — turn drive mode off</string>
+    <string name="car_no_bonded">No paired Bluetooth devices on this phone. Pair with the car first, then choose it here.</string>
+    <string name="car_bt_denied">Bluetooth permission refused — drive mode needs it to recognise your car. Grant it in Settings → Apps → ZMM Presence → Permissions.</string>
+    <string name="car_saved">Drive mode set for %1$s. Starts next time the car connects.</string>
+    <string name="car_cleared">Drive mode turned off.</string>
+
+    <string name="drive_channel">Drive mode</string>
+    <string name="drive_notif_title">Reporting while driving</string>
+    <string name="drive_notif_body">Connected to %1$s — position sent to your hub every minute. Stops when the car disconnects.</string>
+    <string name="drive_car_generic">your car</string>
+
     <string name="forget_title">Forget this hub?</string>
     <string name="forget_body">Clears the URL, user and token from this phone and disarms the geofence.\n\nThis does NOT revoke the token — do that on the hub, under Settings → Auth → Tokens.</string>
     <string name="forget_ok">Forget</string>

@@ -164,8 +164,24 @@ class HeartbeatWorker(
          */
         fun schedule(ctx: Context, intervalS: Long) {
             val interval = intervalS.coerceAtLeast(MIN_INTERVAL_S)
+
+            // Flex window: without one, PeriodicWorkRequestBuilder's two-arg
+            // form sets flex = the WHOLE interval, meaning the job is
+            // "eligible to run at any point in this 15/30/60 minute window" —
+            // not "runs every 15/30/60 minutes". The OS is then free to push
+            // execution toward the far end of that window to batch it with
+            // other work, and under Doze/App Standby that slack compounds
+            // across periods. Bounding flex to the tail of each period makes
+            // the actual firing time land close to the interval boundary
+            // instead of drifting through it.
+            //
+            // MIN_PERIODIC_FLEX_S is WorkManager's own floor (5 min) — a
+            // shorter flex is silently clamped up to it, same as interval.
+            val flex = (interval / 3).coerceIn(MIN_PERIODIC_FLEX_S, interval)
+
             val req = PeriodicWorkRequestBuilder<HeartbeatWorker>(
                 interval, TimeUnit.SECONDS,
+                flex, TimeUnit.SECONDS,
             )
                 .setConstraints(
                     Constraints.Builder()
@@ -189,5 +205,8 @@ class HeartbeatWorker(
 
         /** WorkManager's floor for periodic work; shorter requests are rounded up. */
         const val MIN_INTERVAL_S = 900L
+
+        /** WorkManager's floor for the flex window; shorter values are rounded up. */
+        const val MIN_PERIODIC_FLEX_S = 300L
     }
 }

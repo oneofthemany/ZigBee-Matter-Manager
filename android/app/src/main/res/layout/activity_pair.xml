@@ -126,6 +126,23 @@
             android:layout_marginTop="8dp"
             android:text="@string/battery_btn" />
 
+        <!-- Drive mode: per-minute reporting while the car's Bluetooth is
+             connected (see DriveService.kt). -->
+        <TextView
+            android:id="@+id/carState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/carBtn"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/car_btn" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/armBtn"
             android:layout_width="match_parent"
