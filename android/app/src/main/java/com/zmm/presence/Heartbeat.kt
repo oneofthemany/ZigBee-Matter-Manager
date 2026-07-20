@@ -46,6 +46,8 @@ class HeartbeatWorker(
             return Result.success()
         }
 
+        refreshConfig(prefs)
+
         val loc = awaitFix(applicationContext)
         if (loc == null) {
             Log.w(TAG, "no location fix available this cycle")
@@ -77,6 +79,78 @@ class HeartbeatWorker(
         suspendCancellableCoroutine { cont ->
             Geofencing.currentFix(ctx) { loc -> cont.resume(loc) }
         }
+
+    /**
+     * Re-fetch mode, home and places from the hub, applying anything changed.
+     *
+     * This is the piece that was missing. Before this, `fetchHome` only ran at
+     * PAIR time — so changing the reporting mode, radius, home location, or
+     * apiary in the web UI had NO effect on an already-paired phone until it
+     * was forgotten and re-paired. The "applied next time it contacts the hub"
+     * hint in the UI was aspirational, not true: the phone contacts the hub
+     * every heartbeat, but never used to ask it "has anything changed?".
+     *
+     * Runs before the fix is posted, on the same cycle that already talks to
+     * the hub, so it costs nothing extra in wake-ups. Best-effort throughout:
+     * a failed refresh must never stop the heartbeat from reporting position
+     * with whatever config it already has cached.
+     */
+    private suspend fun refreshConfig(prefs: Prefs) {
+        val r = try {
+            HubClient.fetchHome(prefs)
+        } catch (e: Exception) {
+            Log.w(TAG, "config refresh failed", e)
+            return
+        }
+        val home = (r as? HubClient.Result.Ok)?.value ?: run {
+            if (r is HubClient.Result.Err) Log.i(TAG, "config refresh: ${r.message}")
+            return
+        }
+
+        val modeChanged = home.mode.heartbeatS != prefs.heartbeatS ||
+            home.mode.name != prefs.modeName
+        val geofenceChanged = home.lat != prefs.homeLat ||
+            home.lon != prefs.homeLon ||
+            home.radiusM != prefs.radiusM
+
+        prefs.homeLat = home.lat
+        prefs.homeLon = home.lon
+        prefs.radiusM = home.radiusM
+        prefs.saveMode(home.mode)
+
+        // Ok(empty) is "hub confirms no places"; Err is "could not tell" and
+        // must leave the cache untouched — see fetchPlaces' doc comment. Using
+        // the cached list as the "no change" default on failure means a
+        // network blip this cycle neither wipes places nor spuriously re-arms
+        // the geofence.
+        val cachedPlaces = prefs.loadPlaces()
+        val places = when (val pr = HubClient.fetchPlaces(prefs)) {
+            is HubClient.Result.Ok -> pr.value
+            is HubClient.Result.Err -> {
+                Log.i(TAG, "place refresh skipped: ${pr.message}")
+                cachedPlaces
+            }
+        }
+        val placesChanged = places.map { it.id to it.radiusM } !=
+            cachedPlaces.map { it.id to it.radiusM }
+        if (placesChanged) prefs.savePlaces(places)
+
+        if (modeChanged) {
+            Log.i(TAG, "mode changed on hub -> ${home.mode.name} " +
+                "(${home.mode.heartbeatS}s); rescheduling")
+            // Safe to call from inside the worker it reschedules: UPDATE policy
+            // replaces the periodic request going forward without touching the
+            // run currently in progress.
+            schedule(applicationContext, home.mode.heartbeatS)
+        }
+
+        if (geofenceChanged || placesChanged) {
+            Log.i(TAG, "geofence config changed on hub; re-arming")
+            Geofencing.arm(applicationContext, home.lat, home.lon, home.radiusM, places) { err ->
+                if (err != null) Log.w(TAG, "re-arm after config refresh failed: $err")
+            }
+        }
+    }
 
     companion object {
         private const val TAG = "ZmmHub"

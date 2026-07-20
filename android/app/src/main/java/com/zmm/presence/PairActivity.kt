@@ -54,6 +54,7 @@ class PairActivity : AppCompatActivity() {
 
         b.pairBtn.setOnClickListener { pair() }
         b.permsBtn.setOnClickListener { requestPermissions() }
+        b.batteryBtn.setOnClickListener { requestBatteryExemption() }
         b.armBtn.setOnClickListener { if (prefs.armed) disarm() else arm() }
         b.forgetBtn.setOnClickListener { forget() }
         b.discoverBtn.setOnClickListener { discover() }
@@ -189,9 +190,13 @@ class PairActivity : AppCompatActivity() {
                     // Cache the reporting mode too, so arming and the boot
                     // re-arm can apply it without another round-trip.
                     prefs.saveMode(r.value.mode)
-                    // Places are optional; fetchPlaces returns empty rather
-                    // than failing if the hub has none or is older.
-                    prefs.savePlaces(HubClient.fetchPlaces(prefs))
+                    // Places are optional; a hub predating them (or a token
+                    // without presence:read) simply pairs with none rather
+                    // than failing pairing outright.
+                    when (val pr = HubClient.fetchPlaces(prefs)) {
+                        is HubClient.Result.Ok -> prefs.savePlaces(pr.value)
+                        is HubClient.Result.Err -> prefs.savePlaces(emptyList())
+                    }
                     status("Paired. Home is ${fmt(r.value.lat)}, ${fmt(r.value.lon)} " +
                         "(${r.value.radiusM.toInt()} m).")
                 }
@@ -303,6 +308,48 @@ class PairActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * True once the OS has stopped throttling this app's background work.
+     *
+     * This is the actual cause of a phone drifting to "unknown" over time.
+     * WorkManager's periodic heartbeat (Heartbeat.kt) is registered correctly
+     * regardless of this setting — the OS just defers WHEN it is allowed to
+     * run, more aggressively the less often the app is opened. Geofence
+     * ENTER/EXIT events are delivered at a higher priority and mostly escape
+     * this, which is why crossings can keep working while the heartbeat that
+     * fills the gaps between them quietly stops.
+     */
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(android.os.PowerManager::class.java) ?: return true
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun requestBatteryExemption() {
+        if (isIgnoringBatteryOptimizations()) { render(); return }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.battery_title)
+            .setMessage(R.string.battery_body)
+            .setPositiveButton(R.string.battery_ok_btn) { _, _ ->
+                // No activity-result callback needed: onResume() already
+                // re-renders on return from Settings, which picks up whatever
+                // the user chose in the system dialog — the same pattern
+                // requestBackgroundIfNeeded() relies on for its own fallback.
+                try {
+                    startActivity(Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName"),
+                    ))
+                } catch (e: Exception) {
+                    // A handful of OEM builds strip this intent from the ROM.
+                    // Say so rather than leaving the button looking broken.
+                    status(getString(R.string.battery_unsupported))
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun arm() {
         if (!prefs.hasHome) { status("Pair first — no home location cached."); return }
         status("Arming…")
@@ -400,6 +447,11 @@ class PairActivity : AppCompatActivity() {
             else -> getString(R.string.perm_ok)
         }
         b.permsBtn.isEnabled = !fg || !bg
+
+        val batteryOk = isIgnoringBatteryOptimizations()
+        b.batteryState.text = getString(if (batteryOk) R.string.battery_ok else R.string.battery_none)
+        b.batteryBtn.isEnabled = !batteryOk
+
         b.armBtn.isEnabled = prefs.isPaired && prefs.hasHome && fg && bg
         b.armBtn.setText(if (prefs.armed) R.string.disarm else R.string.arm)
         b.homeState.text = if (prefs.hasHome) {

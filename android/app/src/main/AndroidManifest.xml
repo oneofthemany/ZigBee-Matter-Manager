@@ -16,6 +16,14 @@
     <!-- Android 13+: needed only for the "geofence armed / report failed" notices. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Lets the app ask the user to exempt it from Doze/App Standby throttling.
+         Without this, the periodic heartbeat (Heartbeat.kt) gets deferred further
+         and further the less often the app is opened — which is exactly the
+         "away from home" case where an accurate position matters most. This is
+         Google's documented justification for the permission: apps with a core
+         function that depends on unrestricted background work. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Geofencing is Play Services. Declared required so the Play Store (and a
          user reading the manifest) is honest about it. -->
     <uses-feature

@@ -379,11 +379,18 @@
 
     function modeHint(m) {
         if (!m) return '';
+        // Bounded by the phone's CURRENT interval, not the new one: the app
+        // picks up a changed mode at the start of its next scheduled
+        // heartbeat, and that schedule was set by whichever mode was active
+        // before this change. Saying "applied within its current interval"
+        // is the honest bound; "next time it contacts the hub" implied
+        // something closer to immediate, which it is not.
         return 'Phone reports every <strong>' + mins(m.heartbeat_s) +
                '</strong>; marked unknown after <strong>' + mins(m.stale_after_s) +
                '</strong> of silence. Boundary crossings detected within about ' +
                '<strong>' + Math.round(m.responsiveness_ms / 1000) + ' s</strong>. ' +
-               'Applied to the phone next time it contacts the hub.';
+               'A saved change reaches the phone within its current heartbeat interval — ' +
+               'sooner if you disarm and re-arm on the phone.';
     }
 
     function field(id, label, value, col, readonly, hint, type, step) {

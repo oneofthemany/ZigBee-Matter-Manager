@@ -108,6 +108,24 @@
             android:layout_marginTop="12dp"
             android:text="@string/grant_location" />
 
+        <!-- Background-throttling exemption. See battery_body for why this is
+             not optional polish: without it, reports silently degrade to once
+             every few hours the less often the app is opened. -->
+        <TextView
+            android:id="@+id/batteryState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/batteryBtn"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/battery_btn" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/armBtn"
             android:layout_width="match_parent"

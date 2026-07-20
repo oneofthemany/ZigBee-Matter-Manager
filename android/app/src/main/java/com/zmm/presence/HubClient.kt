@@ -142,11 +142,18 @@ object HubClient {
     }
 
     /**
-     * Named places, for wake-up geofences. Failure is not fatal: places are an
-     * enhancement, and a hub that predates them (or a token without
-     * presence:read) should still leave home tracking fully working.
+     * Named places, for wake-up geofences.
+     *
+     * Returns [Result] rather than a bare list, and that distinction is load
+     * bearing: an empty list has two very different causes — "the hub
+     * genuinely has no places configured" and "could not reach the hub this
+     * cycle" — and a caller that cannot tell them apart cannot tell whether
+     * it is safe to overwrite its cache. Collapsing both into `emptyList()`
+     * previously meant a transient network blip during a heartbeat would
+     * silently wipe every cached place and de-arm those geofences. Ok(empty)
+     * means "confirmed none"; Err means "unknown, keep what you had".
      */
-    suspend fun fetchPlaces(prefs: Prefs): List<Place> = withContext(Dispatchers.IO) {
+    suspend fun fetchPlaces(prefs: Prefs): Result<List<Place>> = withContext(Dispatchers.IO) {
         val url = "${prefs.hubUrl}/api/places"
         try {
             val conn = open(url, "GET", prefs)
@@ -154,10 +161,10 @@ object HubClient {
             val body = readBody(conn)
             conn.disconnect()
             if (code !in 200..299) {
-                Log.i(TAG, "places unavailable (HTTP $code) — home only")
-                return@withContext emptyList()
+                return@withContext Result.Err("places unavailable (HTTP $code)")
             }
-            val arr = JSONObject(body).optJSONArray("places") ?: return@withContext emptyList()
+            val arr = JSONObject(body).optJSONArray("places")
+                ?: return@withContext Result.Ok(emptyList())
             val out = ArrayList<Place>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -172,10 +179,10 @@ object HubClient {
                     radiusM = o.optDouble("radius_m", 0.0).toFloat(),
                 ))
             }
-            out.filter { !it.lat.isNaN() && !it.lon.isNaN() && it.radiusM > 0f }
+            Result.Ok(out.filter { !it.lat.isNaN() && !it.lon.isNaN() && it.radiusM > 0f })
         } catch (e: Exception) {
             Log.w(TAG, "fetchPlaces failed", e)
-            emptyList()
+            Result.Err(e.message ?: "fetchPlaces failed")
         }
     }
 
