@@ -113,8 +113,32 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             ],
         }
 
+    def _attach_position(u: dict, dev, allowed: bool) -> None:
+        """
+        Add live coordinates, for admins only.
+
+        presence_users.py deliberately keeps positions out of its published
+        state — only distance-from-home is exposed, and coordinates are never
+        persisted. That is a real privacy boundary, and the map is the first
+        feature that needs to cross it.
+
+        So it is crossed as narrowly as possible: `admin`, never blanket
+        `presence:read`. A household member with presence:read can still see
+        who is home and how far away; pinning someone to a street corner is an
+        administrator's capability. Nothing here changes what is stored — these
+        values remain in memory and vanish on restart.
+        """
+        if not allowed:
+            return
+        lat = getattr(dev, "_last_lat", None)
+        lon = getattr(dev, "_last_lon", None)
+        if lat is not None and lon is not None:
+            u.setdefault("state", {})
+            u["state"]["lat"] = lat
+            u["state"]["lon"] = lon
+
     @app.get("/api/presence/users")
-    async def list_users(_=Depends(require_scope("presence:read"))):
+    async def list_users(request: Request, _=Depends(require_scope("presence:read"))):
         # Annotate rather than filter: an admin needs to see that a user's
         # presence is stalled *and why*. Silently omitting them would present
         # a missing MFA enrolment as a broken phone.
@@ -125,10 +149,15 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         from modules.auth import get_auth_manager
         amgr = get_auth_manager()
 
+        from modules.auth import scope_matches
+        principal: Optional[Principal] = getattr(request.state, "principal", None)
+        is_admin = bool(principal) and scope_matches("admin", principal.scopes)
+
         users = _mgr().list_users()
         for u in users:
             if not isinstance(u, dict) or not u.get("user_id"):
                 continue
+            _attach_position(u, _mgr().get_user(u["user_id"]), is_admin)
             # Resolve through the explicit link, never the id. A presence user
             # whose account was renamed still points at the right account; one
             # that never had an account is standalone rather than broken.

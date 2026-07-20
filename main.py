@@ -1129,6 +1129,11 @@ register_alert_routes(app)
 register_presence_routes(app, get_presence_manager)
 register_remote_access_routes(app)
 
+# Map tiles: a caching proxy so presence maps don't announce the
+# coordinates being viewed to a third-party tile server on every pan.
+from routes.map_routes import register_map_routes
+register_map_routes(app)
+
 # ============================================================================
 # POST-SETUP ZIGBEE HOT-START SERVICES
 # ============================================================================
