@@ -63,26 +63,38 @@ class PairActivity : AppCompatActivity() {
     }
 
     /**
-     * Keep content clear of the system bars and the app bar.
+     * Keep content clear of the status bar AND the app bar.
      *
-     * targetSdk 35 (Android 15) enforces edge-to-edge: the window extends
-     * behind the status and navigation bars whether or not the layout expects
-     * it. Without this the top of the form sits underneath the app bar — the
-     * hub URL field is the first casualty — and the bottom buttons hide behind
-     * the gesture bar.
+     * targetSdk 35 (Android 15) forces edge-to-edge: the window starts at y=0
+     * and the ActionBar is drawn ON TOP of the content view rather than above
+     * it. Without this the first fields sit behind the "ZMM Presence" bar and
+     * the blurb disappears under the status bar.
      *
-     * Padding rather than fitsSystemWindows so the scroll surface still
-     * extends to the edges; only the content is inset.
+     * So the top padding is the status bar inset PLUS the action bar height —
+     * the system inset alone is not enough, because the bar occupying that
+     * space is the app's own, and the insets API knows nothing about it.
      */
     private fun applyWindowInsets() {
+        // Resolved from the theme rather than hardcoded to 56dp: it differs by
+        // configuration, and a wrong constant here is a permanent overlap.
+        val tv = android.util.TypedValue()
+        val actionBarPx = if (theme.resolveAttribute(
+                android.R.attr.actionBarSize, tv, true)) {
+            android.util.TypedValue.complexToDimensionPixelSize(
+                tv.data, resources.displayMetrics)
+        } else 0
+
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
             val bars = insets.getInsets(
                 androidx.core.view.WindowInsetsCompat.Type.systemBars() or
                 androidx.core.view.WindowInsetsCompat.Type.displayCutout()
             )
-            // The app bar occupies the top inset already, so only the sides and
-            // bottom need adding; the ScrollView handles the rest.
-            v.setPadding(bars.left, v.paddingTop, bars.right, bars.bottom)
+            v.setPadding(
+                bars.left,
+                bars.top + actionBarPx,
+                bars.right,
+                bars.bottom,
+            )
             insets
         }
     }
