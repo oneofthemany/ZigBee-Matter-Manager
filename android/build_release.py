@@ -467,9 +467,14 @@ def verify_pinning_code(apk: Path) -> bool:
     hub with a deliberately wrong pin.
     """
     head("Certificate pinning (compiled in)")
+    # Keep in step with the literals in HubClient.kt / CertPin.kt. These are a
+    # proxy for the guards being compiled in, so a reworded message shows up
+    # here as a failure — annoying, but the alternative is a check that quietly
+    # stops testing anything the day someone edits a string.
     needles = {
         "pin mismatch rejection": b"Certificate pin mismatch",
-        "unpinned-connection guard": b"No certificate pin stored",
+        "untrusted-hub guard": b"Hub trust not established",
+        "pinned-without-pin guard": b"Pinned mode with no stored pin",
         "plaintext refusal": b"Refusing to send credentials over plain http",
     }
     blob = b""
