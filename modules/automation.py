@@ -67,7 +67,7 @@ VALID_COMMANDS = {
     "lock", "unlock"
 }
 
-FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media"}
+FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request"}
 BRANCHING_STEP_TYPES = {"if_then_else", "parallel"}
 ALL_STEP_TYPES = FLAT_STEP_TYPES | BRANCHING_STEP_TYPES
 
@@ -576,6 +576,14 @@ class AutomationEngine:
                     return f"{label}[{i+1}]: control needs a valid control_action"
                 if ma == "announce" and not step.get("text"):
                     return f"{label}[{i+1}]: announce needs text"
+            elif st == "request":
+                if not step.get("to_user"):
+                    return f"{label}[{i+1}]: request needs to_user"
+                if not (step.get("message") or "").strip():
+                    return f"{label}[{i+1}]: request needs a message"
+                ts = step.get("timeout_s", 1200)
+                if not isinstance(ts, (int, float)) or ts <= 0:
+                    return f"{label}[{i+1}]: request timeout_s must be positive"
             elif st in ("wait_for", "condition"):
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
@@ -1270,6 +1278,8 @@ class AutomationEngine:
                     await self._step_command(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "media":
                     await self._step_media(rule_id, step, f"{prefix}[{path} {num}/{total}]")
+                elif st == "request":
+                    await self._step_request(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "delay":
                     secs = step.get("seconds", 0) or 0
                     if secs > 0:
@@ -1365,6 +1375,48 @@ class AutomationEngine:
                         f"{tag} 💥 {tname} {command}: {e}", level="ERROR",
                         traceback=traceback.format_exc())
 
+
+    async def _step_request(self, rule_id, step, tag):
+        """
+        Send someone an ask that needs an answer.
+
+        Unlike a notification this does not fire and forget: the request is
+        recorded, and if nobody answers within its timeout the SENDER is told.
+        The rule does not wait for the answer — blocking a sequence for twenty
+        minutes would tie up the engine and, worse, make the outcome depend on
+        whether the hub happened to stay up. The escalation is what closes the
+        loop.
+        """
+        from modules.requests_store import get_request_store
+
+        store = get_request_store()
+        if not store:
+            self._trace(rule_id, "step", "REQUEST_SKIP",
+                        f"{tag} Request store unavailable", level="WARNING")
+            return
+
+        to_user = step.get("to_user")
+        message = (step.get("message") or "").strip()
+        timeout_s = step.get("timeout_s", 1200)
+        # Attribute the ask to a person where the rule names one, otherwise to
+        # the system. "ZMM asks you to get milk" is odd but honest; inventing a
+        # sender would be worse, since knowing who is asking is the point.
+        from_user = step.get("from_user") or "zmm"
+
+        result = await store.create(
+            from_user=from_user,
+            to_user=to_user,
+            message=message,
+            timeout_s=timeout_s,
+            source="automation",
+            context={"rule_id": rule_id},
+        )
+        if result.get("success"):
+            self._trace(rule_id, "step", "REQUEST",
+                        f"{tag} \u2709 asked {to_user}: {message[:60]}")
+        else:
+            self._trace(rule_id, "step", "REQUEST_FAIL",
+                        f"{tag} Request failed: {result.get('error')}", level="WARNING")
 
     async def _step_media(self, rule_id, step, tag):
         """Play radio/Tidal or control a media player (Cast/WiiM)."""

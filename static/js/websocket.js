@@ -116,6 +116,18 @@ export function initWS() {
                     if (window.handlePresenceUpdate) window.handlePresenceUpdate(payload);
                     break;
 
+                // Requests are time-limited, so they are pushed rather than
+                // waited for: the recipient sees the ask immediately, and the
+                // sender learns of a lapse the moment the sweep notices it.
+                case 'request_created':
+                case 'request_accepted':
+                case 'request_declined':
+                case 'request_expired':
+                    if (window.zmmHandleRequestEvent) {
+                        window.zmmHandleRequestEvent(msg.type, payload);
+                    }
+                    break;
+
                 case "device_list":
                     state.devices = msg.data;
                     renderDeviceTable();

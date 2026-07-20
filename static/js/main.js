@@ -402,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
         checkMatterStatus();
         // Header presence badge — page-level, not tied to the Settings tab.
         if (window.initPresenceBadge) window.initPresenceBadge();
+        if (window.initRequestsUI) window.initRequestsUI();
         // Fallback poll — the matter_status websocket event is the primary
         // signal; this catches missed events (ws reconnects, backend restarts)
         setInterval(checkMatterStatus, 60000);

@@ -63,6 +63,9 @@
                  Populated by presence-badge.js, empty until then. -->
            <span class="navbar-text ms-2" id="presence-badge-host"></span>
 
+            <!-- Requests needing an answer. Populated by requests-ui.js. -->
+           <span class="navbar-text ms-2" id="requests-badge-host"></span>
+
             <!-- Switch to the Frames UI. Plain /frames (no ?view=) so the server
                  clears any "I want the manager" override for this session.
                  Mobile-only (d-lg-none): on a desktop, Frames is already a tab
@@ -1649,6 +1652,7 @@
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/js/presence.js"></script>
 <script src="/static/js/presence-badge.js"></script>
+<script src="/static/js/requests-ui.js"></script>
 <script src="/static/js/presence-settings.js"></script>
 <script src="/static/js/places-settings.js"></script>
 <script src="/static/js/setup-jedi.js"></script>
