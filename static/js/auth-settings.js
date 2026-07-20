@@ -308,6 +308,14 @@
     // grants blanket "presence:read" (which does not scope-match the per-user
     // "presence:read:<u>") and "presence:write:*" — so without these a minimal
     // per-user token can't even be issued.
+    // Presence requires MFA, enforced server-side on every presence request and
+    // at token issuance. Mirrored here only so the tick is disabled instead of
+    // failing at save; treat a missing mfa block as "off" so a stale or partial
+    // response can never present an unprotected account as eligible.
+    function mfaOn(u) {
+        return !!(u && u.mfa && u.mfa.enabled);
+    }
+
     function presenceScopes(username) {
         return ['presence:read:' + username, 'presence:write:' + username];
     }
@@ -390,16 +398,27 @@
                   '<div class="form-check">' +
                     '<input id="upresence" type="checkbox" class="form-check-input"' +
                       (existing && hasPresenceUser(u.username) ? ' checked' : '') +
-                      (existing ? '' : ' disabled') + '>' +
+                      (existing && mfaOn(u) ? '' : ' disabled') + '>' +
                     '<label class="form-check-label" for="upresence">Mobile presence</label>' +
                   '</div>' +
                   '<div class="form-text">' +
-                    (existing
-                      ? 'Lets this user\'s phone report its location. Creates a presence user and ' +
-                        'grants <code>' + escape(presenceScopes(u.username).join('</code> + <code>')) +
-                        '</code> — issue the phone\'s token with exactly those two scopes. ' +
-                        'Home location and radius are set in the Presence tab.'
-                      : 'Save the user first, then re-open to enable presence.') +
+                    (!existing
+                      ? 'Save the user first, then re-open to enable presence.'
+                      : !mfaOn(u)
+                        // The server refuses presence without MFA, so the tick
+                        // is disabled rather than left to fail at save time.
+                        // Say which account needs enrolling — an admin editing
+                        // someone else would otherwise check their own.
+                        ? '<span class="text-warning">' +
+                          '<i class="fas fa-shield-alt"></i> Requires MFA.</span> ' +
+                          'Presence publishes this person\'s real-world location to a ' +
+                          'phone token that leaves the house, so <code>' +
+                          escape(u.username) + '</code> must have TOTP enabled first. ' +
+                          'They can enrol under Settings → User Accounts → My Account.'
+                        : 'Lets this user\'s phone report its location. Creates a presence user and ' +
+                          'grants <code>' + escape(presenceScopes(u.username).join('</code> + <code>')) +
+                          '</code> — issue the phone\'s token with exactly those two scopes. ' +
+                          'Home location and radius are set in the Presence tab.') +
                   '</div>' +
                 '</div>' +
                 (existing ? '<div class="form-check"><input id="udisabled" type="checkbox" class="form-check-input"' +
@@ -438,6 +457,16 @@
                 var pScopes = presenceScopes(u.username);
                 scopes = scopes.filter(function (s) { return pScopes.indexOf(s) === -1; });
                 if (wantPresence) {
+                    // A disabled input is a hint, not a control — it can be
+                    // re-enabled in devtools, and the checked state may predate
+                    // MFA being turned off. The server rejects this anyway; the
+                    // point here is a clear message instead of an opaque 403.
+                    if (!mfaOn(u)) {
+                        showErr('user-edit-error',
+                            'Presence requires MFA. Enable TOTP for "' + u.username +
+                            '" first — presence publishes their location to a phone token.');
+                        return;
+                    }
                     if (!presenceIdOk(u.username)) {
                         showErr('user-edit-error',
                             'Presence needs a username of letters, numbers or underscores — ' +
@@ -480,6 +509,12 @@
                             user_id: u.username,
                             display_name: u.username,
                             enabled: true,
+                            // Explicit link to the login account. Everything
+                            // keyed on the account — the MFA policy, and the
+                            // cascade that removes this record when the account
+                            // is deleted — resolves through this field rather
+                            // than assuming user_id happens to be a username.
+                            account: u.username,
                         }),
                     });
                     if (!pr.ok) {

@@ -43,6 +43,9 @@ class UserUpsert(BaseModel):
     enabled: bool = True
     owntracks_user: Optional[str] = None
     owntracks_device: Optional[str] = None
+    # Login account this presence user belongs to. None = standalone tracker,
+    # which cannot satisfy the MFA policy because there is no account to enrol.
+    account: Optional[str] = None
 
 
 class FixReport(BaseModel):
@@ -64,16 +67,53 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             raise HTTPException(503, "Presence manager not initialised")
         return mgr
 
+    def _account_for(user_id: str) -> Optional[str]:
+        """
+        The login account a presence user belongs to, or None if standalone.
+
+        Every policy decision about a presence user resolves through here, so
+        the account link is read from the record rather than inferred from the
+        id. A missing presence user returns None, which the MFA gate treats as
+        "no account" and refuses — the safe reading when we cannot identify who
+        a location belongs to.
+        """
+        dev = _mgr().get_user(user_id)
+        return getattr(dev.cfg, "account", None) if dev else None
+
+    def _gate_presence_mfa(user_id: str) -> None:
+        """Apply the MFA policy to whichever account owns this presence user."""
+        account = _account_for(user_id)
+        if not account:
+            raise HTTPException(
+                403,
+                f"Presence user '{user_id}' is not linked to a login account, "
+                "so MFA cannot be verified. Link it to an account, or delete it "
+                "if it is left over from a deleted user."
+            )
+        require_presence_mfa(account)
+
     @app.get("/api/presence/users")
     async def list_users(_=Depends(require_scope("presence:read"))):
         # Annotate rather than filter: an admin needs to see that a user's
         # presence is stalled *and why*. Silently omitting them would present
         # a missing MFA enrolment as a broken phone.
+        #
+        # `orphaned` distinguishes the two ways mfa_ok can be false. Without an
+        # account there is nothing to enrol, so "enable MFA" is useless advice —
+        # the record is a leftover from a deleted user and should be removed.
+        from modules.auth import get_auth_manager
+        amgr = get_auth_manager()
+
         users = _mgr().list_users()
         for u in users:
-            uid = u.get("user_id") if isinstance(u, dict) else None
-            if uid:
-                u["mfa_ok"] = user_has_mfa(uid)
+            if not isinstance(u, dict) or not u.get("user_id"):
+                continue
+            # Resolve through the explicit link, never the id. A presence user
+            # whose account was renamed still points at the right account; one
+            # that never had an account is standalone rather than broken.
+            account = u.get("account")
+            u["mfa_ok"] = bool(account) and user_has_mfa(account)
+            u["orphaned"] = bool(amgr) and bool(account) and account not in amgr.users
         return {"users": users}
 
     @app.get("/api/presence/users/{user_id}")
@@ -101,7 +141,7 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
 
         # Policy gate, checked after the scope check so the error names the
         # actual obstacle rather than hiding it behind a permissions message.
-        require_presence_mfa(user_id)
+        _gate_presence_mfa(user_id)
 
         dev = _mgr().get_user(user_id)
         if not dev:
@@ -156,7 +196,7 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         ):
             raise HTTPException(403, f"Token lacks scope: {wanted}")
 
-        require_presence_mfa(user_id)
+        _gate_presence_mfa(user_id)
 
         result = await _mgr().report_pwa_fix(
             user_id=user_id,

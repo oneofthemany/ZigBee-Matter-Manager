@@ -461,7 +461,46 @@ def register_auth_routes(
         sec = _sec()
         sec.mfa.pop(username, None)
         _auth()._save_locked()
-        return {"success": True}
+
+        # Cascade: remove the matching presence user.
+        #
+        # Presence users live in a separate registry keyed by user_id, linked to
+        # an account only by the convention that the two names match (the Mobile
+        # presence tick creates it that way). Left behind, the orphan keeps
+        # reporting a location for someone who no longer has an account, and any
+        # policy keyed on the account — MFA, for one — silently fails closed
+        # against a user record that isn't there. That mismatch is confusing
+        # precisely because both halves look correct in isolation.
+        removed_presence: List[str] = []
+        try:
+            from modules.presence_users import get_presence_manager
+            pmgr = get_presence_manager()
+            if pmgr:
+                # Match on the explicit account link, not the id. A presence
+                # user may be named differently from its account, and more than
+                # one may point at the same account (phone plus tablet).
+                doomed = [
+                    d.cfg.user_id for d in list(pmgr.devices.values())
+                    if getattr(d.cfg, "account", None) == username
+                ]
+                for uid in doomed:
+                    result = await pmgr.delete_user(uid)
+                    if result.get("success"):
+                        removed_presence.append(uid)
+        except Exception as e:
+            # The account is already gone; failing the whole request now would
+            # be misleading. Surface it instead so the orphan can be cleaned up.
+            logger.warning(
+                f"[auth] deleted user '{username}' but could not remove its "
+                f"presence user: {e}"
+            )
+
+        if removed_presence:
+            logger.info(
+                f"[auth] cascade-deleted presence user(s) "
+                f"{removed_presence} linked to '{username}'"
+            )
+        return {"success": True, "presence_users_removed": removed_presence}
 
     # ---- groups (admin) ------------------------------------------------
 
