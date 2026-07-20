@@ -1,0 +1,98 @@
+package com.zmm.presence
+
+import android.content.Context
+import android.content.SharedPreferences
+
+/**
+ * Pairing details for one hub + one presence user.
+ *
+ * The bearer token lives here. On a non-rooted device app-private SharedPreferences
+ * are readable only by this app, which is the same bar as any other token store on
+ * Android; EncryptedSharedPreferences would add key-store wrapping but not change
+ * the outcome if the device itself is compromised. The real mitigation is that the
+ * token is scoped to one user's presence and revocable per-device from the hub.
+ */
+class Prefs(context: Context) {
+
+    private val sp: SharedPreferences =
+        context.getSharedPreferences("zmm_presence", Context.MODE_PRIVATE)
+
+    var hubUrl: String
+        get() = sp.getString(KEY_HUB, "") ?: ""
+        set(v) = sp.edit().putString(KEY_HUB, normaliseUrl(v)).apply()
+
+    var userId: String
+        get() = sp.getString(KEY_USER, "") ?: ""
+        set(v) = sp.edit().putString(KEY_USER, v.trim()).apply()
+
+    var token: String
+        get() = sp.getString(KEY_TOKEN, "") ?: ""
+        set(v) = sp.edit().putString(KEY_TOKEN, v.trim()).apply()
+
+    /**
+     * SHA-256 of the hub's public key, captured at pairing. See [CertPin].
+     * Empty means unpaired — connections refuse rather than falling back to
+     * CA validation, so an empty pin can never silently downgrade trust.
+     */
+    var certPin: String
+        get() = sp.getString(KEY_PIN, "") ?: ""
+        set(v) = sp.edit().putString(KEY_PIN, v.trim()).apply()
+
+    /** Home geofence, cached so BootReceiver can re-arm without a network call. */
+    var homeLat: Double
+        get() = Double.fromBits(sp.getLong(KEY_LAT, NAN_BITS))
+        set(v) = sp.edit().putLong(KEY_LAT, v.toRawBits()).apply()
+
+    var homeLon: Double
+        get() = Double.fromBits(sp.getLong(KEY_LON, NAN_BITS))
+        set(v) = sp.edit().putLong(KEY_LON, v.toRawBits()).apply()
+
+    var radiusM: Float
+        get() = sp.getFloat(KEY_RADIUS, 0f)
+        set(v) = sp.edit().putFloat(KEY_RADIUS, v).apply()
+
+    var armed: Boolean
+        get() = sp.getBoolean(KEY_ARMED, false)
+        set(v) = sp.edit().putBoolean(KEY_ARMED, v).apply()
+
+    val isPaired: Boolean
+        get() = hubUrl.isNotEmpty() && userId.isNotEmpty() && token.isNotEmpty()
+
+    val hasHome: Boolean
+        get() = !homeLat.isNaN() && !homeLon.isNaN() && radiusM > 0f
+
+    fun clear() = sp.edit().clear().apply()
+
+    companion object {
+        private const val KEY_HUB = "hub_url"
+        private const val KEY_USER = "user_id"
+        private const val KEY_TOKEN = "token"
+        private const val KEY_LAT = "home_lat"
+        private const val KEY_LON = "home_lon"
+        private const val KEY_RADIUS = "radius_m"
+        private const val KEY_ARMED = "armed"
+        private const val KEY_PIN = "cert_pin"
+        private val NAN_BITS = Double.NaN.toRawBits()
+
+        /**
+         * Tolerate "hub:8000", "https://hub:8000/", "https://hub/".
+         *
+         * A missing scheme becomes https, NEVER http. The bearer token rides on
+         * every request; defaulting a bare "192.168.1.1:8000" to plaintext would
+         * silently put that token on the wire in the clear, and the user who
+         * typed no scheme is exactly the user who would not notice.
+         *
+         * An explicit "http://" is preserved rather than rewritten — pairing
+         * rejects it outright (see [isSecure]), which is a clearer failure than
+         * quietly connecting somewhere the user did not ask for.
+         */
+        fun normaliseUrl(raw: String): String {
+            var s = raw.trim().trimEnd('/')
+            if (s.isEmpty()) return s
+            if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"
+            return s
+        }
+
+        fun isSecure(url: String): Boolean = url.startsWith("https://")
+    }
+}

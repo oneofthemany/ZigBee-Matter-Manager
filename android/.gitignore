@@ -1,0 +1,26 @@
+*.iml
+.gradle/
+/local.properties
+
+# The whole IDE directory, not the usual per-file list. Android Studio's
+# default .gitignore shares some of .idea/ so teammates inherit code style and
+# run configurations — worth it on a team, noise in a single-author repo that
+# strangers will clone to build one APK. It also holds machine-specific paths
+# and, in some plugins, tokens.
+.idea/
+
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Signing material. The keystore IS the app's identity — anyone holding it and
+# its password can ship an update that Android accepts as genuinely yours.
+# Neither belongs in a repo, and losing the keystore means you can never update
+# an installed app again, only uninstall and reinstall. Back it up somewhere
+# outside this directory.
+keystore.properties
+*.jks
+*.keystore

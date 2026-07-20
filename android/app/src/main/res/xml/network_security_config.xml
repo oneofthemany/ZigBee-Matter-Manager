@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Cleartext HTTP is OFF by default. Your token travels on every request; over
+    plain http:// on a network you don't fully trust, anyone can lift it.
+
+    If your hub is plain http:// on your LAN, uncomment the block below and put
+    YOUR host in it. Do NOT set cleartextTrafficPermitted on a base-config —
+    that would allow plaintext to anywhere, including a hostile captive portal.
+-->
+<network-security-config>
+
+    <!--
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">zmm.local</domain>
+        <domain includeSubdomains="false">192.168.1.10</domain>
+    </domain-config>
+    -->
+
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!--
+                System CAs only. The user CA store is deliberately NOT trusted:
+                the hub is authenticated by certificate pinning instead (see
+                CertPin.kt), so a CA installed on the phone — by the user or by
+                anyone else — cannot be used to impersonate it.
+
+                No certificate the hub presents will validate against a system
+                CA either. That is fine and expected: the pinned trust manager
+                replaces the default one on every hub connection, so this
+                block governs only incidental traffic, of which the app makes
+                none.
+            -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

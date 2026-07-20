@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG BUILDS ONLY.
+
+    This file lives in src/debug/, so it overrides the strict release config in
+    src/main/ for debug builds and is never shipped in a release APK. That's the
+    point: testing against a plain-http hub on your LAN shouldn't force you to
+    weaken the build you actually install on your phone.
+
+    10.0.2.2 is the emulator's alias for your host machine's loopback — use it
+    when the hub runs on the same computer as the emulator (http://10.0.2.2:8000).
+
+    NOTE: <domain> matches a HOSTNAME or a literal IP. There is no CIDR/range
+    support — "192.168.1.0" matches only the host 192.168.1.0, and
+    includeSubdomains is about DNS labels, not subnets. To test from a real
+    phone on your LAN you must add your hub's exact IP or hostname below.
+
+    If your hub is exposed over HTTPS, none of this is needed.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The hub. Reachable as-is from both the emulator (its NAT routes to
+             your LAN) and a real phone on Wi-Fi. -->
+        <domain includeSubdomains="false">192.168.1.1</domain>
+
+        <!-- Emulator -> the host machine's loopback, for when the hub runs on
+             the same computer as the emulator. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

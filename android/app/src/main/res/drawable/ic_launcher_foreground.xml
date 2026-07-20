@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A honeycomb cell with a location pin: the hive metaphor, plus what this app
+     actually does. Drawn inside the 72dp safe zone of the 108dp adaptive canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Hexagon outline (honey) -->
+    <path
+        android:strokeColor="#F2A93B"
+        android:strokeWidth="4"
+        android:fillColor="#00000000"
+        android:strokeLineJoin="round"
+        android:pathData="M54,26 L74,38 L74,62 L54,74 L34,62 L34,38 Z" />
+
+    <!-- Location pin centred in the cell -->
+    <path
+        android:fillColor="#F7BB5E"
+        android:pathData="M54,38 C49.6,38 46,41.6 46,46 C46,52 54,62 54,62 C54,62 62,52 62,46 C62,41.6 58.4,38 54,38 Z" />
+    <path
+        android:fillColor="#16283A"
+        android:pathData="M54,43 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+</vector>

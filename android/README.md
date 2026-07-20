@@ -28,6 +28,40 @@ device id the app shows you).
 Do NOT give the phone the unscoped `presence:read` — that means "read *every*
 user's location", which is exactly what you don't want on a device you can lose.
 
+### Transport: HTTPS with certificate pinning
+
+The hub must be `https://`. A URL typed without a scheme is assumed to be
+https, and an explicit `http://` is **refused at pairing** — the token rides on
+every request, and putting it on the wire in clear text is not a tradeoff worth
+offering.
+
+Hubs are self-hosted with self-signed certificates, so there is no CA to
+validate against. Rather than trusting the phone's user CA store — which would
+let *any* CA on the device intercept this app's traffic — the app pins the
+hub's public key on first pair (`CertPin.kt`):
+
+1. At pairing the app fetches the hub's certificate and shows you its SHA-256
+   fingerprint. **Compare it against your hub before accepting.** This is the
+   one step nothing can verify for you.
+2. That key is stored, and every later connection must present it. The system
+   and user CA stores are not consulted for hub traffic at all.
+3. The pin is checked during the TLS handshake, before the `Authorization`
+   header is written — a server that fails the check never receives the token.
+
+Print the fingerprint on the hub to compare against:
+
+```bash
+openssl x509 -in cert.pem -noout -pubkey \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -c
+```
+
+We hash the public key (SPKI), not the certificate, so **renewing** the cert
+with the same key keeps working. Regenerating with a **new key** breaks the pin
+on purpose: use **Forget**, then pair again and re-check the fingerprint. A pin
+mismatch and a real interception are indistinguishable from the phone, which is
+why it fails loudly instead of recovering silently.
+
 ## Requirements
 
 - **Google Play Services** — the Geofencing API needs `play-services-location`.
@@ -52,6 +86,11 @@ user's location", which is exactly what you don't want on a device you can lose.
 
 ## Building
 
+> **Building this yourself? See [BUILDING.md](BUILDING.md)** — full walkthrough
+> including signing keys, hub prerequisites, verifying the certificate
+> fingerprint, and troubleshooting. The summary below assumes you already know
+> Android tooling.
+
 Open `android/` in Android Studio and Run. First sync downloads Gradle and the
 Play Services dependency.
 
@@ -59,11 +98,43 @@ There is no `gradle-wrapper.jar` checked in (it's a binary). Android Studio will
 offer to create the wrapper on first open, or run `gradle wrapper` if you have
 Gradle on PATH.
 
+From the command line, `JAVA_HOME` must point at a JDK 17–21; Gradle 8.13
+rejects newer ones. Studio's bundled runtime works:
+
+```bash
+export JAVA_HOME=~/.local/share/JetBrains/Toolbox/apps/android-studio/jbr
+./gradlew assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
+```
+
+### Release builds
+
+Release APKs need a signing key. Generate your own — it is never checked in,
+and no key ships with this repo:
+
+```bash
+cd android
+keytool -genkeypair -v -keystore zmm-release.jks \
+  -alias zmm -keyalg RSA -keysize 4096 -validity 10000
+cp keystore.properties.example keystore.properties
+# then edit keystore.properties with the passwords you just chose
+./gradlew assembleRelease    # app/build/outputs/apk/release/app-release.apk
+```
+
+`keystore.properties`, `*.jks` and `*.keystore` are gitignored. Back the
+keystore up somewhere outside the repo: **losing it means you can never update
+an installed app again**, only uninstall and reinstall. Anyone who has it plus
+its password can ship an update Android accepts as genuinely yours.
+
+Without `keystore.properties` the release build still succeeds but emits an
+unsigned APK (and warns) — the phone will refuse to install it.
+
 ## Cleartext HTTP
 
-`usesCleartextTraffic` is **off**. If your hub is plain `http://` on the LAN, add
-your host to `res/xml/network_security_config.xml` — the file has a commented
-example. Don't enable cleartext globally.
+Not supported, by design — see "Transport" above. `usesCleartextTraffic` is off
+and pairing refuses `http://` URLs, because the bearer token would be readable
+by anyone on the network. Debug builds permit cleartext to a few fixed LAN and
+emulator addresses (`src/debug/res/xml/network_security_config.xml`) for
+development only; that file never ships in a release APK.
 
 ## Known limits
 

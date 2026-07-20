@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZMM Presence</string>
+    <string name="blurb">Reports arrive/leave to your own hub. Nothing else, nobody else.</string>
+
+    <string name="hub_hint">Hub URL (e.g. http://zmm.local:8000)</string>
+    <string name="user_hint">Presence user id (e.g. sean)</string>
+    <string name="token_hint">API token</string>
+
+    <string name="pair">Pair with hub</string>
+    <string name="grant_location">Grant location</string>
+    <string name="arm">Arm geofence</string>
+    <string name="disarm">Disarm geofence</string>
+    <string name="forget">Forget this hub</string>
+    <string name="cancel">Cancel</string>
+    <string name="open_settings">Open settings</string>
+
+    <string name="perm_none">Location: not granted</string>
+    <string name="perm_fg_only">Location: foreground only — a geofence needs \"Allow all the time\"</string>
+    <string name="perm_ok">Location: allowed all the time</string>
+
+    <string name="home_none">Home: not set — pair to fetch it from the hub</string>
+    <string name="home_fmt">Home: %1$s, %2$s (%3$d m)</string>
+    <string name="device_id_fmt">Device id: %1$s\nUse this as the token\'s device id on the hub so you can revoke this phone alone.</string>
+
+    <string name="bg_title">Allow location all the time</string>
+    <string name="bg_body">Android will ask again, and this time you must choose \"Allow all the time\".\n\nWithout it, the geofence stops the moment you close the app — which is exactly when you need it (arriving home with your phone in your pocket).\n\nThis app only sends your position to your own hub, and only when you cross your home boundary.</string>
+    <string name="bg_ok">Ask me</string>
+
+    <string name="bg_denied_title">Background location refused</string>
+    <string name="bg_denied_body">Android won\'t ask again from inside the app. To enable it: Settings → Permissions → Location → Allow all the time.</string>
+
+    <string name="forget_title">Forget this hub?</string>
+    <string name="forget_body">Clears the URL, user and token from this phone and disarms the geofence.\n\nThis does NOT revoke the token — do that on the hub, under Settings → Auth → Tokens.</string>
+    <string name="forget_ok">Forget</string>
+
+    <string name="pin_title">Check this fingerprint</string>
+    <!--
+        Deliberately blunt. This is the one step the app cannot verify for the
+        user, and a dialog that reads like a routine confirmation would get
+        tapped through. On the hub the matching command is:
+          openssl x509 -in cert.pem -noout -pubkey \
+            | openssl pkey -pubin -outform der \
+            | openssl dgst -sha256 -c
+    -->
+    <string name="pin_body">This hub is presenting:\n\n%1$s\n\nSubject: %2$s\n\nThe app will accept only this key from now on. Nothing can confirm it for you — compare it against the fingerprint shown on your hub before you accept.\n\nIf it doesn\'t match, someone may be intercepting the connection.</string>
+    <string name="pin_accept">It matches</string>
+</resources>
