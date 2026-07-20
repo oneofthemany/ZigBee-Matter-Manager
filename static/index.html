@@ -389,13 +389,13 @@
                             </button>
                         </li>
                         <li class="nav-item">
-                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsPresence">
-                                <i class="fas fa-eye me-1"></i> <span class="tab-label">Presence</span>
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsAdmin">
+                                <i class="fas fa-lock me-1"></i> <span class="tab-label">Admin Auth</span>
                             </button>
                         </li>
                         <li class="nav-item">
-                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsAdmin">
-                                <i class="fas fa-lock me-1"></i> <span class="tab-label">Admin Authentication</span>
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#accountsPresence">
+                                <i class="fas fa-eye me-1"></i> <span class="tab-label">Presence</span>
                             </button>
                         </li>
                     </ul>
@@ -416,6 +416,13 @@
                             </div>
                         </div>
 
+                        <!-- Admin-only stuff last -->
+                        <div class="tab-pane fade" id="accountsAdmin">
+                            <div class="card shadow-sm border-danger">
+                                <div class="card-header bg-danger text-white py-2">
+                                    <span class="fw-bold"><i class="fas fa-lock me-1"></i> Admin Authentication Settings</span>
+                                </div>
+
                         <!-- Presence-tracking config -->
                         <div class="tab-pane fade" id="accountsPresence">
                             <div class="card shadow-sm">
@@ -429,13 +436,6 @@
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Admin-only stuff last -->
-                        <div class="tab-pane fade" id="accountsAdmin">
-                            <div class="card shadow-sm border-danger">
-                                <div class="card-header bg-danger text-white py-2">
-                                    <span class="fw-bold"><i class="fas fa-lock me-1"></i> Admin Authentication Settings</span>
-                                </div>
                                 <div class="card-body" id="auth-settings-host">
                                     <div class="text-center text-muted py-4">
                                         <i class="fas fa-spinner fa-spin"></i> Loading admin settings...
