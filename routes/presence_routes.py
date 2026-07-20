@@ -27,7 +27,9 @@ from modules.auth_middleware import (
     Principal, require_scope, require_any_scope, require_authenticated,
 )
 from modules.auth_secure import require_presence_mfa, user_has_mfa
-from modules.presence_users import PRESENCE_MODES, mode_params
+from modules.presence_users import (
+    PRESENCE_MODES, DEFAULT_PRESENCE_MODE, mode_params,
+)
 
 logger = logging.getLogger("modules.presence_routes")
 
@@ -94,6 +96,22 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
                 "if it is left over from a deleted user."
             )
         require_presence_mfa(account)
+
+    @app.get("/api/presence/modes")
+    async def list_modes(_=Depends(require_scope("presence:read"))):
+        """
+        Reporting modes and their resolved parameters.
+
+        Served rather than hardcoded in the UI so the table has exactly one
+        definition. A dropdown built from a copy drifts the moment the modes
+        are retuned, and the drift is invisible — the labels still look right.
+        """
+        return {
+            "default": DEFAULT_PRESENCE_MODE,
+            "modes": [
+                {"id": k, **mode_params(k)} for k in PRESENCE_MODES
+            ],
+        }
 
     @app.get("/api/presence/users")
     async def list_users(_=Depends(require_scope("presence:read"))):

@@ -192,7 +192,11 @@
     // ----------------------------------------------------------
     // Editor modal
     // ----------------------------------------------------------
-    function openEditor(userId) {
+    async function openEditor(userId) {
+        // Fetch once, then reuse. The modal is built as a string, so the modes
+        // must be in hand before it renders — there is nothing to patch later.
+        if (!presenceModes.length) await loadPresenceModes();
+
         var existing = userId
             ? users.find(function (u) { return u.user_id === userId; })
             : null;
@@ -229,6 +233,7 @@
                   field('radius_m', 'Geofence radius (m)', u.radius_m, 'col-md-4', '', '', 'number') +
                   field('hysteresis_m', 'Leave-hysteresis (m)', u.hysteresis_m, 'col-md-4', '', '', 'number') +
                   field('min_accuracy_m', 'Min accuracy (m)', u.min_accuracy_m, 'col-md-4', '', '', 'number') +
+                  modeField(u.presence_mode) +
                   '<div class="col-12"><hr><h6 class="mb-2">OwnTracks (optional)</h6>' +
                     '<p class="text-muted small">Set if you also use the OwnTracks mobile app for reliable background tracking.</p>' +
                   '</div>' +
@@ -252,6 +257,19 @@
         var modalEl = document.getElementById('presenceEditModal');
         var modal = new bootstrap.Modal(modalEl);
         modal.show();
+
+        // Keep the hint in step with the selection, so the cost of a mode is
+        // visible before saving rather than discovered afterwards.
+        var modeSelEl = document.getElementById('field-presence_mode');
+        if (modeSelEl) {
+            modeSelEl.onchange = function () {
+                var m = presenceModes.filter(function (x) {
+                    return x.id === modeSelEl.value;
+                })[0];
+                var hint = document.getElementById('presence-mode-hint');
+                if (hint && m) hint.innerHTML = modeHint(m);
+            };
+        }
 
         document.getElementById('presence-use-current').onclick = async function () {
             try {
@@ -281,6 +299,12 @@
                 owntracks_device: val('owntracks_device') || null
             };
 
+            // Only send when the picker actually rendered. Sending null on a
+            // hub without modes would reset the stored value; omitting the key
+            // lets the server preserve it.
+            var modeSel = document.getElementById('field-presence_mode');
+            if (modeSel && modeSel.value) body.presence_mode = modeSel.value;
+
             try {
                 var r = await fetch('/api/presence/users', {
                     method: 'POST',
@@ -300,6 +324,74 @@
                 showError(e.message || String(e));
             }
         };
+    }
+
+    // Modes come from /api/presence/modes so this dropdown can't drift from
+    // the server's table. Loaded once per page; empty until then.
+    var presenceModes = [];
+    var presenceModeDefault = 'balanced';
+
+    async function loadPresenceModes() {
+        try {
+            var r = await fetch('/api/presence/modes', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var j = await r.json();
+            presenceModes = j.modes || [];
+            presenceModeDefault = j.default || 'balanced';
+        } catch (e) { /* leave empty; modeField degrades to a note */ }
+    }
+
+    function mins(s) {
+        return Math.round(s / 60) + ' min';
+    }
+
+    /**
+     * Reporting-mode picker.
+     *
+     * Shows what each mode actually costs — how often the phone reports, and
+     * how long silence is tolerated before the user reads as unknown. Those
+     * two numbers are the whole tradeoff, and picking blind from three labels
+     * is how people end up surprised by either battery drain or a user stuck
+     * on "unknown".
+     */
+    function modeField(current) {
+        var sel = current || presenceModeDefault;
+        if (!presenceModes.length) {
+            return '<div class="col-md-6"><label class="form-label small fw-bold">' +
+                   'Reporting mode</label>' +
+                   '<div class="form-text small text-muted">Unavailable — ' +
+                   'this hub predates reporting modes.</div></div>';
+        }
+        var opts = presenceModes.map(function (m) {
+            return '<option value="' + escape(m.id) + '"' +
+                   (m.id === sel ? ' selected' : '') + '>' +
+                   escape(m.label) +
+                   ' — reports every ' + mins(m.heartbeat_s) +
+                   '</option>';
+        }).join('');
+
+        var chosen = presenceModes.filter(function (m) { return m.id === sel; })[0]
+                     || presenceModes[0];
+        return '' +
+        '<div class="col-md-6">' +
+          '<label class="form-label small fw-bold" for="field-presence_mode">' +
+            'Reporting mode</label>' +
+          '<select id="field-presence_mode" class="form-select form-select-sm">' +
+            opts +
+          '</select>' +
+          '<div class="form-text small" id="presence-mode-hint">' +
+            modeHint(chosen) +
+          '</div>' +
+        '</div>';
+    }
+
+    function modeHint(m) {
+        if (!m) return '';
+        return 'Phone reports every <strong>' + mins(m.heartbeat_s) +
+               '</strong>; marked unknown after <strong>' + mins(m.stale_after_s) +
+               '</strong> of silence. Boundary crossings detected within about ' +
+               '<strong>' + Math.round(m.responsiveness_ms / 1000) + ' s</strong>. ' +
+               'Applied to the phone next time it contacts the hub.';
     }
 
     function field(id, label, value, col, readonly, hint, type, step) {
