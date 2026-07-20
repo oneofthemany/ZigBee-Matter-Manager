@@ -896,6 +896,28 @@ async def lifespan(app: FastAPI):
     app.state.bringup_task.add_done_callback(_bringup_done)
     logger.info("Web UI starting — service bring-up continues in background")
 
+
+    # Requests: expire unanswered asks and tell their senders.
+    #
+    # Swept rather than one timer per request: a periodic pass is rebuilt for
+    # free after a restart, where per-request timers would have to be restored
+    # and could silently not be — leaving a sender waiting forever for an
+    # escalation that no longer had anything scheduled to fire it.
+    async def _request_sweeper():
+        from modules.requests_store import get_request_store
+        while True:
+            try:
+                await asyncio.sleep(30)
+                store = get_request_store()
+                if store:
+                    await store.sweep()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[requests] sweep failed: {e}")
+
+    app.state.request_sweeper = asyncio.create_task(_request_sweeper())
+
     yield  # Application runs here
 
     # Shutdown
@@ -1133,6 +1155,14 @@ register_remote_access_routes(app)
 # coordinates being viewed to a third-party tile server on every pan.
 from routes.map_routes import register_map_routes
 register_map_routes(app)
+
+# Requests — asks that need an answer, with escalation when none comes.
+from modules.requests_store import RequestStore, set_request_store
+from routes.request_routes import register_request_routes
+request_store = RequestStore(notifier=lambda ev, payload: broadcast_event(ev, payload))
+request_store.load()
+set_request_store(request_store)
+register_request_routes(app)
 
 # Named places — shared geofences beyond home. Loaded before the routes so a
 # request arriving immediately after startup sees the configured set.
