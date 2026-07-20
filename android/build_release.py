@@ -191,6 +191,31 @@ def find_gradlew() -> Path:
 
 # ---------------------------------------------------------------- signing setup
 
+def ask_password(prompt: str) -> str:
+    """
+    Read a password without echoing it.
+
+    getpass needs a terminal. Run under a harness that gives the process no tty
+    (an IDE run window, CI, a tool that pipes stdin) it either warns and echoes
+    the password in the clear, or raises EOFError with no useful context. Both
+    are bad enough to refuse outright: silently echoing a signing password into
+    a scrollback buffer is exactly the leak this function exists to prevent.
+    """
+    if not sys.stdin.isatty():
+        raise Failed(
+            "No terminal available, so the password cannot be read without\n"
+            "  echoing it. Run this in a real terminal window:\n\n"
+            f"    cd {HERE}\n"
+            "    python3 build_release.py --setup\n\n"
+            "  Or skip the script and write keystore.properties by hand — see\n"
+            "  section 5.2 of BUILDING.md."
+        )
+    try:
+        return getpass.getpass(prompt)
+    except (EOFError, KeyboardInterrupt):
+        raise Failed("Password entry was interrupted.")
+
+
 def props_escape(v: str) -> str:
     """
     Escape a value for a Java .properties file.
@@ -215,7 +240,7 @@ def setup_signing() -> None:
 
     if KEYSTORE.exists():
         info(f"{KEYSTORE.name} exists; recording its password in {KEY_PROPS.name}.")
-        pw = getpass.getpass("  Keystore password: ")
+        pw = ask_password("  Keystore password: ")
         if not pw:
             raise Failed("No password given.")
         # Confirm it actually opens the keystore, rather than writing a wrong
@@ -233,10 +258,10 @@ def setup_signing() -> None:
 
   Back up zmm-release.jks somewhere outside this repo.
 """)
-        pw = getpass.getpass("  Choose a keystore password (min 6 chars): ")
+        pw = ask_password("  Choose a keystore password (min 6 chars): ")
         if len(pw) < 6:
             raise Failed("keytool requires at least 6 characters.")
-        if pw != getpass.getpass("  Confirm: "):
+        if pw != ask_password("  Confirm: "):
             raise Failed("Passwords did not match.")
 
         cn = input("  Common name [ZMM Presence]: ").strip() or "ZMM Presence"

@@ -110,7 +110,13 @@ object CertPin {
         val ctx = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf<javax.net.ssl.X509TrustManager>(tm), java.security.SecureRandom())
         }
-        ctx.socketFactory.createSocket().use { raw ->
+        // MUST be a plain java.net.Socket. Using ctx.socketFactory.createSocket()
+        // here returns an SSLSocket, and layering the SSLSocket below over it
+        // negotiates TLS inside TLS — the server sees a ClientHello where it
+        // expects application data and the handshake dies with Conscrypt's
+        // "Unable to parse TLS packet header" (the JVM says "Unsupported or
+        // unrecognized SSL message"). Neither message points at the real cause.
+        java.net.Socket().use { raw ->
             raw.connect(java.net.InetSocketAddress(host, port), timeoutMs)
             (ctx.socketFactory.createSocket(raw, host, port, true)
                     as javax.net.ssl.SSLSocket).use { s ->
