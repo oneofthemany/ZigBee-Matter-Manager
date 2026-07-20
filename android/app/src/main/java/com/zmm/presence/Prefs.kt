@@ -63,6 +63,36 @@ class Prefs(context: Context) {
         get() = sp.getFloat(KEY_RADIUS, 0f)
         set(v) = sp.edit().putFloat(KEY_RADIUS, v).apply()
 
+    /**
+     * Reporting mode, cached from the hub alongside the home geofence.
+     *
+     * Cached for the same reason the geofence is: BootReceiver re-arms after a
+     * restart, and it must not need a network round-trip to do it. A phone that
+     * reboots out of signal would otherwise come back untracked.
+     */
+    var modeName: String
+        get() = sp.getString(KEY_MODE, "balanced") ?: "balanced"
+        set(v) = sp.edit().putString(KEY_MODE, v).apply()
+
+    var heartbeatS: Long
+        get() = sp.getLong(KEY_HEARTBEAT, 1800L)
+        set(v) = sp.edit().putLong(KEY_HEARTBEAT, v).apply()
+
+    var responsivenessMs: Int
+        get() = sp.getInt(KEY_RESPONSIVENESS, 120_000)
+        set(v) = sp.edit().putInt(KEY_RESPONSIVENESS, v).apply()
+
+    var priority: String
+        get() = sp.getString(KEY_PRIORITY, "balanced") ?: "balanced"
+        set(v) = sp.edit().putString(KEY_PRIORITY, v).apply()
+
+    fun saveMode(m: HubClient.ModeParams) {
+        modeName = m.name
+        heartbeatS = m.heartbeatS
+        responsivenessMs = m.responsivenessMs
+        priority = m.priority
+    }
+
     var armed: Boolean
         get() = sp.getBoolean(KEY_ARMED, false)
         set(v) = sp.edit().putBoolean(KEY_ARMED, v).apply()
@@ -85,6 +115,10 @@ class Prefs(context: Context) {
         private const val KEY_ARMED = "armed"
         private const val KEY_PIN = "cert_pin"
         private const val KEY_TRUST = "trust_mode"
+        private const val KEY_MODE = "mode_name"
+        private const val KEY_HEARTBEAT = "heartbeat_s"
+        private const val KEY_RESPONSIVENESS = "responsiveness_ms"
+        private const val KEY_PRIORITY = "priority"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"

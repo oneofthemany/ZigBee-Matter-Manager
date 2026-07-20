@@ -62,10 +62,18 @@ object Geofencing {
      * this decides which side of a 100 m circle you are on, so it does not
      * warrant a GPS fix.
      */
+    /** Map the hub's mode name onto a Play Services priority constant. */
+    private fun priorityOf(name: String): Int = when (name) {
+        "high" -> Priority.PRIORITY_HIGH_ACCURACY
+        "low" -> Priority.PRIORITY_LOW_POWER
+        else -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+    }
+
     @SuppressLint("MissingPermission")   // checked explicitly below
     fun currentFix(ctx: Context, cb: (android.location.Location?) -> Unit) {
         if (!hasForegroundLocation(ctx)) { cb(null); return }
         val client = LocationServices.getFusedLocationProviderClient(ctx)
+        val priority = priorityOf(Prefs(ctx).priority)
 
         fun fallbackToLastKnown() {
             client.lastLocation
@@ -73,7 +81,7 @@ object Geofencing {
                 .addOnFailureListener { cb(null) }
         }
 
-        client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+        client.getCurrentLocation(priority, null)
             .addOnSuccessListener { loc -> if (loc != null) cb(loc) else fallbackToLastKnown() }
             .addOnFailureListener { fallbackToLastKnown() }
     }
@@ -95,7 +103,11 @@ object Geofencing {
             // fix) flaps home/away and hammers the hub. The server has its own
             // hysteresis; this stops the noise before it leaves the phone.
             .setLoiteringDelay(60_000)
-            .setNotificationResponsiveness(60_000)
+            // From the hub's reporting mode. This is a hint, not a contract:
+            // the OS batches geofence events for power and will happily be
+            // slower than asked, so a low value buys a better chance of a
+            // prompt event, never a guarantee of one.
+            .setNotificationResponsiveness(Prefs(ctx).responsivenessMs)
             .build()
 
         val request = GeofencingRequest.Builder()

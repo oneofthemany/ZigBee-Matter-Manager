@@ -22,7 +22,28 @@ object HubClient {
     private const val TAG = "ZmmHub"
     private const val TIMEOUT_MS = 15_000
 
-    data class HomeConfig(val lat: Double, val lon: Double, val radiusM: Float)
+    data class HomeConfig(
+        val lat: Double,
+        val lon: Double,
+        val radiusM: Float,
+        /** Reporting aggressiveness, resolved by the hub. See [ModeParams]. */
+        val mode: ModeParams,
+    )
+
+    /**
+     * How hard to work at tracking, as decided on the hub.
+     *
+     * The phone deliberately holds no copy of the mode table: the hub sends
+     * resolved numbers, so retuning a device is a hub-side edit rather than an
+     * app update. Defaults here are the "balanced" values and exist only for a
+     * hub too old to send the block.
+     */
+    data class ModeParams(
+        val name: String = "balanced",
+        val heartbeatS: Long = 1800,
+        val responsivenessMs: Int = 120_000,
+        val priority: String = "balanced",
+    )
 
     sealed class Result<out T> {
         data class Ok<T>(val value: T) : Result<T>()
@@ -58,7 +79,19 @@ object HubClient {
             val radius = o.optDouble("radius_m", 0.0).toFloat()
             if (radius <= 0f) return@withContext Result.Err("Home radius is 0 — set it on the hub.")
 
-            Result.Ok(HomeConfig(o.getDouble("home_lat"), o.getDouble("home_lon"), radius))
+            // A hub predating reporting modes simply omits this; the defaults
+            // then apply and the app behaves exactly as it did before.
+            val mp = o.optJSONObject("mode_params")
+            val mode = if (mp == null) ModeParams() else ModeParams(
+                name = mp.optString("mode", "balanced"),
+                heartbeatS = mp.optLong("heartbeat_s", 1800),
+                responsivenessMs = mp.optInt("responsiveness_ms", 120_000),
+                priority = mp.optString("priority", "balanced"),
+            )
+
+            Result.Ok(HomeConfig(
+                o.getDouble("home_lat"), o.getDouble("home_lon"), radius, mode,
+            ))
         } catch (e: Exception) {
             Log.w(TAG, "fetchHome failed", e)
             Result.Err(e.message ?: "Could not reach the hub")

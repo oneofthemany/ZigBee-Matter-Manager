@@ -77,6 +77,10 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    // AndroidX, not third party. Periodic heartbeats must survive process
+    // death and reboots; a foreground service or AlarmManager would be more
+    // aggressive than presence warrants.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // The ONLY third-party dependency, and it's unavoidable: OS geofencing lives
     // in Play Services. Everything else is AndroidX/Kotlin. No analytics, no

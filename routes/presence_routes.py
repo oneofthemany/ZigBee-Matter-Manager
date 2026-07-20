@@ -27,6 +27,7 @@ from modules.auth_middleware import (
     Principal, require_scope, require_any_scope, require_authenticated,
 )
 from modules.auth_secure import require_presence_mfa, user_has_mfa
+from modules.presence_users import PRESENCE_MODES, mode_params
 
 logger = logging.getLogger("modules.presence_routes")
 
@@ -46,6 +47,8 @@ class UserUpsert(BaseModel):
     # Login account this presence user belongs to. None = standalone tracker,
     # which cannot satisfy the MFA policy because there is no account to enrol.
     account: Optional[str] = None
+    # Reporting aggressiveness: battery | balanced | responsive.
+    presence_mode: Optional[str] = None
 
 
 class FixReport(BaseModel):
@@ -146,11 +149,16 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         dev = _mgr().get_user(user_id)
         if not dev:
             raise HTTPException(404, "User not found")
+        from modules.presence_users import mode_params
         return {
             **dev.cfg.to_dict(),
             "ieee": dev.ieee,
             "state": dict(dev.state),
             "last_seen": dev.last_seen,
+            # Resolved reporting parameters. The phone applies these rather
+            # than holding its own copy of the table, so retuning a device is
+            # a hub-side edit — no reinstall, no re-pair.
+            "mode_params": mode_params(dev.cfg.presence_mode),
         }
 
     @app.post("/api/presence/users")
@@ -172,6 +180,22 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         fields_set = getattr(payload, "model_fields_set", None)
         if fields_set is None:                      # pydantic v1
             fields_set = getattr(payload, "__fields_set__", set())
+        # Same tri-state problem as `account`: an omitted presence_mode arrives
+        # as None and would reset an existing user to the default on any edit.
+        if "presence_mode" not in fields_set:
+            data.pop("presence_mode", None)
+            existing_mode = _mgr().get_user(payload.user_id)
+            if existing_mode is not None:
+                data["presence_mode"] = getattr(
+                    existing_mode.cfg, "presence_mode", None
+                )
+        elif payload.presence_mode not in PRESENCE_MODES:
+            raise HTTPException(
+                400,
+                f"Unknown presence_mode '{payload.presence_mode}'. "
+                f"Expected one of: {', '.join(sorted(PRESENCE_MODES))}."
+            )
+
         if "account" not in fields_set:
             data.pop("account", None)
 

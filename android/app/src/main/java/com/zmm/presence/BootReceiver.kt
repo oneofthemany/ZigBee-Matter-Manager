@@ -34,10 +34,16 @@ class BootReceiver : BroadcastReceiver() {
 
         val pending = goAsync()
         Geofencing.arm(context, prefs.homeLat, prefs.homeLon, prefs.radiusM) { err ->
-            if (err == null) Log.i(TAG, "geofence re-armed after $action")
-            else {
+            if (err == null) {
+                Log.i(TAG, "geofence re-armed after $action")
+                // Periodic work survives reboot on its own, but not an app
+                // reinstall — and re-scheduling is idempotent (UPDATE policy),
+                // so doing it here costs nothing and closes that gap.
+                HeartbeatWorker.schedule(context, prefs.heartbeatS)
+            } else {
                 Log.w(TAG, "re-arm failed: $err")
                 prefs.armed = false
+                HeartbeatWorker.cancel(context)
             }
             pending.finish()
         }

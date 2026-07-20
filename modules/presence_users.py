@@ -57,6 +57,64 @@ DEFAULT_HYSTERESIS_M = 30.0       # extra buffer to leave home (radius + this)
 DEFAULT_STALE_AFTER_S = 30 * 60   # mark unknown after 30 min of silence
 DEFAULT_MIN_ACCURACY_M = 250.0    # ignore fixes worse than this
 
+# --- Reporting aggressiveness ---------------------------------------------
+#
+# Presence decays: a phone that only reports at boundary crossings goes silent
+# the moment it settles somewhere, and `stale_after_s` then flips the user to
+# "unknown" while they are sitting at home. So every mode carries a heartbeat,
+# and `stale_after_s` is derived from it rather than set independently — a
+# stale window shorter than the heartbeat would guarantee false "unknown".
+#
+# `heartbeat_s` is the phone's periodic report interval. 900 s is Android's
+# floor for periodic background work (WorkManager), so no mode can beat it
+# without exact alarms, which are a battery and permissions problem of their
+# own.
+#
+# `responsiveness_ms` is what the phone asks the OS for as crossing-detection
+# latency. It is a hint: the OS batches geofence events to save power and will
+# ignore a request it considers wasteful, so treat these as "no faster than".
+PRESENCE_MODES: Dict[str, Dict[str, Any]] = {
+    "battery": {
+        "label": "Battery saver",
+        "heartbeat_s": 3600,           # 1 h
+        "responsiveness_ms": 300_000,  # ~5 min crossing lag
+        "priority": "low",
+    },
+    "balanced": {
+        "label": "Balanced",
+        "heartbeat_s": 1800,           # 30 min
+        "responsiveness_ms": 120_000,  # ~2 min
+        "priority": "balanced",
+    },
+    "responsive": {
+        "label": "Responsive",
+        "heartbeat_s": 900,            # 15 min — the platform floor
+        "responsiveness_ms": 30_000,   # ~30 s
+        "priority": "high",
+    },
+}
+
+DEFAULT_PRESENCE_MODE = "balanced"
+
+# How long silence is tolerated, as a multiple of the heartbeat. Two missed
+# heartbeats plus slack: one missed report is routine (doze, no signal, a dead
+# spot) and should not flip someone to "unknown".
+STALE_HEARTBEAT_FACTOR = 2.5
+
+
+def mode_params(mode: Optional[str]) -> Dict[str, Any]:
+    """
+    Resolved parameters for a mode, falling back to the default for anything
+    unrecognised — a bad value in config must not stop presence working.
+    """
+    m = PRESENCE_MODES.get(mode or "", PRESENCE_MODES[DEFAULT_PRESENCE_MODE])
+    return {
+        **m,
+        "mode": mode if mode in PRESENCE_MODES else DEFAULT_PRESENCE_MODE,
+        "stale_after_s": round(m["heartbeat_s"] * STALE_HEARTBEAT_FACTOR),
+    }
+
+
 CONFIG_PATH = Path("./data/presence_users.yaml")
 
 # IEEE-style identifier prefix for virtual users so they slot into the
@@ -106,6 +164,10 @@ class UserConfig:
     # failed closed for reasons nothing on screen explained. An explicit link
     # can be verified, migrated, and cascaded; a convention can only be assumed.
     account: Optional[str] = None
+    # Reporting aggressiveness. See PRESENCE_MODES — the phone fetches the
+    # resolved parameters and applies them, so changing this here retunes the
+    # device without reinstalling or re-pairing it.
+    presence_mode: str = DEFAULT_PRESENCE_MODE
     home_lat: Optional[float] = None
     home_lon: Optional[float] = None
     radius_m: float = DEFAULT_RADIUS_M
@@ -134,15 +196,24 @@ class UserConfig:
         if account is _MISSING:
             account = str(d["user_id"])
 
+        mode = str(d.get("presence_mode") or DEFAULT_PRESENCE_MODE)
+        if mode not in PRESENCE_MODES:
+            mode = DEFAULT_PRESENCE_MODE
+
         return UserConfig(
             user_id=str(d["user_id"]),
             display_name=str(d.get("display_name") or d["user_id"]),
             account=account,
+            presence_mode=mode,
             home_lat=d.get("home_lat"),
             home_lon=d.get("home_lon"),
             radius_m=float(d.get("radius_m", DEFAULT_RADIUS_M)),
             hysteresis_m=float(d.get("hysteresis_m", DEFAULT_HYSTERESIS_M)),
-            stale_after_s=float(d.get("stale_after_s", DEFAULT_STALE_AFTER_S)),
+            # Derived from the mode, not stored independently. An explicit
+            # value shorter than the heartbeat would mark the user "unknown"
+            # between two perfectly healthy reports, and nothing on screen
+            # would explain why. One knob, one behaviour.
+            stale_after_s=float(mode_params(mode)["stale_after_s"]),
             min_accuracy_m=float(d.get("min_accuracy_m", DEFAULT_MIN_ACCURACY_M)),
             enabled=bool(d.get("enabled", True)),
             owntracks_device=d.get("owntracks_device"),

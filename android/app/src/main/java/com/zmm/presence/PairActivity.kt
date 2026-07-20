@@ -147,6 +147,9 @@ class PairActivity : AppCompatActivity() {
                     prefs.homeLat = r.value.lat
                     prefs.homeLon = r.value.lon
                     prefs.radiusM = r.value.radiusM
+                    // Cache the reporting mode too, so arming and the boot
+                    // re-arm can apply it without another round-trip.
+                    prefs.saveMode(r.value.mode)
                     status("Paired. Home is ${fmt(r.value.lat)}, ${fmt(r.value.lon)} " +
                         "(${r.value.radiusM.toInt()} m).")
                 }
@@ -208,6 +211,7 @@ class PairActivity : AppCompatActivity() {
             runOnUiThread {
                 if (err == null) {
                     prefs.armed = true
+                    HeartbeatWorker.schedule(this, prefs.heartbeatS)
                     status("Armed. Reporting your position…")
                     reportNow()
                 } else {
@@ -258,6 +262,9 @@ class PairActivity : AppCompatActivity() {
         Geofencing.disarm(this) { err ->
             runOnUiThread {
                 prefs.armed = false
+                // Stop the heartbeat too, or a disarmed phone keeps waking up
+                // to report a position nobody asked for.
+                HeartbeatWorker.cancel(this)
                 status(if (err == null) "Disarmed." else "Disarm reported: $err")
                 render()
             }
@@ -270,6 +277,7 @@ class PairActivity : AppCompatActivity() {
             .setMessage(R.string.forget_body)
             .setPositiveButton(R.string.forget_ok) { _, _ ->
                 Geofencing.disarm(this)
+                HeartbeatWorker.cancel(this)
                 prefs.clear()
                 b.hubUrl.setText(""); b.userId.setText(""); b.token.setText("")
                 status("Forgotten. Revoke the token on the hub too.")
