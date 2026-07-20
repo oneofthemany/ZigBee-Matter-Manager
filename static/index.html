@@ -27,6 +27,9 @@
     <link rel="stylesheet" href="/static/css/hive-components.css">
     <link rel="stylesheet" href="/static/css/frames.css">
     <link rel="stylesheet" href="/static/css/automations.css">
+    <!-- Vendored, not a CDN: same policy as echarts/pdf.js, and the map must
+         work on a LAN with no internet access. -->
+    <link rel="stylesheet" href="/static/vendor/leaflet.css">
 </head>
 <body>
 <nav class="navbar navbar-dark bg-dark hive-header">
@@ -55,6 +58,10 @@
            <span class="navbar-text" id="connection-status">
                <i class="fas fa-circle text-danger"></i><span class="d-none d-sm-inline"> Disconnected</span>
            </span>
+
+            <!-- Presence count; renders only for users with presence:read.
+                 Populated by presence-badge.js, empty until then. -->
+           <span class="navbar-text ms-2" id="presence-badge-host"></span>
 
             <!-- Switch to the Frames UI. Plain /frames (no ?view=) so the server
                  clears any "I want the manager" override for this session.
@@ -1627,7 +1634,9 @@
 <script src="/static/js/auth-settings.js"></script>
 <script src="/static/js/remote-access.js"></script>
 <script src="/static/js/my-account.js"></script>
+<script src="/static/vendor/leaflet.js"></script>
 <script src="/static/js/presence.js"></script>
+<script src="/static/js/presence-badge.js"></script>
 <script src="/static/js/presence-settings.js"></script>
 <script src="/static/js/setup-jedi.js"></script>
 <script src="/static/js/setup-wizard.js"></script>
