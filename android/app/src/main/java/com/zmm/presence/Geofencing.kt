@@ -15,15 +15,24 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 
 /**
- * Arms/disarms the single home geofence.
+ * Arms/disarms the home geofence and any named places.
  *
- * One geofence, one place. If you're inside it you're home; if you're not, you're
- * away. That maps exactly onto what presence_users.py already models, which is why
- * this app doesn't need to stream location at all.
+ * Home decides presence: inside it you are home, outside you are away. Places
+ * add nothing to that decision — they exist so the OS wakes this app when you
+ * arrive somewhere interesting, at which point it posts a fix and the HUB
+ * decides which place that is. Keeping resolution server-side means a place
+ * can be added or resized without an app update, and the phone and hub can
+ * never disagree about a boundary.
+ *
+ * Either way this app never streams location; it reports at crossings and on
+ * a periodic heartbeat.
  */
 object Geofencing {
 
     const val HOME_ID = "zmm_home"
+
+    /** Request-id prefix for place geofences, so they can be told from home. */
+    const val PLACE_PREFIX = "zmm_place_"
     private const val TAG = "ZmmGeofence"
 
     fun hasForegroundLocation(ctx: Context): Boolean =
@@ -87,10 +96,24 @@ object Geofencing {
     }
 
     /**
-     * @return null on success, else a human-readable reason.
+     * Arm the home geofence, plus one per named place.
+     *
+     * @param places extra named regions to watch, beyond home. These exist
+     *        purely to wake the phone: the fix it then posts is resolved
+     *        against the hub's place registry, so the phone never decides
+     *        which place someone is in and a radius change on the hub takes
+     *        effect without touching the app.
+     * @return via [onResult]: null on success, else a human-readable reason.
      */
     @SuppressLint("MissingPermission")   // checked explicitly below
-    fun arm(ctx: Context, lat: Double, lon: Double, radiusM: Float, onResult: (String?) -> Unit) {
+    fun arm(
+        ctx: Context,
+        lat: Double,
+        lon: Double,
+        radiusM: Float,
+        places: List<HubClient.Place> = emptyList(),
+        onResult: (String?) -> Unit,
+    ) {
         if (!hasForegroundLocation(ctx)) { onResult("Location permission not granted"); return }
         if (!hasBackgroundLocation(ctx)) { onResult("Background location ('Allow all the time') not granted"); return }
 
@@ -118,12 +141,35 @@ object Geofencing {
                 GeofencingRequest.INITIAL_TRIGGER_ENTER or GeofencingRequest.INITIAL_TRIGGER_EXIT
             )
             .addGeofence(geofence)
+            .apply {
+                // Android caps an app at 100 geofences; the hub caps places
+                // well below that, so this cannot overflow in practice. A
+                // place with a bad radius is skipped rather than failing the
+                // whole arm — losing one region beats losing home.
+                places.forEach { p ->
+                    if (p.radiusM > 0f) {
+                        addGeofence(
+                            Geofence.Builder()
+                                .setRequestId(PLACE_PREFIX + p.id)
+                                .setCircularRegion(p.lat, p.lon, p.radiusM)
+                                .setExpirationDuration(Geofence.NEVER_EXPIRE)
+                                .setTransitionTypes(
+                                    Geofence.GEOFENCE_TRANSITION_ENTER or
+                                    Geofence.GEOFENCE_TRANSITION_EXIT
+                                )
+                                .setLoiteringDelay(60_000)
+                                .setNotificationResponsiveness(Prefs(ctx).responsivenessMs)
+                                .build()
+                        )
+                    }
+                }
+            }
             .build()
 
         LocationServices.getGeofencingClient(ctx)
             .addGeofences(request, pendingIntent(ctx))
             .addOnSuccessListener {
-                Log.i(TAG, "geofence armed at $lat,$lon r=$radiusM")
+                Log.i(TAG, "armed: home $lat,$lon r=$radiusM + ${places.size} place(s)")
                 onResult(null)
             }
             .addOnFailureListener { e ->

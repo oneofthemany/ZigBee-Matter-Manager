@@ -347,6 +347,9 @@ class PresenceUserDevice:
         self.last_seen: float = 0.0
         self.state: Dict[str, Any] = {
             "presence": PRESENCE_UNKNOWN,
+            # Named place: "home", "away", a place id, or "unknown" before
+            # the first fix. Automations test this for "at the shops".
+            "place": PRESENCE_UNKNOWN,
             "available": True,
             "distance_m": None,
             "accuracy_m": None,
@@ -655,13 +658,33 @@ class PresenceUserManager:
             dev._last_lon = lon
             dev.last_seen = ts
 
+            # Named place, resolved here rather than on the phone: one
+            # implementation decides where someone is, and adding a place or
+            # widening its radius takes effect immediately for fixes already
+            # arriving. "home" wins over any place covering the same spot —
+            # being at home is the more meaningful answer.
+            new_place = PRESENCE_HOME if new_state == PRESENCE_HOME else "away"
+            if new_state != PRESENCE_HOME:
+                try:
+                    from modules.places import get_place_manager
+                    pm = get_place_manager()
+                    hit = pm.resolve(lat, lon) if pm else None
+                    if hit:
+                        new_place = hit.id
+                except Exception as e:                     # noqa: BLE001
+                    # Place resolution must never break presence reporting.
+                    logger.warning("[presence] place resolve failed: %s", e)
+
             changed: Dict[str, Any] = {}
             if dev.state.get("presence") != new_state:
                 changed["presence"] = new_state
             if dev.state.get("source") != source:
                 changed["source"] = source
+            if dev.state.get("place") != new_place:
+                changed["place"] = new_place
 
             dev.state["presence"] = new_state
+            dev.state["place"] = new_place
             dev.state["distance_m"] = round(distance, 1)
             dev.state["accuracy_m"] = round(accuracy, 1) if accuracy else None
             dev.state["source"] = source

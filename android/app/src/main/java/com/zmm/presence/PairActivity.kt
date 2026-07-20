@@ -150,6 +150,9 @@ class PairActivity : AppCompatActivity() {
                     // Cache the reporting mode too, so arming and the boot
                     // re-arm can apply it without another round-trip.
                     prefs.saveMode(r.value.mode)
+                    // Places are optional; fetchPlaces returns empty rather
+                    // than failing if the hub has none or is older.
+                    prefs.savePlaces(HubClient.fetchPlaces(prefs))
                     status("Paired. Home is ${fmt(r.value.lat)}, ${fmt(r.value.lon)} " +
                         "(${r.value.radiusM.toInt()} m).")
                 }
@@ -207,7 +210,9 @@ class PairActivity : AppCompatActivity() {
     private fun arm() {
         if (!prefs.hasHome) { status("Pair first — no home location cached."); return }
         status("Arming…")
-        Geofencing.arm(this, prefs.homeLat, prefs.homeLon, prefs.radiusM) { err ->
+        Geofencing.arm(
+            this, prefs.homeLat, prefs.homeLon, prefs.radiusM, prefs.loadPlaces(),
+        ) { err ->
             runOnUiThread {
                 if (err == null) {
                     prefs.armed = true

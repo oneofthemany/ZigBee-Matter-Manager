@@ -1134,6 +1134,15 @@ register_remote_access_routes(app)
 from routes.map_routes import register_map_routes
 register_map_routes(app)
 
+# Named places — shared geofences beyond home. Loaded before the routes so a
+# request arriving immediately after startup sees the configured set.
+from modules.places import PlaceManager, set_place_manager
+from routes.place_routes import register_place_routes
+place_manager = PlaceManager()
+place_manager.load()
+set_place_manager(place_manager)
+register_place_routes(app)
+
 # ============================================================================
 # POST-SETUP ZIGBEE HOT-START SERVICES
 # ============================================================================

@@ -30,6 +30,15 @@ object HubClient {
         val mode: ModeParams,
     )
 
+    /** A named region from the hub, used only to register a wake-up geofence. */
+    data class Place(
+        val id: String,
+        val name: String,
+        val lat: Double,
+        val lon: Double,
+        val radiusM: Float,
+    )
+
     /**
      * How hard to work at tracking, as decided on the hub.
      *
@@ -129,6 +138,44 @@ object HubClient {
         } catch (e: Exception) {
             Log.w(TAG, "postFix failed", e)
             Result.Err(e.message ?: "Could not reach the hub")
+        }
+    }
+
+    /**
+     * Named places, for wake-up geofences. Failure is not fatal: places are an
+     * enhancement, and a hub that predates them (or a token without
+     * presence:read) should still leave home tracking fully working.
+     */
+    suspend fun fetchPlaces(prefs: Prefs): List<Place> = withContext(Dispatchers.IO) {
+        val url = "${prefs.hubUrl}/api/places"
+        try {
+            val conn = open(url, "GET", prefs)
+            val code = conn.responseCode
+            val body = readBody(conn)
+            conn.disconnect()
+            if (code !in 200..299) {
+                Log.i(TAG, "places unavailable (HTTP $code) — home only")
+                return@withContext emptyList()
+            }
+            val arr = JSONObject(body).optJSONArray("places") ?: return@withContext emptyList()
+            val out = ArrayList<Place>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (!o.optBoolean("enabled", true)) continue
+                val id = o.optString("id")
+                if (id.isEmpty()) continue
+                out.add(Place(
+                    id = id,
+                    name = o.optString("name", id),
+                    lat = o.optDouble("lat", Double.NaN),
+                    lon = o.optDouble("lon", Double.NaN),
+                    radiusM = o.optDouble("radius_m", 0.0).toFloat(),
+                ))
+            }
+            out.filter { !it.lat.isNaN() && !it.lon.isNaN() && it.radiusM > 0f }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchPlaces failed", e)
+            emptyList()
         }
     }
 

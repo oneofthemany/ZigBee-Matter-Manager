@@ -86,6 +86,46 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_PRIORITY, "balanced") ?: "balanced"
         set(v) = sp.edit().putString(KEY_PRIORITY, v).apply()
 
+    /**
+     * Named places, cached as JSON alongside the home geofence.
+     *
+     * Same reason home is cached: BootReceiver re-arms without a network call,
+     * and a phone that reboots out of signal must come back watching the same
+     * regions it was watching before.
+     */
+    var placesJson: String
+        get() = sp.getString(KEY_PLACES, "[]") ?: "[]"
+        set(v) = sp.edit().putString(KEY_PLACES, v).apply()
+
+    fun savePlaces(places: List<HubClient.Place>) {
+        val arr = org.json.JSONArray()
+        places.forEach { p ->
+            arr.put(org.json.JSONObject().apply {
+                put("id", p.id); put("name", p.name)
+                put("lat", p.lat); put("lon", p.lon)
+                put("radius_m", p.radiusM.toDouble())
+            })
+        }
+        placesJson = arr.toString()
+    }
+
+    fun loadPlaces(): List<HubClient.Place> = try {
+        val arr = org.json.JSONArray(placesJson)
+        (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { o ->
+                HubClient.Place(
+                    id = o.optString("id"),
+                    name = o.optString("name"),
+                    lat = o.optDouble("lat", Double.NaN),
+                    lon = o.optDouble("lon", Double.NaN),
+                    radiusM = o.optDouble("radius_m", 0.0).toFloat(),
+                )
+            }
+        }.filter { it.id.isNotEmpty() && !it.lat.isNaN() && it.radiusM > 0f }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
     fun saveMode(m: HubClient.ModeParams) {
         modeName = m.name
         heartbeatS = m.heartbeatS
@@ -119,6 +159,7 @@ class Prefs(context: Context) {
         private const val KEY_HEARTBEAT = "heartbeat_s"
         private const val KEY_RESPONSIVENESS = "responsiveness_ms"
         private const val KEY_PRIORITY = "priority"
+        private const val KEY_PLACES = "places_json"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"

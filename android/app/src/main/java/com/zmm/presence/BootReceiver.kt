@@ -33,7 +33,9 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         val pending = goAsync()
-        Geofencing.arm(context, prefs.homeLat, prefs.homeLon, prefs.radiusM) { err ->
+        Geofencing.arm(
+            context, prefs.homeLat, prefs.homeLon, prefs.radiusM, prefs.loadPlaces(),
+        ) { err ->
             if (err == null) {
                 Log.i(TAG, "geofence re-armed after $action")
                 // Periodic work survives reboot on its own, but not an app
