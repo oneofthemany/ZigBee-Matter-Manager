@@ -80,6 +80,21 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     }
 
     function getNotificationSupport() {
+        // Secure context FIRST. The Notification and serviceWorker APIs exist
+        // on an insecure origin — they are simply refused at the point of use,
+        // so testing for their presence reports "full support" and delivery
+        // then fails with nothing to explain it.
+        //
+        // This is the common case here, not an edge case: reaching the hub at
+        // https://192.168.1.x with its self-signed certificate is a cert error,
+        // and a cert-error origin is NOT a secure context. Service worker
+        // registration is blocked and notification permission does not stick.
+        // Reached through the tunnel, with a publicly-issued certificate,
+        // everything works.
+        if (!window.isSecureContext) {
+            return 'insecure';
+        }
+
         // Full native support
         if ('Notification' in window && 'serviceWorker' in navigator) {
             if (isIOS() && !isStandalone()) {
@@ -101,6 +116,21 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
     async function requestPermission() {
         var support = getNotificationSupport();
+
+        if (support === 'insecure') {
+            // Name the remedy. "Not supported" would be wrong and would send
+            // people hunting through browser settings that cannot fix it.
+            if (window.toast) {
+                window.toast.warning(
+                    'Notifications need a secure connection. This page is served over ' +
+                    'a certificate the browser does not trust, so it blocks them. ' +
+                    'Open ZMM on your public/tunnel address, or install the hub\'s ' +
+                    'certificate on this device, then try again.',
+                    { duration: 12000 }
+                );
+            }
+            return false;
+        }
 
         if (support === 'none') {
             if (window.toast) window.toast.warning('Notifications are not supported in this browser');
@@ -392,7 +422,23 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
         // Build platform-specific status alert
         var statusAlert = '';
-        if (support === 'ios-browser') {
+        if (support === 'insecure') {
+            // The most common reason delivery silently fails here, and the one
+            // no amount of toggling in this dialog can fix.
+            statusAlert =
+                '<div class="alert alert-warning small mb-3">' +
+                    '<i class="fas fa-lock-open me-1"></i>' +
+                    '<strong>Insecure connection</strong> — the browser blocks notifications ' +
+                    'on this address, so nothing will be delivered no matter what is enabled below.' +
+                    '<br><br>' +
+                    'You are on <code>' + String(location.origin).replace(/</g, '&lt;') + '</code>, ' +
+                    'whose certificate this device does not trust. Either:' +
+                    '<ul class="mb-0 mt-1" style="padding-left: 1.2rem;">' +
+                        '<li>open ZMM on your public/tunnel address (recommended), or</li>' +
+                        '<li>install the hub\'s certificate on this device.</li>' +
+                    '</ul>' +
+                '</div>';
+        } else if (support === 'ios-browser') {
             statusAlert =
                 '<div class="alert alert-warning small mb-3">' +
                     '<i class="fas fa-mobile-alt me-1"></i>' +
