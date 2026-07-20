@@ -232,6 +232,106 @@ class _Capabilities:
         return False
 
 
+class HouseholdDevice:
+    """
+    Aggregate of every presence user, as a virtual device.
+
+    Automations can already test one person ("is Sean away?") because
+    prerequisites accept any ieee. What they cannot express is a question about
+    the household as a whole — "is anybody in?" — without one condition per
+    person and a rule that silently goes wrong the day someone is added.
+
+    Exposing counts as attributes keeps that logic in the rule where the user
+    can see it:
+
+        home_count  <  1     nobody in           -> lock the door
+        home_count  >= 1     somebody in
+        anyone_home ==  0    same thing, boolean
+
+    `unknown` deliberately counts as neither home nor away. A phone that has
+    not reported is not evidence that its owner left, and a lock rule keyed on
+    a flat battery is worse than one that does nothing.
+    """
+
+    IEEE = f"{USER_IEEE_PREFIX}_household"
+
+    def __init__(self) -> None:
+        self.ieee = self.IEEE
+        self.friendly_name = "Household"
+        self.manufacturer = "ZMM"
+        self.model = "Presence Aggregate"
+        self.last_seen: float = 0.0
+        self.state: Dict[str, Any] = {
+            "home_count": 0,
+            "away_count": 0,
+            "unknown_count": 0,
+            "total": 0,
+            # Ints, not bools: the rule builder's operators are numeric, and
+            # "anyone_home < 1" reads the same way as "home_count < 1".
+            "anyone_home": 0,
+            "everyone_home": 0,
+            "available": True,
+            "last_update": None,
+        }
+        self.capabilities = _Capabilities()
+
+    def recompute(self, devices: Dict[str, "PresenceUserDevice"]) -> bool:
+        """Recalculate from the current users. True if anything changed."""
+        home = away = unknown = 0
+        for d in devices.values():
+            if d.ieee == self.ieee or not getattr(d, "cfg", None):
+                continue
+            if not d.cfg.enabled:
+                continue
+            p = d.state.get("presence")
+            if p == PRESENCE_HOME:
+                home += 1
+            elif p == PRESENCE_AWAY:
+                away += 1
+            else:
+                unknown += 1
+
+        total = home + away + unknown
+        new = {
+            "home_count": home,
+            "away_count": away,
+            "unknown_count": unknown,
+            "total": total,
+            "anyone_home": 1 if home > 0 else 0,
+            # False for an empty household: "everyone is home" should not be
+            # vacuously true when there is nobody to be home.
+            "everyone_home": 1 if (total > 0 and home == total) else 0,
+        }
+        changed = any(self.state.get(k) != v for k, v in new.items())
+        if changed:
+            self.state.update(new)
+            self.state["last_update"] = time.time()
+            self.last_seen = time.time()
+        return changed
+
+    def is_available(self) -> bool:
+        return True
+
+    def get_control_commands(self) -> List[Dict[str, Any]]:
+        return []
+
+    def get_device_discovery_configs(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "component": "sensor",
+                "object_id": "home_count",
+                "node_id": "presence_household",
+                "config": {
+                    "name": "People home",
+                    "state_topic": "zigbee/presence/_household/state",
+                    "value_template": "{{ value_json.home_count }}",
+                    "unique_id": "zmm_presence_household_home_count",
+                    "icon": "mdi:home-account",
+                },
+            },
+        ]
+
+
 class PresenceUserDevice:
     """
     Quack-types as a Zigbee/Matter device for the automation engine and
@@ -327,6 +427,10 @@ class PresenceUserManager:
         self.config_path = Path(config_path)
 
         self.devices: Dict[str, PresenceUserDevice] = {}
+        # Aggregate view, kept in the same dict so it reaches the automation
+        # engine through the existing merge in main.py with no extra wiring.
+        self.household = HouseholdDevice()
+        self.devices[self.household.ieee] = self.household
         self._stale_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
@@ -637,8 +741,26 @@ class PresenceUserManager:
     # ------------------------------------------------------------------
     # MQTT
     # ------------------------------------------------------------------
+    def _refresh_household(self) -> None:
+        """
+        Recalculate the aggregate after any change to a user's presence.
+
+        Called from the publish path because that is the one point every
+        state change already funnels through — computing it anywhere else
+        would mean remembering to, and forgetting once leaves automations
+        acting on a stale count.
+        """
+        try:
+            self.household.recompute(self.devices)
+        except Exception as e:                        # noqa: BLE001
+            logger.warning("[presence] household recompute failed: %s", e)
+
     async def _publish_state(self, dev: PresenceUserDevice) -> None:
+        self._refresh_household()
         if not self.mqtt_handler:
+            return
+        # The household aggregate has no cfg and its own topic; skip it here.
+        if getattr(dev, "cfg", None) is None:
             return
         topic = f"zigbee/presence/{dev.cfg.user_id}/state"
         payload = {
