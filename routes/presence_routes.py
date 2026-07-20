@@ -158,7 +158,33 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             payload: UserUpsert,
             _=Depends(require_scope("admin")),
     ):
-        result = await _mgr().upsert_user(payload.dict())
+        data = payload.dict()
+
+        # `account` is tri-state, and .dict() flattens two of those states into
+        # one: a client that omitted the field and a client that sent null both
+        # arrive here as None. UserConfig.from_dict treats a MISSING key as
+        # "legacy, adopt user_id" and an explicit null as "deliberate standalone
+        # tracker", so passing the flattened dict straight through made every
+        # API-created presence user standalone — unlinkable to an account, and
+        # therefore permanently blocked by the MFA gate.
+        #
+        # Drop the key when the client never set it, restoring the distinction.
+        fields_set = getattr(payload, "model_fields_set", None)
+        if fields_set is None:                      # pydantic v1
+            fields_set = getattr(payload, "__fields_set__", set())
+        if "account" not in fields_set:
+            data.pop("account", None)
+
+            # upsert_user REPLACES the whole config, and the Presence tab's save
+            # doesn't know about `account` — so without this, editing someone's
+            # radius there would silently rewrite their account link. Carry the
+            # stored value forward, including a deliberate None, and let
+            # from_dict's migration apply only when the record is genuinely new.
+            existing = _mgr().get_user(payload.user_id)
+            if existing is not None:
+                data["account"] = getattr(existing.cfg, "account", None)
+
+        result = await _mgr().upsert_user(data)
         if not result.get("success"):
             raise HTTPException(400, result.get("error"))
         return result
