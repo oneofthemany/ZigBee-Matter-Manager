@@ -429,11 +429,13 @@ class PresenceUserManager:
         self.automation_evaluator = automation_evaluator
         self.config_path = Path(config_path)
 
+        # Presence users only. The household aggregate is deliberately NOT in
+        # here: every loop over this dict assumes each entry has a .cfg, and an
+        # entry without one broke config saving, OwnTracks matching, the stale
+        # watcher and the user list at once. Exposed via
+        # automation_devices() instead, which is the only place it is wanted.
         self.devices: Dict[str, PresenceUserDevice] = {}
-        # Aggregate view, kept in the same dict so it reaches the automation
-        # engine through the existing merge in main.py with no extra wiring.
         self.household = HouseholdDevice()
-        self.devices[self.household.ieee] = self.household
         self._stale_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
@@ -488,6 +490,15 @@ class PresenceUserManager:
     # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
+    def automation_devices(self) -> Dict[str, Any]:
+        """
+        Presence users plus the household aggregate, for the automation engine.
+
+        The aggregate is a device to automations and a nuisance to everything
+        else, so it is merged here rather than living in `devices`.
+        """
+        return {**self.devices, self.household.ieee: self.household}
+
     def list_users(self) -> List[Dict[str, Any]]:
         return [
             {

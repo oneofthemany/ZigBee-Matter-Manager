@@ -777,12 +777,12 @@ async def lifespan(app: FastAPI):
 
         def _devs_with_presence():
             merged = dict(_orig_dev_getter())
-            merged.update(presence_manager.devices)
+            merged.update(presence_manager.automation_devices())
             return merged
 
         def _names_with_presence():
             names = dict(_orig_name_getter())
-            for ieee, dev in presence_manager.devices.items():
+            for ieee, dev in presence_manager.automation_devices().items():
                 names[ieee] = dev.friendly_name
             return names
 
