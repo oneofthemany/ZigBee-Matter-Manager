@@ -415,6 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (window.initMyAccount) window.initMyAccount();
                 if (window.initAuthSettings) window.initAuthSettings();
                 if (window.initPresenceSettings) window.initPresenceSettings();
+                if (window.initPlacesSettings) window.initPlacesSettings();
                 if (window.initRemoteAccess) window.initRemoteAccess();
             });
         }
