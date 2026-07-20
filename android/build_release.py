@@ -16,12 +16,18 @@ out of your shell history and out of the process list (`ps` shows every
 argument of every running command, including other users' commands).
 
 Usage:
-    python3 build_release.py              # build, signing if configured
-    python3 build_release.py --setup      # create keystore + properties first
-    python3 build_release.py --verify-only  # re-check an existing APK
-    python3 build_release.py --debug      # debug APK instead
+    python3 build_release.py                 # build, signing if configured
+    python3 build_release.py --setup         # create keystore + properties first
+    python3 build_release.py --verify-only   # re-check an existing APK
+    python3 build_release.py --debug         # debug APK instead
+    python3 build_release.py --install       # ...then install: one device
+                                              # installs straight away, several
+                                              # prompt for which
+    python3 build_release.py --install SERIAL  # ...then install to that
+                                                # device by name, no prompt
 
-Exit status is 0 only if every check passed, so this is safe to use in a script.
+Exit status is 0 only if every check passed (and, with --install, the install
+itself succeeded), so this is safe to use in a script.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ HERE = Path(__file__).resolve().parent
 KEYSTORE = HERE / "zmm-release.jks"
 KEY_PROPS = HERE / "keystore.properties"
 KEY_ALIAS = "zmm"
+PACKAGE_ID = "com.zmm.presence"      # must match applicationId in build.gradle.kts
 
 # Gradle 8.13 refuses to run on JDK 22+. Anything older than 17 can't build
 # this project. That window is why we hunt for a JDK instead of trusting
@@ -176,6 +183,116 @@ def build_tool(sdk: Path, name: str) -> Path:
             "  Install build-tools via Android Studio's SDK Manager."
         )
     return versions[0] / name
+
+
+def find_adb(sdk: Path) -> Path:
+    """PATH first — build-tools has no adb, it lives under platform-tools."""
+    which = shutil.which("adb")
+    if which:
+        return Path(which)
+    candidate = sdk / "platform-tools" / "adb"
+    if candidate.exists():
+        return candidate
+    raise Failed(
+        "adb not found on PATH or under the SDK's platform-tools/.\n"
+        "  Install platform-tools via Android Studio's SDK Manager, or add it "
+        "to PATH."
+    )
+
+
+def list_devices(adb: Path) -> list[dict]:
+    """
+    Parse `adb devices -l`.
+
+    Includes devices adb can see but cannot use (unauthorized, offline) rather
+    than silently dropping them — a phone sitting there unauthorized looks
+    identical to "not connected" unless something says otherwise, and that is
+    the exact confusion a first-time USB debugging setup runs into.
+    """
+    r = run([str(adb), "devices", "-l"])
+    if r.returncode != 0:
+        raise Failed(f"adb devices failed:\n{r.stderr or r.stdout}")
+
+    out = []
+    for line in r.stdout.splitlines()[1:]:          # skip "List of devices attached"
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        serial, state = parts[0], parts[1]
+        model = next((p.split(":", 1)[1] for p in parts[2:]
+                     if p.startswith("model:")), "")
+        out.append({"serial": serial, "state": state, "model": model})
+    return out
+
+
+def choose_device(devices: list[dict], requested: str | None) -> str:
+    """
+    Resolve which device to install to.
+
+    `requested` is either a literal serial (from `--install SERIAL`), the
+    `__prompt__` sentinel (bare `--install`), or None.
+    """
+    usable = [d for d in devices if d["state"] == "device"]
+
+    if requested and requested != "__prompt__":
+        if not any(d["serial"] == requested for d in devices):
+            raise Failed(f"No device with serial '{requested}' in `adb devices`.")
+        if not any(d["serial"] == requested and d["state"] == "device" for d in devices):
+            raise Failed(f"Device '{requested}' is not in a usable state "
+                        f"(check for an 'allow USB debugging' prompt on the phone).")
+        return requested
+
+    if not devices:
+        raise Failed(
+            "No devices found by adb.\n"
+            "  Check the cable, that USB debugging is enabled, and that you "
+            "accepted the 'allow USB debugging' prompt on the phone."
+        )
+    if not usable:
+        detail = "\n".join(f"    {d['serial']}  {d['state']}" for d in devices)
+        raise Failed(f"adb sees device(s) but none are usable:\n{detail}\n"
+                    f"  'unauthorized' means accept the prompt on the phone's screen.")
+    if len(usable) == 1:
+        d = usable[0]
+        ok(f"one device connected: {d['serial']} ({d['model'] or 'unknown model'})")
+        return d["serial"]
+
+    # Multiple devices: this must be interactive. A non-interactive caller
+    # (CI, a script) cannot answer a picker, and installing to a guessed
+    # device would be worse than refusing outright.
+    if not sys.stdin.isatty():
+        detail = "\n".join(f"    {d['serial']}  {d['model']}" for d in usable)
+        raise Failed(f"Multiple devices connected and no terminal to ask which:\n"
+                    f"{detail}\n"
+                    f"  Run again with --install <serial>.")
+
+    print(f"\n  {C.B}Multiple devices connected:{C.X}")
+    for i, d in enumerate(usable, 1):
+        print(f"    {i}) {d['serial']}  {d['model'] or 'unknown model'}")
+    while True:
+        choice = input(f"  Install to which? [1-{len(usable)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(usable):
+            return usable[int(choice) - 1]["serial"]
+        print("  Not a valid choice.")
+
+
+def install_apk(adb: Path, serial: str, apk: Path) -> bool:
+    head("Install")
+    r = run([str(adb), "-s", serial, "install", "-r", str(apk)])
+    out = (r.stdout or "") + (r.stderr or "")
+
+    if r.returncode == 0 and "Success" in out:
+        ok(f"installed to {serial}")
+        return True
+
+    bad("install failed")
+    info(out.strip()[:500])
+    if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in out:
+        info(f"the installed copy was signed with a different key (e.g. the debug\n"
+            f"        build). Uninstall it first — this loses the phone's pairing:\n"
+            f"          {adb} -s {serial} uninstall {PACKAGE_ID}")
+    return False
 
 
 def find_gradlew() -> Path:
@@ -507,6 +624,12 @@ def main() -> int:
                     help="verify the existing APK without rebuilding")
     ap.add_argument("--debug", action="store_true",
                     help="build the debug variant instead of release")
+    ap.add_argument("--install", nargs="?", const="__prompt__", default=None,
+                    metavar="SERIAL",
+                    help="install to a device after a successful build. With "
+                         "no value: use the one connected device, or prompt if "
+                         "there are several. With a value: install straight to "
+                         "that adb serial, no prompt.")
     args = ap.parse_args()
 
     release = not args.debug
@@ -540,13 +663,29 @@ def main() -> int:
         if release:
             check_gitignored()
 
+        checks_ok = all(results)
         head("Result")
-        if all(results):
+        if checks_ok:
             ok("all checks passed")
-            print(f"\n  Install with:\n    adb install -r {apk.relative_to(HERE)}\n")
-            return 0
-        bad("one or more checks failed — see above")
-        return 1
+        else:
+            bad("one or more checks failed — see above")
+
+        if not checks_ok:
+            return 1
+
+        if args.install is not None:
+            adb = find_adb(sdk)
+            devices = list_devices(adb)
+            serial = choose_device(devices, args.install)
+            if not install_apk(adb, serial, apk):
+                return 1
+        else:
+            print(f"\n  Install with:\n"
+                 f"    python3 {Path(__file__).name} --install\n"
+                 f"  or:\n"
+                 f"    adb install -r {apk.relative_to(HERE)}\n")
+
+        return 0
 
     except Failed as e:
         print(f"\n{C.R}Error:{C.X} {e}\n", file=sys.stderr)
