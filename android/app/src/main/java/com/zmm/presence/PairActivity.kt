@@ -208,11 +208,47 @@ class PairActivity : AppCompatActivity() {
             runOnUiThread {
                 if (err == null) {
                     prefs.armed = true
-                    status("Armed. The hub will be told when you arrive or leave.")
+                    status("Armed. Reporting your position…")
+                    reportNow()
                 } else {
                     prefs.armed = false
                     status("Could not arm: $err")
                 }
+                render()
+            }
+        }
+    }
+
+    /**
+     * Send the current position now, instead of waiting for a crossing.
+     *
+     * Without this the hub sits at "unknown" until the user next walks through
+     * the boundary — which, if they armed at home, could be hours. An unknown
+     * state right after a successful pairing is indistinguishable from a broken
+     * one, so we resolve it immediately.
+     */
+    private fun reportNow() {
+        Geofencing.currentFix(this) { loc ->
+            if (loc == null) {
+                runOnUiThread {
+                    status("Armed, but no location fix yet. The hub will update " +
+                           "when you next arrive or leave.")
+                    render()
+                }
+                return@currentFix
+            }
+            lifecycleScope.launch {
+                val r = HubClient.postFix(
+                    prefs, loc.latitude, loc.longitude,
+                    if (loc.hasAccuracy()) loc.accuracy else null,
+                    loc.time / 1000.0,
+                )
+                status(when (r) {
+                    is HubClient.Result.Ok ->
+                        "Armed. Position reported — the hub knows where you are."
+                    is HubClient.Result.Err ->
+                        "Armed, but reporting position failed: ${r.message}"
+                })
                 render()
             }
         }

@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 
 /**
  * Arms/disarms the single home geofence.
@@ -45,6 +46,36 @@ object Geofencing {
             PendingIntent.FLAG_UPDATE_CURRENT
         }
         return PendingIntent.getBroadcast(ctx, 0, intent, flags)
+    }
+
+    /**
+     * One-shot current location, for reporting state immediately rather than
+     * waiting for a boundary crossing.
+     *
+     * INITIAL_TRIGGER_ENTER is supposed to fire on arming if you are already
+     * inside, but it only does so once Play Services has a location it trusts.
+     * With a cold fix that can take minutes, or not happen at all — leaving the
+     * hub showing "unknown" while the user is standing at home, which reads as
+     * a broken pairing.
+     *
+     * Tries a fresh fix, falling back to the last known one. Balanced power:
+     * this decides which side of a 100 m circle you are on, so it does not
+     * warrant a GPS fix.
+     */
+    @SuppressLint("MissingPermission")   // checked explicitly below
+    fun currentFix(ctx: Context, cb: (android.location.Location?) -> Unit) {
+        if (!hasForegroundLocation(ctx)) { cb(null); return }
+        val client = LocationServices.getFusedLocationProviderClient(ctx)
+
+        fun fallbackToLastKnown() {
+            client.lastLocation
+                .addOnSuccessListener { cb(it) }
+                .addOnFailureListener { cb(null) }
+        }
+
+        client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+            .addOnSuccessListener { loc -> if (loc != null) cb(loc) else fallbackToLastKnown() }
+            .addOnFailureListener { fallbackToLastKnown() }
     }
 
     /**
