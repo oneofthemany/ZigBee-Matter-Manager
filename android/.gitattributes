@@ -1,0 +1,22 @@
+# Line endings, pinned so they don't depend on each contributor's core.autocrlf.
+#
+# Everything is LF in the repository. The one deliberate exception is gradlew.bat:
+# Windows batch files require CRLF, and some Windows shells mis-parse a .bat with
+# LF endings. Gradle generates it that way on purpose — Git warning about it is
+# expected, not a problem to fix.
+
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never munge line endings in binaries; doing so corrupts them silently.
+*.jar   binary
+*.jks   binary
+*.keystore binary
+*.png   binary
+*.jpg   binary
+*.webp  binary
+*.apk   binary
+*.aab   binary
+*.so    binary
