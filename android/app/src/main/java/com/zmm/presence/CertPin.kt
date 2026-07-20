@@ -94,6 +94,57 @@ object CertPin {
     }
 
     /**
+     * How a given hub should be authenticated.
+     *
+     * Two deployments need two different answers, and guessing wrong breaks one
+     * of them:
+     *
+     *   - Reached through a tunnel or reverse proxy, the hub presents a real,
+     *     publicly-issued certificate. Ordinary CA validation is both sufficient
+     *     and *better* than pinning here, because such certificates rotate on
+     *     renewal — a pin would break every cycle and report interception when
+     *     nothing is wrong.
+     *   - Reached directly on the LAN, the hub presents its own self-signed
+     *     certificate, which no CA vouches for. Pinning is the only way to
+     *     authenticate it without trusting the phone's user CA store.
+     */
+    sealed class Trust {
+        /** Chains to a system CA; use ordinary validation, store no pin. */
+        object System : Trust()
+
+        /** No CA vouches for it; pin this key after the user confirms it. */
+        data class SelfSigned(val cert: X509Certificate) : Trust()
+    }
+
+    /**
+     * Decide which mode a hub needs, by attempting an ordinary validated
+     * connection and seeing whether it survives the handshake.
+     *
+     * Only a TLS *handshake* failure implies self-signed. A timeout or refused
+     * connection is a network problem and is rethrown, so an unreachable hub is
+     * never silently downgraded into "self-signed, please accept this key".
+     */
+    fun probeTrust(url: String, timeoutMs: Int): Trust {
+        val u = java.net.URL(url)
+        val port = if (u.port == -1) 443 else u.port
+        try {
+            val c = u.openConnection() as HttpsURLConnection
+            c.connectTimeout = timeoutMs
+            c.readTimeout = timeoutMs
+            c.requestMethod = "HEAD"
+            c.instanceFollowRedirects = false
+            // Any HTTP status means TLS validated — 401 here is a success.
+            c.responseCode
+            c.disconnect()
+            return Trust.System
+        } catch (e: javax.net.ssl.SSLException) {
+            // Includes SSLHandshakeException (untrusted chain) and
+            // SSLPeerUnverifiedException (hostname mismatch).
+            return Trust.SelfSigned(probe(u.host, port, timeoutMs))
+        }
+    }
+
+    /**
      * Open a TLS connection purely to learn the server's key, accepting whatever
      * it presents. Used ONCE, at pairing, to show the user a fingerprint to
      * confirm. No credentials are sent on this connection.

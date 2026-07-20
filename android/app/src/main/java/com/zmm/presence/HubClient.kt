@@ -114,11 +114,22 @@ object HubClient {
             // impossible for any later code path to put a token on plaintext.
             throw java.io.IOException("Refusing to send credentials over plain http")
         }
-        if (prefs.certPin.isEmpty()) {
-            throw java.io.IOException("No certificate pin stored — pair with the hub first")
+        when (prefs.trustMode) {
+            Prefs.TRUST_SYSTEM, Prefs.TRUST_PIN -> Unit
+            else -> throw java.io.IOException(
+                "Hub trust not established — pair with the hub first"
+            )
+        }
+        if (prefs.trustMode == Prefs.TRUST_PIN && prefs.certPin.isEmpty()) {
+            throw java.io.IOException("Pinned mode with no stored pin — re-pair with the hub")
         }
         return (URL(url).openConnection() as HttpURLConnection).apply {
-            CertPin.apply(this, prefs.certPin)
+            // In TRUST_SYSTEM we deliberately leave the default SSLSocketFactory
+            // in place: the platform validates against system CAs, which is what
+            // a tunnel-issued certificate needs and what survives its rotation.
+            if (prefs.trustMode == Prefs.TRUST_PIN) {
+                CertPin.apply(this, prefs.certPin)
+            }
             requestMethod = method
             connectTimeout = TIMEOUT_MS
             readTimeout = TIMEOUT_MS

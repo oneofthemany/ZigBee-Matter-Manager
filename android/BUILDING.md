@@ -244,12 +244,29 @@ type. There is no analytics, crash reporting or telemetry anywhere in this app.
 **What it sends.** `GeofenceReceiver.kt` posts latitude, longitude, accuracy and
 a timestamp on geofence crossings only. Not a continuous track.
 
-**How it authenticates the hub.** `CertPin.kt`. Because hubs are self-hosted
-with self-signed certificates, there is no CA to validate against. The app pins
-the hub's public key on first pair rather than trusting the phone's user CA
-store — which would let any CA installed on the device intercept its traffic.
+**How it authenticates the hub.** `CertPin.kt`, and it depends on how your hub
+is reached. The app decides once, at pairing, by attempting an ordinary
+validated connection:
 
-At pairing you are shown a fingerprint. **Compare it against your hub:**
+| Your hub | Mode | What happens |
+|---|---|---|
+| Behind a tunnel / reverse proxy with a real certificate | **System** | Ordinary CA validation. No fingerprint prompt, no pin stored. |
+| Direct on the LAN, self-signed certificate | **Pinned** | You confirm a fingerprint; only that key is accepted thereafter. |
+
+Neither mode ever trusts the phone's **user CA store**, which is what would let
+any CA installed on the device intercept the app's traffic.
+
+Pinning is not applied to publicly-issued certificates on purpose. Those rotate
+on renewal, and a pin would break at every cycle while reporting it as
+interception — training you to click through the one warning that should never
+be routine.
+
+A TLS handshake failure means self-signed. A timeout or refused connection is a
+network error and is rethrown, so an unreachable hub is never quietly turned
+into "self-signed, please accept this key".
+
+In pinned mode you are shown a fingerprint at pairing. **Compare it against
+your hub:**
 
 ```bash
 openssl s_client -connect YOUR_HUB:8000 </dev/null 2>/dev/null \
@@ -260,14 +277,22 @@ openssl s_client -connect YOUR_HUB:8000 </dev/null 2>/dev/null \
 
 That must match what the dialog shows.
 
-> **Known limitation, stated plainly.** This is trust-on-first-use, the SSH
-> model. The first connection is taken on faith — someone intercepting at that
-> exact moment would get pinned instead of your hub. Comparing the fingerprint
-> closes that window, which is why the dialog is worded bluntly rather than as
-> a routine confirmation.
+> **Known limitation, stated plainly.** Pinned mode is trust-on-first-use, the
+> SSH model. The first connection is taken on faith — someone intercepting at
+> that exact moment would get pinned instead of your hub. Comparing the
+> fingerprint closes that window, which is why the dialog is worded bluntly
+> rather than as a routine confirmation.
 
 The pin is checked during the TLS handshake, before the `Authorization` header
-is written, so a server failing the check never receives your token.
+is written, so a server failing the check never receives your token. If trust
+was never established, requests refuse outright rather than falling back to
+plain CA validation — a failed pairing must not silently become an
+unauthenticated one.
+
+**Which URL to pair with.** Use your **public/tunnel URL**, even at home. A
+geofence EXIT fires exactly when you leave the LAN, at which point a private
+address like `192.168.1.x` is unreachable and the report cannot be delivered.
+One URL everywhere is also one trust mode everywhere.
 
 **Dependencies.** One third party: `play-services-location`, unavoidable
 because OS geofencing lives in Play Services. Everything else is AndroidX and

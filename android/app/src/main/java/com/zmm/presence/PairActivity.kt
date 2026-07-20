@@ -79,27 +79,30 @@ class PairActivity : AppCompatActivity() {
             return
         }
 
-        // No pin yet: learn the hub's key and have the user vouch for it before
-        // we store it or send the token anywhere.
-        if (prefs.certPin.isEmpty()) { confirmPin(); return }
+        // Trust not yet established: work out how this hub should be
+        // authenticated before sending the token anywhere.
+        if (prefs.trustMode.isEmpty()) { establishTrust(); return }
 
         fetchHome()
     }
 
     /**
-     * Trust-on-first-use. We show the fingerprint and ask the user to compare it
-     * with their hub before accepting. This is the one moment the app cannot
-     * verify anything for them, so it says so plainly rather than dressing an
-     * unverified key up as a routine confirmation.
+     * Decide how to authenticate this hub, and pin only if we must.
+     *
+     * A hub behind a tunnel presents a publicly-issued certificate: ordinary
+     * validation covers it, no fingerprint prompt is warranted, and pinning
+     * would actively harm — such certificates rotate, and a pin would later
+     * fail claiming interception. A hub on the LAN presents a self-signed
+     * certificate that no CA vouches for, so the user must vouch for it
+     * instead. Only that second case shows a dialog.
      */
-    private fun confirmPin() {
-        status("Fetching hub certificate…")
+    private fun establishTrust() {
+        status("Checking hub certificate…")
         b.pairBtn.isEnabled = false
         lifecycleScope.launch {
-            val probed = try {
-                val u = java.net.URL(prefs.hubUrl)
+            val trust = try {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    CertPin.probe(u.host, if (u.port == -1) 443 else u.port, 15_000)
+                    CertPin.probeTrust(prefs.hubUrl, 15_000)
                 }
             } catch (e: Exception) {
                 status("Could not reach the hub: ${e.message}")
@@ -107,17 +110,31 @@ class PairActivity : AppCompatActivity() {
                 return@launch
             }
 
-            val pin = CertPin.spkiPin(probed)
             b.pairBtn.isEnabled = true
-            AlertDialog.Builder(this@PairActivity)
-                .setTitle(R.string.pin_title)
-                .setMessage(getString(R.string.pin_body, CertPin.readable(pin), probed.subjectDN.name))
-                .setPositiveButton(R.string.pin_accept) { _, _ ->
-                    prefs.certPin = pin
+            when (trust) {
+                is CertPin.Trust.System -> {
+                    prefs.trustMode = Prefs.TRUST_SYSTEM
+                    prefs.certPin = ""
+                    status("Hub certificate is publicly trusted.")
                     fetchHome()
                 }
-                .setNegativeButton(R.string.cancel) { _, _ -> status("Pairing cancelled.") }
-                .show()
+                is CertPin.Trust.SelfSigned -> {
+                    val pin = CertPin.spkiPin(trust.cert)
+                    AlertDialog.Builder(this@PairActivity)
+                        .setTitle(R.string.pin_title)
+                        .setMessage(getString(R.string.pin_body,
+                            CertPin.readable(pin), trust.cert.subjectDN.name))
+                        .setPositiveButton(R.string.pin_accept) { _, _ ->
+                            prefs.certPin = pin
+                            prefs.trustMode = Prefs.TRUST_PIN
+                            fetchHome()
+                        }
+                        .setNegativeButton(R.string.cancel) { _, _ ->
+                            status("Pairing cancelled.")
+                        }
+                        .show()
+                }
+            }
         }
     }
 

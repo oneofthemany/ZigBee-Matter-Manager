@@ -31,12 +31,24 @@ class Prefs(context: Context) {
 
     /**
      * SHA-256 of the hub's public key, captured at pairing. See [CertPin].
-     * Empty means unpaired — connections refuse rather than falling back to
-     * CA validation, so an empty pin can never silently downgrade trust.
+     * Only meaningful when [trustMode] is [TRUST_PIN].
      */
     var certPin: String
         get() = sp.getString(KEY_PIN, "") ?: ""
         set(v) = sp.edit().putString(KEY_PIN, v.trim()).apply()
+
+    /**
+     * How to authenticate the hub: [TRUST_SYSTEM], [TRUST_PIN], or "" when not
+     * yet paired.
+     *
+     * Empty is a hard refusal, never a fallback. If the app cannot say how it
+     * decided to trust this hub, it must not send the token at all — silently
+     * defaulting to CA validation would turn a failed pairing into an
+     * unauthenticated one.
+     */
+    var trustMode: String
+        get() = sp.getString(KEY_TRUST, "") ?: ""
+        set(v) = sp.edit().putString(KEY_TRUST, v).apply()
 
     /** Home geofence, cached so BootReceiver can re-arm without a network call. */
     var homeLat: Double
@@ -72,6 +84,13 @@ class Prefs(context: Context) {
         private const val KEY_RADIUS = "radius_m"
         private const val KEY_ARMED = "armed"
         private const val KEY_PIN = "cert_pin"
+        private const val KEY_TRUST = "trust_mode"
+
+        /** Hub cert chains to a system CA — ordinary validation, no pin. */
+        const val TRUST_SYSTEM = "system"
+
+        /** Hub cert is self-signed — authenticated solely by [Prefs.certPin]. */
+        const val TRUST_PIN = "pin"
         private val NAN_BITS = Double.NaN.toRawBits()
 
         /**
