@@ -161,8 +161,92 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         }
 
         var result = await Notification.requestPermission();
+        if (result === 'granted') {
+            // Fire and forget: a failed subscription must not make the
+            // permission grant look like it failed.
+            subscribeToPush();
+        }
         return result === 'granted';
     }
+
+
+    // ----------------------------------------------------------
+    // WEB PUSH SUBSCRIPTION
+    // ----------------------------------------------------------
+
+    /**
+     * Register this browser for server-initiated push.
+     *
+     * Distinct from Notification.permission: permission lets the PAGE raise a
+     * notification while it is running, a subscription lets the HUB raise one
+     * when nothing is open. Requests need the second — the whole point is
+     * reaching someone who is not looking at ZMM.
+     *
+     * Requires a trusted secure context. On the LAN self-signed address the
+     * service worker will not even register, so this is a no-op there; use the
+     * public/tunnel URL.
+     */
+    async function subscribeToPush() {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+        if (!window.isSecureContext) return false;
+        if (Notification.permission !== 'granted') return false;
+
+        try {
+            var reg = await navigator.serviceWorker.ready;
+
+            var existing = await reg.pushManager.getSubscription();
+            if (existing) {
+                // Re-post it anyway: the hub may have been rebuilt, and a
+                // subscription it does not know about is one it cannot use.
+                await postSubscription(existing);
+                return true;
+            }
+
+            var r = await fetch('/api/push/key', { credentials: 'same-origin' });
+            if (!r.ok) return false;
+            var key = (await r.json()).key;
+
+            var sub = await reg.pushManager.subscribe({
+                // Required by Chrome: the hub must be able to read every
+                // payload it sends, so silent pushes are not permitted.
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(key),
+            });
+            await postSubscription(sub);
+            return true;
+        } catch (e) {
+            if (window.zmmLog) zmmLog('pwa').warn('[push] subscribe failed', e);
+            return false;
+        }
+    }
+
+    async function postSubscription(sub) {
+        var j = sub.toJSON();
+        if (!j.keys || !j.keys.p256dh || !j.keys.auth) return;
+        await fetch('/api/push/subscribe', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                endpoint: j.endpoint,
+                p256dh: j.keys.p256dh,
+                auth: j.keys.auth,
+                label: navigator.userAgent.slice(0, 60),
+            }),
+        });
+    }
+
+    /** VAPID keys arrive base64url; PushManager wants raw bytes. */
+    function urlBase64ToUint8Array(base64String) {
+        var padding = '='.repeat((4 - base64String.length % 4) % 4);
+        var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        var raw = window.atob(base64);
+        var out = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    window.zbmSubscribeToPush = subscribeToPush;
 
     // ----------------------------------------------------------
     // 3. SEND NOTIFICATION

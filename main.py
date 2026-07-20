@@ -1156,10 +1156,57 @@ register_remote_access_routes(app)
 from routes.map_routes import register_map_routes
 register_map_routes(app)
 
+# Web Push — the only channel that reaches a device with its screen off.
+from modules.webpush import VapidKeys, PushManager, set_push_manager
+from routes.push_routes import register_push_routes
+_vapid = VapidKeys.load_or_create()
+push_manager = PushManager(_vapid)
+push_manager.load()
+set_push_manager(push_manager)
+register_push_routes(app)
+
 # Requests — asks that need an answer, with escalation when none comes.
 from modules.requests_store import RequestStore, set_request_store
 from routes.request_routes import register_request_routes
-request_store = RequestStore(notifier=lambda ev, payload: broadcast_event(ev, payload))
+
+
+async def _request_notifier(event: str, payload: dict):
+    """
+    Fan a request event out to both channels.
+
+    The websocket updates anyone already looking at ZMM; push reaches the
+    person who is not. Both are attempted because they answer different
+    questions, and neither is allowed to break the other — a request's state
+    is authoritative whether or not any notification lands.
+    """
+    try:
+        await broadcast_event(event, payload)
+    except Exception as e:
+        logger.debug(f"[requests] websocket broadcast failed: {e}")
+
+    # Only two events are worth interrupting someone for: an ask arriving,
+    # and the sender learning it lapsed. Accept/decline show up in the UI.
+    try:
+        if event == "request_created":
+            target, title = payload.get("to_user"), f"Request from {payload.get('from_user')}"
+        elif event == "request_expired":
+            target, title = payload.get("from_user"), f"No answer from {payload.get('to_user')}"
+        else:
+            return
+        if not target:
+            return
+        await push_manager.send_to_user(target, {
+            "title": title,
+            "body": payload.get("message") or "",
+            "tag": f"zmm-request-{payload.get('id')}",
+            "request_id": payload.get("id"),
+            "kind": event,
+        })
+    except Exception as e:
+        logger.warning(f"[requests] push failed: {e}")
+
+
+request_store = RequestStore(notifier=_request_notifier)
 request_store.load()
 set_request_store(request_store)
 register_request_routes(app)

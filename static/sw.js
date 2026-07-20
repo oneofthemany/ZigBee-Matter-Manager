@@ -134,22 +134,66 @@ self.addEventListener('push', function (event) {
         }
     }
 
+    // A request needs an answer, so offer one here. Making someone open the
+    // app to tap Accept is how a time-limited ask quietly expires.
+    var isRequest = data.kind === 'request_created' && data.request_id;
+
     event.waitUntil(
         self.registration.showNotification(data.title || 'ZigBee Manager', {
             body: data.body || '',
             icon: data.icon || '/static/images/zigbee-manager-logo.png',
             badge: '/static/images/zigbee-manager-logo.png',
             tag: data.tag || 'zbm-notification',
-            data: data.data || {},
+            data: Object.assign({}, data.data || {}, {
+                request_id: data.request_id || null,
+                kind: data.kind || null
+            }),
             vibrate: [100, 50, 100],
-            requireInteraction: data.requireInteraction || false
+            actions: isRequest ? [
+                { action: 'accept', title: 'Accept' },
+                { action: 'decline', title: 'Decline' }
+            ] : [],
+            // Requests persist until answered; an ask that scrolls away
+            // unnoticed becomes an escalation nobody understands.
+            requireInteraction: isRequest ? true : (data.requireInteraction || false)
         })
     );
 });
 
 // Notification click: focus or open the app
 self.addEventListener('notificationclick', function (event) {
+    var d = event.notification.data || {};
     event.notification.close();
+
+    // Answer straight from the notification. Credentials are included so the
+    // session cookie authenticates it exactly as the page would.
+    if ((event.action === 'accept' || event.action === 'decline') && d.request_id) {
+        event.waitUntil(
+            fetch('/api/requests/' + encodeURIComponent(d.request_id) + '/' + event.action, {
+                method: 'POST',
+                credentials: 'include'
+            }).then(function (r) {
+                if (r.ok) return;
+                // 409 means it settled first — usually it expired while the
+                // notification sat on the lock screen. Say so rather than
+                // leaving the tap looking successful.
+                return self.registration.showNotification('Could not answer', {
+                    body: r.status === 409
+                        ? 'That request had already expired.'
+                        : 'Could not reach the hub.',
+                    icon: '/static/images/zigbee-manager-logo.png',
+                    tag: 'zmm-request-fail'
+                });
+            }).catch(function () {
+                return self.registration.showNotification('Could not answer', {
+                    body: 'No connection to the hub.',
+                    icon: '/static/images/zigbee-manager-logo.png',
+                    tag: 'zmm-request-fail'
+                });
+            })
+        );
+        return;
+    }
 
     event.waitUntil(
         self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clients) {

@@ -23,3 +23,5 @@ numpy
 sounddevice
 markdown-it-py
 kokoro-onnx==0.4.7
+# Web Push (RFC 8291/8292): ECDH + HKDF + AES-GCM and ES256 VAPID signing.
+cryptography
