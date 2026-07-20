@@ -45,6 +45,7 @@ class PairActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         b = ActivityPairBinding.inflate(layoutInflater)
         setContentView(b.root)
+        applyWindowInsets()
         prefs = Prefs(this)
 
         b.hubUrl.setText(prefs.hubUrl)
@@ -55,9 +56,35 @@ class PairActivity : AppCompatActivity() {
         b.permsBtn.setOnClickListener { requestPermissions() }
         b.armBtn.setOnClickListener { if (prefs.armed) disarm() else arm() }
         b.forgetBtn.setOnClickListener { forget() }
+        b.discoverBtn.setOnClickListener { discover() }
 
         b.deviceId.text = getString(R.string.device_id_fmt, deviceId())
         render()
+    }
+
+    /**
+     * Keep content clear of the system bars and the app bar.
+     *
+     * targetSdk 35 (Android 15) enforces edge-to-edge: the window extends
+     * behind the status and navigation bars whether or not the layout expects
+     * it. Without this the top of the form sits underneath the app bar — the
+     * hub URL field is the first casualty — and the bottom buttons hide behind
+     * the gesture bar.
+     *
+     * Padding rather than fitsSystemWindows so the scroll surface still
+     * extends to the edges; only the content is inset.
+     */
+    private fun applyWindowInsets() {
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
+            val bars = insets.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.systemBars() or
+                androidx.core.view.WindowInsetsCompat.Type.displayCutout()
+            )
+            // The app bar occupies the top inset already, so only the sides and
+            // bottom need adding; the ScrollView handles the rest.
+            v.setPadding(bars.left, v.paddingTop, bars.right, bars.bottom)
+            insets
+        }
     }
 
     override fun onResume() {
@@ -161,6 +188,63 @@ class PairActivity : AppCompatActivity() {
             b.pairBtn.isEnabled = true
             render()
         }
+    }
+
+    /**
+     * Search the local network for a hub and offer its address.
+     *
+     * Stops on the first hit rather than listing every hub: households have
+     * one, and a picker for a list of one is friction. The dialog names what
+     * was found so a second hub on the network is still visible as wrong.
+     */
+    private fun discover() {
+        status(getString(R.string.discover_searching))
+        b.discoverBtn.isEnabled = false
+
+        var handle: Discovery.Handle? = null
+        var settled = false
+
+        fun finish(block: () -> Unit) {
+            if (settled) return
+            settled = true
+            handle?.stop()
+            runOnUiThread {
+                b.discoverBtn.isEnabled = true
+                block()
+            }
+        }
+
+        handle = Discovery.start(this, onFound = { hub ->
+            finish {
+                val url = hub.preferredUrl
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.discover_title)
+                    .setMessage(getString(
+                        if (hub.hasPublic) R.string.discover_body
+                        else R.string.discover_body_local,
+                        hub.name, url,
+                    ))
+                    .setPositiveButton(R.string.discover_use) { _, _ ->
+                        b.hubUrl.setText(url)
+                        // Trust is bound to a host, so switching address must
+                        // invalidate it — otherwise a pin taken from the LAN
+                        // certificate would be checked against the tunnel's.
+                        prefs.trustMode = ""
+                        prefs.certPin = ""
+                        status("Address set. Enter your user id and token, then Pair.")
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .show()
+            }
+        }, onError = { msg ->
+            finish { status(msg) }
+        })
+
+        // mDNS has no "finished" signal — it browses until stopped. Give it a
+        // few seconds, then report nothing found rather than spinning forever.
+        b.discoverBtn.postDelayed({
+            finish { status(getString(R.string.discover_none)) }
+        }, 6000)
     }
 
     private fun requestPermissions() {
