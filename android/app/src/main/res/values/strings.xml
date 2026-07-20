@@ -45,4 +45,17 @@
     -->
     <string name="pin_body">This hub is presenting:\n\n%1$s\n\nSubject: %2$s\n\nThe app will accept only this key from now on. Nothing can confirm it for you — compare it against the fingerprint shown on your hub before you accept.\n\nIf it doesn\'t match, someone may be intercepting the connection.</string>
     <string name="pin_accept">It matches</string>
+
+    <string name="discover">Find hub on this network</string>
+    <string name="discover_searching">Searching the local network…</string>
+    <string name="discover_none">No hub found. Check you are on the same Wi\u2011Fi, or type the address.</string>
+    <string name="discover_title">Hub found</string>
+    <!--
+        Explains WHICH address was chosen and why. The public one is what makes
+        presence work away from home, and a user who does not know that will
+        "helpfully" change it back to the LAN address.
+    -->
+    <string name="discover_body">Found %1$s.\n\nPair with:\n%2$s\n\nThis is the address that works both at home and away — presence reports when you leave, which is exactly when a home-network address stops working.</string>
+    <string name="discover_body_local">Found %1$s.\n\nPair with:\n%2$s\n\nThis hub has no public address configured, so it will only report presence while you are on the home Wi\u2011Fi. Set up Remote Access on the hub for it to work away from home.</string>
+    <string name="discover_use">Use this</string>
 </resources>

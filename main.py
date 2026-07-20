@@ -1156,6 +1156,34 @@ register_remote_access_routes(app)
 from routes.map_routes import register_map_routes
 register_map_routes(app)
 
+# mDNS — let the companion app find this hub on the home network, and learn
+# the PUBLIC url to pair with. A geofence reports when you leave home, which is
+# exactly when a LAN address stops working, so the address worth advertising is
+# the tunnel one.
+from modules.discovery import HubAdvertiser, set_advertiser
+try:
+    _web_cfg = (CONFIG.get("web") or {})
+    _ra_cfg = {}
+    try:
+        import yaml as _yaml
+        from pathlib import Path as _Path
+        _ra_path = _Path("./data/remote_access.yaml")
+        if _ra_path.exists():
+            _ra_cfg = _yaml.safe_load(_ra_path.read_text()) or {}
+    except Exception:
+        _ra_cfg = {}
+    _public = _ra_cfg.get("hostname") or ""
+    _advertiser = HubAdvertiser(
+        port=int(_web_cfg.get("port", 8000)),
+        public_url=(f"https://{_public}" if _public else ""),
+        https=bool(_web_cfg.get("ssl", True)),
+    )
+    _advertiser.start()
+    set_advertiser(_advertiser)
+except Exception as _e:
+    # Discovery is a convenience; never let it stop the hub coming up.
+    logger.warning(f"[discovery] not advertising: {_e}")
+
 # Web Push — the only channel that reaches a device with its screen off.
 from modules.webpush import VapidKeys, PushManager, set_push_manager
 from routes.push_routes import register_push_routes
