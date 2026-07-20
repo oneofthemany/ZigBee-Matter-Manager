@@ -5,12 +5,24 @@ accounts, no third-party service, no analytics.
 
 ## What it does
 
-Arms a **geofence** at your home (fetched from the hub's presence config) and
-POSTs a fix to `/api/presence/users/<user_id>/fix` on ENTER/EXIT. The OS delivers
-those transitions even when the app is killed, so there is no persistent
-notification and effectively no battery cost.
+Reports your position to **your own hub** over four channels, each with one
+job (the same architecture as the Home Assistant companion app):
 
-It does *not* stream your location. It reports two events: you arrived, you left.
+| Channel | When it reports | Battery cost |
+|---|---|---|
+| **Geofence** | crossing your home or place boundaries | ~none (OS-delivered, app can be dead) |
+| **Heartbeat** | every 15–60 min (set per user on the hub) | one brief fix per interval |
+| **Passive** | when you've moved ≥50 m *and* some app already computed a location | ~none (piggybacks; a stationary phone generates nothing) |
+| **Drive mode** | every minute while connected to your car's Bluetooth | ~none in practice (phone charging, GPS already on for navigation) |
+
+Everything goes to `/api/presence/users/<user_id>/fix` and nowhere else. The
+only persistent notification is drive mode's, which Android requires for a
+location service; it lives exactly as long as the drive.
+
+The honest statement of posture: this app does not run its own continuous
+tracking, but the passive channel means it receives a fix whenever the OS
+computes one for any app and you have moved. What is *sent* is throttled as
+above; what is *received* is up to the OS.
 
 ## Security model
 

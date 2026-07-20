@@ -74,6 +74,14 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Passive fill (PassiveUpdates.kt): Play Services delivers batched
+             location fixes here via our own PendingIntent. exported=false —
+             the explicit PendingIntent reaches it regardless; nothing else
+             may inject a fake position. -->
+        <receiver
+            android:name=".PassiveLocationReceiver"
+            android:exported="false" />
+
         <!-- Wakes the app when the car's Bluetooth connects/disconnects.
              ACL_CONNECTED/DISCONNECTED are on Android's implicit-broadcast
              exemption list, so a manifest receiver gets them even with the app

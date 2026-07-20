@@ -68,6 +68,7 @@ class DriveService : Service() {
 
         startInForeground(prefs.carBtName)
         startUpdates(prefs)
+        running = true
         Log.i(TAG, "drive mode started (${prefs.carBtName})")
 
         // NOT_STICKY: if the system kills us mid-drive there is no reliable
@@ -144,6 +145,7 @@ class DriveService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
         callback?.let {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(it)
@@ -158,6 +160,15 @@ class DriveService : Service() {
         private const val CHANNEL_ID = "zmm_drive"
         private const val NOTIF_ID = 41
         private const val UPDATE_INTERVAL_MS = 60_000L
+
+        /**
+         * Whether drive mode is currently streaming. Read by
+         * [PassiveLocationReceiver] to stand down while driving — the two
+         * channels would otherwise post the same track twice.
+         */
+        @Volatile
+        var running = false
+            private set
 
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(

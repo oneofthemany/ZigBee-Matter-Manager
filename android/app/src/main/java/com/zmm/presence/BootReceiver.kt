@@ -42,6 +42,9 @@ class BootReceiver : BroadcastReceiver() {
                 // reinstall — and re-scheduling is idempotent (UPDATE policy),
                 // so doing it here costs nothing and closes that gap.
                 HeartbeatWorker.schedule(context, prefs.heartbeatS)
+                // The passive subscription dies with the reboot, like the
+                // geofences. Re-registering is idempotent too.
+                PassiveUpdates.register(context)
             } else {
                 Log.w(TAG, "re-arm failed: $err")
                 prefs.armed = false

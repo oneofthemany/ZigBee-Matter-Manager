@@ -426,6 +426,7 @@ class PairActivity : AppCompatActivity() {
                 if (err == null) {
                     prefs.armed = true
                     HeartbeatWorker.schedule(this, prefs.heartbeatS)
+                    PassiveUpdates.register(this)
                     status("Armed. Reporting your position…")
                     reportNow()
                 } else {
@@ -481,6 +482,7 @@ class PairActivity : AppCompatActivity() {
                 // disarmed means "stop reporting", full stop.
                 HeartbeatWorker.cancel(this)
                 DriveService.stop(this)
+                PassiveUpdates.unregister(this)
                 status(if (err == null) "Disarmed." else "Disarm reported: $err")
                 render()
             }
@@ -495,6 +497,7 @@ class PairActivity : AppCompatActivity() {
                 Geofencing.disarm(this)
                 HeartbeatWorker.cancel(this)
                 DriveService.stop(this)
+                PassiveUpdates.unregister(this)
                 prefs.clear()
                 b.hubUrl.setText(""); b.userId.setText(""); b.token.setText("")
                 status("Forgotten. Revoke the token on the hub too.")

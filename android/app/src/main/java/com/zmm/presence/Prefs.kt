@@ -143,6 +143,15 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_CAR_NAME, "") ?: ""
         set(v) = sp.edit().putString(KEY_CAR_NAME, v).apply()
 
+    /**
+     * When the passive channel last posted, for collapsing batched deliveries.
+     * In Prefs rather than a field because the receiver runs in a process that
+     * may have been born for that one broadcast.
+     */
+    var passiveLastPostMs: Long
+        get() = sp.getLong(KEY_PASSIVE_POST, 0L)
+        set(v) = sp.edit().putLong(KEY_PASSIVE_POST, v).apply()
+
     fun saveMode(m: HubClient.ModeParams) {
         modeName = m.name
         heartbeatS = m.heartbeatS
@@ -179,6 +188,7 @@ class Prefs(context: Context) {
         private const val KEY_PLACES = "places_json"
         private const val KEY_CAR_ADDR = "car_bt_addr"
         private const val KEY_CAR_NAME = "car_bt_name"
+        private const val KEY_PASSIVE_POST = "passive_last_post_ms"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"
