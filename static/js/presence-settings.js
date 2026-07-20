@@ -206,8 +206,7 @@
             home_lat: null, home_lon: null,
             radius_m: 100, hysteresis_m: 30,
             stale_after_s: 1800, min_accuracy_m: 250,
-            enabled: true,
-            owntracks_user: '', owntracks_device: ''
+            enabled: true
         };
 
         var modalHtml =
@@ -234,11 +233,6 @@
                   field('hysteresis_m', 'Leave-hysteresis (m)', u.hysteresis_m, 'col-md-4', '', '', 'number') +
                   field('min_accuracy_m', 'Min accuracy (m)', u.min_accuracy_m, 'col-md-4', '', '', 'number') +
                   modeField(u.presence_mode) +
-                  '<div class="col-12"><hr><h6 class="mb-2">OwnTracks (optional)</h6>' +
-                    '<p class="text-muted small">Set if you also use the OwnTracks mobile app for reliable background tracking.</p>' +
-                  '</div>' +
-                  field('owntracks_user', 'OwnTracks user', u.owntracks_user || '', 'col-md-6') +
-                  field('owntracks_device', 'OwnTracks device', u.owntracks_device || '', 'col-md-6') +
                 '</div>' +
                 '<div id="presence-edit-error" class="alert alert-danger mt-3" style="display:none"></div>' +
               '</div>' +
@@ -295,8 +289,6 @@
                 stale_after_s: u.stale_after_s,
                 min_accuracy_m: parseFloat(val('min_accuracy_m')) || 250,
                 enabled: true,
-                owntracks_user: val('owntracks_user') || null,
-                owntracks_device: val('owntracks_device') || null
             };
 
             // Only send when the picker actually rendered. Sending null on a

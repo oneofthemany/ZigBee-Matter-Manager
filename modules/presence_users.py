@@ -1,11 +1,11 @@
 """
-Presence Users — Per-user home/away tracking via PWA geolocation and OwnTracks.
+Presence Users — Per-user home/away tracking from the companion app.
 
 Each user is exposed to the rest of ZMM as a *virtual device* with attributes:
     presence       : "home" | "away" | "unknown"
     distance_m     : float (metres from home)
     accuracy_m     : float (GPS reported accuracy)
-    source         : "pwa" | "owntracks" | "manual"
+    source         : "pwa" | "manual"
     last_update    : float (unix ts)
     lat / lon      : float (latest reported position) — stored in memory only
                       after persistence, NOT written to disk in long-term form.
@@ -175,11 +175,6 @@ class UserConfig:
     stale_after_s: float = DEFAULT_STALE_AFTER_S
     min_accuracy_m: float = DEFAULT_MIN_ACCURACY_M
     enabled: bool = True
-    # Sources allowed to update this user, in priority order. PWA reports are
-    # always accepted but OwnTracks reports are only honoured if the topic
-    # device id matches `owntracks_device` (when set).
-    owntracks_device: Optional[str] = None  # e.g. "phone"
-    owntracks_user: Optional[str] = None    # e.g. "sean"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -216,8 +211,6 @@ class UserConfig:
             stale_after_s=float(mode_params(mode)["stale_after_s"]),
             min_accuracy_m=float(d.get("min_accuracy_m", DEFAULT_MIN_ACCURACY_M)),
             enabled=bool(d.get("enabled", True)),
-            owntracks_device=d.get("owntracks_device"),
-            owntracks_user=d.get("owntracks_user"),
         )
 
 
@@ -414,7 +407,7 @@ class PresenceUserDevice:
 class PresenceUserManager:
     """
     Owns user configs, the virtual device dict, and ingest paths from
-    PWA HTTP and OwnTracks MQTT.
+    the companion app over HTTP.
     """
 
     def __init__(
@@ -431,7 +424,7 @@ class PresenceUserManager:
 
         # Presence users only. The household aggregate is deliberately NOT in
         # here: every loop over this dict assumes each entry has a .cfg, and an
-        # entry without one broke config saving, OwnTracks matching, the stale
+        # entry without one broke config saving, the user list and the stale
         # watcher and the user list at once. Exposed via
         # automation_devices() instead, which is the only place it is wanted.
         self.devices: Dict[str, PresenceUserDevice] = {}
@@ -573,52 +566,6 @@ class PresenceUserManager:
             accuracy=accuracy,
             timestamp=timestamp,
             source="pwa",
-        )
-
-    async def report_owntracks(self, topic: str, payload: Dict[str, Any]) -> None:
-        """
-        OwnTracks publishes to: owntracks/<user>/<device>
-        with payloads like:
-            {"_type":"location","lat":51.5,"lon":-0.1,"acc":15,"tst":1690000000,...}
-        """
-        try:
-            parts = topic.split("/")
-            if len(parts) < 3 or parts[0] != "owntracks":
-                return
-            ot_user = parts[1]
-            ot_device = parts[2]
-        except Exception:
-            return
-
-        if payload.get("_type") != "location":
-            return
-
-        # Find the user whose owntracks_user/owntracks_device matches.
-        target: Optional[UserConfig] = None
-        for d in self.devices.values():
-            cu = d.cfg.owntracks_user
-            cd = d.cfg.owntracks_device
-            if cu and cu == ot_user and (not cd or cd == ot_device):
-                target = d.cfg
-                break
-
-        if not target:
-            logger.debug(f"OwnTracks msg for unmapped {ot_user}/{ot_device}")
-            return
-
-        try:
-            lat = float(payload["lat"])
-            lon = float(payload["lon"])
-        except (KeyError, TypeError, ValueError):
-            return
-
-        await self._ingest(
-            user_id=target.user_id,
-            lat=lat,
-            lon=lon,
-            accuracy=float(payload.get("acc", 0) or 0) or None,
-            timestamp=float(payload.get("tst", time.time())),
-            source="owntracks",
         )
 
     async def _ingest(

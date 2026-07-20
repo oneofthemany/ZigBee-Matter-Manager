@@ -1,6 +1,7 @@
 # ZMM Presence — Android companion
 
-A minimal, self-hosted replacement for OwnTracks. It talks to **your hub only**.
+A minimal, self-hosted presence app. It talks to **your hub only** — no
+accounts, no third-party service, no analytics.
 
 ## What it does
 
@@ -35,16 +36,25 @@ https, and an explicit `http://` is **refused at pairing** — the token rides o
 every request, and putting it on the wire in clear text is not a tradeoff worth
 offering.
 
-Hubs are self-hosted with self-signed certificates, so there is no CA to
-validate against. Rather than trusting the phone's user CA store — which would
-let *any* CA on the device intercept this app's traffic — the app pins the
-hub's public key on first pair (`CertPin.kt`):
+How the hub is authenticated depends on how it is reached, decided once at
+pairing (`CertPin.kt`):
 
-1. At pairing the app fetches the hub's certificate and shows you its SHA-256
-   fingerprint. **Compare it against your hub before accepting.** This is the
-   one step nothing can verify for you.
-2. That key is stored, and every later connection must present it. The system
-   and user CA stores are not consulted for hub traffic at all.
+| Your hub | Mode | What happens |
+|---|---|---|
+| Behind a tunnel with a real certificate | **System** | Ordinary CA validation. No fingerprint prompt, no pin stored. |
+| Direct on the LAN, self-signed | **Pinned** | You confirm a fingerprint; only that key is accepted thereafter. |
+
+Neither mode trusts the phone's **user CA store**, which is what would let any
+CA installed on the device intercept this app's traffic. Publicly-issued
+certificates are deliberately not pinned — they rotate on renewal, and a pin
+would break every cycle while reporting it as interception.
+
+In pinned mode:
+
+1. At pairing the app shows the certificate's SHA-256 fingerprint.
+   **Compare it against your hub before accepting.** This is the one step
+   nothing can verify for you.
+2. That key is stored, and every later connection must present it.
 3. The pin is checked during the TLS handshake, before the `Authorization`
    header is written — a server that fails the check never receives the token.
 

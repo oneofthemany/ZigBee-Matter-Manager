@@ -44,8 +44,6 @@ class UserUpsert(BaseModel):
     stale_after_s: float = 1800.0
     min_accuracy_m: float = 250.0
     enabled: bool = True
-    owntracks_user: Optional[str] = None
-    owntracks_device: Optional[str] = None
     # Login account this presence user belongs to. None = standalone tracker,
     # which cannot satisfy the MFA policy because there is no account to enrol.
     account: Optional[str] = None
