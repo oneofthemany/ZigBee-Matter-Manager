@@ -392,25 +392,13 @@
             're-add the hostname so it recreates the CNAME against the current tunnel.</p>' +
             crumb('dash.cloudflare.com → your domain → DNS → Records') +
 
-            // 6. Access (optional)
-            '<p class="fw-bold mb-1">6. Cloudflare Access — optional login gate</p>' +
-            '<p class="mb-1">ZMM already enforces password + TOTP MFA, so Access is optional. If a ' +
-            'Cloudflare login page appears — or you see “<em>That account does not have access</em>” ' +
-            '— an Access application is gating the hostname and either needs a policy that includes ' +
-            'your users, <em>or</em> can be removed entirely.</p>' +
-            '<p class="mb-1"><strong>To allow specific users</strong> (add an Allow policy, then ' +
-            'enable a login method such as One-time PIN or Google):</p>' +
-            crumb('Zero Trust → Access controls → Applications → your app → Access policies → ' +
-                  'Add a policy → Action: Allow → Include → Emails → add each user → Save') +
-            '<p class="mb-1"><strong>Or remove Access</strong> to land straight on the ZMM login:</p>' +
-            crumb('Zero Trust → Access controls → Applications → your app → ⋯ → Delete') +
-
-            // 7. finish in ZMM
-            '<p class="fw-bold mb-1">7. Finish in ZMM</p>' +
+            // 6. finish in ZMM
+            '<p class="fw-bold mb-1">6. Finish in ZMM</p>' +
             '<p class="mb-2">Back on this page: paste the token, enter the same <strong>Public ' +
             'hostname</strong>, tick <strong>Enable remote access</strong>, and <strong>Save &amp; ' +
             'Apply</strong>. The status card should show <span class="badge bg-success">Running</span> ' +
-            'with edge connections above zero.</p>' +
+            'with edge connections above zero. <strong>That’s the full setup</strong> — remote ' +
+            'users can already reach your hostname and log in with their ZMM account.</p>' +
 
             '<div class="alert alert-info py-2 mb-2">' +
               '<i class="fas fa-shield-alt me-1"></i> Accounts and API tokens carrying the ' +
@@ -423,13 +411,33 @@
             '<ul class="mb-2">' +
               '<li><strong>Error 1033 / “tunnel not found”</strong> → the hostname’s CNAME points ' +
                 'at a tunnel with no live connector (see step 5).</li>' +
-              '<li><strong>Cloudflare login / “That account does not have access”</strong> → an ' +
-                'Access policy issue (see step 6).</li>' +
+              '<li><strong>Cloudflare login / “That account does not have access”</strong> → a ' +
+                'leftover Zero Trust Access application is gating the hostname — see the optional ' +
+                'section below.</li>' +
               '<li><strong>502 / origin unreachable</strong>, or ' +
                 '<strong>x509: certificate signed by unknown authority</strong> in the logs → ' +
                 '<strong>No TLS Verify</strong> is off (step 4), or ZMM is not listening on ' +
                 '<code>' + origin + '</code>.</li>' +
             '</ul>' +
+
+            '<hr class="my-2">' +
+
+            // Optional: Zero Trust Access, deliberately outside the numbered flow
+            '<p class="fw-bold mb-1"><i class="fas fa-layer-group me-1"></i>Optional: add a Cloudflare ' +
+            'Access gate</p>' +
+            '<p class="mb-1">ZMM already enforces password + TOTP MFA on its own login, so Zero Trust ' +
+            '<strong>Access is not required</strong> to get remote access working — the 6 steps above ' +
+            'are the complete setup. Only add Access if you want a second gate (e.g. email-OTP or SSO) ' +
+            'in front of the hostname before a request even reaches ZMM:</p>' +
+            '<p class="mb-1"><strong>To add it</strong> (Allow policy, then a login method such as ' +
+            'One-time PIN or Google):</p>' +
+            crumb('Zero Trust → Access controls → Applications → Add an application → your app → ' +
+                  'Access policies → Add a policy → Action: Allow → Include → Emails → add each ' +
+                  'user → Save') +
+            '<p class="mb-1">If you already added one and now see a Cloudflare login page or ' +
+            '“<em>That account does not have access</em>,” either add your users to its policy ' +
+            '(above), or <strong>delete it</strong> to go straight back to the ZMM login:</p>' +
+            crumb('Zero Trust → Access controls → Applications → your app → ⋯ → Delete') +
 
             '<p class="mb-0 text-muted">Prefer a private overlay network instead of a public URL? ' +
             'Tailscale/WireGuard works out of the box — see <code>docs/remote_access.md</code>.</p>' +

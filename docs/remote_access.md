@@ -130,10 +130,16 @@ model):
   `/api/system/status` are only served anonymously to LAN clients;
   internet visitors see the login page and nothing else. The first-run
   setup wizard is LAN-only.
-- **Extra wall (optional)**: put
+- **Extra wall (optional, not required)**: the tunnel setup above is
+  complete on its own — remote users land straight on the ZMM login.
+  If you want a second gate in front of it, you can additionally put
   [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
-  in front of the hostname for email-OTP/SSO before a request even
-  reaches ZMM. Free for up to 50 users.
+  (Zero Trust) in front of the hostname for email-OTP/SSO before a
+  request even reaches ZMM (free for up to 50 users) — but skip it
+  entirely if ZMM's own password + TOTP MFA is enough. If you add an
+  Access application and later want it gone, delete it from **Zero
+  Trust → Access controls → Applications**; the tunnel itself keeps
+  working unaffected.
 
 ## Troubleshooting
 
