@@ -195,8 +195,21 @@ function ensureModal() {
         <div class="modal-content">
           <div class="modal-header py-2">
             <h5 class="modal-title"><i class="fas fa-drafting-compass me-2"></i>Floor plan</h5>
-            <div class="ms-3 small text-muted" id="fpStatus"></div>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="d-flex align-items-center gap-2 ms-auto">
+              <div class="small text-muted d-none d-md-block" id="fpStatus"></div>
+              <!-- Phone-only: the tools/levels and properties panes are off-canvas
+                   drawers below 768px (see floor-plan.css) — there's no room for a
+                   fixed 240px + 300px rail either side of the canvas. -->
+              <button type="button" class="btn btn-sm btn-outline-secondary d-md-none" id="fpToggleSidebarBtn"
+                      title="Tools & levels" aria-label="Toggle tools and levels">
+                <i class="fas fa-sliders"></i>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary d-md-none" id="fpTogglePropsBtn"
+                      title="Properties" aria-label="Toggle properties">
+                <i class="fas fa-list"></i>
+              </button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
           </div>
           <div class="modal-body p-0 d-flex" style="overflow:hidden">
             <!-- Left: tools + levels -->
@@ -364,13 +377,50 @@ function ensureModal() {
     bindModalEvents();
 }
 
+/** Phone-only off-canvas drawers — see the @media block in floor-plan.css. */
+function setMobileDrawer(which, open) {
+    const modal = document.getElementById('floorPlanModal');
+    if (!modal) return;
+    const cls = which === 'sidebar' ? 'fp-sidebar-open' : 'fp-props-open';
+    const other = which === 'sidebar' ? 'fp-props-open' : 'fp-sidebar-open';
+    modal.classList.remove(other);   // only one drawer open at a time
+    modal.classList.toggle(cls, open);
+}
+
+function closeMobileDrawers() {
+    document.getElementById('floorPlanModal')?.classList.remove('fp-sidebar-open', 'fp-props-open');
+}
+
 function bindModalEvents() {
     document.getElementById('fpSave').addEventListener('click', save);
     document.getElementById('fpSwitchMode')?.addEventListener('click', switchToManual);
     document.getElementById('fpAddLevel').addEventListener('click', addLevel);
     document.getElementById('fpAddCircuit').addEventListener('click', addCircuit);
     document.querySelectorAll('#fpToolbar [data-tool]').forEach(b => {
-        b.addEventListener('click', () => setTool(b.dataset.tool));
+        b.addEventListener('click', () => {
+            setTool(b.dataset.tool);
+            // On a phone the tools drawer covers the canvas — picking a tool
+            // means "I'm about to draw", so get out of the way automatically.
+            closeMobileDrawers();
+        });
+    });
+
+    // Phone-only off-canvas drawers (see the @media block in floor-plan.css).
+    // These buttons are hidden at desktop widths, so no harm binding always.
+    document.getElementById('fpToggleSidebarBtn')?.addEventListener('click', () => {
+        const open = !document.getElementById('floorPlanModal').classList.contains('fp-sidebar-open');
+        setMobileDrawer('sidebar', open);
+    });
+    document.getElementById('fpTogglePropsBtn')?.addEventListener('click', () => {
+        const open = !document.getElementById('floorPlanModal').classList.contains('fp-props-open');
+        setMobileDrawer('props', open);
+    });
+    // Tapping the dimmed canvas while a drawer is open closes it. The CSS
+    // scrim (::after on #fpCanvasWrap, see floor-plan.css) is a real painted
+    // layer above the svg, so this is the only element the tap can actually
+    // hit — the svg's own mousedown/touchstart never see it.
+    document.getElementById('fpCanvasWrap')?.addEventListener('click', () => {
+        closeMobileDrawers();
     });
     document.getElementById('fpToggleGrid').addEventListener('change', e => {
         _state.showGrid = e.target.checked;
@@ -526,6 +576,7 @@ function bindModalEvents() {
         window.removeEventListener('blur', onBlur);
         _altDown = false;
         _state = null;
+        closeMobileDrawers();
     });
 }
 
@@ -2866,6 +2917,11 @@ function renderProps() {
         bindLevelProps();
         return;
     }
+    // Auto-surface the properties drawer on a phone — tapping a wall/room/etc.
+    // on the canvas is a clear "show me its properties" gesture, and the
+    // drawer is closed by default there (see the @media block in floor-plan.css).
+    if (window.matchMedia('(max-width: 767.98px)').matches) setMobileDrawer('props', true);
+
     const { kind, id } = _state.selection;
     const lvl = currentLevel();
     let html = '';

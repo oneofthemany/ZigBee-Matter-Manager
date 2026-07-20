@@ -64,9 +64,9 @@
 
         host.innerHTML =
             '<button class="btn btn-sm btn-link p-0 border-0" id="presence-badge-btn" ' +
-                'title="Show where everyone is">' +
+                'title="Show where everyone is" aria-label="Presence: ' + esc(label) + '. Show where everyone is.">' +
               '<span class="badge ' + cls + '">' +
-                '<i class="fas fa-location-dot me-1"></i>' + esc(label) +
+                '<i class="fas fa-location-dot"></i><span class="ms-1 d-none d-sm-inline">' + esc(label) + '</span>' +
               '</span>' +
             '</button>';
 

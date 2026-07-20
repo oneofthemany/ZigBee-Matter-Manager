@@ -179,6 +179,8 @@ async function start() {
     await loadSavedFrames();
     await loadFrame();
     initWS();
+    // Header presence badge — same gating as the manager (main.js).
+    if (window.initPresenceBadge) window.initPresenceBadge();
 }
 
 document.addEventListener('DOMContentLoaded', () => {

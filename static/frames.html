@@ -23,6 +23,9 @@
     <link rel="stylesheet" href="/static/css/toasts.css">
     <link rel="stylesheet" href="/static/css/frames.css">
     <link rel="stylesheet" href="/static/css/frames-page.css">
+    <!-- Vendored, not a CDN: the presence map must work on a LAN with no
+         internet access, same as the manager (presence-badge.js). -->
+    <link rel="stylesheet" href="/static/vendor/leaflet.css">
 </head>
 <body class="frames-page">
 
@@ -35,6 +38,10 @@
             <div class="frames-page-sub">
                 <span id="framesConnection" class="frames-conn is-down" title="Connecting…"></span>
                 <span id="framesSubtitle">Your hive</span>
+                <!-- Same badge + "where is everyone" map as the manager navbar
+                     (presence-badge.js). Empty until populated; hidden entirely
+                     for users without presence:read. -->
+                <span id="presence-badge-host"></span>
             </div>
         </div>
     </div>
@@ -74,6 +81,7 @@
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/vendor/leaflet.js"></script>
 <script src="/static/js/log.js"></script>
 <script src="/static/js/toasts.js"></script>
 <script src="/static/js/auth.js"></script>
@@ -85,6 +93,9 @@
      all. Self-bootstraps from localStorage prefs; the prefs UI lives in the
      manager's Presence settings. -->
 <script src="/static/js/presence.js"></script>
+<!-- Header badge + "where is everyone" map. Started from frames-page.js once
+     auth is ready, same gating as the manager (main.js). -->
+<script src="/static/js/presence-badge.js"></script>
 <script type="module" src="/static/js/frames-page.js"></script>
 <script>
     if ('serviceWorker' in navigator) {

@@ -525,3 +525,82 @@
     vector-effect: non-scaling-stroke;
     stroke-dasharray: 0.12 0.08;
 }
+
+/* ============================================================
+   Mobile layout (phones)
+   ============================================================
+   The desktop editor is a fixed 3-column layout — 240px tools/levels rail,
+   flexible canvas, 300px properties rail. On a phone those two rails alone
+   (540px) are wider than the viewport, leaving the canvas zero room. Below
+   768px the rails become off-canvas drawers that slide over the canvas
+   instead of squeezing it: toggled by the header buttons in floor-plan.js
+   (#fpToggleSidebarBtn / #fpTogglePropsBtn), which add/remove
+   .fp-sidebar-open / .fp-props-open on #floorPlanModal.
+   ============================================================ */
+@media (max-width: 767.98px) {
+    #floorPlanModal .modal-body {
+        position: relative;
+    }
+
+    #fpSidebar,
+    #fpProps {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        z-index: 15;
+        background: var(--fp-sidebar-bg);
+        box-shadow: 0 0 20px rgba(0, 0, 0, 0.35);
+        transition: transform 0.2s ease;
+    }
+
+    #fpSidebar {
+        left: 0;
+        width: 84vw;
+        max-width: 280px;
+        min-width: 0;
+        transform: translateX(-100%);
+    }
+
+    #fpProps {
+        right: 0;
+        width: 84vw;
+        max-width: 320px;
+        min-width: 0;
+        transform: translateX(100%);
+    }
+
+    #floorPlanModal.fp-sidebar-open #fpSidebar,
+    #floorPlanModal.fp-props-open #fpProps {
+        transform: translateX(0);
+    }
+
+    #fpCanvasWrap {
+        width: 100%;
+    }
+
+    /* Dim + swallow taps on the canvas while a drawer is open, so the first
+       tap closes the drawer instead of also placing a wall/room vertex
+       underneath it. Real element (not the canvas itself) — floor-plan.js
+       closes the drawer on click via #fpCanvasWrap, which sits under this. */
+    #floorPlanModal.fp-sidebar-open #fpCanvasWrap::after,
+    #floorPlanModal.fp-props-open #fpCanvasWrap::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.25);
+        z-index: 10;
+    }
+
+    /* Bigger touch targets throughout the drawers. */
+    #fpToolbar .btn,
+    #fpAddLevel,
+    #fpAddCircuit,
+    #fpZoomOut, #fpZoomFit, #fpZoomIn,
+    #fpLevelList .list-group-item {
+        min-height: 40px;
+    }
+
+    #fpSnapStep, #fpAngleStep, #fpThermalMode, #fpHeatFlux {
+        min-height: 34px;
+    }
+}

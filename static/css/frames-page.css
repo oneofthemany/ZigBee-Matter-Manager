@@ -100,6 +100,25 @@ body.frames-page {
     background: var(--bad);
 }
 
+/* Presence badge — sits in the same status line as the connection dot.
+   Full opacity (overriding .frames-page-sub's .75): this one's a tappable
+   control, not decorative status text, and needs to read as such. */
+#presence-badge-host {
+    opacity: 1;
+    margin-left: .35rem;
+}
+
+#presence-badge-host .badge {
+    font-size: .65rem;
+    padding: .25em .5em;
+}
+
+#presence-badge-host #presence-badge-btn {
+    /* The visible glyph is small, but the tap target isn't. */
+    padding: .4rem;
+    margin: -.4rem;
+}
+
 /* ---------- main ---------- */
 
 .frames-page-main {
