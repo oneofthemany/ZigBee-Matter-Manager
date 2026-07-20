@@ -380,3 +380,49 @@ def get_secure_auth_manager() -> Optional[SecureAuthManager]:
 def set_secure_auth_manager(s: SecureAuthManager) -> None:
     global _secure
     _secure = s
+
+
+# --- Presence / MFA policy ------------------------------------------------
+
+def user_has_mfa(username: str) -> bool:
+    """
+    True only if `username` has TOTP enrolled AND enabled.
+
+    Deliberately fails closed. If the secure manager isn't initialised we
+    cannot prove MFA is on, and the caller is deciding whether to expose
+    someone's real-time location — "unknown" must behave as "no".
+    """
+    s = get_secure_auth_manager()
+    if s is None:
+        return False
+    rec = s.mfa.get(username)
+    return bool(rec and rec.enabled)
+
+
+# Wording lives here so the API, the token issuer and the UI all say the same
+# thing. Users meet this message at the point they are blocked, which may be
+# any of three different screens.
+PRESENCE_MFA_MESSAGE = (
+    "Presence requires MFA. Enable TOTP for '{user}' under "
+    "Settings → User Accounts → My Account, then try again."
+)
+
+
+def require_presence_mfa(username: str) -> None:
+    """
+    Gate presence on MFA, raising HTTP 403 when it isn't enabled.
+
+    Why presence specifically, when other scopes aren't gated this way:
+    presence is the one feature that publishes a person's real-world location
+    continuously, and it is reached by a long-lived token on a phone that
+    leaves the house. Once remote access is on, the account password is the
+    only wall in front of it — and a password alone is what MFA exists to fix.
+
+    Enforced at REQUEST time, not just when presence is switched on. Turning
+    MFA off must immediately stop location reporting; checking only at grant
+    time would leave working phone tokens behind a wall the user believes they
+    have taken down.
+    """
+    if not user_has_mfa(username):
+        from fastapi import HTTPException
+        raise HTTPException(403, PRESENCE_MFA_MESSAGE.format(user=username))

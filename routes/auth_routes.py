@@ -46,7 +46,9 @@ from modules.auth_middleware import (
     Principal, get_principal, issue_session_cookie,
     require_authenticated, require_scope,
 )
-from modules.auth_secure import SecureAuthManager, LAN_ONLY_SCOPE
+from modules.auth_secure import (
+    SecureAuthManager, LAN_ONLY_SCOPE, require_presence_mfa, user_has_mfa,
+)
 from modules.auth_network import NetworkResolver
 
 logger = logging.getLogger("routes.auth")
@@ -536,6 +538,26 @@ def register_auth_routes(
         target_user = req.username or principal.user.username
         if target_user != principal.user.username and not is_admin:
             raise HTTPException(403, "Cannot issue tokens for another user")
+
+        # A presence-scoped token is the credential a phone carries out of the
+        # house, so refuse to mint one for an account without MFA. The request
+        # endpoints enforce this too — this check exists so the failure lands
+        # at the moment the token is created, rather than as an unexplained 403
+        # after the phone is already paired.
+        if any(s.startswith("presence:") for s in (req.scopes or [])):
+            # A per-user scope names its own subject; a blanket presence scope
+            # doesn't, so fall back to the token's owner. The truthiness check
+            # skips a malformed "presence:read:" with an empty subject, which
+            # would otherwise produce "Enable TOTP for ''".
+            subject = next(
+                (s.split(":", 2)[2] for s in req.scopes
+                 if s.startswith(("presence:read:", "presence:write:"))
+                 and len(s.split(":", 2)) == 3
+                 and s.split(":", 2)[2]),
+                target_user,
+            )
+            require_presence_mfa(subject)
+
         try:
             expires = (req.expires_in_days * 86400) if req.expires_in_days else None
             plaintext, rec = await mgr.issue_token(

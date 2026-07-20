@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from modules.auth_middleware import (
     Principal, require_scope, require_any_scope, require_authenticated,
 )
+from modules.auth_secure import require_presence_mfa, user_has_mfa
 
 logger = logging.getLogger("modules.presence_routes")
 
@@ -65,7 +66,15 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
 
     @app.get("/api/presence/users")
     async def list_users(_=Depends(require_scope("presence:read"))):
-        return {"users": _mgr().list_users()}
+        # Annotate rather than filter: an admin needs to see that a user's
+        # presence is stalled *and why*. Silently omitting them would present
+        # a missing MFA enrolment as a broken phone.
+        users = _mgr().list_users()
+        for u in users:
+            uid = u.get("user_id") if isinstance(u, dict) else None
+            if uid:
+                u["mfa_ok"] = user_has_mfa(uid)
+        return {"users": users}
 
     @app.get("/api/presence/users/{user_id}")
     async def get_user(
@@ -89,6 +98,10 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
                 or scope_matches("admin", principal.scopes)
         ):
             raise HTTPException(403, f"Token lacks scope: presence:read:{user_id}")
+
+        # Policy gate, checked after the scope check so the error names the
+        # actual obstacle rather than hiding it behind a permissions message.
+        require_presence_mfa(user_id)
 
         dev = _mgr().get_user(user_id)
         if not dev:
@@ -142,6 +155,8 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
                 or scope_matches("admin", principal.scopes)
         ):
             raise HTTPException(403, f"Token lacks scope: {wanted}")
+
+        require_presence_mfa(user_id)
 
         result = await _mgr().report_pwa_fix(
             user_id=user_id,
