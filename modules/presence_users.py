@@ -84,10 +84,28 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # Data model
 # ---------------------------------------------------------------------------
 
+# Distinguishes "key absent" from "key present and null" when loading configs.
+# A legacy record with no `account` key is migrated to its user_id; a record
+# with `account: null` is a deliberate standalone tracker and must stay that
+# way. Plain `d.get("account")` returns None for both and would silently
+# re-link every standalone record on the next load.
+_MISSING = object()
+
+
 @dataclass
 class UserConfig:
     user_id: str                          # short stable id, e.g. "sean"
     display_name: str                     # "Sean"
+    # Login account this presence user belongs to, or None for a standalone
+    # record (a tracker with no human account behind it).
+    #
+    # This used to be implied by `user_id == username`. That convention broke in
+    # two directions: deleting an account left a presence user that still
+    # reported a location, and any policy keyed on the account — MFA in
+    # particular — resolved against a user record that no longer existed and
+    # failed closed for reasons nothing on screen explained. An explicit link
+    # can be verified, migrated, and cascaded; a convention can only be assumed.
+    account: Optional[str] = None
     home_lat: Optional[float] = None
     home_lon: Optional[float] = None
     radius_m: float = DEFAULT_RADIUS_M
@@ -106,9 +124,20 @@ class UserConfig:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "UserConfig":
+        # Migration: records written before `account` existed relied on the
+        # user_id == username convention, so adopt user_id as the link. This is
+        # what those records already meant; it does not invent a relationship.
+        # Whether that account still EXISTS is a separate question, answered by
+        # `orphaned` in the API rather than guessed at here — this module has no
+        # business importing the auth manager.
+        account = d.get("account", _MISSING)
+        if account is _MISSING:
+            account = str(d["user_id"])
+
         return UserConfig(
             user_id=str(d["user_id"]),
             display_name=str(d.get("display_name") or d["user_id"]),
+            account=account,
             home_lat=d.get("home_lat"),
             home_lon=d.get("home_lon"),
             radius_m=float(d.get("radius_m", DEFAULT_RADIUS_M)),
