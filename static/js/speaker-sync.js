@@ -10,7 +10,7 @@
  */
 const log = zmmLog('speaker-sync');
 
-let _cfg = { enabled: false, http_port: 8010, app_id: '' };
+let _cfg = { enabled: false, http_port: 8010, app_id: '', mic_device: '' };
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g,
@@ -31,7 +31,7 @@ async function render() {
     try {
         const cfgRes = await (await fetch('/api/config/structured')).json();
         const media = (cfgRes.config || {}).media || {};
-        _cfg = Object.assign({ enabled: false, http_port: 8010, app_id: '' },
+        _cfg = Object.assign({ enabled: false, http_port: 8010, app_id: '', mic_device: '' },
                              (media.cast || {}).sync || {});
         status = await (await fetch('/api/media/sync/status')).json();
     } catch (e) {
@@ -46,6 +46,11 @@ async function render() {
             ? '<span class="badge bg-success">listener running · custom receiver</span>'
             : '<span class="badge bg-success">listener running · built-in receiver mode</span>')
         : '<span class="badge bg-secondary">disabled (or not yet restarted)</span>';
+    // Chirp-calibration mic badge: does the server see a capture device?
+    const mic = status?.mic;
+    const micBadge = !live ? '' : (mic?.available
+        ? `<span class="badge bg-success ms-1" title="Inputs: ${esc((mic.inputs || []).join(', '))}"><i class="fas fa-microphone me-1"></i>mic: ${esc(mic.selected)}</span>`
+        : `<span class="badge bg-warning text-dark ms-1" title="${esc(mic?.error || 'No capture device found')} — a mic plugged in after the container started needs a container restart to appear"><i class="fas fa-microphone-slash me-1"></i>no mic detected</span>`);
 
     // render() rebuilds the whole host on every tab show — carry the active
     // pane across re-renders.
@@ -123,7 +128,14 @@ async function render() {
           </div>
           <div class="col-md-3">
             <label class="form-label small fw-semibold">Status</label>
-            <div class="mt-2">${statusBadge}</div>
+            <div class="mt-2">${statusBadge} ${micBadge}</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Mic Device <span class="fw-normal text-muted">(optional)</span></label>
+            <input type="text" class="form-control" id="cfg_sync_mic"
+                   value="${esc(_cfg.mic_device)}" placeholder="blank = system default input">
+            <small class="text-muted">Capture device for chirp calibration — case-insensitive
+              substring of the device name, e.g. "USB".</small>
           </div>
         </div>
         <div id="speakerSyncAlert"></div>
@@ -179,6 +191,7 @@ function collectSlice() {
             enabled: document.getElementById('cfg_sync_enabled')?.checked ?? false,
             http_port: Number(document.getElementById('cfg_sync_port')?.value) || 8010,
             app_id: document.getElementById('cfg_sync_appid')?.value?.trim() || '',
+            mic_device: document.getElementById('cfg_sync_mic')?.value?.trim() || '',
         } } },
     };
 }

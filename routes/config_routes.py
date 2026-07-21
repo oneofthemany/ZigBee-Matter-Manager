@@ -45,7 +45,8 @@ MEDIA_DEFAULTS = {
         "app_id": "CC1AD845",
         "lyrics_app_id": "",
         "karaoke": False,
-        "sync": {"enabled": False, "http_port": 8010, "app_id": ""},
+        "sync": {"enabled": False, "http_port": 8010, "app_id": "",
+                 "mic_device": ""},
     },
     "wiim": {"enabled": True, "devices": []},
     "radio_browser": {"enabled": True},
@@ -265,6 +266,9 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                             sync_cfg["http_port"] = int(sync_in["http_port"])
                         if "app_id" in sync_in:
                             sync_cfg["app_id"] = str(sync_in.get("app_id") or "").strip()
+                        if "mic_device" in sync_in:
+                            sync_cfg["mic_device"] = str(
+                                sync_in.get("mic_device") or "").strip()
                 if "tts" in m:
                     tts_in = m["tts"] or {}
                     tts_cfg = media_cfg.setdefault("tts", {})
