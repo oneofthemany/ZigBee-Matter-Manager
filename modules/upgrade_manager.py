@@ -80,16 +80,18 @@ VALID_ACTIONS = {"install_watcher", "build", "swap", "rollback", "cancel", "gc"}
 # VERSION PARSING / COMPARISON
 #
 # CalVer scheme (replaces plain semver as of the 2026-07-20 cutover):
-#   MM.YYYY           e.g. 07.2026            — "major": deliberate milestone
-#   DD.MM.YYYY         e.g. 20.07.2026         — "minor": normal dated release
-#   DD.NN.MM.YYYY       e.g. 20.01.07.2026     — "patch": same-day iteration
-#     (NN is a 1-based counter of releases published that day)
+#   MM.YYYY           e.g. 07.2026            — "major": monthly milestone
+#   DD.MM.YYYY         e.g. 20.07.2026         — "minor": daily release
+#   DD.NN.MM.YYYY       e.g. 20.01.07.2026     — "patch": same-day revision
+#     (NN is a 1-based counter of revisions published after that day's daily)
 #
 # The tag's own shape *is* its significance — there's no diff-based bump
 # math like old semver had, because a date has no inherent magnitude. Fewer
-# components = a bigger, less frequent release. "Bleeding edge" is a fully
-# separate axis: it means the GitHub release is flagged Pre-release, and
-# applies to a tag of any of the three shapes above.
+# components = a bigger, less frequent release. UI channel names: major =
+# "Monthly", minor = "Daily", patch = "Bleeding edge". "Testing"
+# (channel "prerelease") is a fully separate axis: it means the GitHub
+# release is flagged Pre-release, and applies to a tag of any of the three
+# shapes above.
 #
 # Old semver tags (e.g. "3.4.7") are still recognised for comparison so
 # existing installs cross over cleanly — they always sort older than every
@@ -161,14 +163,16 @@ def _sort_key(p: Dict[str, Any]) -> Tuple:
     """
     Chronological ordering key. Legacy semver always sorts before any CalVer
     tag (leading 0 vs 1). Within CalVer, a missing day/seq (coarser tags —
-    "major" has no day, "minor" has no seq) sorts as the END of its period,
-    so a milestone tagged just "07.2026" ranks after every dated release
-    that shipped earlier that same month.
+    "major" has no day, "minor" has no seq) sorts as the START of its period:
+    the daily "21.07.2026" is revision 0 of its day, so same-day revisions
+    "21.NN.07.2026" rank after it; likewise a monthly "07.2026" is the base
+    of its month. This matches the publishing flow (coarse tag first, finer
+    revisions afterwards).
     """
     if p["kind"] == "legacy":
         return (0, p["major"], p["minor"], p["patch"], 0)
-    day = p["day"] if p["day"] is not None else 99
-    seq = p["seq"] if p["seq"] is not None else 99
+    day = p["day"] if p["day"] is not None else 0
+    seq = p["seq"] if p["seq"] is not None else 0
     return (1, p["year"], p["month"], day, seq)
 
 
@@ -571,15 +575,19 @@ def watcher_installed() -> bool:
 # ---------------------------------------------------------------------------
 async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
     """
-    Walk GitHub releases (newest first) and return the first one that
+    Fetch GitHub releases and return the highest-versioned one that
     qualifies for `channel`.
+
+    The GitHub API's list order is created_at-based (effectively the target
+    commit's date), NOT publish time or version order, so we never trust it:
+    all qualifying releases are collected and the max by version (then by
+    published_at) wins.
 
     Non-prerelease channels (major/minor/patch) skip drafts and Pre-release
     builds, then skip any release whose tag shape doesn't meet the channel's
-    rank (e.g. a "minor" channel skips same-day "patch" releases and keeps
-    looking further back for the last minor-or-bigger one). "prerelease"
-    (bleeding edge) skips only drafts and takes the very first entry,
-    including Pre-release-flagged ones — that's what makes it bleeding edge.
+    rank (e.g. a "minor" channel skips same-day "patch" releases and only
+    considers minor-or-bigger tags). "prerelease" (testing) skips only
+    drafts and also considers Pre-release-flagged builds.
     """
     url = f"{GITHUB_API_BASE}/repos/{repo}/releases?per_page=30"
     headers = {
@@ -603,6 +611,8 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
     if not isinstance(data, list):
         return None
 
+    best = None
+    best_key = None
     for r in data:
         if r.get("draft"):
             continue
@@ -619,17 +629,20 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
             if rank < _CHANNEL_MIN_RANK.get(channel, 1):
                 continue
 
-        return {
-            "version": v,
-            "tag": r.get("tag_name"),
-            "notes": r.get("body") or "",
-            "url": r.get("html_url"),
-            "published_at": r.get("published_at"),
-            "tarball_url": r.get("tarball_url"),
-            "prerelease": is_prerelease,
-        }
+        key = (_sort_key(parsed), r.get("published_at") or "")
+        if best_key is None or key > best_key:
+            best_key = key
+            best = {
+                "version": v,
+                "tag": r.get("tag_name"),
+                "notes": r.get("body") or "",
+                "url": r.get("html_url"),
+                "published_at": r.get("published_at"),
+                "tarball_url": r.get("tarball_url"),
+                "prerelease": is_prerelease,
+            }
 
-    return None
+    return best
 
 
 async def check_for_updates(force: bool = False) -> Dict[str, Any]:

@@ -676,12 +676,12 @@ function renderSettings(data) {
         <div class="col-md-6">
           <label class="form-label small">Release channel</label>
           <select class="form-select form-select-sm" id="upgChannel">
-            <option value="major" ${channel === 'major' ? 'selected' : ''}>Stable &mdash; major milestones only (e.g. 07.2026)</option>
-            <option value="minor" ${channel === 'minor' ? 'selected' : ''}>Stable &mdash; minor &amp; major (e.g. 20.07.2026)</option>
-            <option value="patch" ${channel === 'patch' ? 'selected' : ''}>Stable &mdash; every dated release (e.g. 20.01.07.2026)</option>
-            <option value="prerelease" ${channel === 'prerelease' ? 'selected' : ''}>Bleeding edge &mdash; includes pre-release builds</option>
+            <option value="major" ${channel === 'major' ? 'selected' : ''}>Monthly &mdash; milestone releases only (e.g. 07.2026)</option>
+            <option value="minor" ${channel === 'minor' ? 'selected' : ''}>Daily &mdash; daily &amp; monthly releases (e.g. 21.07.2026)</option>
+            <option value="patch" ${channel === 'patch' ? 'selected' : ''}>Bleeding edge &mdash; every release, incl. same-day revisions (e.g. 21.01.07.2026)</option>
+            <option value="prerelease" ${channel === 'prerelease' ? 'selected' : ''}>Testing &mdash; everything, incl. builds flagged pre-release</option>
           </select>
-          <div class="small text-muted mt-1">Versions are dated (day.release.month.year) &mdash; fewer parts means a bigger release. This sets how big a release has to be before you're notified; bleeding edge also includes builds flagged pre-release on GitHub.</div>
+          <div class="small text-muted mt-1">Versions are dated (day.revision.month.year) &mdash; fewer parts means a bigger release. This sets how big a release has to be before you're notified; Testing also includes builds flagged pre-release on GitHub.</div>
         </div>
 
         <div class="col-md-6">
