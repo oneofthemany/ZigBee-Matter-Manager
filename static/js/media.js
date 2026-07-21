@@ -1214,6 +1214,26 @@ function buildLyricsScreenDOM() {
     el.id = 'mediaLyricsScreen';
     el.style.cssText = 'position:fixed;inset:0;z-index:1090;background:#000;color:#fff;overflow:hidden';
     el.innerHTML = `
+      <style>
+        #lyrLayout{position:absolute;inset:0;display:flex;align-items:center;gap:5vw;padding:6vh 6vw}
+        #lyrArtCol{flex:0 0 32vh;display:flex;flex-direction:column;align-items:center;text-align:center;min-width:0}
+        #lyrArt{width:32vh;height:32vh;border-radius:16px;object-fit:cover;box-shadow:0 20px 60px rgba(0,0,0,.6);background:#222}
+        #lyrTitle{font-size:3vh;font-weight:700;margin-top:2.5vh}
+        #lyrArtist{font-size:2vh;opacity:.75;margin-top:.5vh}
+        #lyrCol{flex:1 1 auto;height:100%;min-height:0;position:relative;overflow:hidden;
+                -webkit-mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent);
+                mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent)}
+        /* Phones / portrait: stack the lyrics BELOW the album art instead of beside it */
+        @media (max-width: 767px), (orientation: portrait) {
+          #lyrLayout{flex-direction:column;gap:2.5vh;padding:9vh 5vw 3vh;align-items:center}
+          #lyrArtCol{flex:0 0 auto}
+          #lyrArt{width:min(22vh,60vw);height:min(22vh,60vw);border-radius:12px}
+          #lyrTitle{font-size:2.3vh;margin-top:1.2vh}
+          #lyrArtist{font-size:1.7vh;margin-top:.3vh}
+          #lyrCol{height:auto;width:100%;align-self:stretch;text-align:center}
+          #lyrCol .lyrln{transform-origin:center center !important;font-size:2.6vh !important}
+        }
+      </style>
       <div id="lyrBg" style="position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(60px) brightness(.35);transform:scale(1.2)"></div>
       <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.25),rgba(0,0,0,.7))"></div>
       <button class="btn btn-outline-light btn-sm" style="position:absolute;top:1rem;right:1rem;z-index:2"
@@ -1224,15 +1244,13 @@ function buildLyricsScreenDOM() {
         <span class="small" style="min-width:4.5rem;text-align:center"><i class="fas fa-stopwatch me-1"></i><span id="lyrOffLbl"></span></span>
         <button class="btn btn-outline-light btn-sm" onclick="window.mediaLyricsNudge(100)"><i class="fas fa-plus"></i></button>
       </div>
-      <div style="position:absolute;inset:0;display:flex;align-items:center;gap:5vw;padding:6vh 6vw">
-        <div style="flex:0 0 32vh;display:flex;flex-direction:column;align-items:center;text-align:center">
-          <img id="lyrArt" alt="" style="width:32vh;height:32vh;border-radius:16px;object-fit:cover;box-shadow:0 20px 60px rgba(0,0,0,.6);background:#222">
-          <div id="lyrTitle" style="font-size:3vh;font-weight:700;margin-top:2.5vh"></div>
-          <div id="lyrArtist" style="font-size:2vh;opacity:.75;margin-top:.5vh"></div>
+      <div id="lyrLayout">
+        <div id="lyrArtCol">
+          <img id="lyrArt" alt="">
+          <div id="lyrTitle"></div>
+          <div id="lyrArtist"></div>
         </div>
-        <div id="lyrCol" style="flex:1 1 auto;height:100%;position:relative;overflow:hidden;
-             -webkit-mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent);
-             mask-image:linear-gradient(180deg,transparent,#000 18%,#000 82%,transparent)">
+        <div id="lyrCol">
           <div id="lyrInner" style="position:absolute;left:0;right:0;top:50%;transition:transform .45s cubic-bezier(.22,.61,.36,1)">
             <div style="opacity:.5;font-size:2.4vh">Waiting for playback…</div>
           </div>
