@@ -1155,6 +1155,7 @@ from routes import register_journey_routes, register_fuel_routes
 register_journey_routes(app, get_journey_manager)
 register_fuel_routes(app)
 from routes.message_routes import register_message_routes
+from modules.messages_store import get_message_store
 register_message_routes(app, get_message_store)
 register_remote_access_routes(app)
 
