@@ -116,15 +116,12 @@ export function initWS() {
                     if (window.handlePresenceUpdate) window.handlePresenceUpdate(payload);
                     break;
 
-                // Requests are time-limited, so they are pushed rather than
-                // waited for: the recipient sees the ask immediately, and the
-                // sender learns of a lapse the moment the sweep notices it.
-                case 'request_created':
-                case 'request_accepted':
-                case 'request_declined':
-                case 'request_expired':
-                    if (window.zmmHandleRequestEvent) {
-                        window.zmmHandleRequestEvent(msg.type, payload);
+                // Messages are pushed rather than waited for: the recipient
+                // sees them the moment they arrive, read receipts flow back.
+                case 'message_created':
+                case 'messages_read':
+                    if (window.zmmHandleMessageEvent) {
+                        window.zmmHandleMessageEvent(msg.type, payload);
                     }
                     break;
 

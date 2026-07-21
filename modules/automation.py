@@ -577,13 +577,11 @@ class AutomationEngine:
                 if ma == "announce" and not step.get("text"):
                     return f"{label}[{i+1}]: announce needs text"
             elif st == "request":
+                # Historical name for the message step (saved rules carry it).
                 if not step.get("to_user"):
-                    return f"{label}[{i+1}]: request needs to_user"
+                    return f"{label}[{i+1}]: message needs to_user"
                 if not (step.get("message") or "").strip():
-                    return f"{label}[{i+1}]: request needs a message"
-                ts = step.get("timeout_s", 1200)
-                if not isinstance(ts, (int, float)) or ts <= 0:
-                    return f"{label}[{i+1}]: request timeout_s must be positive"
+                    return f"{label}[{i+1}]: message needs text"
             elif st in ("wait_for", "condition"):
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
@@ -1378,45 +1376,42 @@ class AutomationEngine:
 
     async def _step_request(self, rule_id, step, tag):
         """
-        Send someone an ask that needs an answer.
+        Send someone a message.
 
-        Unlike a notification this does not fire and forget: the request is
-        recorded, and if nobody answers within its timeout the SENDER is told.
-        The rule does not wait for the answer — blocking a sequence for twenty
-        minutes would tie up the engine and, worse, make the outcome depend on
-        whether the hub happened to stay up. The escalation is what closes the
-        loop.
+        The step type is still called "request" because saved rules carry it,
+        but it now delivers through the messages store: the text lands in the
+        recipient's conversation thread and goes out as a web push that wakes
+        their phone. The old accept/decline-with-expiry flow was retired in
+        its favour — a message the recipient can simply reply to closes the
+        loop better than an escalation nobody asked for.
         """
-        from modules.requests_store import get_request_store
+        from modules.messages_store import get_message_store
 
-        store = get_request_store()
+        store = get_message_store()
         if not store:
-            self._trace(rule_id, "step", "REQUEST_SKIP",
-                        f"{tag} Request store unavailable", level="WARNING")
+            self._trace(rule_id, "step", "MESSAGE_SKIP",
+                        f"{tag} Message store unavailable", level="WARNING")
             return
 
         to_user = step.get("to_user")
         message = (step.get("message") or "").strip()
-        timeout_s = step.get("timeout_s", 1200)
         # Attribute the ask to a person where the rule names one, otherwise to
         # the system. "ZMM asks you to get milk" is odd but honest; inventing a
         # sender would be worse, since knowing who is asking is the point.
         from_user = step.get("from_user") or "zmm"
 
-        result = await store.create(
+        result = await store.send(
             from_user=from_user,
             to_user=to_user,
-            message=message,
-            timeout_s=timeout_s,
+            body=message,
             source="automation",
-            context={"rule_id": rule_id},
         )
         if result.get("success"):
-            self._trace(rule_id, "step", "REQUEST",
-                        f"{tag} \u2709 asked {to_user}: {message[:60]}")
+            self._trace(rule_id, "step", "MESSAGE",
+                        f"{tag} \u2709 messaged {to_user}: {message[:60]}")
         else:
-            self._trace(rule_id, "step", "REQUEST_FAIL",
-                        f"{tag} Request failed: {result.get('error')}", level="WARNING")
+            self._trace(rule_id, "step", "MESSAGE_FAIL",
+                        f"{tag} Message failed: {result.get('error')}", level="WARNING")
 
     async def _step_media(self, rule_id, step, tag):
         """Play radio/Tidal or control a media player (Cast/WiiM)."""
@@ -1769,18 +1764,48 @@ class AutomationEngine:
             return names.get(ieee_or_group, ieee_or_group), None
         return names.get(ieee_or_group, ieee_or_group), dev.state or {}
 
+    @staticmethod
+    def _presence_value_options(attribute: str) -> Optional[List[str]]:
+        """
+        Enumerated values for a presence user's attributes, so the rule
+        builder offers a dropdown instead of a free-text box nobody could
+        guess place ids into.
+
+        `place` lists the apiary: "home"/"away"/"unknown" plus every
+        configured place id, read live so a place added a minute ago is
+        offerable immediately.
+        """
+        if attribute == "presence":
+            return ["home", "away", "unknown"]
+        if attribute == "place":
+            opts = ["home", "away", "unknown"]
+            try:
+                from modules.places import get_place_manager
+                pm = get_place_manager()
+                if pm:
+                    opts += sorted(p["id"] for p in pm.list() if p.get("id"))
+            except Exception:                     # noqa: BLE001
+                # No place manager just means a shorter dropdown.
+                pass
+            return opts
+        return None
+
     def get_source_attributes(self, ieee: str) -> List[Dict[str, Any]]:
         # Merged view — matter/nuki/etc. devices trigger automations too
         devices = self._get_all_devices()
         if ieee not in devices: return []
         state = devices[ieee].state
         skip = {"last_seen","available","manufacturer","model","power_source","lqi","linkquality"}
+        is_presence = ieee.startswith("user::")
         attrs = []
         for k, v in state.items():
             if k in skip or k.endswith("_raw") or k.startswith("attr_"): continue
             if isinstance(v, (list, dict)): continue
             a = {"attribute":k,"current_value":v,"type":self._type(v)}
-            if isinstance(v, bool):
+            presence_opts = self._presence_value_options(k) if is_presence else None
+            if presence_opts:
+                a["operators"]=["eq","neq","in","nin"]; a["value_options"]=presence_opts
+            elif isinstance(v, bool):
                 a["operators"]=["eq","neq"]; a["value_options"]=["true","false"]
             elif isinstance(v, str) and v.upper() in ("ON","OFF"):
                 a["operators"]=["eq","neq","in","nin"]; a["value_options"]=["ON","OFF"]
@@ -1823,6 +1848,7 @@ class AutomationEngine:
         names = self._get_all_names()
         if ieee not in devices: return {}
         state = devices[ieee].state or {}
+        is_presence = ieee.startswith("user::")
         attrs = []
         for k, v in state.items():
             if k.endswith("_raw") or k.startswith("attr_"): continue
@@ -1831,7 +1857,11 @@ class AutomationEngine:
                  "operators": ["eq", "neq", "in", "nin"] if isinstance(v, str) else
                  ["eq", "neq"] if isinstance(v, bool) else
                  ["eq", "neq", "gt", "lt", "gte", "lte"]}
-            if isinstance(v, bool): a["value_options"] = ["true", "false"]
+            presence_opts = self._presence_value_options(k) if is_presence else None
+            if presence_opts:
+                a["operators"] = ["eq", "neq", "in", "nin"]
+                a["value_options"] = presence_opts
+            elif isinstance(v, bool): a["value_options"] = ["true", "false"]
             elif isinstance(v, str) and v.upper() in ("ON", "OFF"): a["value_options"] = ["ON", "OFF"]
             attrs.append(a)
         return {"ieee": ieee, "friendly_name": names.get(ieee, ieee),

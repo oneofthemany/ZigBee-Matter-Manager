@@ -909,27 +909,6 @@ async def lifespan(app: FastAPI):
     logger.info("Web UI starting — service bring-up continues in background")
 
 
-    # Requests: expire unanswered asks and tell their senders.
-    #
-    # Swept rather than one timer per request: a periodic pass is rebuilt for
-    # free after a restart, where per-request timers would have to be restored
-    # and could silently not be — leaving a sender waiting forever for an
-    # escalation that no longer had anything scheduled to fire it.
-    async def _request_sweeper():
-        from modules.requests_store import get_request_store
-        while True:
-            try:
-                await asyncio.sleep(30)
-                store = get_request_store()
-                if store:
-                    await store.sweep()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[requests] sweep failed: {e}")
-
-    app.state.request_sweeper = asyncio.create_task(_request_sweeper())
-
     yield  # Application runs here
 
     # Shutdown
@@ -974,6 +953,9 @@ async def lifespan(app: FastAPI):
     from modules import fuel_history as _fuel_history
     if _fuel_history._manager is not None:
         await _fuel_history._manager.stop()
+    from modules.messages_store import get_message_store as _gms
+    if _gms() is not None:
+        await _gms().stop()
 
     # 2. services
     if zigbee_service.multipan and zigbee_service.multipan.is_running:
@@ -1172,6 +1154,8 @@ from modules.journeys import get_journey_manager
 from routes import register_journey_routes, register_fuel_routes
 register_journey_routes(app, get_journey_manager)
 register_fuel_routes(app)
+from routes.message_routes import register_message_routes
+register_message_routes(app, get_message_store)
 register_remote_access_routes(app)
 
 # Map tiles: a caching proxy so presence maps don't announce the
@@ -1216,51 +1200,39 @@ push_manager.load()
 set_push_manager(push_manager)
 register_push_routes(app)
 
-# Requests — asks that need an answer, with escalation when none comes.
-from modules.requests_store import RequestStore, set_request_store
-from routes.request_routes import register_request_routes
-
-
-async def _request_notifier(event: str, payload: dict):
+async def _message_notifier(event: str, payload: dict):
     """
-    Fan a request event out to both channels.
-
-    The websocket updates anyone already looking at ZMM; push reaches the
-    person who is not. Both are attempted because they answer different
-    questions, and neither is allowed to break the other — a request's state
-    is authoritative whether or not any notification lands.
+    Fan a message out: websocket for anyone with the app open, web push for
+    the phone in a pocket. State is authoritative,
+    delivery is best-effort on both channels.
     """
     try:
         await broadcast_event(event, payload)
     except Exception as e:
-        logger.debug(f"[requests] websocket broadcast failed: {e}")
+        logger.debug(f"[messages] websocket broadcast failed: {e}")
 
-    # Only two events are worth interrupting someone for: an ask arriving,
-    # and the sender learning it lapsed. Accept/decline show up in the UI.
+    if event != "message_created":
+        return                        # read-receipts are not worth a wake-up
     try:
-        if event == "request_created":
-            target, title = payload.get("to_user"), f"Request from {payload.get('from_user')}"
-        elif event == "request_expired":
-            target, title = payload.get("from_user"), f"No answer from {payload.get('to_user')}"
-        else:
-            return
+        target = payload.get("to_user")
         if not target:
             return
         await push_manager.send_to_user(target, {
-            "title": title,
-            "body": payload.get("message") or "",
-            "tag": f"zmm-request-{payload.get('id')}",
-            "request_id": payload.get("id"),
-            "kind": event,
+            "title": payload.get("from_user") or "Message",
+            "body": payload.get("body") or "",
+            # One tag per thread: a burst of messages collapses into one
+            # notification showing the latest, instead of a stack.
+            "tag": f"zmm-msg-{payload.get('thread_id')}",
+            "kind": "message_created",
+            "data": {"peer": payload.get("from_user")},
         })
     except Exception as e:
-        logger.warning(f"[requests] push failed: {e}")
+        logger.warning(f"[messages] push failed: {e}")
 
 
-request_store = RequestStore(notifier=_request_notifier)
-request_store.load()
-set_request_store(request_store)
-register_request_routes(app)
+from modules.messages_store import MessageStore, set_message_store, get_message_store
+message_store = MessageStore(notifier=_message_notifier)
+set_message_store(message_store)
 
 # Named places — shared geofences beyond home. Loaded before the routes so a
 # request arriving immediately after startup sees the configured set.

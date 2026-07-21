@@ -11,7 +11,7 @@
 import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 
-let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [];
+let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
@@ -27,9 +27,9 @@ function _opOpts(sel) {
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
     ).join('');
 }
-const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music'};
+const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment'};
 
-const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media'};
+const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message'};
 
 // Media action picker options (label, value).
 const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
@@ -157,6 +157,12 @@ export async function initAutomationTab(ieee) {
     // Media players are optional — a failure here must not break the tab.
     try { const pj = await (await fetch('/api/media/players')).json(); cachedPlayers = pj.success ? (pj.players||[]) : []; }
     catch(e) { cachedPlayers = []; }
+    // Presence users feed the Request step's To/From dropdowns. Optional for
+    // the same reason: no presence users just means a free-text field.
+    try {
+        const uj = await (await fetch('/api/presence/users')).json();
+        cachedPresenceUsers = (uj.users||[]).filter(u=>u.enabled!==false);
+    } catch(e) { cachedPresenceUsers = []; }
 }
 
 // ============================================================================
@@ -312,6 +318,7 @@ function _addBtns(path) {
         <button class="btn btn-outline-secondary" onclick="window._aAddStep('${path}','wait_for')"><i class="fas fa-hourglass-half"></i> Wait</button>
         <button class="btn btn-outline-dark" onclick="window._aAddStep('${path}','condition')"><i class="fas fa-filter"></i> Gate</button>
         <button class="btn" style="color:#0a9396;border-color:#0a9396" onclick="window._aAddStep('${path}','media')"><i class="fas fa-music"></i> Media</button>
+        <button class="btn" style="color:#9d4edd;border-color:#9d4edd" onclick="window._aAddStep('${path}','request')"><i class="fas fa-comment"></i> Msg</button>
         <button class="btn btn-outline-primary" onclick="window._aAddStep('${path}','if_then_else')"><i class="fas fa-code-branch"></i> If/Then/Else</button>
         <button class="btn btn-outline-info" onclick="window._aAddStep('${path}','parallel')"><i class="fas fa-columns"></i> Parallel</button>
     </div>`;
@@ -554,6 +561,27 @@ function _renderStep(step, path, idx, total) {
         body += `<button class="btn btn-sm btn-outline-info" onclick="window._aAddBranch(${sid})"><i class="fas fa-plus"></i> Branch</button>`;
     } else if(step.type==='media') {
         body = _mediaStepBody(step, sid);
+    } else if(step.type==='request') {
+        // A message into the user-to-user messaging system (step type keeps
+        // its historical name for saved rules). Lands in the recipient's
+        // thread and goes out as a phone-waking web push. to/from are LOGIN
+        // accounts — push subscriptions key on the username.
+        const userOpt = (u, sel) => {
+            const account = u.account || u.user_id;
+            return `<option value="${account}" ${sel===account?'selected':''}>${u.display_name||u.user_id}</option>`;
+        };
+        const toOpts = cachedPresenceUsers.map(u=>userOpt(u, step.to_user)).join('');
+        const fromOpts = cachedPresenceUsers.map(u=>userOpt(u, step.from_user)).join('');
+        const toSel = cachedPresenceUsers.length
+            ? `<select class="form-select form-select-sm s-rq-to" data-sid="${sid}"><option value="">To…</option>${toOpts}</select>`
+            : `<input type="text" class="form-control form-control-sm s-rq-to" data-sid="${sid}" placeholder="To (username)" value="${step.to_user||''}">`;
+        const fromSel = cachedPresenceUsers.length
+            ? `<select class="form-select form-select-sm s-rq-from" data-sid="${sid}"><option value="">From: ZMM</option>${fromOpts}</select>`
+            : `<input type="text" class="form-control form-control-sm s-rq-from" data-sid="${sid}" placeholder="From (optional)" value="${step.from_user||''}">`;
+        body=`<div class="row g-1 align-items-center mb-1">
+            <div class="col-md-6">${toSel}</div>
+            <div class="col-md-6">${fromSel}</div></div>
+            <input type="text" class="form-control form-control-sm s-rq-msg" data-sid="${sid}" placeholder="Message, e.g. At the shops — need anything?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">`;
     }
 
     return `<div class="card card-body bg-light p-2 mb-1" id="step-${sid}">
@@ -1155,6 +1183,10 @@ function _syncTreeFromDOM(steps) {
             _syncTreeFromDOM(s.else_steps||[]);
         } else if(s.type==='parallel') {
             (s.branches||[]).forEach(br=>_syncTreeFromDOM(br));
+        } else if(s.type==='request') {
+            s.to_user=document.querySelector(`.s-rq-to[data-sid="${sid}"]`)?.value||'';
+            s.from_user=document.querySelector(`.s-rq-from[data-sid="${sid}"]`)?.value||'';
+            s.message=document.querySelector(`.s-rq-msg[data-sid="${sid}"]`)?.value||'';
         } else if(s.type==='media') {
             s.player_id=document.querySelector(`.s-mplayer[data-sid="${sid}"]`)?.value||'';
             s.media_action=document.querySelector(`.s-maction[data-sid="${sid}"]`)?.value||'play_tidal';
@@ -1197,6 +1229,7 @@ function _cleanTree(steps) {
         else if(s.type==='wait_for'||s.type==='condition'){d.ieee=s.ieee;d.attribute=s.attribute;d.operator=s.operator;d.value=s.value;if(s.negate)d.negate=true;if(s.type==='wait_for')d.timeout=s.timeout;}
         else if(s.type==='if_then_else'){d.inline_conditions=(s.inline_conditions||[]).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.then_steps=_cleanTree(s.then_steps||[]);d.else_steps=_cleanTree(s.else_steps||[]);}
         else if(s.type==='parallel'){d.branches=(s.branches||[]).map(br=>_cleanTree(br));}
+        else if(s.type==='request'){d.to_user=s.to_user;d.message=(s.message||'').trim();if(s.from_user)d.from_user=s.from_user;}
         else if(s.type==='media'){
             d.player_id=s.player_id; d.media_action=s.media_action;
             if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
@@ -1212,6 +1245,7 @@ function _cleanTree(steps) {
         if(d.type==='command')return d.target_ieee&&d.command;
         if(d.type==='delay')return d.seconds>0;
         if(d.type==='wait_for'||d.type==='condition')return d.ieee&&d.attribute;
+        if(d.type==='request')return !!(d.to_user&&d.message);
         if(d.type==='if_then_else')return(d.inline_conditions||[]).length>0;
         if(d.type==='parallel')return(d.branches||[]).length>=2;
         if(d.type==='media'){

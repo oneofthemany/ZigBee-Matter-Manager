@@ -170,6 +170,9 @@ function _renderSeq(seq) {
         }
         else if (s.type === 'media')
             h += `<div class="ap-act"><i class="fas fa-music"></i><span>${_esc(_mediaStepText(s))}</span></div>`;
+        else if (s.type === 'request')
+            h += `<div class="ap-act"><i class="fas fa-comment"></i><span>message ${_esc(s.to_user || '?')}: &ldquo;${_esc(s.message || '')}&rdquo;`
+               + (s.from_user ? ` (from ${_esc(s.from_user)})` : '') + `</span></div>`;
     });
     return h;
 }
