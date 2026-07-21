@@ -655,6 +655,65 @@ RUN systemctl disable otbr-agent 2>/dev/null || true
 RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
 
 WORKDIR /app
+DOCKERFILE_TOP
+
+    # Part 2 — zmm_telemetry Rust appender (optional).
+    # Deliberately placed BEFORE the Python requirements layers: the Rust
+    # sources change ~once per release cycle while requirements churn far more
+    # often, so this ordering keeps the toolchain download and crate compile
+    # fully cached across ordinary dependency bumps. The wheels declare no
+    # Python dependencies, so installing them before requirements is safe.
+    if [[ "$WITH_APPENDER" == true ]]; then
+        info "Including zmm_telemetry Rust appender in image build"
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
+
+# ── Build zmm_telemetry from source inside the container ──
+# maturin installs via the shared pip cache mount so a layer rebuild reuses
+# the downloaded wheel instead of re-fetching it.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3-dev \
+        pkg-config \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal \
+ && pip install maturin
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+ARG BUILD_JOBS=4
+ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
+ENV MAKEFLAGS="-j${BUILD_JOBS}"
+
+COPY zmm_telemetry/ /tmp/zmm_telemetry/
+COPY zmm_eq/ /tmp/zmm_eq/
+# Cache mounts keep crates.io downloads and compiled artifacts in host-side
+# buildah volumes (never committed to the image), so even when the crate
+# sources DO change, the rebuild is incremental. NOTE: /root/.cargo/registry
+# is a mount point here — do not rm -rf /root/.cargo in this layer.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/var/cache/cargo-target \
+    export CARGO_TARGET_DIR=/var/cache/cargo-target \
+ && cd /tmp/zmm_telemetry \
+ && maturin build --release --out /tmp/wheels \
+ && cd /tmp/zmm_eq \
+ && maturin build --release --out /tmp/wheels \
+ && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl /tmp/wheels/zmm_eq-*.whl \
+ && rm -rf /tmp/zmm_telemetry /tmp/zmm_eq /tmp/wheels
+DOCKERFILE_APPENDER
+    else
+        info "Skipping zmm_telemetry Rust appender — Python executemany fallback will be used"
+        # Bake an env var into the image so telemetry_db.py forces the Python path
+        # even if a stray zmm_telemetry wheel is somehow present at runtime.
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_NOAPPENDER'
+
+# Force Python executemany fallback (no Rust appender built into this image)
+ENV ZMM_TELEMETRY_BACKEND=python
+DOCKERFILE_NOAPPENDER
+    fi
+
+    # Part 2.5 — Python requirements (always present)
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
 
 # ── Application requirements (layer cache) ──
 # Install from the fully-pinned lockfile for reproducible builds/upgrades.
@@ -669,59 +728,22 @@ WORKDIR /app
 # image). When a release changes requirements, only the new/changed packages
 # are downloaded — everything else installs from the local cache. Supported
 # natively by podman/buildah; docker needs BuildKit (both fine here).
-#
-# The follow-up `pip install -r requirements.txt` is a self-heal top-up: when
-# the lock is complete it's a no-op, but if a release added a package to
-# requirements.txt without regenerating the lock, this installs the missing
-# package (at latest resolvable version) instead of shipping an image that
-# breaks at import time. The upgrade watcher logs a drift warning when this
-# top-up is expected to do real work.
-COPY requirements.lock requirements.txt ./
+COPY requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
- && pip install -r requirements.lock \
- && pip install -r requirements.txt
-DOCKERFILE_TOP
+ && pip install -r requirements.lock
 
-    # Part 2 — zmm_telemetry Rust appender (optional)
-    if [[ "$WITH_APPENDER" == true ]]; then
-        info "Including zmm_telemetry Rust appender in image build"
-        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
-
-# ── Build zmm_telemetry from source inside the container ──
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-dev \
-        pkg-config \
- && rm -rf /var/lib/apt/lists/* \
- && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable --profile minimal \
- && pip install --no-cache-dir maturin
-
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-ARG BUILD_JOBS=4
-ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
-ENV MAKEFLAGS="-j${BUILD_JOBS}"
-
-COPY zmm_telemetry/ /tmp/zmm_telemetry/
-COPY zmm_eq/ /tmp/zmm_eq/
-RUN cd /tmp/zmm_telemetry \
- && maturin build --release --out /tmp/wheels \
- && cd /tmp/zmm_eq \
- && maturin build --release --out /tmp/wheels \
- && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl /tmp/wheels/zmm_eq-*.whl \
- && rm -rf /tmp/zmm_telemetry /tmp/zmm_eq /tmp/wheels /root/.cargo /root/.rustup /root/.cache
-DOCKERFILE_APPENDER
-    else
-        info "Skipping zmm_telemetry Rust appender — Python executemany fallback will be used"
-        # Bake an env var into the image so telemetry_db.py forces the Python path
-        # even if a stray zmm_telemetry wheel is somehow present at runtime.
-        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_NOAPPENDER'
-
-# Force Python executemany fallback (no Rust appender built into this image)
-ENV ZMM_TELEMETRY_BACKEND=python
-DOCKERFILE_NOAPPENDER
-    fi
+# Self-heal top-up, in its OWN layer: when the lock is complete this is a
+# no-op, but if a release added a package to requirements.txt without
+# regenerating the lock, this installs the missing package (at latest
+# resolvable version) instead of shipping an image that breaks at import
+# time. Split from the lock install so a txt-only edit rebuilds just this
+# small layer, not the full ~130-package lock install above. The upgrade
+# watcher logs a drift warning when this top-up is expected to do real work.
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+DOCKERFILE_REQS
 
     # Part 3 — application source and final image config (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_BOTTOM'
