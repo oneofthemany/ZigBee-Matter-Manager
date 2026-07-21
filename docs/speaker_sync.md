@@ -147,7 +147,7 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
 
 ## UI
 
-- **Settings → Speakers** — enablement (toggle / port / App ID) with its own
+- **Settings → Audio** — enablement (toggle / port / App ID) with its own
   Save & Restart, live status badge, and the one-time registration checklist
   with a copy-ready receiver URL. Saves only the `media.cast.sync` config
   slice (merged key-wise server-side, so it can't clobber other tabs).
@@ -162,14 +162,14 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
 
 Requires a Google Cast developer account (one-time $5 registration fee).
 
-1. Enable in Settings → Speakers, Save & Restart, confirm
+1. Enable in Settings → Audio, Save & Restart, confirm
    `http://<host>:8010/health` answers.
 2. [Cast developer console](https://cast.google.com/publish) → *Add new
    application → Custom Receiver* → URL
    `http://<host>:8010/cast/sync_receiver.html`. **Don't publish.** Register
    each test speaker's serial number for development (as for the lyrics
    receiver) and reboot the speakers once.
-3. Paste the App ID into Settings → Speakers, Save & Restart.
+3. Paste the App ID into Settings → Audio, Save & Restart.
 
 Full steps also in `static/cast/README.md`.
 
@@ -225,6 +225,6 @@ Failure modes to watch:
 | `modules/media/cast_sync.py` | Service: HTTP listener, producer, WS protocol, launch, groups/trims |
 | `static/cast/sync_receiver.html` | CAF receiver: clock sync + Web Audio scheduling |
 | `routes/cast_sync_routes.py` | REST endpoints (main app) |
-| `static/js/speaker-sync.js` | Settings → Speakers tab |
+| `static/js/speaker-sync.js` | Settings → Audio tab |
 | `static/js/media.js` | Group-builder sub-tabs (WiiM / Speaker sync) |
 | `routes/config_routes.py` | `media.cast.sync` slice merge on save |

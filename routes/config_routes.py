@@ -55,6 +55,9 @@ MEDIA_DEFAULTS = {
         "base_url": "https://translate.google.com/translate_tts",
         "lang": "en",
     },
+    # Cast EQ proxy — base_url must be this app's LAN address so speakers can
+    # fetch the processed stream (falls back to tidal.manifest_base_url).
+    "eq": {"base_url": ""},
 }
 
 SECURITY_DEFAULTS = {
@@ -256,7 +259,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     if "karaoke" in cast_in:
                         cast_cfg["karaoke"] = bool(cast_in["karaoke"])
                     if "sync" in cast_in:
-                        # Speaker-sync PoC (Settings → Speakers tab saves only
+                        # Speaker-sync PoC (Settings → Audio tab saves only
                         # this slice, so merge key-wise like everything else).
                         sync_in = cast_in["sync"] or {}
                         sync_cfg = cast_cfg.setdefault("sync", {})
@@ -269,6 +272,11 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         if "mic_device" in sync_in:
                             sync_cfg["mic_device"] = str(
                                 sync_in.get("mic_device") or "").strip()
+                if "eq" in m:
+                    eq_in = m["eq"] or {}
+                    eq_cfg = media_cfg.setdefault("eq", {})
+                    if "base_url" in eq_in:
+                        eq_cfg["base_url"] = str(eq_in.get("base_url") or "").strip()
                 if "tts" in m:
                     tts_in = m["tts"] or {}
                     tts_cfg = media_cfg.setdefault("tts", {})

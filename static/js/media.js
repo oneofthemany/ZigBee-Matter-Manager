@@ -488,7 +488,8 @@ function eqLocalHtml() {
             preamp ${st.preampDb.toFixed(1)} dB</span>
         </div>
         ${bypassed ? `<div class="small text-warning mb-1"><i class="fas fa-triangle-exclamation me-1"></i>
-            This stream doesn't allow browser audio processing (no CORS) — playing it unprocessed.</div>` : ''}
+            This stream refused browser audio processing (no CORS) and the server relay
+            failed too — playing it unprocessed.</div>` : ''}
         <canvas id="eqspec-local" class="zmm-eq-spec" height="46"></canvas>
         <div class="zmm-eq-bands">
           ${eq.BANDS.map((f, i) => `
@@ -1617,12 +1618,12 @@ async function renderSyncPane() {
 
     const banner = disabled
         ? `<div class="alert alert-info small py-2">OpenZone is disabled — enable it under
-             <strong>Settings → Speakers</strong>.</div>`
+             <strong>Settings → Audio</strong>.</div>`
         : unregistered
             ? `<div class="alert alert-info small py-2">Running in <strong>built-in receiver
                  mode</strong> — no Cast registration needed. Sync is auto-corrected to within
                  a few tens of ms; use the trim sliders for the final by-ear alignment.
-                 (Registering a custom receiver under <strong>Settings → Speakers</strong>
+                 (Registering a custom receiver under <strong>Settings → Audio</strong>
                  upgrades this to sample-accurate sync.)</div>`
             : '';
 

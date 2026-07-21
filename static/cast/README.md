@@ -69,7 +69,7 @@ devices whose serials are registered in the console.
 
 ## One-time setup
 
-All of this is driven from **Settings → Speakers** in the UI (it edits
+All of this is driven from **Settings → Audio** in the UI (it edits
 `media.cast.sync` in config.yaml for you). Requires a Google Cast developer
 account (one-time $5 registration fee).
 

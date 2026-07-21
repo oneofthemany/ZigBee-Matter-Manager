@@ -113,6 +113,15 @@ class EqStreamEngine:
         return ("No LAN base URL configured — set media.eq.base_url "
                 "(or media.tidal.manifest_base_url) so the speaker can reach this app")
 
+    def status(self) -> dict:
+        """Readiness summary for the Settings → Audio tab."""
+        return {"available": self.available,
+                "have_dsp": _HAVE_DSP,
+                "have_ffmpeg": bool(self._ffmpeg),
+                "base_url": self._base,
+                **({} if self.available
+                   else {"reason": self._unavailable_reason()})}
+
     def _conf(self, player_id: str) -> dict:
         c = self._settings.get(player_id) or {}
         gains = c.get("gains")

@@ -1,16 +1,18 @@
 /**
- * speaker-sync.js — Settings → Speakers tab.
+ * speaker-sync.js — Settings → Audio tab.
  *
- * Enablement + one-time Cast-console registration for the speaker-sync
- * feature (synchronised multi-speaker playback WITHOUT a Google-Home group;
- * server: modules/media/cast_sync.py). Saves only its own config slice
- * (media.cast.sync) via /api/config/structured, so it can't clobber fields
- * owned by the other settings tabs. Sync groups themselves are built in
- * Media → Group (speaker-sync sub-tab).
+ * OpenZone enablement + one-time Cast-console registration for the
+ * speaker-sync feature (synchronised multi-speaker playback WITHOUT a
+ * Google-Home group; server: modules/media/cast_sync.py), plus the Cast EQ
+ * proxy's LAN base URL (server: modules/media/eq_stream.py). Saves only its
+ * own config slices (media.cast.sync + media.eq) via /api/config/structured,
+ * so it can't clobber fields owned by the other settings tabs. Sync groups
+ * themselves are built in Media → Group (speaker-sync sub-tab).
  */
 const log = zmmLog('speaker-sync');
 
 let _cfg = { enabled: false, http_port: 8010, app_id: '', mic_device: '' };
+let _eqCfg = { base_url: '' };
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g,
@@ -27,13 +29,15 @@ export function initSpeakerSyncTab() {
 async function render() {
     const host = document.getElementById('settingsSpeakers');
     if (!host) return;
-    let status = null;
+    let status = null, eqStatus = null;
     try {
         const cfgRes = await (await fetch('/api/config/structured')).json();
         const media = (cfgRes.config || {}).media || {};
         _cfg = Object.assign({ enabled: false, http_port: 8010, app_id: '', mic_device: '' },
                              (media.cast || {}).sync || {});
+        _eqCfg = Object.assign({ base_url: '' }, media.eq || {});
         status = await (await fetch('/api/media/sync/status')).json();
+        eqStatus = await (await fetch('/api/media/eq/status')).json();
     } catch (e) {
         host.innerHTML = `<div class="alert alert-danger">Could not load speaker settings: ${esc(e.message)}</div>`;
         return;
@@ -51,11 +55,16 @@ async function render() {
     const micBadge = !live ? '' : (mic?.available
         ? `<span class="badge bg-success ms-1" title="Inputs: ${esc((mic.inputs || []).join(', '))}"><i class="fas fa-microphone me-1"></i>mic: ${esc(mic.selected)}</span>`
         : `<span class="badge bg-warning text-dark ms-1" title="${esc(mic?.error || 'No capture device found')} — a mic plugged in after the container started needs a container restart to appear"><i class="fas fa-microphone-slash me-1"></i>no mic detected</span>`);
+    const eqBadge = eqStatus?.available
+        ? '<span class="badge bg-success">DSP ready</span>'
+        : `<span class="badge bg-warning text-dark">not ready</span>
+           <div class="small text-muted mt-1">${esc(eqStatus?.reason || 'status unavailable')}</div>`;
 
     // render() rebuilds the whole host on every tab show — carry the active
     // pane across re-renders.
     const activeEl = host.querySelector('.tab-pane.active');
-    const active = activeEl?.id === 'speakersReceiverPane' ? 'speakersReceiverPane' : 'speakersZonePane';
+    const active = ['speakersReceiverPane', 'speakersEqPane'].includes(activeEl?.id)
+        ? activeEl.id : 'speakersZonePane';
 
     host.innerHTML = `
     <ul class="nav nav-pills mb-3 zmm-icon-rail" id="speakersSubNav">
@@ -69,6 +78,12 @@ async function render() {
         <button class="nav-link${active === 'speakersZonePane' ? ' active' : ''}"
                 data-bs-toggle="tab" data-bs-target="#speakersZonePane">
           <i class="fas fa-volume-up me-1"></i> <span class="tab-label">OpenZone</span>
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link${active === 'speakersEqPane' ? ' active' : ''}"
+                data-bs-toggle="tab" data-bs-target="#speakersEqPane">
+          <i class="fas fa-sliders-h me-1"></i> <span class="tab-label">Cast EQ</span>
         </button>
       </li>
       <li class="nav-item">
@@ -146,6 +161,51 @@ async function render() {
     </div>
     </div>
 
+    <div class="tab-pane fade${active === 'speakersEqPane' ? ' show active' : ''}" id="speakersEqPane">
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+        <span class="fw-bold"><i class="fas fa-sliders-h me-1"></i> Cast EQ (server DSP)</span>
+        <div>
+          <button class="btn btn-success btn-sm" onclick="speakerSyncSave()">
+            <i class="fas fa-save me-1"></i> Save
+          </button>
+          <button class="btn btn-primary btn-sm ms-2" onclick="speakerSyncSaveRestart()"
+                  title="Save and restart the service to apply changes now">
+            <i class="fas fa-rotate me-1"></i> Save &amp; Restart
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Cast speakers expose no DSP API, so their 10-band EQ (Media tab → player
+          <i class="fas fa-sliders-h"></i> button) is applied on the server: playback is routed
+          through an ffmpeg → Rust biquad proxy and the speaker fetches the processed stream
+          back from this app. That URL must be reachable <strong>by the speaker</strong>, so
+          it needs this app's LAN address — plain HTTP, since Cast devices reject
+          self-signed certificates.
+        </p>
+        <div class="row g-3 mb-2">
+          <div class="col-md-5">
+            <label class="form-label small fw-semibold">LAN Base URL</label>
+            <input type="text" class="form-control" id="cfg_eq_baseurl"
+                   value="${esc(_eqCfg.base_url)}"
+                   placeholder="http://${esc(location.hostname)}:${esc(location.port || '80')}">
+            <small class="text-muted">How speakers reach this app
+              (<code>media.eq.base_url</code>). Falls back to the Tidal manifest base URL
+              when blank.</small>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Status</label>
+            <div class="mt-2">${eqBadge}</div>
+          </div>
+        </div>
+      </div>
+      <div class="card-footer text-muted small">
+        <i class="fas fa-info-circle me-1"></i> Changes take effect after a service restart.
+      </div>
+    </div>
+    </div>
+
     <div class="tab-pane fade${active === 'speakersReceiverPane' ? ' show active' : ''}" id="speakersReceiverPane">
     <div class="card shadow-sm">
       <div class="card-header bg-light py-2">
@@ -187,12 +247,17 @@ async function render() {
 
 function collectSlice() {
     return {
-        media: { cast: { sync: {
-            enabled: document.getElementById('cfg_sync_enabled')?.checked ?? false,
-            http_port: Number(document.getElementById('cfg_sync_port')?.value) || 8010,
-            app_id: document.getElementById('cfg_sync_appid')?.value?.trim() || '',
-            mic_device: document.getElementById('cfg_sync_mic')?.value?.trim() || '',
-        } } },
+        media: {
+            cast: { sync: {
+                enabled: document.getElementById('cfg_sync_enabled')?.checked ?? false,
+                http_port: Number(document.getElementById('cfg_sync_port')?.value) || 8010,
+                app_id: document.getElementById('cfg_sync_appid')?.value?.trim() || '',
+                mic_device: document.getElementById('cfg_sync_mic')?.value?.trim() || '',
+            } },
+            eq: {
+                base_url: document.getElementById('cfg_eq_baseurl')?.value?.trim() || '',
+            },
+        },
     };
 }
 

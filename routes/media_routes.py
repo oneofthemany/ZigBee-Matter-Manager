@@ -7,7 +7,7 @@ lifespan owns the service instance and routes resolve it lazily.
 import logging
 from typing import List, Optional
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger("routes.media")
@@ -226,6 +226,57 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "Could not resolve a playable URL"}
         return {"success": True, **got}
 
+    @app.get("/api/media/local/proxy")
+    async def local_stream_proxy(url: str, request: Request):
+        """Same-origin passthrough for the browser player's Web Audio EQ.
+
+        A MediaElementSource on a cross-origin stream whose host sends no CORS
+        headers is pure silence, so when a stream refuses CORS the browser
+        player re-requests it through here: same origin as the page, so CORS
+        never applies and the EQ keeps working (see local-player.js). Range
+        headers pass through so seekable sources (Tidal AAC) stay seekable;
+        endless radio streams flow until the client disconnects.
+        """
+        if not url.lower().startswith(("http://", "https://")):
+            return Response("http(s) URLs only", status_code=400)
+        if not _svc():
+            return Response("Media service not enabled", status_code=503)
+        import httpx
+        from fastapi.responses import StreamingResponse
+        fwd = {"User-Agent": "ZMM-Media/1.0", "Icy-MetaData": "0"}
+        rng = request.headers.get("range")
+        if rng:
+            fwd["Range"] = rng
+        client = httpx.AsyncClient(follow_redirects=True,
+                                   timeout=httpx.Timeout(15, read=None))
+        try:
+            upstream = await client.send(
+                client.build_request("GET", url, headers=fwd), stream=True)
+        except Exception as e:
+            await client.aclose()
+            logger.warning(f"Local stream proxy fetch failed for {url}: {e}")
+            return Response(f"upstream fetch failed: {e}", status_code=502)
+        if upstream.status_code >= 400:
+            code = upstream.status_code
+            await upstream.aclose()
+            await client.aclose()
+            return Response(f"upstream returned {code}", status_code=502)
+
+        async def gen():
+            try:
+                async for chunk in upstream.aiter_bytes(16384):
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        headers = {k: v for k, v in upstream.headers.items()
+                   if k.lower() in ("content-type", "content-length",
+                                    "content-range", "accept-ranges")}
+        headers["Cache-Control"] = "no-store"
+        return StreamingResponse(gen(), status_code=upstream.status_code,
+                                 headers=headers)
+
     @app.post("/api/media/control")
     async def control(body: ControlBody):
         svc = _svc()
@@ -287,6 +338,16 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True, "eq": info}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @app.get("/api/media/eq/status")
+    async def eq_status():
+        """Cast EQ proxy readiness (Settings → Audio tab badge)."""
+        svc = _svc()
+        engine = getattr(svc, "eq_stream", None) if svc else None
+        if not engine:
+            return {"success": True, "available": False,
+                    "reason": "Media service not enabled"}
+        return {"success": True, **engine.status()}
 
     @app.get("/api/media/eq/stream/{player_id}/{token}.wav")
     async def eq_stream(player_id: str, token: str):

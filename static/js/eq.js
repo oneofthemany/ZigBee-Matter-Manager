@@ -15,8 +15,10 @@
  *
  * CORS reality (see local-player.js): a MediaElementSource on a cross-origin
  * stream without CORS headers outputs pure silence, so the local player only
- * routes elements created with crossorigin="anonymous" through this graph,
- * and falls back to a plain, un-EQ'd element when a stream refuses CORS.
+ * routes elements created with crossorigin="anonymous" through this graph.
+ * Streams that refuse CORS are re-requested through the server's same-origin
+ * passthrough (/api/media/local/proxy) so the EQ still works; a plain,
+ * un-EQ'd element is the last resort when the proxy fails too.
  */
 const log = zmmLog('eq');
 

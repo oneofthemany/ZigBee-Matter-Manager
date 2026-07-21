@@ -16,13 +16,18 @@
  * Web Audio EQ (eq.js) can process them — a MediaElementSource on a
  * cross-origin stream WITHOUT CORS headers is pure silence, and WITH the
  * attribute a non-CORS stream refuses to load at all. So: try the CORS
- * element first; if the stream rejects it, rebuild a plain element (same
- * src, no EQ) and remember the host so later tracks skip the doomed attempt.
+ * element on the direct URL first; if the stream rejects it, re-request it
+ * through the server's same-origin passthrough (/api/media/local/proxy —
+ * CORS never applies, EQ keeps working) and remember the host so later
+ * tracks go straight to the proxy. Only if the proxy fails too does a plain
+ * element play the source directly, un-EQ'd.
  */
 const log = zmmLog('local-player');
 import { eqAttach, eqResume } from './eq.js';
 
 export const LOCAL_ID = 'local:browser';
+
+const _proxied = u => `/api/media/local/proxy?url=${encodeURIComponent(u)}`;
 
 let _audio = null;
 let _queue = [];          // MediaItem dicts, in play order
@@ -30,7 +35,8 @@ let _index = 0;
 let _volume = 1.0;
 let _loading = false;     // resolving a URL — reads as "buffering"
 let _corsMode = true;     // current element is CORS-tagged (EQ-capable)
-let _plainRetrySrc = null; // src we already fell back on (one retry per load)
+let _srcStage = 'direct'; // current source: direct | proxy | plain
+let _directUrl = null;    // the playing track's un-proxied URL
 let _noCorsHosts = new Set(); // hosts that refused CORS this session
 let _onChange = () => {};
 let _onError = () => {};
@@ -67,13 +73,23 @@ function audio() {
     a.addEventListener('error', () => {
         const err = a.error;
         // CORS-tagged elements refuse streams that lack CORS headers — retry
-        // once on a plain element (EQ bypassed) before calling it a failure.
-        if (_corsMode && a.src && a.src !== _plainRetrySrc) {
-            _plainRetrySrc = a.src;
-            try { _noCorsHosts.add(new URL(a.src).host); } catch { /* data: etc. */ }
-            log.log('stream refused CORS — retrying without EQ routing', a.src);
+        // through the server's same-origin proxy first (EQ keeps working);
+        // only if that fails too, fall back to a plain element (EQ bypassed).
+        if (_corsMode && _directUrl && _srcStage === 'direct') {
+            try { _noCorsHosts.add(new URL(_directUrl, location.href).host); } catch { /* data: etc. */ }
+            log.log('stream refused CORS — rerouting via server proxy', _directUrl);
+            _srcStage = 'proxy';
+            a.src = _proxied(_directUrl);
+            a.load();
+            a.play().catch(e => _onError(`Tap play to start audio (${e.name})`));
+            _onChange();
+            return;
+        }
+        if (_corsMode && _directUrl && _srcStage === 'proxy') {
+            log.log('proxy stream failed — playing direct without EQ routing', _directUrl);
+            _srcStage = 'plain';
             const b = _newElement(false);
-            b.src = _plainRetrySrc;
+            b.src = _directUrl;
             b.play().catch(e => _onError(`Tap play to start audio (${e.name})`));
             _onChange();
             return;
@@ -136,14 +152,16 @@ async function _load(i, autoplay) {
         _loading = false;
     }
     if (!url) { _onError('No playable URL for this item'); return; }
-    // Per-track CORS choice: prefer the EQ-capable element, but go straight
-    // to plain for hosts that already refused CORS this session (saves a
-    // guaranteed-to-fail load on every queue advance).
-    _plainRetrySrc = null;
-    let wantCors = true;
-    try { wantCors = !_noCorsHosts.has(new URL(url, location.href).host); } catch { /* keep true */ }
-    const el = wantCors !== _corsMode ? _newElement(wantCors) : a;
-    el.src = url;
+    // Per-track routing: always start on the EQ-capable element; hosts that
+    // already refused CORS this session go straight to the server proxy
+    // (saves a guaranteed-to-fail load on every queue advance).
+    _directUrl = url;
+    _srcStage = 'direct';
+    try {
+        if (_noCorsHosts.has(new URL(url, location.href).host)) _srcStage = 'proxy';
+    } catch { /* keep direct */ }
+    const el = _corsMode ? a : _newElement(true);
+    el.src = _srcStage === 'proxy' ? _proxied(url) : url;
     if (autoplay) {
         try {
             // Must be reached from the click that started playback, or the
@@ -184,6 +202,7 @@ export function stop() {
     a.load();                     // drop the buffer so radio stops fetching
     _queue = [];
     _index = 0;
+    _directUrl = null;
     _onChange();
 }
 
