@@ -90,6 +90,7 @@ export function initMedia() {
     window.mediaPlayStation = playStation;
     window.mediaControl = control;
     window.mediaSetVolume = setVolume;
+    window.mediaVolStep = volStep;
     window.mediaSelect = selectPlayer;
     window.mediaPane = setPane;
     window.mediaUngroup = ungroup;
@@ -190,9 +191,13 @@ async function loadPlayers() {
 }
 
 // "This device" is always offered first — it needs no discovery and is the
-// only target that works with no speaker on the network at all.
+// only target that works with no speaker on the network at all. Anything
+// actively playing floats above the rest: that's the card being reached for,
+// and on a phone it saves scrolling past every idle speaker. The sort is
+// stable, so ties keep the usual order (local, then discovery order).
 function _rebuild() {
     _players = [local.snapshot(), ..._remote];
+    _players.sort((a, b) => (b.state === 'playing') - (a.state === 'playing'));
     _syncPosAnchors();
 }
 
@@ -326,7 +331,7 @@ function renderPlayers() {
           </div>
           ${q ? `<div class="small text-muted">Track ${q.index + 1} of ${q.length}</div>` : ''}
           <div id="artist-${pidE}" class="mt-2"></div>
-          <div class="d-flex align-items-center gap-2 mt-2" onclick="event.stopPropagation()">
+          <div class="d-flex align-items-center gap-2 mt-2 flex-wrap" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-outline-secondary" ${disabled} ${hasQueue ? '' : 'disabled'}
                     onclick="window.mediaControl('${pid}','prev')" title="Previous">
               <i class="fas fa-backward-step"></i>
@@ -343,10 +348,20 @@ function renderPlayers() {
                     onclick="window.mediaControl('${pid}','stop')" title="Stop">
               <i class="fas fa-stop"></i>
             </button>
-            <input type="range" class="form-range flex-grow-1" min="0" max="100" value="${vol}" ${disabled}
-                   oninput="this.nextElementSibling.textContent=this.value+'%'"
-                   onchange="window.mediaSetVolume('${pid}', this.value)">
-            <span class="small text-muted" style="width:2.5em">${vol}%</span>
+            <div class="d-flex align-items-center gap-1 flex-grow-1 zmm-vol">
+              <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
+                      onclick="window.mediaVolStep('${pid}', -5)" title="Volume down 5%">
+                <i class="fas fa-volume-low"></i>
+              </button>
+              <input type="range" class="form-range flex-grow-1" id="vol-${pidE}" min="0" max="100" value="${vol}" ${disabled}
+                     oninput="document.getElementById('vol-lbl-${pidE}').textContent=this.value+'%'"
+                     onchange="window.mediaSetVolume('${pid}', this.value)">
+              <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
+                      onclick="window.mediaVolStep('${pid}', 5)" title="Volume up 5%">
+                <i class="fas fa-volume-high"></i>
+              </button>
+              <span class="small text-muted" id="vol-lbl-${pidE}" style="width:2.5em">${vol}%</span>
+            </div>
             ${p.is_group && p.provider === 'wiim'
                 ? `<button class="btn btn-sm btn-outline-danger" onclick="window.mediaUngroup('${pid}')" title="Ungroup">
                      <i class="far fa-object-ungroup"></i></button>`
@@ -493,6 +508,18 @@ async function setVolume(playerId, value) {
     if (playerId === LOCAL_ID) { local.setVolume(level); return; }
     const r = await apiPost('/api/media/volume', { player_id: playerId, level });
     if (!r.success) toast(r.error || 'Volume failed', 'error');
+}
+
+// ±step nudge for the mobile volume buttons. Reads the slider rather than the
+// last snapshot so repeated taps compound instead of racing the 10s refresh.
+function volStep(playerId, delta) {
+    const slider = document.getElementById('vol-' + playerId);
+    if (!slider || slider.disabled) return;
+    const next = Math.max(0, Math.min(100, Number(slider.value) + delta));
+    slider.value = next;
+    const lbl = document.getElementById('vol-lbl-' + playerId);
+    if (lbl) lbl.textContent = next + '%';
+    setVolume(playerId, next);
 }
 
 // ---------------------------------------------------------------------------
