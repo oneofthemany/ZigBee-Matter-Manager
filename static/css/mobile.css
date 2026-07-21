@@ -1280,3 +1280,45 @@ body.controlling {
         display: none;
     }
 }
+
+
+/* ----------------------------------------------------------
+   DRIVE TAB — journeys + fuel on phones
+   ----------------------------------------------------------
+   The Time/Max trip columns are hidden by Bootstrap utilities in
+   drive.js; this section covers what utilities can't express.     */
+
+@media (max-width: 767.98px) {
+    /* Trip rows are tap targets — give fingers a full-height row. */
+    #drive .drive-trip-row td {
+        padding-top: 0.55rem;
+        padding-bottom: 0.55rem;
+    }
+
+    /* Fuel results: let the station address wrap instead of forcing
+       the table wider than the phone; keep price/maps columns tight. */
+    #drive #fuel-results td:first-child {
+        white-space: normal;
+        word-break: break-word;
+        min-width: 9rem;
+    }
+
+    /* The Maps buttons are the thing a passenger actually taps —
+       comfortable 44px-ish target. */
+    #drive #fuel-results .btn {
+        padding: 0.45rem 0.6rem;
+    }
+
+    /* Chart hugs the card edges; a shorter plot leaves room for the
+       controls without scrolling the card off-screen. */
+    #drive #fuel-history-chart {
+        height: 200px !important;
+    }
+}
+
+@media (max-width: 575.98px) {
+    /* Stat tiles: 2×2 grid already; tighten padding so four fit. */
+    #drive .card-body .border.rounded.p-2 {
+        padding: 0.4rem !important;
+    }
+}
