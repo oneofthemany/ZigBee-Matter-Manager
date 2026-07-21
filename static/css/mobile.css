@@ -1200,6 +1200,68 @@ body.controlling {
     }
 }
 
+/* ----------------------------------------------------------
+   MEDIA TAB — graphic equaliser panel (all viewports)
+   ----------------------------------------------------------
+   10 vertical sliders on the ISO octave bands for "This device";
+   the same .zmm-eq wrapper also holds the WiiM preset row. Vertical
+   ranges use writing-mode (the modern standard); orient="vertical"
+   is on the element for older Firefox.                            */
+
+.zmm-eq-bands {
+    display: flex;
+    justify-content: space-between;
+    gap: 2px;
+}
+
+.zmm-eq-band {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.zmm-eq-slider {
+    writing-mode: vertical-lr;
+    direction: rtl;              /* up = boost */
+    appearance: auto;
+    width: 1.4rem;
+    height: 96px;
+    padding: 0;
+    margin: 2px 0;
+    accent-color: var(--bs-primary);
+}
+
+.zmm-eq-slider:disabled {
+    opacity: .35;
+}
+
+.zmm-eq-db,
+.zmm-eq-hz {
+    font-size: .62rem;
+    color: var(--bs-secondary-color);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.zmm-eq-spec {
+    width: 100%;
+    height: 46px;
+    display: block;
+    margin-bottom: .25rem;
+    border-radius: 4px;
+    background: var(--bs-secondary-bg);
+}
+
+/* Bigger touch targets where fingers, not pointers, do the dragging. */
+@media (max-width: 991.98px) {
+    .zmm-eq-slider {
+        width: 1.9rem;
+        height: 120px;
+    }
+}
+
 
 /* ----------------------------------------------------------
    DOCS TAB — one pane at a time on phones

@@ -51,6 +51,12 @@ class GroupBody(BaseModel):
     member_ids: List[str] = []
 
 
+class EqBody(BaseModel):
+    player_id: str
+    enabled: Optional[bool] = None
+    preset: Optional[str] = None
+
+
 class QueueModeBody(BaseModel):
     player_id: str
     repeat: Optional[str] = None      # off | one | all
@@ -251,6 +257,32 @@ def register_media_routes(app: FastAPI, get_media_service):
         try:
             level = await svc.controller.adjust_volume(body.player_id, body.delta)
             return {"success": True, "level": level}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ── Equaliser (device DSP — WiiM presets; Cast has none; the browser
+    #    player EQs client-side and never calls these) ─────────────────────
+    @app.get("/api/media/eq")
+    async def eq_info(player_id: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            info = await svc.controller.eq_info(player_id)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "supported": info is not None, "eq": info}
+
+    @app.post("/api/media/eq")
+    async def eq_set(body: EqBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        if body.enabled is None and not body.preset:
+            return {"success": False, "error": "Provide enabled and/or preset"}
+        try:
+            info = await svc.controller.set_eq(body.player_id, body.enabled, body.preset)
+            return {"success": True, "eq": info}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

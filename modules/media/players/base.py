@@ -73,6 +73,23 @@ class PlayerProvider(ABC):
         """Optional mute toggle."""
 
     # ------------------------------------------------------------------
+    # Equaliser (optional, per-ecosystem)
+    # ------------------------------------------------------------------
+    async def eq_info(self, player_id: str) -> Optional[dict]:
+        """
+        Describe this player's EQ capability, or None when it has none
+        (Cast has no DSP API; the browser player does its EQ client-side).
+        Shape: {"mode": "presets", "presets": [...], "enabled": bool,
+        "preset": str} — "preset" may be "" when the device can't report it.
+        """
+        return None
+
+    async def set_eq(self, player_id: str, enabled: Optional[bool] = None,
+                     preset: Optional[str] = None) -> None:
+        """Apply an EQ change. Default raises like the grouping stubs do."""
+        raise NotImplementedError(f"{self.provider} does not support set_eq")
+
+    # ------------------------------------------------------------------
     # Native grouping (per-ecosystem; cross-ecosystem is out of scope)
     # ------------------------------------------------------------------
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:

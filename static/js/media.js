@@ -12,6 +12,7 @@ import { confirmDialog } from './dialogs.js';
 import { openSyncLab, restoreSyncLab } from './sync-lab.js';
 import * as local from './local-player.js';
 import { LOCAL_ID } from './local-player.js';
+import * as eq from './eq.js';
 
 let _remote = [];           // players from /api/media/players (Cast / WiiM)
 let _players = [];          // _remote + the "This device" entry, as rendered
@@ -32,6 +33,8 @@ let _radioFavs = [];         // pinned radio stations (full dicts)
 let _radioSearchCache = [];  // last radio search results, for star-toggle by index
 let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth progress
 let _posTimer = null;        // 1s interpolation ticker for the progress bars
+let _eqOpen = new Set();     // player_ids with their EQ panel expanded
+let _eqWiim = {};            // player_id -> cached /api/media/eq result (wiim)
 
 function _fmtTime(ms) {
     if (!isFinite(ms) || ms < 0) ms = 0;
@@ -124,6 +127,11 @@ export function initMedia() {
     window.mediaLyricsClose = closeLyricsScreen;
     window.mediaArtistPanel = artistPanel;
     window.mediaPlayTidalOn = playTidalOn;
+    // Equaliser
+    window.mediaEqToggle = eqToggle;
+    window.mediaEqEnable = eqEnable;
+    window.mediaEqPreset = eqPreset;
+    window.mediaEqBand = eqBand;
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
 }
 
@@ -348,6 +356,11 @@ function renderPlayers() {
                     onclick="window.mediaControl('${pid}','stop')" title="Stop">
               <i class="fas fa-stop"></i>
             </button>
+            ${(p.provider === 'local' || p.provider === 'wiim') ? `
+            <button class="btn btn-sm ${_eqOpen.has(p.player_id) ? 'btn-primary' : 'btn-outline-secondary'}" ${disabled}
+                    onclick="window.mediaEqToggle('${pid}')" title="Equaliser">
+              <i class="fas fa-sliders"></i>
+            </button>` : ''}
             <div class="d-flex align-items-center gap-1 flex-grow-1 zmm-vol">
               <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
                       onclick="window.mediaVolStep('${pid}', -5)" title="Volume down 5%">
@@ -367,9 +380,12 @@ function renderPlayers() {
                      <i class="far fa-object-ungroup"></i></button>`
                 : ''}
           </div>
+          <div id="eqp-${pidE}" onclick="event.stopPropagation()"></div>
           ${q && p.provider !== 'local' ? queueControls(p, q) : ''}
         </div>`;
     }).join('');
+    for (const pid of _eqOpen) renderEqPanel(pid);
+    if (!_eqOpen.has(LOCAL_ID)) eq.eqSpectrumStop();
     updateSearchTarget();
 }
 
@@ -399,6 +415,153 @@ function queueControls(p, q) {
         </button>
       </div>
       ${upNext ? `<div class="small mt-1">${upNext}</div>` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Equaliser panel — two flavours behind one button:
+//   local  → the Web Audio 10-band EQ (eq.js): full sliders + preset library
+//   wiim   → the speaker's own DSP presets via /api/media/eq (EQLoad list)
+// Cast devices expose no DSP, so their cards simply have no EQ button.
+// ---------------------------------------------------------------------------
+function eqToggle(pid) {
+    if (_eqOpen.has(pid)) _eqOpen.delete(pid);
+    else {
+        delete _eqWiim[pid];  // refetch on open — the WiiM app may have changed it
+        _eqOpen.add(pid);
+    }
+    renderPlayers();          // repaints the button state + panel container
+}
+
+function renderEqPanel(pid) {
+    const box = document.getElementById('eqp-' + pid);
+    if (!box) return;
+    const p = _players.find(x => x.player_id === pid);
+    if (!p) { box.innerHTML = ''; return; }
+    if (p.provider === 'local') {
+        box.innerHTML = eqLocalHtml();
+        eq.eqSpectrumStart('eqspec-local');
+    } else {
+        box.innerHTML = eqWiimHtml(pid);
+    }
+}
+
+const _fmtDb = v => (v > 0 ? '+' : '') + Number(v).toFixed(1).replace(/\.0$/, '');
+
+function eqLocalHtml() {
+    const st = eq.eqState();
+    const names = Object.keys(eq.PRESETS);
+    const opts = (st.preset === 'Custom' ? ['Custom', ...names] : names)
+        .map(n => `<option value="${esc(n)}" ${n === st.preset ? 'selected' : ''}>${esc(n)}</option>`)
+        .join('');
+    const bypassed = local.eqBypassed();
+    return `
+      <div class="border-top mt-2 pt-2 zmm-eq">
+        <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="eqOnLocal" ${st.enabled ? 'checked' : ''}
+                   onchange="window.mediaEqEnable('${LOCAL_ID}', this.checked)">
+            <label class="form-check-label small fw-semibold" for="eqOnLocal">EQ</label>
+          </div>
+          <select class="form-select form-select-sm w-auto" id="eqPresetSel" title="Preset"
+                  onchange="window.mediaEqPreset('${LOCAL_ID}', this.value)">${opts}</select>
+          <span class="small text-muted ms-auto" id="eqPreampLbl"
+                title="Automatic headroom: the signal is lowered by the largest boost so no band can clip">
+            preamp ${st.preampDb.toFixed(1)} dB</span>
+        </div>
+        ${bypassed ? `<div class="small text-warning mb-1"><i class="fas fa-triangle-exclamation me-1"></i>
+            This stream doesn't allow browser audio processing (no CORS) — playing it unprocessed.</div>` : ''}
+        <canvas id="eqspec-local" class="zmm-eq-spec" height="46"></canvas>
+        <div class="zmm-eq-bands">
+          ${eq.BANDS.map((f, i) => `
+            <div class="zmm-eq-band">
+              <span class="zmm-eq-db" id="eqdb-${i}">${_fmtDb(st.gains[i])}</span>
+              <input type="range" class="zmm-eq-slider" orient="vertical"
+                     min="${eq.GAIN_MIN}" max="${eq.GAIN_MAX}" step="0.5" value="${st.gains[i]}"
+                     ${st.enabled ? '' : 'disabled'} aria-label="${eq.BAND_LABELS[i]} Hz band"
+                     oninput="window.mediaEqBand(${i}, this.value)">
+              <span class="zmm-eq-hz">${eq.BAND_LABELS[i]}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
+}
+
+function eqWiimHtml(pid) {
+    const c = _eqWiim[pid];
+    if (!c) { eqWiimFetch(pid); return `<div class="border-top mt-2 pt-2">${spinner()}</div>`; }
+    if (c.error) return `<div class="border-top mt-2 pt-2 small text-muted">${esc(c.error)}</div>`;
+    if (!c.supported || !c.eq) {
+        return `<div class="border-top mt-2 pt-2 small text-muted">
+            This speaker's firmware doesn't expose EQ control.</div>`;
+    }
+    const info = c.eq;
+    const cur = info.preset || '';
+    const opts = [`<option value="" ${cur ? '' : 'selected'} disabled>${cur ? '' : 'Choose preset…'}</option>`,
+        ...info.presets.map(n =>
+            `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}</option>`)].join('');
+    return `
+      <div class="border-top mt-2 pt-2 zmm-eq">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="eqOn-${esc(pid)}" ${info.enabled ? 'checked' : ''}
+                   onchange="window.mediaEqEnable('${esc(pid)}', this.checked)">
+            <label class="form-check-label small fw-semibold" for="eqOn-${esc(pid)}">EQ</label>
+          </div>
+          <select class="form-select form-select-sm w-auto"
+                  onchange="window.mediaEqPreset('${esc(pid)}', this.value)">${opts}</select>
+          <span class="small text-muted ms-auto"
+                title="EQ runs on the speaker itself — per-band control isn't exposed by the WiiM API">
+            <i class="fas fa-microchip me-1"></i>device DSP</span>
+        </div>
+      </div>`;
+}
+
+async function eqWiimFetch(pid) {
+    const d = await apiGet('/api/media/eq?player_id=' + encodeURIComponent(pid));
+    _eqWiim[pid] = d.success ? d : { error: d.error || 'EQ query failed' };
+    if (_eqOpen.has(pid)) renderEqPanel(pid);
+}
+
+async function eqEnable(pid, on) {
+    if (pid === LOCAL_ID) {
+        eq.eqSetEnabled(on);
+        renderEqPanel(pid);           // sliders follow the enabled state
+        return;
+    }
+    const r = await apiPost('/api/media/eq', { player_id: pid, enabled: !!on });
+    if (!r.success) { toast(r.error || 'EQ change failed', 'error'); return; }
+    _eqWiim[pid] = { success: true, supported: true, eq: r.eq };
+    renderEqPanel(pid);
+}
+
+async function eqPreset(pid, name) {
+    if (pid === LOCAL_ID) {
+        eq.eqApplyPreset(name);
+        renderEqPanel(pid);
+        return;
+    }
+    if (!name) return;
+    const r = await apiPost('/api/media/eq', { player_id: pid, preset: name });
+    if (!r.success) { toast(r.error || 'EQ preset failed', 'error'); return; }
+    _eqWiim[pid] = { success: true, supported: true, eq: r.eq };
+    renderEqPanel(pid);
+    toast(`EQ preset: ${name}`, 'success');
+}
+
+// Slider drags update the engine + labels in place — no re-render, so the
+// drag never fights the DOM (same principle as the volume slider).
+function eqBand(i, val) {
+    eq.eqSetBand(i, Number(val));
+    const st = eq.eqState();
+    const db = document.getElementById('eqdb-' + i);
+    if (db) db.textContent = _fmtDb(st.gains[i]);
+    const pre = document.getElementById('eqPreampLbl');
+    if (pre) pre.textContent = `preamp ${st.preampDb.toFixed(1)} dB`;
+    const sel = document.getElementById('eqPresetSel');
+    if (sel && sel.value !== 'Custom') {
+        if (!sel.querySelector('option[value="Custom"]'))
+            sel.insertAdjacentHTML('afterbegin', '<option value="Custom">Custom</option>');
+        sel.value = 'Custom';
+    }
 }
 
 function selectPlayer(id) {

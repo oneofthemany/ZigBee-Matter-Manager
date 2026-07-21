@@ -420,6 +420,17 @@ class MediaController:
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._dispatch(player_id, "set_muted", muted)
 
+    async def eq_info(self, player_id: str) -> Optional[dict]:
+        provider = self._provider_for(player_id)
+        if not provider:
+            raise ValueError(f"No provider for player {player_id}")
+        return await provider.eq_info(player_id)
+
+    async def set_eq(self, player_id: str, enabled: Optional[bool] = None,
+                     preset: Optional[str] = None) -> Optional[dict]:
+        await self._dispatch(player_id, "set_eq", enabled, preset)
+        return await self.eq_info(player_id)
+
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:
         provider = self._provider_for(master_id)
         if not provider:

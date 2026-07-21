@@ -61,6 +61,11 @@ class WiiMPlayerProvider(PlayerProvider):
         self._scheme: Dict[str, str] = {}
         # Cached display names from getStatusEx.
         self._names: Dict[str, str] = {}
+        # EQ preset list per IP (None = not probed yet, [] = unsupported) and
+        # the last preset WE loaded — the API can report on/off (EQGetStat)
+        # but not which preset is active, so we remember our own writes.
+        self._eq_presets: Dict[str, Optional[List[str]]] = {}
+        self._eq_current: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP plumbing
@@ -223,6 +228,53 @@ class WiiMPlayerProvider(PlayerProvider):
     async def set_muted(self, player_id: str, muted: bool) -> None:
         ip = player_id.split(":", 1)[1]
         await self._command(ip, f"setPlayerCmd:mute:{1 if muted else 0}")
+
+    # ------------------------------------------------------------------
+    # Equaliser (official WiiM HTTP API: EQOn/EQOff/EQGetList/EQLoad/EQGetStat)
+    # ------------------------------------------------------------------
+    async def _eq_preset_list(self, ip: str) -> List[str]:
+        """Preset names from the device, cached. [] means EQ unsupported
+        (older LinkPlay firmware answers 'unknown command')."""
+        cached = self._eq_presets.get(ip)
+        if cached is not None:
+            return cached
+        data = await self._command_json(ip, "EQGetList")
+        presets = [str(p) for p in data] if isinstance(data, list) else []
+        self._eq_presets[ip] = presets
+        return presets
+
+    async def eq_info(self, player_id: str) -> Optional[dict]:
+        ip = player_id.split(":", 1)[1]
+        presets = await self._eq_preset_list(ip)
+        if not presets:
+            return None
+        stat = await self._command_json(ip, "EQGetStat")
+        enabled = bool(stat) and str(stat.get("EQStat", "")).lower() == "on"
+        return {
+            "mode": "presets",
+            "presets": presets,
+            "enabled": enabled,
+            "preset": self._eq_current.get(ip, ""),
+        }
+
+    async def set_eq(self, player_id: str, enabled: Optional[bool] = None,
+                     preset: Optional[str] = None) -> None:
+        ip = player_id.split(":", 1)[1]
+        if preset:
+            allowed = await self._eq_preset_list(ip)
+            if preset not in allowed:
+                raise ValueError(f"Unknown EQ preset '{preset}'")
+            # EQLoad enables the EQ as a side effect on current firmware, but
+            # that isn't documented — send EQOn explicitly unless turning off.
+            if enabled is not False:
+                await self._command(ip, "EQOn")
+            if await self._command(ip, f"EQLoad:{preset}") is None:
+                raise RuntimeError(f"EQ preset load failed on {ip}")
+            self._eq_current[ip] = preset
+        if enabled is not None and not (preset and enabled):
+            cmd = "EQOn" if enabled else "EQOff"
+            if await self._command(ip, cmd) is None:
+                raise RuntimeError(f"{cmd} failed on {ip}")
 
     # ------------------------------------------------------------------
     # Native multiroom (LinkPlay — semi-official, not in WiiM HTTP PDF)

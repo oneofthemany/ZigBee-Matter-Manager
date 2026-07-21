@@ -11,8 +11,16 @@
  * short-lived, so we resolve each track just-in-time via
  * /api/media/local/track_url, which returns 320k AAC (DASH/FLAC is Cast-only)
  * — natively playable in an <audio> element, no MSE or dash.js needed.
+ *
+ * Equaliser routing: elements are created with crossorigin="anonymous" so the
+ * Web Audio EQ (eq.js) can process them — a MediaElementSource on a
+ * cross-origin stream WITHOUT CORS headers is pure silence, and WITH the
+ * attribute a non-CORS stream refuses to load at all. So: try the CORS
+ * element first; if the stream rejects it, rebuild a plain element (same
+ * src, no EQ) and remember the host so later tracks skip the doomed attempt.
  */
 const log = zmmLog('local-player');
+import { eqAttach, eqResume } from './eq.js';
 
 export const LOCAL_ID = 'local:browser';
 
@@ -21,6 +29,9 @@ let _queue = [];          // MediaItem dicts, in play order
 let _index = 0;
 let _volume = 1.0;
 let _loading = false;     // resolving a URL — reads as "buffering"
+let _corsMode = true;     // current element is CORS-tagged (EQ-capable)
+let _plainRetrySrc = null; // src we already fell back on (one retry per load)
+let _noCorsHosts = new Set(); // hosts that refused CORS this session
 let _onChange = () => {};
 let _onError = () => {};
 
@@ -29,11 +40,22 @@ export function initLocalPlayer({ onChange, onError }) {
     _onError = onError || (() => {});
 }
 
+/** True while playback runs on the plain fallback element — the EQ can't
+ *  touch this stream, and the panel says so instead of silently lying. */
+export function eqBypassed() {
+    return !_corsMode && _queue.length > 0;
+}
+
 function audio() {
     if (_audio) return _audio;
     const a = new Audio();
     a.preload = 'auto';
     a.volume = _volume;
+    if (_corsMode) {
+        a.crossOrigin = 'anonymous';
+        // Attach may fail (no Web Audio) — playback still works, just un-EQ'd.
+        if (!eqAttach(a)) _corsMode = false;
+    }
     // Re-render on anything that changes what the card shows. timeupdate is
     // deliberately absent: the position bar interpolates from an anchor, so
     // re-rendering 4x/sec would just fight the user's volume drag.
@@ -44,6 +66,18 @@ function audio() {
         }));
     a.addEventListener('error', () => {
         const err = a.error;
+        // CORS-tagged elements refuse streams that lack CORS headers — retry
+        // once on a plain element (EQ bypassed) before calling it a failure.
+        if (_corsMode && a.src && a.src !== _plainRetrySrc) {
+            _plainRetrySrc = a.src;
+            try { _noCorsHosts.add(new URL(a.src).host); } catch { /* data: etc. */ }
+            log.log('stream refused CORS — retrying without EQ routing', a.src);
+            const b = _newElement(false);
+            b.src = _plainRetrySrc;
+            b.play().catch(e => _onError(`Tap play to start audio (${e.name})`));
+            _onChange();
+            return;
+        }
         const msg = err && err.code === 4
             ? 'This device cannot play that stream (unsupported format or blocked source)'
             : 'Playback failed on this device';
@@ -53,6 +87,19 @@ function audio() {
     });
     _audio = a;
     return a;
+}
+
+// Swap the cached element for a fresh one in the given CORS mode. The old
+// element keeps its (single, permanent) MediaElementSource but is silenced
+// and dropped; eq.js re-attaches per element.
+function _newElement(cors) {
+    const old = _audio;
+    if (old) {
+        try { old.pause(); old.removeAttribute('src'); old.load(); } catch { /* dying anyway */ }
+    }
+    _audio = null;
+    _corsMode = cors;
+    return audio();
 }
 
 // ── Queue ───────────────────────────────────────────────────────────────
@@ -89,12 +136,20 @@ async function _load(i, autoplay) {
         _loading = false;
     }
     if (!url) { _onError('No playable URL for this item'); return; }
-    a.src = url;
+    // Per-track CORS choice: prefer the EQ-capable element, but go straight
+    // to plain for hosts that already refused CORS this session (saves a
+    // guaranteed-to-fail load on every queue advance).
+    _plainRetrySrc = null;
+    let wantCors = true;
+    try { wantCors = !_noCorsHosts.has(new URL(url, location.href).host); } catch { /* keep true */ }
+    const el = wantCors !== _corsMode ? _newElement(wantCors) : a;
+    el.src = url;
     if (autoplay) {
         try {
             // Must be reached from the click that started playback, or the
             // browser's autoplay policy rejects it.
-            await a.play();
+            eqResume();
+            await el.play();
         } catch (e) {
             _onError(`Tap play to start audio (${e.name})`);
         }
@@ -118,6 +173,7 @@ export function prev() {
 export function pause() { audio().pause(); }
 
 export function resume() {
+    eqResume();
     audio().play().catch(e => _onError(`Could not resume (${e.name})`));
 }
 
