@@ -598,6 +598,7 @@ class GroupManager:
             "type": group_type,
             "capabilities": list(capabilities),
             "members": device_iees,
+            "chamber": None,
             "created_at": None
         }
 
@@ -770,6 +771,23 @@ class GroupManager:
         # Update Home Assistant discovery
         await self._publish_group_discovery(group_id, group)
 
+        return {"success": True, "group": group}
+
+    def set_chamber(self, group_id: int, chamber_id: Optional[str]) -> Dict:
+        """
+        Assign (or clear, with ``chamber_id=None``) the chamber a group belongs to.
+
+        Purely a local attribute — no Zigbee I/O, unlike membership changes —
+        so this is sync rather than async. A group with a chamber becomes its
+        own controllable cell in that chamber's Frames "by chamber" section,
+        the same idea as a device's own chamber assignment, one level up.
+        """
+        if group_id not in self.groups:
+            return {"error": "Group not found"}
+
+        group = self.groups[group_id]
+        group['chamber'] = chamber_id
+        self.save_groups()
         return {"success": True, "group": group}
 
     async def remove_device_from_group(self, group_id: int, ieee: str) -> Dict:

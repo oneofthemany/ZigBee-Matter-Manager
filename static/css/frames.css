@@ -134,6 +134,13 @@
     pointer-events: none;
 }
 
+/* A group's own tile — same shape as a device cell, tinted to show it
+   controls several devices at once rather than being one of them. */
+.frame-cell.is-group {
+    border-style: dashed;
+    border-color: var(--honey);
+}
+
 .cell-head {
     display: flex;
     align-items: center;

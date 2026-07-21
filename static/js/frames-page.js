@@ -23,6 +23,7 @@ import { state } from './state.js';
 import {
     initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate, setFrameTab,
     openFrameBuilder, saveFrame, deleteCurrentFrame, frameCommand, frameSetpoint,
+    frameGroupCommand,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 } from './frames.js';
@@ -31,7 +32,7 @@ import {
 // here exactly as main.js does for the dashboard.
 Object.assign(window, {
     setFrameTab, openFrameBuilder, saveFrame, deleteCurrentFrame,
-    frameCommand, frameSetpoint,
+    frameCommand, frameSetpoint, frameGroupCommand,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 });

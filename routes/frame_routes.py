@@ -15,6 +15,10 @@ Query params (auto):
     chambers=a,b                — restrict to these chambers
     kinds=light,switch          — restrict to these cell kinds
 
+A Zigbee group assigned a chamber (see routes/group_routes.py) becomes its own
+controllable cell in that chamber's section on a chamber-split frame — no query
+param needed, it's driven by the group's own ``chamber`` field.
+
 Storage:
     Saved frames: ``data/frames.json``. A frame is only filters over the live
     hive — it never stores device state, so it can't go stale.
@@ -100,6 +104,13 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             return []
         return svc.get_device_list() or []
 
+    def _device_groups() -> List[Dict[str, Any]]:
+        """Zigbee groups, so a chamber-assigned one gets its own cell — [] if groups aren't wired up yet."""
+        svc = get_zigbee_service()
+        if svc is None or not hasattr(svc, "group_manager"):
+            return []
+        return svc.group_manager.get_all_groups() or []
+
     @app.get("/api/frames/auto")
     async def get_auto_frame(
         split: str = "chamber",
@@ -121,6 +132,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 include_chambers=_csv(chambers),
                 include_kinds=_csv(kinds),
                 levels=chamber_levels(cfg),
+                device_groups=_device_groups(),
             )
             return {"success": True, **frame}
         except Exception as e:
@@ -208,7 +220,9 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             if not frame:
                 return {"success": False, "error": f"no frame '{frame_id}'", "groups": [], "total": 0}
             cfg = _load_config()
-            rendered = render_saved_frame(frame, _devices(), build_registry(cfg), chamber_levels(cfg))
+            rendered = render_saved_frame(
+                frame, _devices(), build_registry(cfg), chamber_levels(cfg), device_groups=_device_groups()
+            )
             return {"success": True, **rendered, "frame": frame}
         except Exception as e:
             logger.error(f"Failed to render frame {frame_id}: {e}")

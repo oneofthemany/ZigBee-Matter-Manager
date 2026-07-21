@@ -149,6 +149,7 @@ def register_chamber_routes(app: FastAPI, get_zigbee_service):
             _save_config(cfg)
 
             unassigned = 0
+            groups_cleared = 0
             svc = get_zigbee_service()
             if svc is not None:
                 cid = valid_id(chamber_id)
@@ -162,9 +163,22 @@ def register_chamber_routes(app: FastAPI, get_zigbee_service):
                     svc._save_json(SETTINGS_PATH, svc.device_settings)
                     unassigned = len(stale)
 
+                # Groups assigned to this chamber are unassigned in the same
+                # pass, for the same reason as devices — a stale id would
+                # render a phantom section in Frames.
+                gm = getattr(svc, "group_manager", None)
+                if gm is not None:
+                    stale_groups = [g for g in gm.groups.values() if g.get("chamber") == cid]
+                    for g in stale_groups:
+                        g["chamber"] = None
+                    if stale_groups:
+                        gm.save_groups()
+                        groups_cleared = len(stale_groups)
+
             return {
                 "success": True,
                 "unassigned": unassigned,
+                "groups_cleared": groups_cleared,
                 "chambers": build_registry(cfg),
             }
         except Exception as e:

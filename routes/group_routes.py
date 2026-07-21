@@ -3,9 +3,24 @@ Groups API routes.
 Extracted from main.py.
 """
 import logging
+import os
+from typing import Any, Dict
+
+import yaml
 from fastapi import FastAPI
 
+from modules.chambers import registry_ids, valid_id
+
 logger = logging.getLogger("routes.groups")
+
+CONFIG_PATH = "./config/config.yaml"
+
+
+def _load_config() -> Dict[str, Any]:
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    with open(CONFIG_PATH, "r") as f:
+        return yaml.safe_load(f) or {}
 
 
 def register_group_routes(app: FastAPI, get_zigbee_service, get_manager):
@@ -50,6 +65,42 @@ def register_group_routes(app: FastAPI, get_zigbee_service, get_manager):
             return result
         except Exception as e:
             logger.error(f"Failed to create group: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/groups/{group_id}/chamber")
+    async def set_group_chamber(group_id: int, data: dict):
+        """
+        Assign (or clear) the chamber a group belongs to. Body: ``{chamber}``.
+
+        ``chamber: null`` clears it. A group with a chamber becomes its own
+        controllable cell in that chamber's section of the Frames "by chamber"
+        view — the same idea as a device's own chamber assignment.
+        """
+        try:
+            zigbee_service = get_zigbee_service()
+            if not hasattr(zigbee_service, 'group_manager'):
+                return {"error": "Group manager not initialized"}
+
+            raw_chamber = data.get('chamber')
+            chamber_id = None
+            if raw_chamber not in (None, ""):
+                chamber_id = valid_id(raw_chamber)
+                if not chamber_id:
+                    return {"error": f"invalid chamber id: {raw_chamber!r}"}
+                if chamber_id not in registry_ids(_load_config()):
+                    # Reject unknown ids outright — same rule chambers/assign uses:
+                    # a typo shouldn't create a phantom chamber no UI renders.
+                    return {"error": f"no chamber '{chamber_id}'"}
+
+            result = zigbee_service.group_manager.set_chamber(group_id, chamber_id)
+            if 'success' in result:
+                await get_manager().broadcast({
+                    "type": "group_updated",
+                    "group": result['group']
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Failed to set group chamber: {e}")
             return {"error": str(e)}
 
     @app.post("/api/groups/{group_id}/add_device")

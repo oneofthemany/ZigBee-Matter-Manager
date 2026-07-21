@@ -314,6 +314,77 @@ def resolve_cell(device: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: modules/groups.py's own capability vocabulary — NOT the same one `features()`
+#: reads (see module docstring). A group's capabilities come from
+#: ``DeviceCapability`` (on_off/brightness/color_temp/color_xy/color_hs/position/
+#: lock), so group cell features are derived here, independently.
+_GROUP_TYPE_TO_KIND = {
+    "light": CELL_LIGHT,
+    "switch": CELL_SWITCH,
+    "cover": CELL_COVER,
+    "lock": CELL_LOCK,
+}
+
+
+def group_features(group: Dict[str, Any], kind: str) -> List[str]:
+    """Quick actions for a group's own control tile, mirroring ``features()``."""
+    caps = set(group.get("capabilities") or [])
+    out: List[str] = []
+
+    if kind == CELL_LIGHT:
+        if "on_off" in caps:
+            out.append("toggle")
+        if "brightness" in caps:
+            out.append("brightness")
+        if caps & {"color_temp", "color_xy", "color_hs"}:
+            out.append("color")
+    elif kind == CELL_SWITCH:
+        out.append("toggle")
+    elif kind == CELL_COVER:
+        out.extend(["open", "close", "stop"])
+        if "position" in caps:
+            out.append("position")
+    # No CELL_LOCK branch: GroupManager.control_group has no lock/unlock
+    # command handler, so a lock-type group renders with no quick actions
+    # rather than offering a button that would silently do nothing.
+
+    return out
+
+
+def resolve_group_cell(group: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build one cell descriptor for a Zigbee group's own control tile.
+
+    A group assigned a chamber (``group["chamber"]``) appears as a single
+    controllable cell in that chamber's Frames section, alongside its member
+    devices' own cells — the same "one thing, one control surface" idea as
+    ``resolve_cell``, just applied to the group as a whole rather than to any
+    one device. Quick actions act on every member at once, via
+    ``GroupManager.control_group`` (``POST /api/groups/{id}/control``), not the
+    single-device command path.
+
+    ``is_group`` distinguishes this from a device cell — ``ieee`` is None,
+    there's nothing to look up in ``state.deviceCache`` by that key. ``members``
+    ships the ieees so the frontend can derive an on/off/brightness readout by
+    looking at what the group's own devices are currently doing.
+    """
+    kind = _GROUP_TYPE_TO_KIND.get(group.get("type"), CELL_UNKNOWN)
+    return {
+        "group_id": group.get("id"),
+        "ieee": None,
+        "is_group": True,
+        "name": group.get("name") or f"Group {group.get('id')}",
+        "chamber": group.get("chamber"),
+        "kind": kind,
+        "features": group_features(group, kind),
+        "readouts": [],
+        "badges": [],
+        "available": True,
+        "last_seen_ts": None,
+        "members": list(group.get("members") or []),
+    }
+
+
 def is_zigbee(device: Dict[str, Any]) -> bool:
     """Frames is Zigbee-only for now; AC/media/heating adapters come later."""
     protocol = device.get("protocol")
@@ -337,6 +408,7 @@ def build_auto_frame(
     order: Optional[List[str]] = None,
     levels: Optional[List[dict]] = None,
     tabs: Optional[List[dict]] = None,
+    device_groups: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """
     Group devices into a frame.
@@ -362,6 +434,11 @@ def build_auto_frame(
     Chamber group order follows the registry (level index, then name), so a
     chamber-split frame reads ground floor first. Unassigned devices always sort
     last — they're a to-do list, not a room.
+
+    ``device_groups`` (Zigbee groups, each carrying its own ``chamber``) are
+    used only for split="chamber": a group assigned a chamber gets its own
+    controllable cell in that chamber's section, via ``resolve_group_cell``.
+    Groups without a chamber don't appear in Frames at all.
     """
     if split not in VALID_SPLITS:
         split = SPLIT_CHAMBER
@@ -371,6 +448,13 @@ def build_auto_frame(
     chamber_rank = {c["id"]: i for i, c in enumerate(chambers)}
 
     cells = [resolve_cell(d) for d in devices if is_zigbee(d)]
+
+    # A group assigned a chamber becomes its own controllable cell in that
+    # chamber's section — visible without having to name a single device.
+    # Only meaningful for the chamber split: a group tile has no natural home
+    # in a device-type section.
+    if split == SPLIT_CHAMBER:
+        cells.extend(resolve_group_cell(g) for g in (device_groups or []) if g.get("chamber"))
 
     if include_chambers:
         wanted = set(include_chambers)
@@ -629,6 +713,7 @@ def render_saved_frame(
     devices: List[Dict[str, Any]],
     chambers: Optional[List[dict]] = None,
     levels: Optional[List[dict]] = None,
+    device_groups: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """Build a saved frame's layout. Thin wrapper — a saved frame is just filters."""
     frame = build_auto_frame(
@@ -641,6 +726,7 @@ def render_saved_frame(
         order=saved.get("order"),
         levels=levels,
         tabs=saved.get("tabs"),
+        device_groups=device_groups,
     )
     frame["id"] = saved.get("id")
     frame["name"] = saved.get("name")

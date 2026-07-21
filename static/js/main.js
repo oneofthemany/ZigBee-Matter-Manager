@@ -65,6 +65,7 @@ import {
     selectFrame,
     frameCommand,
     frameSetpoint,
+    frameGroupCommand,
     framesHandleDeviceUpdate,
     openFrameBuilder,
     saveFrame,
@@ -286,6 +287,7 @@ window.setFramesSplit = setSplit;
 window.selectFrame = selectFrame;
 window.frameCommand = frameCommand;
 window.frameSetpoint = frameSetpoint;
+window.frameGroupCommand = frameGroupCommand;
 // Frame builder
 window.openFrameBuilder = openFrameBuilder;
 window.saveFrame = saveFrame;

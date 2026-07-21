@@ -8,8 +8,12 @@
  * websocket already keeps current — so a state change re-renders one cell and
  * never refetches the layout.
  *
- * Quick actions go through window.sendCommand (actions.js), which already does
- * the optimistic update. Frames does not open a second command path.
+ * Quick actions on a device cell go through window.sendCommand (actions.js),
+ * which already does the optimistic update. A group cell's quick actions go
+ * through frameGroupCommand instead (POST /api/groups/{id}/control) — a
+ * group has no single device to send an optimistic update for, so its tile
+ * relies on member devices' own websocket updates instead (see
+ * framesHandleDeviceUpdate).
  *
  * Zigbee-only for now — the backend excludes everything else.
  */
@@ -100,6 +104,26 @@ function setpointOf(cell) {
     const s = stateOf(cell);
     const v = s.occupied_heating_setpoint ?? s.heating_setpoint ?? s.target_temp;
     return typeof v === 'number' ? v : null;
+}
+
+// ── group cells (a Zigbee group's own control tile, see resolve_group_cell) ─
+
+/**
+ * Aggregate readouts for a group cell, reusing the per-device helpers above
+ * against each member — a group cell has no ieee of its own to look up.
+ */
+function groupIsOn(cell) {
+    return (cell.members || []).some(ieee => isOn({ ieee }));
+}
+
+function groupBrightnessPct(cell) {
+    const vals = (cell.members || []).map(ieee => brightnessOf({ ieee }));
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+}
+
+function groupPositionPct(cell) {
+    const vals = (cell.members || []).map(ieee => positionOf({ ieee }));
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 50;
 }
 
 // ── readout formatting ──────────────────────────────────────────────
@@ -238,9 +262,63 @@ function controlsHtml(cell) {
     return (html ? `<div class="cell-controls">${html}</div>` : '') + sliders;
 }
 
+/**
+ * Controls for a group's own tile — same layout as controlsHtml, but every
+ * action goes through frameGroupCommand (POST /api/groups/{id}/control)
+ * instead of the single-device command path, and reads/writes are aggregated
+ * across cell.members instead of one device's state.
+ */
+function groupControlsHtml(cell) {
+    const f = cell.features || [];
+    const gid = cell.group_id;
+    let html = '';
+
+    if (f.includes('toggle')) {
+        const on = groupIsOn(cell);
+        html += `
+            <button class="btn btn-sm ${on ? 'btn-warning' : 'btn-outline-secondary'} flex-grow-1"
+                    onclick="window.frameGroupCommand(${gid}, 'toggle', ${!on})"
+                    aria-pressed="${on}">
+                <i class="fas fa-power-off"></i> ${on ? 'On' : 'Off'}
+            </button>`;
+    }
+
+    if (f.includes('open') || f.includes('close')) {
+        html += `
+            <div class="btn-group btn-group-sm flex-grow-1" role="group" aria-label="Group cover controls">
+                <button class="btn btn-outline-secondary" onclick="window.frameGroupCommand(${gid}, 'open')" title="Open">
+                    <i class="fas fa-arrow-up"></i>
+                </button>
+                <button class="btn btn-outline-secondary" onclick="window.frameGroupCommand(${gid}, 'stop')" title="Stop">
+                    <i class="fas fa-stop"></i>
+                </button>
+                <button class="btn btn-outline-secondary" onclick="window.frameGroupCommand(${gid}, 'close')" title="Close">
+                    <i class="fas fa-arrow-down"></i>
+                </button>
+            </div>`;
+    }
+
+    let sliders = '';
+    if (f.includes('brightness')) {
+        sliders += `
+            <input type="range" class="form-range cell-slider" min="0" max="100" value="${groupBrightnessPct(cell)}"
+                   aria-label="Brightness"
+                   onchange="window.frameGroupCommand(${gid}, 'brightness', this.value)">`;
+    }
+    if (f.includes('position')) {
+        sliders += `
+            <input type="range" class="form-range cell-slider" min="0" max="100" value="${groupPositionPct(cell)}"
+                   aria-label="Position"
+                   onchange="window.frameGroupCommand(${gid}, 'position', this.value)">`;
+    }
+
+    return (html ? `<div class="cell-controls">${html}</div>` : '') + sliders;
+}
+
 // ── cells ───────────────────────────────────────────────────────────
 
 function cellIcon(cell) {
+    if (cell.is_group) return 'fa-layer-group';
     if (cell.kind === 'sensor' && cell.readouts?.length) {
         return READOUT_ICONS[cell.readouts[0].kind] || KIND_ICONS.sensor;
     }
@@ -248,6 +326,22 @@ function cellIcon(cell) {
 }
 
 function cellInnerHtml(cell) {
+    if (cell.is_group) {
+        const memberCount = (cell.members || []).length;
+        const controls = groupControlsHtml(cell);
+        const body = controls || `<div class="readout is-pending">No controls available</div>`;
+        return `
+            <div class="cell-head">
+                <span class="cell-icon"><i class="fas ${cellIcon(cell)}"></i></span>
+                <span class="cell-name" title="${esc(cell.name)}">${esc(cell.name)}</span>
+                <span class="cell-badges" title="${memberCount} device${memberCount === 1 ? '' : 's'} in this group">
+                    <i class="fas fa-layer-group"></i>${memberCount}
+                </span>
+            </div>
+            <div class="cell-body">${body}</div>
+        `;
+    }
+
     const dev = devOf(cell);
     // Prefer the live name — a rename shouldn't need a frame refetch.
     const name = dev?.friendly_name || cell.name;
@@ -282,14 +376,16 @@ function cellInnerHtml(cell) {
 }
 
 function cellHtml(cell) {
-    const active = (cell.features || []).includes('toggle') && isOn(cell);
+    const active = (cell.features || []).includes('toggle') && (cell.is_group ? groupIsOn(cell) : isOn(cell));
     const cls = [
         'frame-cell',
+        cell.is_group ? 'is-group' : '',
         cell.available ? '' : 'is-offline',
         active ? 'is-active' : '',
     ].filter(Boolean).join(' ');
 
-    return `<div class="${cls}" data-ieee="${esc(cell.ieee)}" data-kind="${esc(cell.kind)}"
+    return `<div class="${cls}" data-ieee="${esc(cell.ieee)}"
+                 data-group-id="${cell.is_group ? esc(String(cell.group_id)) : ''}" data-kind="${esc(cell.kind)}"
                  title="${cell.available ? '' : 'Device unreachable'}">
                 ${cellInnerHtml(cell)}
             </div>`;
@@ -386,25 +482,38 @@ export function setFrameTab(id) {
     renderFrame();
 }
 
+/** Don't yank a slider out from under a finger mid-drag. */
+function sliderBeingDragged(el) {
+    return el.contains(document.activeElement) &&
+        document.activeElement.matches('input[type="range"]');
+}
+
 /** Re-render only the cells for one device. Called on every websocket update. */
 export function framesHandleDeviceUpdate(ieee) {
     if (!frame) return;
-    const cells = document.querySelectorAll(`.frame-cell[data-ieee="${CSS.escape(ieee)}"]`);
-    if (!cells.length) return;
+    const allCells = frame.groups.flatMap(g => g.cells);
 
-    const cell = frame.groups.flatMap(g => g.cells).find(c => c.ieee === ieee);
-    if (!cell) return;
+    const cell = allCells.find(c => !c.is_group && c.ieee === ieee);
+    if (cell) {
+        const dev = devOf(cell);
+        if (dev) cell.available = !!dev.available;
+        for (const el of document.querySelectorAll(`.frame-cell[data-ieee="${CSS.escape(ieee)}"]`)) {
+            if (sliderBeingDragged(el)) continue;
+            el.classList.toggle('is-offline', !cell.available);
+            el.classList.toggle('is-active', (cell.features || []).includes('toggle') && isOn(cell));
+            el.innerHTML = cellInnerHtml(cell);
+        }
+    }
 
-    const dev = devOf(cell);
-    if (dev) cell.available = !!dev.available;
-
-    for (const el of cells) {
-        // Don't yank a slider out from under a finger mid-drag.
-        if (el.contains(document.activeElement) &&
-            document.activeElement.matches('input[type="range"]')) continue;
-        el.classList.toggle('is-offline', !cell.available);
-        el.classList.toggle('is-active', (cell.features || []).includes('toggle') && isOn(cell));
-        el.innerHTML = cellInnerHtml(cell);
+    // A group has no websocket event of its own — its aggregate on/off,
+    // brightness and position can still change because one of its member
+    // devices just did, so refresh every group tile this ieee belongs to.
+    for (const gc of allCells.filter(c => c.is_group && c.members?.includes(ieee))) {
+        for (const el of document.querySelectorAll(`.frame-cell[data-group-id="${CSS.escape(String(gc.group_id))}"]`)) {
+            if (sliderBeingDragged(el)) continue;
+            el.classList.toggle('is-active', (gc.features || []).includes('toggle') && groupIsOn(gc));
+            el.innerHTML = cellInnerHtml(gc);
+        }
     }
 }
 
@@ -616,7 +725,7 @@ function renderBuilder() {
     renderOrderList();
 }
 
-/** The groups this frame can produce — what a tab is allowed to hold. */
+/** The sections this frame can produce — what a tab is allowed to hold. */
 function availableGroups() {
     if (draft.split === 'type') {
         const wanted = draft.kinds.length ? draft.kinds : allKinds.map(k => k.kind);
@@ -868,6 +977,48 @@ export async function frameSetpoint(ieee, delta) {
     if (el) el.textContent = `${next}°`;
 
     await window.sendCommand(ieee, 'temperature', next);
+}
+
+/**
+ * Route a group cell's quick action through POST /api/groups/{id}/control —
+ * a different command surface from a device's (window.sendCommand), with its
+ * own unit conventions:
+ *
+ * - brightness: the slider is 0-100 like a device's, but control_group calls
+ *   the ZCL level-control cluster directly with no conversion, so it wants a
+ *   raw 0-254 level (see handlers/general.py:set_brightness_pct, which is
+ *   what does that conversion on the single-device path).
+ * - position: the UI convention is 100 = open (handlers/blinds.py inverts
+ *   this for a single device just before the cluster call); control_group
+ *   has no such inversion, so it's done here instead.
+ *
+ * Member devices report their new state over the websocket like any other
+ * command, so no optimistic update is needed — framesHandleDeviceUpdate picks
+ * it up per member device from there.
+ */
+export async function frameGroupCommand(groupId, action, value = null) {
+    let body;
+    switch (action) {
+        case 'toggle': body = { state: value ? 'ON' : 'OFF' }; break;
+        case 'brightness': body = { brightness: Math.round((Number(value) / 100) * 254) }; break;
+        case 'open': body = { cover_state: 'OPEN' }; break;
+        case 'close': body = { cover_state: 'CLOSE' }; break;
+        case 'stop': body = { cover_state: 'STOP' }; break;
+        case 'position': body = { position: 100 - Number(value) }; break;
+        default: return;
+    }
+
+    try {
+        const res = await fetch(`/api/groups/${groupId}/control`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+    } catch (e) {
+        window.toast.error('Group command failed: ' + e.message);
+    }
 }
 
 // ── init ────────────────────────────────────────────────────────────

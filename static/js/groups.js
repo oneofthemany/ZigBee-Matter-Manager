@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { confirmDialog } from './dialogs.js';
+import { ensureChambers, getChambers, chamberName } from './chambers.js';
 
 const log = zmmLog('groups');
 
@@ -16,6 +17,12 @@ const groupsState = {
     selectedDevices: new Set(),
     currentGroup: null
 };
+
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+}
 
 /**
  * Initialize groups tab
@@ -527,10 +534,56 @@ window.deleteGroup = async function(groupId, groupName) {
 }
 
 
+/** Chamber `<option>`s for the group control modal's chamber select. */
+function chamberOptionsHtml(currentId) {
+    const chambers = getChambers();
+    let opts = `<option value="" ${currentId ? '' : 'selected'}>— No chamber —</option>`;
+    opts += chambers.map(c =>
+        `<option value="${esc(c.id)}" ${c.id === currentId ? 'selected' : ''}>${esc(c.name)}</option>`
+    ).join('');
+    // A chamber id pointing nowhere (deleted since assignment) shouldn't be
+    // silently dropped from the list — show it, flagged, so it can be fixed.
+    if (currentId && !chambers.some(c => c.id === currentId)) {
+        opts += `<option value="${esc(currentId)}" selected>${esc(currentId)} (unknown)</option>`;
+    }
+    return opts;
+}
+
+export async function assignGroupChamber(groupId, chamberId) {
+    const select = document.getElementById('groupChamberSelect');
+    if (select) select.disabled = true;
+    try {
+        const res = await fetch(`/api/groups/${groupId}/chamber`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chamber: chamberId || null }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        // Keep the caches in step so Frames and this modal stay correct
+        // without a full groups refetch.
+        const group = groupsState.allGroups.find(g => g.id === groupId);
+        const resolved = data.group?.chamber ?? (chamberId || null);
+        if (group) group.chamber = resolved;
+        if (groupsState.currentGroup?.id === groupId) groupsState.currentGroup.chamber = resolved;
+
+        window.toast.success(resolved ? `Group moved to ${chamberName(resolved)}` : 'Chamber cleared');
+    } catch (e) {
+        window.toast.error('Could not set chamber: ' + e.message);
+        // Put the control back where it was rather than leaving it showing a
+        // chamber the group isn't actually in.
+        if (select) select.value = groupsState.currentGroup?.chamber || '';
+    } finally {
+        if (select) select.disabled = false;
+    }
+}
+window.assignGroupChamber = assignGroupChamber;
+
 /**
  * Open group control modal
  */
-window.openGroupControl = function(groupId) {
+window.openGroupControl = async function(groupId) {
     const group = groupsState.allGroups.find(g => g.id === groupId);
     if (!group) {
         log.error(`Group ${groupId} not found`);
@@ -538,6 +591,10 @@ window.openGroupControl = function(groupId) {
     }
 
     groupsState.currentGroup = group;
+
+    // The chamber picker renders synchronously from the cached registry, same
+    // as the device modal's.
+    await ensureChambers().catch(() => {});
 
     // Set title
     const titleElement = document.getElementById('groupControlTitle');
@@ -549,7 +606,15 @@ window.openGroupControl = function(groupId) {
         infoDiv.innerHTML = `
             <div class="mb-2"><strong>Type:</strong> ${group.type}</div>
             <div class="mb-2"><strong>Devices:</strong> ${group.members.length}</div>
-            <div><strong>Capabilities:</strong> ${renderCapabilityBadges(group.capabilities || [])}</div>
+            <div class="mb-2"><strong>Capabilities:</strong> ${renderCapabilityBadges(group.capabilities || [])}</div>
+            <div class="d-flex align-items-center gap-2">
+                <strong>Chamber:</strong>
+                <select id="groupChamberSelect" class="form-select form-select-sm" style="max-width: 200px;"
+                        onchange="window.assignGroupChamber(${group.id}, this.value)">
+                    ${chamberOptionsHtml(group.chamber)}
+                </select>
+                <span class="text-muted small">Assigning a chamber shows this group as a control tile in Frames</span>
+            </div>
         `;
     }
 
