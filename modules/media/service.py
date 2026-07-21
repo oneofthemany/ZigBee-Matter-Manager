@@ -86,12 +86,20 @@ class MediaService:
 
         # ---- Cast EQ (server-side DSP proxy) ----
         # Always constructed; wants() gates on the zmm_eq wheel + ffmpeg + a
-        # reachable base URL, so this is inert until all three exist.
+        # device-reachable base URL. Devices reject the main app's self-signed
+        # HTTPS, so streams they fetch are served by the plain-HTTP device
+        # listener below, and the base URL is auto-derived from it —
+        # media.eq.base_url is only an override for multi-homed hosts.
         eq_cfg = config.get("eq", {}) or {}
+        from modules.media.device_http import DeviceAudioListener, lan_ip
+        self.device_http = DeviceAudioListener(
+            self, port=int(config.get("device_http_port", 8011)))
         from modules.media.eq_stream import EqStreamEngine
         self.eq_stream = EqStreamEngine(
             base_url=eq_cfg.get("base_url") or tidal_cfg.get("manifest_base_url", ""),
             settings_file=eq_cfg.get("settings_file", "./data/media_eq.json"),
+            fallback_base=lambda: (
+                f"http://{lan_ip()}:{self.device_http.port}" if lan_ip() else ""),
         )
         self.controller.set_eq_engine(self.eq_stream)
 
@@ -282,12 +290,14 @@ class MediaService:
         self._task = asyncio.create_task(self._run())
         if self.cast_sync is not None:
             self.cast_sync.start()      # brings up the plain-HTTP sync listener
+        self.device_http.start()        # plain-HTTP device-audio listener
         logger.info(f"Media service started (poll={self.poll_interval}s)")
 
     def stop(self):
         self._save_sessions()       # best-effort final persist before going down
         if self.cast_sync is not None:
             self.cast_sync.stop()
+        self.device_http.stop()
         if self._task:
             self._task.cancel()
             self._task = None

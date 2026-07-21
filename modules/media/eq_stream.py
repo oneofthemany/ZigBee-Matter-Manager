@@ -90,8 +90,12 @@ class _Session:
 
 
 class EqStreamEngine:
-    def __init__(self, base_url: str = "", settings_file: str = "./data/media_eq.json"):
+    def __init__(self, base_url: str = "", settings_file: str = "./data/media_eq.json",
+                 fallback_base=None):
         self._base = (base_url or "").rstrip("/")
+        # Zero-config default: () -> "http://<lan-ip>:<device-http-port>"
+        # (see device_http.py). A configured base_url overrides it.
+        self._fallback_base = fallback_base
         self._file = settings_file
         self._ffmpeg = shutil.which("ffmpeg") or ""
         self._settings: Dict[str, dict] = self._load()
@@ -101,24 +105,40 @@ class EqStreamEngine:
     # ------------------------------------------------------------------
     # Capability / settings
     # ------------------------------------------------------------------
+    def _resolve_base(self) -> str:
+        """The URL prefix speakers fetch from: configured base_url if set,
+        else the auto-derived plain-HTTP device listener address. An https
+        override is ignored — devices reject the app's self-signed cert, and
+        a proxy URL they can't fetch breaks ALL playback for EQ-on players."""
+        if self._base and not self._base.startswith("https://"):
+            return self._base
+        if callable(self._fallback_base):
+            try:
+                return (self._fallback_base() or "").rstrip("/")
+            except Exception:
+                return ""
+        return ""
+
     @property
     def available(self) -> bool:
-        return _HAVE_DSP and bool(self._ffmpeg) and bool(self._base)
+        return _HAVE_DSP and bool(self._ffmpeg) and bool(self._resolve_base())
 
     def _unavailable_reason(self) -> str:
         if not _HAVE_DSP:
             return "DSP engine (zmm_eq) not installed in this build"
         if not self._ffmpeg:
             return "ffmpeg not found on the server"
-        return ("No LAN base URL configured — set media.eq.base_url "
-                "(or media.tidal.manifest_base_url) so the speaker can reach this app")
+        return ("Could not determine this app's LAN address — set "
+                "media.eq.base_url so the speaker can reach this app")
 
     def status(self) -> dict:
         """Readiness summary for the Settings → Audio tab."""
+        base = self._resolve_base()
         return {"available": self.available,
                 "have_dsp": _HAVE_DSP,
                 "have_ffmpeg": bool(self._ffmpeg),
-                "base_url": self._base,
+                "base_url": base,
+                "auto": not self._base,
                 **({} if self.available
                    else {"reason": self._unavailable_reason()})}
 
@@ -190,7 +210,7 @@ class EqStreamEngine:
         (proxy_url, content_type) for the device to play instead."""
         token = secrets.token_urlsafe(8)
         self._pending[player_id] = (token, url)
-        proxy = (f"{self._base}/api/media/eq/stream/"
+        proxy = (f"{self._resolve_base()}/api/media/eq/stream/"
                  f"{quote(player_id, safe='')}/{token}.wav")
         return proxy, "audio/wav"
 

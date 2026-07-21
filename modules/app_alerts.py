@@ -48,6 +48,11 @@ EXCLUDED_LOGGER_PREFIXES = (
     "matter_server",        # relays matter-server subprocess stderr verbatim
     "pychromecast",         # reconnects on its own, very chatty
     "editor.",              # editor test flows report through their own UI
+    "uk_fuel_prices_api",   # logs ERROR per retailer feed; several are
+                            # chronically down (BP 403s non-browsers, KRL
+                            # times out) while the query still succeeds off
+                            # the rest. modules/fuel_prices.py surfaces real
+                            # total failure through the API instead.
 )
 
 

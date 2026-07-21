@@ -56,7 +56,9 @@ async function render() {
         ? `<span class="badge bg-success ms-1" title="Inputs: ${esc((mic.inputs || []).join(', '))}"><i class="fas fa-microphone me-1"></i>mic: ${esc(mic.selected)}</span>`
         : `<span class="badge bg-warning text-dark ms-1" title="${esc(mic?.error || 'No capture device found')} — a mic plugged in after the container started needs a container restart to appear"><i class="fas fa-microphone-slash me-1"></i>no mic detected</span>`);
     const eqBadge = eqStatus?.available
-        ? '<span class="badge bg-success">DSP ready</span>'
+        ? `<span class="badge bg-success">DSP ready</span>
+           <div class="small text-muted mt-1">speakers fetch from
+             <code>${esc(eqStatus.base_url)}</code>${eqStatus.auto ? ' (auto)' : ''}</div>`
         : `<span class="badge bg-warning text-dark">not ready</span>
            <div class="small text-muted mt-1">${esc(eqStatus?.reason || 'status unavailable')}</div>`;
 
@@ -180,19 +182,19 @@ async function render() {
           Cast speakers expose no DSP API, so their 10-band EQ (Media tab → player
           <i class="fas fa-sliders-h"></i> button) is applied on the server: playback is routed
           through an ffmpeg → Rust biquad proxy and the speaker fetches the processed stream
-          back from this app. That URL must be reachable <strong>by the speaker</strong>, so
-          it needs this app's LAN address — plain HTTP, since Cast devices reject
-          self-signed certificates.
+          back over a plain-HTTP listener (Cast devices reject this app's self-signed
+          HTTPS). The listener's address is auto-detected — <strong>no configuration
+          needed</strong>.
         </p>
         <div class="row g-3 mb-2">
           <div class="col-md-5">
-            <label class="form-label small fw-semibold">LAN Base URL</label>
+            <label class="form-label small fw-semibold">LAN Base URL <span class="fw-normal text-muted">(override, usually blank)</span></label>
             <input type="text" class="form-control" id="cfg_eq_baseurl"
                    value="${esc(_eqCfg.base_url)}"
-                   placeholder="http://${esc(location.hostname)}:${esc(location.port || '80')}">
-            <small class="text-muted">How speakers reach this app
-              (<code>media.eq.base_url</code>). Falls back to the Tidal manifest base URL
-              when blank.</small>
+                   placeholder="blank = auto-detect">
+            <small class="text-muted">Only set this (<code>media.eq.base_url</code>) if
+              auto-detection picks the wrong interface. Must be plain
+              <code>http://</code> and reachable by the speaker.</small>
           </div>
           <div class="col-md-4">
             <label class="form-label small fw-semibold">Status</label>

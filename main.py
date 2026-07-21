@@ -325,6 +325,9 @@ octopus_service = OctopusEnergyService(config=CONFIG.get("octopus", {}))
 # (model downloads on demand from the therapy UI); set media.therapy.engine
 # to "wyoming" to use an external wyoming-piper server instead.
 therapy_tts = create_therapy_tts(CONFIG.get("media", {}).get("therapy", {}))
+# The device-audio listener serves /api/therapy/stream to speakers; hand it
+# the TTS service (built after MediaService) so guided speech works there too.
+media_service.device_http.get_tts = lambda: therapy_tts
 
 # Let automation steps play radio/Tidal and control players (engine is built
 # before the media service, so wire the getter in now).
