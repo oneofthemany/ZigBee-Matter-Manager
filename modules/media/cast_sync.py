@@ -53,7 +53,7 @@ import struct
 import tempfile
 import time
 import uuid as uuid_mod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 # Module-level on purpose: with ``from __future__ import annotations`` the
@@ -309,6 +309,7 @@ class CastSyncPoc:
         # index for sounddevice; None = system default.
         self._mic_device = cfg.get("mic_device") or None
         self._calibrating = False
+        self._mic_cache: Optional[Tuple[float, dict]] = None
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -489,6 +490,39 @@ class CastSyncPoc:
         logger.info("Cast sync session stopped")
         return {"success": True}
 
+    def _mic_status(self) -> dict:
+        """Capture-device probe for the OpenZone mic badge (cached 30 s).
+
+        PortAudio snapshots the ALSA device list at init, so while no usable
+        mic is found we re-init on each expiry to pick up cards that appeared
+        since (never mid-calibration — that would kill the recording). Note
+        the container maps /dev/snd at CREATE time (build.sh): a mic
+        hot-plugged after start needs a container restart to appear at all.
+        """
+        now = time.monotonic()
+        if self._mic_cache and now - self._mic_cache[0] < 30.0:
+            return self._mic_cache[1]
+        info: dict = {"available": False, "selected": None,
+                      "configured": self._mic_device, "inputs": []}
+        try:
+            import sounddevice as sd
+            prev = self._mic_cache[1] if self._mic_cache else None
+            if not self._calibrating and (prev is None
+                                          or not prev["available"]):
+                sd._terminate()
+                sd._initialize()
+            info["inputs"] = [d["name"] for d in sd.query_devices()
+                              if d["max_input_channels"] > 0]
+            sel = (sd.query_devices(self._mic_device, "input")
+                   if self._mic_device is not None
+                   else sd.query_devices(kind="input"))
+            info["selected"] = sel["name"]
+            info["available"] = True
+        except Exception as e:
+            info["error"] = str(e)
+        self._mic_cache = (now, info)
+        return info
+
     def status(self) -> dict:
         devices = []
         for sid, info in self._pending.items():
@@ -513,6 +547,7 @@ class CastSyncPoc:
             "duration_s": self._duration_s if self.running else 0,
             "remaining_s": (max(0, self._duration_s - elapsed)
                             if self.running and self._duration_s else None),
+            "mic": self._mic_status(),
             "devices": devices,
         }
 
