@@ -1,6 +1,7 @@
 """
 MQTT Client Wrapper for Zigbee Service
-Handles connection, publishing, and Home Assistant integration (Birth Messages).
+Handles connection, publishing, and Home Assistant integration (Birth Messages)
+via the Home Assistant MQTT Discovery protocol.
 """
 import json
 import asyncio
@@ -16,8 +17,9 @@ logger = logging.getLogger("mqtt")
 class MQTTService:
     """
     MQTT Service with robust reconnection and HA command handling.
-    Based on ZHA MQTT patterns for reliable Home Assistant integration.
-    """
+    Implements the Home Assistant MQTT Discovery protocol (config topics,
+    birth-message resync, command topics) for reliable HA integration.
+"""
 
     def __init__(
             self,

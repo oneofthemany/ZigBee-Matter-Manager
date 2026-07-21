@@ -628,3 +628,5 @@ Contributions are welcome. The codebase follows a modular handler architecture â
 ## ðŸ“„ License
 
 This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
+
+Third-party components and acknowledgements are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
