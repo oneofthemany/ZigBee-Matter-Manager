@@ -160,6 +160,13 @@ LAN_ANONYMOUS_PREFIXES: Tuple[str, ...] = (
     "/api-docs",                 # docs viewer is read-only static html/js
     "/api/routes",
     "/routes",
+    # Device-fetched audio: Cast/WiiM speakers pull these URLs themselves and
+    # have no way to carry a session cookie or bearer token. The EQ stream is
+    # additionally guarded by its per-playback random token; the therapy and
+    # manifest routes serve audio only, no user data.
+    "/api/media/eq/stream/",
+    "/api/media/tidal/manifest/",
+    "/api/therapy/stream",
 )
 
 

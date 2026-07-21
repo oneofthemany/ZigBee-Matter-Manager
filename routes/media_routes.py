@@ -362,7 +362,8 @@ def register_media_routes(app: FastAPI, get_media_service):
         from fastapi.responses import StreamingResponse
         return StreamingResponse(engine.stream(player_id, token),
                                  media_type="audio/wav",
-                                 headers={"Cache-Control": "no-store"})
+                                 headers={"Cache-Control": "no-store",
+                                          "Access-Control-Allow-Origin": "*"})
 
     @app.post("/api/media/group")
     async def group(body: GroupBody):
@@ -650,6 +651,9 @@ def register_media_routes(app: FastAPI, get_media_service):
         mpd = await src.dash_manifest(track_id)
         if not mpd:
             return Response("no lossless manifest for track", status_code=404)
-        return Response(content=mpd, media_type="application/dash+xml")
+        # CORS: the Cast receiver XHR-fetches the MPD from its google-hosted
+        # origin, so without this header DASH playback fails on the device.
+        return Response(content=mpd, media_type="application/dash+xml",
+                        headers={"Access-Control-Allow-Origin": "*"})
 
     logger.info("Media routes registered")

@@ -107,6 +107,7 @@ def register_tts_routes(app: FastAPI, get_tts):
                            voice=voice or "af_heart", speech_speed=speed,
                            pitch=pitch, interval=interval, breath=breath)
         return StreamingResponse(ts.wav_stream(), media_type="audio/wav",
-                                 headers={"Cache-Control": "no-store"})
+                                 headers={"Cache-Control": "no-store",
+                                          "Access-Control-Allow-Origin": "*"})
 
     logger.info("TTS routes registered")
