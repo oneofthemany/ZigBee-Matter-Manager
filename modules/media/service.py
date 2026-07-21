@@ -12,6 +12,9 @@ Config (config.yaml):
     wiim:    { enabled: true, devices: ["192.168.1.50"] }
     radio_browser: { enabled: true }
     poll_interval_seconds: 10
+    # Cast EQ proxy — base_url must be this app's LAN address so speakers can
+    # fetch the processed stream (falls back to tidal.manifest_base_url).
+    eq: { base_url: "http://192.168.1.10:8000" }
 """
 from __future__ import annotations
 
@@ -80,6 +83,17 @@ class MediaService:
         self.controller.register_resolver("tidal", self.tidal.resolve_url)
         # Infinite radio: top up from the seed track's "track radio".
         self.controller.register_extender(self.tidal.track_radio)
+
+        # ---- Cast EQ (server-side DSP proxy) ----
+        # Always constructed; wants() gates on the zmm_eq wheel + ffmpeg + a
+        # reachable base URL, so this is inert until all three exist.
+        eq_cfg = config.get("eq", {}) or {}
+        from modules.media.eq_stream import EqStreamEngine
+        self.eq_stream = EqStreamEngine(
+            base_url=eq_cfg.get("base_url") or tidal_cfg.get("manifest_base_url", ""),
+            settings_file=eq_cfg.get("settings_file", "./data/media_eq.json"),
+        )
+        self.controller.set_eq_engine(self.eq_stream)
 
         # ---- Player providers ----
         wiim_cfg = config.get("wiim", {}) or {}

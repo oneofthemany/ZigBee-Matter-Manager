@@ -5,3 +5,7 @@
 /data/tts_cache/
 __pycache__/
 *.pyc
+
+# Rust build artifacts (wheels are built in the container image)
+zmm_telemetry/target/
+zmm_eq/target/

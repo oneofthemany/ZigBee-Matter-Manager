@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "zmm_eq"
+version = "0.1.0"
+description = "10-band biquad graphic EQ for the ZMM media stream proxy"
+requires-python = ">=3.10"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

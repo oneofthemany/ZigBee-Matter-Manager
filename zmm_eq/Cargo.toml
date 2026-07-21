@@ -1,0 +1,14 @@
+[package]
+name = "zmm_eq"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zmm_eq"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module"] }
+
+[profile.release]
+lto = true

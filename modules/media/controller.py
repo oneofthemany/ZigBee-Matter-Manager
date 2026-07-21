@@ -51,6 +51,12 @@ class MediaController:
         # Players whose restored queue still needs aligning to what the device
         # actually reports now-playing (it may have advanced while we were down).
         self._needs_reconcile: set[str] = set()
+        # Server-side EQ proxy for Cast targets (set by the service). When a
+        # cast player has EQ enabled, play_url routes its stream through it.
+        self._eq_engine = None
+
+    def set_eq_engine(self, engine) -> None:
+        self._eq_engine = engine
 
     # ------------------------------------------------------------------
     # Session persistence (survive restart/upgrade — keep controlling casts)
@@ -183,8 +189,19 @@ class MediaController:
     # Control (routed by player_id prefix)
     # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
-        item = await self._resolve(item, player_id)
+        eq = self._eq_engine
+        proxied = bool(eq and eq.wants(player_id, item.media_type))
+        # Proxied playback is decoded server-side, so ask sources for their
+        # plain single-URL form (Tidal → AAC), not the Cast-only DASH manifest
+        # ffmpeg would otherwise have to chew through.
+        item = await self._resolve(item, None if proxied else player_id)
         self._record_recent(item)
+        if proxied and item.url:
+            from dataclasses import replace
+            url, ctype = eq.wrap(player_id, item.url)
+            # A copy, not a mutation: the queue keeps the direct URL so a
+            # later replay (or EQ turned off) starts from the true source.
+            item = replace(item, url=url, content_type=ctype)
         await self._dispatch(player_id, "play_url", item)
 
     def _record_recent(self, item: MediaItem) -> None:
@@ -420,16 +437,50 @@ class MediaController:
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._dispatch(player_id, "set_muted", muted)
 
+    def _eq_proxied(self, player_id: str) -> bool:
+        """Cast EQ lives in the stream proxy, not on the (DSP-less) device."""
+        return bool(self._eq_engine and player_id.startswith("cast:"))
+
     async def eq_info(self, player_id: str) -> Optional[dict]:
+        if self._eq_proxied(player_id):
+            return self._eq_engine.info(player_id)
         provider = self._provider_for(player_id)
         if not provider:
             raise ValueError(f"No provider for player {player_id}")
         return await provider.eq_info(player_id)
 
     async def set_eq(self, player_id: str, enabled: Optional[bool] = None,
-                     preset: Optional[str] = None) -> Optional[dict]:
+                     preset: Optional[str] = None,
+                     gains: Optional[List[float]] = None) -> Optional[dict]:
+        if self._eq_proxied(player_id):
+            r = self._eq_engine.set(player_id, enabled, preset, gains)
+            restarted = False
+            if r.get("restart"):
+                # The audio path itself changes (direct → proxy), which only a
+                # fresh load can do. Gain changes never come through here as a
+                # restart — the proxy retunes those live.
+                restarted = await self._replay_current(player_id)
+            return {**self._eq_engine.info(player_id), "restarted": restarted}
         await self._dispatch(player_id, "set_eq", enabled, preset)
         return await self.eq_info(player_id)
+
+    async def _replay_current(self, player_id: str) -> bool:
+        """Re-issue the current queue item so it loads via the new path.
+        The track restarts from the top — acceptable for the rare on/off
+        toggle, never needed for slider moves."""
+        state = self._cache.get(player_id)
+        if not state or state.state not in _ACTIVE + (PlaybackState.PAUSED,):
+            return False
+        q = self._queue.get(player_id)
+        cur = q.current() if q and q.items else None
+        if not cur:
+            return False
+        try:
+            await self.play_url(player_id, cur.item)
+            return True
+        except Exception as e:
+            logger.warning(f"EQ replay failed for {player_id}: {e}")
+            return False
 
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:
         provider = self._provider_for(master_id)

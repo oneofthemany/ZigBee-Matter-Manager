@@ -55,6 +55,7 @@ class EqBody(BaseModel):
     player_id: str
     enabled: Optional[bool] = None
     preset: Optional[str] = None
+    gains: Optional[List[float]] = None   # 10-band dB values (Cast DSP proxy)
 
 
 class QueueModeBody(BaseModel):
@@ -278,13 +279,29 @@ def register_media_routes(app: FastAPI, get_media_service):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        if body.enabled is None and not body.preset:
-            return {"success": False, "error": "Provide enabled and/or preset"}
+        if body.enabled is None and not body.preset and body.gains is None:
+            return {"success": False, "error": "Provide enabled, preset and/or gains"}
         try:
-            info = await svc.controller.set_eq(body.player_id, body.enabled, body.preset)
+            info = await svc.controller.set_eq(body.player_id, body.enabled,
+                                               body.preset, body.gains)
             return {"success": True, "eq": info}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @app.get("/api/media/eq/stream/{player_id}/{token}.wav")
+    async def eq_stream(player_id: str, token: str):
+        """The Cast EQ proxy stream: source → ffmpeg decode → Rust biquad
+        chain → endless WAV. Fetched by the speaker, not the browser."""
+        svc = _svc()
+        engine = getattr(svc, "eq_stream", None) if svc else None
+        if not engine or not engine.available:
+            return Response("EQ proxy not available", status_code=503)
+        if not engine.knows(player_id, token):
+            return Response("unknown or superseded stream token", status_code=404)
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(engine.stream(player_id, token),
+                                 media_type="audio/wav",
+                                 headers={"Cache-Control": "no-store"})
 
     @app.post("/api/media/group")
     async def group(body: GroupBody):

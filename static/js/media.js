@@ -34,7 +34,8 @@ let _radioSearchCache = [];  // last radio search results, for star-toggle by in
 let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth progress
 let _posTimer = null;        // 1s interpolation ticker for the progress bars
 let _eqOpen = new Set();     // player_ids with their EQ panel expanded
-let _eqWiim = {};            // player_id -> cached /api/media/eq result (wiim)
+let _eqDev = {};             // player_id -> cached /api/media/eq result (wiim/cast)
+let _eqSend = {};            // player_id -> {timer, gains} debounced slider POSTs
 
 function _fmtTime(ms) {
     if (!isFinite(ms) || ms < 0) ms = 0;
@@ -132,6 +133,7 @@ export function initMedia() {
     window.mediaEqEnable = eqEnable;
     window.mediaEqPreset = eqPreset;
     window.mediaEqBand = eqBand;
+    window.mediaEqBandRemote = eqBandRemote;
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
 }
 
@@ -356,11 +358,10 @@ function renderPlayers() {
                     onclick="window.mediaControl('${pid}','stop')" title="Stop">
               <i class="fas fa-stop"></i>
             </button>
-            ${(p.provider === 'local' || p.provider === 'wiim') ? `
             <button class="btn btn-sm ${_eqOpen.has(p.player_id) ? 'btn-primary' : 'btn-outline-secondary'}" ${disabled}
                     onclick="window.mediaEqToggle('${pid}')" title="Equaliser">
               <i class="fas fa-sliders"></i>
-            </button>` : ''}
+            </button>
             <div class="d-flex align-items-center gap-1 flex-grow-1 zmm-vol">
               <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
                       onclick="window.mediaVolStep('${pid}', -5)" title="Volume down 5%">
@@ -418,15 +419,18 @@ function queueControls(p, q) {
 }
 
 // ---------------------------------------------------------------------------
-// Equaliser panel — two flavours behind one button:
-//   local  → the Web Audio 10-band EQ (eq.js): full sliders + preset library
-//   wiim   → the speaker's own DSP presets via /api/media/eq (EQLoad list)
-// Cast devices expose no DSP, so their cards simply have no EQ button.
+// Equaliser panel — three flavours behind one button:
+//   local → the Web Audio 10-band EQ (eq.js): sliders + presets, client-side
+//   wiim  → the speaker's own DSP presets via /api/media/eq (device EQ list)
+//   cast  → the SAME 10-band sliders, but applied by the server's DSP stream
+//           proxy (Rust biquads on the audio feeding the speaker). Slider
+//           moves retune the running stream live; only the on/off switch
+//           reloads the track (the audio path itself changes).
 // ---------------------------------------------------------------------------
 function eqToggle(pid) {
     if (_eqOpen.has(pid)) _eqOpen.delete(pid);
     else {
-        delete _eqWiim[pid];  // refetch on open — the WiiM app may have changed it
+        delete _eqDev[pid];   // refetch on open — state may have changed elsewhere
         _eqOpen.add(pid);
     }
     renderPlayers();          // repaints the button state + panel container
@@ -440,9 +444,24 @@ function renderEqPanel(pid) {
     if (p.provider === 'local') {
         box.innerHTML = eqLocalHtml();
         eq.eqSpectrumStart('eqspec-local');
-    } else {
-        box.innerHTML = eqWiimHtml(pid);
+        return;
     }
+    const c = _eqDev[pid];
+    if (!c) {
+        eqDevFetch(pid);
+        box.innerHTML = `<div class="border-top mt-2 pt-2">${spinner()}</div>`;
+        return;
+    }
+    if (c.error) {
+        box.innerHTML = `<div class="border-top mt-2 pt-2 small text-muted">${esc(c.error)}</div>`;
+        return;
+    }
+    if (!c.supported || !c.eq) {
+        box.innerHTML = `<div class="border-top mt-2 pt-2 small text-muted">
+            This speaker doesn't expose EQ control.</div>`;
+        return;
+    }
+    box.innerHTML = c.eq.mode === 'bands' ? eqCastHtml(pid, c.eq) : eqWiimHtml(pid, c.eq);
 }
 
 const _fmtDb = v => (v > 0 ? '+' : '') + Number(v).toFixed(1).replace(/\.0$/, '');
@@ -485,15 +504,7 @@ function eqLocalHtml() {
       </div>`;
 }
 
-function eqWiimHtml(pid) {
-    const c = _eqWiim[pid];
-    if (!c) { eqWiimFetch(pid); return `<div class="border-top mt-2 pt-2">${spinner()}</div>`; }
-    if (c.error) return `<div class="border-top mt-2 pt-2 small text-muted">${esc(c.error)}</div>`;
-    if (!c.supported || !c.eq) {
-        return `<div class="border-top mt-2 pt-2 small text-muted">
-            This speaker's firmware doesn't expose EQ control.</div>`;
-    }
-    const info = c.eq;
+function eqWiimHtml(pid, info) {
     const cur = info.preset || '';
     const opts = [`<option value="" ${cur ? '' : 'selected'} disabled>${cur ? '' : 'Choose preset…'}</option>`,
         ...info.presets.map(n =>
@@ -515,9 +526,57 @@ function eqWiimHtml(pid) {
       </div>`;
 }
 
-async function eqWiimFetch(pid) {
+// Cast panel: identical band sliders to "This device", but the DSP runs on
+// the server, inside the stream feeding the speaker.
+function eqCastHtml(pid, info) {
+    const pidE = esc(pid);
+    if (!info.available) {
+        return `<div class="border-top mt-2 pt-2 small text-muted">
+            <i class="fas fa-sliders me-1"></i>Cast EQ needs the server DSP stream:
+            ${esc(info.reason || 'not available')}</div>`;
+    }
+    const names = Object.keys(eq.PRESETS);
+    const withCustom = names.includes(info.preset) ? names : ['Custom', ...names];
+    const opts = withCustom
+        .map(n => `<option value="${esc(n)}" ${n === (info.preset || 'Flat') ? 'selected' : ''}>${esc(n)}</option>`)
+        .join('');
+    const live = info.live
+        ? '<span class="badge bg-success" title="EQ stream running — sliders retune it live">live</span>'
+        : (info.enabled
+            ? '<span class="badge bg-secondary" title="Applies when the next track starts through the EQ stream">armed</span>'
+            : '');
+    return `
+      <div class="border-top mt-2 pt-2 zmm-eq">
+        <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="eqrOn-${pidE}" ${info.enabled ? 'checked' : ''}
+                   onchange="window.mediaEqEnable('${pidE}', this.checked)">
+            <label class="form-check-label small fw-semibold" for="eqrOn-${pidE}">EQ</label>
+          </div>
+          <select class="form-select form-select-sm w-auto" id="eqrSel-${pidE}" title="Preset"
+                  onchange="window.mediaEqPreset('${pidE}', this.value)">${opts}</select>
+          ${live}
+          <span class="small text-muted ms-auto"
+                title="Processed on the server before it reaches the speaker — Cast devices have no DSP of their own">
+            <i class="fas fa-server me-1"></i>stream DSP</span>
+        </div>
+        <div class="zmm-eq-bands">
+          ${info.gains.map((g, i) => `
+            <div class="zmm-eq-band">
+              <span class="zmm-eq-db" id="eqrdb-${pidE}-${i}">${_fmtDb(g)}</span>
+              <input type="range" class="zmm-eq-slider" orient="vertical"
+                     min="-${info.gain_limit || 12}" max="${info.gain_limit || 12}" step="0.5" value="${g}"
+                     ${info.enabled ? '' : 'disabled'} aria-label="${eq.BAND_LABELS[i]} Hz band"
+                     oninput="window.mediaEqBandRemote('${pidE}', ${i}, this.value)">
+              <span class="zmm-eq-hz">${eq.BAND_LABELS[i]}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
+}
+
+async function eqDevFetch(pid) {
     const d = await apiGet('/api/media/eq?player_id=' + encodeURIComponent(pid));
-    _eqWiim[pid] = d.success ? d : { error: d.error || 'EQ query failed' };
+    _eqDev[pid] = d.success ? d : { error: d.error || 'EQ query failed' };
     if (_eqOpen.has(pid)) renderEqPanel(pid);
 }
 
@@ -529,8 +588,9 @@ async function eqEnable(pid, on) {
     }
     const r = await apiPost('/api/media/eq', { player_id: pid, enabled: !!on });
     if (!r.success) { toast(r.error || 'EQ change failed', 'error'); return; }
-    _eqWiim[pid] = { success: true, supported: true, eq: r.eq };
+    _eqDev[pid] = { success: true, supported: true, eq: r.eq };
     renderEqPanel(pid);
+    if (r.eq && r.eq.restarted) toast('Reloading the track through the EQ stream', 'info');
 }
 
 async function eqPreset(pid, name) {
@@ -539,12 +599,42 @@ async function eqPreset(pid, name) {
         renderEqPanel(pid);
         return;
     }
-    if (!name) return;
-    const r = await apiPost('/api/media/eq', { player_id: pid, preset: name });
+    if (!name || name === 'Custom') return;
+    const body = { player_id: pid, preset: name };
+    const c = _eqDev[pid];
+    // Band-mode targets (Cast) get the preset's curve as explicit gains —
+    // the preset library lives client-side, the server just applies numbers.
+    if (c && c.eq && c.eq.mode === 'bands' && eq.PRESETS[name]) body.gains = eq.PRESETS[name];
+    const r = await apiPost('/api/media/eq', body);
     if (!r.success) { toast(r.error || 'EQ preset failed', 'error'); return; }
-    _eqWiim[pid] = { success: true, supported: true, eq: r.eq };
+    _eqDev[pid] = { success: true, supported: true, eq: r.eq };
     renderEqPanel(pid);
     toast(`EQ preset: ${name}`, 'success');
+}
+
+// Remote band drag: label updates instantly, the POST is debounced so a drag
+// becomes a handful of calls, and the server retunes the running stream live.
+function eqBandRemote(pid, i, val) {
+    const c = _eqDev[pid];
+    if (!c || !c.eq) return;
+    const pend = _eqSend[pid] || (_eqSend[pid] = { timer: null, gains: c.eq.gains.slice() });
+    pend.gains[i] = Number(val);
+    const lbl = document.getElementById(`eqrdb-${pid}-${i}`);
+    if (lbl) lbl.textContent = _fmtDb(pend.gains[i]);
+    const sel = document.getElementById(`eqrSel-${pid}`);
+    if (sel && sel.value !== 'Custom') {
+        if (!sel.querySelector('option[value="Custom"]'))
+            sel.insertAdjacentHTML('afterbegin', '<option value="Custom">Custom</option>');
+        sel.value = 'Custom';
+    }
+    clearTimeout(pend.timer);
+    pend.timer = setTimeout(async () => {
+        delete _eqSend[pid];
+        const r = await apiPost('/api/media/eq',
+            { player_id: pid, gains: pend.gains, preset: 'Custom' });
+        if (r.success) _eqDev[pid] = { success: true, supported: true, eq: r.eq };
+        else toast(r.error || 'EQ update failed', 'error');
+    }, 250);
 }
 
 // Slider drags update the engine + labels in place — no re-render, so the

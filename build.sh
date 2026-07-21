@@ -594,6 +594,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnl-3-200 \
         libnl-route-3-200 \
         socat \
+        ffmpeg \
         procps \
         strace \
         iproute2 \
@@ -703,10 +704,13 @@ ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
 ENV MAKEFLAGS="-j${BUILD_JOBS}"
 
 COPY zmm_telemetry/ /tmp/zmm_telemetry/
+COPY zmm_eq/ /tmp/zmm_eq/
 RUN cd /tmp/zmm_telemetry \
  && maturin build --release --out /tmp/wheels \
- && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl \
- && rm -rf /tmp/zmm_telemetry /tmp/wheels /root/.cargo /root/.rustup /root/.cache
+ && cd /tmp/zmm_eq \
+ && maturin build --release --out /tmp/wheels \
+ && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl /tmp/wheels/zmm_eq-*.whl \
+ && rm -rf /tmp/zmm_telemetry /tmp/zmm_eq /tmp/wheels /root/.cargo /root/.rustup /root/.cache
 DOCKERFILE_APPENDER
     else
         info "Skipping zmm_telemetry Rust appender — Python executemany fallback will be used"
@@ -830,8 +834,9 @@ screenshots
 .ruff_cache
 .mypy_cache
 
-# Rust build artifacts (the wheel is built separately in the image)
+# Rust build artifacts (the wheels are built separately in the image)
 zmm_telemetry/target
+zmm_eq/target
 
 # Local/editor/OS noise
 *.log
