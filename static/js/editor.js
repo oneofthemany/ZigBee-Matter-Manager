@@ -119,6 +119,11 @@ function buildEditorHTML() {
                 <input type="file" id="editorImportInput" multiple style="display:none;"
                        accept=".py,.js,.css,.html,.yaml,.yml,.json,.md,.txt,.conf,.sh"
                        onchange="window.editorImportFiles(this.files); this.value='';">
+                <button class="btn btn-sm btn-outline-danger w-100 mb-1"
+                        onclick="window.editorDeleteCurrent()" title="Delete current file"
+                        id="editorDeleteBtn" style="font-size: 11px;" disabled>
+                    <i class="fas fa-trash me-1"></i> Delete
+                </button>
                 <div class="d-flex gap-1">
                     <button class="btn btn-sm btn-outline-secondary flex-grow-1"
                             onclick="window.editorExpandAllFolders()"
@@ -145,14 +150,6 @@ function buildEditorHTML() {
                  style="height: 36px; background: #252526; overflow-x: auto; white-space: nowrap;">
                 <div id="editorTabBar" class="d-flex align-items-center gap-1"></div>
                 <div class="ms-auto d-flex gap-1">
-                    <button class="btn btn-sm btn-outline-light py-0 px-2" style="font-size: 11px;"
-                            onclick="window.editorSave()" title="Save (Ctrl+S)" id="editorSaveBtn" disabled>
-                        <i class="fas fa-save"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger py-0 px-2" style="font-size: 11px;"
-                            onclick="window.editorDeleteCurrent()" title="Delete current file" id="editorDeleteBtn" disabled>
-                        <i class="fas fa-trash"></i>
-                    </button>
                     <button class="btn btn-sm btn-outline-danger py-0 px-2" style="font-size: 11px;"
                             onclick="window.editorTestDeploy()" title="Test Deploy (with rollback)" id="editorTestBtn" disabled>
                         <i class="fas fa-flask"></i> Test
@@ -590,7 +587,6 @@ window.editorOpenFile = async function(path) {
         document.getElementById('editorFileName').textContent = path;
         document.getElementById('editorLanguage').textContent = data.language;
         document.getElementById('editorFileSize').textContent = formatSize(data.size);
-        document.getElementById('editorSaveBtn').disabled = false;
         document.getElementById('editorTestBtn').disabled = false;
         document.getElementById('editorBatchAddBtn').disabled = false;
 
@@ -860,7 +856,6 @@ window.editorDeleteConfirm = async function() {
                 document.getElementById('editorFileName').textContent = 'No file open';
                 document.getElementById('editorLanguage').textContent = '-';
                 document.getElementById('editorFileSize').textContent = '-';
-                document.getElementById('editorSaveBtn').disabled = true;
                 document.getElementById('editorTestBtn').disabled = true;
                 document.getElementById('editorDeleteBtn').disabled = true;
 
