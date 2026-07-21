@@ -245,6 +245,7 @@ impl Appender {
         Ok(Self { inner: Mutex::new(inner) })
     }
 
+    #[pyo3(signature = (ieee, attribute, value=None, numeric_val=None))]
     fn append_device_state(
         &self,
         ieee: String,

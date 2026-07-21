@@ -728,10 +728,13 @@ DOCKERFILE_NOAPPENDER
 # image). When a release changes requirements, only the new/changed packages
 # are downloaded — everything else installs from the local cache. Supported
 # natively by podman/buildah; docker needs BuildKit (both fine here).
+# The base image's pip is deliberately NOT upgraded: it already handles every
+# tag in the lock, and upgrading it here re-ran on every lock change for no
+# benefit. PIP_ROOT_USER_ACTION silences the (irrelevant in a container)
+# root-user warning.
 COPY requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip \
- && pip install -r requirements.lock
+    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
 
 # Self-heal top-up, in its OWN layer: when the lock is complete this is a
 # no-op, but if a release added a package to requirements.txt without
@@ -742,7 +745,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # watcher logs a drift warning when this top-up is expected to do real work.
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.txt
 DOCKERFILE_REQS
 
     # Part 3 — application source and final image config (always present)
