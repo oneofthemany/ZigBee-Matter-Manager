@@ -248,13 +248,110 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
     window.zbmSubscribeToPush = subscribeToPush;
 
+    /**
+     * Render the push-delivery panel (status line + browser/server test
+     * buttons) into any host element. Shared by the navbar bell modal and
+     * Settings → Notifications, so both show the same truth about whether
+     * this device can be pinged.
+     */
+    window.zbmRenderPushPanel = function (host) {
+        if (!host) return;
+        host.innerHTML =
+            '<div class="d-flex gap-1">' +
+              '<button class="btn btn-outline-primary btn-sm w-100" data-push-test="local">' +
+                '<i class="fas fa-bell me-1"></i> Test (this browser)</button>' +
+              '<button class="btn btn-outline-primary btn-sm w-100" data-push-test="server">' +
+                '<i class="fas fa-paper-plane me-1"></i> Test (server push)</button>' +
+            '</div>' +
+            '<div class="small text-muted mt-2" data-push-status></div>';
+
+        var statusEl = host.querySelector('[data-push-status]');
+
+        host.querySelector('[data-push-test="local"]').onclick = async function () {
+            var granted = await requestPermission();
+            if (granted) {
+                sendNotification('Test Notification',
+                    'ZigBee Manager notifications are working!', 'test-' + Date.now());
+                if (window.toast) window.toast.success('Test notification sent!');
+            }
+            renderPushStatusInto(statusEl);
+        };
+
+        host.querySelector('[data-push-test="server"]').onclick = async function () {
+            var btn = this;
+            btn.disabled = true;
+            try {
+                var granted = await requestPermission();
+                if (!granted) return;
+                await subscribeToPush();
+                var r = await fetch('/api/push/test',
+                                    { method: 'POST', credentials: 'same-origin' });
+                var j = await r.json().catch(function () { return {}; });
+                if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+                if (window.toast) window.toast.success(
+                    'Server push sent — it should arrive as a notification ' +
+                    'even with this tab closed.');
+            } catch (e) {
+                if (window.toast) window.toast.error(String(e.message || e), { duration: 10000 });
+            } finally {
+                btn.disabled = false;
+                renderPushStatusInto(statusEl);
+            }
+        };
+
+        renderPushStatusInto(statusEl);
+    };
+
+    /** One honest line naming the broken link, into a given element. */
+    async function renderPushStatusInto(el) {
+        if (!el) return;
+        if (!window.isSecureContext) {
+            el.innerHTML = '<i class="fas fa-triangle-exclamation text-warning me-1"></i>' +
+                'Server push unavailable: untrusted origin. Open ZMM on the tunnel/public URL.';
+            return;
+        }
+        if (!('Notification' in window) || !('serviceWorker' in navigator) ||
+            !('PushManager' in window)) {
+            el.innerHTML = 'Server push not supported by this browser.';
+            return;
+        }
+        if (Notification.permission !== 'granted') {
+            el.innerHTML = 'Notification permission not granted yet.';
+            return;
+        }
+        try {
+            var reg = await navigator.serviceWorker.ready;
+            var sub = await reg.pushManager.getSubscription();
+            el.innerHTML = sub
+                ? '<i class="fas fa-circle-check text-success me-1"></i>' +
+                  'This device is subscribed — server pushes can wake it.'
+                : '<i class="fas fa-triangle-exclamation text-warning me-1"></i>' +
+                  'Permission granted but no push subscription. Use "Test (server push)" to create one.';
+        } catch (e) {
+            el.innerHTML = 'Could not read push state: ' + String(e.message || e);
+        }
+    }
+
     // ----------------------------------------------------------
     // 3. SEND NOTIFICATION
     // ----------------------------------------------------------
 
+    /**
+     * Show a notification.
+     *
+     * Returns false ONLY when this channel is switched off, so a caller can
+     * fall back to its own in-app alert. Callers used to get that fallback
+     * for free because this function did not exist on pages that never
+     * loaded pwa.js; now that it always exists, "disabled" has to be
+     * reported rather than silently swallowed, or every notification rule
+     * goes quiet the moment the master toggle is off.
+     *
+     * A suppressed duplicate returns true: it was handled, and being quiet
+     * is the point.
+     */
     function sendNotification(title, body, tag, options) {
         var prefs = getPrefs();
-        if (!prefs.enabled) return;
+        if (!prefs.enabled) return false;
 
         // Suppress duplicate notifications within the cooldown window
         var key = tag || (title + ':' + body);
@@ -262,7 +359,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         var suppressMs = (prefs.suppressMinutes || 5) * 60 * 1000;
 
         if (notifHistory[key] && (now - notifHistory[key]) < suppressMs) {
-            return; // Too recent, skip
+            return true; // Too recent, deliberately silent
         }
         notifHistory[key] = now;
 
@@ -277,6 +374,12 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
                         icon: '/static/images/zigbee-manager-logo.png',
                         badge: '/static/images/zigbee-manager-logo.png',
                         tag: tag || 'zbm-' + Date.now(),
+                        // Replacing a tagged notification is silent unless
+                        // renotify is set — the same defect that made every
+                        // message after a thread's first arrive without a
+                        // sound. A repeat alert is the point of a repeat.
+                        renotify: true,
+                        silent: false,
                         vibrate: [100, 50, 100],
                         requireInteraction: options && options.persistent || false,
                         data: options && options.data || {}
@@ -299,6 +402,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             // In-app fallback for browsers without notification support
             sendInAppNotification(title, body, tag);
         }
+        return true;
     }
 
     /**
@@ -417,6 +521,8 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     // 5. HOOK INTO WEBSOCKET UPDATES
     // ----------------------------------------------------------
 
+    var _hookTries = 0;
+
     function hookWebSocket() {
         // Patch the global handleDeviceUpdate if it exists
         // We watch for state.deviceCache changes via MutationObserver on the table
@@ -424,6 +530,9 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
 
         var tbody = document.getElementById('deviceTableBody');
         if (!tbody) {
+            // Bounded: pages without a device table (Frames) would otherwise
+            // retry every second for the life of the tab, forever.
+            if (++_hookTries > 30) return;
             setTimeout(hookWebSocket, 1000);
             return;
         }
@@ -641,10 +750,8 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
                             '</div>' +
                         '</div>' +
 
-                        // Test button
-                        '<button class="btn btn-outline-primary btn-sm w-100" id="zbm-notif-test">' +
-                            '<i class="fas fa-paper-plane me-1"></i> Send test notification' +
-                        '</button>' +
+                        // Shared push panel: status + browser/server tests.
+                        '<div id="zbm-push-panel"></div>' +
 
                     '</div>' +
                     '<div class="modal-footer">' +
@@ -692,18 +799,9 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             if (el) el.addEventListener('change', saveCurrentPrefs);
         });
 
-        // Test button
-        document.getElementById('zbm-notif-test').addEventListener('click', async function () {
-            var granted = await requestPermission();
-            if (granted) {
-                sendNotification(
-                    'Test Notification',
-                    'ZigBee Manager notifications are working!',
-                    'test-' + Date.now()
-                );
-                if (window.toast) window.toast.success('Test notification sent!');
-            }
-        });
+        // Shared push panel (status + tests) — same one Settings →
+        // Notifications shows.
+        window.zbmRenderPushPanel(document.getElementById('zbm-push-panel'));
 
         var bsModal = new bootstrap.Modal(modal);
         bsModal.show();
@@ -736,11 +834,32 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             registerServiceWorker();
             setTimeout(createNotificationBell, 300);
             setTimeout(hookWebSocket, 2000);
+            setTimeout(healPushSubscription, 4000);
         });
     } else {
         registerServiceWorker();
         setTimeout(createNotificationBell, 300);
         setTimeout(hookWebSocket, 2000);
+        setTimeout(healPushSubscription, 4000);
+    }
+
+    /**
+     * Re-assert the push subscription on every page load.
+     *
+     * subscribeToPush() otherwise ran only at the moment permission was
+     * granted — so a subscription the browser rotated, a hub that was
+     * rebuilt, or a permission granted before the subscribe code shipped
+     * all left this device silently unreachable, while the local test
+     * button still "worked". subscribeToPush() already handles the
+     * existing-subscription case by re-posting it, so calling it whenever
+     * permission is granted is idempotent and self-healing.
+     */
+    function healPushSubscription() {
+        if (!window.isSecureContext) return;
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        subscribeToPush().then(function (ok) {
+            if (!ok) zmmLog('pwa').warn('[push] subscription heal failed');
+        });
     }
 
 })();

@@ -97,6 +97,12 @@
      auth is ready, same gating as the manager (main.js). -->
 <script src="/static/js/presence-badge.js"></script>
 <script type="module" src="/static/js/frames-page.js"></script>
+<!-- Push subscription lives in pwa.js, and the manifest's start_url is
+     /frames — so this is the page an installed PWA actually opens. Without
+     it a phone could register the worker (below) yet never subscribe, which
+     is why pushes silently went nowhere. The navbar bell degrades to nothing
+     here: createNotificationBell returns early when it finds no navbar. -->
+<script src="/static/js/pwa.js"></script>
 <script>
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', function () {

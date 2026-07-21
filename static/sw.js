@@ -4,7 +4,7 @@
 
 // Bump this on every frontend change — the `activate` handler purges any
 // cache whose name != CACHE_NAME, so a new version wipes stale cached assets.
-var CACHE_NAME = 'zbm-v7';
+var CACHE_NAME = 'zbm-v8';
 
 // App shell files to cache on install
 var APP_SHELL = [
@@ -140,6 +140,13 @@ self.addEventListener('push', function (event) {
             icon: data.icon || '/static/images/zigbee-manager-logo.png',
             badge: '/static/images/zigbee-manager-logo.png',
             tag: data.tag || 'zbm-notification',
+            // Tags collapse a burst into one notification — but replacing a
+            // tagged notification is SILENT unless renotify is set, which
+            // made every message after a thread's first arrive without a
+            // sound. Re-alerting on each replacement is the whole point of
+            // a ping.
+            renotify: true,
+            silent: false,
             data: Object.assign({}, data.data || {}, {
                 kind: data.kind || null
             }),

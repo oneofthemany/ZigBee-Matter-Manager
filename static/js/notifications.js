@@ -343,12 +343,13 @@ function evaluateRules() {
                 : trigger.defaultBody(name, curr, rule);
 
             const send = window.zbmSendNotification;
-            if (typeof send === 'function') {
-                send(title, body, `${rule.id}-${ieee}`, {
-                    persistent: !!trigger.persistent,
-                });
-            } else if (window.toast) {
-                // Hard fallback if pwa.js isn't loaded
+            // Falsy means that channel is switched off (master toggle), not
+            // that it failed — fall back to a toast so a rule the user built
+            // still shows up somewhere.
+            const delivered = typeof send === 'function' && send(
+                title, body, `${rule.id}-${ieee}`,
+                { persistent: !!trigger.persistent });
+            if (!delivered && window.toast) {
                 window.toast.info(`${title}: ${body}`);
             }
 
@@ -737,6 +738,19 @@ function renderNotificationsPane() {
     if (!pane || pane.dataset.rendered === '1') return;
 
     pane.innerHTML = `
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-light py-2">
+                <span class="fw-bold"><i class="fas fa-mobile-screen me-1"></i> Delivery on this device</span>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">
+                    Whether ZMM can ping <strong>this</strong> phone/browser — including
+                    chat messages and automation messages — with the app closed.
+                    "Test (server push)" proves the whole hub → push-service → device chain.
+                </p>
+                <div id="notif-push-panel"></div>
+            </div>
+        </div>
         <div class="card shadow-sm">
             <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="fas fa-bell me-1"></i> Notification Rules</span>
@@ -759,6 +773,14 @@ function renderNotificationsPane() {
     `;
 
     document.getElementById('notifAddRuleBtn').addEventListener('click', () => openRuleEditor(null));
+
+    // Shared push panel from pwa.js (same one as the navbar bell modal).
+    if (window.zbmRenderPushPanel) {
+        window.zbmRenderPushPanel(document.getElementById('notif-push-panel'));
+    } else {
+        const h = document.getElementById('notif-push-panel');
+        if (h) h.innerHTML = '<div class="text-muted small">Push panel unavailable (pwa.js not loaded).</div>';
+    }
 
     pane.dataset.rendered = '1';
     renderRulesList();
