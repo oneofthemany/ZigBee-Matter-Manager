@@ -45,12 +45,15 @@ function _ensureContainer() {
             position: 'fixed',
             bottom: '1rem',
             right: '1rem',
-            zIndex: '1090',
+            // Below the Bootstrap modal backdrop (1050) so open modals layer above us
+            zIndex: '1040',
             display: 'flex',
             flexDirection: 'column',
             gap: '0.5rem',
             maxWidth: '340px',
             width: '100%',
+            // The container itself must never intercept clicks — only the cards do
+            pointerEvents: 'none',
         });
         document.body.appendChild(c);
     }
@@ -71,6 +74,7 @@ function _createCard(ieee, friendlyName) {
         opacity: '0',
         transform: 'translateY(8px)',
         transition: 'opacity 0.25s ease, transform 0.25s ease',
+        pointerEvents: 'auto',
     });
 
     const displayName = friendlyName && friendlyName !== ieee
@@ -186,7 +190,11 @@ function _dismiss(ieee) {
     if (card && card.isConnected) {
         card.style.opacity = '0';
         card.style.transform = 'translateY(8px)';
-        setTimeout(() => card.remove(), 260);
+        setTimeout(() => {
+            card.remove();
+            const container = document.getElementById('join-progress-container');
+            if (container && container.childElementCount === 0) container.remove();
+        }, 260);
     }
     _trackers.delete(ieee);
 }
