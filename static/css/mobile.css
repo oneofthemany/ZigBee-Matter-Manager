@@ -1136,9 +1136,51 @@ body.controlling {
    desktop 7/5 split is never affected — .zmm-pane-hidden simply
    does nothing at lg and up, whatever JS puts on the element.     */
 
+/* Volume nudge buttons only exist on touch layouts — a desktop pointer is
+   precise enough for the slider alone. */
+.zmm-vol-step {
+    display: none;
+}
+
 @media (max-width: 991.98px) {
     .zmm-pane-hidden {
         display: none !important;
+    }
+
+    /* Volume gets its own full-width row in each player card: inline next to
+       the transport buttons the slider is a few px wide and impossible to
+       grab. The −/+ buttons give a coarse ±5% without any dragging at all. */
+    #mediaPlayers .zmm-vol {
+        flex: 1 1 100%;
+    }
+
+    #mediaPlayers .zmm-vol-step {
+        display: inline-block;
+        min-width: 44px;
+        min-height: 40px;
+    }
+
+    #mediaPlayers .zmm-vol .form-range {
+        height: 40px;
+    }
+
+    #mediaPlayers .zmm-vol .form-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #0d6efd;
+        border: 2px solid #fff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+
+    #mediaPlayers .zmm-vol .form-range::-moz-range-thumb {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #0d6efd;
+        border: 2px solid #fff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
 
     /* Target + now-playing stays put while the pane below scrolls. */
