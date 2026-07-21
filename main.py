@@ -970,6 +970,10 @@ async def lifespan(app: FastAPI):
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()
+    # Lazy singleton — only exists if someone searched for fuel this run.
+    from modules import fuel_history as _fuel_history
+    if _fuel_history._manager is not None:
+        await _fuel_history._manager.stop()
 
     # 2. services
     if zigbee_service.multipan and zigbee_service.multipan.is_running:

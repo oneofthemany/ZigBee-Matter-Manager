@@ -323,12 +323,41 @@
             var data = await r.json().catch(function () { return {}; });
             if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
             renderFuelResults(out, data);
+            loadFuelTrend(fuel);
         } catch (e) {
             out.innerHTML = '<div class="alert alert-warning py-2 small mb-0">' +
                 escape(e.message || String(e)) + '</div>';
         } finally {
             if (btn) btn.disabled = false;
         }
+    }
+
+    // Historical context under the results — the hub snapshots every query
+    // into its own history DB, so this gets richer the more you search.
+    async function loadFuelTrend(fuel) {
+        var host = document.getElementById('fuel-trend');
+        if (!host) return;
+        try {
+            var r = await fetch('/api/fuel/history?fuel=' + encodeURIComponent(fuel) + '&days=30',
+                                { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var h = await r.json();
+            if (!h.series || h.series.length < 2 || !h.cheapest_seen) return;
+            var today = h.series[h.series.length - 1];
+            var first = h.series[0];
+            var dir = today.min > first.min ? 'up' : today.min < first.min ? 'down' : 'flat';
+            var arrow = dir === 'up' ? '<i class="fas fa-arrow-trend-up text-danger"></i>'
+                      : dir === 'down' ? '<i class="fas fa-arrow-trend-down text-success"></i>'
+                      : '<i class="fas fa-arrows-left-right text-muted"></i>';
+            host.innerHTML =
+                '<div class="small text-muted border-top pt-2 mt-2">' +
+                  arrow + ' Cheapest seen in ' + h.series.length + ' day(s) of history: ' +
+                  '<strong>£' + h.cheapest_seen.price.toFixed(2) + '</strong> — ' +
+                  escape(h.cheapest_seen.brand || '?') + ' ' +
+                  escape(h.cheapest_seen.postcode || '') +
+                  ' (' + escape(h.cheapest_seen.day) + ')' +
+                '</div>';
+        } catch (e) { /* history is a bonus, never an error */ }
     }
 
     function renderFuelResults(out, data) {
@@ -378,7 +407,8 @@
                 '<th>Station</th><th>Price/L</th><th>Dist</th><th>Maps</th>' +
               '</tr></thead><tbody>' + rows + '</tbody>' +
             '</table>' +
-          '</div>';
+          '</div>' +
+          '<div id="fuel-trend"></div>';
     }
 
     // ----------------------------------------------------------

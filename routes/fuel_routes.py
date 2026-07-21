@@ -99,4 +99,37 @@ def register_fuel_routes(app: FastAPI):
     async def fuel_refresh(_=Depends(require_scope("admin"))):
         return await get_fuel_service().refresh()
 
+    # ------------------------------------------------------------------
+    # History — snapshots recorded at query time (modules/fuel_history.py)
+    # ------------------------------------------------------------------
+    @app.get("/api/fuel/history")
+    async def fuel_history(
+            fuel: str = Query("E10"),
+            days: int = Query(30, ge=1, le=365),
+            site_id: Optional[str] = Query(None, max_length=64),
+            _=Depends(require_authenticated),
+    ):
+        fuel = fuel.upper()
+        if fuel not in FUEL_TYPES:
+            raise HTTPException(400, f"Unknown fuel '{fuel}'")
+        from modules.fuel_history import get_fuel_history
+        return await get_fuel_history().daily_trend(fuel, days, site_id)
+
+    @app.get("/api/fuel/history/station/{site_id}")
+    async def fuel_station_history(
+            site_id: str,
+            days: int = Query(90, ge=1, le=365),
+            _=Depends(require_authenticated),
+    ):
+        if not site_id or len(site_id) > 64:
+            raise HTTPException(400, "Bad site_id")
+        from modules.fuel_history import get_fuel_history
+        return {"site_id": site_id,
+                "history": await get_fuel_history().station_history(site_id, days)}
+
+    @app.get("/api/fuel/history/status")
+    async def fuel_history_status(_=Depends(require_authenticated)):
+        from modules.fuel_history import get_fuel_history
+        return await get_fuel_history().status()
+
     logger.info("Fuel price routes registered")

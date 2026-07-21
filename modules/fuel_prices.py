@@ -14,7 +14,10 @@ so that cadence loses nothing. This module wraps it with:
       fuel, sorted cheapest-first, each with a Google Maps link built from
       its postcode so a phone can navigate to the winner in one tap.
 
-Nothing here is persisted; prices are advisory data re-fetched on demand.
+Prices are re-fetched on demand, but each query's results are also
+snapshotted into fuel price history (modules/fuel_history.py, its own
+DuckDB) — the retailer feeds publish only "today's number" with no archive,
+so anything not recorded at query time is gone by tomorrow.
 """
 
 from __future__ import annotations
@@ -151,6 +154,17 @@ class FuelPriceService:
         # Cheapest first; distance breaks ties so two same-price stations
         # rank nearest-first.
         stations.sort(key=lambda x: (x["price"], x["distance_km"] or 0))
+
+        # Snapshot into history BEFORE the top-N slice: every station in the
+        # radius contributes to trends, not just the ten displayed. The feeds
+        # keep no archive, so query time is the only chance to record today's
+        # number. Best-effort — history must never break the live answer.
+        try:
+            from modules.fuel_history import get_fuel_history
+            await get_fuel_history().record_stations(stations)
+        except Exception as e:                            # noqa: BLE001
+            logger.warning(f"fuel history snapshot failed: {e}")
+
         return {
             "success": True,
             "fuel": fuel,
