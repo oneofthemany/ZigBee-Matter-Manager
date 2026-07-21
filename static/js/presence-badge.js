@@ -12,7 +12,7 @@
     'use strict';
 
     var POLL_MS = 60000;          // presence changes on the order of minutes
-    var state = { users: [], map: null, markers: [], timer: null };
+    var state = { users: [], places: [], map: null, markers: [], timer: null };
 
     function esc(s) {
         return String(s == null ? '' : s)
@@ -42,6 +42,28 @@
 
     function presenceOf(u) {
         return (u.state && u.state.presence) || 'unknown';
+    }
+
+    // The apiary — named places beyond home. Same scope as the user list, so
+    // anyone who can see the map can see what its regions are called.
+    async function fetchPlaces() {
+        try {
+            var r = await fetch('/api/places', {
+                credentials: 'same-origin', cache: 'no-store',
+            });
+            if (!r.ok) return;
+            state.places = ((await r.json()).places || [])
+                .filter(function (p) { return p.enabled !== false; });
+        } catch (e) { /* places are an enrichment, never a failure */ }
+    }
+
+    // "sainsburys" → "Sainsburys" (place name), null for home/away/unknown.
+    function placeNameOf(u) {
+        var pid = u.state && u.state.place;
+        if (!pid || pid === 'home' || pid === 'away' || pid === 'unknown') return null;
+        var p = state.places.find(function (x) { return x.id === pid; });
+        return p ? p.name : String(pid).replace(/[_-]+/g, ' ')
+            .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
     }
 
     // ---- badge ------------------------------------------------------------
@@ -139,8 +161,11 @@
         host.innerHTML = state.users.map(function (u) {
             var p = presenceOf(u);
             var d = u.state && u.state.distance_m;
+            var at = placeNameOf(u);
             return '<div class="d-flex justify-content-between align-items-center py-1 border-bottom">' +
-                '<span><strong>' + esc(u.display_name || u.user_id) + '</strong> ' + stateBadge(p) + '</span>' +
+                '<span><strong>' + esc(u.display_name || u.user_id) + '</strong> ' + stateBadge(p) +
+                  (at ? ' <span class="badge bg-primary"><i class="fas fa-map-pin me-1"></i>' + esc(at) + '</span>' : '') +
+                '</span>' +
                 '<span class="text-muted">' +
                   (d != null ? Math.round(d) + ' m from home · ' : '') +
                   esc(ago(u.state && u.state.last_update)) +
@@ -185,9 +210,29 @@
             }).addTo(state.map).bindPopup('Home geofence');
         }
 
+        // Apiary geofences, dashed blue so they read as regions rather than
+        // people. Occupied places join the fit-bounds set; empty ones are
+        // drawn but must not zoom the map out to the whole town.
+        var occupied = {};
+        state.users.forEach(function (u) {
+            var pid = u.state && u.state.place;
+            if (pid) occupied[pid] = true;
+        });
+        var placeBounds = [];
+        state.places.forEach(function (p) {
+            if (p.lat == null || p.lon == null) return;
+            L.circle([p.lat, p.lon], {
+                radius: p.radius_m || 100,
+                color: '#0d6efd', fillColor: '#0d6efd', fillOpacity: 0.08,
+                weight: 1, dashArray: '4 4',
+            }).addTo(state.map).bindPopup('<strong>' + esc(p.name) + '</strong><br>Apiary place');
+            if (occupied[p.id]) placeBounds.push([p.lat, p.lon]);
+        });
+
         var bounds = [];
         withPos.forEach(function (u) {
             var p = presenceOf(u);
+            var at = placeNameOf(u);
             var colour = p === 'home' ? '#198754' : (p === 'away' ? '#6c757d' : '#ffc107');
             // CircleMarker, not the default pin: Leaflet's marker icons are
             // separate image files, and vectors avoid vendoring those assets
@@ -196,9 +241,10 @@
                 radius: 8, color: colour, fillColor: colour, fillOpacity: 0.85, weight: 2,
             }).addTo(state.map)
               .bindPopup('<strong>' + esc(u.display_name || u.user_id) + '</strong><br>' +
-                         esc(p) + ' · ' + esc(ago(u.state.last_update)));
+                         esc(at ? p + ' · at ' + at : p) + ' · ' + esc(ago(u.state.last_update)));
             bounds.push([u.state.lat, u.state.lon]);
         });
+        placeBounds.forEach(function (b) { bounds.push(b); });
 
         if (home) bounds.push([home.home_lat, home.home_lon]);
         if (bounds.length > 1) state.map.fitBounds(bounds, { padding: [40, 40] });
@@ -220,6 +266,10 @@
     async function tick() {
         if (!canSee()) { renderBadge(); return; }
         var ok = await fetchUsers();
+        // Places change rarely; fetch on the same cadence anyway — one small
+        // request against a local hub, and a freshly added place shows on the
+        // next tick without a reload.
+        await fetchPlaces();
         if (ok) {
             renderBadge();
             if (state.map) renderList();
