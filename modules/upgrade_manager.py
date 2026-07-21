@@ -335,6 +335,49 @@ def update_state(**changes) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# RUST COMPONENTS (native wheels baked into the image at build time)
+# ---------------------------------------------------------------------------
+# build.sh / upgrade.sh read this marker when generating the Containerfile:
+# "true" installs the Rust toolchain and builds the zmm_telemetry (fast
+# DuckDB appender) and zmm_eq (Cast EQ DSP) wheels into the image. The file
+# lives in STATE_DIR (the shared data volume), so a toggle from the UI is
+# picked up by the NEXT host-side image build — it cannot change the image
+# that is already running.
+APPENDER_MARKER_FILE = os.path.join(STATE_DIR, "appender.enabled")
+
+
+def get_rust_components() -> Dict[str, Any]:
+    """The build marker plus what the RUNNING image actually contains —
+    the two differ after a toggle until the next upgrade build."""
+    import importlib.util
+    import shutil
+    marker = False
+    try:
+        with open(APPENDER_MARKER_FILE, "r") as f:
+            marker = f.read().strip().lower() == "true"
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Could not read {APPENDER_MARKER_FILE}: {e}")
+    return {
+        "build_enabled": marker,
+        "installed": {
+            "telemetry": importlib.util.find_spec("zmm_telemetry") is not None,
+            "eq_dsp": importlib.util.find_spec("zmm_eq") is not None,
+            "ffmpeg": bool(shutil.which("ffmpeg")),
+        },
+    }
+
+
+def set_rust_components(enabled: bool) -> Dict[str, Any]:
+    _ensure_dirs()
+    with open(APPENDER_MARKER_FILE, "w") as f:
+        f.write("true" if enabled else "false")
+    logger.info(f"Rust components build marker set to {enabled}")
+    return get_rust_components()
+
+
+# ---------------------------------------------------------------------------
 # TRIGGER / STATUS (the IPC between container and host watcher)
 # ---------------------------------------------------------------------------
 def read_status() -> Dict[str, Any]:

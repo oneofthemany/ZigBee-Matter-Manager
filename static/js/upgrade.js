@@ -105,6 +105,11 @@ function renderUpgradeCard() {
             <i class="fab fa-python me-1"></i> <span class="tab-label">Python Dependencies</span>
           </button>
         </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#upgradeRustPane">
+            <i class="fab fa-rust me-1"></i> <span class="tab-label">Rust Components</span>
+          </button>
+        </li>
       </ul>
 
       <div class="tab-content">
@@ -155,6 +160,21 @@ function renderUpgradeCard() {
           </div>
         </div>
 
+        <div class="tab-pane fade" id="upgradeRustPane">
+          <div class="card shadow-sm mb-3" id="rustCard">
+            <div class="card-header bg-light py-2">
+              <span class="fw-bold"><i class="fab fa-rust me-1"></i> Rust Components</span>
+            </div>
+            <div class="card-body" id="rustCardBody">
+              <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading...</div>
+            </div>
+            <div class="card-footer text-muted small">
+              The toggle sets what the <strong>next upgrade build</strong> bakes into the
+              image — it cannot add components to the container that is already running.
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- Build log modal -->
@@ -196,7 +216,84 @@ function renderUpgradeCard() {
             }
         });
 
+    // Rust pane: fetch fresh on every visit — the state is tiny and the
+    // marker may have been flipped from the host side.
+    document.querySelector('button[data-bs-target="#upgradeRustPane"]')
+        .addEventListener('shown.bs.tab', () => loadRustComponents());
+
     mount.dataset.rendered = 'true';
+}
+
+// ============================================================================
+// RUST COMPONENTS (native wheels baked in at image build time)
+// ============================================================================
+
+async function loadRustComponents() {
+    const body = document.getElementById('rustCardBody');
+    if (!body) return;
+    let data;
+    try {
+        data = await (await fetch('/api/upgrade/rust')).json();
+    } catch (e) {
+        data = null;
+    }
+    if (!data || !data.success) {
+        body.innerHTML = `<div class="alert alert-warning small mb-0">
+            Could not read Rust components state${data && data.error ? ': ' + escapeHtml(data.error) : ''}.</div>`;
+        return;
+    }
+    const inst = data.installed || {};
+    const on = !!data.build_enabled;
+    // A component enabled for builds but absent from this image = arrives
+    // with the next upgrade; present while builds are off = will drop out.
+    const row = (label, desc, present) => `
+        <div class="d-flex align-items-center gap-2 py-1 border-bottom">
+          <span class="badge ${present ? 'bg-success' : 'bg-secondary'}" style="min-width:5.5em">
+            ${present ? 'installed' : 'not in image'}</span>
+          <div class="small"><strong>${label}</strong>
+            <span class="text-muted">— ${desc}</span>
+            ${!present && on ? '<span class="text-info ms-1">(included in the next upgrade build)</span>' : ''}
+            ${present && !on ? '<span class="text-warning ms-1">(will be dropped by the next upgrade build)</span>' : ''}
+          </div>
+        </div>`;
+    body.innerHTML = `
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="upgRustEnabled" ${on ? 'checked' : ''}>
+        <label class="form-check-label" for="upgRustEnabled">
+          <strong>Build Rust components into upgrade images</strong>
+          <div class="small text-muted">Adds the Rust toolchain to the image build — expect it to
+            take roughly 5&ndash;15 minutes longer. The running app is untouched until you upgrade.</div>
+        </label>
+      </div>
+      <div class="mb-2">
+        ${row('Telemetry appender <code>zmm_telemetry</code>',
+              'fast native DuckDB writes for device telemetry (Python fallback otherwise)',
+              !!inst.telemetry)}
+        ${row('Cast EQ DSP <code>zmm_eq</code>',
+              'live 10-band equaliser for Cast speakers (Media tab); without it Cast EQ is unavailable',
+              !!inst.eq_dsp)}
+        ${row('ffmpeg', 'stream decoder used by the Cast EQ (part of the base image on current builds)',
+              !!inst.ffmpeg)}
+      </div>`;
+    document.getElementById('upgRustEnabled').addEventListener('change', async (e) => {
+        const enabled = e.target.checked;
+        e.target.disabled = true;
+        try {
+            const res = await fetch('/api/upgrade/rust', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled }),
+            });
+            const r = await res.json();
+            if (!r.success) throw new Error(r.error || 'save failed');
+            toast('success', enabled
+                ? 'Rust components will be included in the next upgrade build'
+                : 'Rust components will be left out of the next upgrade build');
+        } catch (err) {
+            toast('danger', 'Could not save: ' + err.message);
+        }
+        loadRustComponents();   // re-render badges + hints from saved state
+    });
 }
 
 // ============================================================================

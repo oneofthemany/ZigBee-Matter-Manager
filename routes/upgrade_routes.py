@@ -239,6 +239,29 @@ def register_upgrade_routes(app: FastAPI):
             logger.error(f"Failed to save upgrade settings: {e}")
             return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
+    @app.get("/api/upgrade/rust")
+    async def get_rust_components():
+        """Rust-components build marker + what the running image contains."""
+        try:
+            return {"success": True, **um.get_rust_components()}
+        except Exception as e:
+            logger.error(f"Failed to read rust components state: {e}")
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+    @app.post("/api/upgrade/rust")
+    async def set_rust_components(data: Dict[str, Any] = Body(...)):
+        """Toggle whether the next image build includes the Rust wheels
+        (zmm_telemetry appender + zmm_eq Cast EQ DSP). Takes effect at the
+        next upgrade build — never changes the running image."""
+        try:
+            if "enabled" not in data:
+                return JSONResponse({"success": False, "error": "Provide enabled"},
+                                    status_code=400)
+            return {"success": True, **um.set_rust_components(bool(data["enabled"]))}
+        except Exception as e:
+            logger.error(f"Failed to set rust components marker: {e}")
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
     @app.get("/api/upgrade/manager-token")
     async def get_manager_token():
         """Return the ZMM Manager's action token (data/state/manager_token,
