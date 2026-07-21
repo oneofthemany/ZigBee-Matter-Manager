@@ -134,6 +134,10 @@ import { createChart } from './chart-utils.js';
             { id: 'journeys', icon: 'fa-route', label: 'Journeys' },
             { id: 'fuel', icon: 'fa-gas-pump', label: 'Fuel' },
             { id: 'history', icon: 'fa-chart-line', label: 'Price History' },
+            // Named places (the apiary) live here rather than in Settings →
+            // Presence: journeys name their endpoints from it, so the list
+            // of places belongs beside the trips it labels.
+            { id: 'apiary', icon: 'fa-map-location-dot', label: 'Apiary' },
         ];
         var nav = tabs.map(function (t) {
             return '<li class="nav-item">' +
@@ -167,6 +171,7 @@ import { createChart } from './chart-utils.js';
               pane('journeys', journeysCard()) +
               pane('fuel', fuelCard()) +
               pane('history', historyCard()) +
+              pane('apiary', apiaryCard()) +
             '</div>';
 
         bindJourneyHandlers();
@@ -177,11 +182,36 @@ import { createChart } from './chart-utils.js';
             btn.addEventListener('shown.bs.tab', function () {
                 activePane = btn.getAttribute('data-drive-pane');
                 // The chart can only measure itself in a visible pane, so it
-                // draws on first show rather than at render time.
+                // draws on first show rather than at render time. Same story
+                // for the apiary's map picker.
                 if (activePane === 'history') renderHistoryChart();
+                if (activePane === 'apiary') initApiary();
             });
         });
         if (activePane === 'history') renderHistoryChart();
+        if (activePane === 'apiary') initApiary();
+    }
+
+    // ----------------------------------------------------------
+    // Apiary pane — hosts places-settings.js (moved from Settings →
+    // Presence). That module owns everything inside
+    // #places-settings-host; this pane just provides the card.
+    // ----------------------------------------------------------
+    function apiaryCard() {
+        return '<div class="card shadow-sm">' +
+          '<div class="card-header bg-light py-2">' +
+            '<span class="fw-bold"><i class="fas fa-map-location-dot me-1"></i> Apiary</span>' +
+          '</div>' +
+          '<div class="card-body" id="places-settings-host">' +
+            '<div class="text-center text-muted py-4">' +
+              '<i class="fas fa-spinner fa-spin"></i> Loading apiary...</div>' +
+          '</div>' +
+        '</div>';
+    }
+
+    function initApiary() {
+        if (window.initPlacesSettings) window.initPlacesSettings();
+        else log.warn('places-settings.js not loaded; apiary pane is empty');
     }
 
     // ----------------------------------------------------------

@@ -426,7 +426,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (window.initMyAccount) window.initMyAccount();
                 if (window.initAuthSettings) window.initAuthSettings();
                 if (window.initPresenceSettings) window.initPresenceSettings();
-                if (window.initPlacesSettings) window.initPlacesSettings();
+                // Apiary moved to the Drive tab; drive.js initialises it there.
                 if (window.initRemoteAccess) window.initRemoteAccess();
             });
         }
