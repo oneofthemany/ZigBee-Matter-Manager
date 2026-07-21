@@ -12,6 +12,7 @@ python-matter-server[server]
 python-multipart
 duckdb
 httpx
+uk-fuel-prices-api
 tzdata
 aiohttp>=3.9
 pychromecast~=14.0

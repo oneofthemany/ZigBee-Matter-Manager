@@ -17,6 +17,11 @@ discovery all work without modification.
 Storage:
     data/presence_users.yaml  — user definitions (no coordinates persisted
                                 across restarts unless explicitly enabled).
+    data/presence_state.json  — last known presence/place/last_seen per user,
+                                restored on startup so badges survive a
+                                restart. Deliberately contains NO coordinates:
+                                the privacy stance above is about positions,
+                                not about whether someone was home.
 
 Dependencies:
     - mqtt_handler (optional, for HA discovery + state publish)
@@ -116,6 +121,7 @@ def mode_params(mode: Optional[str]) -> Dict[str, Any]:
 
 
 CONFIG_PATH = Path("./data/presence_users.yaml")
+STATE_PATH = Path("./data/presence_state.json")
 
 # IEEE-style identifier prefix for virtual users so they slot into the
 # existing 16-hex-char namespace cleanly (collision-proof).
@@ -175,6 +181,11 @@ class UserConfig:
     stale_after_s: float = DEFAULT_STALE_AFTER_S
     min_accuracy_m: float = DEFAULT_MIN_ACCURACY_M
     enabled: bool = True
+    # Opt-in per user: record drive-mode fixes (car Bluetooth connected) as
+    # journeys with distance and speed statistics. Off by default because it
+    # persists movement history, which the rest of this module deliberately
+    # does not.
+    journeys_enabled: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -211,6 +222,7 @@ class UserConfig:
             stale_after_s=float(mode_params(mode)["stale_after_s"]),
             min_accuracy_m=float(d.get("min_accuracy_m", DEFAULT_MIN_ACCURACY_M)),
             enabled=bool(d.get("enabled", True)),
+            journeys_enabled=bool(d.get("journeys_enabled") or False),
         )
 
 
@@ -416,11 +428,13 @@ class PresenceUserManager:
             event_emitter: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
             automation_evaluator: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
             config_path: Path = CONFIG_PATH,
+            state_path: Path = STATE_PATH,
     ):
         self.mqtt_handler = mqtt_handler
         self.event_emitter = event_emitter
         self.automation_evaluator = automation_evaluator
         self.config_path = Path(config_path)
+        self.state_path = Path(state_path)
 
         # Presence users only. The household aggregate is deliberately NOT in
         # here: every loop over this dict assumes each entry has a .cfg, and an
@@ -437,6 +451,7 @@ class PresenceUserManager:
     # ------------------------------------------------------------------
     async def start(self) -> None:
         self._load_config()
+        self._load_state()
         for dev in self.devices.values():
             await self._publish_discovery(dev)
             await self._publish_state(dev)
@@ -479,6 +494,77 @@ class PresenceUserManager:
                 yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
         except Exception as e:
             logger.error(f"Failed to save presence users config: {e}")
+
+    # ------------------------------------------------------------------
+    # Runtime-state persistence (survives restarts)
+    # ------------------------------------------------------------------
+    #
+    # Config persistence above answers "who are the users"; this answers
+    # "where did we last believe they were". Without it a restart flips every
+    # badge to "unknown" until the next heartbeat — up to an hour in battery
+    # mode — which reads on screen as the whole household vanishing.
+    #
+    # The file carries NO coordinates. presence/place/distance are exactly
+    # what the UI and MQTT already show; persisting them does not widen what
+    # is stored, only how long it survives.
+
+    _STATE_KEYS = ("presence", "place", "distance_m", "accuracy_m",
+                   "source", "last_update")
+
+    def _save_state(self) -> None:
+        try:
+            payload = {
+                dev.cfg.user_id: {
+                    **{k: dev.state.get(k) for k in self._STATE_KEYS},
+                    "last_seen": dev.last_seen,
+                }
+                for dev in self.devices.values()
+            }
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic replace: this file is rewritten on every fix, and a crash
+            # mid-write must not leave half a JSON to choke the next startup.
+            tmp = self.state_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(self.state_path)
+        except Exception as e:
+            logger.debug(f"Failed to save presence state: {e}")
+
+    def _load_state(self) -> None:
+        """Restore last known state, demoting anything now stale to unknown."""
+        if not self.state_path.exists():
+            return
+        try:
+            saved = json.loads(self.state_path.read_text())
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable presence state file: {e}")
+            return
+        if not isinstance(saved, dict):
+            return
+
+        now = time.time()
+        restored = 0
+        for user_id, snap in saved.items():
+            dev = self.get_user(user_id)
+            if not dev or not isinstance(snap, dict):
+                continue
+            last_seen = float(snap.get("last_seen") or 0.0)
+            dev.last_seen = last_seen
+            for k in self._STATE_KEYS:
+                if k in snap:
+                    dev.state[k] = snap[k]
+            # The same staleness rule the live watcher applies: a snapshot
+            # older than the stale window is not evidence of anything, and
+            # restoring it verbatim would show a confidently wrong badge
+            # after a long outage. last_seen survives either way so the UI
+            # can still say how long ago the phone was heard from.
+            if not last_seen or now - last_seen > dev.cfg.stale_after_s:
+                dev.state["presence"] = PRESENCE_UNKNOWN
+                dev.state["place"] = PRESENCE_UNKNOWN
+                dev.state["source"] = "stale"
+            else:
+                restored += 1
+        if restored:
+            logger.info(f"Restored presence state for {restored} user(s)")
 
     # ------------------------------------------------------------------
     # CRUD
@@ -544,6 +630,7 @@ class PresenceUserManager:
             if not dev:
                 return {"success": False, "error": "User not found"}
             self._save_config()
+            self._save_state()
             await self._remove_discovery(dev)
             return {"success": True}
 
@@ -738,6 +825,11 @@ class PresenceUserManager:
 
     async def _publish_state(self, dev: PresenceUserDevice) -> None:
         self._refresh_household()
+        # Every state change funnels through here (same reasoning as the
+        # household recompute), so this is the one save point that cannot be
+        # forgotten. Must run before the MQTT early-return: state should
+        # survive a restart whether or not a broker is configured.
+        self._save_state()
         if not self.mqtt_handler:
             return
         # The household aggregate has no cfg and its own topic; skip it here.

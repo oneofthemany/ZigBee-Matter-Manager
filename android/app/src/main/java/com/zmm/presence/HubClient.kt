@@ -28,6 +28,20 @@ object HubClient {
         val radiusM: Float,
         /** Reporting aggressiveness, resolved by the hub. See [ModeParams]. */
         val mode: ModeParams,
+        /** Journey recording, resolved by the hub. See [JourneyParams]. */
+        val journeys: JourneyParams = JourneyParams(),
+    )
+
+    /**
+     * Whether drives are recorded as journeys, and how often drive mode
+     * should report while they are. Hub-decided for the same reason as
+     * [ModeParams]: enabling journeys or retuning the cadence is a hub-side
+     * edit, picked up at the next config refresh. Defaults are "off, once a
+     * minute" — exactly the pre-journeys behaviour — for hubs predating this.
+     */
+    data class JourneyParams(
+        val enabled: Boolean = false,
+        val driveIntervalS: Long = 60,
     )
 
     /** A named region from the hub, used only to register a wake-up geofence. */
@@ -98,8 +112,17 @@ object HubClient {
                 priority = mp.optString("priority", "balanced"),
             )
 
+            // Same contract as mode_params: absent on an older hub means the
+            // defaults, which are the old behaviour.
+            val jo = o.optJSONObject("journeys")
+            val journeys = if (jo == null) JourneyParams() else JourneyParams(
+                enabled = jo.optBoolean("enabled", false),
+                driveIntervalS = jo.optLong("drive_interval_s", 60),
+            )
+
             Result.Ok(HomeConfig(
                 o.getDouble("home_lat"), o.getDouble("home_lon"), radius, mode,
+                journeys,
             ))
         } catch (e: Exception) {
             Log.w(TAG, "fetchHome failed", e)
@@ -107,13 +130,23 @@ object HubClient {
         }
     }
 
-    /** Report a fix. Needs scope presence:write:<user>. */
+    /**
+     * Report a fix. Needs scope presence:write:<user>.
+     *
+     * The drive-mode extras default to null so the heartbeat, geofence and
+     * passive callers are untouched; only DriveService fills them in. Speed
+     * is GPS doppler speed in m/s — the hub aggregates it into per-trip
+     * statistics rather than deriving speed from consecutive positions.
+     */
     suspend fun postFix(
         prefs: Prefs,
         lat: Double,
         lon: Double,
         accuracy: Float?,
         timestampSec: Double,
+        speedMps: Float? = null,
+        bearingDeg: Float? = null,
+        tripId: String? = null,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val url = "${prefs.hubUrl}/api/presence/users/${enc(prefs.userId)}/fix"
         try {
@@ -122,6 +155,9 @@ object HubClient {
                 put("lon", lon)
                 if (accuracy != null) put("accuracy", accuracy.toDouble())
                 put("timestamp", timestampSec)
+                if (speedMps != null) put("speed", speedMps.toDouble())
+                if (bearingDeg != null) put("bearing", bearingDeg.toDouble())
+                if (tripId != null) put("trip_id", tripId)
             }.toString()
 
             val conn = open(url, "POST", prefs)

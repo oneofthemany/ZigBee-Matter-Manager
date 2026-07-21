@@ -39,6 +39,8 @@ from routes.security_routes import register_security_routes
 from routes.chamber_routes import register_chamber_routes
 from routes.frame_routes import register_frame_routes
 from routes.octopus_routes import register_octopus_routes
+from routes.journey_routes import register_journey_routes
+from routes.fuel_routes import register_fuel_routes
 
 
 
@@ -68,6 +70,8 @@ __all__ = [
     'register_heating_routes',
     'register_heating_controller_routes',
     'register_presence_routes',
+    'register_journey_routes',
+    'register_fuel_routes',
     'register_remote_access_routes',
     'register_sun_routes',
     'register_floor_plan_routes',

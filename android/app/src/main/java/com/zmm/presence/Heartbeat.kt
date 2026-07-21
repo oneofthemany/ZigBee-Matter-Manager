@@ -117,6 +117,7 @@ class HeartbeatWorker(
         prefs.homeLon = home.lon
         prefs.radiusM = home.radiusM
         prefs.saveMode(home.mode)
+        prefs.saveJourneys(home.journeys)
 
         // Ok(empty) is "hub confirms no places"; Err is "could not tell" and
         // must leave the cache untouched — see fetchPlaces' doc comment. Using

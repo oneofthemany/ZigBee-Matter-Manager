@@ -409,6 +409,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // signal; this catches missed events (ws reconnects, backend restarts)
         setInterval(checkMatterStatus, 60000);
 
+        // Drive tab listener — journeys + fuel prices load on first open
+        const driveTab = document.querySelector('button[data-bs-target="#drive"]');
+        if (driveTab) {
+            driveTab.addEventListener('shown.bs.tab', () => {
+                if (window.initDriveTab) window.initDriveTab();
+            });
+        }
+
         // Settings tab listener
         const settingsTab = document.querySelector('button[data-bs-target="#settings"]');
         if (settingsTab) {

@@ -233,6 +233,18 @@
                   field('hysteresis_m', 'Leave-hysteresis (m)', u.hysteresis_m, 'col-md-4', '', '', 'number') +
                   field('min_accuracy_m', 'Min accuracy (m)', u.min_accuracy_m, 'col-md-4', '', '', 'number') +
                   modeField(u.presence_mode) +
+                  '<div class="col-md-6">' +
+                    '<label class="form-label small fw-bold">Journey recording</label>' +
+                    '<div class="form-check form-switch">' +
+                      '<input class="form-check-input" type="checkbox" id="field-journeys_enabled"' +
+                        (u.journeys_enabled ? ' checked' : '') + '>' +
+                      '<label class="form-check-label small text-muted" for="field-journeys_enabled">' +
+                        'Record drives (car Bluetooth) as journeys with speed stats' +
+                      '</label>' +
+                    '</div>' +
+                    '<div class="form-text small">Stores movement history on the hub — ' +
+                      'see the Drive tab. Tracks are kept 90 days; summaries indefinitely.</div>' +
+                  '</div>' +
                 '</div>' +
                 '<div id="presence-edit-error" class="alert alert-danger mt-3" style="display:none"></div>' +
               '</div>' +
@@ -296,6 +308,9 @@
             // lets the server preserve it.
             var modeSel = document.getElementById('field-presence_mode');
             if (modeSel && modeSel.value) body.presence_mode = modeSel.value;
+
+            var journeysEl = document.getElementById('field-journeys_enabled');
+            if (journeysEl) body.journeys_enabled = !!journeysEl.checked;
 
             try {
                 var r = await fetch('/api/presence/users', {

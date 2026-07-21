@@ -52,6 +52,15 @@ class DriveService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var callback: LocationCallback? = null
 
+    /**
+     * One drive, one id. Generated when the service starts (the car
+     * connecting) and dies with it, so the hub can group this drive's fixes
+     * into a journey without guessing at gaps. Null when the user hasn't
+     * opted in to journey recording — the fixes then carry no trip tag and
+     * the hub stores nothing.
+     */
+    private var tripId: String? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -67,6 +76,8 @@ class DriveService : Service() {
         }
 
         startInForeground(prefs.carBtName)
+        tripId = if (prefs.journeysEnabled)
+            java.util.UUID.randomUUID().toString() else null
         startUpdates(prefs)
         running = true
         Log.i(TAG, "drive mode started (${prefs.carBtName})")
@@ -119,6 +130,12 @@ class DriveService : Service() {
                         prefs, loc.latitude, loc.longitude,
                         if (loc.hasAccuracy()) loc.accuracy else null,
                         loc.time / 1000.0,
+                        // GPS doppler speed/bearing: far better than anything
+                        // derivable from consecutive fixes, and free — the
+                        // receiver computes them anyway.
+                        speedMps = if (loc.hasSpeed()) loc.speed else null,
+                        bearingDeg = if (loc.hasBearing()) loc.bearing else null,
+                        tripId = tripId,
                     )) {
                         is HubClient.Result.Ok -> Log.i(TAG, "drive fix reported")
                         is HubClient.Result.Err ->
@@ -136,8 +153,16 @@ class DriveService : Service() {
         // navigation keeps the GPS lit for the whole drive, so these fixes
         // piggyback on hardware that is already on. Everywhere else this app
         // uses balanced power for exactly the opposite reason.
+        //
+        // Cadence: hub-decided when journeys are on (default 10 s, so miles
+        // and the speed distribution are honestly sampled); the pre-journeys
+        // once-a-minute otherwise, since presence alone needs no more.
+        val intervalMs = if (prefs.journeysEnabled)
+            prefs.driveIntervalS.coerceAtLeast(1L) * 1000L
+        else
+            UPDATE_INTERVAL_MS
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY, UPDATE_INTERVAL_MS,
+            Priority.PRIORITY_HIGH_ACCURACY, intervalMs,
         ).build()
 
         LocationServices.getFusedLocationProviderClient(this)

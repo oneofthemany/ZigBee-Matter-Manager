@@ -156,6 +156,7 @@ try:
     from modules.auth import AuthManager, set_auth_manager
     from modules.auth_middleware import AuthMiddleware
     from modules.presence_users import PresenceUserManager, set_presence_manager, get_presence_manager
+    from modules.journeys import JourneyManager, set_journey_manager
     from modules.auth import AuthManager, set_auth_manager
     from modules.auth_middleware import AuthMiddleware
     from modules.auth_secure import SecureAuthManager, set_secure_auth_manager
@@ -790,6 +791,14 @@ async def lifespan(app: FastAPI):
         zigbee_service.automation._get_names = _names_with_presence
         logger.info("Wired presence users into automation engine")
 
+        # ── Journeys (drive tracking) ──
+        # Its own DuckDB file with its own single worker thread — DuckDB is
+        # single-writer per file, so journeys never share a database.
+        journey_manager = JourneyManager()
+        await journey_manager.start()
+        set_journey_manager(journey_manager)
+        app.state.journey_manager = journey_manager
+
 
         # Initialise AI Assistant
         ai_config = CONFIG.get("ai", {})
@@ -955,6 +964,9 @@ async def lifespan(app: FastAPI):
     presence_manager = getattr(app.state, "presence_manager", None)
     if presence_manager:
         await presence_manager.stop()
+    journey_manager = getattr(app.state, "journey_manager", None)
+    if journey_manager:
+        await journey_manager.stop()
 
     # 2. services
     if zigbee_service.multipan and zigbee_service.multipan.is_running:
@@ -1149,6 +1161,10 @@ register_api_docs_routes(app)
 register_wiki_routes(app)
 register_alert_routes(app)
 register_presence_routes(app, get_presence_manager)
+from modules.journeys import get_journey_manager
+from routes import register_journey_routes, register_fuel_routes
+register_journey_routes(app, get_journey_manager)
+register_fuel_routes(app)
 register_remote_access_routes(app)
 
 # Map tiles: a caching proxy so presence maps don't announce the

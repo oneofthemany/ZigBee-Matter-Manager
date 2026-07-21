@@ -159,6 +159,24 @@ class Prefs(context: Context) {
         priority = m.priority
     }
 
+    /**
+     * Journey recording, cached from the hub like the mode: DriveService is
+     * started by a Bluetooth broadcast with the app possibly dead, and must
+     * decide its cadence and whether to tag a trip without a network call.
+     */
+    var journeysEnabled: Boolean
+        get() = sp.getBoolean(KEY_JOURNEYS, false)
+        set(v) = sp.edit().putBoolean(KEY_JOURNEYS, v).apply()
+
+    var driveIntervalS: Long
+        get() = sp.getLong(KEY_DRIVE_INTERVAL, 60L)
+        set(v) = sp.edit().putLong(KEY_DRIVE_INTERVAL, v).apply()
+
+    fun saveJourneys(j: HubClient.JourneyParams) {
+        journeysEnabled = j.enabled
+        driveIntervalS = j.driveIntervalS
+    }
+
     var armed: Boolean
         get() = sp.getBoolean(KEY_ARMED, false)
         set(v) = sp.edit().putBoolean(KEY_ARMED, v).apply()
@@ -188,6 +206,8 @@ class Prefs(context: Context) {
         private const val KEY_PLACES = "places_json"
         private const val KEY_CAR_ADDR = "car_bt_addr"
         private const val KEY_CAR_NAME = "car_bt_name"
+        private const val KEY_JOURNEYS = "journeys_enabled"
+        private const val KEY_DRIVE_INTERVAL = "drive_interval_s"
         private const val KEY_PASSIVE_POST = "passive_last_post_ms"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */

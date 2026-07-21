@@ -198,6 +198,7 @@ class PairActivity : AppCompatActivity() {
                     // Cache the reporting mode too, so arming and the boot
                     // re-arm can apply it without another round-trip.
                     prefs.saveMode(r.value.mode)
+                    prefs.saveJourneys(r.value.journeys)
                     // Places are optional; a hub predating them (or a token
                     // without presence:read) simply pairs with none rather
                     // than failing pairing outright.

@@ -141,6 +141,7 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automations"><i class="fas fa-bolt"></i> <span class="tab-label">Automations</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#heating"><i class="fas fa-temperature-high"></i> <span class="tab-label">Heating</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#energy"><i class="fas fa-plug"></i> <span class="tab-label">Energy</span></button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#drive"><i class="fas fa-car"></i> <span class="tab-label">Drive</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> <span class="tab-label">Zones</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#topology"><i class="fas fa-network-wired"></i> <span class="tab-label">Topology</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mqtt-explorer"><i class="fas fa-broadcast-tower"></i> <span class="tab-label">MQTT Explorer</span></button></li>
@@ -991,6 +992,15 @@
             </div>
         </div>
 
+        <!-- Drive Tab: journeys + fuel prices -->
+        <div class="tab-pane fade" id="drive">
+            <div class="container-fluid p-3" id="drive-host">
+                <div class="text-center text-muted py-5">
+                    <i class="fas fa-spinner fa-spin"></i> Loading drive data...
+                </div>
+            </div>
+        </div>
+
         <!-- Zones Tab-->
         <div class="tab-pane fade" id="zones" role="tabpanel" aria-labelledby="zones-tab">
             <div class="container-fluid p-3">
@@ -1650,6 +1660,7 @@
 <script src="/static/js/remote-access.js"></script>
 <script src="/static/js/my-account.js"></script>
 <script src="/static/vendor/leaflet.js"></script>
+<script src="/static/js/drive.js"></script>
 <script src="/static/js/presence.js"></script>
 <script src="/static/js/presence-badge.js"></script>
 <script src="/static/js/requests-ui.js"></script>
