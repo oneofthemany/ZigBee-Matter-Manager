@@ -189,27 +189,30 @@ def _rcursor():
 
 
 def _write_exec(sql: str, params: List[tuple]):
-    """Serialised write via a per-call cursor on the shared connection.
+    """Write via a per-call cursor on the shared connection.
 
-    With the in-process Rust appender gone, every telemetry write lands here —
-    from the event-loop thread (device/packet/metric writes) AND worker threads
-    (snapshot/prune). DuckDB handles aren't safe to share across threads, so we
-    (a) hold _db_lock so only one writer touches the engine at a time, and
-    (b) use a fresh cursor rather than the base connection, so a concurrent
-    reader's cursor never shares our handle - "writers hold the lock, readers
-    use cursors" rule.
+    Every telemetry write lands here — including calls made ON THE EVENT-LOOP
+    THREAD (device/packet/metric writes from zigpy callbacks). So the lock is
+    held ONLY long enough to create a fresh cursor; the executemany itself runs
+    OUTSIDE the lock. DuckDB serialises concurrent writes from separate cursors
+    internally (verified: parallel INSERTs + an overlapping DELETE → no errors,
+    no corruption), so we don't need to hold _db_lock across the write — and
+    must not, or a slow writer (a big snapshot batch, prune's multi-second
+    DELETEs, or the one-time WAL replay at open) would block every loop-thread
+    write behind it and stall the event loop. Each caller gets its own cursor,
+    so no handle is shared across threads.
     """
     if not params:
         return
     with _db_lock:
-        cur = _get_db().cursor()
+        cur = _get_db().cursor()          # brief: init + cursor creation only
+    try:
+        cur.executemany(sql, params)      # outside the lock — DuckDB serialises
+    finally:
         try:
-            cur.executemany(sql, params)
-        finally:
-            try:
-                cur.close()
-            except Exception:
-                pass
+            cur.close()
+        except Exception:
+            pass
 
 
 def warm():
@@ -1296,23 +1299,25 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     """Remove records older than retention period.
 
     Callers run this in a worker thread (multi-table DELETEs take seconds on a
-    grown DB). DELETE is a write, so hold _db_lock (like every other writer)
-    and use a per-call cursor rather than the shared base connection.
+    grown DB). Uses a per-call cursor, created under a brief _db_lock; the
+    DELETEs run OUTSIDE the lock so this never blocks loop-thread writers for
+    seconds (DuckDB serialises the concurrent writes internally). See
+    _write_exec for the same rationale.
     """
     cutoff = f"{retention_days} days"
     with _db_lock:
-        db = _get_db().cursor()
+        db = _get_db().cursor()           # brief: cursor creation only
+    try:
+        for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
+            db.execute(
+                f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
+            )
+            logger.debug(f"Pruned {table}: retention={retention_days}d")
+    finally:
         try:
-            for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
-                db.execute(
-                    f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
-                )
-                logger.debug(f"Pruned {table}: retention={retention_days}d")
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
+            db.close()
+        except Exception:
+            pass
 
     logger.info(f"Telemetry pruned (retention={retention_days} days)")
 
