@@ -347,24 +347,43 @@ def update_state(**changes) -> Dict[str, Any]:
 # lives in STATE_DIR (the shared data volume), so a toggle from the UI is
 # picked up by the NEXT host-side image build — it cannot change the image
 # that is already running.
+# The two Rust crates are independent (zmm_telemetry = DuckDB appender,
+# zmm_eq = Cast EQ DSP) and get their own build markers. See build.sh Part 2.
 APPENDER_MARKER_FILE = os.path.join(STATE_DIR, "appender.enabled")
+EQ_MARKER_FILE = os.path.join(STATE_DIR, "eq.enabled")
+
+
+def _read_marker(path: str) -> Optional[bool]:
+    """True/False from a marker file, or None if it doesn't exist yet."""
+    try:
+        with open(path, "r") as f:
+            return f.read().strip().lower() == "true"
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"Could not read {path}: {e}")
+        return None
 
 
 def get_rust_components() -> Dict[str, Any]:
-    """The build marker plus what the RUNNING image actually contains —
-    the two differ after a toggle until the next upgrade build."""
+    """Per-crate build markers plus what the RUNNING image actually contains —
+    the two differ after a toggle until the next upgrade build.
+
+    Legacy migration: before the crates were split, one marker built both. If
+    eq.enabled is absent we inherit the appender marker, so an upgrade never
+    silently drops a working EQ. The UI writes both markers explicitly on any
+    change, which ends the inheritance.
+    """
     import importlib.util
     import shutil
-    marker = False
-    try:
-        with open(APPENDER_MARKER_FILE, "r") as f:
-            marker = f.read().strip().lower() == "true"
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"Could not read {APPENDER_MARKER_FILE}: {e}")
+    appender = bool(_read_marker(APPENDER_MARKER_FILE))
+    eq_raw = _read_marker(EQ_MARKER_FILE)
+    eq = appender if eq_raw is None else eq_raw
     return {
-        "build_enabled": marker,
+        "appender_enabled": appender,
+        "eq_enabled": eq,
+        # Legacy key kept for older clients: "any Rust component requested".
+        "build_enabled": appender or eq,
         "installed": {
             "telemetry": importlib.util.find_spec("zmm_telemetry") is not None,
             "eq_dsp": importlib.util.find_spec("zmm_eq") is not None,
@@ -373,11 +392,28 @@ def get_rust_components() -> Dict[str, Any]:
     }
 
 
-def set_rust_components(enabled: bool) -> Dict[str, Any]:
+def set_rust_components(appender: Optional[bool] = None,
+                        eq: Optional[bool] = None,
+                        enabled: Optional[bool] = None) -> Dict[str, Any]:
+    """Update the per-crate build markers.
+
+    Pass `appender` and/or `eq` to set them individually; unspecified crates
+    keep their current effective value. `enabled` is the legacy combined
+    toggle — it sets both crates at once. Both markers are always written so
+    the legacy eq→appender inheritance stops applying after the first change.
+    """
     _ensure_dirs()
+    if enabled is not None:
+        appender = enabled if appender is None else appender
+        eq = enabled if eq is None else eq
+    cur = get_rust_components()
+    new_appender = cur["appender_enabled"] if appender is None else bool(appender)
+    new_eq = cur["eq_enabled"] if eq is None else bool(eq)
     with open(APPENDER_MARKER_FILE, "w") as f:
-        f.write("true" if enabled else "false")
-    logger.info(f"Rust components build marker set to {enabled}")
+        f.write("true" if new_appender else "false")
+    with open(EQ_MARKER_FILE, "w") as f:
+        f.write("true" if new_eq else "false")
+    logger.info(f"Rust build markers set: appender={new_appender}, eq={new_eq}")
     return get_rust_components()
 
 

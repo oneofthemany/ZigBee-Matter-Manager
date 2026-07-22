@@ -691,22 +691,40 @@ do_build() {
         log_to_build "Appender marker missing — defaulting WITH_APPENDER=false (matches build.sh default)"
     fi
 
+    # ── EQ choice: separate marker (zmm_eq is an independent crate). ─────────
+    # Legacy migration: before the split, a single marker built BOTH crates,
+    # so an install that predates eq.enabled but has appender.enabled=true was
+    # also getting the EQ. When eq.enabled is missing we therefore inherit the
+    # appender value, so an upgrade never silently drops a working EQ. Once the
+    # UI writes eq.enabled explicitly the inheritance no longer applies.
+    local eq_marker="${DATA_DIR}/data/state/eq.enabled"
+    local with_eq="$with_appender"
+    if [[ -f "$eq_marker" ]]; then
+        with_eq=$(tr -d '[:space:]' < "$eq_marker")
+        [[ "$with_eq" == "true" ]] || with_eq="false"
+        log_to_build "EQ marker found: ${eq_marker} = ${with_eq}"
+    else
+        log_to_build "EQ marker missing — inheriting WITH_EQ=${with_eq} from appender marker (legacy combined build)"
+    fi
+
     # Containerfile generation. With the new layout work_dir IS APP_DIR, so
     # we can't copy "an existing Containerfile from APP_DIR" — they're the
     # same path. The cloned tag's build.sh has write_containerfile() which
     # produces the Containerfile expected by that version.
     if [[ ! -f "$work_dir/Containerfile" ]]; then
         if [[ -f "$work_dir/build.sh" ]]; then
-            log_to_build "Generating Containerfile via target tag's build.sh write_containerfile() (WITH_APPENDER=${with_appender})"
+            log_to_build "Generating Containerfile via target tag's build.sh write_containerfile() (WITH_APPENDER=${with_appender}, WITH_EQ=${with_eq})"
             (
                 set +u
                 # shellcheck disable=SC1090
                 source "$work_dir/build.sh" >/dev/null 2>&1 || true
                 if type write_containerfile >/dev/null 2>&1; then
                     # write_containerfile reads CLONE_DIR for the output path
-                    # and WITH_APPENDER for the appender stanza toggle.
+                    # and WITH_APPENDER / WITH_EQ for the per-crate stanzas.
+                    # (Older tags ignore WITH_EQ harmlessly.)
                     CLONE_DIR="$work_dir" APP_DIR="$work_dir" \
                     WITH_APPENDER="$with_appender" \
+                    WITH_EQ="$with_eq" \
                         write_containerfile
                 fi
             ) >>"$BUILD_LOG" 2>&1 || true

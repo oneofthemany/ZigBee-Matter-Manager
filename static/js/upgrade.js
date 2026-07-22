@@ -243,57 +243,76 @@ async function loadRustComponents() {
         return;
     }
     const inst = data.installed || {};
-    const on = !!data.build_enabled;
+    const appenderOn = !!data.appender_enabled;
+    const eqOn = !!data.eq_enabled;
     // A component enabled for builds but absent from this image = arrives
-    // with the next upgrade; present while builds are off = will drop out.
-    const row = (label, desc, present) => `
-        <div class="d-flex align-items-center gap-2 py-1 border-bottom">
+    // with the next upgrade; present while its build is off = will drop out.
+    const statusHint = (present, on) =>
+        (!present && on) ? '<span class="text-info ms-1">(included in the next upgrade build)</span>'
+        : (present && !on) ? '<span class="text-warning ms-1">(will be dropped by the next upgrade build)</span>'
+        : '';
+    // A build toggle paired with its own installed/pending badge.
+    const toggle = (id, on, present, label, note, desc) => `
+        <div class="d-flex align-items-start gap-2 py-2 border-bottom">
+          <div class="form-check form-switch mb-0" style="min-width:2.5em">
+            <input class="form-check-input" type="checkbox" id="${id}" ${on ? 'checked' : ''}>
+          </div>
+          <div class="small flex-grow-1">
+            <label class="form-check-label" for="${id}"><strong>${label}</strong></label>
+            <span class="badge ${present ? 'bg-success' : 'bg-secondary'} ms-1">
+              ${present ? 'installed' : 'not in image'}</span>
+            ${statusHint(present, on)}
+            <span class="text-warning ms-1">${note}</span>
+            <div class="text-muted">${desc}</div>
+          </div>
+        </div>`;
+    // Plain info row (no toggle) for things that aren't built here.
+    const infoRow = (present, label, desc) => `
+        <div class="d-flex align-items-center gap-2 py-2">
           <span class="badge ${present ? 'bg-success' : 'bg-secondary'}" style="min-width:5.5em">
             ${present ? 'installed' : 'not in image'}</span>
           <div class="small"><strong>${label}</strong>
-            <span class="text-muted">— ${desc}</span>
-            ${!present && on ? '<span class="text-info ms-1">(included in the next upgrade build)</span>' : ''}
-            ${present && !on ? '<span class="text-warning ms-1">(will be dropped by the next upgrade build)</span>' : ''}
-          </div>
+            <span class="text-muted">— ${desc}</span></div>
         </div>`;
     body.innerHTML = `
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="upgRustEnabled" ${on ? 'checked' : ''}>
-        <label class="form-check-label" for="upgRustEnabled">
-          <strong>Build Rust components into upgrade images</strong>
-          <div class="small text-muted">Adds the Rust toolchain to the image build — expect it to
-            take roughly 5&ndash;15 minutes longer. The running app is untouched until you upgrade.</div>
-        </label>
-      </div>
-      <div class="mb-2">
-        ${row('Telemetry appender <code>zmm_telemetry</code>',
-              'fast native DuckDB writes for device telemetry (Python fallback otherwise)',
-              !!inst.telemetry)}
-        ${row('Cast EQ DSP <code>zmm_eq</code>',
-              'live 10-band equaliser for Cast speakers (Media tab); without it Cast EQ is unavailable',
-              !!inst.eq_dsp)}
-        ${row('ffmpeg', 'stream decoder used by the Cast EQ (part of the base image on current builds)',
-              !!inst.ffmpeg)}
-      </div>`;
-    document.getElementById('upgRustEnabled').addEventListener('change', async (e) => {
-        const enabled = e.target.checked;
-        e.target.disabled = true;
-        try {
-            const res = await fetch('/api/upgrade/rust', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled }),
-            });
-            const r = await res.json();
-            if (!r.success) throw new Error(r.error || 'save failed');
-            toast('success', enabled
-                ? 'Rust components will be included in the next upgrade build'
-                : 'Rust components will be left out of the next upgrade build');
-        } catch (err) {
-            toast('danger', 'Could not save: ' + err.message);
-        }
-        loadRustComponents();   // re-render badges + hints from saved state
-    });
+      <div class="small text-muted mb-2">Each Rust component is built independently into the
+        next upgrade image. The running app is untouched until you upgrade.</div>
+      ${toggle('upgRustAppender', appenderOn, !!inst.telemetry,
+               'Telemetry appender <code>zmm_telemetry</code>',
+               '&#9888; adds ~5&ndash;15 min (compiles bundled DuckDB)',
+               'Fast native DuckDB writes for device telemetry. The Python fallback is fine for '
+               + 'small/home networks — enable only for large networks or heavy debug captures.')}
+      ${toggle('upgRustEq', eqOn, !!inst.eq_dsp,
+               'Cast EQ DSP <code>zmm_eq</code>',
+               'small, fast compile',
+               'Live 10-band equaliser for Cast speakers (Media tab). Without it, Cast EQ is '
+               + 'unavailable. Independent of the appender.')}
+      ${infoRow(!!inst.ffmpeg, 'ffmpeg',
+               'stream decoder used by the Cast EQ (part of the base image on current builds)')}`;
+
+    const wire = (id, key, name) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', async (e) => {
+            const on = e.target.checked;
+            e.target.disabled = true;
+            try {
+                const res = await fetch('/api/upgrade/rust', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [key]: on }),
+                });
+                const r = await res.json();
+                if (!r.success) throw new Error(r.error || 'save failed');
+                toast('success', `${name} will be ${on ? 'included in' : 'left out of'} the next upgrade build`);
+            } catch (err) {
+                toast('danger', 'Could not save: ' + err.message);
+            }
+            loadRustComponents();   // re-render badges + hints from saved state
+        });
+    };
+    wire('upgRustAppender', 'appender', 'Telemetry appender');
+    wire('upgRustEq', 'eq', 'Cast EQ DSP');
 }
 
 // ============================================================================

@@ -250,14 +250,25 @@ def register_upgrade_routes(app: FastAPI):
 
     @app.post("/api/upgrade/rust")
     async def set_rust_components(data: Dict[str, Any] = Body(...)):
-        """Toggle whether the next image build includes the Rust wheels
-        (zmm_telemetry appender + zmm_eq Cast EQ DSP). Takes effect at the
-        next upgrade build — never changes the running image."""
+        """Toggle whether the next image build includes each Rust wheel.
+
+        The two crates are independent: `appender` → zmm_telemetry (fast
+        DuckDB writes), `eq` → zmm_eq (Cast EQ DSP). Send either or both.
+        `enabled` is the legacy combined toggle (sets both). Takes effect at
+        the next upgrade build — never changes the running image."""
         try:
-            if "enabled" not in data:
-                return JSONResponse({"success": False, "error": "Provide enabled"},
-                                    status_code=400)
-            return {"success": True, **um.set_rust_components(bool(data["enabled"]))}
+            appender = data.get("appender")
+            eq = data.get("eq")
+            enabled = data.get("enabled")
+            if appender is None and eq is None and enabled is None:
+                return JSONResponse(
+                    {"success": False, "error": "Provide appender, eq, or enabled"},
+                    status_code=400)
+            return {"success": True, **um.set_rust_components(
+                appender=None if appender is None else bool(appender),
+                eq=None if eq is None else bool(eq),
+                enabled=None if enabled is None else bool(enabled),
+            )}
         except Exception as e:
             logger.error(f"Failed to set rust components marker: {e}")
             return JSONResponse({"success": False, "error": str(e)}, status_code=500)

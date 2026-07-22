@@ -657,17 +657,25 @@ RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
 WORKDIR /app
 DOCKERFILE_TOP
 
-    # Part 2 — zmm_telemetry Rust appender (optional).
-    # Deliberately placed BEFORE the Python requirements layers: the Rust
-    # sources change ~once per release cycle while requirements churn far more
-    # often, so this ordering keeps the toolchain download and crate compile
-    # fully cached across ordinary dependency bumps. The wheels declare no
-    # Python dependencies, so installing them before requirements is safe.
-    if [[ "$WITH_APPENDER" == true ]]; then
-        info "Including zmm_telemetry Rust appender in image build"
-        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
+    # Part 2 — Rust components (each independently optional).
+    #   zmm_telemetry — fast native DuckDB appender. Compiles the bundled
+    #                   DuckDB amalgamation, so it dominates build time
+    #                   (~5-15 min). A small/home network is fine on the
+    #                   Python executemany fallback, so this defaults off.
+    #   zmm_eq        — Cast EQ biquad DSP. pyo3-only, compiles in seconds.
+    #                   The Media-tab equaliser needs it and nothing else.
+    # The two are separate crates/wheels with no cross-dependency, so we build
+    # only what's requested. Deliberately placed BEFORE the Python requirements
+    # layers: the Rust sources change ~once per release cycle while requirements
+    # churn far more often, so this ordering keeps the toolchain download and
+    # crate compiles fully cached across ordinary dependency bumps. The wheels
+    # declare no Python dependencies, so installing them before requirements is
+    # safe.
+    if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
+        info "Including Rust toolchain in image build (appender=${WITH_APPENDER}, eq=${WITH_EQ})"
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUST_TOOLCHAIN'
 
-# ── Build zmm_telemetry from source inside the container ──
+# ── Rust toolchain (shared by any Rust component built below) ──
 # maturin installs via the shared pip cache mount so a layer rebuild reuses
 # the downloaded wheel instead of re-fetching it.
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -684,27 +692,51 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 ARG BUILD_JOBS=4
 ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
 ENV MAKEFLAGS="-j${BUILD_JOBS}"
+DOCKERFILE_RUST_TOOLCHAIN
 
+        # Cache mounts keep crates.io downloads and compiled artifacts in
+        # host-side buildah volumes (never committed to the image), so even
+        # when the crate sources DO change, the rebuild is incremental. NOTE:
+        # /root/.cargo/registry is a mount point here — do not rm -rf
+        # /root/.cargo in these layers.
+        if [[ "$WITH_APPENDER" == true ]]; then
+            info "Including zmm_telemetry Rust appender in image build"
+            cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
+
+# ── Build zmm_telemetry (fast DuckDB appender) from source ──
 COPY zmm_telemetry/ /tmp/zmm_telemetry/
-COPY zmm_eq/ /tmp/zmm_eq/
-# Cache mounts keep crates.io downloads and compiled artifacts in host-side
-# buildah volumes (never committed to the image), so even when the crate
-# sources DO change, the rebuild is incremental. NOTE: /root/.cargo/registry
-# is a mount point here — do not rm -rf /root/.cargo in this layer.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/var/cache/cargo-target \
     export CARGO_TARGET_DIR=/var/cache/cargo-target \
  && cd /tmp/zmm_telemetry \
  && maturin build --release --out /tmp/wheels \
+ && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl \
+ && rm -rf /tmp/zmm_telemetry /tmp/wheels
+DOCKERFILE_APPENDER
+        fi
+
+        if [[ "$WITH_EQ" == true ]]; then
+            info "Including zmm_eq Cast EQ DSP in image build"
+            cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_EQ'
+
+# ── Build zmm_eq (Cast EQ biquad DSP) from source ──
+COPY zmm_eq/ /tmp/zmm_eq/
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/var/cache/cargo-target \
+    export CARGO_TARGET_DIR=/var/cache/cargo-target \
  && cd /tmp/zmm_eq \
  && maturin build --release --out /tmp/wheels \
- && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl /tmp/wheels/zmm_eq-*.whl \
- && rm -rf /tmp/zmm_telemetry /tmp/zmm_eq /tmp/wheels
-DOCKERFILE_APPENDER
-    else
+ && pip install --no-cache-dir /tmp/wheels/zmm_eq-*.whl \
+ && rm -rf /tmp/zmm_eq /tmp/wheels
+DOCKERFILE_EQ
+        fi
+    fi
+
+    if [[ "$WITH_APPENDER" != true ]]; then
         info "Skipping zmm_telemetry Rust appender — Python executemany fallback will be used"
-        # Bake an env var into the image so telemetry_db.py forces the Python path
-        # even if a stray zmm_telemetry wheel is somehow present at runtime.
+        # Bake an env var into the image so telemetry_db.py forces the Python
+        # path even if a stray zmm_telemetry wheel is somehow present at
+        # runtime. Independent of the EQ choice above.
         cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_NOAPPENDER'
 
 # Force Python executemany fallback (no Rust appender built into this image)
@@ -823,7 +855,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 
 CMD ["python", "launcher.py"]
 DOCKERFILE_BOTTOM
-    ok "Containerfile written (appender=${WITH_APPENDER})."
+    ok "Containerfile written (appender=${WITH_APPENDER}, eq=${WITH_EQ})."
 
     # Keep the image lean: exclude build-context cruft that `COPY . .` would
     # otherwise bake in (~24 MB of .git + screenshots that are useless at
@@ -1453,8 +1485,13 @@ ${BOLD}Options:${NC}
   --no-autostart     Skip systemd unit installation
   --rebuild          Force image rebuild
   --with-appender    Build the Rust zmm_telemetry appender into the image
-                     (default: off — Python executemany fallback is used)
+                     (default: off — Python executemany fallback is used;
+                     compiling bundled DuckDB adds ~5-15 min to the build)
   --no-appender      Explicitly skip the Rust appender (default)
+  --with-eq          Build the Rust zmm_eq Cast EQ DSP into the image
+                     (default: off — needed for the Media-tab equaliser;
+                     small, fast compile, independent of --with-appender)
+  --no-eq            Explicitly skip the Rust EQ DSP (default)
   --help             Show this message
 
 ${BOLD}Environment:${NC}
@@ -1476,6 +1513,9 @@ WITH_APPENDER=false   # Build the Rust zmm_telemetry wheel into the image.
                       # Default off — the Python executemany fallback in
                       # telemetry_db.py is sufficient for small/medium
                       # networks. Enable for large/enterprise debug captures.
+WITH_EQ=false         # Build the Rust zmm_eq wheel into the image. Default
+                      # off — enable to get the Media-tab Cast EQ. Separate
+                      # crate from the appender; compiles in seconds.
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1489,6 +1529,8 @@ while [[ $# -gt 0 ]]; do
         --rebuild)      FORCE_REBUILD=true;     shift ;;
         --with-appender)    WITH_APPENDER=true;  shift ;;
         --no-appender)      WITH_APPENDER=false; shift ;;
+        --with-eq)          WITH_EQ=true;        shift ;;
+        --no-eq)            WITH_EQ=false;       shift ;;
         --help|-h)      usage ;;
         *) die "Unknown argument: $1  (use --help)" ;;
     esac
@@ -1587,20 +1629,29 @@ else
 fi
 
 # ── Persist appender choice for upgrades ─────────────────────────────────────
-# The user passed --with-appender (or didn't) at install time. Record that
-# decision in DATA_DIR/data/state/ so upgrade.sh's do_build can read it back
-# when it re-runs write_containerfile against the new tag — without needing
-# the operator to remember and re-pass the flag.
+# The user's --with-appender / --with-eq choices at install time are recorded
+# in DATA_DIR/data/state/ so upgrade.sh's do_build can read them back when it
+# re-runs write_containerfile against the new tag — without needing the
+# operator to remember and re-pass the flags.
 #
 # DATA_DIR survives APP_DIR wipes during upgrades; APP_DIR does not. So this
-# is the right place for the marker.
+# is the right place for the markers. The two are independent (see build.sh
+# Part 2), so each gets its own marker file.
 APPENDER_MARKER="${DATA_DIR}/data/state/appender.enabled"
+EQ_MARKER="${DATA_DIR}/data/state/eq.enabled"
 if [[ "$WITH_APPENDER" == true ]]; then
     echo "true"  > "$APPENDER_MARKER"
     ok "Appender marker written: ${APPENDER_MARKER} = true"
 else
     echo "false" > "$APPENDER_MARKER"
     ok "Appender marker written: ${APPENDER_MARKER} = false"
+fi
+if [[ "$WITH_EQ" == true ]]; then
+    echo "true"  > "$EQ_MARKER"
+    ok "EQ marker written: ${EQ_MARKER} = true"
+else
+    echo "false" > "$EQ_MARKER"
+    ok "EQ marker written: ${EQ_MARKER} = false"
 fi
 
 step_announce "Install upgrade watcher"
