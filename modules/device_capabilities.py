@@ -427,7 +427,14 @@ class DeviceCapabilities:
         if "philips" in manufacturer or "signify" in manufacturer:
             if "sml" in model and self.ON_OFF in self._cluster_ids:
                 self._capabilities.add('motion_sensor')
-                self._capabilities.discard('switch')
+                # The SML's EP1 carries OnOff/Level/Color as OUTPUT (controller)
+                # clusters — it's a scene controller, not a light. Those leak into
+                # the flat cluster set and get mis-detected as light/switch caps
+                # (see PHASE 2), which renders a bogus "Switch (EP1)" control card
+                # and lets on/state/brightness pollute the sensor's state. Discard
+                # every actuator cap so the device presents purely as a sensor.
+                for cap in ('switch', 'light', 'on_off', 'level_control', 'color_control'):
+                    self._capabilities.discard(cap)
                 # Apply EP1 controller quirk
                 if 1 in self._configurable_endpoints:
                     self._configurable_endpoints[1]['configurable_clusters'].clear()

@@ -184,6 +184,30 @@ class OccupancySensingHandler(ClusterHandler):
     ATTR_SENSITIVITY = 0x0030
     ATTR_SENSITIVITY_MAX = 0x0031
 
+    # Signify (Philips) manufacturer code. Hue's manufacturer-specific
+    # attributes — motion sensitivity (0x0406/0x0030) and LED indication
+    # (genBasic 0x0033) — are ONLY readable/writable when this code is attached
+    # to the ZCL frame. Without it the device silently ignores the write, which
+    # is why sensitivity changes never stuck before.
+    PHILIPS_MFR = 0x100B
+
+    # LED indication lives on the Basic cluster (0x0000), not occupancy — but
+    # it's a motion-sensor setting from the user's point of view, so it's exposed
+    # and applied here alongside sensitivity. "Blink green LED on motion".
+    ATTR_LED_INDICATION = 0x0033  # genBasic, boolean, manufacturer-specific
+
+    def _philips_mfr(self) -> Optional[int]:
+        """Return the Signify manufacturer code for Hue devices, else None."""
+        man = (self.device.zigpy_dev.manufacturer or "").lower()
+        return self.PHILIPS_MFR if ('philips' in man or 'signify' in man) else None
+
+    def _basic_cluster(self):
+        """The Basic cluster (0x0000) on this handler's endpoint, or None."""
+        try:
+            return self.cluster.endpoint.in_clusters.get(0x0000)
+        except Exception:
+            return None
+
     # Occupancy types
     OCCUPANCY_TYPES = {
         0: "PIR",
@@ -298,10 +322,14 @@ class OccupancySensingHandler(ClusterHandler):
             except Exception as e:
                 logger.debug(f"[{self.device.ieee}] Could not read motion timeout: {e}")
 
-            # Read sensitivity (Philips/Aqara specific)
+            # Read sensitivity (Philips/Aqara specific). Hue needs the Signify
+            # manufacturer code or the read comes back UNSUPPORTED_ATTRIBUTE.
             if 'philips' in manufacturer or 'lumi' in manufacturer or 'signify' in manufacturer:
+                mfr = self._philips_mfr()
                 try:
-                    result = await self.cluster.read_attributes([self.ATTR_SENSITIVITY])
+                    result = await self.cluster.read_attributes(
+                        [self.ATTR_SENSITIVITY], manufacturer=mfr
+                    )
                     if result and self.ATTR_SENSITIVITY in result[0]:
                         sensitivity = result[0][self.ATTR_SENSITIVITY]
                         if hasattr(sensitivity, 'value'):
@@ -310,6 +338,24 @@ class OccupancySensingHandler(ClusterHandler):
                         logger.info(f"[{self.device.ieee}] Read motion sensitivity: {sensitivity}")
                 except Exception as e:
                     logger.debug(f"[{self.device.ieee}] Could not read sensitivity: {e}")
+
+            # Read Hue LED indication (genBasic 0x0033, manufacturer-specific) so
+            # the config panel shows its current on/off state.
+            mfr = self._philips_mfr()
+            basic = self._basic_cluster()
+            if mfr and basic is not None:
+                try:
+                    result = await basic.read_attributes(
+                        [self.ATTR_LED_INDICATION], manufacturer=mfr
+                    )
+                    if result and self.ATTR_LED_INDICATION in result[0]:
+                        led = result[0][self.ATTR_LED_INDICATION]
+                        if hasattr(led, 'value'):
+                            led = led.value
+                        self.device.update_state({"led_indication": bool(led)})
+                        logger.info(f"[{self.device.ieee}] Read LED indication: {bool(led)}")
+                except Exception as e:
+                    logger.debug(f"[{self.device.ieee}] Could not read LED indication: {e}")
 
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Error reading occupancy config: {e}")
@@ -337,11 +383,30 @@ class OccupancySensingHandler(ClusterHandler):
             options.append({
                 "name": "sensitivity",
                 "label": "Motion Sensitivity",
-                "type": "number",
-                "min": 0, "max": 2,
-                "description": "0=Low, 1=Medium, 2=High",
+                "type": "select",
+                "options": [
+                    {"value": 0, "label": "Low"},
+                    {"value": 1, "label": "Medium"},
+                    {"value": 2, "label": "High"},
+                ],
+                "description": "PIR motion detection sensitivity",
                 "attribute_id": self.ATTR_SENSITIVITY,
                 "current_value": self.device.state.get("sensitivity", 1)  # Show current value
+            })
+
+        # Hue LED indication toggle (Signify only).
+        if 'philips' in man or 'signify' in man:
+            options.append({
+                "name": "led_indication",
+                "label": "Motion LED",
+                "type": "select",
+                "options": [
+                    {"value": 0, "label": "Off"},
+                    {"value": 1, "label": "On (blink on motion)"},
+                ],
+                "description": "Blink the sensor's green LED when motion is detected",
+                "attribute_id": self.ATTR_LED_INDICATION,
+                "current_value": int(bool(self.device.state.get("led_indication", True))),
             })
 
         return options
@@ -360,13 +425,28 @@ class OccupancySensingHandler(ClusterHandler):
                 self.device.update_state({"motion_timeout": timeout})
                 logger.info(f"[{self.device.ieee}] Set motion timeout: {timeout}s")
 
-            # Handle sensitivity
+            # Handle sensitivity. Philips uses attribute 0x0030 and REQUIRES the
+            # Signify manufacturer code on the write or it's silently dropped.
             if "sensitivity" in settings:
                 sensitivity = int(settings["sensitivity"])
-                # Philips uses attribute 0x0030
-                await self.cluster.write_attributes({self.ATTR_SENSITIVITY: sensitivity})
+                await self.cluster.write_attributes(
+                    {self.ATTR_SENSITIVITY: sensitivity},
+                    manufacturer=self._philips_mfr(),
+                )
                 self.device.update_state({"sensitivity": sensitivity})
                 logger.info(f"[{self.device.ieee}] Set sensitivity: {sensitivity}")
+
+            # Handle Hue LED indication (genBasic 0x0033, manufacturer-specific).
+            if "led_indication" in settings:
+                mfr = self._philips_mfr()
+                basic = self._basic_cluster()
+                if mfr and basic is not None:
+                    led_on = bool(int(settings["led_indication"]))
+                    await basic.write_attributes(
+                        {self.ATTR_LED_INDICATION: led_on}, manufacturer=mfr
+                    )
+                    self.device.update_state({"led_indication": led_on})
+                    logger.info(f"[{self.device.ieee}] Set LED indication: {led_on}")
 
             return True
 
@@ -858,6 +938,40 @@ class PowerConfigurationHandler(ClusterHandler):
     ATTR_BATTERY_VOLTAGE = 0x0020
     ATTR_BATTERY_PERCENTAGE = 0x0021
 
+    # CR2450 coin-cell discharge curve (volts → %), interpolated linearly
+    # between points. Coin cells hold ~3.0V then fall away steeply below 2.9V,
+    # so a flat linear 2.5–3.0 map badly over-reads. Descending by voltage.
+    _COIN_CELL_CURVE = [
+        (3.00, 100), (2.95, 90), (2.90, 70), (2.85, 55), (2.80, 45),
+        (2.75, 35), (2.70, 25), (2.65, 18), (2.60, 12), (2.50, 5), (2.40, 0),
+    ]
+
+    def _is_coarse_battery(self) -> bool:
+        """
+        True for devices whose reported batteryPercentageRemaining is useless —
+        Philips Hue SML motion sensors report a flat 100% for months then drop
+        off a cliff. For these we derive % from battery_voltage instead.
+        """
+        man = (self.device.zigpy_dev.manufacturer or "").lower()
+        model = (self.device.zigpy_dev.model or "").lower()
+        return ('philips' in man or 'signify' in man) and 'sml' in model
+
+    @classmethod
+    def _voltage_to_pct(cls, voltage: Optional[float]) -> Optional[int]:
+        """Map a coin-cell voltage to a percentage via the discharge curve."""
+        if voltage is None:
+            return None
+        pts = cls._COIN_CELL_CURVE
+        if voltage >= pts[0][0]:
+            return 100
+        if voltage <= pts[-1][0]:
+            return 0
+        for (v_hi, p_hi), (v_lo, p_lo) in zip(pts, pts[1:]):
+            if v_lo <= voltage <= v_hi:
+                frac = (voltage - v_lo) / (v_hi - v_lo)
+                return int(round(p_lo + frac * (p_hi - p_lo)))
+        return None
+
     def attribute_updated(self, attrid: int, value: Any, timestamp: Optional[float] = None):
         if hasattr(value, 'value'):
             value = value.value
@@ -865,11 +979,22 @@ class PowerConfigurationHandler(ClusterHandler):
         if attrid == self.ATTR_BATTERY_VOLTAGE:
             # Voltage in 100mV units. Value of 54 means 5.4V.
             voltage = float(value) / 10 if value is not None else None
-            self.device.update_state({"battery_voltage": voltage})
+            updates = {"battery_voltage": voltage}
+            # For coarse-reporting devices, voltage IS the battery signal.
+            if voltage is not None and self._is_coarse_battery():
+                pct = self._voltage_to_pct(voltage)
+                if pct is not None:
+                    updates["battery"] = pct
+            self.device.update_state(updates)
             logger.debug(f"[{self.device.ieee}] Battery voltage: {voltage}V (raw: {value})")
 
         elif attrid == self.ATTR_BATTERY_PERCENTAGE:
             # Percentage is 0-200 (0.5% steps), divide by 2. Value of 170 means 85%.
+            if self._is_coarse_battery():
+                # Device's own % is a flat 100% — ignore it; battery is derived
+                # from voltage above. Nothing to store here.
+                logger.debug(f"[{self.device.ieee}] Ignoring coarse battery %% (raw: {value})")
+                return
             percentage = min(100, round(value / 2)) if value is not None else None
             self.device.update_state({"battery": percentage})
             logger.debug(f"[{self.device.ieee}] Battery: {percentage}% (raw: {value})")
@@ -884,12 +1009,23 @@ class PowerConfigurationHandler(ClusterHandler):
     def parse_value(self, attrid: int, value: Any) -> Any:
         """Parse raw values before they hit device state from generic poller."""
         if attrid == self.ATTR_BATTERY_VOLTAGE:
-            return float(value) / 10 if value is not None else None
+            voltage = float(value) / 10 if value is not None else None
+            # Poll path: derive battery from voltage for coarse devices as a
+            # side-effect, since the poller stores this attr under battery_voltage.
+            if voltage is not None and self._is_coarse_battery():
+                pct = self._voltage_to_pct(voltage)
+                if pct is not None:
+                    self.device.update_state({"battery": pct})
+            return voltage
         if attrid == self.ATTR_BATTERY_PERCENTAGE:
             return min(100, round(value / 2)) if value is not None else None
         return value
 
     def get_pollable_attributes(self) -> Dict[int, str]:
+        # Coarse-battery devices: poll voltage only (battery is derived from it).
+        # Polling 0x0021 would just overwrite the derived value with a flat 100%.
+        if self._is_coarse_battery():
+            return {self.ATTR_BATTERY_VOLTAGE: "battery_voltage"}
         return {
             self.ATTR_BATTERY_PERCENTAGE: "battery",
             self.ATTR_BATTERY_VOLTAGE: "battery_voltage"

@@ -180,6 +180,29 @@ export const CONFIG_DEFINITIONS = [
         type: 'number',
         min: 0, max: 65535,
         condition: (d) => hasCluster(d, 0x0406)
+    },
+
+    // --- Philips Hue Motion (SML00x) ---
+    {
+        key: 'sensitivity',
+        label: 'Motion Sensitivity',
+        type: 'select',
+        options: [
+            {value: 0, label: 'Low'},
+            {value: 1, label: 'Medium'},
+            {value: 2, label: 'High'}
+        ],
+        condition: (d) => isPhilipsMotion(d)
+    },
+    {
+        key: 'led_indication',
+        label: 'Motion LED',
+        type: 'select',
+        options: [
+            {value: 0, label: 'Off'},
+            {value: 1, label: 'On (blink on motion)'}
+        ],
+        condition: (d) => isPhilipsMotion(d)
     }
 ];
 
