@@ -553,6 +553,17 @@ _prompt_manual_usb() {
 # CONTAINERFILE
 # =============================================================================
 write_containerfile() {
+    # Backward/forward compatibility: this function is also sourced+called by
+    # the INSTALLED upgrade.sh, which may be an OLDER version that predates the
+    # Rust-component split and therefore does NOT export WITH_EQ (and may not
+    # export WITH_APPENDER). Under `set -u` an unbound reference below aborts
+    # the function mid-write, truncating the Containerfile (no app/entrypoint
+    # layers) and producing a broken image. Default them here so any caller is
+    # safe. WITH_EQ inherits WITH_APPENDER when unset, preserving the pre-split
+    # combined-toggle behaviour (appender on ⇒ EQ on).
+    : "${WITH_APPENDER:=false}"
+    : "${WITH_EQ:=$WITH_APPENDER}"
+
     cat > "$CLONE_DIR/Containerfile" << 'DOCKERFILE_TOP'
 # Zigbee Matter Manager — Root Container
 FROM python:3.11-slim-bookworm
