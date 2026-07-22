@@ -8,6 +8,14 @@
 //!     Appender.append_spectrum_scan(channel, energy)
 //!     Appender.flush()              -> drains all buffers
 //!     Appender.pending() -> dict    -> per-table buffer counts (debug)
+//!
+//! Concurrency: the row buffers and the DuckDB connection live behind
+//! *separate* mutexes. Appends only ever touch the buffers mutex (an in-memory
+//! push), so they never wait on the DuckDB write — which can take seconds and
+//! is what previously stalled the asyncio event loop. `flush()` swaps the
+//! buffers out under a brief lock, then does the disk write under the `conn`
+//! mutex with the GIL released, so both other Python threads and further
+//! appends keep running while it drains.
 
 use chrono::Utc;
 use duckdb::{params, Connection};
@@ -94,10 +102,13 @@ struct HeatingBoilerRow {
     dry_run: bool,
 }
 
-// ───────────────────────── inner state ─────────────────────────
+// ───────────────────────── buffered rows ─────────────────────────
 
-struct Inner {
-    conn: Connection,
+/// In-memory row buffers, guarded by their own mutex. Held only for the
+/// microseconds an append (push) or a flush's buffer-swap needs — never for
+/// the duration of a DuckDB write.
+#[derive(Default)]
+struct Buffers {
     device_states: Vec<DeviceStateRow>,
     packet_stats: Vec<PacketStatRow>,
     system_metrics: Vec<SystemMetricRow>,
@@ -106,163 +117,194 @@ struct Inner {
     heating_boiler: Vec<HeatingBoilerRow>,
 }
 
-impl Inner {
-    fn new(db_path: &str) -> duckdb::Result<Self> {
-        let conn = Connection::open(db_path)?;
-        Ok(Self {
-            conn,
-            device_states: Vec::with_capacity(AUTO_FLUSH_THRESHOLD),
-            packet_stats: Vec::with_capacity(AUTO_FLUSH_THRESHOLD),
-            system_metrics: Vec::with_capacity(64),
-            spectrum: Vec::with_capacity(256),
-            heating_rooms: Vec::with_capacity(256),
-            heating_boiler: Vec::with_capacity(64),
-        })
+impl Buffers {
+    fn is_empty(&self) -> bool {
+        self.device_states.is_empty()
+            && self.packet_stats.is_empty()
+            && self.system_metrics.is_empty()
+            && self.spectrum.is_empty()
+            && self.heating_rooms.is_empty()
+            && self.heating_boiler.is_empty()
     }
+}
 
-    fn flush_device_states(&mut self) -> duckdb::Result<()> {
-        if self.device_states.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("device_states")?;
-        for r in self.device_states.drain(..) {
-            app.append_row(params![r.ts, r.ieee, r.attribute, r.value, r.numeric_val])?;
-        }
-        app.flush()?;
-        Ok(())
+// ─────────────── DuckDB writers (run with the GIL released) ───────────────
+//
+// Each consumes the rows it was handed (via drain) and writes them through a
+// DuckDB appender. They take `&Connection` and the owned buffer set, so they
+// never touch the shared buffers mutex — appends run concurrently.
+
+fn write_device_states(conn: &Connection, rows: &mut Vec<DeviceStateRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
     }
-
-    fn flush_packet_stats(&mut self) -> duckdb::Result<()> {
-        if self.packet_stats.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("packet_stats")?;
-        for r in self.packet_stats.drain(..) {
-            app.append_row(params![
-                r.ts, r.ieee,
-                r.rx_packets, r.tx_packets, r.rx_bytes, r.tx_bytes,
-                r.errors, r.retries, r.lqi,
-            ])?;
-        }
-        app.flush()?;
-        Ok(())
+    let mut app = conn.appender("device_states")?;
+    for r in rows.drain(..) {
+        app.append_row(params![r.ts, r.ieee, r.attribute, r.value, r.numeric_val])?;
     }
+    app.flush()?;
+    Ok(())
+}
 
-    fn flush_system_metrics(&mut self) -> duckdb::Result<()> {
-        if self.system_metrics.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("system_metrics")?;
-        for r in self.system_metrics.drain(..) {
-            app.append_row(params![
-                r.ts,
-                r.cpu_percent, r.cpu_freq,
-                r.mem_total, r.mem_used, r.mem_percent,
-                r.swap_used, r.swap_percent,
-                r.disk_total, r.disk_used, r.disk_percent,
-                r.cpu_temp, r.gpu_temp,
-                r.load_1m, r.load_5m, r.load_15m,
-                r.uptime_secs, r.process_rss, r.process_threads,
-            ])?;
-        }
-        app.flush()?;
-        Ok(())
+fn write_packet_stats(conn: &Connection, rows: &mut Vec<PacketStatRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
     }
-
-    fn flush_spectrum(&mut self) -> duckdb::Result<()> {
-        if self.spectrum.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("spectrum_scans")?;
-        for r in self.spectrum.drain(..) {
-            app.append_row(params![r.ts, r.channel, r.energy])?;
-        }
-        app.flush()?;
-        Ok(())
+    let mut app = conn.appender("packet_stats")?;
+    for r in rows.drain(..) {
+        app.append_row(params![
+            r.ts, r.ieee,
+            r.rx_packets, r.tx_packets, r.rx_bytes, r.tx_bytes,
+            r.errors, r.retries, r.lqi,
+        ])?;
     }
+    app.flush()?;
+    Ok(())
+}
 
-
-    fn flush_heating_rooms(&mut self) -> duckdb::Result<()> {
-        if self.heating_rooms.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("heating_tick_rooms")?;
-        for r in self.heating_rooms.drain(..) {
-            app.append_row(params![
-                r.ts, r.circuit_id, r.room_id, r.classification,
-                r.current_temp_c, r.setpoint_c, r.outdoor_temp_c,
-                r.calling_for_heat, r.trv_setpoint_c, r.trv_valve_open_pct,
-                r.dry_run, r.reason,
-            ])?;
-        }
-        app.flush()?;
-        Ok(())
+fn write_system_metrics(conn: &Connection, rows: &mut Vec<SystemMetricRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
     }
-
-    fn flush_heating_boiler(&mut self) -> duckdb::Result<()> {
-        if self.heating_boiler.is_empty() {
-            return Ok(());
-        }
-        let mut app = self.conn.appender("heating_tick_boiler")?;
-        for r in self.heating_boiler.drain(..) {
-            app.append_row(params![
-                r.ts, r.circuit_id, r.boiler_called,
-                r.rooms_cold, r.rooms_ontarget, r.rooms_hot,
-                r.receiver_command, r.dry_run,
-            ])?;
-        }
-        app.flush()?;
-        Ok(())
+    let mut app = conn.appender("system_metrics")?;
+    for r in rows.drain(..) {
+        app.append_row(params![
+            r.ts,
+            r.cpu_percent, r.cpu_freq,
+            r.mem_total, r.mem_used, r.mem_percent,
+            r.swap_used, r.swap_percent,
+            r.disk_total, r.disk_used, r.disk_percent,
+            r.cpu_temp, r.gpu_temp,
+            r.load_1m, r.load_5m, r.load_15m,
+            r.uptime_secs, r.process_rss, r.process_threads,
+        ])?;
     }
+    app.flush()?;
+    Ok(())
+}
 
-    fn flush_all(&mut self) -> duckdb::Result<()> {
-        self.flush_device_states()?;
-        self.flush_packet_stats()?;
-        self.flush_system_metrics()?;
-        self.flush_spectrum()?;
-        self.flush_heating_rooms()?;
-        self.flush_heating_boiler()?;
-        Ok(())
+fn write_spectrum(conn: &Connection, rows: &mut Vec<SpectrumRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
     }
+    let mut app = conn.appender("spectrum_scans")?;
+    for r in rows.drain(..) {
+        app.append_row(params![r.ts, r.channel, r.energy])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
+fn write_heating_rooms(conn: &Connection, rows: &mut Vec<HeatingRoomRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut app = conn.appender("heating_tick_rooms")?;
+    for r in rows.drain(..) {
+        app.append_row(params![
+            r.ts, r.circuit_id, r.room_id, r.classification,
+            r.current_temp_c, r.setpoint_c, r.outdoor_temp_c,
+            r.calling_for_heat, r.trv_setpoint_c, r.trv_valve_open_pct,
+            r.dry_run, r.reason,
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
+fn write_heating_boiler(conn: &Connection, rows: &mut Vec<HeatingBoilerRow>) -> duckdb::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut app = conn.appender("heating_tick_boiler")?;
+    for r in rows.drain(..) {
+        app.append_row(params![
+            r.ts, r.circuit_id, r.boiler_called,
+            r.rooms_cold, r.rooms_ontarget, r.rooms_hot,
+            r.receiver_command, r.dry_run,
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
+fn write_all(conn: &Connection, b: &mut Buffers) -> duckdb::Result<()> {
+    write_device_states(conn, &mut b.device_states)?;
+    write_packet_stats(conn, &mut b.packet_stats)?;
+    write_system_metrics(conn, &mut b.system_metrics)?;
+    write_spectrum(conn, &mut b.spectrum)?;
+    write_heating_rooms(conn, &mut b.heating_rooms)?;
+    write_heating_boiler(conn, &mut b.heating_boiler)?;
+    Ok(())
 }
 
 // ───────────────────────── PyO3 wrapper ─────────────────────────
 
 #[pyclass]
 struct Appender {
-    inner: Mutex<Inner>,
+    buffers: Mutex<Buffers>,
+    conn: Mutex<Connection>,
 }
 
 fn db_err(e: duckdb::Error) -> PyErr {
     PyRuntimeError::new_err(format!("duckdb: {e}"))
 }
 
+// Non-`#[pymethods]` block: helpers here stay private (not exposed to Python).
+impl Appender {
+    /// Swap the current buffers out under a brief lock, then write them to
+    /// DuckDB with the GIL released. Callable from any thread; while the write
+    /// runs, both other Python threads (the asyncio loop) and concurrent
+    /// appends make progress.
+    fn drain_and_write(&self, py: Python<'_>) -> PyResult<()> {
+        let mut taken = {
+            let mut b = self.buffers.lock();
+            if b.is_empty() {
+                return Ok(());
+            }
+            std::mem::take(&mut *b)
+        };
+        py.allow_threads(|| {
+            let conn = self.conn.lock();
+            write_all(&conn, &mut taken)
+        })
+        .map_err(db_err)
+    }
+}
+
 #[pymethods]
 impl Appender {
     #[new]
     fn new(db_path: &str) -> PyResult<Self> {
-        let inner = Inner::new(db_path).map_err(db_err)?;
-        Ok(Self { inner: Mutex::new(inner) })
+        let conn = Connection::open(db_path).map_err(db_err)?;
+        Ok(Self {
+            buffers: Mutex::new(Buffers::default()),
+            conn: Mutex::new(conn),
+        })
     }
 
     #[pyo3(signature = (ieee, attribute, value=None, numeric_val=None))]
     fn append_device_state(
         &self,
+        py: Python<'_>,
         ieee: String,
         attribute: String,
         value: Option<String>,
         numeric_val: Option<f64>,
     ) -> PyResult<()> {
-        let mut g = self.inner.lock();
-        g.device_states.push(DeviceStateRow {
-            ts: Utc::now(),
-            ieee,
-            attribute,
-            value,
-            numeric_val,
-        });
-        if g.device_states.len() >= AUTO_FLUSH_THRESHOLD {
-            g.flush_device_states().map_err(db_err)?;
+        let over = {
+            let mut b = self.buffers.lock();
+            b.device_states.push(DeviceStateRow {
+                ts: Utc::now(),
+                ieee,
+                attribute,
+                value,
+                numeric_val,
+            });
+            b.device_states.len() >= AUTO_FLUSH_THRESHOLD
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
@@ -270,6 +312,7 @@ impl Appender {
     #[allow(clippy::too_many_arguments)]
     fn append_packet_stats(
         &self,
+        py: Python<'_>,
         ieee: String,
         rx_packets: i64,
         tx_packets: i64,
@@ -279,18 +322,21 @@ impl Appender {
         retries: i32,
         lqi: i32,
     ) -> PyResult<()> {
-        let mut g = self.inner.lock();
-        g.packet_stats.push(PacketStatRow {
-            ts: Utc::now(),
-            ieee, rx_packets, tx_packets, rx_bytes, tx_bytes, errors, retries, lqi,
-        });
-        if g.packet_stats.len() >= AUTO_FLUSH_THRESHOLD {
-            g.flush_packet_stats().map_err(db_err)?;
+        let over = {
+            let mut b = self.buffers.lock();
+            b.packet_stats.push(PacketStatRow {
+                ts: Utc::now(),
+                ieee, rx_packets, tx_packets, rx_bytes, tx_bytes, errors, retries, lqi,
+            });
+            b.packet_stats.len() >= AUTO_FLUSH_THRESHOLD
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
 
-    fn append_system_metrics(&self, metrics: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn append_system_metrics(&self, py: Python<'_>, metrics: &Bound<'_, PyDict>) -> PyResult<()> {
         // Helpers to extract optional typed values from the dict
         fn opt_f32(d: &Bound<'_, PyDict>, k: &str) -> PyResult<Option<f32>> {
             match d.get_item(k)? { Some(v) if !v.is_none() => Ok(Some(v.extract::<f32>()?)), _ => Ok(None) }
@@ -324,19 +370,25 @@ impl Appender {
             process_threads: opt_i32(metrics, "process_threads")?,
         };
 
-        let mut g = self.inner.lock();
-        g.system_metrics.push(row);
-        if g.system_metrics.len() >= 64 {
-            g.flush_system_metrics().map_err(db_err)?;
+        let over = {
+            let mut b = self.buffers.lock();
+            b.system_metrics.push(row);
+            b.system_metrics.len() >= 64
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
 
-    fn append_spectrum_scan(&self, channel: i32, energy: i32) -> PyResult<()> {
-        let mut g = self.inner.lock();
-        g.spectrum.push(SpectrumRow { ts: Utc::now(), channel, energy });
-        if g.spectrum.len() >= 256 {
-            g.flush_spectrum().map_err(db_err)?;
+    fn append_spectrum_scan(&self, py: Python<'_>, channel: i32, energy: i32) -> PyResult<()> {
+        let over = {
+            let mut b = self.buffers.lock();
+            b.spectrum.push(SpectrumRow { ts: Utc::now(), channel, energy });
+            b.spectrum.len() >= 256
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
@@ -346,6 +398,7 @@ impl Appender {
     #[pyo3(signature = (ts_epoch, circuit_id, room_id, classification, current_temp_c, setpoint_c, outdoor_temp_c, calling_for_heat, trv_setpoint_c, trv_valve_open_pct, dry_run, reason))]
     fn append_heating_room(
         &self,
+        py: Python<'_>,
         ts_epoch: f64,
         circuit_id: String,
         room_id: String,
@@ -363,15 +416,18 @@ impl Appender {
             ts_epoch as i64, ((ts_epoch.fract()) * 1e9) as u32,
         ).ok_or_else(|| PyRuntimeError::new_err("invalid ts_epoch"))?;
 
-        let mut g = self.inner.lock();
-        g.heating_rooms.push(HeatingRoomRow {
-            ts, circuit_id, room_id, classification,
-            current_temp_c, setpoint_c, outdoor_temp_c,
-            calling_for_heat, trv_setpoint_c, trv_valve_open_pct,
-            dry_run, reason,
-        });
-        if g.heating_rooms.len() >= 256 {
-            g.flush_heating_rooms().map_err(db_err)?;
+        let over = {
+            let mut b = self.buffers.lock();
+            b.heating_rooms.push(HeatingRoomRow {
+                ts, circuit_id, room_id, classification,
+                current_temp_c, setpoint_c, outdoor_temp_c,
+                calling_for_heat, trv_setpoint_c, trv_valve_open_pct,
+                dry_run, reason,
+            });
+            b.heating_rooms.len() >= 256
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
@@ -380,6 +436,7 @@ impl Appender {
     #[pyo3(signature = (ts_epoch, circuit_id, boiler_called, rooms_cold, rooms_ontarget, rooms_hot, receiver_command, dry_run))]
     fn append_heating_boiler(
         &self,
+        py: Python<'_>,
         ts_epoch: f64,
         circuit_id: String,
         boiler_called: bool,
@@ -393,31 +450,34 @@ impl Appender {
             ts_epoch as i64, ((ts_epoch.fract()) * 1e9) as u32,
         ).ok_or_else(|| PyRuntimeError::new_err("invalid ts_epoch"))?;
 
-        let mut g = self.inner.lock();
-        g.heating_boiler.push(HeatingBoilerRow {
-            ts, circuit_id, boiler_called,
-            rooms_cold, rooms_ontarget, rooms_hot,
-            receiver_command, dry_run,
-        });
-        if g.heating_boiler.len() >= 64 {
-            g.flush_heating_boiler().map_err(db_err)?;
+        let over = {
+            let mut b = self.buffers.lock();
+            b.heating_boiler.push(HeatingBoilerRow {
+                ts, circuit_id, boiler_called,
+                rooms_cold, rooms_ontarget, rooms_hot,
+                receiver_command, dry_run,
+            });
+            b.heating_boiler.len() >= 64
+        };
+        if over {
+            self.drain_and_write(py)?;
         }
         Ok(())
     }
 
-    fn flush(&self) -> PyResult<()> {
-        self.inner.lock().flush_all().map_err(db_err)
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        self.drain_and_write(py)
     }
 
     fn pending<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let g = self.inner.lock();
+        let b = self.buffers.lock();
         let d = PyDict::new(py);
-        d.set_item("device_states", g.device_states.len())?;
-        d.set_item("packet_stats", g.packet_stats.len())?;
-        d.set_item("system_metrics", g.system_metrics.len())?;
-        d.set_item("spectrum_scans", g.spectrum.len())?;
-        d.set_item("heating_rooms", g.heating_rooms.len())?;
-        d.set_item("heating_boiler", g.heating_boiler.len())?;
+        d.set_item("device_states", b.device_states.len())?;
+        d.set_item("packet_stats", b.packet_stats.len())?;
+        d.set_item("system_metrics", b.system_metrics.len())?;
+        d.set_item("spectrum_scans", b.spectrum.len())?;
+        d.set_item("heating_rooms", b.heating_rooms.len())?;
+        d.set_item("heating_boiler", b.heating_boiler.len())?;
         Ok(d)
     }
 }

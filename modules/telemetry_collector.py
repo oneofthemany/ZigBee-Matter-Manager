@@ -88,7 +88,12 @@ class TelemetryCollector:
                 break
             try:
                 from modules.telemetry_db import flush_appender
-                flush_appender()
+                # Off the loop thread: the DuckDB drain can take seconds on a
+                # grown DB, and blocking the loop here starved the bellows ASH
+                # serial ACKs → NCP ERROR_EXCEEDED_MAXIMUM_ACK_TIMEOUT_COUNT →
+                # watchdog stalls. The Rust flush now releases the GIL, so the
+                # loop keeps running while this worker drains.
+                await asyncio.to_thread(flush_appender)
             except Exception as e:
                 logger.debug(f"Appender flush loop error: {e}")
 
