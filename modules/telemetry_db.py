@@ -69,23 +69,112 @@ except ImportError as _imp_err:
 
 _appender = None  # zmm_telemetry.Appender singleton
 
-_db_lock = threading.Lock()
+# Reentrant: _get_db() → _finish_db_init() may re-enter _get_db(); RLock keeps
+# that from self-deadlocking. Follows a per-DB singleton+RLock pattern
+#  — one shared connection per file for reads AND writes.
+_db_lock = threading.RLock()
+
+
+def _connect_local_db(path: str):
+    """`duckdb.connect` for a local DB file, healing the two failure modes a
+    bind-mounted / concurrently-written DuckDB hits in the container:
+      1. 0-byte stub — the container runtime materialises a bind-mount target
+         as an empty file, which DuckDB refuses to open. Replace it in place
+         with a valid empty database.
+      2. Unreplayable WAL — a killed/again-opened writer can leave a WAL DuckDB
+         can't replay ('Failure while replaying WAL file …'), which then wedges
+         every telemetry request. The main DB file is intact, so move the WAL
+         aside and reconnect (the WAL held only uncommitted writes).
+    """
+    import duckdb
+    # (1) heal a 0-byte stub before trying to open it
+    try:
+        if os.path.exists(path) and os.path.getsize(path) == 0:
+            wal = path + ".wal"
+            try:
+                os.remove(path)                     # plain file — just drop it
+            except OSError:
+                import tempfile
+                import shutil
+                fd, tmp = tempfile.mkstemp(suffix=".duckdb")
+                os.close(fd)
+                os.remove(tmp)
+                duckdb.connect(tmp).close()         # a valid empty database
+                shutil.copyfile(tmp, path)          # overwrite contents in place
+                os.remove(tmp)
+            try:
+                if os.path.exists(wal):
+                    os.remove(wal)
+            except OSError:
+                pass
+    except Exception as e:
+        logger.warning(f"could not heal possibly-empty DB {path}: {e}")
+
+    # (2) open, recovering from an unreplayable WAL
+    try:
+        return duckdb.connect(path)
+    except Exception as e:
+        wal = path + ".wal"
+        if "replaying WAL" in str(e) and os.path.exists(wal):
+            bak = f"{wal}.corrupt-{int(time.time())}"
+            try:
+                os.rename(wal, bak)
+            except OSError:
+                raise
+            logger.error(f"{path} WAL unreplayable; moved to {bak} and reconnecting")
+            return duckdb.connect(path)
+        raise
 
 
 def _get_db():
-    """Get or create the DuckDB connection (lazy singleton)."""
+    """Get or create the single shared DuckDB connection (lazy singleton).
+
+    This one connection is the *sole* engine touching telemetry.duckdb in this
+    process — writes go through it (under _db_lock) and reads run on short-lived
+    cursors off it (see read_cursor()). Never open a second engine (e.g. an
+    in-process Rust appender) on this file: POSIX fcntl locks are per-PID, so a
+    second in-process DuckDB instance is NOT blocked and you get two split-brain
+    views of the same file. See _finish_db_init().
+    """
     global _db
     if _db is None:
         with _db_lock:
             if _db is not None:
                 return _db
-            import duckdb
             os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            db = duckdb.connect(DB_PATH)
+            db = _connect_local_db(DB_PATH)
             _init_tables(db)
             _db = db
             _finish_db_init()
     return _db
+
+
+def read_cursor():
+    """Short-lived READ cursor on the shared connection. DuckDB allows
+    concurrent reads across cursors of one connection, so readers using this
+    don't serialise behind _db_lock (the lock is only held to init/fetch the
+    connection). Writers and DDL keep using _db_lock + _get_db() directly.
+
+    Use as a context manager:
+
+        with read_cursor() as cur:
+            rows = cur.execute(sql, params).fetchall()
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        with _db_lock:
+            conn = _get_db()
+        cur = conn.cursor()
+        try:
+            yield cur
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+    return _cm()
 
 
 def warm():
@@ -100,15 +189,13 @@ def warm():
 
 
 def _finish_db_init():
-    # Initialise Rust appender against the now-existing tables
+    # Deliberately DO NOT open the in-process Rust appender against DB_PATH.
     global _appender
-    if _USE_RUST and _appender is None:
-        try:
-            _appender = _zt.Appender(DB_PATH)
-            logger.info(f"Telemetry: zmm_telemetry appender active ({DB_PATH})")
-        except Exception as e:
-            logger.warning(f"zmm_telemetry init failed, falling back to INSERT: {e}")
-            _appender = None
+    _appender = None
+    if _USE_RUST:
+        logger.info(
+            "Telemetry: zmm_telemetry present but NOT opened in-process "
+            "(would split-brain the DB); using the shared Python connection")
     logger.info(f"Telemetry database opened: {DB_PATH}")
 
 
