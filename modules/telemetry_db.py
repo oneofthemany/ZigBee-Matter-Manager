@@ -177,6 +177,41 @@ def read_cursor():
     return _cm()
 
 
+def _rcursor():
+    """Fresh READ cursor on the shared connection, created under the brief init
+    lock. Non-context-manager form of read_cursor() for one-line reader swaps
+    (`db = _rcursor()`); the short-lived cursor is closed by GC when the query
+    function returns. Each caller gets its own handle, so readers never share
+    the base connection across threads.
+    """
+    with _db_lock:
+        return _get_db().cursor()
+
+
+def _write_exec(sql: str, params: List[tuple]):
+    """Serialised write via a per-call cursor on the shared connection.
+
+    With the in-process Rust appender gone, every telemetry write lands here —
+    from the event-loop thread (device/packet/metric writes) AND worker threads
+    (snapshot/prune). DuckDB handles aren't safe to share across threads, so we
+    (a) hold _db_lock so only one writer touches the engine at a time, and
+    (b) use a fresh cursor rather than the base connection, so a concurrent
+    reader's cursor never shares our handle - "writers hold the lock, readers
+    use cursors" rule.
+    """
+    if not params:
+        return
+    with _db_lock:
+        cur = _get_db().cursor()
+        try:
+            cur.executemany(sql, params)
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+
 def warm():
     """Open + migrate the DB (seconds on first touch after boot).
 
@@ -408,9 +443,8 @@ def write_system_metrics(metrics: Dict[str, Any]):
     if _appender is not None:
         _appender.append_system_metrics(metrics)
         return
-    # ── Python fallback ──
-    db = _get_db()
-    db.executemany("""
+    # ── Python path (shared connection, serialised) ──
+    _write_exec("""
         INSERT INTO system_metrics (
             cpu_percent, cpu_freq, mem_total, mem_used, mem_percent,
             swap_used, swap_percent, disk_total, disk_used, disk_percent,
@@ -443,9 +477,8 @@ def write_packet_stats(stats_batch: List[Dict[str, Any]]):
                 int(s.get("lqi", 0)),
             )
         return
-    # ── Python fallback ──
-    db = _get_db()
-    db.executemany("""
+    # ── Python path (shared connection, serialised) ──
+    _write_exec("""
         INSERT INTO packet_stats (ieee, rx_packets, tx_packets, rx_bytes, tx_bytes, errors, retries, lqi)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, [
@@ -468,9 +501,8 @@ def write_device_state(ieee: str, attribute: str, value: Any):
     if _appender is not None:
         _appender.append_device_state(ieee, attribute, str_val, num_val)
         return
-    # ── Python fallback ──
-    db = _get_db()
-    db.executemany("""
+    # ── Python path (shared connection, serialised) ──
+    _write_exec("""
         INSERT INTO device_states (ieee, attribute, value, numeric_val)
         VALUES (?, ?, ?, ?)
     """, [(ieee, attribute, str_val, num_val)])
@@ -480,16 +512,14 @@ def write_device_states_batch(rows: List[tuple]) -> int:
     """
     Bulk device-state rows [(ieee, attribute, value), ...] in ONE commit.
 
-    For worker-thread callers (the collector's keep-alive snapshot): uses a
-    per-call cursor — never the shared connection, which is not safe across
-    threads — and always the Python path, since the Rust appender must only
-    be driven from the event-loop thread. One executemany replaces hundreds
-    of per-row commits, which is what stalled the loop for seconds.
+    For worker-thread callers (the collector's keep-alive snapshot): goes
+    through _write_exec, which holds _db_lock and uses a per-call cursor —
+    never bare shared-connection access, which isn't safe across threads. One
+    executemany replaces hundreds of per-row commits, which is what stalled the
+    loop for seconds.
     """
     if not rows:
         return 0
-    _get_db()  # ensure init
-    cur = _get_db().cursor()
     data = []
     for ieee, attribute, value in rows:
         str_val = str(value) if value is not None else None
@@ -498,7 +528,7 @@ def write_device_states_batch(rows: List[tuple]) -> int:
         except (TypeError, ValueError):
             num_val = None
         data.append((ieee, attribute, str_val, num_val))
-    cur.executemany("""
+    _write_exec("""
         INSERT INTO device_states (ieee, attribute, value, numeric_val)
         VALUES (?, ?, ?, ?)
     """, data)
@@ -514,9 +544,8 @@ def write_spectrum_scan(results: Dict[int, int]):
         for ch, e in results.items():
             _appender.append_spectrum_scan(int(ch), int(e))
         return
-    # ── Python fallback ──
-    db = _get_db()
-    db.executemany("""
+    # ── Python path (shared connection, serialised) ──
+    _write_exec("""
         INSERT INTO spectrum_scans (channel, energy) VALUES (?, ?)
     """, [(int(ch), int(e)) for ch, e in results.items()])
 
@@ -632,11 +661,10 @@ def write_heating_tick(
             logger.error(f"write_heating_tick appender failed, falling back: {e}")
             # fall through to Python INSERT
 
-    # ── Python fallback ──
-    db = _get_db()
+    # ── Python path (shared connection, serialised) ──
     try:
         if room_rows:
-            db.executemany("""
+            _write_exec("""
                 INSERT INTO heating_tick_rooms (
                     ts, circuit_id, room_id, classification,
                     current_temp_c, setpoint_c, outdoor_temp_c,
@@ -651,7 +679,7 @@ def write_heating_tick(
                 for r in room_rows
             ])
         if boiler_rows:
-            db.executemany("""
+            _write_exec("""
                 INSERT INTO heating_tick_boiler (
                     ts, circuit_id, boiler_called,
                     rooms_cold, rooms_ontarget, rooms_hot,
@@ -685,7 +713,7 @@ def query_system_metrics(hours: int = 1, bucket_minutes: int = 1) -> List[Dict]:
     Get system metrics aggregated by time bucket.
     Returns one row per bucket with averaged values.
     """
-    db = _get_db()
+    db = _rcursor()
     result = db.execute(f"""
         SELECT
             time_bucket(INTERVAL '{bucket_minutes} minutes', ts) AS bucket,
@@ -714,7 +742,7 @@ def query_system_metrics(hours: int = 1, bucket_minutes: int = 1) -> List[Dict]:
 
 def query_packet_stats(ieee: Optional[str] = None, hours: int = 1) -> List[Dict]:
     """Get packet stats history for a device or all devices."""
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     if ieee:
         result = db.execute(f"""
@@ -745,7 +773,7 @@ def query_packet_stats(ieee: Optional[str] = None, hours: int = 1) -> List[Dict]
 
 def query_device_state_history(ieee: str, attribute: str, hours: int = 24) -> List[Dict]:
     """Get state change history for a specific device attribute."""
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     result = db.execute(f"""
         SELECT ts, value, numeric_val
@@ -771,7 +799,7 @@ def query_last_report_age_sec(ieee: str, attributes: List[str],
     """
     if not attributes:
         return None
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     placeholders = ", ".join("?" for _ in attributes)
     row = db.execute(f"""
@@ -791,7 +819,7 @@ def query_device_attributes(ieee: str, hours: int = 720) -> List[str]:
     Default lookback matches the retention window (30 days) so attributes
     only written at rare events (e.g. app restarts) still appear.
     """
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     result = db.execute(f"""
         SELECT DISTINCT attribute
@@ -816,7 +844,7 @@ def query_device_state_bucketed(ieee: str, attribute: str,
     window start, and the newest known value is repeated at `now`, so the
     chart draws a continuous line instead of "No data in this range".
     """
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     bucket_minutes = int(bucket_minutes)
     result = db.execute(f"""
@@ -869,7 +897,7 @@ def query_device_state_bucketed(ieee: str, attribute: str,
 
 def query_spectrum_history(hours: int = 24) -> List[Dict]:
     """Get spectrum scan history."""
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     result = db.execute(f"""
         SELECT ts, channel, energy
@@ -882,7 +910,7 @@ def query_spectrum_history(hours: int = 24) -> List[Dict]:
 
 def get_db_stats() -> Dict[str, Any]:
     """Get database size and row counts per table."""
-    db = _get_db()
+    db = _rcursor()
     stats = {}
     for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
         count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -928,7 +956,7 @@ def query_room_heating_state(
     signal is sufficient — we want a conservative gate (bias toward
     rejecting windows, not including contaminated ones).
     """
-    db = _get_db()
+    db = _rcursor()
     hours = int(hours)
     rows = db.execute(f"""
         SELECT
@@ -1267,17 +1295,24 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
 def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     """Remove records older than retention period.
 
-    Callers run this in a worker thread (multi-table DELETEs take seconds on
-    a grown DB), so use a per-call cursor rather than the shared connection.
+    Callers run this in a worker thread (multi-table DELETEs take seconds on a
+    grown DB). DELETE is a write, so hold _db_lock (like every other writer)
+    and use a per-call cursor rather than the shared base connection.
     """
-    _get_db()
-    db = _get_db().cursor()
     cutoff = f"{retention_days} days"
-    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
-        deleted = db.execute(
-            f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
-        ).fetchone()
-        logger.debug(f"Pruned {table}: retention={retention_days}d")
+    with _db_lock:
+        db = _get_db().cursor()
+        try:
+            for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
+                db.execute(
+                    f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
+                )
+                logger.debug(f"Pruned {table}: retention={retention_days}d")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     logger.info(f"Telemetry pruned (retention={retention_days} days)")
 
