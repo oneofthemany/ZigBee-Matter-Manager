@@ -46,6 +46,13 @@ class ClusterHandler:
     CLUSTER_ID: Optional[int] = None
     REPORT_CONFIG: list = []
 
+    # Command-driven clusters (e.g. Poll Control) carry no reportable
+    # attributes, so the capability layer flags them "not configurable" and the
+    # device configure loop would skip their configure() entirely. Handlers that
+    # still need configure() to run at join time (to bind, write intervals, etc.)
+    # set this True to opt out of the reportable-cluster gate.
+    ALWAYS_CONFIGURE: bool = False
+
     def __init__(self, device, cluster: 'Cluster'):
         self.device = device
         self.cluster = cluster

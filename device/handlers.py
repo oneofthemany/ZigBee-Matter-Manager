@@ -149,15 +149,20 @@ class DeviceHandlerManagerMixin:
             ep_id = h.endpoint.endpoint_id
             cluster_id = h.cluster_id
 
-            if not self.capabilities.is_endpoint_configurable(ep_id):
-                role = self.capabilities.get_endpoint_role(ep_id)
-                if role == 'controller': stats['skipped_controller'] += 1
-                else: stats['skipped_not_configurable'] += 1
-                continue
+            # Command-driven clusters (Poll Control) opt out of the
+            # reportable-cluster gate — they have no reporting to configure but
+            # still MUST run configure() to bind (e.g. so sleepy end devices
+            # get their check-ins answered and stay on the network).
+            if not getattr(h, 'ALWAYS_CONFIGURE', False):
+                if not self.capabilities.is_endpoint_configurable(ep_id):
+                    role = self.capabilities.get_endpoint_role(ep_id)
+                    if role == 'controller': stats['skipped_controller'] += 1
+                    else: stats['skipped_not_configurable'] += 1
+                    continue
 
-            if not self.capabilities.is_cluster_configurable(cluster_id, ep_id):
-                stats['skipped_not_configurable'] += 1
-                continue
+                if not self.capabilities.is_cluster_configurable(cluster_id, ep_id):
+                    stats['skipped_not_configurable'] += 1
+                    continue
 
             try:
                 await h.configure()

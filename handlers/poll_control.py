@@ -41,6 +41,19 @@ class PollControlHandler(ClusterHandler):
     """
     CLUSTER_ID = 0x0020
     REPORT_CONFIG = []  # No reporting needed — this is command-driven
+    ALWAYS_CONFIGURE = True  # Bind must run even though there's nothing to report
+
+    # Desired check-in cadence written at join time (values in SECONDS; the
+    # attributes themselves are quarter-seconds, converted below).
+    #
+    # check-in: how often the device wakes to ask "are you still there?".
+    #   1h keeps the app<->device relationship fresh without wrecking battery.
+    # long poll: the MAC data-poll cadence to the parent while idle. This is the
+    #   actual keep-alive that stops the parent aging the child out — it must be
+    #   comfortably shorter than the parent's child timeout (Silabs default
+    #   ~256 min). Left at a conservative 30s.
+    DESIRED_CHECKIN_INTERVAL_S = 3600
+    DESIRED_LONG_POLL_INTERVAL_S = 30
 
     # Poll Control Attributes
     ATTR_CHECKIN_INTERVAL = 0x0000      # How often device checks in (quarter-seconds)
@@ -84,20 +97,23 @@ class PollControlHandler(ClusterHandler):
             f"[{self.device.ieee}] Poll Control Check-in #{self._checkin_count} — responding"
         )
 
-        # Send Check-in Response (command 0x00, client-to-server direction)
-        # Args: (start_fast_polling: bool, fast_poll_timeout: uint16)
+        # Send Check-in Response. The device only stays awake for a short
+        # fast-poll window after checking in, so this must go out promptly — and
+        # it must echo the check-in's TSN or the device may not match it to its
+        # request and will treat the check-in as unanswered.
         try:
-            asyncio.create_task(self._send_checkin_response())
+            asyncio.create_task(self._send_checkin_response(tsn))
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Failed to schedule check-in response: {e}")
 
-    async def _send_checkin_response(self):
+    async def _send_checkin_response(self, tsn: Optional[int] = None):
         """Send the actual Check-in Response to the device."""
         try:
-            # zigpy's PollControl cluster has a checkin_response() client command
+            # zigpy's PollControl cluster has a checkin_response() server command
             result = await self.cluster.checkin_response(
                 start_fast_polling=False,
-                fast_poll_timeout=0
+                fast_poll_timeout=0,
+                tsn=tsn,
             )
             logger.debug(f"[{self.device.ieee}] Check-in response sent: {result}")
         except AttributeError:
@@ -108,7 +124,8 @@ class PollControlHandler(ClusterHandler):
                     CHECKIN_RESPONSE_CMD,
                     False,  # start_fast_polling
                     0,      # fast_poll_timeout
-                    direction=True  # client-to-server
+                    direction=True,  # client-to-server
+                    tsn=tsn,
                 )
                 logger.debug(f"[{self.device.ieee}] Check-in response sent (fallback): {result}")
             except Exception as e:
@@ -142,20 +159,68 @@ class PollControlHandler(ClusterHandler):
 
     async def configure(self):
         """
-        Configure Poll Control — bind the cluster.
-        We don't configure reporting; check-ins are command-driven.
+        Configure Poll Control so the sleepy end device stays on the network.
+
+        Order matters:
+          1. bind() — registers the coordinator as the recipient of this
+             device's Check-in commands. WITHOUT THIS the device has no
+             check-in destination, never gets a Check-in Response, eventually
+             decides its parent is lost, and silently drops off (the exact
+             failure behind Hive SLT thermostats going dark after a day or two).
+          2. write the long-poll / check-in intervals so the device MAC-polls
+             its parent often enough to never be aged out of the child table,
+             and checks in on a known cadence.
+
+        Both steps run at join time while the device is guaranteed awake.
+        Interval writes are best-effort — a failure here never fails the bind.
         """
         try:
             async with asyncio.timeout(5.0):
                 await self.cluster.bind()
-            logger.info(f"[{self.device.ieee}] Poll Control cluster bound")
-            return True
+            logger.info(f"[{self.device.ieee}] ✅ Poll Control cluster bound to coordinator")
         except asyncio.TimeoutError:
             logger.warning(f"[{self.device.ieee}] Poll Control bind timed out")
             return False
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Poll Control bind failed: {e}")
             return False
+
+        # ── Set the long-poll (MAC keep-alive) and check-in cadence ──────────
+        # Sent as Poll Control commands (server-received) while the device is
+        # awake. Quiet best-effort: a sleeping/older device just keeps its
+        # firmware defaults, and the bind above is what actually matters.
+        long_poll_qs = self.DESIRED_LONG_POLL_INTERVAL_S * 4
+        checkin_qs = self.DESIRED_CHECKIN_INTERVAL_S * 4
+
+        try:
+            async with asyncio.timeout(5.0):
+                await self.cluster.set_long_poll_interval(long_poll_qs)
+            logger.info(
+                f"[{self.device.ieee}] Poll Control long-poll interval set to "
+                f"{self.DESIRED_LONG_POLL_INTERVAL_S}s"
+            )
+        except Exception as e:
+            logger.debug(
+                f"[{self.device.ieee}] set_long_poll_interval skipped: "
+                f"{type(e).__name__}: {e}"
+            )
+
+        try:
+            async with asyncio.timeout(5.0):
+                await self.cluster.write_attributes(
+                    {self.ATTR_CHECKIN_INTERVAL: checkin_qs}
+                )
+            logger.info(
+                f"[{self.device.ieee}] Poll Control check-in interval set to "
+                f"{self.DESIRED_CHECKIN_INTERVAL_S}s"
+            )
+        except Exception as e:
+            logger.debug(
+                f"[{self.device.ieee}] check-in interval write skipped: "
+                f"{type(e).__name__}: {e}"
+            )
+
+        return True
 
     def get_discovery_configs(self) -> List[Dict]:
         """No HA discovery needed for Poll Control."""
