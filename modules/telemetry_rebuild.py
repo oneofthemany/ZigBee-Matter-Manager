@@ -14,7 +14,7 @@ This module is the engine for that. Two entry points use it:
   * ``scripts/rebuild_telemetry_db.py`` — the manual CLI, for running it
     deliberately or inspecting what would be recovered.
 
-Design rules, all of which exist because of a real incident:
+Design rules, and why each one matters:
 
   * The damaged file is opened READ_ONLY and never written. A failed rebuild
     leaves it exactly as it was.

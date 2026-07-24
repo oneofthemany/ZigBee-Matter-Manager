@@ -54,21 +54,16 @@ MANAGER_PORT = int(os.environ.get("ZMM_MANAGER_PORT", "8001"))
 
 # If main.py dies in under this many seconds it's a "boot crash"
 HEALTHY_SECONDS = 25
-# A crash after HEALTHY_SECONDS is treated as a one-off and simply restarted.
-# That is correct for a genuine one-off and badly wrong for a loop: an app that
-# boots fine, serves for two minutes, then dies — every single time — restarts
-# forever and nothing ever escalates.
+# A crash after HEALTHY_SECONDS means the app booted fine, so it is treated as a
+# one-off and simply restarted. That is right once and wrong repeatedly: an app
+# that boots, serves for a while, then reliably dies will restart forever
+# without anything escalating.
 #
-# That is not hypothetical. On 2026-07-24 a blocking database migration tripped
-# loop_monitor's 60s exit-70 on every boot, roughly two minutes apart, for as
-# long as anyone was willing to watch. Each crash "lived" ~118s, comfortably
-# past HEALTHY_SECONDS, so every one was written off as a one-off. The manager
-# watchdog could not help either: it polls health every 20s and needs three
-# consecutive failures, but the app was genuinely healthy for most of each
-# cycle, so its streak kept resetting. Nothing in the system was counting
-# restarts, which is the only signal that actually distinguishes a loop.
-#
-# Repeated runtime crashes inside this window now escalate to recovery standby.
+# The manager watchdog cannot cover this gap. It polls health and needs
+# consecutive failures, but an app on a crash cycle is genuinely healthy for
+# most of each cycle, so its streak keeps resetting. Restart frequency is the
+# only signal that distinguishes a crash loop from bad luck, and the launcher is
+# the only component that sees it.
 RUNTIME_CRASH_WINDOW = 900     # seconds to remember a runtime crash for
 MAX_RUNTIME_CRASHES = 3        # this many inside the window == a crash loop
 
