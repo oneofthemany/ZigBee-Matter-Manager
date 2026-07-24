@@ -52,7 +52,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--in-place", action="store_true",
                     help="repair the database in place by dropping and rebuilding "
                          "only the damaged tables (no file swap; app must be stopped)")
+    ap.add_argument("--cleanup-quarantine", action="store_true",
+                    help="delete quarantined WALs and pre-rebuild copies older "
+                         "than the retention window (the app also does this "
+                         "automatically at startup once the DB is healthy)")
+    ap.add_argument("--retention-days", type=float, default=None,
+                    help="override the quarantine retention window for --cleanup-quarantine")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --cleanup-quarantine, list what would be deleted")
     args = ap.parse_args(argv)
+
+    if args.cleanup_quarantine:
+        from modules.telemetry_db import cleanup_quarantined
+        res = cleanup_quarantined(retention_days=args.retention_days,
+                                  dry_run=args.dry_run)
+        if res["skipped_reason"]:
+            print(f"Skipped: {res['skipped_reason']}")
+            return 1
+        if not res["removed"]:
+            print(f"Nothing to clean up ({res['kept']} file(s) still within "
+                  f"the retention window).")
+            return 0
+        verb = "Would delete" if args.dry_run else "Deleted"
+        for path in res["removed"]:
+            print(f"  {path}")
+        print(f"{verb} {len(res['removed'])} file(s), "
+              f"{res['bytes_freed'] / (1024 * 1024):.1f} MB freed. "
+              f"{res['kept']} kept (still within retention).")
+        return 0
 
     if args.in_place:
         if not os.path.exists(args.src):

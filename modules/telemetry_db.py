@@ -415,6 +415,76 @@ def _write_backend_marker(name: str) -> None:
 # force the operation that fails on it.
 
 
+# ── Quarantine cleanup ───────────────────────────────────────────────────────
+# Quarantined files are kept on purpose: an unreplayable WAL or a pre-rebuild
+# database copy may hold rows the live file no longer has, so nothing deletes
+# them at the moment of damage. They are also large, and once the live database
+# has been checkpointing cleanly for a while nobody is going to mine them —
+# left alone they occupy the data volume permanently.
+QUARANTINE_RETENTION_DAYS = float(
+    os.environ.get("ZMM_QUARANTINE_RETENTION_DAYS", "7"))
+
+
+def cleanup_quarantined(retention_days: Optional[float] = None,
+                        dry_run: bool = False) -> Dict[str, Any]:
+    """Remove quarantine artifacts once the live database has proven itself.
+
+    Refuses to run while the database is in a fatal state: if the live file is
+    broken, a quarantined copy may well be the better one, and deleting it would
+    throw away the only remaining route to that data.
+
+    Age is the proof. A file still inside the retention window is left alone, so
+    a WAL quarantined during this very boot is never swept by the same boot.
+    """
+    import glob
+
+    days = QUARANTINE_RETENTION_DAYS if retention_days is None else retention_days
+    result: Dict[str, Any] = {"removed": [], "kept": 0, "bytes_freed": 0,
+                              "skipped_reason": None}
+
+    if is_fatal():
+        result["skipped_reason"] = "database is in a fatal state"
+        logger.info("Quarantine cleanup skipped — the database is unusable, so "
+                    "the quarantined copies may be better than the live one")
+        return result
+
+    cutoff = time.time() - days * 86400
+    patterns = []
+    for base in (DB_PATH, SYSTEM_DB_PATH, OCTOPUS_DB_PATH):
+        patterns += [
+            f"{base}.wal.unreplayable-*",   # WAL the engine would not replay
+            f"{base}.wal.corrupt-*",        # same thing under its former name
+            f"{base}.damaged-*",            # pre-rebuild copy (and its .wal)
+        ]
+
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern)):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_mtime > cutoff:
+                result["kept"] += 1
+                continue
+            size = st.st_size
+            if not dry_run:
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    logger.warning(f"Could not remove {path}: {e}")
+                    continue
+            result["removed"].append(path)
+            result["bytes_freed"] += size
+
+    if result["removed"]:
+        verb = "would remove" if dry_run else "removed"
+        logger.info(
+            f"Quarantine cleanup: {verb} {len(result['removed'])} file(s), "
+            f"{result['bytes_freed'] / (1024 * 1024):.1f} MB "
+            f"(older than {days:g} days); {result['kept']} still within retention")
+    return result
+
+
 def _reconcile_worker() -> None:
     """Body of the reconciler thread. Never raises."""
     try:
@@ -436,6 +506,12 @@ def _reconcile_worker() -> None:
             )
 
         _write_backend_marker(backend)
+
+        # The database opened and is usable, which is the proof this waits for.
+        try:
+            cleanup_quarantined()
+        except Exception as e:
+            logger.debug(f"Quarantine cleanup failed: {e}")
 
         quarantined = list(_quarantined_wals)
         if not quarantined and not switched:
