@@ -17,7 +17,8 @@ from fastapi import Body, FastAPI, Header
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 
-from manager import containers, host, logs, ollama, recovery, upgrade, watchdog
+from manager import (beekeeper, containers, host, logs, ollama, recovery,
+                     upgrade, watchdog)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -82,6 +83,7 @@ async def status():
             "watchdog": watchdog.get_state(),
             "recovery": recovery.state(app_ok=app_health.get("ok")),
             "ollama": await ollama.summary(),
+            "beekeeper": await beekeeper.status(),
             "host": host.summary()}
 
 
@@ -218,6 +220,41 @@ async def ollama_update(authorization: str = Header(default="")):
     ok, msg = ollama.start_update()
     return JSONResponse({"success": ok, "message" if ok else "error": msg},
                         status_code=200 if ok else 409)
+
+
+# ── Beekeeper: DNS ad/tracker blocker sidecar lifecycle ──────────────────────
+# Reads are open (part of /status too); enable/disable/restart need the token.
+# The manager only owns the container's existence/run state — the main app's
+# Beekeeper tab drives blocklists, stats and the :53 on/off once it's running.
+
+@app.get("/beekeeper")
+async def beekeeper_status():
+    return await beekeeper.status()
+
+
+@app.post("/beekeeper/enable")
+async def beekeeper_enable(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await beekeeper.enable()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/beekeeper/disable")
+async def beekeeper_disable(data: dict = Body(default={}),
+                           authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await beekeeper.disable(remove=bool(data.get("remove")))
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
+
+
+@app.post("/beekeeper/restart")
+async def beekeeper_restart(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    result = await beekeeper.restart()
+    return JSONResponse(result, status_code=200 if result.get("success") else 409)
 
 
 # ── Host OS: updates as collected by scripts/os_updates.sh ───────────────────

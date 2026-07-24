@@ -318,6 +318,23 @@ dialog .remember input{accent-color:var(--honey)}
   <pre id="olJob" class="term"></pre>
 </section>
 
+<!-- ── Beekeeper — DNS ad/tracker blocker sidecar ── -->
+<section id="bkCard" class="card">
+  <h2>Beekeeper <span class="hint">&mdash; DNS ad/tracker blocker</span></h2>
+  <div class="rowline" style="border:0">
+    <span id="bkInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn primary" id="bkEnableBtn" onclick="enableBeekeeper(this)" hidden>Enable</button>
+    <button class="btn" id="bkRestartBtn" onclick="restartBeekeeper(this)" hidden>Restart</button>
+    <button class="btn" id="bkDisableBtn" onclick="disableBeekeeper(this)" hidden>Disable</button>
+  </div>
+  <div class="muted" style="font-size:.76rem;margin-top:.4rem">
+    Runs the DNS sinkhole as its own always-on container. Once it&rsquo;s running,
+    manage blocklists &amp; stats and switch blocking on from the app&rsquo;s
+    <strong>Beekeeper</strong> tab, then point your router&rsquo;s DNS at this host.
+  </div>
+</section>
+
 <!-- ── Live logs ── -->
 <section class="card"><h2>Live logs <span class="hint">— streams only while open</span></h2>
   <div id="logbtns" class="chips muted">&hellip;</div>
@@ -498,6 +515,7 @@ async function refresh(){
      return '<div class="rowline">'+dot(cls)+'<code>'+esc(x.name)+'</code>'+
       '<span class="muted">'+esc(x.status||x.state||'')+'</span></div>';
     }).join('')||'<span class="muted">none found</span>';
+  updateBeekeeper(d.beekeeper||{});
   const rec=d.recovery||{};
   if(rec.active&&!recoveryShown){recoveryShown=true;$('recovery').hidden=false;loadRecovery();}
   if(!rec.active&&recoveryShown){recoveryShown=false;$('recovery').hidden=true;}
@@ -506,6 +524,31 @@ async function refresh(){
   $('conn').className='pill bad';$('conn').innerHTML='<span class="dot"></span>offline';
  }finally{setTimeout(refresh,BACKOFF[refIdx]);}}
 refresh();
+
+/* ── Beekeeper (DNS ad/tracker blocker) enablement ─────────────────────── */
+function updateBeekeeper(bk){
+ const info=$('bkInfo'),en=$('bkEnableBtn'),dis=$('bkDisableBtn'),re=$('bkRestartBtn');
+ if(!info)return;
+ if(bk.available===false){
+  info.innerHTML=dot('s-warn')+'<span class="muted">'+esc(bk.error||'runtime socket unavailable')+'</span>';
+  en.hidden=dis.hidden=re.hidden=true;return;}
+ if(!bk.installed){
+  info.innerHTML=dot('s-mut')+'<span>not installed</span>';
+  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;return;}
+ if(bk.running){
+  info.innerHTML=dot('s-ok')+'<code>'+esc(bk.name)+'</code><span class="muted">running</span>';
+  en.hidden=true;dis.hidden=re.hidden=false;}
+ else{
+  info.innerHTML=dot('s-bad')+'<code>'+esc(bk.name)+'</code><span class="muted">'+esc(bk.state||'stopped')+'</span>';
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;}}
+async function enableBeekeeper(btn){
+ const d=await act('/beekeeper/enable',null,false,btn);if(d&&d.success)refresh();}
+async function restartBeekeeper(btn){
+ const d=await act('/beekeeper/restart',null,false,btn);if(d&&d.success)refresh();}
+async function disableBeekeeper(btn){
+ if(!await confirmM('Stop the Beekeeper DNS blocker?\nDevices using this host for DNS will fall back to their secondary resolver.',
+   {title:'Disable Beekeeper',confirmText:'Disable',danger:true}))return;
+ const d=await act('/beekeeper/disable',null,false,btn);if(d&&d.success)refresh();}
 
 /* ── upgrade / rollback ────────────────────────────────────────────────── */
 async function rollback(v,btn){

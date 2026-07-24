@@ -120,6 +120,7 @@ The first install also sets up the **in-app upgrade watcher** (a small host-side
 - **Multi-Endpoint Routing** — Proper handling of devices with multiple endpoints (e.g., dual-gang switches)
 - **Device Tabs** — Custom tab organization to group devices by room or function (e.g., "Heating", "Lighting")
 - **Touchlink** — Scan, identify (blink), and factory reset Philips Hue bulbs directly from the web UI
+- **Beekeeper DNS Ad-Blocker** — Built-in network-wide DNS sinkhole (Pi-hole/AdGuard-style, but our own engine — no third-party DNS library) that blocks ads/trackers for every device; runs as a decoupled always-on sidecar so app upgrades never drop household DNS. See [docs/beekeeper.md](docs/beekeeper.md)
 
 <!-- SCREENSHOT: Device modal with control tab -->
 <p align="center">
@@ -609,6 +610,7 @@ The UI also exposes a **Dismiss** button on failed-state banners and a **Force-c
 | [docs/matter.md](docs/matter.md)                                           | Matter integration — setup, supported features, architecture       |
 | [docs/multipan.md](docs/multipan.md)                                       | MultiPAN (Zigbee + Thread on the Sonoff MG24) — firmware, CPC wire format, OTBR setup |
 | [docs/heating.md](docs/heating.md)                                         | Weather-aware heating — advisor, controller, thermal profile, radiator sizing, EPC/preheat maths, config reference |
+| [docs/beekeeper.md](docs/beekeeper.md)                                     | Beekeeper — the built-in DNS ad/tracker blocker (Pi-hole/AdGuard-style, own engine); setup, port-53/resolved, config |
 | [docs/automations.md](docs/automations.md)                                 | Automation engine — rule syntax, conditions, sequences, examples   |
 | [docs/mqtt-explorer.md](docs/mqtt-explorer.md)                             | MQTT Explorer — usage, filtering, architecture                     |
 | [docs/onboarding.md](docs/onboarding.md)                                   | Developer guide — handler architecture, adding new device support  |

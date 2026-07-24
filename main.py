@@ -201,6 +201,7 @@ try:
         register_wiki_routes,
         register_alert_routes,
         register_signal_routes,
+        register_adblock_routes,
         manager, broadcast_event,
     )
 
@@ -1198,6 +1199,7 @@ register_floor_plan_routes(app, lambda: heating_controller)
 register_chamber_routes(app, get_zigbee_service)
 register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)
+register_adblock_routes(app)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_wiki_routes(app)

@@ -1,0 +1,73 @@
+/* Beekeeper (DNS ad/tracker blocker) tab styling.
+   Uses the app's hive design tokens where available, with safe fallbacks so it
+   reads correctly in both light and dark mode. */
+
+.bk-title-icon {
+  font-size: 1.6rem;
+  color: var(--accent, #f0a500);
+}
+
+.bk-pill { font-weight: 600; letter-spacing: .02em; }
+.bk-pill.bk-on     { background: var(--success, #198754); color: #fff; }
+.bk-pill.bk-off    { background: var(--bs-secondary, #6c757d); color: #fff; }
+.bk-pill.bk-paused { background: var(--warning, #ffc107); color: #212529; }
+.bk-pill.bk-offline{ background: var(--danger, #dc3545); color: #fff; }
+
+.bk-master .form-check-input { cursor: pointer; width: 2.6em; height: 1.4em; }
+
+/* Stat cards */
+.bk-stat {
+  background: var(--bg-surface, #fff);
+  border: 1px solid var(--border-color, rgba(0,0,0,.1));
+  border-radius: .6rem;
+  padding: .7rem .9rem;
+  height: 100%;
+  text-align: center;
+}
+.bk-stat-val { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+.bk-stat-lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted, #6c757d); }
+.bk-stat-blocked .bk-stat-val { color: var(--danger, #dc3545); }
+
+/* Top-N lists */
+.bk-list .list-group-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .4rem .9rem; font-size: .85rem;
+  background: transparent;
+}
+.bk-list .bk-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
+.bk-list .bk-list-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+.bk-list .bk-empty { color: var(--text-muted, #6c757d); font-style: italic; }
+
+/* Recent queries scroll area */
+.bk-recent-scroll { max-height: 360px; overflow-y: auto; }
+.bk-recent-scroll td { font-size: .8rem; vertical-align: middle; }
+.bk-badge-blocked { background: var(--danger, #dc3545); color: #fff; }
+.bk-badge-allowed { background: var(--bs-secondary-bg, #e9ecef); color: var(--bs-body-color, #333); }
+.bk-badge-cached  { background: var(--info, #0dcaf0); color: #052c33; }
+
+.bk-check-box { max-width: 260px; }
+#bkCheckResult .bk-blocked { color: var(--danger, #dc3545); font-weight: 600; }
+#bkCheckResult .bk-allowed { color: var(--success, #198754); font-weight: 600; }
+
+/* Allow/Deny chips */
+.bk-rule-chips { display: flex; flex-wrap: wrap; gap: .35rem; max-height: 160px; overflow-y: auto; }
+.bk-chip {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .2rem .55rem; border-radius: 1rem; font-size: .8rem;
+  background: var(--bg-surface-sunken, #f0f2f5);
+  border: 1px solid var(--border-color, rgba(0,0,0,.1));
+}
+.bk-chip button {
+  border: none; background: transparent; line-height: 1; padding: 0; cursor: pointer;
+  color: var(--text-muted, #888);
+}
+.bk-chip button:hover { color: var(--danger, #dc3545); }
+.bk-rule-empty { color: var(--text-muted, #6c757d); font-style: italic; font-size: .82rem; }
+
+.bk-list-err { color: var(--danger, #dc3545); }
+
+@media (prefers-color-scheme: dark) {
+  .bk-stat { background: rgba(255,255,255,.03); }
+}
+:root[data-theme="dark"] .bk-stat { background: rgba(255,255,255,.03); }
+:root[data-theme="dark"] .bk-badge-allowed { background: rgba(255,255,255,.1); color: #ddd; }

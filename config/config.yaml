@@ -196,6 +196,44 @@ matter:
 #     backbone_interface: eth0
 #     nat64: false
 
+# Beekeeper — first-party DNS sinkhole ad/tracker blocker (Pi-hole/AdGuard-style,
+# but our own engine). Runs as a separate always-on sidecar (python -m beekeeper)
+# so app restarts/upgrades never drop household DNS. See docs/beekeeper.md.
+beekeeper:
+  enabled: false                 # bind :53 and start blocking at boot
+  listen:
+    # "" = auto-detect the host's primary LAN IPv4 so the sinkhole serves the
+    # whole network AND coexists with systemd-resolved on 127.0.0.53. Set an
+    # explicit address to pin it. Point your router's DHCP DNS at this address.
+    address: ""
+    port: 53
+  upstreams:                     # unblocked queries forwarded here, in failover order
+    - 1.1.1.1                    # Cloudflare
+    - 9.9.9.9                    # Quad9
+  upstream_timeout: 3.0
+  sinkhole:
+    mode: zero                   # zero = answer blocked names with 0.0.0.0/:: ; nxdomain = reply NXDOMAIN
+    ipv4: 0.0.0.0
+    ipv6: "::"
+    ttl: 60
+  cache:
+    enabled: true
+    max_entries: 10000
+    ttl: 300                     # fixed positive-cache cap (seconds)
+  blocklists:                    # public hosts-format sources, imported as data you own
+    - name: StevenBlack unified hosts
+      url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+      enabled: true
+    - name: OISD small
+      url: https://small.oisd.nl/domainswild
+      enabled: true
+  refresh_interval_hours: 24
+  control:                       # loopback control API the main app proxies to
+    host: 127.0.0.1
+    port: 8053
+  log_queries: true              # per-query log for the dashboard (SQLite under data/beekeeper)
+  query_retention_days: 7
+
 ai:
   provider: ollama
   model: llama3.1:8b-instruct-q4_K_M

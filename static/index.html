@@ -27,6 +27,7 @@
     <link rel="stylesheet" href="/static/css/hive-components.css">
     <link rel="stylesheet" href="/static/css/frames.css">
     <link rel="stylesheet" href="/static/css/automations.css">
+    <link rel="stylesheet" href="/static/css/adblock.css">
     <!-- Vendored, not a CDN: same policy as echarts/pdf.js, and the map must
          work on a LAN with no internet access. -->
     <link rel="stylesheet" href="/static/vendor/leaflet.css">
@@ -141,6 +142,7 @@
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automations"><i class="fas fa-bolt"></i> <span class="tab-label">Automations</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#heating"><i class="fas fa-temperature-high"></i> <span class="tab-label">Heating</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#energy"><i class="fas fa-plug"></i> <span class="tab-label">Energy</span></button></li>
+       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#beekeeper"><i class="fas fa-shield-halved"></i> <span class="tab-label">Beekeeper</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#drive"><i class="fas fa-car"></i> <span class="tab-label">Drive</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#zones"><i class="fas fa-bullseye"></i> <span class="tab-label">Zones</span></button></li>
        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#topology"><i class="fas fa-network-wired"></i> <span class="tab-label">Topology</span></button></li>
@@ -279,6 +281,149 @@
                     <div class="mesh-topology-container" style="height: 75vh; background: var(--bg-surface-sunken); overflow: hidden;"></div>
                 </div>
             </div>
+        </div>
+
+        <!-- BEEKEEPER (DNS ad/tracker blocker) TAB -->
+        <div class="tab-pane fade" id="beekeeper">
+          <div class="bk-wrap p-3">
+
+            <!-- Header: title, status pill, master switch -->
+            <div class="bk-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+              <div class="d-flex align-items-center gap-2">
+                <i class="fas fa-shield-halved bk-title-icon"></i>
+                <div>
+                  <h4 class="mb-0">Beekeeper</h4>
+                  <div class="text-muted small">DNS sinkhole — blocks ads &amp; trackers for your whole network</div>
+                </div>
+                <span id="bkStatusPill" class="badge bk-pill ms-2">…</span>
+              </div>
+              <div class="d-flex align-items-center gap-3">
+                <div class="btn-group btn-group-sm" role="group">
+                  <button id="bkPauseBtn" class="btn btn-outline-secondary" title="Pause blocking temporarily"><i class="fas fa-pause"></i> Pause</button>
+                  <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown"></button>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item bk-pause-opt" data-min="5" href="#">Pause 5 minutes</a></li>
+                    <li><a class="dropdown-item bk-pause-opt" data-min="15" href="#">Pause 15 minutes</a></li>
+                    <li><a class="dropdown-item bk-pause-opt" data-min="60" href="#">Pause 1 hour</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item bk-pause-opt" data-min="0" href="#">Resume now</a></li>
+                  </ul>
+                </div>
+                <div class="form-check form-switch bk-master">
+                  <input class="form-check-input" type="checkbox" role="switch" id="bkMasterSwitch">
+                  <label class="form-check-label small" for="bkMasterSwitch">Enabled</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Offline / not-installed banner -->
+            <div id="bkOffline" class="alert alert-warning d-none" role="alert">
+              <i class="fas fa-triangle-exclamation me-1"></i>
+              <span id="bkOfflineMsg">Beekeeper isn't running yet.</span>
+              Enable it from the <a href="#" id="bkManagerLink" class="alert-link">ZMM Manager</a>,
+              then it'll appear here. <a href="#" id="bkDocsLink" class="alert-link">Setup guide</a>
+            </div>
+
+            <!-- Stat cards -->
+            <div class="row g-2 mb-3" id="bkStats">
+              <div class="col-6 col-lg"><div class="bk-stat"><div class="bk-stat-val" id="bkStatTotal">–</div><div class="bk-stat-lbl">Queries (24h)</div></div></div>
+              <div class="col-6 col-lg"><div class="bk-stat bk-stat-blocked"><div class="bk-stat-val" id="bkStatBlocked">–</div><div class="bk-stat-lbl">Blocked (24h)</div></div></div>
+              <div class="col-6 col-lg"><div class="bk-stat"><div class="bk-stat-val" id="bkStatPct">–</div><div class="bk-stat-lbl">% Blocked</div></div></div>
+              <div class="col-6 col-lg"><div class="bk-stat"><div class="bk-stat-val" id="bkStatClients">–</div><div class="bk-stat-lbl">Clients</div></div></div>
+              <div class="col-6 col-lg"><div class="bk-stat"><div class="bk-stat-val" id="bkStatDomains">–</div><div class="bk-stat-lbl">Domains on list</div></div></div>
+            </div>
+
+            <div class="row g-3">
+              <!-- Left column: chart + recent -->
+              <div class="col-lg-7">
+                <div class="card shadow-sm mb-3">
+                  <div class="card-header d-flex justify-content-between align-items-center py-2">
+                    <span><i class="fas fa-chart-area me-1"></i> Queries over 24h</span>
+                    <span class="small text-muted">blocked vs allowed</span>
+                  </div>
+                  <div class="card-body"><div id="bkChart" style="height:220px;"></div></div>
+                </div>
+                <div class="card shadow-sm">
+                  <div class="card-header d-flex justify-content-between align-items-center py-2">
+                    <span><i class="fas fa-stream me-1"></i> Recent queries</span>
+                    <div class="input-group input-group-sm bk-check-box">
+                      <input type="text" id="bkCheckInput" class="form-control" placeholder="Test a domain…">
+                      <button id="bkCheckBtn" class="btn btn-outline-secondary">Check</button>
+                    </div>
+                  </div>
+                  <div class="card-body p-0">
+                    <div id="bkCheckResult" class="small px-3 pt-2 d-none"></div>
+                    <div class="table-responsive bk-recent-scroll">
+                      <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light"><tr><th>Time</th><th>Client</th><th>Domain</th><th>Type</th><th>Result</th></tr></thead>
+                        <tbody id="bkRecentBody"><tr><td colspan="5" class="text-muted text-center py-3">No data yet</td></tr></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right column: top blocked, top clients, controls -->
+              <div class="col-lg-5">
+                <div class="card shadow-sm mb-3">
+                  <div class="card-header py-2"><i class="fas fa-ban me-1"></i> Top blocked domains</div>
+                  <div class="card-body p-0"><ul class="list-group list-group-flush bk-list" id="bkTopBlocked"></ul></div>
+                </div>
+                <div class="card shadow-sm mb-3">
+                  <div class="card-header py-2"><i class="fas fa-display me-1"></i> Top clients</div>
+                  <div class="card-body p-0"><ul class="list-group list-group-flush bk-list" id="bkTopClients"></ul></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Blocklists -->
+            <div class="card shadow-sm mt-3">
+              <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <span><i class="fas fa-list-ul me-1"></i> Blocklists</span>
+                <div class="btn-group btn-group-sm">
+                  <button id="bkRefreshBtn" class="btn btn-outline-primary"><i class="fas fa-rotate"></i> Refresh now</button>
+                  <button id="bkFlushBtn" class="btn btn-outline-secondary" title="Clear the DNS cache"><i class="fas fa-broom"></i> Flush cache</button>
+                </div>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table table-sm mb-0">
+                    <thead class="table-light"><tr><th>List</th><th class="text-end">Domains</th><th>Last updated</th><th></th></tr></thead>
+                    <tbody id="bkListsBody"><tr><td colspan="4" class="text-muted text-center py-3">—</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Allow / Deny editors -->
+            <div class="row g-3 mt-0">
+              <div class="col-md-6">
+                <div class="card shadow-sm">
+                  <div class="card-header py-2 text-success"><i class="fas fa-circle-check me-1"></i> Allowlist <span class="text-muted small">(never blocked)</span></div>
+                  <div class="card-body">
+                    <div class="input-group input-group-sm mb-2">
+                      <input type="text" id="bkAllowInput" class="form-control" placeholder="domain.com to always allow">
+                      <button class="btn btn-outline-success bk-add-rule" data-kind="allow">Add</button>
+                    </div>
+                    <div id="bkAllowList" class="bk-rule-chips"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="card shadow-sm">
+                  <div class="card-header py-2 text-danger"><i class="fas fa-circle-minus me-1"></i> Denylist <span class="text-muted small">(always blocked)</span></div>
+                  <div class="card-body">
+                    <div class="input-group input-group-sm mb-2">
+                      <input type="text" id="bkDenyInput" class="form-control" placeholder="domain.com to always block">
+                      <button class="btn btn-outline-danger bk-add-rule" data-kind="deny">Add</button>
+                    </div>
+                    <div id="bkDenyList" class="bk-rule-chips"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
         </div>
 
         <!-- SETTINGS TAB -->
@@ -1666,6 +1811,7 @@
 <script src="/static/js/device-search.js"></script>
 <script src="/static/js/mobile-helpers.js"></script>
 <script src="/static/js/deploy-animation.js"></script>
+<script src="/static/js/adblock.js"></script>
 <script type="module" src="/static/js/floor-plan.js"></script>
 <script type="module" src="/static/js/heating-controller.js"></script>
 <script type="module" src="/static/js/main.js"></script>
