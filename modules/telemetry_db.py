@@ -25,7 +25,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.telemetry_db")
 
@@ -42,15 +42,14 @@ OCTOPUS_RETENTION_DAYS = 400
 # Host metrics live in their OWN database file, for the same reason Octopus
 # does — one file's corruption must not take the others with it.
 #
-# This split was not theoretical. On 2026-07-24 a single damaged block inside
-# system_metrics made the *whole* telemetry.duckdb uncheckpointable: the WAL
-# grew unbounded, and when it eventually could not be replayed it took two
-# days of Zigbee device history with it. The damage was confined to host CPU
-# and memory samples — the least valuable rows in the file — but the blast
-# radius was every table sharing the file.
+# A single damaged block anywhere in a DuckDB file makes the WHOLE file
+# uncheckpointable: the WAL then grows without bound, and a WAL that cannot be
+# replayed loses every table's recent writes, not just the damaged one. Host CPU
+# and memory samples are the least valuable rows here, so they must not be able
+# to take device history down with them.
 #
-# Different write patterns, different value, different lifetimes: keep them in
-# different files.
+# Different write patterns, different value, different lifetimes: different
+# files.
 SYSTEM_DB_PATH = "./data/system_metrics.duckdb"
 
 # Lazy import — duckdb is only needed when this module is used
@@ -703,7 +702,9 @@ def _get_system_db():
             # and unreplayable-WAL healing too, rather than a bare connect().
             db = _connect_local_db(SYSTEM_DB_PATH)
             _init_system_tables(db)
-            _migrate_system_metrics_from_telemetry(db)
+            # NO migration here. This is reached from write/query paths that run
+            # on the event loop; anything slow here stalls the whole app. The
+            # migration is a startup step — see migrate_system_metrics().
             _system_db = db
             _finish_system_db_init()
             logger.info(f"System metrics database opened: {SYSTEM_DB_PATH}")
@@ -739,30 +740,33 @@ def _system_cursor():
     return _get_system_db().cursor()
 
 
+_SYSTEM_METRICS_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        ts          TIMESTAMP NOT NULL DEFAULT now(),
+        cpu_percent FLOAT,
+        cpu_freq    FLOAT,
+        mem_total   BIGINT,
+        mem_used    BIGINT,
+        mem_percent FLOAT,
+        swap_used   BIGINT,
+        swap_percent FLOAT,
+        disk_total  BIGINT,
+        disk_used   BIGINT,
+        disk_percent FLOAT,
+        cpu_temp    FLOAT,
+        gpu_temp    FLOAT,
+        load_1m     FLOAT,
+        load_5m     FLOAT,
+        load_15m    FLOAT,
+        uptime_secs BIGINT,
+        process_rss BIGINT,
+        process_threads INTEGER
+    )
+"""
+
+
 def _init_system_tables(db):
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS system_metrics (
-            ts          TIMESTAMP NOT NULL DEFAULT now(),
-            cpu_percent FLOAT,
-            cpu_freq    FLOAT,
-            mem_total   BIGINT,
-            mem_used    BIGINT,
-            mem_percent FLOAT,
-            swap_used   BIGINT,
-            swap_percent FLOAT,
-            disk_total  BIGINT,
-            disk_used   BIGINT,
-            disk_percent FLOAT,
-            cpu_temp    FLOAT,
-            gpu_temp    FLOAT,
-            load_1m     FLOAT,
-            load_5m     FLOAT,
-            load_15m    FLOAT,
-            uptime_secs BIGINT,
-            process_rss BIGINT,
-            process_threads INTEGER
-        )
-    """)
+    db.execute(_SYSTEM_METRICS_DDL.format(table="system_metrics"))
 
 
 SYSTEM_METRIC_COLUMNS = (
@@ -773,56 +777,85 @@ SYSTEM_METRIC_COLUMNS = (
 )
 
 
-def _migrate_system_metrics_from_telemetry(sdb) -> None:
-    """One-time move of system_metrics out of telemetry.duckdb.
+def migrate_system_metrics(log: Optional[Callable[[str], None]] = None,
+                           budget_seconds: float = 90.0) -> Optional[Dict[str, Any]]:
+    """Move system_metrics out of telemetry.duckdb into its own file.
 
-    Doubles as the repair for the 2026-07-24 corruption. The damaged blocks
-    were inside this table, and dropping it is what frees them — after which
-    telemetry.duckdb can CHECKPOINT again for the first time in days, so its
-    WAL stops growing and stops risking another unreplayable-WAL data loss.
+    MUST be called from a worker thread during startup, before any service
+    writes telemetry. NEVER lazily from a write.
 
-    Rows are salvaged rather than read in one go: a straight SELECT dies on the
-    bad block and would migrate nothing. The bisection keeps everything either
-    side of the damage.
+    The first version of this ran on first use, so it fired from
+    system_monitor's loop — on the EVENT LOOP. The salvage took minutes, tripped
+    loop_monitor's 60s exit-70, and the app crash-looped because every restart
+    started the migration from scratch and never finished it.
 
-    Best-effort by design — host CPU/memory samples are the least valuable
-    rows in the system, and losing some of them must never stop the app
-    starting.
+    Single engine by design: the telemetry connection ATTACHes the system file
+    and copies in-engine (fast, and it keeps the original timestamps). Opening a
+    second DuckDB instance on either file from this process would split-brain
+    it — POSIX fcntl locks are per-PID.
+
+    Doubles as a repair when the damaged blocks are inside this table. Dropping
+    it frees them, which is what lets telemetry.duckdb CHECKPOINT again. Rows
+    are salvaged around the damage rather than read in one pass, because a
+    straight SELECT dies on a bad block and would migrate nothing.
+
+    Returns a summary when it migrated, else None. Never raises: losing some
+    host CPU samples must not stop the app booting.
     """
+    import logging as _logging
+    say = log or _logging.getLogger("modules.telemetry_db").info
+
     try:
-        tdb = _get_db()
-        tables = {r[0] for r in tdb.execute(
+        db = _get_db()
+        tables = {r[0] for r in db.execute(
             "SELECT table_name FROM information_schema.tables").fetchall()}
         if "system_metrics" not in tables:
-            return                      # already migrated, or a fresh install
+            return None                      # already migrated / fresh install
+
+        say(f"Migrating system_metrics out of {DB_PATH} into {SYSTEM_DB_PATH}")
+        os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
 
         cols = SYSTEM_METRIC_COLUMNS
-        ncols = len(cols.split(","))
-
-        def copy_range(lo: int, hi: int) -> int:
-            rows = tdb.execute(
-                f"SELECT {cols} FROM system_metrics "
-                f"WHERE rowid >= {lo} AND rowid < {hi}").fetchall()
-            if rows:
-                ph = ", ".join(["?"] * ncols)
-                sdb.executemany(
-                    f"INSERT INTO system_metrics ({cols}) VALUES ({ph})", rows)
-            return len(rows)
-
+        db.execute(f"ATTACH '{SYSTEM_DB_PATH}' AS sysdb")
         try:
-            hi = tdb.execute("SELECT max(rowid) FROM system_metrics").fetchone()[0]
-            bound = int(hi) + 1 if hi is not None else 0
-        except Exception:
-            bound = 1 << 24             # damaged: let the bisection find the end
+            db.execute(_SYSTEM_METRICS_DDL.format(table="sysdb.system_metrics"))
 
-        from modules.telemetry_rebuild import salvage_table
-        rep = salvage_table("system_metrics", bound, copy_range,
-                            log=lambda m: logger.info(f"  {m.strip()}"))
+            def copy_range(lo: int, hi: int) -> int:
+                cur = db.execute(
+                    f"INSERT INTO sysdb.system_metrics ({cols}) "
+                    f"SELECT {cols} FROM system_metrics "
+                    f"WHERE rowid >= {lo} AND rowid < {hi}")
+                res = cur.fetchall()
+                return int(res[0][0]) if res and res[0] else 0
 
-        # Freeing these blocks is the point: it is what lets the main database
-        # checkpoint again. Must happen before any CHECKPOINT — a failed one
-        # invalidates the connection and the DROP would then be impossible.
-        tdb.execute("DROP TABLE system_metrics")
+            try:
+                hi = db.execute("SELECT max(rowid) FROM system_metrics").fetchone()[0]
+                bound = int(hi) + 1 if hi is not None else 0
+            except Exception:
+                bound = 1 << 24              # damaged — let the bisection find the end
+
+            from modules.telemetry_rebuild import salvage_table, RebuildTimeout
+            try:
+                rep = salvage_table("system_metrics", bound, copy_range,
+                                    log=lambda m: say(m.strip()),
+                                    deadline=time.monotonic() + budget_seconds)
+            except RebuildTimeout as e:
+                # Leave everything as it is and try again next boot rather than
+                # holding up startup. Nothing has been dropped at this point.
+                say(f"system_metrics migration abandoned (over budget): {e}")
+                db.execute("DELETE FROM sysdb.system_metrics")
+                return None
+
+            # Freeing these blocks is the point — it is what lets the main
+            # database checkpoint again. Must happen BEFORE any CHECKPOINT: a
+            # failed one invalidates the connection and the DROP becomes
+            # impossible until the process restarts.
+            db.execute("DROP TABLE system_metrics")
+        finally:
+            try:
+                db.execute("DETACH sysdb")
+            except Exception:
+                pass
 
         if rep.lost_estimate:
             logger.warning(
@@ -830,17 +863,18 @@ def _migrate_system_metrics_from_telemetry(sdb) -> None:
                 f"{SYSTEM_DB_PATH}; ~{rep.lost_estimate:,} unreadable rows "
                 f"discarded with the damaged blocks")
         else:
-            logger.info(f"Migrated {rep.copied:,} system_metrics rows into "
-                        f"{SYSTEM_DB_PATH}")
+            say(f"Migrated {rep.copied:,} system_metrics rows into {SYSTEM_DB_PATH}")
 
         try:
-            tdb.execute("CHECKPOINT")
-            logger.info("Telemetry database checkpointed after migration — "
-                        "the damaged blocks are gone")
+            db.execute("CHECKPOINT")
+            say("Telemetry database checkpointed after migration")
         except Exception as e:
             logger.warning(f"Post-migration checkpoint failed: {e}")
+
+        return {"migrated": rep.copied, "lost": rep.lost_estimate}
     except Exception as e:
         logger.warning(f"system_metrics migration skipped: {e}")
+        return None
 
 
 def prune_system(retention_days: int = DEFAULT_RETENTION_DAYS):
@@ -1905,9 +1939,9 @@ class _FatalWatchHandler(logging.Handler):
     sites to remember, watch what they log: if the signature goes past, latch
     it.
 
-    Missing the latch is not cosmetic — it means no sentinel, which means the
-    next boot does not self-repair and the database stays broken indefinitely.
-    That is exactly what happened after the 24.07.2026 upgrade.
+    Missing the latch is not cosmetic: no latch means no sentinel, which means
+    the next boot does not self-repair and the database stays broken
+    indefinitely.
     """
 
     def __init__(self):
