@@ -387,10 +387,19 @@
               </div>
               <div class="card-body p-0">
                 <div class="table-responsive">
-                  <table class="table table-sm mb-0">
-                    <thead class="table-light"><tr><th>List</th><th class="text-end">Domains</th><th>Last updated</th><th></th></tr></thead>
-                    <tbody id="bkListsBody"><tr><td colspan="4" class="text-muted text-center py-3">—</td></tr></tbody>
+                  <table class="table table-sm mb-0 align-middle">
+                    <thead class="table-light"><tr><th style="width:1%">On</th><th>List</th><th class="text-end">Domains</th><th>Last updated</th><th style="width:1%"></th></tr></thead>
+                    <tbody id="bkListsBody"><tr><td colspan="5" class="text-muted text-center py-3">—</td></tr></tbody>
                   </table>
+                </div>
+                <div class="bk-addlist border-top p-2">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">Add list</span>
+                    <input type="text" id="bkListName" class="form-control" placeholder="Name (e.g. HaGeZi Pro)" style="max-width:200px">
+                    <input type="url" id="bkListUrl" class="form-control" placeholder="https://…/hosts (hosts or domain-list format)">
+                    <button id="bkListAddBtn" class="btn btn-primary">Add &amp; fetch</button>
+                  </div>
+                  <div class="form-text ms-1">Paste any hosts-format or domain-list URL — e.g. HaGeZi, 1Hosts, or your own. It's fetched and compiled immediately.</div>
                 </div>
               </div>
             </div>

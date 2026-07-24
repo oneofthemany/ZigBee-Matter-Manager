@@ -229,6 +229,58 @@ def message_txid(message: bytes) -> Optional[int]:
     return struct.unpack_from("!H", message, 0)[0]
 
 
+# ── Query builder + answer parser (for the in-app "dig" tester) ───────────────
+
+def build_query(qname: str, qtype: int = TYPE_A, txid: int = 0, rd: bool = True) -> bytes:
+    """Encode a minimal DNS query (one question, no EDNS)."""
+    flags = 0x0100 if rd else 0x0000
+    header = _HEADER.pack(txid & 0xFFFF, flags, 1, 0, 0, 0)
+    labels = b"".join(bytes([len(l)]) + l.encode("idna" if any(ord(c) > 127 for c in l)
+                                                else "ascii")
+                      for l in qname.strip(".").split(".") if l)
+    question = labels + b"\x00" + struct.pack("!HH", qtype, CLASS_IN)
+    return header + question
+
+
+def parse_answers(message: bytes) -> list:
+    """Best-effort extract of the answer section as [{"type","name","data"}].
+
+    A/AAAA records are decoded to printable addresses; other types report their
+    rdata length. Returns [] on any malformation — this only feeds the UI tester,
+    never the resolver hot path.
+    """
+    import ipaddress
+    out: list = []
+    try:
+        _txid, _flags, qd, an, _ns, _ar = _HEADER.unpack_from(message, 0)
+        pos = 12
+        for _ in range(qd):                      # skip question section
+            _name, pos = _read_name(message, pos)
+            pos += 4                             # qtype + qclass
+        for _ in range(an):
+            name, pos = _read_name(message, pos)
+            rtype, _rclass, _ttl, rdlen = struct.unpack_from("!HHIH", message, pos)
+            pos += 10
+            rdata = message[pos:pos + rdlen]
+            pos += rdlen
+            if rtype == TYPE_A and rdlen == 4:
+                out.append({"type": "A", "name": name, "data": str(ipaddress.IPv4Address(rdata))})
+            elif rtype == TYPE_AAAA and rdlen == 16:
+                out.append({"type": "AAAA", "name": name, "data": str(ipaddress.IPv6Address(rdata))})
+            elif rtype == TYPE_CNAME:
+                cname, _ = _read_name(message, pos - rdlen)
+                out.append({"type": "CNAME", "name": name, "data": cname})
+            else:
+                out.append({"type": str(rtype), "name": name, "data": f"({rdlen} bytes)"})
+    except Exception:
+        pass
+    return out
+
+
+RCODE_NAMES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN",
+               4: "NOTIMP", 5: "REFUSED"}
+
+
 # ── Small address packers (avoid pulling in socket/ipaddress on the hot path) ──
 
 def _pack_ipv4(addr: str) -> bytes:

@@ -94,6 +94,16 @@ class AdBlockClient:
     async def lists(self) -> Dict[str, Any]:
         return await self._request("GET", "/lists")
 
+    async def add_list(self, name: str, url: str) -> Dict[str, Any]:
+        return await self._request("POST", "/lists/add", json={"name": name, "url": url})
+
+    async def remove_list(self, key: str) -> Dict[str, Any]:
+        return await self._request("POST", "/lists/remove", json={"key": key})
+
+    async def toggle_list(self, key: str, enabled: bool) -> Dict[str, Any]:
+        return await self._request("POST", "/lists/toggle",
+                                   json={"key": key, "enabled": enabled})
+
     # ── rules ─────────────────────────────────────────────────────────────────
     async def rules(self) -> Dict[str, Any]:
         return await self._request("GET", "/rules")
@@ -107,6 +117,9 @@ class AdBlockClient:
 
     async def check(self, domain: str) -> Dict[str, Any]:
         return await self._request("GET", "/check", params={"domain": domain})
+
+    async def dig(self, domain: str, qtype: int = 1) -> Dict[str, Any]:
+        return await self._request("GET", "/dig", params={"domain": domain, "type": qtype})
 
     # ── stats ─────────────────────────────────────────────────────────────────
     async def summary(self, hours: float = 24.0) -> Dict[str, Any]:

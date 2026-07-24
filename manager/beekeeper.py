@@ -14,7 +14,9 @@ app. It runs on host networking so the sinkhole can serve the LAN on :53.
 Everything here is best-effort and never raises — a failed socket call returns a
 structured error the dashboard can show.
 """
+import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from manager import containers
@@ -23,6 +25,44 @@ logger = logging.getLogger("manager.beekeeper")
 
 APP_CONTAINER = containers.APP_CONTAINER
 BEEKEEPER_CONTAINER = f"{APP_CONTAINER}-beekeeper"
+
+# Host-side firewall helper (scripts/beekeeper_firewall.sh) talks to the manager
+# through these files under the mounted DATA_DIR, exactly like the OS-update flow.
+_DATA_DIR = os.environ.get("ZMM_DATA_DIR") or os.environ.get("DATA_DIR") \
+    or "/opt/.zigbee-matter-manager"
+_FW_DIR = os.path.join(_DATA_DIR, "data", "beekeeper")
+_FW_TRIGGER = os.path.join(_FW_DIR, "firewall_action")
+_FW_STATUS = os.path.join(_FW_DIR, "firewall_status.json")
+
+
+def firewall_status() -> Dict[str, Any]:
+    """Read the host helper's last firewall result (never raises)."""
+    try:
+        with open(_FW_STATUS) as f:
+            data = json.load(f)
+        return {"available": True, **data}
+    except (OSError, ValueError):
+        return {"available": True, "backend": None, "port_53_open": None,
+                "detail": "not checked yet", "updated_at": None}
+
+
+def request_firewall(action: str = "open") -> Dict[str, Any]:
+    """Ask the host helper to open (or re-check) :53 by writing its trigger file.
+
+    Needs the host path unit installed (install_watcher.sh / a current build.sh).
+    If it isn't, the trigger is simply never consumed — surfaced as a stale
+    status in the UI.
+    """
+    if action not in ("open", "check"):
+        return {"success": False, "error": "action must be open|check"}
+    try:
+        os.makedirs(_FW_DIR, exist_ok=True)
+        with open(_FW_TRIGGER, "w") as f:
+            f.write(action)
+        return {"success": True, "message": f"Firewall {action} requested — the host "
+                "helper applies it within a second or two; refresh to see the result."}
+    except OSError as e:
+        return {"success": False, "error": str(e)}
 
 # App-container mount destinations the sidecar needs to share.
 _SHARE_DESTS = ("/app/config", "/app/data", "/app/logs")
@@ -62,7 +102,8 @@ async def status() -> Dict[str, Any]:
                 "name": BEEKEEPER_CONTAINER, "error": str(e)}
     if not info:
         return {"available": True, "installed": False, "running": False,
-                "name": BEEKEEPER_CONTAINER, "error": None}
+                "name": BEEKEEPER_CONTAINER, "firewall": firewall_status(),
+                "error": None}
     state = (info.get("State") or {})
     return {
         "available": True,
@@ -71,6 +112,7 @@ async def status() -> Dict[str, Any]:
         "name": BEEKEEPER_CONTAINER,
         "image": (info.get("Config") or {}).get("Image"),
         "state": state.get("Status"),   # running | exited | created | ...
+        "firewall": firewall_status(),
         "error": None,
     }
 

@@ -220,12 +220,15 @@ beekeeper:
     enabled: true
     max_entries: 10000
     ttl: 300                     # fixed positive-cache cap (seconds)
-  blocklists:                    # public hosts-format sources, imported as data you own
-    - name: StevenBlack unified hosts
-      url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+  # Seed blocklists (imported as data you own; edit/add more from the UI, which
+  # persists to data/beekeeper/sources.json). "Block, don't break" defaults:
+  # HaGeZi Multi PRO (ads+tracking+malware, low breakage) + OISD Big (broad).
+  blocklists:
+    - name: HaGeZi Multi PRO
+      url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt
       enabled: true
-    - name: OISD small
-      url: https://small.oisd.nl/domainswild
+    - name: OISD Big
+      url: https://big.oisd.nl/domainswild
       enabled: true
   refresh_interval_hours: 24
   control:                       # loopback control API the main app proxies to

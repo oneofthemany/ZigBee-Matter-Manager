@@ -328,10 +328,16 @@ dialog .remember input{accent-color:var(--honey)}
     <button class="btn" id="bkRestartBtn" onclick="restartBeekeeper(this)" hidden>Restart</button>
     <button class="btn" id="bkDisableBtn" onclick="disableBeekeeper(this)" hidden>Disable</button>
   </div>
+  <div class="rowline" style="border:0;margin-top:.3rem">
+    <span id="bkFwInfo" class="muted">&hellip;</span>
+    <span class="spacer"></span>
+    <button class="btn" id="bkFwOpenBtn" onclick="openBeekeeperFirewall(this)" hidden>Open :53</button>
+  </div>
   <div class="muted" style="font-size:.76rem;margin-top:.4rem">
     Runs the DNS sinkhole as its own always-on container. Once it&rsquo;s running,
     manage blocklists &amp; stats and switch blocking on from the app&rsquo;s
     <strong>Beekeeper</strong> tab, then point your router&rsquo;s DNS at this host.
+    DNS needs port 53 open in the host firewall &mdash; use <strong>Open :53</strong> above.
   </div>
 </section>
 
@@ -540,7 +546,25 @@ function updateBeekeeper(bk){
   en.hidden=true;dis.hidden=re.hidden=false;}
  else{
   info.innerHTML=dot('s-bad')+'<code>'+esc(bk.name)+'</code><span class="muted">'+esc(bk.state||'stopped')+'</span>';
-  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;}}
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;}
+ updateBeekeeperFirewall(bk.firewall||{},bk.installed);}
+function updateBeekeeperFirewall(fw,installed){
+ const info=$('bkFwInfo'),btn=$('bkFwOpenBtn');
+ if(!info)return;
+ if(!installed){info.textContent='';btn.hidden=true;return;}
+ const open=fw.port_53_open;
+ if(open===true){
+  info.innerHTML=dot('s-ok')+'firewall: port 53 open'+(fw.backend?' <span class="muted">('+esc(fw.backend)+')</span>':'');
+  btn.hidden=false;btn.textContent='Re-check :53';}
+ else if(open===false){
+  info.innerHTML=dot('s-bad')+'firewall: <b>port 53 blocked</b>'+(fw.backend?' <span class="muted">('+esc(fw.backend)+')</span>':'');
+  btn.hidden=false;btn.textContent='Open :53';}
+ else{
+  info.innerHTML=dot('s-warn')+'firewall: '+esc(fw.detail||'not checked')+(fw.backend?' <span class="muted">('+esc(fw.backend)+')</span>':'');
+  btn.hidden=false;btn.textContent='Open :53';}}
+async function openBeekeeperFirewall(btn){
+ const d=await act('/beekeeper/firewall/open',null,false,btn);
+ if(d&&d.success){setTimeout(refresh,2500);}}
 async function enableBeekeeper(btn){
  const d=await act('/beekeeper/enable',null,false,btn);if(d&&d.success)refresh();}
 async function restartBeekeeper(btn){

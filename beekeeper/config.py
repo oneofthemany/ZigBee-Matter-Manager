@@ -49,14 +49,18 @@ def logs_dir() -> Path:
 # first run; the user prunes/extends these from the UI. These are DATA — the
 # domains live in files under data/beekeeper/lists/ once fetched.
 DEFAULT_BLOCKLISTS: List[Dict[str, Any]] = [
+    # The community "block, don't break" default: HaGeZi Multi PRO (ads +
+    # tracking + malware, tuned to minimise breakage) plus OISD Big as a broad,
+    # conservative safety net. Comprehensive without the false positives of the
+    # aggressive/parental-control lists (NSFW, anti-piracy, DNS-bypass, …).
     {
-        "name": "StevenBlack unified hosts",
-        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+        "name": "HaGeZi Multi PRO",
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt",
         "enabled": True,
     },
     {
-        "name": "OISD small",
-        "url": "https://small.oisd.nl/domainswild",
+        "name": "OISD Big",
+        "url": "https://big.oisd.nl/domainswild",
         "enabled": True,
     },
 ]
@@ -121,6 +125,13 @@ class Config:
     @property
     def denylist_file(self) -> Path:
         return self.data_dir / "denylist.txt"
+
+    @property
+    def sources_file(self) -> Path:
+        # User-managed blocklist sources (seeded from config.yaml on first use).
+        # Once this exists it is authoritative, so UI edits survive restarts
+        # without rewriting the commented config.yaml.
+        return self.data_dir / "sources.json"
 
     # ── Loading ──────────────────────────────────────────────────────────────
     @classmethod

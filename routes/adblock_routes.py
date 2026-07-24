@@ -53,6 +53,20 @@ def register_adblock_routes(app: FastAPI):
     async def adblock_lists():
         return await client.lists()
 
+    @app.post("/api/adblock/lists/add")
+    async def adblock_lists_add(payload: dict = Body(...)):
+        return await client.add_list(str(payload.get("name", "")),
+                                     str(payload.get("url", "")))
+
+    @app.post("/api/adblock/lists/remove")
+    async def adblock_lists_remove(payload: dict = Body(...)):
+        return await client.remove_list(str(payload.get("key", "")))
+
+    @app.post("/api/adblock/lists/toggle")
+    async def adblock_lists_toggle(payload: dict = Body(...)):
+        return await client.toggle_list(str(payload.get("key", "")),
+                                        bool(payload.get("enabled", True)))
+
     # ── allow / deny rules ────────────────────────────────────────────────────
     @app.get("/api/adblock/rules")
     async def adblock_rules():
@@ -71,6 +85,10 @@ def register_adblock_routes(app: FastAPI):
     @app.get("/api/adblock/check")
     async def adblock_check(domain: str = Query(...)):
         return await client.check(domain)
+
+    @app.get("/api/adblock/dig")
+    async def adblock_dig(domain: str = Query(...), type: int = 1):
+        return await client.dig(domain, type)
 
     # ── stats ─────────────────────────────────────────────────────────────────
     @app.get("/api/adblock/stats/summary")

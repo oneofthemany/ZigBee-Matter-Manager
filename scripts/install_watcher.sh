@@ -33,7 +33,8 @@ set -euo pipefail
 #   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
 #   - Behavioural changes that the watcher needs to know about -> bump by 1.
 #   - Never decrement. Self-heal compares `new > cur` strictly.
-WATCHER_SCHEMA_VERSION=6
+# v7: added the Beekeeper firewall helper (script + zmm-beekeeper-firewall.{service,path}).
+WATCHER_SCHEMA_VERSION=7
 
 # Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
@@ -182,10 +183,24 @@ else
     warn "os_apply.sh not found — host OS updates stay view-only."
 fi
 
+# Beekeeper firewall helper — opens/checks DNS :53 across firewalld/ufw/nftables/
+# iptables when the manager writes the firewall_action trigger. Non-fatal; without
+# it the Beekeeper card's "Open :53" button is a no-op and users open the port by hand.
+HAVE_BK_FIREWALL=false
+if src=$(find_script "beekeeper_firewall.sh"); then
+    install_file "$src" "${SCRIPTS_DIR}/beekeeper_firewall.sh"
+    HAVE_BK_FIREWALL=true
+    ok "Installed beekeeper_firewall.sh -> ${SCRIPTS_DIR}/beekeeper_firewall.sh"
+else
+    warn "beekeeper_firewall.sh not found — Beekeeper firewall button will be a no-op."
+fi
+
 # The manager writes this file to request an immediate re-check; the path
 # unit below watches it. Must exist as a DIRECTORY parent before the path
 # unit starts, or systemd can't watch it.
 mkdir -p "${DATA_DIR}/data/os_updates"
+# Same requirement for the Beekeeper firewall trigger's parent directory.
+mkdir -p "${DATA_DIR}/data/beekeeper"
 
 # build.sh is sourced by run_container.sh from $APP_DIR/build.sh. Keep it in
 # sync with the rest of the helpers — without this, a schema bump that
@@ -345,6 +360,37 @@ WantedBy=multi-user.target
 PATHUNIT
     fi
 
+    if $HAVE_BK_FIREWALL; then
+        # Runs as root (system unit) so it can drive firewalld/ufw/nft/iptables.
+        sudo tee "$unit_dir/zmm-beekeeper-firewall.service" >/dev/null <<SERVICE
+[Unit]
+Description=ZMM Beekeeper firewall helper (oneshot — open/check DNS :53)
+# WATCHER_SCHEMA_VERSION=${WATCHER_SCHEMA_VERSION}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPTS_DIR}/beekeeper_firewall.sh
+Environment=ZMM_DATA_DIR=${DATA_DIR}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SuccessExitStatus=0 1
+TimeoutStartSec=120
+SERVICE
+
+        sudo tee "$unit_dir/zmm-beekeeper-firewall.path" >/dev/null <<PATHUNIT
+[Unit]
+Description=Watch for ZMM Beekeeper firewall triggers
+
+[Path]
+# The :8001 manager writes this to open/re-check DNS port 53.
+PathChanged=${DATA_DIR}/data/beekeeper/firewall_action
+Unit=zmm-beekeeper-firewall.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now zmm-upgrade.path
     ok "systemd system path unit enabled (event-driven)"
@@ -355,6 +401,10 @@ PATHUNIT
     if $HAVE_OS_APPLY; then
         sudo systemctl enable --now zmm-os-apply.path
         ok "OS apply worker enabled (runs as root via system unit)"
+    fi
+    if $HAVE_BK_FIREWALL; then
+        sudo systemctl enable --now zmm-beekeeper-firewall.path
+        ok "Beekeeper firewall helper enabled (runs as root via system unit)"
     fi
 }
 

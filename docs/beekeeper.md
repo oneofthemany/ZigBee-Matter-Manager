@@ -92,6 +92,13 @@ only `127.0.0.53:53` — **not** your LAN address. Beekeeper binds the host's
 **LAN IP** on `:53` (auto-detected; override with `beekeeper.listen.address`),
 so the two usually coexist with no changes.
 
+**Opening the firewall (the easy way).** DNS on `:53` must be allowed through the
+host firewall or other machines get *host unreachable*. The **ZMM Manager →
+Beekeeper card** shows the firewall state and has an **Open :53** button that
+opens `53/udp`+`53/tcp` for you across firewalld/ufw/nftables/iptables (it runs a
+root host helper via the same mechanism as the OS-update actions). By hand:
+`sudo firewall-cmd --permanent --add-port=53/udp --add-port=53/tcp && sudo firewall-cmd --reload`.
+
 If Beekeeper reports it *couldn't bind :53*, something is holding the port on
 all interfaces (occasionally resolved's stub is configured to `0.0.0.0`).
 Disable **only** the stub listener — this does not stop resolved doing local
@@ -147,10 +154,36 @@ error. `nxdomain` replies NXDOMAIN for every type; a little cleaner, but some
 apps retry harder on it.
 
 **Blocklists** are any hosts-format (`0.0.0.0 ads.example.com`) or plain
-domain-list source (one domain per line, `*.` wildcard prefixes allowed). Add
-your own URLs here; disable one by setting `enabled: false` (its cached file is
-kept for a quick re-enable). Lists refresh every `refresh_interval_hours` and on
-demand from the **Refresh now** button.
+domain-list source (one domain per line, `*.` wildcard prefixes allowed). The
+`config.yaml` entries are just the initial seed — **manage lists from the
+Beekeeper tab** (add a URL, toggle, or remove), which persists to
+`data/beekeeper/sources.json` (authoritative once it exists). Lists refresh every
+`refresh_interval_hours` and on demand via **Refresh now**.
+
+### Recommended lists
+
+The shipped defaults are a "block, don't break" pairing that's comprehensive
+without breaking sites:
+
+| List | URL | What it's for |
+|------|-----|---------------|
+| **HaGeZi Multi PRO** | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt` | Ads + tracking + malware, tuned for low breakage (~540k domains) |
+| **OISD Big** | `https://big.oisd.nl/domainswild` | Broad, conservative safety net (~330k domains) |
+
+Good optional add-ons (paste into **Add list**):
+
+- **HaGeZi Threat Intelligence Feeds** (malware/phishing/scam):
+  `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/tif.txt`
+- **HaGeZi Multi ULTIMATE** (more aggressive — expect the odd false positive):
+  `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/ultimate.txt`
+
+Avoid stacking the *parental-control / opinionated* lists (NSFW, anti-piracy,
+DNS-bypass, safesearch-enforce, dating) unless you specifically want that
+behaviour — they cause "why can't I reach X" complaints, not ad-blocking.
+
+When a site breaks, use **Test a domain** (a real dig through the resolver — it
+shows exactly what Beekeeper answers) to find the culprit, then add it to the
+**Allowlist**.
 
 ---
 

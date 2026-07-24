@@ -78,7 +78,21 @@ def build_app(server: BeekeeperServer) -> FastAPI:
     async def lists():
         from . import blocklists
         return {"lists": blocklists.read_meta(server.cfg.lists_dir),
-                "configured": server.cfg.blocklists}
+                "sources": server.sources()}
+
+    @app.post("/lists/add")
+    async def lists_add(payload: dict = Body(...)):
+        return await server.add_source(str(payload.get("name", "")),
+                                       str(payload.get("url", "")))
+
+    @app.post("/lists/remove")
+    async def lists_remove(payload: dict = Body(...)):
+        return await server.remove_source(str(payload.get("key", "")))
+
+    @app.post("/lists/toggle")
+    async def lists_toggle(payload: dict = Body(...)):
+        return await server.set_source_enabled(str(payload.get("key", "")),
+                                               bool(payload.get("enabled", True)))
 
     # ── allow / deny rules ────────────────────────────────────────────────────
     @app.get("/rules")
@@ -109,6 +123,10 @@ def build_app(server: BeekeeperServer) -> FastAPI:
     @app.get("/check")
     async def check(domain: str = Query(...)):
         return server.check_domain(domain)
+
+    @app.get("/dig")
+    async def dig(domain: str = Query(...), type: int = 1):
+        return await server.dig(domain, type)
 
     # ── stats ─────────────────────────────────────────────────────────────────
     @app.get("/stats/summary")

@@ -257,6 +257,18 @@ async def beekeeper_restart(authorization: str = Header(default="")):
     return JSONResponse(result, status_code=200 if result.get("success") else 409)
 
 
+@app.get("/beekeeper/firewall")
+async def beekeeper_firewall():
+    return beekeeper.firewall_status()
+
+
+@app.post("/beekeeper/firewall/open")
+async def beekeeper_firewall_open(authorization: str = Header(default="")):
+    if not upgrade.check_token(authorization):
+        return _unauthorized()
+    return JSONResponse(beekeeper.request_firewall("open"))
+
+
 # ── Host OS: updates as collected by scripts/os_updates.sh ───────────────────
 # Reads are open; every action (re-check, apply, release upgrade) needs the
 # bearer token and just writes the trigger file the host-side path units

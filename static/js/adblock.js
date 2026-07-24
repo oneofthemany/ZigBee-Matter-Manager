@@ -117,17 +117,24 @@
 
   function renderLists(data) {
     var body = $('bkListsBody');
-    var lists = (data && data.lists) || [];
-    if (!lists.length) {
-      body.innerHTML = '<tr><td colspan="4" class="text-muted text-center py-3">No lists yet — click “Refresh now”.</td></tr>';
+    var sources = (data && data.sources) || [];
+    var metaBySlug = {};
+    ((data && data.lists) || []).forEach(function (m) { metaBySlug[m.slug] = m; });
+    if (!sources.length) {
+      body.innerHTML = '<tr><td colspan="5" class="text-muted text-center py-3">No lists — add one below.</td></tr>';
       return;
     }
-    body.innerHTML = lists.map(function (l) {
-      var when = l.fetched_at ? new Date(l.fetched_at * 1000).toLocaleString() : '<span class="text-muted">never</span>';
-      var err = l.error ? ' <span class="bk-list-err" title="' + esc(l.error) + '"><i class="fas fa-triangle-exclamation"></i></span>' : '';
-      var name = esc(l.name) + err + (l.enabled ? '' : ' <span class="badge bg-secondary">disabled</span>');
-      return '<tr><td>' + name + '</td><td class="text-end">' + fmt(l.count) + '</td><td class="small">' + when + '</td>'
-        + '<td class="small text-muted text-truncate" style="max-width:220px" title="' + esc(l.url) + '">' + esc(l.url) + '</td></tr>';
+    body.innerHTML = sources.map(function (s) {
+      var m = metaBySlug[s.slug] || {};
+      var when = m.fetched_at ? new Date(m.fetched_at * 1000).toLocaleString() : '<span class="text-muted">never</span>';
+      var err = m.error ? ' <span class="bk-list-err" title="' + esc(m.error) + '"><i class="fas fa-triangle-exclamation"></i></span>' : '';
+      var toggle = '<div class="form-check form-switch mb-0"><input class="form-check-input bk-list-toggle" type="checkbox" '
+        + (s.enabled ? 'checked' : '') + ' data-key="' + esc(s.url) + '"></div>';
+      var name = '<div>' + esc(s.name) + err + '</div>'
+        + '<div class="small text-muted text-truncate" style="max-width:280px" title="' + esc(s.url) + '">' + esc(s.url) + '</div>';
+      var rm = '<button class="btn btn-sm btn-link text-danger bk-list-remove p-0" title="Remove" data-key="' + esc(s.url) + '"><i class="fas fa-trash"></i></button>';
+      return '<tr><td>' + toggle + '</td><td>' + name + '</td><td class="text-end">' + fmt(m.count) + '</td>'
+        + '<td class="small">' + when + '</td><td>' + rm + '</td></tr>';
     }).join('');
   }
 
@@ -254,6 +261,27 @@
       toast('DNS cache flushed (' + (res.cleared || 0) + ' entries)', true);
     });
 
+    // Add a blocklist source.
+    $('bkListAddBtn').addEventListener('click', addList);
+    $('bkListUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') addList(); });
+
+    // Toggle / remove sources (event delegation on the table body).
+    $('bkListsBody').addEventListener('change', async function (e) {
+      var t = e.target.closest('.bk-list-toggle');
+      if (!t) return;
+      t.disabled = true;
+      var res = await api('/lists/toggle', { method: 'POST', body: { key: t.getAttribute('data-key'), enabled: t.checked } });
+      if (res.ok === false) toast(res.error || 'toggle failed', false);
+      refreshListsAndRules(); refreshAll();
+    });
+    $('bkListsBody').addEventListener('click', async function (e) {
+      var b = e.target.closest('.bk-list-remove');
+      if (!b) return;
+      var res = await api('/lists/remove', { method: 'POST', body: { key: b.getAttribute('data-key') } });
+      if (res.ok === false) toast(res.error || 'remove failed', false);
+      refreshListsAndRules(); refreshAll();
+    });
+
     document.querySelectorAll('.bk-add-rule').forEach(function (btn) {
       btn.addEventListener('click', function () { addRule(btn.getAttribute('data-kind')); });
     });
@@ -299,16 +327,43 @@
     if (res.rules) renderRules(res.rules); else refreshListsAndRules();
   }
 
+  async function addList() {
+    var name = ($('bkListName').value || '').trim();
+    var url = ($('bkListUrl').value || '').trim();
+    if (!url) return;
+    var btn = $('bkListAddBtn');
+    btn.disabled = true; btn.textContent = 'Fetching…';
+    var res = await api('/lists/add', { method: 'POST', body: { name: name, url: url } });
+    btn.disabled = false; btn.innerHTML = 'Add &amp; fetch';
+    if (res.ok === false) { toast(res.error || 'could not add list', false); return; }
+    $('bkListName').value = ''; $('bkListUrl').value = '';
+    toast('List added — ' + fmt(res.block_count) + ' domains now blocked', true);
+    refreshListsAndRules(); refreshAll();
+  }
+
   async function doCheck() {
     var d = ($('bkCheckInput').value || '').trim();
     var out = $('bkCheckResult');
     if (!d) { out.classList.add('d-none'); return; }
-    var res = await api('/check?domain=' + encodeURIComponent(d));
     out.classList.remove('d-none');
+    out.innerHTML = '<span class="text-muted">digging ' + esc(d) + '…</span>';
+    var res = await api('/dig?domain=' + encodeURIComponent(d));
     if (res.available === false) { out.textContent = res.error; return; }
-    out.innerHTML = res.blocked
-      ? '<span class="bk-blocked">' + esc(d) + ' would be BLOCKED</span> (' + (res.reason || 'list') + ')'
-      : '<span class="bk-allowed">' + esc(d) + ' is allowed</span>';
+    if (res.ok === false) {
+      out.innerHTML = '<span class="bk-blocked">query failed</span>: ' + esc(res.error || 'error');
+      return;
+    }
+    var meta = ' <span class="text-muted small">· ' + esc(res.rcode_name) + ' · ' + res.elapsed_ms + 'ms'
+      + (res.cached ? ' · cached' : (res.upstream ? ' · via ' + esc(res.upstream) : '')) + '</span>';
+    if (res.blocked) {
+      var ans = (res.answers || []).map(function (a) { return a.data; }).join(', ') || res.rcode_name;
+      out.innerHTML = '<span class="bk-blocked"><i class="fas fa-ban"></i> ' + esc(d) + ' BLOCKED</span> → '
+        + esc(ans) + ' <span class="text-muted small">(' + (res.reason || 'list') + ')</span>' + meta;
+    } else {
+      var ips = (res.answers || []).map(function (a) { return esc(a.type + ' ' + a.data); }).join(', ');
+      out.innerHTML = '<span class="bk-allowed"><i class="fas fa-check"></i> ' + esc(d) + ' allowed</span>'
+        + (ips ? ' → ' + ips : '') + meta;
+    }
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────────

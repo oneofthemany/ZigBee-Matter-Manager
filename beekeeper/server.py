@@ -223,10 +223,76 @@ class BeekeeperServer:
                           elapsed_ms=(time.perf_counter() - t0) * 1000)
         return result.response
 
+    # ── blocklist sources (user-editable, persisted to sources.json) ──────────
+    def sources(self) -> list:
+        """The effective blocklist sources. sources.json wins once it exists;
+        otherwise the config.yaml defaults (which we seed into it on first use)."""
+        path = self.cfg.sources_file
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [self._norm_source(s) for s in data if isinstance(s, dict) and s.get("url")]
+        except (OSError, ValueError):
+            pass
+        # Seed from config defaults so the UI has something to edit from the start.
+        seed = [self._norm_source(s) for s in self.cfg.blocklists]
+        self._save_sources(seed)
+        return seed
+
+    @staticmethod
+    def _norm_source(s: dict) -> dict:
+        url = str(s.get("url") or "").strip()
+        name = str(s.get("name") or url or "list").strip()
+        return {"name": name, "url": url, "enabled": bool(s.get("enabled", True)),
+                "slug": blocklists.slugify(name or url)}
+
+    def _save_sources(self, sources: list) -> None:
+        try:
+            self.cfg.sources_file.parent.mkdir(parents=True, exist_ok=True)
+            self.cfg.sources_file.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+        except OSError as e:
+            logger.warning("could not persist sources.json: %s", e)
+
+    async def add_source(self, name: str, url: str) -> dict:
+        url = (url or "").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return {"ok": False, "error": "URL must start with http:// or https://"}
+        sources = self.sources()
+        if any(s["url"] == url for s in sources):
+            return {"ok": False, "error": "that URL is already in the list"}
+        sources.append(self._norm_source({"name": name or url, "url": url, "enabled": True}))
+        self._save_sources(sources)
+        return await self.refresh_now()   # fetch the new list + recompile
+
+    async def remove_source(self, key: str) -> dict:
+        """Remove by url or slug."""
+        sources = self.sources()
+        kept = [s for s in sources if s["url"] != key and s["slug"] != key]
+        if len(kept) == len(sources):
+            return {"ok": False, "error": "source not found"}
+        self._save_sources(kept)
+        await self.reload_matcher()
+        return {"ok": True, "sources": kept}
+
+    async def set_source_enabled(self, key: str, enabled: bool) -> dict:
+        sources = self.sources()
+        found = False
+        for s in sources:
+            if s["url"] == key or s["slug"] == key:
+                s["enabled"] = enabled
+                found = True
+        if not found:
+            return {"ok": False, "error": "source not found"}
+        self._save_sources(sources)
+        # Enabling may need a fetch (no cached file yet); recompile either way.
+        if enabled:
+            return await self.refresh_now()
+        await self.reload_matcher()
+        return {"ok": True, "sources": sources}
+
     # ── matcher / refresh ────────────────────────────────────────────────────
     def _enabled_slugs(self) -> Set[str]:
-        return {blocklists.slugify(b.get("name") or b.get("url"))
-                for b in self.cfg.blocklists if b.get("enabled", True)}
+        return {s["slug"] for s in self.sources() if s.get("enabled", True)}
 
     async def reload_matcher(self) -> None:
         """Recompile the block/allow/deny sets off the event loop and swap in."""
@@ -242,7 +308,7 @@ class BeekeeperServer:
         self._refreshing = True
         try:
             metas = await asyncio.to_thread(
-                blocklists.refresh_lists, self.cfg.lists_dir, self.cfg.blocklists)
+                blocklists.refresh_lists, self.cfg.lists_dir, self.sources())
             self._last_refresh_meta = [m.to_dict() for m in metas]
             await self.reload_matcher()
             return {"ok": True, "lists": self._last_refresh_meta,
@@ -327,6 +393,49 @@ class BeekeeperServer:
         blocked, reason = self.matcher.is_blocked((domain or "").strip().lower())
         return {"domain": domain, "blocked": blocked, "reason": reason,
                 "blocking_active": self.state.blocking_active}
+
+    async def dig(self, domain: str, qtype: int = 1) -> dict:
+        """Run a real query through the resolver and report the answer — the
+        in-app equivalent of ``dig``. Exercises the full block/forward path so
+        the result is exactly what a device on the network would get."""
+        import random
+        domain = (domain or "").strip().strip(".").lower()
+        if not domain:
+            return {"ok": False, "error": "no domain given"}
+        query = wire.build_query(domain, qtype, txid=random.randint(0, 0xFFFF))
+        try:
+            q = wire.parse_question(query)
+        except wire.DNSFormatError as e:
+            return {"ok": False, "error": f"bad domain: {e}"}
+
+        t0 = time.perf_counter()
+        blocked, reason = (self.matcher.is_blocked(q.qname)
+                           if self.state.blocking_active else (False, None))
+        upstream = None
+        cached = False
+        if blocked:
+            resp = wire.build_block_response(
+                query, q, mode=self.cfg.sinkhole_mode, ipv4=self.cfg.sinkhole_ipv4,
+                ipv6=self.cfg.sinkhole_ipv6, ttl=self.cfg.sinkhole_ttl)
+        else:
+            result = await self.resolver.resolve(query, q)
+            if result.response is None:
+                return {"ok": False, "domain": domain, "error": result.error or
+                        "upstream unreachable", "elapsed_ms": (time.perf_counter() - t0) * 1000}
+            resp = result.response
+            upstream = result.upstream
+            cached = result.cached
+        rcode = struct.unpack_from("!H", resp, 2)[0] & 0xF if len(resp) >= 4 else None
+        return {
+            "ok": True, "domain": domain, "qtype": qtype,
+            "blocked": blocked, "reason": reason,
+            "blocking_active": self.state.blocking_active,
+            "rcode": rcode, "rcode_name": wire.RCODE_NAMES.get(rcode, str(rcode)),
+            "answers": wire.parse_answers(resp),
+            "cached": cached, "upstream": upstream,
+            "resolver": self.bound_address,
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
 
     def status(self) -> dict:
         return {
