@@ -229,17 +229,27 @@ class WeatherService:
 
             # Persist to telemetry so thermal-profile fits can use real
             # historical outdoor temps instead of a constant proxy.
+            # write_device_state() is synchronous and takes the telemetry
+            # DuckDB lock. On the first call after an abrupt restart that lock
+            # is held while DuckDB replays the WAL, which can run for a minute
+            # or more if the WAL is large or was damaged mid-checkpoint.
+            # Calling it inline stalls the entire event loop and trips
+            # loop_monitor's 60s self-restart (exit 70), so it goes to a thread.
             try:
                 from modules.telemetry_db import write_device_state
-                t_c = self._current.get("temperature_2m")
-                if isinstance(t_c, (int, float)):
-                    write_device_state("__weather__", "outdoor_temperature_c", t_c)
-                code = self._current.get("weather_code")
-                if isinstance(code, (int, float)):
-                    write_device_state("__weather__", "weather_code", int(code))
-                hum = self._current.get("relative_humidity_2m")
-                if isinstance(hum, (int, float)):
-                    write_device_state("__weather__", "humidity_percent", hum)
+
+                def _persist():
+                    t_c = self._current.get("temperature_2m")
+                    if isinstance(t_c, (int, float)):
+                        write_device_state("__weather__", "outdoor_temperature_c", t_c)
+                    code = self._current.get("weather_code")
+                    if isinstance(code, (int, float)):
+                        write_device_state("__weather__", "weather_code", int(code))
+                    hum = self._current.get("relative_humidity_2m")
+                    if isinstance(hum, (int, float)):
+                        write_device_state("__weather__", "humidity_percent", hum)
+
+                await asyncio.to_thread(_persist)
             except Exception as e:
                 logger.debug(f"Weather telemetry write failed: {e}")
 

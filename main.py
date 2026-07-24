@@ -461,10 +461,13 @@ async def lifespan(app: FastAPI):
     # the first _get_db() holds _db_lock for the whole open/migration
     # (seconds), and any loop-thread write landing during that window stalls
     # the event loop behind the lock.
+    telemetry_db = None
+    warm_error = None
     try:
         from modules import telemetry_db
         await asyncio.to_thread(telemetry_db.warm)
     except Exception as e:
+        warm_error = e
         logger.warning(f"Telemetry DB warm-up failed: {e}")
 
     # Application alert center: capture ERROR-level logs as user-visible
@@ -475,6 +478,37 @@ async def lifespan(app: FastAPI):
         install_log_capture()
     except Exception as e:
         logger.warning(f"Alert center init failed: {e}")
+
+    # Raised only now the alert center can actually push it. A failed warm-up
+    # is not cosmetic: it leaves the connection unopened, so the next caller
+    # pays the entire failing open under _db_lock. It used to pass with only a
+    # log line, which is how a stalled open reached the event loop unnoticed.
+    if warm_error is not None:
+        try:
+            from modules.app_alerts import raise_alert
+            raise_alert(
+                severity="warning",
+                source="telemetry_db",
+                title="Telemetry database warm-up failed",
+                message=(
+                    f"{warm_error}\n\n"
+                    "History and trend data may be unavailable, and the first "
+                    "query will be slow while the database opens. Telemetry "
+                    "writes are buffered off the event loop, so the app stays "
+                    "responsive either way."
+                ),
+                dedupe_key="telemetry_db:warm_failed",
+            )
+        except Exception as e:
+            logger.debug(f"Could not raise telemetry warm-up alert: {e}")
+
+    # Reconcile the DB against the active write backend on a dedicated thread
+    # (handles a WAL left behind by the other backend). Returns immediately.
+    if telemetry_db is not None:
+        try:
+            telemetry_db.start_reconciler()
+        except Exception as e:
+            logger.debug(f"Could not start telemetry reconciler: {e}")
 
     # ── Test-deploy recovery ──
     # Must run BEFORE the slow background bring-up (Zigbee/Matter/HA can take

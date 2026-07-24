@@ -75,6 +75,24 @@ _appender = None  # zmm_telemetry.Appender singleton
 _db_lock = threading.RLock()
 
 
+def _is_unreplayable_wal_error(err: Exception) -> bool:
+    """True for DuckDB's "can't replay this WAL" open failures.
+
+    DuckDB words this two ways and both must be caught:
+      - Failure while replaying WAL file "..."
+      - Failure while replaying checkpoint WAL file "...": checkpoint WAL
+        cannot contain a checkpoint marker
+
+    The second form is what a WAL written by the *other* write backend looks
+    like (see the appender/executemany note on _reconcile_worker). Matching
+    only the first left it unhandled, so the open raised instead of healing —
+    which is what turned a recoverable WAL into a wedged DB, a failed warm(),
+    and a loop stall the watchdog answered with an exit-70 restart loop.
+    """
+    msg = str(err).lower()
+    return "replaying" in msg and "wal" in msg
+
+
 def _connect_local_db(path: str):
     """`duckdb.connect` for a local DB file, healing the two failure modes a
     bind-mounted / concurrently-written DuckDB hits in the container:
@@ -115,13 +133,28 @@ def _connect_local_db(path: str):
         return duckdb.connect(path)
     except Exception as e:
         wal = path + ".wal"
-        if "replaying WAL" in str(e) and os.path.exists(wal):
-            bak = f"{wal}.corrupt-{int(time.time())}"
+        if _is_unreplayable_wal_error(e) and os.path.exists(wal):
+            # "unreplayable", not "corrupt": the usual cause is a backend
+            # switch leaving a WAL the incoming engine won't accept, and the
+            # file itself is generally intact. It is quarantined rather than
+            # deleted — it holds the only copy of any rows that never reached
+            # the main file, and the engine that wrote it may still read it.
+            bak = f"{wal}.unreplayable-{int(time.time())}"
+            try:
+                size = os.path.getsize(wal)
+            except OSError:
+                size = 0
             try:
                 os.rename(wal, bak)
             except OSError:
                 raise
-            logger.error(f"{path} WAL unreplayable; moved to {bak} and reconnecting")
+            logger.warning(
+                f"{path}: WAL could not be replayed ({e}). "
+                f"Quarantined to {bak} ({size} bytes) and reconnecting. "
+                f"The reconciler will report this."
+            )
+            _quarantined_wals.append({"db": path, "wal": bak, "bytes": size,
+                                      "error": str(e)})
             return duckdb.connect(path)
         raise
 
@@ -222,8 +255,162 @@ def warm():
     whichever thread first calls _get_db() holds _db_lock for the whole
     open/migration, and every other caller — including loop-thread appender
     writes — queues behind it and stalls the event loop.
+
+    NOTE: this fails open. If it raises, `_db` is left unset and the *next*
+    caller pays the whole open — so callers must surface the failure (main.py
+    raises an app alert) and must not assume the DB is ready afterwards.
     """
     _get_db()
+
+
+# ── Write-backend reconciliation ────────────────────────────────────────────
+# The write backend can change under a database that is already on disk:
+# installing/removing the zmm_telemetry wheel, or setting
+# ZMM_TELEMETRY_BACKEND=python, switches between the Rust appender and the
+# Python executemany path. The engine that wrote the existing WAL may not be
+# the one now trying to replay it, which surfaces as the "checkpoint WAL"
+# open failure _is_unreplayable_wal_error() catches.
+#
+# Reconciliation runs on its own dedicated thread because every step can be
+# slow (open, migration, checkpoint) and none of it may ever land on the
+# event loop — that is precisely the stall that trips loop_monitor's exit-70.
+
+_BACKEND_MARKER = "./data/.telemetry_backend"
+
+# Quarantine records appended by _connect_local_db, consumed by the reconciler.
+_quarantined_wals: List[Dict[str, Any]] = []
+_reconciler_thread: Optional[threading.Thread] = None
+
+
+def _current_backend() -> str:
+    """Which engine actually writes — call only after _get_db().
+
+    Keyed on the live `_appender`, not on `_USE_RUST`: the wheel being
+    importable says nothing about who writes, because _finish_db_init() may
+    decline to open the appender in-process (it currently always does, to
+    avoid split-braining the file). WAL compatibility is decided by the
+    engine that did the writing, so that is what gets recorded.
+    """
+    return "rust-appender" if _appender is not None else "python-executemany"
+
+
+def _read_backend_marker() -> Optional[str]:
+    try:
+        with open(_BACKEND_MARKER) as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def _write_backend_marker(name: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(_BACKEND_MARKER), exist_ok=True)
+        with open(_BACKEND_MARKER, "w") as fh:
+            fh.write(name)
+    except OSError as e:
+        logger.debug(f"Could not persist telemetry backend marker: {e}")
+
+
+def _checkpoint() -> bool:
+    """Fold the live WAL into the main DB file. True on success.
+
+    Without this the WAL keeps growing across restarts and the next backend
+    switch inherits an even larger one to choke on. Follows _write_exec's
+    rule: hold _db_lock only to obtain a cursor, never across the work.
+    """
+    try:
+        with _db_lock:
+            cur = _get_db().cursor()
+        try:
+            cur.execute("CHECKPOINT")
+        finally:
+            cur.close()
+        return True
+    except Exception as e:
+        logger.warning(f"Telemetry CHECKPOINT failed: {e}")
+        return False
+
+
+def _reconcile_worker() -> None:
+    """Body of the reconciler thread. Never raises."""
+    try:
+        previous = _read_backend_marker()
+
+        # Open before reading the backend: which engine writes is only settled
+        # once the connection is up (_finish_db_init decides whether the
+        # appender is opened). The open is slow on a big DB and slower on an
+        # unreplayable WAL — safe here, since this thread is the only waiter.
+        _get_db()
+
+        backend = _current_backend()
+        switched = previous is not None and previous != backend
+
+        if switched:
+            logger.warning(
+                f"Telemetry write backend changed: {previous} → {backend}. "
+                f"Reconciling {DB_PATH}."
+            )
+
+        checkpointed = _checkpoint()
+        _write_backend_marker(backend)
+
+        quarantined = list(_quarantined_wals)
+        if not quarantined and not switched:
+            return
+
+        from modules.app_alerts import raise_alert
+
+        if quarantined:
+            total = sum(q.get("bytes", 0) for q in quarantined)
+            paths = "\n".join(f"  • {q['wal']} ({q.get('bytes', 0):,} bytes)"
+                              for q in quarantined)
+            raise_alert(
+                severity="warning",
+                source="telemetry_db",
+                title="Telemetry WAL could not be replayed",
+                message=(
+                    f"The write-ahead log could not be replayed"
+                    + (f" after the backend changed ({previous} → {backend})"
+                       if switched else "")
+                    + f". It has been set aside so the database could open, and the "
+                      f"app is running normally.\n\n"
+                    f"Quarantined ({total:,} bytes total) — not deleted:\n{paths}\n\n"
+                    "Rows that were only in that WAL are not in the database. "
+                    "Everything already written is intact, and new telemetry is "
+                    "recording normally. Delete the file once you're satisfied "
+                    "nothing is needed from it."
+                ),
+                dedupe_key="telemetry_db:wal_quarantined",
+            )
+        elif switched:
+            raise_alert(
+                severity="info",
+                source="telemetry_db",
+                title="Telemetry write backend changed",
+                message=(
+                    f"Switched from {previous} to {backend}. The database was "
+                    f"reconciled cleanly"
+                    + (" and checkpointed." if checkpointed else
+                       ", but the checkpoint did not complete — see the log.")
+                ),
+                dedupe_key=f"telemetry_db:backend_switch:{previous}->{backend}",
+            )
+    except Exception as e:
+        # Reconciliation is best-effort; the app runs regardless.
+        logger.warning(f"Telemetry reconciliation failed: {e}")
+
+
+def start_reconciler() -> None:
+    """Start the reconciliation thread (idempotent, non-blocking)."""
+    global _reconciler_thread
+    if _reconciler_thread is not None and _reconciler_thread.is_alive():
+        return
+    _reconciler_thread = threading.Thread(
+        target=_reconcile_worker,
+        name="telemetry-reconciler",
+        daemon=True,
+    )
+    _reconciler_thread.start()
 
 
 def _finish_db_init():

@@ -10,6 +10,7 @@ Hook into main.py after system_monitor and telemetry_db are ready.
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("modules.telemetry_collector")
@@ -20,6 +21,13 @@ DEFAULT_RETENTION_DAYS = 30
 APPENDER_FLUSH_INTERVAL = 5  # seconds — keeps History tab queries near-realtime
 SNAPSHOT_INTERVAL = 3600     # seconds between keep-alive state snapshots
 LINK_SAMPLE_INTERVAL = 300   # seconds between LQI/RSSI samples
+STATE_DRAIN_INTERVAL = 2     # seconds between drains of the state-change buffer
+
+# Upper bound on buffered state rows awaiting write. Only approached if the
+# DB is wedged (e.g. DuckDB replaying a damaged WAL); at that point dropping
+# the oldest telemetry is strictly better than growing until the OOM killer
+# takes the process.
+STATE_BUFFER_MAX = 50_000
 
 # Keep-alive rows must only be written for devices that have actually
 # communicated recently. Cached state survives long after a device goes
@@ -56,6 +64,11 @@ class TelemetryCollector:
         self._prune_task: Optional[asyncio.Task] = None
         self._running = False
         self._last_packet_snapshot: Dict[str, Dict] = {}
+        # Pending (ieee, attribute, value) rows from record_state_change,
+        # drained by _state_drain_loop. deque.append/popleft are atomic under
+        # the GIL, so producers never need a lock.
+        self._state_buffer: deque = deque(maxlen=STATE_BUFFER_MAX)
+        self._state_dropped = 0
 
     def start(self):
         """Start background flush and prune tasks."""
@@ -66,6 +79,7 @@ class TelemetryCollector:
             self._appender_flush_task = asyncio.create_task(self._appender_flush_loop())
             self._snapshot_task = asyncio.create_task(self._snapshot_loop())
             self._link_task = asyncio.create_task(self._link_sample_loop())
+            self._state_drain_task = asyncio.create_task(self._state_drain_loop())
             logger.info("Telemetry collector started")
 
     def stop(self):
@@ -74,9 +88,17 @@ class TelemetryCollector:
         for task in (self._flush_task, self._prune_task,
                      getattr(self, '_appender_flush_task', None),
                      getattr(self, '_snapshot_task', None),
-                     getattr(self, '_link_task', None)):
+                     getattr(self, '_link_task', None),
+                     getattr(self, '_state_drain_task', None)):
             if task:
                 task.cancel()
+
+        # Best-effort final drain so buffered rows aren't lost on shutdown.
+        # Blocking here is fine — the loop is going away regardless.
+        try:
+            self._drain_state_buffer()
+        except Exception as e:
+            logger.debug(f"Final state drain failed: {e}")
 
 
     async def _appender_flush_loop(self):
@@ -97,13 +119,59 @@ class TelemetryCollector:
             except Exception as e:
                 logger.debug(f"Appender flush loop error: {e}")
 
+    async def _state_drain_loop(self):
+        """
+        Write buffered device-state changes in batches, off the loop thread.
+
+        record_state_change() runs on the event loop for every attribute
+        update from every device, so it must never touch the DB lock itself:
+        the first write after an abrupt restart can block for a minute while
+        DuckDB replays the WAL, which stalls the whole app and trips
+        loop_monitor's 60s self-restart. It buffers instead, and this loop
+        does the actual write in a worker thread.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(STATE_DRAIN_INTERVAL)
+            except asyncio.CancelledError:
+                break
+            try:
+                await asyncio.to_thread(self._drain_state_buffer)
+            except Exception as e:
+                logger.debug(f"State drain error: {e}")
+
+    def _drain_state_buffer(self):
+        """Pop everything currently buffered and write it in one commit."""
+        buf = self._state_buffer
+        batch = []
+        while True:
+            try:
+                batch.append(buf.popleft())
+            except IndexError:
+                break
+
+        if not batch:
+            return
+
+        dropped, self._state_dropped = self._state_dropped, 0
+        if dropped:
+            logger.warning(
+                f"Telemetry state buffer overflowed — {dropped} row(s) dropped. "
+                f"The telemetry DB is not keeping up with writes."
+            )
+
+        from modules.telemetry_db import write_device_states_batch
+        write_device_states_batch(batch)
+
     async def _flush_loop(self):
         """Periodically flush packet stats to DuckDB."""
         await asyncio.sleep(30)  # Initial delay
 
         while self._running:
             try:
-                self._flush_packet_stats()
+                # Worker thread: write_packet_stats takes the DB lock, and
+                # blocking the loop on it stalls the app (see _state_drain_loop).
+                await asyncio.to_thread(self._flush_packet_stats)
             except Exception as e:
                 logger.debug(f"Packet stats flush error: {e}")
 
@@ -200,7 +268,9 @@ class TelemetryCollector:
 
         while self._running:
             try:
-                self._sample_link_quality()
+                # Worker thread: writes one row per changed LQI/RSSI value
+                # across every device, all under the DB lock.
+                await asyncio.to_thread(self._sample_link_quality)
             except Exception as e:
                 logger.debug(f"Link quality sample error: {e}")
 
@@ -327,10 +397,15 @@ class TelemetryCollector:
 
     def record_state_change(self, ieee: str, changed_attrs: Dict[str, Any]):
         """
-        Persist attribute changes to DuckDB.
+        Queue attribute changes for persistence to DuckDB.
+
+        Runs on the event loop for every attribute update from every device,
+        so it only does in-memory work: filtering, dedup, and a buffer append.
+        The write itself happens in _state_drain_loop's worker thread — see
+        the note there for why touching the DB lock from here is unsafe.
 
         Includes a short-window dedup: if the same (ieee, attribute, value)
-        has already been written within _DEDUP_WINDOW_SECONDS, the new write
+        has already been queued within _DEDUP_WINDOW_SECONDS, the new write
         is dropped. This collapses the duplicate writes that arise when a
         poll's read_attributes() triggers both the zigpy attribute_updated
         callback path and the handler-return path within microseconds.
@@ -347,7 +422,7 @@ class TelemetryCollector:
         now = time.time()
 
         try:
-            from modules.telemetry_db import write_device_state
+            buf = self._state_buffer
             for attr, value in changed_attrs.items():
                 if attr in SKIP_ATTRS:
                     continue
@@ -362,7 +437,11 @@ class TelemetryCollector:
                         # Same value, same device, same attr, within window -> skip
                         continue
 
-                write_device_state(ieee, attr, value)
+                # maxlen makes append evict the oldest row silently, so count
+                # the loss ourselves and let the drain report it.
+                if len(buf) >= STATE_BUFFER_MAX:
+                    self._state_dropped += 1
+                buf.append((ieee, attr, value))
                 self._dedup_state[key] = (value, now)
 
             # Periodically prune cold entries to bound memory growth

@@ -34,7 +34,14 @@ class DeviceLifecycleMixin:
             return
 
         if ieee in self.devices:
-            logger.error(f"[{ieee}] Duplicate join event - ignoring")
+            # Zigbee devices commonly retransmit their join request if the
+            # first reply is lost, so zigpy re-firing device_joined for an
+            # already-known device is expected network chatter, not an
+            # application error. logger.error() would trip the root
+            # AlertLogHandler (modules/app_alerts.py) and surface a scary
+            # "Error in core.lifecycle" toast for completely normal join
+            # retries, so this stays at warning.
+            logger.warning(f"[{ieee}] Duplicate join event - ignoring")
             return
 
         logger.info(f"Device joined: {ieee}")
@@ -106,8 +113,20 @@ class DeviceLifecycleMixin:
                 dev._identify_handlers()
                 if hasattr(dev, 'capabilities'):
                     dev.capabilities._detect_capabilities()
+                # Claim the init BEFORE the pipeline runs, not after: the
+                # announce/configure/poll below do seconds of radio I/O, and
+                # zigpy's device_initialized() overwhelmingly fires during
+                # exactly that window. Stamping this afterwards would leave
+                # the race we're closing wide open for the pipeline's whole
+                # duration, which is precisely when it matters.
+                if not hasattr(self, '_full_init_ts'):
+                    self._full_init_ts = {}
+                self._full_init_ts[ieee] = time.time()
                 await self.announce_device(ieee)
                 await self._async_device_initialized(ieee)
+                # Re-stamp on completion so the guard's grace period is
+                # measured from when the pipeline actually finished.
+                self._full_init_ts[ieee] = time.time()
                 return
 
             # Already fully initialised by device_initialized() path - nothing to do
@@ -146,14 +165,28 @@ class DeviceLifecycleMixin:
 
         if not hasattr(self, 'state_cache'):
             self.state_cache = {}
+        if not hasattr(self, '_full_init_ts'):
+            self._full_init_ts = {}
+
+        # _delayed_handler_init() races this callback: it short-circuits into
+        # building handlers + running the full init pipeline as soon as it
+        # merely sees endpoints appear, without waiting for zigpy to actually
+        # confirm the interview is done. When that fallback wins the race,
+        # this callback still fires moments later for the same join — without
+        # this guard it would rebuild handlers again, spawn a second
+        # _async_device_initialized task, and re-broadcast device_initialized/
+        # join_progress, which is what made the device list "flash" and the
+        # join-progress card jump backward every time a device joined.
+        just_inited = (time.time() - self._full_init_ts.get(ieee, 0)) < 10
 
         if ieee in self.devices:
             # Refresh in place — preserves listeners/state across re-inits
             wrapper = self.devices[ieee]
             wrapper.zigpy_dev = device
-            wrapper._identify_handlers()
-            if hasattr(wrapper, 'capabilities'):
-                wrapper.capabilities._detect_capabilities()
+            if not just_inited:
+                wrapper._identify_handlers()
+                if hasattr(wrapper, 'capabilities'):
+                    wrapper.capabilities._detect_capabilities()
             wrapper.last_seen = int(time.time() * 1000)
         else:
             self.devices[ieee] = ZigManDevice(self, device)
@@ -190,9 +223,16 @@ class DeviceLifecycleMixin:
                         self._setup_hive_thermostat_binding(slt_ieee=via_ieee, slr_ieee=ieee)
                     )
 
-        asyncio.create_task(self._async_device_initialized(ieee))
+        if not just_inited:
+            asyncio.create_task(self._async_device_initialized(ieee))
+            self._emit_sync("device_initialized", {"ieee": ieee})
+        else:
+            logger.debug(
+                f"[{ieee}] device_initialized: already fully initialised "
+                f"{time.time() - self._full_init_ts.get(ieee, 0):.1f}s ago via "
+                f"delayed-handler-init fallback — skipping duplicate pipeline run"
+            )
         self._rebuild_name_maps()
-        self._emit_sync("device_initialized", {"ieee": ieee})
 
         # Refresh interview status — transitions to "interviewed"
         try:
@@ -276,6 +316,9 @@ class DeviceLifecycleMixin:
         if hasattr(self, 'state_cache') and ieee in self.state_cache:
             del self.state_cache[ieee]
             self._save_state_cache()
+
+        if hasattr(self, '_full_init_ts'):
+            self._full_init_ts.pop(ieee, None)
 
         if hasattr(self, 'polling_scheduler'):
             self.polling_scheduler.disable_for_device(ieee)
