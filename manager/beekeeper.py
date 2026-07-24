@@ -102,47 +102,64 @@ async def _create_config(app_info: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def _create_and_start(cx, app_info: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = await _create_config(app_info)
+    if not cfg["Image"]:
+        return {"success": False, "error": "app image reference unresolved"}
+    if not cfg["HostConfig"]["Binds"]:
+        return {"success": False, "error": "app container has no /app/config or "
+                "/app/data mounts to share (running from source?). Use "
+                "scripts/install_beekeeper.sh instead."}
+    r = await cx.post("/containers/create",
+                      params={"name": BEEKEEPER_CONTAINER}, json=cfg)
+    if r.status_code not in (201,):
+        return {"success": False, "error": f"create failed: {r.status_code} {r.text}"}
+    cid = r.json().get("Id", BEEKEEPER_CONTAINER)
+    r = await cx.post(f"/containers/{cid}/start")
+    if r.status_code in (204, 304):
+        return {"success": True, "created": True,
+                "message": "Beekeeper installed and started.",
+                "image": cfg["Image"], "binds": cfg["HostConfig"]["Binds"]}
+    return {"success": False, "error": f"start failed: {r.status_code} {r.text}"}
+
+
 async def enable() -> Dict[str, Any]:
-    """Create (if needed) and start the Beekeeper sidecar. Idempotent."""
+    """Create (if needed) and start the Beekeeper sidecar. Idempotent.
+
+    If the sidecar already exists but was built from a *different* image than the
+    app is now running (i.e. the app was upgraded), it's recreated from the new
+    image so a rebuild actually ships the new Beekeeper code — otherwise Enable
+    would just restart the stale container.
+    """
     sock = containers.detect_socket()
     if not sock:
         return {"success": False, "error": "No container socket mounted — cannot "
                 "manage the Beekeeper container from the manager."}
     try:
         async with _client(sock) as cx:
-            # Already exists → just (re)start it.
-            existing = await _inspect(cx, BEEKEEPER_CONTAINER)
-            if existing:
-                r = await cx.post(f"/containers/{BEEKEEPER_CONTAINER}/start")
-                if r.status_code in (204, 304):
-                    return {"success": True, "message": "Beekeeper started.",
-                            "created": False}
-                return {"success": False, "error": f"start failed: {r.status_code} {r.text}"}
-
-            # Build from the app container's image + mounts.
             app_info = await _inspect(cx, APP_CONTAINER)
             if not app_info:
                 return {"success": False, "error": f"could not inspect app container "
                         f"'{APP_CONTAINER}' to derive image/mounts"}
-            cfg = await _create_config(app_info)
-            if not cfg["Image"]:
-                return {"success": False, "error": "app image reference unresolved"}
-            if not cfg["HostConfig"]["Binds"]:
-                return {"success": False, "error": "app container has no /app/config "
-                        "or /app/data mounts to share (running from source?). Use "
-                        "scripts/install_beekeeper.sh instead."}
+            app_image_id = app_info.get("Image")   # resolved image ID (sha256:…)
 
-            r = await cx.post("/containers/create",
-                              params={"name": BEEKEEPER_CONTAINER}, json=cfg)
-            if r.status_code not in (201,):
-                return {"success": False, "error": f"create failed: {r.status_code} {r.text}"}
-            cid = r.json().get("Id", BEEKEEPER_CONTAINER)
-            r = await cx.post(f"/containers/{cid}/start")
-            if r.status_code in (204, 304):
-                return {"success": True, "created": True,
-                        "message": "Beekeeper installed and started.",
-                        "image": cfg["Image"], "binds": cfg["HostConfig"]["Binds"]}
-            return {"success": False, "error": f"start failed: {r.status_code} {r.text}"}
+            existing = await _inspect(cx, BEEKEEPER_CONTAINER)
+            if existing:
+                existing_image_id = existing.get("Image")
+                if app_image_id and existing_image_id and app_image_id != existing_image_id:
+                    logger.info("beekeeper image differs from app (%s != %s) — "
+                                "recreating from new image", existing_image_id[:19],
+                                app_image_id[:19])
+                    await cx.post(f"/containers/{BEEKEEPER_CONTAINER}/stop", params={"t": "10"})
+                    await cx.delete(f"/containers/{BEEKEEPER_CONTAINER}", params={"force": "true"})
+                    return await _create_and_start(cx, app_info)
+                # Same image → just (re)start the existing container.
+                r = await cx.post(f"/containers/{BEEKEEPER_CONTAINER}/start")
+                if r.status_code in (204, 304):
+                    return {"success": True, "created": False, "message": "Beekeeper started."}
+                return {"success": False, "error": f"start failed: {r.status_code} {r.text}"}
+
+            return await _create_and_start(cx, app_info)
     except Exception as e:
         logger.error("Beekeeper enable failed: %s", e)
         return {"success": False, "error": str(e)}

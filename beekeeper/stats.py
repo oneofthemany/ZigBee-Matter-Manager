@@ -82,9 +82,20 @@ class Stats:
             self._writer.join(timeout)
 
     def _connect(self) -> sqlite3.Connection:
+        # Ensure the directory exists on every open — a read can otherwise race
+        # startup (or run before start()) and hit "unable to open database file".
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error as e:
+            # Some bind-mounted/overlay filesystems don't support WAL's shared
+            # memory; fall back to the default rollback journal rather than fail.
+            logger.warning("WAL unavailable (%s) — using default journal", e)
         return conn
 
     # ── write path ───────────────────────────────────────────────────────────
@@ -178,16 +189,32 @@ class Stats:
         c["uptime_s"] = round(time.time() - self._started_at, 1)
         return c
 
-    def summary(self, window_hours: float = 24.0) -> Dict[str, Any]:
-        since = time.time() - window_hours * 3600
-        conn = self._connect()
+    def _query(self, sql: str, params: tuple = ()) -> List[tuple]:
+        """Run a read query, returning [] on any DB error.
+
+        The dashboard must never 500 because the query log is momentarily
+        unreadable (missing dir, WAL quirk on a bind mount, mid-rotation) — it
+        degrades to empty stats and recovers on the next poll.
+        """
         try:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(blocked),0), COALESCE(SUM(cached),0), "
-                "COUNT(DISTINCT client) FROM queries WHERE ts >= ?", (since,)).fetchone()
+            conn = self._connect()
+        except sqlite3.Error as e:
+            logger.warning("stats read: connect failed: %s", e)
+            return []
+        try:
+            return conn.execute(sql, params).fetchall()
+        except sqlite3.Error as e:
+            logger.warning("stats read failed: %s", e)
+            return []
         finally:
             conn.close()
-        total, blocked, cached, clients = row or (0, 0, 0, 0)
+
+    def summary(self, window_hours: float = 24.0) -> Dict[str, Any]:
+        since = time.time() - window_hours * 3600
+        rows = self._query(
+            "SELECT COUNT(*), COALESCE(SUM(blocked),0), COALESCE(SUM(cached),0), "
+            "COUNT(DISTINCT client) FROM queries WHERE ts >= ?", (since,))
+        total, blocked, cached, clients = rows[0] if rows else (0, 0, 0, 0)
         return {
             "window_hours": window_hours,
             "total": total, "blocked": blocked, "cached": cached,
@@ -197,35 +224,23 @@ class Stats:
 
     def top_blocked(self, limit: int = 20, window_hours: float = 24.0) -> List[Dict]:
         since = time.time() - window_hours * 3600
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT qname, COUNT(*) c FROM queries WHERE blocked=1 AND ts >= ? "
-                "GROUP BY qname ORDER BY c DESC LIMIT ?", (since, limit)).fetchall()
-        finally:
-            conn.close()
+        rows = self._query(
+            "SELECT qname, COUNT(*) c FROM queries WHERE blocked=1 AND ts >= ? "
+            "GROUP BY qname ORDER BY c DESC LIMIT ?", (since, limit))
         return [{"qname": r[0], "count": r[1]} for r in rows]
 
     def top_clients(self, limit: int = 20, window_hours: float = 24.0) -> List[Dict]:
         since = time.time() - window_hours * 3600
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT client, COUNT(*) total, COALESCE(SUM(blocked),0) blocked "
-                "FROM queries WHERE ts >= ? GROUP BY client ORDER BY total DESC "
-                "LIMIT ?", (since, limit)).fetchall()
-        finally:
-            conn.close()
+        rows = self._query(
+            "SELECT client, COUNT(*) total, COALESCE(SUM(blocked),0) blocked "
+            "FROM queries WHERE ts >= ? GROUP BY client ORDER BY total DESC "
+            "LIMIT ?", (since, limit))
         return [{"client": r[0], "total": r[1], "blocked": r[2]} for r in rows]
 
     def recent(self, limit: int = 100) -> List[Dict]:
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT ts, client, qname, qtype, blocked, reason, cached, rcode "
-                "FROM queries ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        finally:
-            conn.close()
+        rows = self._query(
+            "SELECT ts, client, qname, qtype, blocked, reason, cached, rcode "
+            "FROM queries ORDER BY id DESC LIMIT ?", (limit,))
         return [{"ts": r[0], "client": r[1], "qname": r[2], "qtype": r[3],
                  "blocked": bool(r[4]), "reason": r[5], "cached": bool(r[6]),
                  "rcode": r[7]} for r in rows]
@@ -235,15 +250,11 @@ class Stats:
         now = time.time()
         since = now - window_hours * 3600
         width = (window_hours * 3600) / max(1, buckets)
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT CAST((ts - ?) / ? AS INTEGER) b, "
-                "COUNT(*) total, COALESCE(SUM(blocked),0) blocked "
-                "FROM queries WHERE ts >= ? GROUP BY b ORDER BY b",
-                (since, width, since)).fetchall()
-        finally:
-            conn.close()
+        rows = self._query(
+            "SELECT CAST((ts - ?) / ? AS INTEGER) b, "
+            "COUNT(*) total, COALESCE(SUM(blocked),0) blocked "
+            "FROM queries WHERE ts >= ? GROUP BY b ORDER BY b",
+            (since, width, since))
         by_bucket = {r[0]: (r[1], r[2]) for r in rows}
         out = []
         for b in range(buckets):
