@@ -29,6 +29,11 @@ STATE_DRAIN_INTERVAL = 2     # seconds between drains of the state-change buffer
 # takes the process.
 STATE_BUFFER_MAX = 50_000
 
+# A healthy drain keeps the buffer near zero, so a sustained backlog past this
+# means the DB is falling behind. Warned about while there is still headroom,
+# rather than silently at the point rows start being discarded.
+STATE_BUFFER_WARN = STATE_BUFFER_MAX // 10
+
 # Keep-alive rows must only be written for devices that have actually
 # communicated recently. Cached state survives long after a device goes
 # silent, and consumers like the heating controller's freshness check treat
@@ -68,7 +73,13 @@ class TelemetryCollector:
         # drained by _state_drain_loop. deque.append/popleft are atomic under
         # the GIL, so producers never need a lock.
         self._state_buffer: deque = deque(maxlen=STATE_BUFFER_MAX)
-        self._state_dropped = 0
+        self._state_dropped = 0            # since last drain (for reporting)
+        self._state_dropped_total = 0      # cumulative, for get_stats()
+        self._state_high_water = 0
+        self._state_write_failures = 0
+        self._state_backlog_warned = False
+        self._last_batch = 0
+        self._last_drain_ts: Optional[float] = None
 
     def start(self):
         """Start background flush and prune tasks."""
@@ -143,6 +154,24 @@ class TelemetryCollector:
     def _drain_state_buffer(self):
         """Pop everything currently buffered and write it in one commit."""
         buf = self._state_buffer
+
+        depth = len(buf)
+        if depth > self._state_high_water:
+            self._state_high_water = depth
+
+        # Early warning while there is still headroom, and an explicit
+        # recovery notice so a transient spike doesn't look permanent.
+        if depth >= STATE_BUFFER_WARN and not self._state_backlog_warned:
+            self._state_backlog_warned = True
+            logger.warning(
+                f"Telemetry state buffer backlog: {depth:,} rows pending "
+                f"({depth * 100 // STATE_BUFFER_MAX}% of capacity) — "
+                f"the telemetry DB is falling behind."
+            )
+        elif self._state_backlog_warned and depth < STATE_BUFFER_WARN // 2:
+            self._state_backlog_warned = False
+            logger.info(f"Telemetry state buffer recovered ({depth:,} pending)")
+
         batch = []
         while True:
             try:
@@ -156,12 +185,42 @@ class TelemetryCollector:
         dropped, self._state_dropped = self._state_dropped, 0
         if dropped:
             logger.warning(
-                f"Telemetry state buffer overflowed — {dropped} row(s) dropped. "
+                f"Telemetry state buffer overflowed — {dropped:,} row(s) dropped. "
                 f"The telemetry DB is not keeping up with writes."
             )
 
         from modules.telemetry_db import write_device_states_batch
-        write_device_states_batch(batch)
+        try:
+            write_device_states_batch(batch)
+        except Exception as e:
+            # The rows are already popped, so a failed batch is lost. Say so
+            # rather than letting it vanish into a debug line upstream.
+            self._state_write_failures += 1
+            logger.warning(
+                f"Telemetry batch write failed — {len(batch):,} row(s) lost: {e}"
+            )
+            return
+
+        self._last_batch = len(batch)
+        self._last_drain_ts = time.time()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Cheap snapshot of the state-write buffer, for /api/system/health.
+
+        Reads only a len() and some ints, so it is safe to call from the
+        event loop and from the health endpoint's no-I/O contract.
+        """
+        last_drain = self._last_drain_ts
+        return {
+            "buffered": len(self._state_buffer),
+            "capacity": STATE_BUFFER_MAX,
+            "high_water": self._state_high_water,
+            "dropped": self._state_dropped_total,
+            "write_failures": self._state_write_failures,
+            "last_batch": self._last_batch,
+            "last_drain_age_s": (round(time.time() - last_drain, 1)
+                                 if last_drain else None),
+        }
 
     async def _flush_loop(self):
         """Periodically flush packet stats to DuckDB."""
@@ -441,6 +500,7 @@ class TelemetryCollector:
                 # the loss ourselves and let the drain report it.
                 if len(buf) >= STATE_BUFFER_MAX:
                     self._state_dropped += 1
+                    self._state_dropped_total += 1
                 buf.append((ieee, attr, value))
                 self._dedup_state[key] = (value, now)
 

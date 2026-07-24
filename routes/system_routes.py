@@ -383,6 +383,16 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         monitor = getattr(app.state, "loop_monitor", None)
         if monitor is not None:
             payload["loop"] = monitor.get_stats()
+        # Depth of the telemetry state-write buffer. Device writes are queued
+        # here and drained by a worker, so a climbing depth is the early sign
+        # the DB is falling behind — before rows start being discarded. Reads
+        # a len() and some ints only, so it honours the no-I/O rule above.
+        collector = getattr(app.state, "telemetry_collector", None)
+        if collector is not None:
+            try:
+                payload["telemetry_buffer"] = collector.get_stats()
+            except Exception:
+                pass
         if bringup == "failed":
             from fastapi.responses import JSONResponse
             payload["status"] = "error"

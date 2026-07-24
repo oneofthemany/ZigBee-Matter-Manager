@@ -318,6 +318,12 @@ def _checkpoint() -> bool:
     switch inherits an even larger one to choke on. Follows _write_exec's
     rule: hold _db_lock only to obtain a cursor, never across the work.
     """
+    wal = DB_PATH + ".wal"
+    try:
+        before = os.path.getsize(wal)
+    except OSError:
+        before = 0
+
     try:
         with _db_lock:
             cur = _get_db().cursor()
@@ -325,10 +331,19 @@ def _checkpoint() -> bool:
             cur.execute("CHECKPOINT")
         finally:
             cur.close()
-        return True
     except Exception as e:
         logger.warning(f"Telemetry CHECKPOINT failed: {e}")
         return False
+
+    try:
+        after = os.path.getsize(wal)
+    except OSError:
+        after = 0
+    logger.info(
+        f"Telemetry DB checkpointed: WAL {before:,} → {after:,} bytes "
+        f"(folded into {DB_PATH})"
+    )
+    return True
 
 
 def _reconcile_worker() -> None:
