@@ -12,16 +12,43 @@ import asyncio
 import logging
 import os
 import signal
+from logging.handlers import RotatingFileHandler
 
 import uvicorn
 
-from .config import Config
+from .config import Config, logs_dir
 from .control import build_app
 from .server import BeekeeperServer
 
-logging.basicConfig(
-    level=os.environ.get("BEEKEEPER_LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+
+def _setup_logging() -> None:
+    """Log to stdout (captured as container logs) AND a rotating beekeeper.log.
+
+    The file sits in ${DATA_DIR}/logs alongside the app's other logs, so the ZMM
+    Manager's file-log streamer surfaces it exactly like launcher.log/zigbee.log —
+    and it survives the container being recreated, unlike stdout-only logs.
+    """
+    level = os.environ.get("BEEKEEPER_LOG_LEVEL", "INFO")
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    stream = logging.StreamHandler()
+    stream.setFormatter(fmt)
+    root.addHandler(stream)
+
+    try:
+        d = logs_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        fileh = RotatingFileHandler(d / "beekeeper.log", maxBytes=2 * 1024 * 1024,
+                                    backupCount=3, encoding="utf-8")
+        fileh.setFormatter(fmt)
+        root.addHandler(fileh)
+    except Exception as e:  # never let logging setup stop the resolver
+        root.warning("could not open beekeeper.log for file logging: %s", e)
+
+
+_setup_logging()
 logger = logging.getLogger("beekeeper")
 
 

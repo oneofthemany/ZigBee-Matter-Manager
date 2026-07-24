@@ -36,6 +36,15 @@ def _data_dir() -> Path:
     return base / "beekeeper"
 
 
+def logs_dir() -> Path:
+    """Where beekeeper.log lives. Sits alongside the app's other logs in
+    ``${DATA_DIR}/logs`` so the manager's file-log streamer picks it up exactly
+    like launcher.log / zigbee.log; falls back to ``<repo>/logs`` for source runs.
+    """
+    override = os.environ.get("ZMM_DATA_DIR") or os.environ.get("DATA_DIR")
+    return (Path(override) / "logs") if override else (_REPO_ROOT / "logs")
+
+
 # Shipped defaults. Two conservative, widely-used lists so blocking works on
 # first run; the user prunes/extends these from the UI. These are DATA — the
 # domains live in files under data/beekeeper/lists/ once fetched.
