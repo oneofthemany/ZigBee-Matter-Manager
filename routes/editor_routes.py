@@ -19,6 +19,7 @@ PROJECT_ROOT = Path("/app")
 # Directories the editor can access
 ALLOWED_DIRS = [
     "",              # Root .py files (main.py, device.py, mqtt.py etc.)
+    "beekeeper",
     "core",
     "device",
     "frontend/therapy",
