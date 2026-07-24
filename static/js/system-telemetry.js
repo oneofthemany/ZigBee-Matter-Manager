@@ -338,6 +338,9 @@ async function _refreshDbStats() {
         const el = document.getElementById('sys-db-stats');
         if (!el) return;
 
+        // system_metrics lives in its own database file now, but get_db_stats()
+        // still reports its count alongside the rest, so the badge list is
+        // unchanged.
         const tables = ['system_metrics', 'packet_stats', 'device_states', 'spectrum_scans'];
         const badges = tables.map(t => {
             const count = data[t] || 0;

@@ -493,3 +493,126 @@ def _alert_rebuild_timeout(detail: str) -> None:
         )
     except Exception:
         pass
+
+
+# ── In-place repair ─────────────────────────────────────────────────────────
+
+def repair_in_place(db_path: str, log: Callable[[str], None] = print) -> Dict[str, Any]:
+    """Excise damage from a database in place, without rebuilding the file.
+
+    Dropping a damaged table frees its blocks, and once nothing references them
+    a CHECKPOINT succeeds again — which is the actual cure, because a database
+    that cannot checkpoint grows its WAL forever and eventually leaves one that
+    cannot be replayed. That is what cost 22-23 July.
+
+    Cheaper than rebuild(): no second file, no swap, no downtime beyond the
+    restart you were doing anyway, and rows in undamaged tables never move.
+
+    ORDER IS CRITICAL, and is why this looks fussy:
+
+      1. Salvage the readable rows of the damaged table into a staging table.
+      2. DROP the damaged table.
+      3. Recreate it from the app's own schema and restore the salvaged rows.
+      4. Only THEN checkpoint.
+
+    Never checkpoint before the drop. The first failed checkpoint marks the
+    whole database invalidated, after which every statement — including the
+    DROP that would have fixed it — raises until the process restarts.
+
+    The caller must guarantee no other connection is open (startup, or the app
+    stopped). Returns a summary; raises only if the repair could not proceed.
+    """
+    import duckdb
+    from modules.telemetry_db import _init_tables
+
+    con = duckdb.connect(db_path)
+    summary: Dict[str, Any] = {"damaged": [], "salvaged": 0, "dropped_rows": 0,
+                               "checkpointed": False}
+    try:
+        tables = [r[0] for r in con.execute(
+            "SELECT table_name FROM duckdb_tables() ORDER BY table_name").fetchall()]
+
+        # Probe each table by streaming every row out of it. count(*) is NOT
+        # good enough — DuckDB answers it from row-group metadata without ever
+        # reading the data blocks, so a corrupt block sails straight past it.
+        # Streaming in batches forces the reads while staying memory-bounded.
+        damaged: List[str] = []
+        for t in tables:
+            try:
+                cur = con.execute(f'SELECT * FROM "{t}"')
+                while cur.fetchmany(10_000):
+                    pass
+            except Exception as e:
+                if "invalidated" in str(e):
+                    raise RuntimeError(
+                        "database was already invalidated before the repair "
+                        "began — restart the process and retry") from e
+                log(f"  {t}: unreadable ({_brief(e)})")
+                damaged.append(t)
+
+        if not damaged:
+            log("  no damaged tables found — nothing to repair")
+            return summary
+        summary["damaged"] = damaged
+
+        for t in damaged:
+            staging = f"_repair_{t}"
+            con.execute(f'DROP TABLE IF EXISTS "{staging}"')
+            cols = [r[0] for r in con.execute(
+                "SELECT column_name FROM duckdb_columns() "
+                "WHERE table_name = ? ORDER BY column_index", [t]).fetchall()]
+            collist = ", ".join(f'"{c}"' for c in cols)
+
+            con.execute(f'CREATE TABLE "{staging}" AS SELECT {collist} FROM "{t}" LIMIT 0')
+
+            def copy_range(lo: int, hi: int, _t=t, _s=staging, _c=collist) -> int:
+                cur = con.execute(
+                    f'INSERT INTO "{_s}" ({_c}) SELECT {_c} FROM "{_t}" '
+                    f"WHERE rowid >= {lo} AND rowid < {hi}")
+                res = cur.fetchall()
+                return int(res[0][0]) if res and res[0] else 0
+
+            bound = _upper_bound_local(con, t, log)
+            rep = salvage_table(t, bound, copy_range, log=log)
+            log(f"  {t}: salvaged {rep.copied:,} rows, "
+                f"~{rep.lost_estimate:,} unreadable")
+            summary["salvaged"] += rep.copied
+            summary["dropped_rows"] += rep.lost_estimate
+
+            # Free the damaged blocks. This is the step that makes CHECKPOINT
+            # possible again.
+            con.execute(f'DROP TABLE "{t}"')
+            _init_tables(con)                       # CREATE TABLE IF NOT EXISTS
+            con.execute(f'INSERT INTO "{t}" ({collist}) SELECT {collist} FROM "{staging}"')
+            con.execute(f'DROP TABLE "{staging}"')
+            log(f"  {t}: rebuilt in place with {rep.copied:,} rows")
+
+        con.execute("CHECKPOINT")
+        summary["checkpointed"] = True
+        log("  CHECKPOINT succeeded — WAL folded into the database")
+        return summary
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def _upper_bound_local(con, table: str, log: Callable[[str], None]) -> int:
+    """_upper_bound() for a table in the primary database rather than 'src'."""
+    try:
+        hi = con.execute(f'SELECT max(rowid) FROM "{table}"').fetchone()[0]
+        return int(hi) + 1 if hi is not None else 0
+    except Exception:
+        pass
+    log("    row count unreadable — probing for the end of the table")
+    bound = 1 << 16
+    while bound < FALLBACK_UPPER_BOUND:
+        try:
+            if con.execute(f'SELECT 1 FROM "{table}" WHERE rowid >= {bound} '
+                           f"LIMIT 1").fetchone() is None:
+                return bound
+            bound <<= 1
+        except Exception:
+            bound <<= 1
+    return FALLBACK_UPPER_BOUND

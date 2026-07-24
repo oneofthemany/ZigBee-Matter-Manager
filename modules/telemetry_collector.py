@@ -395,9 +395,13 @@ class TelemetryCollector:
 
         while self._running:
             try:
-                from modules.telemetry_db import prune
+                from modules.telemetry_db import prune, prune_system
                 # Multi-table DELETEs take seconds on a grown DB — worker thread
                 await asyncio.to_thread(prune, retention_days=self._retention_days)
+                # system_metrics lives in its own file now and needs its own
+                # prune, or it would grow forever.
+                await asyncio.to_thread(prune_system,
+                                        retention_days=self._retention_days)
             except Exception as e:
                 logger.warning(f"Telemetry prune error: {e}")
 

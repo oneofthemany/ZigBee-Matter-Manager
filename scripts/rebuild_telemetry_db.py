@@ -49,7 +49,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--install", action="store_true",
                     help="swap the rebuild in, keeping the original")
     ap.add_argument("--force", action="store_true", help="overwrite an existing output file")
+    ap.add_argument("--in-place", action="store_true",
+                    help="repair the database in place by dropping and rebuilding "
+                         "only the damaged tables (no file swap; app must be stopped)")
     args = ap.parse_args(argv)
+
+    if args.in_place:
+        if not os.path.exists(args.src):
+            print(f"error: {args.src} does not exist")
+            return 2
+        print(f"Repairing {args.src} in place ({os.path.getsize(args.src):,} bytes)")
+        print("The application MUST be stopped — this opens the database read-write.\n")
+        from modules.telemetry_rebuild import repair_in_place
+        try:
+            s = repair_in_place(args.src)
+        except Exception as e:
+            print(f"\nin-place repair failed: {e}")
+            return 1
+        if not s["damaged"]:
+            print("\nNothing was damaged — no changes made.")
+            return 0
+        print(f"\nRepaired {', '.join(s['damaged'])}: {s['salvaged']:,} rows kept, "
+              f"~{s['dropped_rows']:,} unreadable rows discarded.")
+        print("Checkpoint succeeded — the WAL is folded into the database."
+              if s["checkpointed"] else "WARNING: checkpoint did not succeed.")
+        print("Restart the application.")
+        return 0
 
     src = args.src
     out = args.out or f"{os.path.splitext(src)[0]}.rebuilt.duckdb"

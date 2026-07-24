@@ -39,6 +39,20 @@ DEFAULT_RETENTION_DAYS = 90
 OCTOPUS_DB_PATH = "./data/octopus.duckdb"
 OCTOPUS_RETENTION_DAYS = 400
 
+# Host metrics live in their OWN database file, for the same reason Octopus
+# does — one file's corruption must not take the others with it.
+#
+# This split was not theoretical. On 2026-07-24 a single damaged block inside
+# system_metrics made the *whole* telemetry.duckdb uncheckpointable: the WAL
+# grew unbounded, and when it eventually could not be replayed it took two
+# days of Zigbee device history with it. The damage was confined to host CPU
+# and memory samples — the least valuable rows in the file — but the blast
+# radius was every table sharing the file.
+#
+# Different write patterns, different value, different lifetimes: keep them in
+# different files.
+SYSTEM_DB_PATH = "./data/system_metrics.duckdb"
+
 # Lazy import — duckdb is only needed when this module is used
 _db = None
 
@@ -494,29 +508,7 @@ def _finish_db_init():
 
 def _init_tables(db):
     """Create tables if they don't exist."""
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS system_metrics (
-            ts          TIMESTAMP NOT NULL DEFAULT now(),
-            cpu_percent FLOAT,
-            cpu_freq    FLOAT,
-            mem_total   BIGINT,
-            mem_used    BIGINT,
-            mem_percent FLOAT,
-            swap_used   BIGINT,
-            swap_percent FLOAT,
-            disk_total  BIGINT,
-            disk_used   BIGINT,
-            disk_percent FLOAT,
-            cpu_temp    FLOAT,
-            gpu_temp    FLOAT,
-            load_1m     FLOAT,
-            load_5m     FLOAT,
-            load_15m    FLOAT,
-            uptime_secs BIGINT,
-            process_rss BIGINT,
-            process_threads INTEGER
-        )
-    """)
+    # system_metrics now lives in its own file — see _init_system_tables().
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS packet_stats (
@@ -691,33 +683,228 @@ def _migrate_octopus_from_telemetry(odb):
         logger.warning(f"Octopus table migration skipped: {e}")
 
 
+
+# ── System-metrics database (separate file) ──────────────────────────────────
+
+_system_db = None
+_system_db_lock = threading.Lock()
+_system_appender = None   # zmm_telemetry.Appender bound to SYSTEM_DB_PATH
+
+
+def _get_system_db():
+    """Get or create the system-metrics DuckDB connection (lazy singleton)."""
+    global _system_db
+    if _system_db is None:
+        with _system_db_lock:
+            if _system_db is not None:
+                return _system_db
+            os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
+            # Same guarded open as the main DB: this file gets the 0-byte-stub
+            # and unreplayable-WAL healing too, rather than a bare connect().
+            db = _connect_local_db(SYSTEM_DB_PATH)
+            _init_system_tables(db)
+            _migrate_system_metrics_from_telemetry(db)
+            _system_db = db
+            _finish_system_db_init()
+            logger.info(f"System metrics database opened: {SYSTEM_DB_PATH}")
+    return _system_db
+
+
+def _finish_system_db_init():
+    """Decide whether the Rust appender may write this file.
+
+    Same rule as _finish_db_init(): the appender opens its OWN DuckDB instance
+    on the path it is given, and POSIX fcntl locks are per-PID, so an appender
+    plus this module's Python connection on one file means two unsynchronised
+    engines and a split-brain view of it.
+
+    query_system_metrics() needs a live read connection here, so the Python
+    connection has to remain the sole engine and the appender stays closed.
+    The hook is kept rather than deleted because write_system_metrics() uses
+    the appender whenever this is set — enabling it is a one-line change if the
+    read path ever moves out of process. At one sample per 30s the appender
+    would buy nothing anyway; its value is millions of rows, not two a minute.
+    """
+    global _system_appender
+    _system_appender = None
+    if _USE_RUST:
+        logger.debug(
+            "System metrics: zmm_telemetry present but NOT opened on "
+            f"{SYSTEM_DB_PATH} (would split-brain with the read connection)")
+
+
+def _system_cursor():
+    """Per-call cursor — the readers run in asyncio.to_thread workers, so the
+    base connection must not be shared across threads (see _octopus_cursor)."""
+    return _get_system_db().cursor()
+
+
+def _init_system_tables(db):
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS system_metrics (
+            ts          TIMESTAMP NOT NULL DEFAULT now(),
+            cpu_percent FLOAT,
+            cpu_freq    FLOAT,
+            mem_total   BIGINT,
+            mem_used    BIGINT,
+            mem_percent FLOAT,
+            swap_used   BIGINT,
+            swap_percent FLOAT,
+            disk_total  BIGINT,
+            disk_used   BIGINT,
+            disk_percent FLOAT,
+            cpu_temp    FLOAT,
+            gpu_temp    FLOAT,
+            load_1m     FLOAT,
+            load_5m     FLOAT,
+            load_15m    FLOAT,
+            uptime_secs BIGINT,
+            process_rss BIGINT,
+            process_threads INTEGER
+        )
+    """)
+
+
+SYSTEM_METRIC_COLUMNS = (
+    "ts, cpu_percent, cpu_freq, mem_total, mem_used, mem_percent, "
+    "swap_used, swap_percent, disk_total, disk_used, disk_percent, "
+    "cpu_temp, gpu_temp, load_1m, load_5m, load_15m, "
+    "uptime_secs, process_rss, process_threads"
+)
+
+
+def _migrate_system_metrics_from_telemetry(sdb) -> None:
+    """One-time move of system_metrics out of telemetry.duckdb.
+
+    Doubles as the repair for the 2026-07-24 corruption. The damaged blocks
+    were inside this table, and dropping it is what frees them — after which
+    telemetry.duckdb can CHECKPOINT again for the first time in days, so its
+    WAL stops growing and stops risking another unreplayable-WAL data loss.
+
+    Rows are salvaged rather than read in one go: a straight SELECT dies on the
+    bad block and would migrate nothing. The bisection keeps everything either
+    side of the damage.
+
+    Best-effort by design — host CPU/memory samples are the least valuable
+    rows in the system, and losing some of them must never stop the app
+    starting.
+    """
+    try:
+        tdb = _get_db()
+        tables = {r[0] for r in tdb.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        if "system_metrics" not in tables:
+            return                      # already migrated, or a fresh install
+
+        cols = SYSTEM_METRIC_COLUMNS
+        ncols = len(cols.split(","))
+
+        def copy_range(lo: int, hi: int) -> int:
+            rows = tdb.execute(
+                f"SELECT {cols} FROM system_metrics "
+                f"WHERE rowid >= {lo} AND rowid < {hi}").fetchall()
+            if rows:
+                ph = ", ".join(["?"] * ncols)
+                sdb.executemany(
+                    f"INSERT INTO system_metrics ({cols}) VALUES ({ph})", rows)
+            return len(rows)
+
+        try:
+            hi = tdb.execute("SELECT max(rowid) FROM system_metrics").fetchone()[0]
+            bound = int(hi) + 1 if hi is not None else 0
+        except Exception:
+            bound = 1 << 24             # damaged: let the bisection find the end
+
+        from modules.telemetry_rebuild import salvage_table
+        rep = salvage_table("system_metrics", bound, copy_range,
+                            log=lambda m: logger.info(f"  {m.strip()}"))
+
+        # Freeing these blocks is the point: it is what lets the main database
+        # checkpoint again. Must happen before any CHECKPOINT — a failed one
+        # invalidates the connection and the DROP would then be impossible.
+        tdb.execute("DROP TABLE system_metrics")
+
+        if rep.lost_estimate:
+            logger.warning(
+                f"Migrated {rep.copied:,} system_metrics rows into "
+                f"{SYSTEM_DB_PATH}; ~{rep.lost_estimate:,} unreadable rows "
+                f"discarded with the damaged blocks")
+        else:
+            logger.info(f"Migrated {rep.copied:,} system_metrics rows into "
+                        f"{SYSTEM_DB_PATH}")
+
+        try:
+            tdb.execute("CHECKPOINT")
+            logger.info("Telemetry database checkpointed after migration — "
+                        "the damaged blocks are gone")
+        except Exception as e:
+            logger.warning(f"Post-migration checkpoint failed: {e}")
+    except Exception as e:
+        logger.warning(f"system_metrics migration skipped: {e}")
+
+
+def prune_system(retention_days: int = DEFAULT_RETENTION_DAYS):
+    """Retention prune for the system-metrics database."""
+    try:
+        db = _system_cursor()
+        try:
+            db.execute("DELETE FROM system_metrics WHERE ts < now() - "
+                       f"INTERVAL '{retention_days} days'")
+            logger.debug(f"Pruned system_metrics: retention={retention_days}d")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"System metrics prune failed: {e}")
+
+
 # ============================================================================
 # WRITE OPERATIONS
 # ============================================================================
 
 def write_system_metrics(metrics: Dict[str, Any]):
-    """Insert a system metrics sample."""
-    _get_db()  # ensure init
-    if _appender is not None:
-        _appender.append_system_metrics(metrics)
+    """Insert a system metrics sample into the system-metrics database.
+
+    Deliberately does NOT use the Rust appender: that appender is bound to
+    DB_PATH, so routing these rows through it would write them straight back
+    into telemetry.duckdb — undoing the split that exists to keep host metrics
+    from being able to damage device history.
+    """
+    if _system_appender is not None:
+        # Appender preferred whenever open. ts = now() is correct here: these
+        # are live samples, taken as they are written.
+        _system_appender.append_system_metrics(metrics)
         return
-    # ── Python path (shared connection, serialised) ──
-    _write_exec("""
-        INSERT INTO system_metrics (
-            cpu_percent, cpu_freq, mem_total, mem_used, mem_percent,
-            swap_used, swap_percent, disk_total, disk_used, disk_percent,
-            cpu_temp, gpu_temp, load_1m, load_5m, load_15m,
-            uptime_secs, process_rss, process_threads
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [(
-        metrics.get("cpu_percent"), metrics.get("cpu_freq"),
-        metrics.get("mem_total"), metrics.get("mem_used"), metrics.get("mem_percent"),
-        metrics.get("swap_used"), metrics.get("swap_percent"),
-        metrics.get("disk_total"), metrics.get("disk_used"), metrics.get("disk_percent"),
-        metrics.get("cpu_temp"), metrics.get("gpu_temp"),
-        metrics.get("load_1m"), metrics.get("load_5m"), metrics.get("load_15m"),
-        metrics.get("uptime_secs"), metrics.get("process_rss"), metrics.get("process_threads"),
-    )])
+
+    db = _system_cursor()
+    try:
+        db.execute("""
+            INSERT INTO system_metrics (
+                cpu_percent, cpu_freq, mem_total, mem_used, mem_percent,
+                swap_used, swap_percent, disk_total, disk_used, disk_percent,
+                cpu_temp, gpu_temp, load_1m, load_5m, load_15m,
+                uptime_secs, process_rss, process_threads
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            metrics.get("cpu_percent"), metrics.get("cpu_freq"),
+            metrics.get("mem_total"), metrics.get("mem_used"), metrics.get("mem_percent"),
+            metrics.get("swap_used"), metrics.get("swap_percent"),
+            metrics.get("disk_total"), metrics.get("disk_used"), metrics.get("disk_percent"),
+            metrics.get("cpu_temp"), metrics.get("gpu_temp"),
+            metrics.get("load_1m"), metrics.get("load_5m"), metrics.get("load_15m"),
+            metrics.get("uptime_secs"), metrics.get("process_rss"),
+            metrics.get("process_threads"),
+        ))
+    except Exception as e:
+        _note_fatal(e)
+        raise
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def write_packet_stats(stats_batch: List[Dict[str, Any]]):
@@ -786,6 +973,20 @@ def write_device_states_batch(rows: List[tuple]) -> int:
         except (TypeError, ValueError):
             num_val = None
         data.append((ieee, attribute, str_val, num_val))
+
+    if _appender is not None:
+        # Appender first whenever it is open, same as write_device_state().
+        # This is now the hot path for ALL device telemetry (the collector
+        # buffers and drains through here), so skipping the appender would
+        # have quietly disabled it for the highest-volume table in the app.
+        # Timestamps are unaffected: both paths stamp at insert time — the
+        # appender explicitly, the Python path via the ts column's DEFAULT
+        # now(). (Bulk *historical* import is different and must never use
+        # the appender — see modules/telemetry_rebuild.)
+        for ieee, attribute, str_val, num_val in data:
+            _appender.append_device_state(ieee, attribute, str_val, num_val)
+        return len(data)
+
     _write_exec("""
         INSERT INTO device_states (ieee, attribute, value, numeric_val)
         VALUES (?, ?, ?, ?)
@@ -971,7 +1172,7 @@ def query_system_metrics(hours: int = 1, bucket_minutes: int = 1) -> List[Dict]:
     Get system metrics aggregated by time bucket.
     Returns one row per bucket with averaged values.
     """
-    db = _rcursor()
+    db = _system_cursor()
     result = db.execute(f"""
         SELECT
             time_bucket(INTERVAL '{bucket_minutes} minutes', ts) AS bucket,
@@ -1170,9 +1371,19 @@ def get_db_stats() -> Dict[str, Any]:
     """Get database size and row counts per table."""
     db = _rcursor()
     stats = {}
-    for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
+    for table in ["packet_stats", "device_states", "spectrum_scans"]:
         count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = count
+
+    # system_metrics lives in its own file — count via its own connection.
+    try:
+        sdb = _system_cursor()
+        stats["system_metrics"] = sdb.execute(
+            "SELECT COUNT(*) FROM system_metrics").fetchone()[0]
+        stats["system_file_size_mb"] = round(
+            os.path.getsize(SYSTEM_DB_PATH) / (1024 * 1024), 2)
+    except Exception:
+        stats.setdefault("system_metrics", 0)
 
     # Octopus lives in its own file — count via its own connection.
     try:
@@ -1563,7 +1774,7 @@ def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     with _db_lock:
         db = _get_db().cursor()           # brief: cursor creation only
     try:
-        for table in ["system_metrics", "packet_stats", "device_states", "spectrum_scans"]:
+        for table in ["packet_stats", "device_states", "spectrum_scans"]:
             db.execute(
                 f"DELETE FROM {table} WHERE ts < now() - INTERVAL '{cutoff}'"
             )
@@ -1605,7 +1816,7 @@ def flush_appender():
 
 def close():
     """Close the database connections."""
-    global _db, _appender, _octopus_db
+    global _db, _appender, _octopus_db, _system_db, _system_appender
     if _appender is not None:
         try:
             _appender.flush()
@@ -1616,6 +1827,16 @@ def close():
         _octopus_db.close()
         _octopus_db = None
         logger.info("Octopus database closed")
+    if _system_appender is not None:
+        try:
+            _system_appender.flush()
+        except Exception as e:
+            logger.warning(f"System appender flush failed: {e}")
+        _system_appender = None
+    if _system_db:
+        _system_db.close()
+        _system_db = None
+        logger.info("System metrics database closed")
     if _db:
         _db.close()
         _db = None
