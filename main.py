@@ -488,6 +488,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Alert center init failed: {e}")
 
+    # Catch-all for a fatally-damaged telemetry DB, however it gets reported.
+    # Without it, a fatal raised on a path that doesn't route through
+    # _write_exec is never latched, no rebuild sentinel is written, and the
+    # next boot cannot self-repair.
+    try:
+        if telemetry_db is not None:
+            telemetry_db.install_fatal_watch()
+    except Exception as e:
+        logger.debug(f"Could not install telemetry fatal watch: {e}")
+
     # Raised only now the alert center can actually push it. A failed warm-up
     # is not cosmetic: it leaves the connection unopened, so the next caller
     # pays the entire failing open under _db_lock. It used to pass with only a

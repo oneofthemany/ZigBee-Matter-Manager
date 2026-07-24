@@ -237,18 +237,24 @@ def _write_exec(sql: str, params: List[tuple]):
     """
     if not params:
         return
-    with _db_lock:
-        cur = _get_db().cursor()          # brief: init + cursor creation only
+    cur = None
     try:
+        # Cursor creation is INSIDE the try: on an invalidated database it is
+        # .cursor() itself that raises, not the execute. Leaving it outside
+        # meant every write after the first fatal escaped the latch, so the
+        # sentinel was never written and the next boot never self-repaired.
+        with _db_lock:
+            cur = _get_db().cursor()      # brief: init + cursor creation only
         cur.executemany(sql, params)      # outside the lock — DuckDB serialises
     except Exception as e:
         _note_fatal(e)
         raise
     finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
 
 
 # ── Fatal-state latch ───────────────────────────────────────────────────────
@@ -1667,3 +1673,44 @@ def build_outdoor_temp_getter(hours: int = 72):
         return val_list[idx]
 
     return _getter
+
+class _FatalWatchHandler(logging.Handler):
+    """Latch a DB-fatal however it was reported.
+
+    Every write helper catches and logs its own failure, so a fatal can surface
+    from any of a dozen bespoke except blocks — and the ones that never touch
+    _write_exec (prune's DELETEs, readers, module-specific writers) would
+    otherwise never reach _note_fatal at all. Rather than trusting a dozen call
+    sites to remember, watch what they log: if the signature goes past, latch
+    it.
+
+    Missing the latch is not cosmetic — it means no sentinel, which means the
+    next boot does not self-repair and the database stays broken indefinitely.
+    That is exactly what happened after the 24.07.2026 upgrade.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if _db_fatal is not None:
+                return                      # already latched (also stops recursion)
+            msg = record.getMessage()
+            if "has been invalidated" in msg or "Corrupt database file" in msg:
+                _note_fatal(Exception(msg))
+        except Exception:
+            pass                            # never let diagnostics break logging
+
+
+_fatal_watch_installed = False
+
+
+def install_fatal_watch() -> None:
+    """Attach the catch-all fatal watcher to the root logger (idempotent)."""
+    global _fatal_watch_installed
+    if _fatal_watch_installed:
+        return
+    logging.getLogger().addHandler(_FatalWatchHandler())
+    _fatal_watch_installed = True
+    logger.debug("Telemetry fatal-state watcher installed")
