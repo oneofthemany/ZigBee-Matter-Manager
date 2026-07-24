@@ -33,11 +33,7 @@ HEALTH_TIMEOUT="${ZMM_HEALTH_TIMEOUT:-300}"
 # After the app first reports healthy, keep watching it for this long before
 # accepting the swap. The health gate above only proves the app BOOTED: it wants
 # two consecutive passes three seconds apart, so ~6s of evidence.
-#
-# On 2026-07-24 that was not enough. A bad build answered healthy at ~55s, the
-# swap was declared SUCCESS, and the app then died at ~123s — and kept dying on
-# that cycle forever, with the automatic rollback window already closed. Any
-# crash cycle shorter than this soak is now caught while rollback is still free.
+# Any crash cycle shorter than this soak is now caught while rollback is still free.
 STABILITY_SOAK="${ZMM_STABILITY_SOAK:-180}"
 
 # Health check URL is auto-detected from config.yaml at health-check time —
