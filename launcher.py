@@ -550,6 +550,8 @@ def main():
     _wait_for_device()
 
     quick_retries = 0
+    # Timestamps of recent runtime crashes, pruned to RUNTIME_CRASH_WINDOW.
+    runtime_crashes: list = []
     while True:
         # 1. Boot guard (best effort — never blocks)
         if os.path.isfile(BOOT_GUARD):
