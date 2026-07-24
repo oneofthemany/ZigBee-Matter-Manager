@@ -30,6 +30,15 @@ REPO_URL="${ZMM_REPO_URL:-https://github.com/oneofthemany/ZigBee-Matter-Manager.
 # endpoint's "bringup" field — wait_until_healthy() only counts a check once
 # bringup=ready, and a full bring-up can take 2-3 minutes on MultiPAN.
 HEALTH_TIMEOUT="${ZMM_HEALTH_TIMEOUT:-300}"
+# After the app first reports healthy, keep watching it for this long before
+# accepting the swap. The health gate above only proves the app BOOTED: it wants
+# two consecutive passes three seconds apart, so ~6s of evidence.
+#
+# On 2026-07-24 that was not enough. A bad build answered healthy at ~55s, the
+# swap was declared SUCCESS, and the app then died at ~123s — and kept dying on
+# that cycle forever, with the automatic rollback window already closed. Any
+# crash cycle shorter than this soak is now caught while rollback is still free.
+STABILITY_SOAK="${ZMM_STABILITY_SOAK:-180}"
 
 # Health check URL is auto-detected from config.yaml at health-check time —
 # see detect_health_url(). Override with $ZMM_HEALTH_URL if needed.
@@ -501,6 +510,50 @@ wait_until_healthy() {
         elapsed=$((elapsed + 3))
     done
     return 1
+}
+
+
+# Watch an already-healthy app for a while and fail if it degrades.
+# Args: soak_seconds expect_version url...
+# Returns 0 if it stayed up for the whole soak, 1 if it did not.
+soak_until_stable() {
+    local soak="$1"; shift
+    local expect_version="$1"; shift
+    local urls=("$@")
+    local elapsed=0 working="" failures=0
+    local tolerate=1   # one transient blip is not a failed upgrade
+
+    log "Soak: watching v${expect_version} for ${soak}s before accepting the swap"
+    while (( elapsed < soak )); do
+        sleep 5
+        elapsed=$((elapsed + 5))
+
+        if ! working=$(is_app_healthy "${urls[@]}"); then
+            failures=$((failures + 1))
+            log "Soak: no healthy response at ${elapsed}s (${failures}/$((tolerate + 1)))"
+            if (( failures > tolerate )); then
+                log "Soak: app stopped answering — treating the swap as failed"
+                return 1
+            fi
+            continue
+        fi
+
+        local body bring
+        body=$(curl -fsS -k --max-time 3 "$working" 2>/dev/null || true)
+        bring=$(printf '%s' "$body" \
+                | grep -oE '"bringup"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+                | sed -E 's/.*"bringup"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        # Falling back to "starting" AFTER it was ready means the process
+        # restarted underneath us — precisely the crash loop the short gate
+        # cannot see, because each fresh boot looks healthy again.
+        if [[ -n "$bring" && "$bring" != "ready" ]]; then
+            log "Soak: bringup=${bring} after already being ready — the app restarted"
+            return 1
+        fi
+        failures=0
+    done
+    log "Soak: v${expect_version} stayed healthy for ${soak}s — accepting the swap"
+    return 0
 }
 
 # ── HARDENED ROLLBACK ────────────────────────────────────────────────────────
@@ -1169,8 +1222,23 @@ do_swap() {
         return 1
     fi
 
+    # ── STEP 4b: Stability soak ──────────────────────────────────────────────
+    # Healthy once is not the same as healthy. Keep watching before we commit,
+    # while rolling back is still a one-line call rather than a manual recovery.
+    if ! soak_until_stable "$STABILITY_SOAK" "$target_version" "${health_candidates[@]}"; then
+        log "Swap: new version did not stay healthy — rolling back"
+
+        log_to_build ""
+        log_to_build "=== STABILITY SOAK FAILED — capturing container logs ==="
+        "$RUNTIME" logs --tail=200 "$CONTAINER_NAME" >>"$BUILD_LOG" 2>&1 || \
+            log_to_build "(no container logs available)"
+
+        rollback_to_previous "new container became healthy but did not stay healthy for ${STABILITY_SOAK}s"
+        return 1
+    fi
+
     # ── STEP 5: Success ──────────────────────────────────────────────────────
-    log "Swap: SUCCESS. New container healthy."
+    log "Swap: SUCCESS. New container healthy and stable."
     update_version_state "$target_version" "$current_version" "$new_tag" "$current_image_tag"
     unmask_unit_if_needed
     container_unit_start
