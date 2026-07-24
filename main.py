@@ -530,6 +530,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.debug(f"Could not start telemetry reconciler: {e}")
 
+        # Move system_metrics into its own database. On a worker thread, and
+        # HERE — before system_monitor exists to write one. Doing this lazily on
+        # first write put it on the event loop, where it stalled the app past
+        # loop_monitor's 60s exit and crash-looped every boot.
+        try:
+            await asyncio.to_thread(telemetry_db.migrate_system_metrics)
+        except Exception as e:
+            logger.warning(f"system_metrics migration failed: {e}")
+
     # ── Test-deploy recovery ──
     # Must run BEFORE the slow background bring-up (Zigbee/Matter/HA can take
     # minutes): the confirm window for a pending restart-type batch starts
