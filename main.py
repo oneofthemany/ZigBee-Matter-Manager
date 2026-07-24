@@ -461,6 +461,15 @@ async def lifespan(app: FastAPI):
     # the first _get_db() holds _db_lock for the whole open/migration
     # (seconds), and any loop-thread write landing during that window stalls
     # the event loop behind the lock.
+    # Self-heal a telemetry DB that a previous run found to be corrupt. MUST
+    # run before warm(): it swaps database files, which is only safe while
+    # nothing has the file open, and this is the one moment that holds.
+    try:
+        from modules import telemetry_rebuild
+        await asyncio.to_thread(telemetry_rebuild.auto_rebuild_if_needed)
+    except Exception as e:
+        logger.warning(f"Telemetry auto-rebuild check failed: {e}")
+
     telemetry_db = None
     warm_error = None
     try:

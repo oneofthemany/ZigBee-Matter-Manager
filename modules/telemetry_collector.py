@@ -78,6 +78,7 @@ class TelemetryCollector:
         self._state_high_water = 0
         self._state_write_failures = 0
         self._state_backlog_warned = False
+        self._fatal_logged = False
         self._last_batch = 0
         self._last_drain_ts: Optional[float] = None
 
@@ -189,16 +190,27 @@ class TelemetryCollector:
                 f"The telemetry DB is not keeping up with writes."
             )
 
-        from modules.telemetry_db import write_device_states_batch
+        from modules.telemetry_db import write_device_states_batch, is_fatal
         try:
             write_device_states_batch(batch)
         except Exception as e:
             # The rows are already popped, so a failed batch is lost. Say so
-            # rather than letting it vanish into a debug line upstream.
+            # rather than letting it vanish into a debug line upstream — but
+            # only once when the DB has gone terminal, since it will otherwise
+            # repeat every drain until the app restarts.
             self._state_write_failures += 1
-            logger.warning(
-                f"Telemetry batch write failed — {len(batch):,} row(s) lost: {e}"
-            )
+            if is_fatal():
+                if not self._fatal_logged:
+                    self._fatal_logged = True
+                    logger.warning(
+                        f"Telemetry DB unusable — dropping buffered state rows "
+                        f"until restart (lost {len(batch):,} in this batch). "
+                        f"telemetry_db has raised an alert with the details."
+                    )
+            else:
+                logger.warning(
+                    f"Telemetry batch write failed — {len(batch):,} row(s) lost: {e}"
+                )
             return
 
         self._last_batch = len(batch)
@@ -217,6 +229,7 @@ class TelemetryCollector:
             "high_water": self._state_high_water,
             "dropped": self._state_dropped_total,
             "write_failures": self._state_write_failures,
+            "db_fatal": self._fatal_logged,
             "last_batch": self._last_batch,
             "last_drain_age_s": (round(time.time() - last_drain, 1)
                                  if last_drain else None),
@@ -472,6 +485,12 @@ class TelemetryCollector:
         always written.
         """
         if not changed_attrs:
+            return
+
+        # DB has gone terminal (set by the drain): buffering would just fill
+        # to capacity and start reporting overflows for writes that can never
+        # land. Drop cheaply until the app restarts.
+        if self._fatal_logged:
             return
 
         # Lazy state init

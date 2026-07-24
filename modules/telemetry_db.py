@@ -241,11 +241,87 @@ def _write_exec(sql: str, params: List[tuple]):
         cur = _get_db().cursor()          # brief: init + cursor creation only
     try:
         cur.executemany(sql, params)      # outside the lock — DuckDB serialises
+    except Exception as e:
+        _note_fatal(e)
+        raise
     finally:
         try:
             cur.close()
         except Exception:
             pass
+
+
+# ── Fatal-state latch ───────────────────────────────────────────────────────
+# Some DuckDB failures are terminal for the process: once it reports "database
+# has been invalidated ... must be restarted", every subsequent statement
+# raises, so each caller logs its own failure and the log fills with thousands
+# of identical lines that bury the one that mattered. This latches the first
+# one, reports it once with an actionable message, and lets callers skip work
+# that cannot possibly succeed.
+
+_db_fatal: Optional[str] = None
+
+# Dropped when the DB goes terminal, read on the next boot by
+# modules.telemetry_rebuild.auto_rebuild_if_needed(). A corrupt DuckDB cannot
+# be rebuilt from inside the process already stuck on it — the first fatal
+# invalidates every connection until restart — so recovery has to be handed to
+# the next startup, when nothing holds the file open.
+REBUILD_SENTINEL = "./data/.telemetry_rebuild_needed"
+
+
+def is_fatal() -> bool:
+    """True once the database has entered an unusable state (until restart)."""
+    return _db_fatal is not None
+
+
+def fatal_reason() -> Optional[str]:
+    return _db_fatal
+
+
+def _note_fatal(err: Exception) -> bool:
+    """Latch a terminal DuckDB error. True if this call did the latching."""
+    global _db_fatal
+    msg = str(err)
+    terminal = ("has been invalidated" in msg
+                or "must be restarted prior to being used" in msg
+                or "Corrupt database file" in msg)
+    if not terminal or _db_fatal is not None:
+        return False
+
+    _db_fatal = msg
+    logger.error(
+        f"Telemetry database is unusable and will stay that way until the app "
+        f"restarts: {msg}"
+    )
+
+    # Flag it for the next boot to rebuild, while nothing holds the file open.
+    try:
+        os.makedirs(os.path.dirname(REBUILD_SENTINEL), exist_ok=True)
+        with open(REBUILD_SENTINEL, "w") as fh:
+            fh.write(msg)
+    except OSError as e:
+        logger.debug(f"Could not write rebuild sentinel: {e}")
+    try:
+        from modules.app_alerts import raise_alert
+        raise_alert(
+            severity="error",
+            source="telemetry_db",
+            title="Telemetry database unusable — rebuild required",
+            message=(
+                f"{msg}\n\n"
+                "DuckDB has invalidated the database, so history and trends "
+                "will not record until the app restarts. Everything else — "
+                "devices, automations, heating control — is unaffected.\n\n"
+                "This has been flagged for automatic repair: on the next "
+                "restart the database will be rebuilt from whatever is still "
+                "readable, keeping the damaged file alongside it. No action is "
+                "needed beyond restarting when convenient."
+            ),
+            dedupe_key="telemetry_db:fatal",
+        )
+    except Exception as e:
+        logger.debug(f"Could not raise telemetry fatal alert: {e}")
+    return True
 
 
 def warm():
@@ -311,39 +387,13 @@ def _write_backend_marker(name: str) -> None:
         logger.debug(f"Could not persist telemetry backend marker: {e}")
 
 
-def _checkpoint() -> bool:
-    """Fold the live WAL into the main DB file. True on success.
-
-    Without this the WAL keeps growing across restarts and the next backend
-    switch inherits an even larger one to choke on. Follows _write_exec's
-    rule: hold _db_lock only to obtain a cursor, never across the work.
-    """
-    wal = DB_PATH + ".wal"
-    try:
-        before = os.path.getsize(wal)
-    except OSError:
-        before = 0
-
-    try:
-        with _db_lock:
-            cur = _get_db().cursor()
-        try:
-            cur.execute("CHECKPOINT")
-        finally:
-            cur.close()
-    except Exception as e:
-        logger.warning(f"Telemetry CHECKPOINT failed: {e}")
-        return False
-
-    try:
-        after = os.path.getsize(wal)
-    except OSError:
-        after = 0
-    logger.info(
-        f"Telemetry DB checkpointed: WAL {before:,} → {after:,} bytes "
-        f"(folded into {DB_PATH})"
-    )
-    return True
+# ── DO NOT add an explicit CHECKPOINT here ─────────────────────────────────
+# It is tempting: an unreplayable WAL is usually a WAL that never got folded
+# into the main file, so "just checkpoint it" looks like the cure.
+#
+# DuckDB checkpoints on its own when it can. If the WAL is growing without
+# bound, that is a signal the database needs rebuilding — not a signal to
+# force the operation that fails on it.
 
 
 def _reconcile_worker() -> None:
@@ -366,7 +416,6 @@ def _reconcile_worker() -> None:
                 f"Reconciling {DB_PATH}."
             )
 
-        checkpointed = _checkpoint()
         _write_backend_marker(backend)
 
         quarantined = list(_quarantined_wals)
@@ -403,10 +452,8 @@ def _reconcile_worker() -> None:
                 source="telemetry_db",
                 title="Telemetry write backend changed",
                 message=(
-                    f"Switched from {previous} to {backend}. The database was "
-                    f"reconciled cleanly"
-                    + (" and checkpointed." if checkpointed else
-                       ", but the checkpoint did not complete — see the log.")
+                    f"Switched from {previous} to {backend}. The database "
+                    f"opened cleanly and is recording normally."
                 ),
                 dedupe_key=f"telemetry_db:backend_switch:{previous}->{backend}",
             )
