@@ -47,6 +47,22 @@ MIN_CHUNK = 2048
 FALLBACK_UPPER_BOUND = 1 << 40
 
 
+# How long the *automatic* startup rebuild may take. It runs inside the app's
+# lifespan, before uvicorn serves, so every second here is a second the app is
+# not answering /api/system/health. The budget has to clear three deadlines:
+#   - container HEALTHCHECK  → unhealthy at ~120s after start
+#   - manager watchdog       → STARTUP_GRACE 180s, then restarts at ~240s
+#   - upgrade.sh do_swap     → HEALTH_TIMEOUT 300s, then ROLLS BACK the upgrade
+# A rebuild that overruns is abandoned (original untouched, sentinel kept) so a
+# damaged database can never turn an upgrade into a rollback loop. The manual
+# CLI has no budget — run it there if a rebuild genuinely needs longer.
+REBUILD_BUDGET_SECONDS = float(os.environ.get("ZMM_TELEMETRY_REBUILD_BUDGET", "90"))
+
+
+class RebuildTimeout(Exception):
+    """Raised when a rebuild exceeds its budget and must be abandoned."""
+
+
 class Report:
     """Per-table outcome, for the summary at the end."""
 
@@ -73,6 +89,7 @@ def salvage_table(
     copy_range: Callable[[int, int], int],
     log: Callable[[str], None] = print,
     min_chunk: int = MIN_CHUNK,
+    deadline: Optional[float] = None,
 ) -> Report:
     """Copy `table` via copy_range(lo, hi), bisecting around unreadable rows.
 
@@ -93,6 +110,12 @@ def salvage_table(
     # the traversal ordered, so the log reads front-to-back through the table.
     stack: List[Tuple[int, int]] = [(0, upper_bound)]
     while stack:
+        # Checked between chunks, not inside them: a single INSERT...SELECT is
+        # not interruptible, so this bounds the search, not one statement.
+        if deadline is not None and time.monotonic() > deadline:
+            raise RebuildTimeout(
+                f"exceeded budget while salvaging {table} "
+                f"({rep.copied:,} rows recovered so far)")
         lo, hi = stack.pop()
         try:
             rep.copied += copy_range(lo, hi)
@@ -190,7 +213,8 @@ def _upper_bound(con, table: str, log: Callable[[str], None]) -> int:
     return FALLBACK_UPPER_BOUND
 
 
-def rebuild(src: str, out: str, log: Callable[[str], None] = print) -> List[Report]:
+def rebuild(src: str, out: str, log: Callable[[str], None] = print,
+            deadline: Optional[float] = None) -> List[Report]:
     import duckdb
 
     # Schema comes from the application itself, so the rebuilt file matches
@@ -231,7 +255,7 @@ def rebuild(src: str, out: str, log: Callable[[str], None] = print) -> List[Repo
                 return int(res[0][0]) if res and res[0] else 0
 
             bound = _upper_bound(con, table, log)
-            rep = salvage_table(table, bound, copy_range, log=log)
+            rep = salvage_table(table, bound, copy_range, log=log, deadline=deadline)
             reports.append(rep)
 
             if rep.clean:
@@ -271,20 +295,36 @@ def verify(path: str, log: Callable[[str], None] = print) -> bool:
 
 
 def install(src: str, out: str, log: Callable[[str], None] = print) -> None:
-    """Swap the rebuild in, preserving the original and its stale WAL."""
+    """Swap the rebuild in, preserving the original and its stale WAL.
+
+    Ordered so that a crash at any point leaves a valid database at `src` — it
+    runs during startup, where the watchdog may restart the app underneath it.
+    Renaming the original out of the way first (the obvious order) would leave
+    a window with no database at all.
+    """
     stamp = int(time.time())
     kept = f"{src}.damaged-{stamp}"
-    os.rename(src, kept)
+
+    # 1. Preserve the original under a second name. A hard link is a new name
+    #    for the same inode — nothing is copied, and `src` stays valid.
+    try:
+        os.link(src, kept)
+    except OSError:
+        shutil.copy2(src, kept)          # different filesystem / no link support
     log(f"  original preserved: {kept}")
 
-    # The old WAL MUST go with it. Left in place, DuckDB would try to replay a
-    # WAL belonging to the previous file against the rebuilt one.
+    # 2. Move the stale WAL aside BEFORE the swap, never after. Crashing
+    #    between the swap and the WAL move would leave DuckDB replaying the old
+    #    file's WAL against the new database on the next boot — the exact
+    #    failure this whole exercise started with.
     wal = src + ".wal"
     if os.path.exists(wal):
-        os.rename(wal, f"{kept}.wal")
+        os.replace(wal, f"{kept}.wal")
         log(f"  stale WAL moved aside: {kept}.wal")
 
-    shutil.move(out, src)
+    # 3. Single atomic swap. `src` is a valid database before and after, and is
+    #    never absent in between.
+    os.replace(out, src)
     log(f"  rebuilt database installed: {src}")
 
 
@@ -337,7 +377,22 @@ def auto_rebuild_if_needed(log: Optional[Callable[[str], None]] = None) -> Optio
                 os.remove(stale)
 
         started = time.time()
-        reports = rebuild(DB_PATH, out, log=say)
+        try:
+            reports = rebuild(DB_PATH, out, log=say,
+                              deadline=time.monotonic() + REBUILD_BUDGET_SECONDS)
+        except RebuildTimeout as e:
+            # Boot healthy rather than risk the watchdog restarting us mid-swap
+            # or an upgrade rolling back. The sentinel stays, so this is
+            # retried next boot; the CLI can do it unbudgeted meanwhile.
+            say(f"Telemetry rebuild abandoned: {e}")
+            for partial in (out, out + ".wal"):
+                if os.path.exists(partial):
+                    try:
+                        os.remove(partial)
+                    except OSError:
+                        pass
+            _alert_rebuild_timeout(str(e))
+            return None
 
         if not verify(out, log=say):
             say("Rebuilt database failed verification — keeping the original untouched.")
@@ -412,6 +467,29 @@ def _alert_rebuild_failed(reason: str, detail: str) -> None:
                 + (f"\n\nOriginal fault: {reason}" if reason else "")
             ),
             dedupe_key="telemetry_db:rebuild_failed",
+        )
+    except Exception:
+        pass
+
+
+def _alert_rebuild_timeout(detail: str) -> None:
+    try:
+        from modules.app_alerts import raise_alert
+        raise_alert(
+            severity="warning", source="telemetry_db",
+            title="Telemetry rebuild took too long — postponed",
+            message=(
+                f"The automatic rebuild of the damaged telemetry database was "
+                f"abandoned so it could not delay startup: {detail}\n\n"
+                f"Nothing was changed — the original database is untouched and "
+                f"the app has started normally. History will not record until "
+                f"the rebuild completes.\n\n"
+                f"Run scripts/rebuild_telemetry_db.py --install with the app "
+                f"stopped (it has no time limit), or raise the budget with "
+                f"ZMM_TELEMETRY_REBUILD_BUDGET (currently "
+                f"{REBUILD_BUDGET_SECONDS:.0f}s)."
+            ),
+            dedupe_key="telemetry_db:rebuild_timeout",
         )
     except Exception:
         pass
