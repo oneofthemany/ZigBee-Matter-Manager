@@ -20,6 +20,10 @@ Sequence:
   │   ├── clean exit   → stop                       │
   │   ├── crash <HEALTHY_SECONDS → recovery standby │
   │   └── crash >HEALTHY_SECONDS → restart main.py  │
+  │        └── but N of those inside                │
+  │            RUNTIME_CRASH_WINDOW  → crash loop:  │
+  │            request auto-rollback (if the        │
+  │            upgrade is recent) + standby         │
   │ recovery standby    (in-process, :8000)         │
   │   └── manager writes .recovery_resume → retry   │
   └─────────────────────────────────────────────────┘
@@ -50,6 +54,38 @@ MANAGER_PORT = int(os.environ.get("ZMM_MANAGER_PORT", "8001"))
 
 # If main.py dies in under this many seconds it's a "boot crash"
 HEALTHY_SECONDS = 25
+# A crash after HEALTHY_SECONDS is treated as a one-off and simply restarted.
+# That is correct for a genuine one-off and badly wrong for a loop: an app that
+# boots fine, serves for two minutes, then dies — every single time — restarts
+# forever and nothing ever escalates.
+#
+# That is not hypothetical. On 2026-07-24 a blocking database migration tripped
+# loop_monitor's 60s exit-70 on every boot, roughly two minutes apart, for as
+# long as anyone was willing to watch. Each crash "lived" ~118s, comfortably
+# past HEALTHY_SECONDS, so every one was written off as a one-off. The manager
+# watchdog could not help either: it polls health every 20s and needs three
+# consecutive failures, but the app was genuinely healthy for most of each
+# cycle, so its streak kept resetting. Nothing in the system was counting
+# restarts, which is the only signal that actually distinguishes a loop.
+#
+# Repeated runtime crashes inside this window now escalate to recovery standby.
+RUNTIME_CRASH_WINDOW = 900     # seconds to remember a runtime crash for
+MAX_RUNTIME_CRASHES = 3        # this many inside the window == a crash loop
+
+# Auto-rollback. The launcher cannot swap its own container image, so it writes
+# the same trigger the Settings UI uses and the host-side systemd path unit
+# (zmm-upgrade.path -> upgrade.sh) performs the swap.
+UPGRADE_TRIGGER_DIR = os.path.join(DATA_DIR, "upgrade")
+TRIGGER_FILE = os.path.join(UPGRADE_TRIGGER_DIR, "trigger")
+VERSION_STATE_FILE = os.path.join(DATA_DIR, "state", "version.json")
+# Records the version we already asked to roll back FROM, so one bad upgrade
+# gets exactly one automatic rollback and never ping-pongs.
+ROLLBACK_MARKER = os.path.join(DATA_DIR, ".auto_rollback_attempted")
+# Only roll back an upgrade this recent. A version that has run happily for
+# days and then starts looping has a new problem — data, disk, hardware — and
+# reverting the code would hide it rather than fix it.
+ROLLBACK_MAX_UPGRADE_AGE = 6 * 3600    # seconds
+
 # Cap on quick-retry loops (avoids tight crashloops when recovery is unavailable)
 MAX_QUICK_RETRIES = 3
 # Seconds to sleep between runtime-level restarts
@@ -242,6 +278,112 @@ def _parse_crash_from_stderr(stderr_text: str, exit_code: int) -> dict:
         "exit_code": exit_code,
         "source": "launcher",
     }
+
+
+
+def _crash_loop_record(crash_times, exit_code, stderr_text, elapsed) -> dict:
+    """Summarise a crash loop for the recovery UI.
+
+    Built here rather than parsed from stderr because these exits usually carry
+    no traceback at all — loop_monitor calls os._exit(70), which skips main.py's
+    excepthook. The stderr tail is still attached when there is one.
+    """
+    info = _parse_crash_from_stderr(stderr_text or "", exit_code)
+    span = (crash_times[-1] - crash_times[0]) if len(crash_times) > 1 else 0.0
+    info["exc_type"] = "CrashLoop"
+    info["exc_value"] = (
+        f"{len(crash_times)} crashes in {span / 60:.1f} min "
+        f"(last exit code {exit_code} after {elapsed:.0f}s). "
+        f"Restarting is not resolving it."
+    )
+    info["source"] = "launcher_crash_loop"
+    info["crash_count"] = len(crash_times)
+    info["crash_window_seconds"] = int(span)
+    return info
+
+
+def _read_version_state() -> dict:
+    try:
+        with open(VERSION_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _request_auto_rollback(crash_times) -> bool:
+    """Ask the host-side watcher to swap back to the previous image.
+
+    The launcher runs INSIDE the container, so it cannot swap its own image.
+    It writes the same trigger the Settings UI uses; the host systemd path unit
+    (zmm-upgrade.path) picks it up and runs upgrade.sh's rollback action.
+
+    Guarded deliberately — an automatic version rollback is a big hammer:
+      * there must actually be a previous version recorded;
+      * at most ONE attempt per version, so a crash loop that is nothing to do
+        with the upgrade cannot ping-pong between two images forever;
+      * only for a RECENT upgrade. A box that has run the same version happily
+        for a week and starts looping has a new problem — data, hardware, a
+        dying disk — and rolling back the code would just hide it.
+    Returns True if a rollback was requested.
+    """
+    state = _read_version_state()
+    current = (state.get("current_version") or "").strip()
+    previous = (state.get("previous_version") or "").strip()
+
+    if not previous:
+        _log("Auto-rollback: no previous version recorded — skipping")
+        return False
+    if previous == current:
+        _log("Auto-rollback: previous version equals current — skipping")
+        return False
+
+    installed_at = state.get("installed_at") or ""
+    try:
+        ts = datetime.datetime.strptime(installed_at, "%Y-%m-%dT%H:%M:%SZ")
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        age = (now_utc - ts).total_seconds()
+    except Exception:
+        age = -1.0
+    if age < 0:
+        _log("Auto-rollback: upgrade time unknown — skipping (manual recovery)")
+        return False
+    if age > ROLLBACK_MAX_UPGRADE_AGE:
+        _log(f"Auto-rollback: current version installed {age / 3600:.1f}h ago, "
+             f"older than {ROLLBACK_MAX_UPGRADE_AGE / 3600:.0f}h — not a fresh "
+             f"upgrade, so this is unlikely to be the new version's fault")
+        return False
+
+    try:
+        if os.path.isfile(ROLLBACK_MARKER):
+            with open(ROLLBACK_MARKER) as f:
+                already = (f.read() or "").strip()
+            if already == current:
+                _log(f"Auto-rollback: already attempted for {current} — not "
+                     f"retrying (recovery standby instead)")
+                return False
+    except Exception:
+        pass
+
+    try:
+        os.makedirs(os.path.dirname(TRIGGER_FILE), exist_ok=True)
+        payload = {"action": "rollback",
+                   "payload": {"previous_version": previous,
+                               "reason": f"crash loop: {len(crash_times)} "
+                                         f"crashes after upgrade to {current}"}}
+        tmp = TRIGGER_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        # PathChanged fires when the file is closed after writing, so write to a
+        # temp name and rename — a half-written trigger must never be picked up.
+        os.replace(tmp, TRIGGER_FILE)
+        with open(ROLLBACK_MARKER, "w") as f:
+            f.write(current)
+        _log(f"Auto-rollback REQUESTED: {current} -> {previous} "
+             f"(crash loop after a {age / 60:.0f} min old upgrade)")
+        return True
+    except Exception as e:
+        _log(f"Auto-rollback: could not write trigger: {e}")
+        return False
 
 
 def _write_crash(info: dict):
@@ -442,9 +584,47 @@ def main():
             return 0
 
         if elapsed >= HEALTHY_SECONDS:
-            # Ran healthy then died — just restart, keep it simple
-            _log(f"Runtime crash (lived {elapsed:.1f}s) — restart in {RESTART_BACKOFF}s")
-            quick_retries = 0
+            # Ran healthy then died. One of these is bad luck; several in a row
+            # is a crash loop that will never resolve itself, so count them.
+            now = time.time()
+            runtime_crashes.append(now)
+            runtime_crashes[:] = [t for t in runtime_crashes
+                                  if now - t <= RUNTIME_CRASH_WINDOW]
+
+            if len(runtime_crashes) >= MAX_RUNTIME_CRASHES:
+                _log(f"Crash loop detected: {len(runtime_crashes)} runtime "
+                     f"crashes within {RUNTIME_CRASH_WINDOW}s — restarting is "
+                     f"not fixing it. Entering recovery standby.")
+                # Always record our own summary here. main.py's excepthook does
+                # not fire for these: loop_monitor exits via os._exit(70), so
+                # last_crash.json would otherwise hold something stale and
+                # unrelated, and the recovery UI would explain the wrong thing.
+                _write_crash(_crash_loop_record(
+                    runtime_crashes, code, stderr_text, elapsed))
+
+                # If this started right after an upgrade, the new version is the
+                # prime suspect — ask the host to put the old one back. Standby
+                # still runs: the swap happens out here, and until it lands the
+                # user needs something on :8000 telling them what is going on.
+                if _request_auto_rollback(runtime_crashes):
+                    _log("Auto-rollback requested — standing by for the host "
+                         "watcher to swap the previous image back in")
+
+                outcome = _recovery_standby()
+                if outcome == "resume":
+                    runtime_crashes.clear()
+                    quick_retries = 0
+                    continue
+                _log("Recovery standby shut down — launcher exiting")
+                return 0
+
+            _log(f"Runtime crash (lived {elapsed:.1f}s) — "
+                 f"{len(runtime_crashes)}/{MAX_RUNTIME_CRASHES} in the last "
+                 f"{RUNTIME_CRASH_WINDOW}s — restart in {RESTART_BACKOFF}s")
+            # NOTE: quick_retries is deliberately NOT reset here any more. It
+            # used to be, which meant a run alternating boot crashes with
+            # runtime crashes cleared the boot counter every other pass and
+            # never escalated either.
             time.sleep(RESTART_BACKOFF)
             continue
 
