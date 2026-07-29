@@ -1516,7 +1516,7 @@ function getFileIcon(ext) {
         '.py': 'fab fa-python', '.js': 'fab fa-js-square',
         '.css': 'fab fa-css3-alt', '.html': 'fab fa-html5',
         '.yaml': 'fas fa-cog', '.yml': 'fas fa-cog',
-        '.json': 'fas fa-brackets-curly', '.md': 'fas fa-file-alt',
+        '.json': 'fas fa-file-code', '.md': 'fas fa-file-alt',
         '.sh': 'fas fa-terminal', '.txt': 'fas fa-file-alt',
     };
     return icons[ext] || 'fas fa-file';

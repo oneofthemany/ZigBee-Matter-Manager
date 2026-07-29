@@ -410,3 +410,12 @@
         animation: none;
     }
 }
+
+/* Status dots and the critical-battery badge loop forever. Colour and weight
+   already carry the state, so reduced motion just stops the throb. */
+@media (prefers-reduced-motion: reduce) {
+    .zbm-status-dot.heating,
+    .zbm-battery.critical {
+        animation: none;
+    }
+}

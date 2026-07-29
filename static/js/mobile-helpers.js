@@ -111,17 +111,32 @@
         tabBar.style.maskImage = mask;
     }
 
+    // .zmm-icon-rail covers the settings/accounts/network sub-rails (and any
+    // added later); #mainTabs and #devTabs are named because they aren't
+    // tagged with that class. #devTabs only exists once the device modal is
+    // built, which is what the observer below is for.
+    var RAIL_SELECTOR = '#mainTabs, #devTabs, .zmm-icon-rail';
+
     function initTabScrollHints() {
-        ['#mainTabs', '#settingsSubNav', '#devTabs'].forEach(function (sel) {
-            var el = document.querySelector(sel);
-            if (!el || el._scrollHint) return;
+        document.querySelectorAll(RAIL_SELECTOR).forEach(function (el) {
+            if (el._scrollHint) return;
             el._scrollHint = true;
             el.addEventListener('scroll', function () { updateTabScrollHint(el); }, { passive: true });
             setTimeout(function () { updateTabScrollHint(el); }, 300);
         });
     }
 
+    function refreshTabScrollHints() {
+        document.querySelectorAll(RAIL_SELECTOR).forEach(updateTabScrollHint);
+    }
+
     initTabScrollHints();
+
+    // Rotating the phone changes which tabs fit, so the fade has to be redone.
+    window.addEventListener('resize', refreshTabScrollHints);
+    window.addEventListener('orientationchange', function () {
+        setTimeout(refreshTabScrollHints, 200);
+    });
 
     // Re-init when modals open (for #devTabs inside device modal)
     var tabObserver = new MutationObserver(function () {
@@ -145,4 +160,59 @@
         lastTap = now;
     }, { passive: false });
 
+})();
+
+
+/* ============================================================
+   KEEP THE ACTIVE TAB VISIBLE IN A SCROLLING RAIL
+
+   Deliberately outside the touch gate above: the rails scroll on
+   any narrow window, not just touch devices, and restoring a tab
+   past the fold (deep link, reload, or a rail that has scrolled)
+   otherwise leaves no tab looking selected at all.
+   ============================================================ */
+(function () {
+    'use strict';
+
+    var RAIL_SELECTOR = '#mainTabs, #devTabs, .zmm-icon-rail';
+
+    function revealActiveTab(rail) {
+        if (!rail || rail.scrollWidth <= rail.clientWidth) return;   // nothing hidden
+        var active = rail.querySelector('.nav-link.active');
+        if (!active) return;
+
+        // Rect maths rather than offsetLeft: .nav-link sits inside .nav-item,
+        // and the rail isn't necessarily the offsetParent.
+        var railRect = rail.getBoundingClientRect();
+        var tabRect = active.getBoundingClientRect();
+        var delta = (tabRect.left - railRect.left) - (rail.clientWidth - tabRect.width) / 2;
+        var target = Math.max(0, Math.min(rail.scrollLeft + delta, rail.scrollWidth - rail.clientWidth));
+        if (Math.abs(target - rail.scrollLeft) < 2) return;
+
+        // Smooth scrolling is a no-op in a hidden document, so a reveal that
+        // runs while the page is backgrounded (restored session, background
+        // tab) would never happen — snap in that case, and whenever the user
+        // has asked for reduced motion.
+        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var instant = reduce || document.visibilityState === 'hidden';
+        rail.scrollTo({ left: target, behavior: instant ? 'auto' : 'smooth' });
+    }
+
+    function revealAll() {
+        document.querySelectorAll(RAIL_SELECTOR).forEach(revealActiveTab);
+    }
+
+    // Bootstrap fires shown.bs.tab on the button that was activated; walk up to
+    // whichever rail it belongs to rather than guessing.
+    document.addEventListener('shown.bs.tab', function (e) {
+        var rail = e.target.closest(RAIL_SELECTOR);
+        if (rail) revealActiveTab(rail);
+    }, true);
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', revealAll);
+    } else {
+        revealAll();
+    }
+    window.addEventListener('orientationchange', function () { setTimeout(revealAll, 250); });
 })();

@@ -23,12 +23,38 @@
         return 'dark';
     }
 
-    function setTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme);
-        // Keep Bootstrap 5.3's native theming in lockstep so its components
-        // (tables, modals, dropdowns) theme themselves without overrides.
-        document.documentElement.setAttribute('data-bs-theme', theme);
-        localStorage.setItem(STORAGE_KEY, theme);
+    var TRANSITION_MS = 250;
+    var _transitionTimer = null;
+
+    /**
+     * Turn the colour transition on for the length of one toggle. The rule
+     * lives behind .theme-transition in dark-mode.css — if it were always on,
+     * every hover would lag 200ms behind the pointer.
+     */
+    function withTransition(fn) {
+        var root = document.documentElement;
+        root.classList.add('theme-transition');
+        fn();
+        clearTimeout(_transitionTimer);
+        _transitionTimer = setTimeout(function () {
+            root.classList.remove('theme-transition');
+        }, TRANSITION_MS);
+    }
+
+    /**
+     * @param {string} theme            'dark' | 'light'
+     * @param {boolean} [persist=true]  false when following the OS — writing
+     *   the key would count as an explicit user preference and the app would
+     *   stop following the OS from then on.
+     */
+    function setTheme(theme, persist) {
+        withTransition(function () {
+            document.documentElement.setAttribute('data-theme', theme);
+            // Keep Bootstrap 5.3's native theming in lockstep so its components
+            // (tables, modals, dropdowns) theme themselves without overrides.
+            document.documentElement.setAttribute('data-bs-theme', theme);
+        });
+        if (persist !== false) localStorage.setItem(STORAGE_KEY, theme);
         updateToggleButton(theme);
         // Notify listeners (charts, canvas widgets etc.) so they can redraw
         // with theme-appropriate colours without waiting for the next tick.
@@ -36,12 +62,21 @@
     }
 
     // ----------------------------------------------------------
-    // 2. APPLY THEME IMMEDIATELY (before DOM ready to avoid flash)
+    // 2. INITIAL THEME
     // ----------------------------------------------------------
+    // Already applied by the inline snippet in the <head> of index.html /
+    // frames.html — it has to run before the first stylesheet or the page
+    // paints light and flips to dark. This script loads at the end of <body>
+    // and only reads back what that snippet decided.
 
-    var initialTheme = getPreferredTheme();
-    document.documentElement.setAttribute('data-theme', initialTheme);
-    document.documentElement.setAttribute('data-bs-theme', initialTheme);
+    var initialTheme = document.documentElement.getAttribute('data-theme');
+    if (!initialTheme) {
+        // No inline snippet on this page — apply now and accept the flash.
+        // The fix is to add the snippet to that page's <head>, not here.
+        initialTheme = getPreferredTheme();
+        document.documentElement.setAttribute('data-theme', initialTheme);
+        document.documentElement.setAttribute('data-bs-theme', initialTheme);
+    }
 
     // ----------------------------------------------------------
     // 3. INJECT TOGGLE BUTTON INTO NAVBAR
@@ -99,9 +134,10 @@
 
     if (window.matchMedia) {
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
-            // Only auto-switch if user hasn't explicitly set a preference
+            // Only auto-switch if user hasn't explicitly set a preference —
+            // and don't persist, or this would become one.
             if (!localStorage.getItem(STORAGE_KEY)) {
-                setTheme(e.matches ? 'dark' : 'light');
+                setTheme(e.matches ? 'dark' : 'light', false);
             }
         });
     }

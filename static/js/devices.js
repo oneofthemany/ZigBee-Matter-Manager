@@ -351,6 +351,25 @@ function populateRouterList() {
     const listContainer = document.getElementById('routerList');
     if (!listContainer) return;
 
+    // This runs on every device websocket update, which on a busy mesh is
+    // several times a second. Rebuilding an open menu yanks the entries out
+    // from under the pointer mid-click, so defer until it closes. Bootstrap
+    // fires dropdown events on the toggle (a sibling of the menu), so the
+    // listener goes on document and catches them as they bubble.
+    const menu = listContainer.closest('.dropdown-menu');
+    if (menu && menu.classList.contains('show')) {
+        if (!listContainer._pendingRepopulate) {
+            listContainer._pendingRepopulate = true;
+            document.addEventListener('hidden.bs.dropdown', function onHidden() {
+                if (menu.classList.contains('show')) return;   // a different dropdown
+                document.removeEventListener('hidden.bs.dropdown', onHidden);
+                listContainer._pendingRepopulate = false;
+                populateRouterList();
+            });
+        }
+        return;
+    }
+
     // Clear current list
     listContainer.innerHTML = '';
 

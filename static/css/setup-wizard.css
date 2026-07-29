@@ -509,3 +509,8 @@
     .setup-actions { flex-wrap: wrap; }
     .integration-icon { font-size: 1.2rem; }
 }
+
+/* Slowed rather than stopped — see the note in mqtt-explorer.css. */
+@media (prefers-reduced-motion: reduce) {
+    .scan-spinner { animation-duration: 2.5s; }
+}

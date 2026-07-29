@@ -7,18 +7,28 @@ those licenses.
 
 ## Vendored frontend libraries
 
-These are redistributed in this repository under `static/js/vendor/` with
-their original license headers intact.
+These are redistributed in this repository under `static/js/vendor/` and
+`static/vendor/` with their original license headers intact. They are
+vendored rather than loaded from a CDN so the UI works on an isolated LAN
+with no internet access.
 
 | Component | Copyright | License |
 |---|---|---|
-| [Apache ECharts](https://echarts.apache.org/) (`echarts.min.js`) | The Apache Software Foundation | Apache-2.0 |
-| [pdf.js](https://mozilla.github.io/pdf.js/) (`pdf.min.js`, `pdf.worker.min.js`) | Mozilla Foundation | Apache-2.0 |
+| [Apache ECharts](https://echarts.apache.org/) (`js/vendor/echarts.min.js`) | The Apache Software Foundation | Apache-2.0 |
+| [pdf.js](https://mozilla.github.io/pdf.js/) (`js/vendor/pdf.min.js`, `pdf.worker.min.js`) | Mozilla Foundation | Apache-2.0 |
+| [Bootstrap](https://getbootstrap.com/) 5.3.0 (`vendor/bootstrap.min.css`, `bootstrap.bundle.min.js`) | The Bootstrap Authors | MIT |
+| [Leaflet](https://leafletjs.com/) (`vendor/leaflet.js`, `leaflet.css`) | Vladimir Agafonkin, CloudMade | BSD-2-Clause |
+| [Font Awesome Free](https://fontawesome.com/) 6.5.1 (`vendor/fontawesome/`) | Fonticons, Inc. | see below |
 
-Both are provided under the Apache License, Version 2.0:
+ECharts and pdf.js are provided under the Apache License, Version 2.0:
 <http://www.apache.org/licenses/LICENSE-2.0>. They are distributed on an
 "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 or implied.
+
+Font Awesome Free is tri-licensed (<https://fontawesome.com/license/free>):
+the icon graphics under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/),
+the fonts in `vendor/fontawesome/webfonts/` under
+[SIL OFL 1.1](https://scripts.sil.org/OFL), and the CSS under MIT.
 
 ## Python dependencies
 
