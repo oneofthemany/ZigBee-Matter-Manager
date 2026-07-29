@@ -256,13 +256,83 @@
                             </tr>
                             </thead>
                             <tbody id="deviceTableBody" aria-busy="true">
-                            <!-- Skeleton rows shown until the first device fetch re-renders the tbody -->
-                            <tr><td colspan="10"><span class="skel skel-block"></span></td></tr>
-                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:80%"></span></td></tr>
-                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:90%"></span></td></tr>
-                            <tr><td colspan="10"><span class="skel skel-block" style="max-width:70%"></span><span class="visually-hidden">Loading devices…</span></td></tr>
+                            <!-- Skeleton rows shown until the first device fetch re-renders the tbody.
+                                 One cell per column, NOT a single colspan=10 cell: with table-layout
+                                 auto the browser sizes columns from their contents, so a merged cell
+                                 left all ten widths to be derived from the header text alone and every
+                                 column jumped the moment real rows arrived. The per-column widths
+                                 below approximate real content (IEEE and name are the wide ones). -->
+                            <tr class="skel-row">
+                                <td><span class="skel skel-block" style="width:1.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:11rem"></span></td>
+                                <td><span class="skel skel-block" style="width:13rem"></span></td>
+                                <td><span class="skel skel-block" style="width:7rem"></span></td>
+                                <td><span class="skel skel-block" style="width:9rem"></span></td>
+                                <td><span class="skel skel-block" style="width:2.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                            </tr>
+                            <tr class="skel-row">
+                                <td><span class="skel skel-block" style="width:1.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:9rem"></span></td>
+                                <td><span class="skel skel-block" style="width:13rem"></span></td>
+                                <td><span class="skel skel-block" style="width:6rem"></span></td>
+                                <td><span class="skel skel-block" style="width:8rem"></span></td>
+                                <td><span class="skel skel-block" style="width:2.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                            </tr>
+                            <tr class="skel-row">
+                                <td><span class="skel skel-block" style="width:1.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:12rem"></span></td>
+                                <td><span class="skel skel-block" style="width:13rem"></span></td>
+                                <td><span class="skel skel-block" style="width:7rem"></span></td>
+                                <td><span class="skel skel-block" style="width:10rem"></span></td>
+                                <td><span class="skel skel-block" style="width:2.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                            </tr>
+                            <tr class="skel-row">
+                                <td><span class="skel skel-block" style="width:1.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:10rem"></span><span class="visually-hidden">Loading devices…</span></td>
+                                <td><span class="skel skel-block" style="width:13rem"></span></td>
+                                <td><span class="skel skel-block" style="width:6rem"></span></td>
+                                <td><span class="skel skel-block" style="width:9rem"></span></td>
+                                <td><span class="skel skel-block" style="width:2.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4.5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                                <td><span class="skel skel-block" style="width:4rem"></span></td>
+                                <td><span class="skel skel-block" style="width:5rem"></span></td>
+                            </tr>
                             </tbody>
                         </table>
+                        <!-- Seed the column widths from the last render before this
+                             table is first painted, so the skeleton is already the
+                             right shape and the columns don't jump sideways when the
+                             real rows arrive. Inline and immediately after the table
+                             on purpose: it must run while the parser is still inside
+                             this document, i.e. before the first paint. Widths are a
+                             hint only — table-layout is auto, so real content still
+                             wins if a device name needs more room.
+                             Written by rememberColumnWidths() in js/devices.js. -->
+                        <script>
+                            (function () {
+                                try {
+                                    var w = JSON.parse(localStorage.getItem('zbm-device-col-widths') || 'null');
+                                    if (!Array.isArray(w)) return;
+                                    var th = document.querySelectorAll('#deviceTableBody')[0]
+                                        .closest('table').tHead.rows[0].cells;
+                                    if (w.length !== th.length) return;   // columns changed since
+                                    for (var i = 0; i < th.length; i++) th[i].style.width = w[i] + 'px';
+                                } catch (e) { /* first visit, or storage unavailable */ }
+                            })();
+                        </script>
                     </div>
                 </div>
             </div>

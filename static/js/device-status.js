@@ -455,10 +455,18 @@
         // Enhance existing rows
         enhanceDeviceTable();
 
-        // Watch for table re-renders (devices.js calls renderDeviceTable)
+        // Watch for table re-renders (devices.js calls renderDeviceTable).
+        //
+        // Runs synchronously, NOT on a timer. This enhancer replaces the LQI
+        // cell that devices.js just rendered (badge + a d-block RSSI line)
+        // with signal bars, which is one line shorter — so every row shrank
+        // 63px -> 49px a few hundred ms after the table appeared, dropping the
+        // tbody ~400px and re-shifting every column. MutationObserver
+        // callbacks are microtasks: they already run after devices.js has
+        // finished its synchronous render, but still before the browser
+        // paints, so doing the work here means the table is only laid out once.
         var observer = new MutationObserver(function () {
-            // Small delay to let devices.js finish rendering
-            setTimeout(enhanceDeviceTable, 50);
+            enhanceDeviceTable();
         });
 
         observer.observe(tbody, { childList: true, subtree: false });
@@ -468,12 +476,14 @@
     // 8. START
     // ----------------------------------------------------------
 
+    // No start-up delay: the device fetch can resolve before a timer would
+    // fire, and attaching the observer late is what let an un-enhanced table
+    // paint first and then jump. init() already retries if the tbody isn't in
+    // the DOM yet, which is the only thing the delay was buying.
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function () {
-            setTimeout(init, 300);
-        });
+        document.addEventListener('DOMContentLoaded', init);
     } else {
-        setTimeout(init, 300);
+        init();
     }
 
 })();
