@@ -121,8 +121,7 @@ class DriveService : Service() {
             return START_NOT_STICKY
         }
 
-        tripId = if (prefs.journeysEnabled)
-            java.util.UUID.randomUUID().toString() else null
+        tripId = if (prefs.journeysEnabled) resumeOrStartTrip(prefs) else null
         if (tripId != null) startMotion()
         startUpdates(prefs)
         running = true
@@ -189,6 +188,41 @@ class DriveService : Service() {
         }
     }
 
+    /**
+     * Continue the trip already in progress, or begin a new one.
+     *
+     * A drive is not the same thing as one run of this service. The service
+     * ends whenever the car's Bluetooth link drops — which head units do
+     * spuriously, mid-drive, as profiles renegotiate — and whenever the system
+     * decides to reclaim it. Minting a fresh id on every start turns one
+     * journey into a run of fragments, and the hub discards any fragment under
+     * MIN_TRIP_FIXES as a blip, so most of them vanish entirely and the
+     * survivor is a stub.
+     *
+     * The resume window matches the hub's TRIP_CLOSE_GAP_S deliberately: below
+     * it the hub would have treated the fixes as one trip regardless, so
+     * reusing the id tells it the truth rather than overriding its judgement.
+     * Above it the drive really did end, and a new id is correct.
+     */
+    private fun resumeOrStartTrip(prefs: Prefs): String {
+        val gap = System.currentTimeMillis() - prefs.driveTripLastMs
+        val previous = prefs.driveTripId
+        // A negative gap means the clock moved backwards (NTP correction, a
+        // timezone-less RTC catching up at boot). Trusting it could resume a
+        // trip from any point in the past.
+        val resumable = previous.isNotEmpty() && gap in 0..TRIP_RESUME_WINDOW_MS
+
+        val id = if (resumable) previous else java.util.UUID.randomUUID().toString()
+        if (resumable) {
+            Log.i(TAG, "resuming trip $id (${gap / 1000}s gap)")
+        } else {
+            Log.i(TAG, "starting trip $id")
+        }
+        prefs.driveTripId = id
+        prefs.driveTripLastMs = System.currentTimeMillis()
+        return id
+    }
+
     private fun startMotion() {
         wakeLock = getSystemService(android.os.PowerManager::class.java)
             ?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG)
@@ -212,6 +246,11 @@ class DriveService : Service() {
                 // to the interval that just ended, and posting is asynchronous.
                 // Draining after an await would fold part of the next interval
                 // into this fix.
+                // Keep the trip alive for a restart. Written per fix so the
+                // window is measured from the last thing that actually
+                // happened, not from when the service started.
+                if (tripId != null) prefs.driveTripLastMs = System.currentTimeMillis()
+
                 val m = motion
                 if (m != null && loc.hasSpeed()) m.noteGpsSpeed(loc.speed)
                 val window = m?.takeWindow()
@@ -304,6 +343,12 @@ class DriveService : Service() {
         private const val NOTIF_ID = 41
         private const val UPDATE_INTERVAL_MS = 60_000L
         private const val WAKE_TAG = "zmm:drive-motion"
+
+        /**
+         * How long a restart may still count as the same drive. Mirrors the
+         * hub's TRIP_CLOSE_GAP_S (journeys.py); keep the two in step.
+         */
+        private const val TRIP_RESUME_WINDOW_MS = 300_000L
 
         /**
          * Whether drive mode is currently streaming. Read by

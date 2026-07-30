@@ -178,6 +178,28 @@ class Prefs(context: Context) {
     }
 
     /**
+     * The trip currently being recorded, and when it last saw a fix.
+     *
+     * Persisted rather than held in DriveService because the thing this
+     * protects against is DriveService not surviving: a head unit that drops
+     * and re-establishes the Bluetooth link, or the system killing the
+     * service mid-drive. Either restarts it, and a restart that minted a
+     * fresh trip id would cut one drive into fragments — fragments short
+     * enough that the hub discards most of them as blips, leaving a
+     * three-fix stub as the only evidence a drive happened.
+     *
+     * Resuming instead makes the phone agree with how the hub already
+     * segments trips: same drive until there is a real gap.
+     */
+    var driveTripId: String
+        get() = sp.getString(KEY_TRIP_ID, "") ?: ""
+        set(v) = sp.edit().putString(KEY_TRIP_ID, v).apply()
+
+    var driveTripLastMs: Long
+        get() = sp.getLong(KEY_TRIP_LAST, 0L)
+        set(v) = sp.edit().putLong(KEY_TRIP_LAST, v).apply()
+
+    /**
      * Fuel grade the car app searches for, cycled from the head unit.
      *
      * Phone-side and not hub-decided, unlike the mode and journey settings:
@@ -221,6 +243,8 @@ class Prefs(context: Context) {
         private const val KEY_DRIVE_INTERVAL = "drive_interval_s"
         private const val KEY_PASSIVE_POST = "passive_last_post_ms"
         private const val KEY_CAR_FUEL = "car_fuel_type"
+        private const val KEY_TRIP_ID = "drive_trip_id"
+        private const val KEY_TRIP_LAST = "drive_trip_last_ms"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"
