@@ -144,6 +144,8 @@ class FuelPriceService:
                 "address": s.get("address"),
                 "postcode": s.get("postcode"),
                 "distance_km": s.get("dist"),
+                "latitude": s.get("latitude"),
+                "longitude": s.get("longitude"),
                 "price": round(float(price), 3),
                 # All four so the UI can show alternatives without re-querying.
                 "prices": {ft: s.get(ft) for ft in FUEL_TYPES if s.get(ft) is not None},
