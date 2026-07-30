@@ -27,8 +27,12 @@ android {
         applicationId = "com.zmm.presence"
         minSdk = 26          // O — geofencing + notification channels
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // Bump BOTH on every build you install anywhere. versionCode is what
+        // Android compares to decide an upgrade is an upgrade; versionName is
+        // what the hero strip shows, and is the only way to tell from the phone
+        // which build is actually running. CHANGELOG.md records what changed.
+        versionCode = 4
+        versionName = "1.3.0"
     }
 
     signingConfigs {
@@ -75,6 +79,12 @@ android {
 }
 
 dependencies {
+    // Prefs.isPublicUrl decides whether drive mode runs at all, and its
+    // negative cases (RFC1918, CGNAT, mDNS, IPv6 ULA) cannot be exercised on a
+    // phone without re-pairing it against each address in turn. It is pure JVM
+    // logic, so a plain unit test covers it.
+    testImplementation("junit:junit:4.13.2")
+
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")

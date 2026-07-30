@@ -220,7 +220,30 @@ class Prefs(context: Context) {
     val hasHome: Boolean
         get() = !homeLat.isNaN() && !homeLon.isNaN() && radiusM > 0f
 
-    fun clear() = sp.edit().clear().apply()
+    /**
+     * Light / dark / follow-the-system, as an AppCompatDelegate.MODE_NIGHT_*
+     * constant.
+     *
+     * Stored as the framework's own constant rather than a private enum so it
+     * can go straight to setDefaultNightMode with nothing to translate. The
+     * default is MODE_NIGHT_FOLLOW_SYSTEM (-1).
+     */
+    var themeMode: Int
+        get() = sp.getInt(KEY_THEME, -1)   // AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+        set(v) = sp.edit().putInt(KEY_THEME, v).apply()
+
+    /**
+     * Wipe the pairing.
+     *
+     * The chosen theme deliberately survives: "Forget this hub" is about the
+     * hub, and silently reverting someone's display preference alongside it
+     * would look like a bug in the toggle rather than part of forgetting.
+     */
+    fun clear() {
+        val theme = themeMode
+        sp.edit().clear().apply()
+        themeMode = theme
+    }
 
     companion object {
         private const val KEY_HUB = "hub_url"
@@ -245,6 +268,7 @@ class Prefs(context: Context) {
         private const val KEY_CAR_FUEL = "car_fuel_type"
         private const val KEY_TRIP_ID = "drive_trip_id"
         private const val KEY_TRIP_LAST = "drive_trip_last_ms"
+        private const val KEY_THEME = "theme_mode"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"
@@ -273,5 +297,58 @@ class Prefs(context: Context) {
         }
 
         fun isSecure(url: String): Boolean = url.startsWith("https://")
+
+        /**
+         * Whether this hub address can be reached from outside the home network.
+         *
+         * Drive mode reports every minute while the car is connected, which by
+         * definition happens away from home. A LAN address cannot answer once
+         * the phone leaves the Wi-Fi, so the whole feature would consist of
+         * failed requests — and the failure looks like a broken hub rather than
+         * an address that was never going to work.
+         *
+         * Conservative by design: anything not recognisably routable counts as
+         * local. A false "local" costs a hub owner one look at Remote Access; a
+         * false "public" costs a drive's worth of silently dropped reports.
+         */
+        fun isPublicUrl(url: String): Boolean {
+            val host = try {
+                java.net.URI(normaliseUrl(url)).host?.lowercase()
+            } catch (e: Exception) {
+                null
+            } ?: return false
+
+            // mDNS and single-label names resolve on the LAN only.
+            if (host == "localhost" || host.endsWith(".local")) return false
+            if (!host.contains('.') && !host.contains(':')) return false
+
+            // Bracketless IPv6 still arrives here with colons.
+            if (host.contains(':')) {
+                val h = host.trim('[', ']')
+                if (h == "::1") return false
+                // fc00::/7 (unique local) and fe80::/10 (link local).
+                if (h.startsWith("fc") || h.startsWith("fd") ||
+                    h.startsWith("fe8") || h.startsWith("fe9") ||
+                    h.startsWith("fea") || h.startsWith("feb")) return false
+                return true
+            }
+
+            val octets = host.split('.')
+            if (octets.size == 4 && octets.all { it.toIntOrNull() in 0..255 }) {
+                val (a, b) = octets[0].toInt() to octets[1].toInt()
+                return when {
+                    a == 10 -> false                          // 10.0.0.0/8
+                    a == 127 -> false                         // loopback
+                    a == 172 && b in 16..31 -> false          // 172.16.0.0/12
+                    a == 192 && b == 168 -> false             // 192.168.0.0/16
+                    a == 169 && b == 254 -> false             // link local
+                    a == 100 && b in 64..127 -> false         // CGNAT
+                    else -> true
+                }
+            }
+
+            // A dotted name that isn't an IP literal: a real domain.
+            return true
+        }
     }
 }

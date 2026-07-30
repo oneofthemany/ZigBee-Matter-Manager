@@ -409,14 +409,25 @@ def _confirm_wipe(existing: dict | None) -> bool:
         return False
 
 
-def install_apk(adb: Path, serial: str, apk: Path, allow_reinstall: bool = False) -> bool:
+def install_apk(adb: Path, serial: str, apk: Path, allow_reinstall: bool = False,
+                version: tuple[str, int] | None = None) -> bool:
     head("Install")
 
     existing = installed_package(adb, serial)
     if existing:
         kind = "debug" if existing["debuggable"] else "release"
-        info(f"installed: {existing['versionName']} "
+        info(f"on device: {existing['versionName']} "
              f"(code {existing['versionCode']}, {kind} build)")
+    if version:
+        info(f"installing: {version[0]} (code {version[1]})")
+
+    # Two builds sharing a versionCode install over each other leaving nothing
+    # on the phone to tell them apart — the app's own version strip will read
+    # identical. Say so before the install, while bumping it is still cheap.
+    if existing and version and str(existing["versionCode"]) == str(version[1]):
+        warn(f"versionCode {version[1]} is already what's installed — bump it in "
+             f"app/build.gradle.kts")
+        info("otherwise you cannot confirm from the phone which build is running")
 
     r = run([str(adb), "-s", serial, "install", "-r", str(apk)])
     out = (r.stdout or "") + (r.stderr or "")
@@ -654,6 +665,53 @@ def gradle_build(jdk: Path, sdk: Path, task: str) -> None:
     ok("build succeeded")
 
 
+def run_unit_tests(jdk: Path, sdk: Path) -> bool:
+    """
+    Run the JVM unit tests and report what actually ran.
+
+    Gradle's own "BUILD SUCCESSFUL" is not enough on its own: a test task with
+    no tests to run succeeds identically to one that ran and passed, so a
+    source set that silently stopped being compiled would look like a clean
+    bill of health. The JUnit XML says how many cases there were.
+
+    Only the debug variant has a unit test task in this project, and the code
+    under test is variant-independent, so debug is the whole suite.
+    """
+    head("Unit tests")
+    results = HERE / "app/build/test-results/testDebugUnitTest"
+    if results.exists():
+        shutil.rmtree(results)          # never report a previous run's XML
+
+    proc = run([str(find_gradlew()), ":app:testDebugUnitTest"],
+               env=jdk_env(jdk, ANDROID_HOME=str(sdk)))
+
+    total = failed = 0
+    cases: list[str] = []
+    for xml in sorted(results.glob("*.xml")) if results.exists() else []:
+        text = xml.read_text()
+        m = re.search(r'tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', text)
+        if m:
+            total += int(m.group(1))
+            failed += int(m.group(2)) + int(m.group(3))
+        cases += re.findall(r'<testcase name="([^"]+)"', text)
+
+    if proc.returncode != 0 or failed:
+        bad(f"{failed} of {total} unit tests failed")
+        for line in (proc.stdout or "").splitlines():
+            if "FAILED" in line or "expected" in line.lower():
+                info(line.strip()[:160])
+        return False
+
+    if total == 0:
+        warn("no unit tests were found — the test source set may not be compiled")
+        return True
+
+    ok(f"{total} unit tests passed")
+    for c in sorted(cases):
+        info(c)
+    return True
+
+
 def find_apk(release: bool) -> Path:
     d = HERE / "app/build/outputs/apk" / ("release" if release else "debug")
     apks = sorted(d.glob("*.apk"))
@@ -709,6 +767,22 @@ def verify_signature(sdk: Path, apk: Path) -> bool:
         warn("signed with the ANDROID DEBUG KEY — fine for yourself, not for distribution")
 
     return True
+
+
+def apk_version(sdk: Path, apk: Path) -> tuple[str, int] | None:
+    """
+    versionName and versionCode as built into the APK.
+
+    Read from the artifact rather than from build.gradle.kts on purpose: the
+    point is to confirm what you are about to install, and the source tree can
+    have moved on since the APK was assembled.
+    """
+    r = run([str(build_tool(sdk, "aapt2")), "dump", "badging", str(apk)])
+    name = re.search(r"versionName='([^']*)'", r.stdout or "")
+    code = re.search(r"versionCode='(\d+)'", r.stdout or "")
+    if not name or not code:
+        return None
+    return name.group(1), int(code.group(1))
 
 
 def _release_res_path(aapt2: Path, apk: Path, name: str) -> str | None:
@@ -837,6 +911,8 @@ def main() -> int:
                          "no value: use the one connected device, or prompt if "
                          "there are several. With a value: install straight to "
                          "that adb serial, no prompt.")
+    ap.add_argument("--skip-tests", action="store_true",
+                    help="don't run the JVM unit tests before verifying")
     ap.add_argument("--reinstall", action="store_true",
                     help="if the installed copy was signed with a different key "
                          "(typically a debug build), uninstall and install "
@@ -863,14 +939,21 @@ def main() -> int:
             warn(f"{KEY_PROPS.name} not found — the APK will be unsigned")
             info("run with --setup to create a signing key")
 
+        tests_ok = True
         if not args.verify_only:
             gradle_build(jdk, sdk, "assembleRelease" if release else "assembleDebug")
+            if not args.skip_tests:
+                tests_ok = run_unit_tests(jdk, sdk)
 
         apk = find_apk(release)
         head("Artifact")
         ok(f"{apk.relative_to(HERE)}  ({apk.stat().st_size / 1e6:.1f} MB)")
+        version = apk_version(sdk, apk)
+        if version:
+            ok(f"version {version[0]} (code {version[1]})")
 
         results = [
+            tests_ok,
             verify_signature(sdk, apk),
             verify_security_config(sdk, apk, release),
             verify_pinning_code(apk),
@@ -892,7 +975,8 @@ def main() -> int:
             adb = find_adb(sdk)
             devices = list_devices(adb)
             serial = choose_device(devices, args.install)
-            if not install_apk(adb, serial, apk, allow_reinstall=args.reinstall):
+            if not install_apk(adb, serial, apk, allow_reinstall=args.reinstall,
+                               version=version):
                 return 1
         else:
             print(f"\n  Install with:\n"

@@ -3,6 +3,41 @@
     <string name="app_name">ZMM Presence</string>
     <string name="blurb">Reports arrive/leave to your own hub. Nothing else, nobody else.</string>
 
+    <!--
+        Hive motif, matching the manager dashboard. The ⬡ prefix on section
+        labels is lifted from `.card-header .fw-bold::before` in
+        hive-components.css; keeping the glyph in the string rather than the
+        layout means a translation can drop it if a locale renders it badly.
+    -->
+    <string name="hex_mark">Z</string>
+    <string name="label_hub">⬡  Hub</string>
+    <string name="label_geofence">⬡  Home geofence</string>
+    <string name="label_permissions">⬡  Permissions</string>
+    <string name="label_drive">⬡  Drive mode</string>
+    <string name="label_device">⬡  This device</string>
+
+    <!-- Status pills. Deliberately terse: they are read at a glance against the
+         full sentence underneath, so they must not repeat it. -->
+    <string name="pill_paired">Paired</string>
+    <string name="pill_unpaired">Not paired</string>
+    <string name="pill_armed">Armed</string>
+    <string name="pill_disarmed">Disarmed</string>
+    <string name="pill_ok">OK</string>
+    <string name="pill_partial">Partial</string>
+    <string name="pill_action">Action needed</string>
+    <string name="pill_on">On</string>
+    <string name="pill_off">Off</string>
+    <string name="pill_unavailable">Unavailable</string>
+
+    <string name="version_fmt">v%1$s · build %2$d</string>
+
+    <!-- Theme toggle. Doubles as the button's content description, so each
+         reads as a statement of the current mode, not an instruction. -->
+    <string name="theme_toggle">Theme</string>
+    <string name="theme_system">Theme: following the system</string>
+    <string name="theme_light">Theme: light</string>
+    <string name="theme_dark">Theme: dark</string>
+
     <!-- Android Auto (car/FuelScreen.kt). Kept short: the head unit truncates
          hard, and a driver reads these at a glance. -->
     <string name="car_fuel_title">Cheapest %1$s nearby</string>
@@ -71,6 +106,16 @@
     <string name="car_pick_title">Which Bluetooth device is your car?</string>
     <string name="car_pick_none">None — turn drive mode off</string>
     <string name="car_no_bonded">No paired Bluetooth devices on this phone. Pair with the car first, then choose it here.</string>
+    <!--
+        Drive mode is gated on the hub having a public address. Reporting every
+        minute while the car is connected only happens away from home, so a LAN
+        address (192.168.x, *.local) can never answer — the feature would be
+        nothing but failed requests, and they would read as a broken hub rather
+        than an address that was never going to work off the home Wi-Fi.
+    -->
+    <string name="car_needs_public">Drive mode: unavailable — this hub has a home-network address, which cannot be reached once you drive away. Set up Remote Access on the hub, then pair again using its public address.</string>
+    <string name="car_needs_public_short">Hub has no public address</string>
+
     <string name="car_bt_denied">Bluetooth permission refused — drive mode needs it to recognise your car. Grant it in Settings → Apps → ZMM Presence → Permissions.</string>
     <string name="car_saved">Drive mode set for %1$s. Starts next time the car connects.</string>
     <string name="car_cleared">Drive mode turned off.</string>

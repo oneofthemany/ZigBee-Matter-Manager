@@ -9,6 +9,7 @@ import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.lifecycle.lifecycleScope
 import com.zmm.presence.databinding.ActivityPairBinding
 import kotlinx.coroutines.launch
@@ -49,9 +50,16 @@ class PairActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super.onCreate: setDefaultNightMode recreates any started
+        // activity to apply, so setting it after would build the whole screen
+        // once in the wrong theme and immediately throw it away — visible as a
+        // flash of the other palette on every launch.
+        AppCompatDelegate.setDefaultNightMode(Prefs(this).themeMode)
+
         super.onCreate(savedInstanceState)
         b = ActivityPairBinding.inflate(layoutInflater)
         setContentView(b.root)
+        applyBackdrop()
         applyWindowInsets()
         prefs = Prefs(this)
 
@@ -66,44 +74,56 @@ class PairActivity : AppCompatActivity() {
         b.armBtn.setOnClickListener { if (prefs.armed) disarm() else arm() }
         b.forgetBtn.setOnClickListener { forget() }
         b.discoverBtn.setOnClickListener { discover() }
+        b.themeBtn.setOnClickListener { cycleTheme() }
+        renderThemeButton()
 
         b.deviceId.text = getString(R.string.device_id_fmt, deviceId())
+        b.versionLabel.text = getString(
+            R.string.version_fmt, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
         render()
     }
 
     /**
-     * Keep content clear of the status bar AND the app bar.
+     * The honeycomb backdrop, on the scroll container so it stays put while the
+     * content moves over it.
      *
-     * targetSdk 35 (Android 15) forces edge-to-edge: the window starts at y=0
-     * and the ActionBar is drawn ON TOP of the content view rather than above
-     * it. Without this the first fields sit behind the "ZMM Presence" bar and
-     * the blurb disappears under the status bar.
+     * Built here rather than as a background resource because the comb has to
+     * tile, and tiling on Android means a BitmapDrawable — a density ladder of
+     * PNGs for what is six lines to a stroke. See [HoneycombDrawable].
+     */
+    private fun applyBackdrop() {
+        val d = resources.displayMetrics.density
+        b.root.background = HoneycombDrawable(
+            baseColor = getColor(R.color.bg_body),
+            strokeColor = getColor(R.color.comb_stroke),
+            glowColor = getColor(R.color.comb_glow),
+            cellRadius = 30f * d,
+            strokeWidthPx = 1f * d,
+        )
+    }
+
+    /**
+     * Keep content clear of the system bars.
      *
-     * So the top padding is the status bar inset PLUS the action bar height —
-     * the system inset alone is not enough, because the bar occupying that
-     * space is the app's own, and the insets API knows nothing about it.
+     * targetSdk 35 (Android 15) forces edge-to-edge: the window starts at y=0,
+     * so without this the hero sits under the status bar and the last button
+     * under the navigation bar.
+     *
+     * The theme is NoActionBar — the hero strip is the title — so the system
+     * inset is the whole story here.
+     *
+     * Padding goes on the ScrollView and clipToPadding stays at its default of
+     * true, so scrolled content is clipped at the status bar instead of sliding
+     * under the clock. The honeycomb still reaches the screen edges regardless:
+     * a view's background is drawn across its whole box, padding included.
      */
     private fun applyWindowInsets() {
-        // Resolved from the theme rather than hardcoded to 56dp: it differs by
-        // configuration, and a wrong constant here is a permanent overlap.
-        val tv = android.util.TypedValue()
-        val actionBarPx = if (theme.resolveAttribute(
-                android.R.attr.actionBarSize, tv, true)) {
-            android.util.TypedValue.complexToDimensionPixelSize(
-                tv.data, resources.displayMetrics)
-        } else 0
-
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
             val bars = insets.getInsets(
                 androidx.core.view.WindowInsetsCompat.Type.systemBars() or
                 androidx.core.view.WindowInsetsCompat.Type.displayCutout()
             )
-            v.setPadding(
-                bars.left,
-                bars.top + actionBarPx,
-                bars.right,
-                bars.bottom,
-            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
     }
@@ -369,6 +389,13 @@ class PairActivity : AppCompatActivity() {
      * first — which they will have done already in practice.
      */
     private fun chooseCar() {
+        // Guarded here as well as by the disabled button: the button can be
+        // tapped in the moment between editing the URL and render() running,
+        // and picking a car that can never report is worse than saying why.
+        if (!Prefs.isPublicUrl(prefs.hubUrl)) {
+            status(getString(R.string.car_needs_public))
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -525,16 +552,121 @@ class PairActivity : AppCompatActivity() {
         b.batteryState.text = getString(if (batteryOk) R.string.battery_ok else R.string.battery_none)
         b.batteryBtn.isEnabled = !batteryOk
 
-        b.carState.text = if (prefs.carBtAddress.isEmpty())
-            getString(R.string.car_none)
-        else
-            getString(R.string.car_fmt, prefs.carBtName.ifEmpty { prefs.carBtAddress })
+        // Drive mode needs a hub reachable from outside the home network: it
+        // reports every minute while the car is connected, which is precisely
+        // when the phone is off the home Wi-Fi. See Prefs.isPublicUrl.
+        val publicHub = Prefs.isPublicUrl(prefs.hubUrl)
+        b.carBtn.isEnabled = publicHub
+        b.carState.text = when {
+            !publicHub -> getString(R.string.car_needs_public)
+            prefs.carBtAddress.isEmpty() -> getString(R.string.car_none)
+            else -> getString(R.string.car_fmt, prefs.carBtName.ifEmpty { prefs.carBtAddress })
+        }
 
         b.armBtn.isEnabled = prefs.isPaired && prefs.hasHome && fg && bg
         b.armBtn.setText(if (prefs.armed) R.string.disarm else R.string.arm)
         b.homeState.text = if (prefs.hasHome) {
             getString(R.string.home_fmt, fmt(prefs.homeLat), fmt(prefs.homeLon), prefs.radiusM.toInt())
         } else getString(R.string.home_none)
+
+        // Pills restate the section's state in one word, so the whole screen
+        // can be read down the right-hand edge without parsing the sentences.
+        pill(b.hubPill,
+            if (prefs.isPaired) R.string.pill_paired else R.string.pill_unpaired,
+            if (prefs.isPaired) Tone.OK else Tone.IDLE)
+
+        pill(b.geoPill,
+            if (prefs.armed) R.string.pill_armed else R.string.pill_disarmed,
+            if (prefs.armed) Tone.OK else Tone.IDLE)
+
+        // Foreground-only is called out separately: it looks like a working
+        // permission right up until the app is closed, which is when the
+        // geofence actually matters.
+        pill(b.permPill,
+            when {
+                fg && bg -> R.string.pill_ok
+                fg -> R.string.pill_partial
+                else -> R.string.pill_action
+            },
+            when {
+                fg && bg -> Tone.OK
+                fg -> Tone.WARN
+                else -> Tone.BAD
+            })
+
+        val driveOn = publicHub && prefs.carBtAddress.isNotEmpty()
+        pill(b.drivePill,
+            when {
+                !publicHub -> R.string.pill_unavailable
+                driveOn -> R.string.pill_on
+                else -> R.string.pill_off
+            },
+            when {
+                !publicHub -> Tone.WARN
+                driveOn -> Tone.OK
+                else -> Tone.IDLE
+            })
+    }
+
+    // ---- theme ----
+
+    /**
+     * Cycle system -> light -> dark -> system.
+     *
+     * A cycle rather than a dialog: three states is few enough to tap through,
+     * and the icon shows which one is current. "System" is in the cycle, not
+     * just the default, so a deliberate choice can be handed back.
+     */
+    private fun cycleTheme() {
+        prefs.themeMode = when (prefs.themeMode) {
+            AppCompatDelegate.MODE_NIGHT_NO -> AppCompatDelegate.MODE_NIGHT_YES
+            AppCompatDelegate.MODE_NIGHT_YES -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            else -> AppCompatDelegate.MODE_NIGHT_NO
+        }
+        renderThemeButton()
+        // Recreates the activity. The backdrop is rebuilt from the newly
+        // resolved colours on the way through, so nothing else has to react.
+        AppCompatDelegate.setDefaultNightMode(prefs.themeMode)
+    }
+
+    private fun renderThemeButton() {
+        b.themeBtn.setIconResource(
+            when (prefs.themeMode) {
+                AppCompatDelegate.MODE_NIGHT_NO -> R.drawable.ic_theme_light
+                AppCompatDelegate.MODE_NIGHT_YES -> R.drawable.ic_theme_dark
+                else -> R.drawable.ic_theme_system
+            }
+        )
+        // The icon alone says which mode is active; the description says it out
+        // loud for TalkBack, where an icon swap is invisible.
+        b.themeBtn.contentDescription = getString(
+            when (prefs.themeMode) {
+                AppCompatDelegate.MODE_NIGHT_NO -> R.string.theme_light
+                AppCompatDelegate.MODE_NIGHT_YES -> R.string.theme_dark
+                else -> R.string.theme_system
+            }
+        )
+    }
+
+    /** Pill colouring. Maps to the dashboard's status token set. */
+    private enum class Tone { OK, WARN, BAD, IDLE }
+
+    private fun pill(view: android.widget.TextView, textRes: Int, tone: Tone) {
+        val color = getColor(
+            when (tone) {
+                Tone.OK -> R.color.status_ok
+                Tone.WARN -> R.color.status_warn
+                Tone.BAD -> R.color.status_bad
+                Tone.IDLE -> R.color.text_muted
+            }
+        )
+        view.setText(textRes)
+        view.setTextColor(color)
+        // Same hue as the text at low alpha, which is how the dashboard builds
+        // its *-subtle fills. One colour per state instead of two to keep in
+        // step.
+        view.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            (color and 0x00FFFFFF) or (0x24 shl 24))
     }
 
     private fun status(s: String) { b.status.text = s }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Night hive. The colour resources already remap themselves via
+    values-night/colors.xml, so the only thing that has to change here is the
+    status bar icon polarity — wax-on-night wants light icons, and that is an
+    explicit boolean rather than something the palette can imply.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.ZmmPresence" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/honey_ink</item>
+        <item name="colorPrimaryContainer">@color/honey_deep</item>
+        <item name="colorOnPrimaryContainer">@color/wax</item>
+
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorOnSecondary">@color/honey_ink</item>
+
+        <item name="colorError">@color/status_bad</item>
+
+        <item name="android:colorBackground">@color/bg_body</item>
+        <item name="colorSurface">@color/bg_surface</item>
+        <item name="colorSurfaceVariant">@color/bg_surface_raised</item>
+        <item name="colorOnBackground">@color/text_primary</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/text_secondary</item>
+        <item name="colorOutline">@color/border_color</item>
+        <item name="colorOutlineVariant">@color/border_color</item>
+
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+
+        <item name="materialButtonStyle">@style/Widget.Zmm.Button</item>
+        <item name="materialCardViewStyle">@style/Widget.Zmm.Card</item>
+    </style>
+</resources>

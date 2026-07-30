@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The hive cell. Same geometry as the hexclip token in hive-tokens.css:
+      polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%)
+    expressed over a 100x100 viewport. Flat top and bottom, points left and
+    right. Filled white and tinted at the use site.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="30dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M25,0 L75,0 L100,50 L75,100 L25,100 L0,50 Z" />
+</vector>

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Hive palette, mirrored from static/css/hive-tokens.css.
+
+    That file is the canonical source of truth for the manager's colours; these
+    are the same values transcribed for Android. If a raw palette value changes
+    there, change it here — the two cannot import from each other, so the only
+    thing keeping the phone and the dashboard looking like one product is that
+    the numbers match.
+
+    Raw palette is theme-agnostic. The semantic names below it are the light
+    theme; values-night/colors.xml overrides those and nothing else, which is
+    the same split the CSS uses (:root vs [data-theme="dark"]).
+-->
+<resources>
+
+    <!-- raw palette (theme-agnostic) -->
+    <color name="night">#0b1620</color>
+    <color name="comb">#101e2b</color>
+    <color name="comb2">#16283a</color>
+    <color name="line">#1e3346</color>
+    <color name="wax">#eaf2f4</color>
+    <color name="muted">#7e97a8</color>
+
+    <color name="honey">#f2a93b</color>
+    <color name="honey_deep">#c97f1e</color>
+    <color name="honey_soft">#f7bb5e</color>
+    <color name="honey_ink">#14100a</color>   <!-- text on honey fills -->
+
+    <color name="hive_ok">#34d399</color>
+    <color name="hive_bad">#f4536e</color>
+    <color name="hive_warn">#f2a93b</color>
+
+    <!-- semantic: hive light (warm paper + navy ink) -->
+    <color name="bg_body">#f2efe7</color>
+    <color name="bg_surface">#ffffff</color>
+    <color name="bg_surface_raised">#faf8f2</color>
+    <color name="bg_input">#ffffff</color>
+
+    <color name="text_primary">#16283a</color>
+    <color name="text_secondary">#53687a</color>
+    <color name="text_muted">#7e8fa0</color>
+
+    <color name="border_color">#ded7c6</color>
+
+    <!--
+        Accent is a darkened honey on light. Raw #f2a93b on white is about 2:1
+        against white, which fails AA for text at any size — the dashboard hits
+        the same wall and solves it the same way. Honey stays honey for FILLS
+        (where the ink on top is dark); only text and outlines shift.
+    -->
+    <color name="accent">#b97a17</color>
+    <color name="accent_strong">#9a6410</color>
+
+    <color name="status_ok">#158057</color>
+    <color name="status_bad">#ca334e</color>
+    <color name="status_warn">#9a6410</color>
+
+    <!-- Honeycomb backdrop. See HoneycombDrawable. -->
+    <color name="comb_stroke">#2ab97a17</color>
+    <color name="comb_glow">#1af2a93b</color>
+
+</resources>

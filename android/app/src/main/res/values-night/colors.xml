@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Hive dark — the manager's night hive. Semantic overrides only; the raw
+    palette in values/colors.xml is shared. Mirrors [data-theme="dark"] in
+    static/css/hive-tokens.css.
+-->
+<resources>
+
+    <color name="bg_body">#0b1620</color>          <!-- night -->
+    <color name="bg_surface">#101e2b</color>       <!-- comb -->
+    <color name="bg_surface_raised">#16283a</color><!-- comb2 -->
+    <color name="bg_input">#0b1620</color>
+
+    <color name="text_primary">#eaf2f4</color>     <!-- wax -->
+    <color name="text_secondary">#9db2c0</color>
+    <color name="text_muted">#7e97a8</color>
+
+    <color name="border_color">#1e3346</color>     <!-- line -->
+
+    <!-- On night, raw honey clears AA comfortably, so no darkening needed. -->
+    <color name="accent">#f2a93b</color>
+    <color name="accent_strong">#f7bb5e</color>
+
+    <color name="status_ok">#34d399</color>
+    <color name="status_bad">#f4536e</color>
+    <color name="status_warn">#f2a93b</color>
+
+    <color name="comb_stroke">#33f2a93b</color>
+    <color name="comb_glow">#26f2a93b</color>
+
+</resources>

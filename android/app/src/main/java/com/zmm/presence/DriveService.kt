@@ -96,7 +96,12 @@ class DriveService : Service() {
         // Checked here, not just in the receiver: the service can be started
         // from the UI too, and a stale start after Forget must not stream
         // location for a hub that no longer exists.
+        // isPublicUrl is part of the gate, not just a UI affordance: drive mode
+        // runs away from home by definition, so a LAN-only hub yields a
+        // foreground service burning GPS for requests that cannot arrive. A
+        // pairing made before Remote Access was set up reaches here otherwise.
         val allowed = prefs.isPaired && prefs.armed &&
+            Prefs.isPublicUrl(prefs.hubUrl) &&
             Geofencing.hasForegroundLocation(this)
 
         // Foreground status is claimed BEFORE deciding whether to run
@@ -107,7 +112,7 @@ class DriveService : Service() {
         }
 
         if (!allowed) {
-            Log.i(TAG, "not paired/armed — drive mode refused")
+            Log.i(TAG, "not paired/armed/public — drive mode refused")
             stopSelf()
             return START_NOT_STICKY
         }

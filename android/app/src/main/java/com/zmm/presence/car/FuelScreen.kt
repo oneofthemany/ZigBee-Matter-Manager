@@ -180,6 +180,16 @@ class FuelScreen(carContext: CarContext) : Screen(carContext) {
                 return@launch
             }
 
+            // The head unit is only ever used away from home, so a LAN-only hub
+            // can never answer here. Saying so beats a generic network error
+            // that a driver would read as "no signal".
+            if (!Prefs.isPublicUrl(prefs.hubUrl)) {
+                loading = false
+                error = carContext.getString(com.zmm.presence.R.string.car_needs_public_short)
+                invalidate()
+                return@launch
+            }
+
             val centre = currentCentre()
             if (centre == null) {
                 loading = false
