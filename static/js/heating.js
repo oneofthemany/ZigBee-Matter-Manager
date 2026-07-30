@@ -72,6 +72,11 @@ let workingZones = [];   // zones being edited in the modal
 let sessionAnomalies = new Map(); // Accumulates anomaly history while the tab is open
 
 const REFRESH_MS = 20_000;
+// The 24h history chart is on a slower clock than the rest of the dashboard —
+// see the call site in loadHeatingDashboard.
+const HISTORY_REFRESH_MS = 5 * 60_000;
+let _lastHistoryLoad = 0;
+let _historyRendered = false;
 
 const EPC_COLOURS = {
     A: '#008054', B: '#19b459', C: '#8dce46',
@@ -140,12 +145,66 @@ function stopHeatingAutoRefresh() {
 // ============================================================================
 // DASHBOARD FETCH + RENDER
 // ============================================================================
+
+/**
+ * Replace `container`'s markup while carrying the *live* nodes named in `ids`
+ * across the swap.
+ *
+ * The nodes are moved, not copied: an ECharts instance holds a reference to the
+ * element it was initialised on, so cloning markup would leave the chart bound
+ * to a detached node and render nothing. Any id whose element is still empty
+ * (first paint) is left alone, so placeholders and spinners show normally.
+ */
+function renderPreserving(container, html, ids) {
+    const saved = new Map();
+    for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && el.childNodes.length) {
+            el.remove();          // detach before the teardown below
+            saved.set(id, el);
+        }
+    }
+
+    container.innerHTML = html;
+
+    for (const [id, liveEl] of saved) {
+        const placeholder = document.getElementById(id);
+        if (placeholder) placeholder.replaceWith(liveEl);
+    }
+}
+
+/** Snapshot a field's value/caret so a re-render can't eat what's being typed. */
+function captureFieldState(id) {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    return {
+        id,
+        value: el.value,
+        focused: document.activeElement === el,
+        start: el.selectionStart,
+        end: el.selectionEnd,
+    };
+}
+
+function restoreFieldState(snap) {
+    if (!snap) return;
+    const el = document.getElementById(snap.id);
+    if (!el || el.value === snap.value) return;
+    el.value = snap.value;
+    if (snap.focused) {
+        el.focus();
+        // Number inputs throw on setSelectionRange in some browsers.
+        try { el.setSelectionRange(snap.start, snap.end); } catch (e) { /* not selectable */ }
+    }
+}
+
 export async function loadHeatingDashboard({ silent = false } = {}) {
     const container = document.getElementById('heatingDashboard');
     if (!container) return;
 
     if (!silent && !lastDashboard) {
         container.innerHTML = spinnerBlock('Loading heating intelligence…');
+        _historyRendered = false;   // the chart node just went with it
     }
 
     try {
@@ -155,6 +214,7 @@ export async function loadHeatingDashboard({ silent = false } = {}) {
 
         if (!json.success) {
             container.innerHTML = renderDisabled(json.error || 'Heating advisor not enabled');
+            _historyRendered = false;
             bindTopBarControls();
             return;
         }
@@ -212,21 +272,28 @@ export async function loadHeatingDashboard({ silent = false } = {}) {
                 }
             }
         } catch (e) { log.debug('Sensor-only injection skipped:', e); }
-        // Preserve heatingControllerPanel contents across re-renders when
-        // possible so the user doesn't see a spinner-flash every 20s.
-        const prevPanel = document.getElementById('heatingControllerPanel');
-        const prevHTML = prevPanel ? prevPanel.innerHTML : null;
-        container.innerHTML = renderDashboard(json.data);
-        if (prevHTML) {
-            const newPanel = document.getElementById('heatingControllerPanel');
-            if (newPanel) newPanel.innerHTML = prevHTML;
-        }
+
+        // The whole tab is rebuilt every REFRESH_MS. Carry the live nodes that
+        // would otherwise flash back to a spinner (and, for the chart, be torn
+        // off their ECharts instance) across the swap, and keep whatever the
+        // user was typing.
+        const typing = captureFieldState('preheatTarget');
+        renderPreserving(container, renderDashboard(json.data), [
+            'heatingControllerPanel',
+            'heatingHistoryChart',
+        ]);
+        restoreFieldState(typing);
 
         renderHeatingAnomalies(anomaliesJson);
 
         bindDashboardControls(json.data);
         bindTopBarControls();
-        loadHeatingHistory();
+        // 24h history barely moves in 20s, and redrawing it means disposing and
+        // re-initialising the chart — visible as a re-animation. Refresh it on
+        // its own slow cadence, or whenever it isn't on screen yet.
+        if (!silent || !_historyRendered || Date.now() - _lastHistoryLoad > HISTORY_REFRESH_MS) {
+            loadHeatingHistory();
+        }
         // Single-shot refresh: controller panel is fetched in-line with the
         // dashboard, not on its own interval. Matches the 20s cadence above.
         await loadControllerStatus();
@@ -236,18 +303,22 @@ export async function loadHeatingDashboard({ silent = false } = {}) {
             container.innerHTML = `<div class="alert alert-danger m-3">
                 Failed to load heating dashboard: ${escapeHtml(err.message || String(err))}
             </div>`;
+            _historyRendered = false;
             bindTopBarControls();
         }
     }
 }
 
 async function loadHeatingHistory(hours = 24) {
+    _lastHistoryLoad = Date.now();
     try {
         const res = await fetch(`/api/heating/history?hours=${hours}`);
         const json = await res.json();
         if (json.success) renderHistoryChart(json.data);
     } catch (err) {
         log.warn('Heating history fetch failed:', err);
+        // Leave _historyRendered as-is: a failed refresh shouldn't blank a
+        // chart that's already on screen, and the next tick will retry.
     }
 }
 
@@ -928,6 +999,10 @@ let _heatingHistoryChart = null;
 function renderHistoryChart(historyData) {
     const container = document.getElementById('heatingHistoryChart');
     if (!container) return;
+    // Only a live chart counts as rendered — the "no data yet" placeholders
+    // below leave this false so the fast dashboard tick keeps checking for the
+    // first data points instead of waiting out HISTORY_REFRESH_MS.
+    _historyRendered = false;
     const devices = historyData?.devices || {};
     const names = Object.keys(devices);
 
@@ -969,8 +1044,6 @@ function renderHistoryChart(historyData) {
         return;
     }
 
-    if (_heatingHistoryChart) { _heatingHistoryChart.dispose(); _heatingHistoryChart = null; }
-
     // === Y range (nice 1°C rounding, min 4° visible) + X range ===
     let tMin = Infinity, tMax = -Infinity, xMin = Infinity, xMax = -Infinity;
     for (const s of series) for (const p of s.points) {
@@ -996,8 +1069,17 @@ function renderHistoryChart(historyData) {
 
     const palette = getChartPalette();
 
-    container.innerHTML = '<div id="heatingHistoryCanvas" style="height:300px"></div>';
-    _heatingHistoryChart = createChart(document.getElementById('heatingHistoryCanvas'));
+    // Reuse the existing instance where possible: disposing and re-initialising
+    // replays the whole intro animation, which on a periodic refresh reads as
+    // the chart flickering. setOption on a live instance tweens instead.
+    let canvas = document.getElementById('heatingHistoryCanvas');
+    if (!canvas || !_heatingHistoryChart) {
+        if (_heatingHistoryChart) { _heatingHistoryChart.dispose(); _heatingHistoryChart = null; }
+        container.innerHTML = '<div id="heatingHistoryCanvas" style="height:300px"></div>';
+        canvas = document.getElementById('heatingHistoryCanvas');
+        _heatingHistoryChart = createChart(canvas);
+    }
+    _historyRendered = true;
 
     const echartsSeries = series.map((s, i) => ({
         name: s.name,

@@ -56,15 +56,20 @@ function _syncPosAnchors() {
 }
 
 function _tickPositions() {
+    // Nothing to animate in a background tab, and the bar is re-anchored from
+    // the player state on the next tick anyway.
+    if (document.hidden) return;
     const now = performance.now();
     for (const [pid, a] of Object.entries(_posAnchors)) {
         if (a.dur <= 0) continue;                         // radio/live: no bar
         const bar = document.getElementById('prog-' + pid);
         if (!bar) continue;
         const cur = Math.min(a.playing ? a.pos + (now - a.at) : a.pos, a.dur);
-        bar.style.width = Math.max(0, Math.min(100, (cur / a.dur) * 100)).toFixed(2) + '%';
+        const pct = Math.max(0, Math.min(100, (cur / a.dur) * 100)).toFixed(2) + '%';
+        if (bar.style.width !== pct) bar.style.width = pct;
         const lbl = document.getElementById('ptime-' + pid);
-        if (lbl) lbl.textContent = _fmtTime(cur) + ' / ' + _fmtTime(a.dur);
+        const text = _fmtTime(cur) + ' / ' + _fmtTime(a.dur);
+        if (lbl && lbl.textContent !== text) lbl.textContent = text;
     }
 }
 
@@ -302,7 +307,7 @@ function renderPlayers() {
         const prog = (p.duration_ms > 0) ? `
           <div class="d-flex align-items-center gap-2 mt-1">
             <div class="progress flex-grow-1" style="height:4px">
-              <div id="prog-${pidE}" class="progress-bar bg-info"
+              <div id="prog-${pidE}" class="progress-bar bg-info zmm-media-progress"
                    style="width:${Math.min(100, (p.position_ms || 0) / p.duration_ms * 100).toFixed(2)}%"></div>
             </div>
             <small class="text-muted" id="ptime-${pidE}" style="font-variant-numeric:tabular-nums;white-space:nowrap">${_fmtTime(p.position_ms || 0)} / ${_fmtTime(p.duration_ms)}</small>

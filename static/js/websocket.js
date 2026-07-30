@@ -20,6 +20,23 @@ import { onDeviceJoined, onInterviewStatusUpdate, onJoinProgress } from './join-
 const log = zmmLog('websocket');
 
 /**
+ * Paint the navbar Zigbee connection indicator.
+ *
+ * Below 576px the text label is hidden and only the coloured dot remains, so
+ * the title/aria-label have to be updated alongside it — otherwise the phone
+ * layout shows an unexplained dot with no way to find out what it means.
+ */
+function setConnectionStatus(connected) {
+    const el = document.getElementById('connection-status');
+    if (!el) return;
+    const label = connected ? 'Connected' : 'Disconnected';
+    el.innerHTML = `<i class="fas fa-circle text-${connected ? 'success' : 'danger'}"></i>`
+        + `<span class="d-none d-sm-inline"> ${label}</span>`;
+    el.title = `Zigbee: ${label}`;
+    el.setAttribute('aria-label', `Zigbee: ${label}`);
+}
+
+/**
  * Initialize WebSocket connection
  */
 export function initWS() {
@@ -27,8 +44,7 @@ export function initWS() {
     state.socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
     state.socket.onopen = () => {
-        document.getElementById('connection-status').innerHTML =
-            '<i class="fas fa-circle text-success"></i><span class="d-none d-sm-inline"> Connected</span>';
+        setConnectionStatus(true);
 
         // Skip the refresh fetches while anonymous (first-run setup wizard —
         // the WS itself is allowed, but /api/devices etc. would just 401).
@@ -43,8 +59,7 @@ export function initWS() {
     };
 
     state.socket.onclose = () => {
-        document.getElementById('connection-status').innerHTML =
-            '<i class="fas fa-circle text-danger"></i><span class="d-none d-sm-inline"> Disconnected</span>';
+        setConnectionStatus(false);
         updateHAStatus("unknown");
         state.socket = null;  // ← clear so the auth-gated reconnect can fire
 
@@ -334,6 +349,12 @@ function updateHAStatus(status) {
         badge.className = 'badge rounded-pill bg-secondary';
         badge.innerHTML = '<i class="fas fa-question"></i><span class="d-none d-sm-inline"> HA: Unknown</span>';
     }
+
+    // The label is hidden below 576px, leaving only the icon — carry the state
+    // in the tooltip so it still means something on a phone.
+    const haLabel = `Home Assistant: ${s.charAt(0).toUpperCase()}${s.slice(1)}`;
+    badge.title = haLabel;
+    badge.setAttribute('aria-label', haLabel);
 }
 
 /**

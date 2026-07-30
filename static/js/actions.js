@@ -1141,16 +1141,26 @@ export async function checkMatterStatus() {
         const data = await res.json();
 
         if (badge) {
+            // rounded-pill has to be re-stated: assigning className wholesale
+            // used to drop it, so the badge silently turned from a pill into a
+            // rectangle the moment the first status check landed.
+            let variant, label;
             if (!data.enabled) {
-                badge.className = 'badge bg-secondary ms-1';
-                badge.innerHTML = '<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Not configured</span>';
+                variant = 'bg-secondary';
+                label = 'Not configured';
             } else if (data.connected) {
-                badge.className = 'badge bg-success ms-1';
-                badge.innerHTML = `<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: ${data.device_count} devices</span>`;
+                variant = 'bg-success';
+                label = `Matter: ${data.device_count} devices`;
             } else {
-                badge.className = 'badge bg-warning ms-1';
-                badge.innerHTML = '<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> Matter: Disconnected</span>';
+                variant = 'bg-warning';
+                label = 'Matter: Disconnected';
             }
+            badge.className = `badge rounded-pill ${variant} ms-1`;
+            badge.innerHTML = `<i class="fas fa-atom"></i><span class="d-none d-sm-inline"> ${label}</span>`;
+            // Below 576px only the atom icon is visible — keep the state in the
+            // tooltip so the icon isn't a dead end on a phone.
+            badge.title = `Matter bridge — ${label}`;
+            badge.setAttribute('aria-label', `Matter bridge — ${label}`);
         }
 
         if (btn) {

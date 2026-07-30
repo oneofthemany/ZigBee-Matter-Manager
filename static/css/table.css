@@ -86,3 +86,10 @@
 .sig-pulse > td {
     animation: sig-pulse-kf 1.2s ease-out;
 }
+
+
+/* The row-update flash is a one-shot highlight; with reduced motion the row
+   simply doesn't flash rather than fading over 1.2s. */
+@media (prefers-reduced-motion: reduce) {
+    .sig-pulse > td { animation: none; }
+}

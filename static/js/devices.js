@@ -26,28 +26,58 @@ function hasOTACluster(d) {
     );
 }
 
+// In-flight /api/devices request, so overlapping callers share one fetch and
+// one render. On a cold load main.js's init and the websocket's onopen both
+// call this within a few hundred ms of each other, which rebuilt the whole
+// tbody twice — the second rebuild being a visible flicker for no new data.
+let _devicesInFlight = null;
+// Fingerprint of the last payload we rendered, to skip a no-op re-render.
+let _lastDevicesKey = null;
+
 /**
- * Fetch all devices from API and render table
+ * Fetch all devices from API and render table.
+ *
+ * Concurrent calls are coalesced into the single in-flight request; a payload
+ * identical to the one already on screen re-renders nothing.
+ *
+ * @param {boolean} [force=false] re-render even if the payload is unchanged
+ *   (used after a filter/sort change that needs the rows rebuilt).
  */
-export async function fetchAllDevices() {
-    try {
-        log.log("Fetching all devices...");
-        const res = await fetch('/api/devices');
-        if (!res.ok) throw new Error(`API Error: ${res.status}`);
-        const devices = await res.json();
+export async function fetchAllDevices(force = false) {
+    if (_devicesInFlight) return _devicesInFlight;
 
-        log.log(`Received ${devices.length} devices.`);
-        state.devices = devices; // Update state
-        renderDeviceTable();
-        populateRouterList();
+    _devicesInFlight = (async () => {
+        try {
+            log.log("Fetching all devices...");
+            const res = await fetch('/api/devices');
+            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            const devices = await res.json();
 
-        try { dismissKnownDevices(state.devices); } catch(e) {}
+            log.log(`Received ${devices.length} devices.`);
+            state.devices = devices; // Update state
 
-    } catch (e) {
-        log.error("Failed to fetch devices:", e);
-        const tbody = document.getElementById('deviceTableBody');
-        if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${e.message}</td></tr>`;
-    }
+            const key = JSON.stringify(devices);
+            if (force || key !== _lastDevicesKey) {
+                _lastDevicesKey = key;
+                renderDeviceTable();
+                populateRouterList();
+            } else {
+                log.debug('Device payload unchanged — skipping re-render.');
+            }
+
+            try { dismissKnownDevices(state.devices); } catch(e) {}
+
+        } catch (e) {
+            log.error("Failed to fetch devices:", e);
+            _lastDevicesKey = null;         // force a real render once it recovers
+            const tbody = document.getElementById('deviceTableBody');
+            if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger">Error loading devices: ${e.message}</td></tr>`;
+        } finally {
+            _devicesInFlight = null;
+        }
+    })();
+
+    return _devicesInFlight;
 }
 
 export function renderDeviceTable() {
@@ -224,6 +254,39 @@ export function renderDeviceTable() {
 
     // Restore the user's chosen column sort now the tbody is rebuilt
     reapplySort(tbody.closest('table'));
+
+    // Swap the LQI/status cells to their final form in this same frame.
+    // device-status.js also does this from a MutationObserver, but that only
+    // helps once its observer is attached — on a cold load the table can be
+    // rendered first, and then the rows visibly shrink when the enhancer
+    // finally runs. The data-enhanced guard makes the duplicate call cheap.
+    if (window._enhanceDeviceTable) {
+        try { window._enhanceDeviceTable(); } catch (e) { log.debug('enhance skipped:', e); }
+    }
+
+    rememberColumnWidths(tbody.closest('table'));
+}
+
+/** localStorage key holding the last rendered device-table column widths. */
+const COL_WIDTH_KEY = 'zbm-device-col-widths';
+
+/**
+ * Record the settled column widths so the next page load can seed the skeleton
+ * with them (see the restore script in index.html).
+ *
+ * The table is table-layout:auto, so widths are derived from content — the
+ * skeleton can only guess, and the guess being wrong is what makes every
+ * column jump sideways when the real rows land. Widths from the previous
+ * render of the same devices are a far better guess than any hardcoded one.
+ */
+function rememberColumnWidths(table) {
+    if (!table || !table.tHead) return;
+    try {
+        const widths = [...table.tHead.rows[0].cells].map(c => Math.round(c.getBoundingClientRect().width));
+        // A hidden tab measures as zero — never persist that.
+        if (widths.some(w => w <= 0)) return;
+        localStorage.setItem(COL_WIDTH_KEY, JSON.stringify(widths));
+    } catch (e) { /* private mode / quota — the skeleton just guesses */ }
 }
 
 /**
@@ -350,6 +413,25 @@ export function handleDeviceUpdate(payload) {
 function populateRouterList() {
     const listContainer = document.getElementById('routerList');
     if (!listContainer) return;
+
+    // This runs on every device websocket update, which on a busy mesh is
+    // several times a second. Rebuilding an open menu yanks the entries out
+    // from under the pointer mid-click, so defer until it closes. Bootstrap
+    // fires dropdown events on the toggle (a sibling of the menu), so the
+    // listener goes on document and catches them as they bubble.
+    const menu = listContainer.closest('.dropdown-menu');
+    if (menu && menu.classList.contains('show')) {
+        if (!listContainer._pendingRepopulate) {
+            listContainer._pendingRepopulate = true;
+            document.addEventListener('hidden.bs.dropdown', function onHidden() {
+                if (menu.classList.contains('show')) return;   // a different dropdown
+                document.removeEventListener('hidden.bs.dropdown', onHidden);
+                listContainer._pendingRepopulate = false;
+                populateRouterList();
+            });
+        }
+        return;
+    }
 
     // Clear current list
     listContainer.innerHTML = '';

@@ -48,14 +48,24 @@ export function formatTime(ts) {
 }
 
 /**
- * Update all last-seen time displays
+ * Update all last-seen time displays.
+ *
+ * Runs once a second, so it has to stay cheap and non-destructive:
+ *  - bails while the page is hidden — nothing to repaint, and the interval
+ *    would otherwise keep the main thread busy in a background tab;
+ *  - uses textContent, not innerText: reading innerText forces a synchronous
+ *    layout, which on a large device table meant a full reflow every second;
+ *  - only writes when the rendered string actually changed, so a cell the
+ *    user is selecting text in isn't rebuilt out from under them (most of
+ *    these only tick over once a minute).
  */
 export function updateLastSeenTimes() {
+    if (document.hidden) return;
     document.querySelectorAll('.last-seen').forEach(cell => {
         const ts = parseInt(cell.getAttribute('data-ts'));
-        if (ts) {
-            cell.innerText = timeAgo(ts);
-        }
+        if (!ts) return;
+        const next = timeAgo(ts);
+        if (cell.textContent !== next) cell.textContent = next;
     });
 }
 

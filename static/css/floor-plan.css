@@ -604,3 +604,21 @@
         min-height: 34px;
     }
 }
+
+/* ----------------------------------------------------------
+   REDUCED MOTION
+   ----------------------------------------------------------
+   The overlays above loop indefinitely (spinning compass ring,
+   blinking overheat badge, breathing sun beams, particle flow).
+   Each animates opacity/transform from a visible resting state,
+   so stopping them leaves every reading legible — the colour and
+   the badge carry the meaning, the motion was only emphasis. */
+@media (prefers-reduced-motion: reduce) {
+    .fp-thermo-ring,
+    .fp-overheat-badge,
+    .fp-sun-beam,
+    .fp-sun-particle,
+    .fp-sun-pulse {
+        animation: none;
+    }
+}

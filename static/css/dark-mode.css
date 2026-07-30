@@ -654,36 +654,42 @@
 
 /* ----------------------------------------------------------
    TRANSITION for smooth theme switching
+
+   Scoped to .theme-transition, which theme-toggle.js puts on
+   <html> only for the duration of a toggle. Leaving this on
+   permanently made every :hover lag 200ms behind the pointer
+   and turned any first-paint theme correction into a visible
+   animated fade instead of a single frame.
    ---------------------------------------------------------- */
 
-body,
-.card,
-.modal-content,
-.table,
-.form-control,
-.form-select,
-.btn,
-.badge,
-.alert,
-.nav-tabs .nav-link,
-.dropdown-menu,
-.list-group-item {
+.theme-transition body,
+.theme-transition .card,
+.theme-transition .modal-content,
+.theme-transition .table,
+.theme-transition .form-control,
+.theme-transition .form-select,
+.theme-transition .btn,
+.theme-transition .badge,
+.theme-transition .alert,
+.theme-transition .nav-tabs .nav-link,
+.theme-transition .dropdown-menu,
+.theme-transition .list-group-item {
     transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    body,
-    .card,
-    .modal-content,
-    .table,
-    .form-control,
-    .form-select,
-    .btn,
-    .badge,
-    .alert,
-    .nav-tabs .nav-link,
-    .dropdown-menu,
-    .list-group-item,
+    .theme-transition body,
+    .theme-transition .card,
+    .theme-transition .modal-content,
+    .theme-transition .table,
+    .theme-transition .form-control,
+    .theme-transition .form-select,
+    .theme-transition .btn,
+    .theme-transition .badge,
+    .theme-transition .alert,
+    .theme-transition .nav-tabs .nav-link,
+    .theme-transition .dropdown-menu,
+    .theme-transition .list-group-item,
     .tab-pane.fade {
         transition: none;
     }

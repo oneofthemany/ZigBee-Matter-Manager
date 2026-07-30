@@ -89,3 +89,10 @@ html[data-bs-theme="dark"] #upgradeSettingsCard .form-text {
         font-size: 0.85rem;
     }
 }
+
+@media (prefers-reduced-motion: reduce) {
+    #upgradeCard .badge.bg-primary i,
+    #upgradeCard .badge.bg-warning i {
+        animation: none;
+    }
+}

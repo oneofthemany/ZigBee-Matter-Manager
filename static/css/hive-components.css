@@ -438,6 +438,15 @@ body {
     --bs-modal-footer-border-color: var(--border-color);
 }
 
+/* Bootstrap's stock backdrop is black at 50%, which over the near-black hive
+   dark surface is close to invisible — modals stopped reading as modal. The
+   --modal-backdrop token carries its own alpha (heavier in dark), so opacity
+   is pinned at 1 and the colour does the work. */
+.modal-backdrop {
+    --bs-backdrop-bg: var(--modal-backdrop);
+    --bs-backdrop-opacity: 1;
+}
+
 .dropdown-menu {
     --bs-dropdown-border-radius: 10px;
     --bs-dropdown-bg: var(--bg-surface-raised);
@@ -514,4 +523,19 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
     .skel::after { animation: none; }
+}
+
+
+/* ----------------------------------------------------------
+   MEDIA POSITION BAR
+   ---------------------------------------------------------- */
+/* Driven by a 1s interval in media.js. Bootstrap's stock .progress-bar eases
+   over 0.6s, so playback read as a lurch-then-wait every second; a linear
+   1s ramp matches the tick and the bar just travels. */
+.zmm-media-progress {
+    transition: width 1s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .zmm-media-progress { transition: none; }
 }

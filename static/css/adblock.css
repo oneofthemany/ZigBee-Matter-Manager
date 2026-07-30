@@ -66,8 +66,8 @@
 
 .bk-list-err { color: var(--danger, #dc3545); }
 
-@media (prefers-color-scheme: dark) {
-  .bk-stat { background: rgba(255,255,255,.03); }
-}
+/* Keyed off data-theme only — the app's own toggle is the single source of
+   truth. A prefers-color-scheme block here used to keep this card dark when
+   the OS was dark but the user had switched the app to light. */
 :root[data-theme="dark"] .bk-stat { background: rgba(255,255,255,.03); }
 :root[data-theme="dark"] .bk-badge-allowed { background: rgba(255,255,255,.1); color: #ddd; }

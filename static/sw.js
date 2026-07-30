@@ -4,26 +4,52 @@
 
 // Bump this on every frontend change — the `activate` handler purges any
 // cache whose name != CACHE_NAME, so a new version wipes stale cached assets.
-var CACHE_NAME = 'zbm-v8';
+var CACHE_NAME = 'zbm-v9';
 
-// App shell files to cache on install
+// App shell files to cache on install.
+//
+// Everything under /static/ is also cached opportunistically by the fetch
+// handler below, so this list is specifically about the FIRST load working
+// offline. It must therefore carry every stylesheet the two pages link, not a
+// subset: Bootstrap supplies .tab-pane/.modal/.d-none display rules, so a page
+// that loads without it paints all 35 tab panes and every modal at once.
 var APP_SHELL = [
     '/',
     '/frames',
     '/static/index.html',
     '/static/frames.html',
-    '/static/css/hive-tokens.css',
-    '/static/css/hive-components.css',
-    '/static/css/mesh.css',
-    '/static/css/debug.css',
-    '/static/css/groups.css',
-    '/static/css/mqtt-explorer.css',
-    '/static/css/mobile.css',
+
+    // Vendored third-party CSS — load-bearing for layout and icons
+    '/static/vendor/bootstrap.min.css',
+    '/static/vendor/bootstrap.bundle.min.js',
+    '/static/vendor/fontawesome/css/all.min.css',
+    '/static/vendor/fontawesome/webfonts/fa-solid-900.woff2',
+    '/static/vendor/fontawesome/webfonts/fa-regular-400.woff2',
+    '/static/vendor/fontawesome/webfonts/fa-brands-400.woff2',
+    '/static/vendor/leaflet.css',
+
+    // Every stylesheet referenced by index.html / frames.html
+    '/static/css/adblock.css',
+    '/static/css/automations.css',
     '/static/css/dark-mode.css',
-    '/static/css/toasts.css',
+    '/static/css/debug.css',
     '/static/css/device-status.css',
+    '/static/css/floor-plan.css',
     '/static/css/frames.css',
     '/static/css/frames-page.css',
+    '/static/css/groups.css',
+    '/static/css/hive-components.css',
+    '/static/css/hive-tokens.css',
+    '/static/css/mesh.css',
+    '/static/css/mobile.css',
+    '/static/css/mqtt-explorer.css',
+    '/static/css/notifications.css',
+    '/static/css/setup-wizard.css',
+    '/static/css/table.css',
+    '/static/css/toasts.css',
+    '/static/css/upgrade.css',
+    '/static/css/wiki.css',
+
     '/static/images/zigbee-manager-logo.png',
     '/static/js/presence.js',
     '/static/js/presence-settings.js'

@@ -8,12 +8,35 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Frames — ZigBee &amp; Matter Manager</title>
 
+    <!-- Theme resolved before the first stylesheet so the page never paints
+         light and flips to dark. Duplicated inline in index.html BY CONVENTION
+         (same reason the manager duplicates the palette): FOUC-critical code
+         must not wait on a network fetch. Keep the storage key and the
+         light/dark default in sync with js/theme-toggle.js. -->
+    <script>
+        (function () {
+            try {
+                var t = localStorage.getItem('zbm-theme');
+                if (!t) {
+                    t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+                        ? 'light' : 'dark';
+                }
+                document.documentElement.setAttribute('data-theme', t);
+                document.documentElement.setAttribute('data-bs-theme', t);
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.documentElement.setAttribute('data-bs-theme', 'dark');
+            }
+        })();
+    </script>
+
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/static/images/zigbee-manager-logo.png">
     <link rel="apple-touch-icon" href="/static/images/zigbee-manager-logo.png">
 
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Vendored, not a CDN — see the note in index.html. -->
+    <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
 
     <!-- Token order matters: dark-mode first, then hive-tokens re-points the
          semantic tokens at the hive palette (see hive-tokens.css). -->
@@ -80,7 +103,7 @@
     <div id="framesGrid"></div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/vendor/bootstrap.bundle.min.js"></script>
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/js/log.js"></script>
 <script src="/static/js/toasts.js"></script>

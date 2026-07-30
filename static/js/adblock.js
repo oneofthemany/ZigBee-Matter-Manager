@@ -14,6 +14,14 @@
   var pollTimer = null;
   var chart = null;
   var lastAvailable = null;
+  var lastSeries = null;   // kept so a theme toggle can redraw without refetching
+
+  // This tab is a classic script, so it can't import chart-utils' managed
+  // charts. Without this the chart kept the old theme's axis/legend colours
+  // until the next 5s poll happened to redraw it.
+  document.addEventListener('themechange', function () {
+    if (chart && lastSeries) renderChart(lastSeries);
+  });
 
   function $(id) { return document.getElementById(id); }
 
@@ -156,6 +164,7 @@
     var el = $('bkChart');
     if (!el) return;
     if (!chart) chart = echarts.init(el);
+    lastSeries = series;
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var labels = series.map(function (b) {
       return new Date(b.start * 1000).getHours() + ':00';
