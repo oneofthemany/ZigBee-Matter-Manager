@@ -90,29 +90,33 @@ class DriveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = Prefs(this)
 
-        // Guard here, not just in the receiver: the service can be started
+        // Checked here, not just in the receiver: the service can be started
         // from the UI too, and a stale start after Forget must not stream
         // location for a hub that no longer exists.
-        if (!prefs.isPaired || !prefs.armed || !Geofencing.hasForegroundLocation(this)) {
+        val allowed = prefs.isPaired && prefs.armed &&
+            Geofencing.hasForegroundLocation(this)
+
+        // Foreground status is claimed BEFORE deciding whether to run
+
+        if (!startInForeground(prefs.carBtName, withLocation = allowed)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (!allowed) {
             Log.i(TAG, "not paired/armed — drive mode refused")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        startInForeground(prefs.carBtName)
-
         // A second ACL_CONNECTED for the same car (they arrive per-profile on
         // some head units) must not stack a second location callback, sensor
         // registration and wake lock on top of the running ones — nor split
-        // one drive into two trips. The guard sits AFTER startForeground, not
-        // before: every startForegroundService call must be answered by one,
-        // and returning early without it is what the system kills a service
-        // for.
+        // one drive into two trips.
         if (running) {
             Log.i(TAG, "drive mode already running; ignoring duplicate start")
             return START_NOT_STICKY
         }
-
 
         tripId = if (prefs.journeysEnabled)
             java.util.UUID.randomUUID().toString() else null
@@ -129,7 +133,16 @@ class DriveService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startInForeground(carName: String) {
+    /**
+     * Claim foreground status. Returns false if the system refused it.
+     *
+     * A refusal is not a crash to propagate: it means this service may not run
+     * right now — the background-start exemption did not apply, or the
+     * location permission behind the service type is gone — and the caller's
+     * correct response is to stop cleanly rather than take the app down. The
+     * geofence and heartbeat channels still cover presence either way.
+     */
+    private fun startInForeground(carName: String, withLocation: Boolean): Boolean {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(
             CHANNEL_ID,
@@ -152,11 +165,25 @@ class DriveService : Service() {
             .setContentIntent(open)
             .build()
 
-        ServiceCompat.startForeground(
-            this, NOTIF_ID, notif,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0,
-        )
+        return try {
+            ServiceCompat.startForeground(
+                this, NOTIF_ID, notif,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && withLocation)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0,
+            )
+            true
+        } catch (e: Exception) {
+            // Deliberately broad. The refusals live in different Android
+            // versions and different exception types —
+            // ForegroundServiceStartNotAllowedException from 12,
+            // SecurityException and MissingForegroundServiceTypeException
+            // from 14 — and catching them by name would mean compiling
+            // against classes that do not exist on older platforms while
+            // still missing whatever a future release adds. They all mean the
+            // same thing here.
+            Log.w(TAG, "foreground start refused", e)
+            false
+        }
     }
 
     private fun startMotion() {
@@ -275,8 +302,21 @@ class DriveService : Service() {
             private set
 
         fun start(ctx: Context) {
-            ContextCompat.startForegroundService(
-                ctx, Intent(ctx, DriveService::class.java))
+            // The other half of the same problem the service guards against,
+            // and it lands in the CALLER's process: from Android 12 a
+            // background startForegroundService throws unless an exemption
+            // applies. Two are expected to (the Bluetooth broadcast, and the
+            // battery-optimisation exemption the app asks for), but "expected
+            // to" is not "does" across every OEM — and an uncaught throw here
+            // means the app crashing at the moment the user gets into the car.
+            // Drive mode is an upgrade to reporting, never its foundation;
+            // failing to start one is a log line, not a crash.
+            try {
+                ContextCompat.startForegroundService(
+                    ctx, Intent(ctx, DriveService::class.java))
+            } catch (e: Exception) {
+                Log.w(TAG, "could not start drive mode", e)
+            }
         }
 
         fun stop(ctx: Context) {
