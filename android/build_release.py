@@ -25,6 +25,10 @@ Usage:
                                               # prompt for which
     python3 build_release.py --install SERIAL  # ...then install to that
                                                 # device by name, no prompt
+    python3 build_release.py --install --reinstall
+                                             # ...replacing a copy signed with
+                                             # a different key (e.g. the debug
+                                             # build). Discards the pairing.
 
 Exit status is 0 only if every check passed (and, with --install, the install
 itself succeeded), so this is safe to use in a script.
@@ -39,6 +43,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -103,8 +108,15 @@ def java_version(java_home: Path) -> int | None:
     return int(m.group(2) or 0) if major == 1 else major
 
 
+_jdk_cache: Path | None = None
+
+
 def find_jdk() -> Path:
     """A JDK in [JDK_MIN, JDK_MAX]. Studio bundles one; prefer it."""
+    global _jdk_cache
+    if _jdk_cache is not None:
+        return _jdk_cache
+
     candidates: list[Path] = []
 
     env = os.environ.get("JAVA_HOME")
@@ -127,6 +139,7 @@ def find_jdk() -> Path:
         if v is None:
             continue
         if JDK_MIN <= v <= JDK_MAX:
+            _jdk_cache = c
             return c
         rejected.append((c, v))
 
@@ -139,6 +152,25 @@ def find_jdk() -> Path:
         f"No JDK between {JDK_MIN} and {JDK_MAX} found.{detail}\n"
         "  Install Android Studio (it bundles one) or set JAVA_HOME yourself."
     )
+
+
+def jdk_env(jdk: Path, **extra: str) -> dict:
+    """
+    Environment for anything that needs a JVM.
+
+    JAVA_HOME alone is not enough. The SDK's apksigner is a shell wrapper whose
+    last line is `exec java -jar apksigner.jar`, so it resolves the JVM from
+    PATH and ignores JAVA_HOME entirely. On a machine whose only JDK is the one
+    bundled inside Android Studio, nothing puts `java` on PATH and the wrapper
+    dies with "exec: java: not found" — which reads as a broken APK rather than
+    a missing interpreter. Setting both covers either convention.
+    """
+    return {
+        **os.environ,
+        "JAVA_HOME": str(jdk),
+        "PATH": f"{jdk / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        **extra,
+    }
 
 
 def find_sdk() -> Path:
@@ -183,6 +215,23 @@ def build_tool(sdk: Path, name: str) -> Path:
             "  Install build-tools via Android Studio's SDK Manager."
         )
     return versions[0] / name
+
+
+def apksigner_cmd(sdk: Path, jdk: Path) -> list[str]:
+    """
+    Command prefix that runs apksigner.
+
+    Invokes the jar with the JDK we located rather than going through the
+    shell wrapper, so the JVM is chosen here instead of by whatever PATH
+    happens to hold. The wrapper is kept as a fallback for build-tools layouts
+    that don't ship lib/apksigner.jar where we expect it; jdk_env() makes it
+    work there too.
+    """
+    exe = build_tool(sdk, "apksigner")
+    jar = exe.parent / "lib" / "apksigner.jar"
+    if jar.exists():
+        return [str(jdk / "bin" / "java"), "-jar", str(jar)]
+    return [str(exe)]
 
 
 def find_adb(sdk: Path) -> Path:
@@ -277,8 +326,98 @@ def choose_device(devices: list[dict], requested: str | None) -> str:
         print("  Not a valid choice.")
 
 
-def install_apk(adb: Path, serial: str, apk: Path) -> bool:
+def installed_package(adb: Path, serial: str) -> dict | None:
+    """
+    What's already installed, or None if the package isn't present.
+
+    Used to explain a signature clash before acting on it. The signature field
+    dumpsys prints is a truncated hash, not the certificate digest, so it can't
+    be compared against apksigner's output — but the DEBUGGABLE flag identifies
+    the overwhelmingly common cause directly: an Android Studio debug build,
+    signed with the debug key, sitting where the release build wants to go.
+    """
+    r = run([str(adb), "-s", serial, "shell", "dumpsys", "package", PACKAGE_ID])
+    out = r.stdout or ""
+    if "versionName=" not in out:
+        return None
+
+    def grab(pattern: str) -> str:
+        m = re.search(pattern, out)
+        return m.group(1).strip() if m else ""
+
+    return {
+        "versionName": grab(r"versionName=(\S+)"),
+        "versionCode": grab(r"versionCode=(\S+)"),
+        "firstInstall": grab(r"firstInstallTime=(.+)"),
+        "debuggable": "DEBUGGABLE" in grab(r"pkgFlags=\[(.*?)\]"),
+    }
+
+
+def wait_until_gone(adb: Path, serial: str, timeout: float = 15.0) -> bool:
+    """
+    Block until PackageManager has actually finished removing the package.
+
+    `adb uninstall` reports Success when the removal is accepted, not when it
+    has settled. Installing inside that window loses a race, and the installer
+    reports it as INSTALL_FAILED_PACKAGE_CHANGED — "Package was removed before
+    install could complete", which reads as a broken APK rather than as two
+    commands issued too close together. `pm path` is the authority on whether
+    the package is really gone.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        r = run([str(adb), "-s", serial, "shell", "pm", "path", PACKAGE_ID])
+        if not (r.stdout or "").strip():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
+def uninstall(adb: Path, serial: str) -> bool:
+    r = run([str(adb), "-s", serial, "uninstall", PACKAGE_ID])
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode == 0 and "Success" in out:
+        return True
+    bad("uninstall failed")
+    info(out.strip()[:300])
+    return False
+
+
+def _confirm_wipe(existing: dict | None) -> bool:
+    """
+    Ask before discarding the phone's pairing.
+
+    Uninstalling is the only way past a signature clash — allowBackup is false,
+    so there is nothing to save and restore around it. What goes with the app is
+    the hub URL, the bearer token, the captured certificate pin and the cached
+    geofence, and re-pairing is a manual trip through the hub UI. That is not a
+    cost to absorb silently on someone's behalf, so it needs either a terminal
+    answer or --reinstall stating the intent up front.
+    """
+    if existing and existing["debuggable"]:
+        info("the installed copy is a DEBUG build (signed with the debug key)")
+    info("uninstalling discards the hub pairing: URL, token, certificate pin")
+    info("and cached geofence. You will need to pair again from the app.")
+
+    if not sys.stdin.isatty():
+        info("no terminal to confirm — re-run with --reinstall to allow this")
+        return False
+    try:
+        return input("  Uninstall and reinstall? [y/N]: ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def install_apk(adb: Path, serial: str, apk: Path, allow_reinstall: bool = False) -> bool:
     head("Install")
+
+    existing = installed_package(adb, serial)
+    if existing:
+        kind = "debug" if existing["debuggable"] else "release"
+        info(f"installed: {existing['versionName']} "
+             f"(code {existing['versionCode']}, {kind} build)")
+
     r = run([str(adb), "-s", serial, "install", "-r", str(apk)])
     out = (r.stdout or "") + (r.stderr or "")
 
@@ -286,12 +425,40 @@ def install_apk(adb: Path, serial: str, apk: Path) -> bool:
         ok(f"installed to {serial}")
         return True
 
+    # A signature clash is the one install failure with a known, safe recovery,
+    # so it is handled rather than merely reported. Everything else (no space,
+    # downgrade, bad ABI) needs a human deciding what to do.
+    if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in out:
+        warn("signature mismatch with the installed copy")
+        if not (allow_reinstall or _confirm_wipe(existing)):
+            bad("install failed — left the existing copy alone")
+            return False
+
+        info("uninstalling...")
+        if not uninstall(adb, serial):
+            return False
+        if not wait_until_gone(adb, serial):
+            bad("package still present after uninstall reported success")
+            return False
+        ok("removed the previous copy")
+
+        # One retry: PACKAGE_CHANGED is transient by definition, and the point
+        # of this branch is to not hand back a failure that a second attempt
+        # would have cleared.
+        for attempt in (1, 2):
+            r = run([str(adb), "-s", serial, "install", str(apk)])
+            out = (r.stdout or "") + (r.stderr or "")
+            if r.returncode == 0 and "Success" in out:
+                ok(f"installed to {serial}")
+                warn("the app is unpaired — pair it again from the hub")
+                return True
+            if "INSTALL_FAILED_PACKAGE_CHANGED" not in out or attempt == 2:
+                break
+            info("package manager was still settling; retrying")
+            time.sleep(1.0)
+
     bad("install failed")
     info(out.strip()[:500])
-    if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in out:
-        info(f"the installed copy was signed with a different key (e.g. the debug\n"
-            f"        build). Uninstall it first — this loses the phone's pairing:\n"
-            f"          {adb} -s {serial} uninstall {PACKAGE_ID}")
     return False
 
 
@@ -304,6 +471,33 @@ def find_gradlew() -> Path:
         "  Open android/ in Android Studio once (it generates the wrapper), or:\n"
         "    gradle wrapper --gradle-version 8.13"
     )
+
+
+def preflight_tools(jdk: Path, sdk: Path) -> None:
+    """
+    Prove the verification tools actually execute before anything long runs.
+
+    Existing on disk is not the same as being runnable: apksigner needs a JVM
+    it finds for itself, and aapt2 needs its shared libraries. Both fail late
+    otherwise — after a full Gradle build — and the failure lands in the
+    verification output, where it reads as a problem with the APK.
+    """
+    r = run(apksigner_cmd(sdk, jdk) + ["version"], env=jdk_env(jdk))
+    if r.returncode != 0:
+        raise Failed(
+            "apksigner is present but will not run:\n"
+            f"    {(r.stderr or r.stdout).strip()[:300]}\n"
+            f"  Tried the JVM at {jdk / 'bin' / 'java'}."
+        )
+    ok(f"apksigner runnable ({build_tool(sdk, 'apksigner').parent.name})")
+
+    r = run([str(build_tool(sdk, "aapt2")), "version"])
+    if r.returncode != 0:
+        raise Failed(
+            "aapt2 is present but will not run:\n"
+            f"    {(r.stderr or r.stdout).strip()[:300]}"
+        )
+    ok("aapt2 runnable")
 
 
 # ---------------------------------------------------------------- signing setup
@@ -363,7 +557,7 @@ def setup_signing() -> None:
         # Confirm it actually opens the keystore, rather than writing a wrong
         # password and failing confusingly during the build.
         r = run([str(keytool), "-list", "-keystore", str(KEYSTORE), "-storepass:env", "KSPW"],
-                env={**os.environ, "KSPW": pw})
+                env=jdk_env(jdk, KSPW=pw))
         if r.returncode != 0:
             raise Failed("That password did not open the keystore.")
         ok("password verified against the existing keystore")
@@ -395,7 +589,7 @@ def setup_signing() -> None:
             "-dname", f"CN={cn}",
             "-storepass:env", "KSPW",
             "-keypass:env", "KSPW",
-        ], env={**os.environ, "KSPW": pw})
+        ], env=jdk_env(jdk, KSPW=pw))
         if r.returncode != 0:
             raise Failed(f"keytool failed:\n{r.stderr}")
         ok(f"created {KEYSTORE.name} (RSA 4096, valid ~27 years)")
@@ -432,10 +626,16 @@ def check_gitignored() -> None:
 
 # ---------------------------------------------------------------- build
 
-def gradle_build(jdk: Path, task: str) -> None:
+def gradle_build(jdk: Path, sdk: Path, task: str) -> None:
     head(f"Gradle :{task}")
     info(f"JAVA_HOME={jdk}")
-    env = {**os.environ, "JAVA_HOME": str(jdk)}
+    info(f"ANDROID_HOME={sdk}")
+    # ANDROID_HOME is passed explicitly, not inherited: find_sdk() also accepts
+    # the SDK at its conventional path, so preflight can succeed on a machine
+    # where the variable is unset and no local.properties exists. Gradle has no
+    # such fallback and fails with "SDK location not found" — which reads as a
+    # missing SDK rather than an unexported variable.
+    env = jdk_env(jdk, ANDROID_HOME=str(sdk))
 
     proc = subprocess.Popen(
         [str(find_gradlew()), task],
@@ -477,14 +677,21 @@ def find_apk(release: bool) -> Path:
 
 def verify_signature(sdk: Path, apk: Path) -> bool:
     head("Signature")
-    apksigner = build_tool(sdk, "apksigner")
     jdk = find_jdk()
-    r = run([str(apksigner), "verify", "--print-certs", str(apk)],
-            env={**os.environ, "JAVA_HOME": str(jdk)})
+    r = run(apksigner_cmd(sdk, jdk) + ["verify", "--print-certs", str(apk)],
+            env=jdk_env(jdk))
 
     if r.returncode != 0:
-        bad("apksigner rejected the APK")
-        info((r.stderr or r.stdout).strip()[:400])
+        detail = (r.stderr or r.stdout).strip()
+        # Distinguish "the APK is bad" from "apksigner could not run at all".
+        # Both surface as a non-zero exit, but only one of them is about the
+        # artifact, and reporting a toolchain fault as a signature failure
+        # sends you looking in entirely the wrong place.
+        if "DOES NOT VERIFY" in detail or "not signed" in detail.lower():
+            bad("apksigner rejected the APK")
+        else:
+            bad("apksigner could not run — this is a toolchain fault, not a bad APK")
+        info(detail[:400])
         return False
 
     out = r.stdout
@@ -630,7 +837,14 @@ def main() -> int:
                          "no value: use the one connected device, or prompt if "
                          "there are several. With a value: install straight to "
                          "that adb serial, no prompt.")
+    ap.add_argument("--reinstall", action="store_true",
+                    help="if the installed copy was signed with a different key "
+                         "(typically a debug build), uninstall and install "
+                         "fresh without asking. This DISCARDS the hub pairing.")
     args = ap.parse_args()
+
+    if args.reinstall and args.install is None:
+        ap.error("--reinstall only means anything alongside --install")
 
     release = not args.debug
 
@@ -643,13 +857,14 @@ def main() -> int:
         ok(f"JDK {java_version(jdk)} at {jdk}")
         sdk = find_sdk()
         ok(f"Android SDK at {sdk}")
+        preflight_tools(jdk, sdk)
 
         if release and not KEY_PROPS.exists():
             warn(f"{KEY_PROPS.name} not found — the APK will be unsigned")
             info("run with --setup to create a signing key")
 
         if not args.verify_only:
-            gradle_build(jdk, "assembleRelease" if release else "assembleDebug")
+            gradle_build(jdk, sdk, "assembleRelease" if release else "assembleDebug")
 
         apk = find_apk(release)
         head("Artifact")
@@ -677,7 +892,7 @@ def main() -> int:
             adb = find_adb(sdk)
             devices = list_devices(adb)
             serial = choose_device(devices, args.install)
-            if not install_apk(adb, serial, apk):
+            if not install_apk(adb, serial, apk, allow_reinstall=args.reinstall):
                 return 1
         else:
             print(f"\n  Install with:\n"
