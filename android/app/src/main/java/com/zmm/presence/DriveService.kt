@@ -76,6 +76,9 @@ class DriveService : Service() {
      */
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
+    /** Fixes the hub refused or never received. See [FixSpool]. */
+    private val spool by lazy { FixSpool(this) }
+
     /**
      * One drive, one id. Generated when the service starts (the car
      * connecting) and dies with it, so the hub can group this drive's fixes
@@ -214,31 +217,41 @@ class DriveService : Service() {
                 val window = m?.takeWindow()
                 val events = m?.takeEvents() ?: emptyList()
 
+                val payload = HubClient.fixPayload(
+                    loc.latitude, loc.longitude,
+                    if (loc.hasAccuracy()) loc.accuracy else null,
+                    loc.time / 1000.0,
+                    // GPS doppler speed/bearing: far better than anything
+                    // derivable from consecutive fixes, and free — the
+                    // receiver computes them anyway.
+                    speedMps = if (loc.hasSpeed()) loc.speed else null,
+                    bearingDeg = if (loc.hasBearing()) loc.bearing else null,
+                    tripId = tripId,
+                    // GNSS altitude is coarse (tens of metres), but summed
+                    // over a drive with a deadband it still separates a
+                    // climb over a pass from a flat run. Where the phone
+                    // has a barometer the hub prefers that instead.
+                    altitudeM = if (loc.hasAltitude()) loc.altitude else null,
+                    motion = window,
+                    events = events,
+                )
+
                 scope.launch {
-                    when (val r = HubClient.postFix(
-                        prefs, loc.latitude, loc.longitude,
-                        if (loc.hasAccuracy()) loc.accuracy else null,
-                        loc.time / 1000.0,
-                        // GPS doppler speed/bearing: far better than anything
-                        // derivable from consecutive fixes, and free — the
-                        // receiver computes them anyway.
-                        speedMps = if (loc.hasSpeed()) loc.speed else null,
-                        bearingDeg = if (loc.hasBearing()) loc.bearing else null,
-                        tripId = tripId,
-                        // GNSS altitude is coarse (tens of metres), but summed
-                        // over a drive with a deadband it still separates a
-                        // climb over a pass from a flat run. Where the phone
-                        // has a barometer the hub prefers that instead.
-                        altitudeM = if (loc.hasAltitude()) loc.altitude else null,
-                        motion = window,
-                        events = events,
-                    )) {
+                    // Backlog first, live fix second. A drain that ran after
+                    // the live post would leave the hub's last-write-wins
+                    // presence sitting on an old position; this way the
+                    // newest fix is always the last one written.
+                    spool.drain(prefs)
+
+                    when (val r = HubClient.postRaw(prefs, payload)) {
                         is HubClient.Result.Ok -> Log.i(TAG, "drive fix reported")
-                        is HubClient.Result.Err ->
-                            // Transient gaps (tunnels, no signal) are normal in
-                            // a car; the next minute's fix corrects it. Nothing
-                            // to escalate.
-                            Log.w(TAG, "drive fix failed: ${r.message}")
+                        is HubClient.Result.Err -> {
+                            // Tunnels and dead spots are routine in a car, and
+                            // the fix is not replaceable — the car will not be
+                            // on this stretch of road again. Keep it.
+                            Log.w(TAG, "drive fix failed, spooled: ${r.message}")
+                            spool.offer(payload)
+                        }
                     }
                 }
             }

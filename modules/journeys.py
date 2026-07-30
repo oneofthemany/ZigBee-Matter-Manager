@@ -394,6 +394,24 @@ class JourneyManager:
             "ON CONFLICT (trip_id) DO NOTHING",
             [trip_id, user_id, ts],
         )
+        # A fix arriving for a trip already marked closed means the closer
+        # called it early: the phone went quiet for longer than
+        # TRIP_CLOSE_GAP_S — a tunnel, a dead spot, a spell with no mobile
+        # data — and then came back mid-drive. Without this the trip stays
+        # closed forever, every later fix lands in trip_fixes where nothing
+        # will ever aggregate it, and the summary is frozen on the handful of
+        # fixes that beat the gap. That is a drive reported as three fixes and
+        # zero miles while the rest of it sits in the table unread.
+        #
+        # Reopening is enough to repair it. Finalisation recomputes distance,
+        # duration, speed, behaviour and endpoints from every fix the trip
+        # has, so the next closer pass produces the same answer it would have
+        # if the gap had never happened.
+        self._con.execute(
+            "UPDATE trips SET status = 'open' "
+            "WHERE trip_id = ? AND status = 'closed'",
+            [trip_id],
+        )
         self._con.execute(
             "INSERT INTO trip_fixes "
             "(trip_id, user_id, ts, lat, lon, speed_mps, bearing_deg, accuracy_m, "

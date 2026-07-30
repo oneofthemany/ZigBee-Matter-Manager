@@ -158,42 +158,69 @@ object HubClient {
         altitudeM: Double? = null,
         motion: MotionSampler.Window? = null,
         events: List<MotionSampler.Event> = emptyList(),
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        val url = "${prefs.hubUrl}/api/presence/users/${enc(prefs.userId)}/fix"
-        try {
-            val payload = JSONObject().apply {
-                put("lat", lat)
-                put("lon", lon)
-                if (accuracy != null) put("accuracy", accuracy.toDouble())
-                put("timestamp", timestampSec)
-                if (speedMps != null) put("speed", speedMps.toDouble())
-                if (bearingDeg != null) put("bearing", bearingDeg.toDouble())
-                if (tripId != null) put("trip_id", tripId)
-                if (altitudeM != null) put("altitude", altitudeM)
-                // Motion rides only on a tagged drive: without a trip there is
-                // nothing on the hub for it to belong to.
-                if (tripId != null) {
-                    motion?.let { put("motion", motionJson(it)) }
-                    if (events.isNotEmpty()) put("events", eventsJson(events))
-                }
-            }.toString()
+    ): Result<Unit> = postRaw(prefs, fixPayload(
+        lat, lon, accuracy, timestampSec, speedMps, bearingDeg, tripId,
+        altitudeM, motion, events,
+    ))
 
-            val conn = open(url, "POST", prefs)
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.outputStream.use { it.write(payload.toByteArray()) }
-
-            val code = conn.responseCode
-            val body = readBody(conn)
-            conn.disconnect()
-
-            if (code in 200..299) Result.Ok(Unit)
-            else Result.Err("Hub returned $code: ${body.take(200)}")
-        } catch (e: Exception) {
-            Log.w(TAG, "postFix failed", e)
-            Result.Err(e.message ?: "Could not reach the hub")
+    /**
+     * Build the body of a fix report, without sending it.
+     *
+     * Separated from [postRaw] so a fix that cannot be delivered now can be
+     * kept and delivered later — see [FixSpool]. Everything the hub needs is
+     * inside the payload, timestamp included, so a spooled fix is not a
+     * degraded one: it lands with the position and time it was taken, however
+     * long the gap between taking it and getting a signal.
+     */
+    fun fixPayload(
+        lat: Double,
+        lon: Double,
+        accuracy: Float?,
+        timestampSec: Double,
+        speedMps: Float? = null,
+        bearingDeg: Float? = null,
+        tripId: String? = null,
+        altitudeM: Double? = null,
+        motion: MotionSampler.Window? = null,
+        events: List<MotionSampler.Event> = emptyList(),
+    ): String = JSONObject().apply {
+        put("lat", lat)
+        put("lon", lon)
+        if (accuracy != null) put("accuracy", accuracy.toDouble())
+        put("timestamp", timestampSec)
+        if (speedMps != null) put("speed", speedMps.toDouble())
+        if (bearingDeg != null) put("bearing", bearingDeg.toDouble())
+        if (tripId != null) put("trip_id", tripId)
+        if (altitudeM != null) put("altitude", altitudeM)
+        // Motion rides only on a tagged drive: without a trip there is
+        // nothing on the hub for it to belong to.
+        if (tripId != null) {
+            motion?.let { put("motion", motionJson(it)) }
+            if (events.isNotEmpty()) put("events", eventsJson(events))
         }
-    }
+    }.toString()
+
+    /** POST an already-built fix payload. */
+    suspend fun postRaw(prefs: Prefs, payload: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val url = "${prefs.hubUrl}/api/presence/users/${enc(prefs.userId)}/fix"
+            try {
+                val conn = open(url, "POST", prefs)
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use { it.write(payload.toByteArray()) }
+
+                val code = conn.responseCode
+                val body = readBody(conn)
+                conn.disconnect()
+
+                if (code in 200..299) Result.Ok(Unit)
+                else Result.Err("Hub returned $code: ${body.take(200)}")
+            } catch (e: Exception) {
+                Log.w(TAG, "postFix failed", e)
+                Result.Err(e.message ?: "Could not reach the hub")
+            }
+        }
 
     /**
      * A window as JSON, with the uncalibrated fields left out.

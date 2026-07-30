@@ -48,6 +48,20 @@ class HeartbeatWorker(
 
         refreshConfig(prefs)
 
+        // Deliver anything drive mode could not. Doing it here rather than
+        // only at the start of the next drive means a journey truncated by a
+        // dead spot is repaired within one heartbeat instead of waiting for
+        // the car to be driven again — and the hub reopens the trip it had
+        // already closed to fold the recovered stretch back in.
+        //
+        // Before the fresh fix below, for the ordering reason FixSpool
+        // documents: the newest position must be the last one the hub sees.
+        try {
+            FixSpool(applicationContext).drain(prefs)
+        } catch (e: Exception) {
+            Log.w(TAG, "spool drain failed", e)
+        }
+
         val loc = awaitFix(applicationContext)
         if (loc == null) {
             Log.w(TAG, "no location fix available this cycle")

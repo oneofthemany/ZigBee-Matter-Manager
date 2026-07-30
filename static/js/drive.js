@@ -161,6 +161,7 @@ import { createChart } from './chart-utils.js';
         var host = document.getElementById(HOST_ID);
         if (!host) return;
         disposeHistoryChart();          // the old canvas is about to be wiped
+        disposeTripMaps();              // and so are the trip maps
 
         var tabs = [
             { id: 'journeys', icon: 'fa-route', label: 'Journeys' },
@@ -360,10 +361,12 @@ import { createChart } from './chart-utils.js';
           '</div>' +
         '</div>' +
         behaviourDetail(t) +
-        // Filled in on first expand — see loadTripEvents. Events are the only
-        // part of a trip not already in the list response, and fetching every
-        // trip's up front would be a hundred requests to render a table.
-        '<div id="trip-events-' + escape(t.trip_id) + '" class="mt-2"></div>';
+        // Filled in on first expand — see loadTripDetail. The track and events
+        // are the only parts of a trip not already in the list response, and
+        // fetching every trip's up front would be a hundred requests to render
+        // a table.
+        '<div id="trip-events-' + escape(t.trip_id) + '" class="mt-2"></div>' +
+        '<div id="trip-map-wrap-' + escape(t.trip_id) + '" class="mt-2"></div>';
     }
 
     /**
@@ -405,15 +408,62 @@ import { createChart } from './chart-utils.js';
         '</div>';
     }
 
+    // Red / amber / green thresholds for acceleration, m/s².
+    //
+    // Red is the phone's own event threshold (MotionSampler.EVENT_ENTER_MPS2):
+    // above it the sampler logged a discrete event, so the map agrees with the
+    // event list by construction rather than by coincidence. Amber is the
+    // approach to it — firm but not logged — which is the band worth showing a
+    // driver, because it is where a habit is visible before it becomes an
+    // event. Change these together with the phone's constant or the two
+    // stories stop matching.
+    var RAG_RED = 3.5;
+    var RAG_AMBER = 2.5;
+
+    var RAG_COLOURS = {
+        green: '#2e7d32',
+        amber: '#ed6c02',
+        red:   '#d32f2f',
+        // No motion data for that stretch — grey, never green. An unmeasured
+        // road must not read as a well-driven one.
+        none:  '#7a8894'
+    };
+
+    /** Worst acceleration seen in the window ending at a track point. */
+    function pointSeverity(p) {
+        if (!p) return null;
+        var lon = p.long_peak_mps2 == null ? null : Math.abs(p.long_peak_mps2);
+        var lat = p.lat_peak_mps2 == null ? null : Math.abs(p.lat_peak_mps2);
+        if (lon == null && lat == null) return null;
+        return Math.max(lon || 0, lat || 0);
+    }
+
+    function ragBand(sev) {
+        if (sev == null) return 'none';
+        if (sev >= RAG_RED) return 'red';
+        if (sev >= RAG_AMBER) return 'amber';
+        return 'green';
+    }
+
     /**
-     * Fetch and render one trip's event timeline.
+     * Fetch and render one trip's events, coaching note and map.
      *
-     * Runs once per trip per page load; the rendered markup is left in place
-     * so collapsing and re-expanding a row costs nothing.
+     * Runs once per trip per page load; the rendered markup and the Leaflet
+     * instance are left in place so collapsing and re-expanding a row costs
+     * nothing.
      */
-    async function loadTripEvents(tripId) {
+    async function loadTripDetail(tripId) {
         var host = document.getElementById('trip-events-' + tripId);
-        if (!host || host.dataset.loaded) return;
+        if (!host) return;
+        if (host.dataset.loaded) {
+            // Leaflet measures the container when it is created. If that
+            // happened while the row was collapsed the map is sized to zero
+            // and renders as grey; re-measuring on every expand is the
+            // documented fix and costs nothing when the size is unchanged.
+            var existing = mapRegistry[tripId];
+            if (existing) setTimeout(function () { existing.invalidateSize(); }, 0);
+            return;
+        }
         host.dataset.loaded = '1';
 
         var trip;
@@ -423,12 +473,17 @@ import { createChart } from './chart-utils.js';
             if (!r.ok) throw new Error('HTTP ' + r.status);
             trip = await r.json();
         } catch (e) {
-            log.warn('trip events fetch failed', e);
+            log.warn('trip detail fetch failed', e);
             // Leave the panel empty rather than showing an error: the summary
-            // above it is complete on its own, and the events are detail.
+            // above it is complete on its own, and this is detail.
             return;
         }
 
+        renderEvents(host, trip);
+        renderTripMap(tripId, trip);
+    }
+
+    function renderEvents(host, trip) {
         var evs = trip.events || [];
         if (!evs.length) return;
 
@@ -446,7 +501,191 @@ import { createChart } from './chart-utils.js';
                        ' <span class="opacity-75">@ ' + into + ' min</span>' +
                      '</span>';
           }).join('') +
-          '</div>';
+          '</div>' +
+          coachingNote(evs);
+    }
+
+    /**
+     * One sentence on what to work on, from whichever event kind dominates.
+     *
+     * The counts alone tell a driver what happened; this is the part that says
+     * what to do about it, which is the whole point of showing them at all.
+     * Withheld below three events — two hard stops on one trip is traffic, not
+     * a habit, and advice given on that evidence teaches drivers to distrust
+     * the rest of it.
+     */
+    function coachingNote(evs) {
+        if (evs.length < 3) return '';
+        var tally = {};
+        evs.forEach(function (e) { tally[e.kind] = (tally[e.kind] || 0) + 1; });
+
+        var top = null;
+        Object.keys(tally).forEach(function (k) {
+            if (!top || tally[k] > tally[top]) top = k;
+        });
+        // No clear majority: reporting a tie as "your main issue is X" would be
+        // inventing a pattern out of a coin toss.
+        if (!top || tally[top] * 2 <= evs.length) return '';
+
+        var advice = {
+            brake: 'Hard braking is usually a following-distance problem — ' +
+                   'arriving at a situation with more room turns most of these ' +
+                   'into gentle ones.',
+            accel: 'Hard acceleration costs fuel for time you get back at the ' +
+                   'next red light. Easing onto the throttle is the single ' +
+                   'cheapest change here.',
+            corner: 'Hard cornering means speed carried into the turn rather ' +
+                    'than shed before it. Braking earlier, in a straight line, ' +
+                    'settles the car through the bend.',
+            harsh:  'These were detected before the phone had worked out which ' +
+                    'way the car faces — a longer drive will classify them.'
+        }[top];
+        if (!advice) return '';
+
+        var k = eventKinds[top] || eventKinds.harsh;
+        return '<div class="alert alert-light border mt-2 mb-0 py-2 px-3 small">' +
+                 '<i class="fas fa-lightbulb text-warning me-1"></i>' +
+                 '<strong>' + tally[top] + ' of ' + evs.length + '</strong> were ' +
+                 escape(k.label.toLowerCase()) + '. ' + advice +
+               '</div>';
+    }
+
+    // Live Leaflet instances, keyed by trip. Kept so an expand can re-measure
+    // one rather than build a second on top of it.
+    var mapRegistry = {};
+
+    /**
+     * Tear down every trip map before the host's innerHTML is replaced.
+     *
+     * Leaflet attaches listeners to window and document, not only to its
+     * container, so dropping the container's markup leaves those live and the
+     * instance uncollectable. Every refresh, delete or sub-tab switch
+     * re-renders, so leaking one map per expanded row adds up over a session.
+     */
+    function disposeTripMaps() {
+        Object.keys(mapRegistry).forEach(function (id) {
+            try { mapRegistry[id].remove(); } catch (e) { /* already gone */ }
+        });
+        mapRegistry = {};
+    }
+
+    /**
+     * Draw the route, coloured green/amber/red by how it was driven, with a
+     * pin at every logged event.
+     *
+     * The track is admin-only on the API (coordinates are a tighter privacy
+     * boundary than behaviour — see journey_routes.py), so a non-admin gets
+     * the events and the summary and simply no map.
+     */
+    function renderTripMap(tripId, trip) {
+        var wrap = document.getElementById('trip-map-wrap-' + tripId);
+        if (!wrap) return;
+
+        var track = (trip.track || []).filter(function (p) {
+            return p.lat != null && p.lon != null;
+        });
+        if (track.length < 2) return;
+
+        if (typeof L === 'undefined') {
+            wrap.innerHTML = '<div class="text-muted small">Map library not loaded.</div>';
+            return;
+        }
+
+        var mapId = 'trip-map-' + tripId;
+        wrap.innerHTML =
+          '<div class="d-flex justify-content-between align-items-center mb-1">' +
+            '<strong>Route</strong>' +
+            '<span class="small">' +
+              legendSwatch('green', 'Smooth') + legendSwatch('amber', 'Firm') +
+              legendSwatch('red', 'Harsh') +
+            '</span>' +
+          '</div>' +
+          '<div id="' + mapId + '" style="height:320px" class="rounded border"></div>';
+
+        var map = L.map(mapId, { scrollWheelZoom: false });
+        mapRegistry[tripId] = map;
+        L.tileLayer('/api/map/tiles/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" ' +
+                         'target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+        }).addTo(map);
+
+        // One polyline per segment rather than one per trip: the colour is a
+        // property of the stretch of road, and a single line can only carry
+        // one. A drive is a few hundred segments, which Leaflet handles
+        // comfortably.
+        var bounds = [];
+        for (var i = 1; i < track.length; i++) {
+            var a = track[i - 1], b = track[i];
+            var band = ragBand(pointSeverity(b));
+            L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+                color: RAG_COLOURS[band],
+                weight: band === 'green' ? 4 : 6,
+                opacity: band === 'none' ? 0.5 : 0.9,
+            }).addTo(map);
+            bounds.push([a.lat, a.lon]);
+        }
+        bounds.push([track[track.length - 1].lat, track[track.length - 1].lon]);
+
+        // Start and end, so the direction of travel is never ambiguous.
+        L.circleMarker([track[0].lat, track[0].lon], {
+            radius: 6, color: '#fff', weight: 2,
+            fillColor: '#198754', fillOpacity: 1,
+        }).addTo(map).bindPopup('Start');
+        var last = track[track.length - 1];
+        L.circleMarker([last.lat, last.lon], {
+            radius: 6, color: '#fff', weight: 2,
+            fillColor: '#212529', fillOpacity: 1,
+        }).addTo(map).bindPopup('End');
+
+        addEventMarkers(map, trip, track);
+
+        map.fitBounds(bounds, { padding: [20, 20] });
+        // Same reason as the re-expand path: the container may still be
+        // hidden when Leaflet first measures it.
+        setTimeout(function () { map.invalidateSize(); map.fitBounds(bounds, { padding: [20, 20] }); }, 60);
+    }
+
+    function legendSwatch(band, label) {
+        return '<span class="ms-2 text-nowrap">' +
+                 '<span style="display:inline-block;width:14px;height:4px;' +
+                   'background:' + RAG_COLOURS[band] + ';vertical-align:middle"></span> ' +
+                 '<span class="text-muted">' + label + '</span></span>';
+    }
+
+    /**
+     * Pin each event to where the car was when it happened.
+     *
+     * Events carry their own timestamp but no position — the phone detects
+     * them between fixes — so the position is the nearest track point in time.
+     * At the 10 s drive cadence that is within a few car lengths, which is
+     * ample for "this junction" and is the honest resolution to claim.
+     */
+    function addEventMarkers(map, trip, track) {
+        (trip.events || []).forEach(function (e) {
+            if (e.ts == null) return;
+            var best = null, bestGap = Infinity;
+            for (var i = 0; i < track.length; i++) {
+                var gap = Math.abs(track[i].ts - e.ts);
+                if (gap < bestGap) { bestGap = gap; best = track[i]; }
+            }
+            // Further from any fix than the gap the closer tolerates means the
+            // track has a hole here and the position would be a guess.
+            if (!best || bestGap > 60) return;
+
+            var k = eventKinds[e.kind] || eventKinds.harsh;
+            var colour = e.kind === 'brake' ? RAG_COLOURS.red : RAG_COLOURS.amber;
+            var into = Math.max(0, Math.round((e.ts - (trip.started_at || e.ts)) / 60));
+            L.circleMarker([best.lat, best.lon], {
+                radius: 8, color: '#fff', weight: 2,
+                fillColor: colour, fillOpacity: 1,
+            }).addTo(map).bindPopup(
+                '<strong>' + escape(k.label) + '</strong><br>' +
+                fmtG(e.peak_mps2) + ' peak · ' +
+                (e.duration_s == null ? '' : e.duration_s.toFixed(1) + ' s · ') +
+                into + ' min into the trip'
+            );
+        });
     }
 
     function bindJourneyHandlers() {
@@ -462,7 +701,7 @@ import { createChart } from './chart-utils.js';
                 var d = document.getElementById('trip-detail-' + id);
                 if (!d) return;
                 d.classList.toggle('d-none');
-                if (!d.classList.contains('d-none')) loadTripEvents(id);
+                if (!d.classList.contains('d-none')) loadTripDetail(id);
             };
         });
 
