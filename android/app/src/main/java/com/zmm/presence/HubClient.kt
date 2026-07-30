@@ -8,14 +8,16 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * The two hub calls this app makes. Nothing else.
+ * The hub calls this app makes. Nothing else.
  *
  *   GET  /api/presence/users/<user>       -> home_lat, home_lon, radius_m
  *   POST /api/presence/users/<user>/fix   -> {lat, lon, accuracy, timestamp}
+ *   GET  /api/places                      -> wake-up geofence regions
+ *   GET  /api/fuel/nearby                 -> cheapest stations, for the car app
  *
- * HttpURLConnection rather than a networking library: two endpoints don't justify
- * a dependency, and every dependency is another thing that could talk to someone
- * who isn't your hub.
+ * HttpURLConnection rather than a networking library: a handful of endpoints
+ * don't justify a dependency, and every dependency is another thing that could
+ * talk to someone who isn't your hub.
  */
 object HubClient {
 
@@ -137,6 +139,12 @@ object HubClient {
      * passive callers are untouched; only DriveService fills them in. Speed
      * is GPS doppler speed in m/s — the hub aggregates it into per-trip
      * statistics rather than deriving speed from consecutive positions.
+     *
+     * [motion] and [events] describe the interval that ended at this fix, not
+     * the instant of it: a position is a point, but how the car was driven only
+     * exists over time. Both are omitted entirely rather than sent as zeroes
+     * when there is nothing to say, so a hub can always tell "no sensors" from
+     * "sensors, and the driving was smooth".
      */
     suspend fun postFix(
         prefs: Prefs,
@@ -147,6 +155,9 @@ object HubClient {
         speedMps: Float? = null,
         bearingDeg: Float? = null,
         tripId: String? = null,
+        altitudeM: Double? = null,
+        motion: MotionSampler.Window? = null,
+        events: List<MotionSampler.Event> = emptyList(),
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val url = "${prefs.hubUrl}/api/presence/users/${enc(prefs.userId)}/fix"
         try {
@@ -158,6 +169,13 @@ object HubClient {
                 if (speedMps != null) put("speed", speedMps.toDouble())
                 if (bearingDeg != null) put("bearing", bearingDeg.toDouble())
                 if (tripId != null) put("trip_id", tripId)
+                if (altitudeM != null) put("altitude", altitudeM)
+                // Motion rides only on a tagged drive: without a trip there is
+                // nothing on the hub for it to belong to.
+                if (tripId != null) {
+                    motion?.let { put("motion", motionJson(it)) }
+                    if (events.isNotEmpty()) put("events", eventsJson(events))
+                }
             }.toString()
 
             val conn = open(url, "POST", prefs)
@@ -176,6 +194,39 @@ object HubClient {
             Result.Err(e.message ?: "Could not reach the hub")
         }
     }
+
+    /**
+     * A window as JSON, with the uncalibrated fields left out.
+     *
+     * NaN is how [MotionSampler] says "the forward axis is not learned yet",
+     * and it has no JSON representation — putting it on the wire would produce
+     * a body no strict parser accepts. Omitting the key says the same thing
+     * and says it in a form the hub already understands.
+     */
+    private fun motionJson(w: MotionSampler.Window): JSONObject = JSONObject().apply {
+        put("n", w.samples)
+        put("vert_rms", round3(w.vertRmsMps2))
+        put("jerk_peak", round3(w.jerkPeakMps3))
+        if (!w.longPeakMps2.isNaN()) put("long_peak", round3(w.longPeakMps2))
+        if (!w.latPeakMps2.isNaN()) put("lat_peak", round3(w.latPeakMps2))
+        if (!w.yawPeakRadS.isNaN()) put("yaw_peak", round3(w.yawPeakRadS))
+        w.pressureHpa?.let { put("pressure", round3(it)) }
+    }
+
+    private fun eventsJson(events: List<MotionSampler.Event>) =
+        org.json.JSONArray().apply {
+            events.forEach { e ->
+                put(JSONObject().apply {
+                    put("t", e.tSec)
+                    put("kind", e.kind)
+                    put("peak", round3(e.peakMps2))
+                    put("dur", round3(e.durationS))
+                })
+            }
+        }
+
+    /** Millimetre-per-second-squared resolution is already more than the sensor has. */
+    private fun round3(v: Float): Double = Math.round(v * 1000.0) / 1000.0
 
     /**
      * Named places, for wake-up geofences.
@@ -219,6 +270,86 @@ object HubClient {
         } catch (e: Exception) {
             Log.w(TAG, "fetchPlaces failed", e)
             Result.Err(e.message ?: "fetchPlaces failed")
+        }
+    }
+
+    /**
+     * One fuel station, as the car app needs it.
+     *
+     * [lat]/[lon] rather than the address the web UI shows: the head unit plots
+     * a marker and hands the position to its navigation app, and neither takes
+     * a postcode. A station the hub reports without coordinates is dropped by
+     * [fetchFuelNearby] — a place with no location cannot be rendered.
+     */
+    data class Station(
+        val siteId: String,
+        val brand: String,
+        val address: String,
+        val postcode: String,
+        val lat: Double,
+        val lon: Double,
+        val distanceKm: Double,
+        /** Pence per litre, as the feeds publish it. */
+        val price: Double,
+    )
+
+    /**
+     * Cheapest stations around a point. Needs the same bearer token as
+     * everything else; the endpoint is authenticated but needs no extra scope.
+     *
+     * The centre is passed explicitly rather than letting the hub fall back to
+     * the user's home: the whole point in the car is "near where I am now",
+     * and the caller is the only one who knows whether it has a usable fix.
+     */
+    suspend fun fetchFuelNearby(
+        prefs: Prefs,
+        lat: Double,
+        lon: Double,
+        fuel: String,
+        radiusKm: Double = 8.0,
+        limit: Int = 12,
+    ): Result<List<Station>> = withContext(Dispatchers.IO) {
+        val url = "${prefs.hubUrl}/api/fuel/nearby" +
+                "?fuel=${enc(fuel)}&lat=$lat&lon=$lon&radius_km=$radiusKm&limit=$limit"
+        try {
+            val conn = open(url, "GET", prefs)
+            val code = conn.responseCode
+            val body = readBody(conn)
+            conn.disconnect()
+
+            if (code == 401) return@withContext Result.Err("Token rejected — re-pair the app.")
+            // The hub says 503 when the upstream feeds are stale or down, which is
+            // a normal transient state and not the same as a broken hub. Surface
+            // its own wording; it is more specific than anything invented here.
+            if (code == 503) return@withContext Result.Err(
+                runCatching { JSONObject(body).optString("detail") }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() } ?: "Fuel data unavailable"
+            )
+            if (code !in 200..299) return@withContext Result.Err("Hub returned $code")
+
+            val arr = JSONObject(body).optJSONArray("stations")
+                ?: return@withContext Result.Ok(emptyList())
+            val out = ArrayList<Station>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val sLat = o.optDouble("latitude", Double.NaN)
+                val sLon = o.optDouble("longitude", Double.NaN)
+                if (sLat.isNaN() || sLon.isNaN()) continue
+                out.add(Station(
+                    siteId = o.optString("site_id"),
+                    brand = o.optString("brand").ifEmpty { "Unbranded" },
+                    address = o.optString("address"),
+                    postcode = o.optString("postcode"),
+                    lat = sLat,
+                    lon = sLon,
+                    distanceKm = o.optDouble("distance_km", Double.NaN),
+                    price = o.optDouble("price", Double.NaN),
+                ))
+            }
+            Result.Ok(out.filter { !it.price.isNaN() })
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchFuelNearby failed", e)
+            Result.Err(e.message ?: "Could not reach the hub")
         }
     }
 

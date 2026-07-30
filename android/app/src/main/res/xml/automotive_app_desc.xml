@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Declares to Android Auto that this app drives the head unit through the
+    template host rather than projecting its own UI. Without this file the
+    CarAppService is simply never discovered — the app installs fine and
+    shows nothing in the car, with no error anywhere.
+-->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>

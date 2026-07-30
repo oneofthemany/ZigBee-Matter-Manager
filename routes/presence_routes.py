@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -54,6 +54,38 @@ class UserUpsert(BaseModel):
     journeys_enabled: Optional[bool] = None
 
 
+class MotionWindow(BaseModel):
+    """
+    Inertial summary of the interval that ended at a fix, from the phone's
+    MotionSampler. All SI: m/s², m/s³, rad/s, hPa.
+
+    Every field is bounded well above anything a car produces, because these
+    numbers come from a device the hub does not control. The bounds are not
+    plausibility filters — journeys.py does that, and needs to see an
+    implausible value to exclude it — they are a ceiling on what a compromised
+    or buggy phone can put into an aggregate.
+
+    long_peak / lat_peak / yaw_peak are optional because the phone genuinely
+    may not know them: the forward axis is learned during a drive, and not
+    every phone has a gyroscope.
+    """
+    n: int = Field(..., ge=1, le=1_000_000)
+    vert_rms: float = Field(..., ge=0.0, le=200.0)
+    jerk_peak: float = Field(..., ge=0.0, le=10_000.0)
+    long_peak: Optional[float] = Field(None, ge=-200.0, le=200.0)
+    lat_peak: Optional[float] = Field(None, ge=0.0, le=200.0)
+    yaw_peak: Optional[float] = Field(None, ge=0.0, le=100.0)
+    pressure: Optional[float] = Field(None, ge=250.0, le=1200.0)
+
+
+class MotionEvent(BaseModel):
+    """One discrete driving event detected by the phone within the window."""
+    t: float
+    kind: str = Field(..., pattern=r"^(brake|accel|corner|harsh)$")
+    peak: float = Field(..., ge=0.0, le=200.0)
+    dur: float = Field(..., ge=0.0, le=300.0)
+
+
 class FixReport(BaseModel):
     lat: float = Field(..., ge=-90.0, le=90.0)
     lon: float = Field(..., ge=-180.0, le=180.0)
@@ -66,6 +98,14 @@ class FixReport(BaseModel):
     bearing: Optional[float] = Field(None, ge=0.0, le=360.0)    # degrees
     trip_id: Optional[str] = Field(None, min_length=8, max_length=64,
                                    pattern=r"^[A-Za-z0-9_-]+$")
+    # GNSS altitude, metres. Below sea level is real (Dead Sea, road tunnels);
+    # the upper bound is simply higher than any road.
+    altitude: Optional[float] = Field(None, ge=-500.0, le=9000.0)
+    # How the car was driven over the interval ending at this fix. The phone
+    # caps its own event list per window; the bound here is what stops a
+    # client that does not.
+    motion: Optional[MotionWindow] = None
+    events: List[MotionEvent] = Field(default_factory=list, max_length=32)
 
 
 class ManualSet(BaseModel):
@@ -352,6 +392,12 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
                             speed_mps=fix.speed,
                             bearing_deg=fix.bearing,
                             accuracy_m=fix.accuracy,
+                            altitude_m=fix.altitude,
+                            # Passed as plain dicts: journeys.py owns the
+                            # storage shape, and handing it pydantic models
+                            # would tie a DuckDB module to this API's schema.
+                            motion=fix.motion.model_dump() if fix.motion else None,
+                            events=[e.model_dump() for e in fix.events],
                         )
                 except Exception as e:               # noqa: BLE001
                     logger.warning(f"[journeys] record_fix failed: {e}")

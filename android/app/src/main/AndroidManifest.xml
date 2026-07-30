@@ -37,10 +37,34 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
+    <!-- Held only while drive mode is streaming, and only when journey
+         recording is on (MotionSampler.kt). Play Services wakes the device to
+         deliver a location fix, but nothing wakes it to deliver an accelerometer
+         sample: once the AP suspends, a non-wakeup sensor stops reporting and
+         every brake, corner and bump until the next fix is simply lost. A drive
+         with the screen off would otherwise record where the car went and
+         nothing about how it was driven. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Motion sensing is an enhancement, never a requirement: a phone with no
+         gyroscope still reports roughness and event magnitudes from the
+         accelerometer alone, and one with no accelerometer at all still records
+         the journey. required=false on all three. -->
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
+
     <!-- Geofencing is Play Services. Declared required so the Play Store (and a
          user reading the manifest) is honest about it. -->
     <uses-feature
         android:name="android.hardware.location.gps"
+        android:required="false" />
+
+    <!-- The car app is an extra, never a requirement: this is a phone app that
+         happens to also answer a head unit. required=true would hide it from
+         every device without automotive hardware — i.e. all of them. -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
         android:required="false" />
 
     <application
@@ -50,6 +74,32 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Material3.DayNight">
+
+        <!-- Tells Android Auto this app speaks templates (res/xml/automotive_app_desc).
+             Without it the CarAppService below is never discovered and the app
+             simply does not appear in the car — no error, no log. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
+        <!-- Cheapest-fuel list on the head unit (car/FuelScreen.kt).
+             exported=true is mandatory: the template host is a separate process
+             and must bind this service. Who may bind is decided in code by the
+             HostValidator, not here — a release build accepts only Google-signed
+             hosts. Category POI is what the host uses to decide which templates
+             this app is allowed, so it must match what the screen actually builds. -->
+        <service
+            android:name=".car.FuelCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POI" />
+            </intent-filter>
+        </service>
 
         <activity
             android:name=".PairActivity"

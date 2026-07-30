@@ -2,13 +2,19 @@
 Journeys API routes — drive history and speed statistics.
 
 Scope model mirrors presence:
-- `presence:read`   trip summaries and aggregate stats (no coordinates)
+- `presence:read`   trip summaries, driving events, and aggregate stats
+                    (no coordinates)
 - `admin`           additionally the raw track points, and deletion
 
 Track coordinates cross the same privacy boundary as the live presence map
 (see _attach_position in presence_routes.py), so they are gated the same
 way: presence:read tells you someone drove 12 miles at an average of
 31 mph; pinning the route to streets is an administrator's capability.
+
+Driving events sit on the presence:read side of that line deliberately. They
+carry a time, a kind and a magnitude but no position, so they say how the car
+was driven and not where — the same class of fact as the average speed and
+harsh-event counts already in the summary, at finer resolution.
 """
 
 from __future__ import annotations

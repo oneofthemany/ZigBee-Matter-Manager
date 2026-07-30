@@ -67,6 +67,10 @@ android {
 
     buildFeatures {
         viewBinding = true
+        // Off by default from AGP 8. FuelCarAppService reads BuildConfig.DEBUG to
+        // decide whether to accept any template host (the Desktop Head Unit) or
+        // only Google-signed ones.
+        buildConfig = true
     }
 }
 
@@ -87,4 +91,12 @@ dependencies {
     // crash reporting, no network library — HttpURLConnection is enough for two
     // endpoints, and fewer deps is fewer things that can phone home.
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // Android Auto. AndroidX, and the only way to put anything on a head unit:
+    // the car renders templates from this library and will not display an app's
+    // own views, so the fuel screen is a rewrite rather than a port of the web
+    // UI's Drive tab. app-projected is the phone-projected host (Android Auto);
+    // it is what makes the CarAppService visible to the car.
+    implementation("androidx.car.app:app:1.4.0")
+    implementation("androidx.car.app:app-projected:1.4.0")
 }

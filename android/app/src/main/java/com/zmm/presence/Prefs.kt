@@ -177,6 +177,17 @@ class Prefs(context: Context) {
         driveIntervalS = j.driveIntervalS
     }
 
+    /**
+     * Fuel grade the car app searches for, cycled from the head unit.
+     *
+     * Phone-side and not hub-decided, unlike the mode and journey settings:
+     * this is a per-driver preference about what to show, not a tracking
+     * policy, and it must be changeable from the car without a round-trip.
+     */
+    var carFuelType: String
+        get() = sp.getString(KEY_CAR_FUEL, "E10") ?: "E10"
+        set(v) = sp.edit().putString(KEY_CAR_FUEL, v).apply()
+
     var armed: Boolean
         get() = sp.getBoolean(KEY_ARMED, false)
         set(v) = sp.edit().putBoolean(KEY_ARMED, v).apply()
@@ -209,6 +220,7 @@ class Prefs(context: Context) {
         private const val KEY_JOURNEYS = "journeys_enabled"
         private const val KEY_DRIVE_INTERVAL = "drive_interval_s"
         private const val KEY_PASSIVE_POST = "passive_last_post_ms"
+        private const val KEY_CAR_FUEL = "car_fuel_type"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"

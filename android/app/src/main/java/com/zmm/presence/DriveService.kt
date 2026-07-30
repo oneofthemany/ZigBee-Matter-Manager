@@ -53,6 +53,30 @@ class DriveService : Service() {
     private var callback: LocationCallback? = null
 
     /**
+     * Inertial sampling, running only when journeys are on.
+     *
+     * Null otherwise, and deliberately so: motion data exists to describe a
+     * recorded drive, and with journey recording off the hub discards the fix
+     * anyway. Sampling three sensors at 50 Hz to build a summary nobody stores
+     * would be pure cost.
+     */
+    private var motion: MotionSampler? = null
+
+    /**
+     * Held for the life of the service.
+     *
+     * The location callback survives Doze on its own — Play Services wakes the
+     * device to deliver it — but sensor listeners do not: when the AP suspends,
+     * a non-wakeup sensor simply stops reporting, and every brake and corner in
+     * that gap is lost. A drive with the screen off and the phone in a pocket
+     * would silently record position but no behaviour. The usual objection to a
+     * wake lock does not apply for the same reason it does not apply to this
+     * being a foreground service at all: the phone is in a car, on charge, for
+     * exactly as long as the drive lasts.
+     */
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
+    /**
      * One drive, one id. Generated when the service starts (the car
      * connecting) and dies with it, so the hub can group this drive's fixes
      * into a journey without guessing at gaps. Null when the user hasn't
@@ -76,8 +100,23 @@ class DriveService : Service() {
         }
 
         startInForeground(prefs.carBtName)
+
+        // A second ACL_CONNECTED for the same car (they arrive per-profile on
+        // some head units) must not stack a second location callback, sensor
+        // registration and wake lock on top of the running ones — nor split
+        // one drive into two trips. The guard sits AFTER startForeground, not
+        // before: every startForegroundService call must be answered by one,
+        // and returning early without it is what the system kills a service
+        // for.
+        if (running) {
+            Log.i(TAG, "drive mode already running; ignoring duplicate start")
+            return START_NOT_STICKY
+        }
+
+
         tripId = if (prefs.journeysEnabled)
             java.util.UUID.randomUUID().toString() else null
+        if (tripId != null) startMotion()
         startUpdates(prefs)
         running = true
         Log.i(TAG, "drive mode started (${prefs.carBtName})")
@@ -120,11 +159,34 @@ class DriveService : Service() {
         )
     }
 
+    private fun startMotion() {
+        wakeLock = getSystemService(android.os.PowerManager::class.java)
+            ?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG)
+            ?.apply {
+                setReferenceCounted(false)
+                // No timeout: the lifetime that bounds this is the service's,
+                // and onDestroy releases it on every path out — including the
+                // system killing the service, which tears down the process.
+                acquire()
+            }
+        motion = MotionSampler(this).also { it.start() }
+    }
+
     @android.annotation.SuppressLint("MissingPermission")   // checked in onStartCommand
     private fun startUpdates(prefs: Prefs) {
         val cb = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
+
+                // Drain before the coroutine, not inside it: the window belongs
+                // to the interval that just ended, and posting is asynchronous.
+                // Draining after an await would fold part of the next interval
+                // into this fix.
+                val m = motion
+                if (m != null && loc.hasSpeed()) m.noteGpsSpeed(loc.speed)
+                val window = m?.takeWindow()
+                val events = m?.takeEvents() ?: emptyList()
+
                 scope.launch {
                     when (val r = HubClient.postFix(
                         prefs, loc.latitude, loc.longitude,
@@ -136,6 +198,13 @@ class DriveService : Service() {
                         speedMps = if (loc.hasSpeed()) loc.speed else null,
                         bearingDeg = if (loc.hasBearing()) loc.bearing else null,
                         tripId = tripId,
+                        // GNSS altitude is coarse (tens of metres), but summed
+                        // over a drive with a deadband it still separates a
+                        // climb over a pass from a flat run. Where the phone
+                        // has a barometer the hub prefers that instead.
+                        altitudeM = if (loc.hasAltitude()) loc.altitude else null,
+                        motion = window,
+                        events = events,
                     )) {
                         is HubClient.Result.Ok -> Log.i(TAG, "drive fix reported")
                         is HubClient.Result.Err ->
@@ -175,6 +244,15 @@ class DriveService : Service() {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(it)
         }
+        // Whatever the sampler still holds covers the seconds since the last
+        // fix and is dropped with it. Deliberately: a network call from
+        // onDestroy is not reliable enough to build on — the same reason the
+        // hub closes trips on an idle timeout rather than waiting to be told —
+        // and what is lost is the tail of a car that has already stopped.
+        motion?.stop()
+        motion = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         scope.cancel()
         Log.i(TAG, "drive mode stopped")
         super.onDestroy()
@@ -185,6 +263,7 @@ class DriveService : Service() {
         private const val CHANNEL_ID = "zmm_drive"
         private const val NOTIF_ID = 41
         private const val UPDATE_INTERVAL_MS = 60_000L
+        private const val WAKE_TAG = "zmm:drive-motion"
 
         /**
          * Whether drive mode is currently streaming. Read by

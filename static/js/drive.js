@@ -74,6 +74,38 @@ import { createChart } from './chart-utils.js';
                '</span>';
     }
 
+    // Acceleration reads better in g than m/s² — "0.45 g" is a quantity
+    // drivers have a feel for — but the stored unit is kept alongside it
+    // rather than hidden, because that is what the API returns.
+    function fmtG(mps2) {
+        if (mps2 == null) return '—';
+        return (mps2 / 9.80665).toFixed(2) + ' g';
+    }
+
+    // Null means "this trip had no motion sensing", which must never render as
+    // a perfect score. Every behaviour formatter here returns an em dash for
+    // null and only ever styles a real number.
+    function scoreClass(s) {
+        if (s == null) return 'text-muted';
+        if (s >= 85) return 'text-success';
+        if (s >= 60) return 'text-warning';
+        return 'text-danger';
+    }
+
+    function fmtScore(s) {
+        if (s == null) return '<span class="text-muted">—</span>';
+        return '<span class="' + scoreClass(s) + '">' + Math.round(s) + '</span>';
+    }
+
+    var eventKinds = {
+        brake:  { label: 'Harsh braking',      icon: 'fa-hand',            cls: 'danger'  },
+        accel:  { label: 'Harsh acceleration', icon: 'fa-gauge-high',      cls: 'warning' },
+        corner: { label: 'Hard cornering',     icon: 'fa-arrows-turn-right', cls: 'warning' },
+        // Detected before the phone had worked out which way the car faces,
+        // so it is a real excursion that simply cannot be attributed.
+        harsh:  { label: 'Harsh manoeuvre',    icon: 'fa-triangle-exclamation', cls: 'secondary' }
+    };
+
     function placeName(p) {
         if (!p || p === 'away') return 'Away';
         if (p === 'home') return 'Home';
@@ -237,6 +269,25 @@ import { createChart } from './chart-utils.js';
               statTile('Avg speed', fmtMph(stats.overall_avg_speed_mps), 'distance / time') +
               statTile('Top speed', fmtMph(stats.top_speed_mps)) +
             '</div>';
+
+            // Second row only when at least one trip carried motion data.
+            // Drawing it from all-null columns would present "no accelerometer"
+            // as flawless driving.
+            if (stats.measured_trip_count > 0) {
+                tiles +=
+                '<div class="row g-2 mb-3">' +
+                  statTile('Driving style', fmtScore(stats.smoothness_score),
+                           'over ' + stats.measured_trip_count + ' measured trip' +
+                           (stats.measured_trip_count === 1 ? '' : 's')) +
+                  statTile('Harsh events', stats.harsh_event_count == null ? '—'
+                           : stats.harsh_event_count,
+                           (stats.harsh_brake_count || 0) + ' brake / ' +
+                           (stats.harsh_accel_count || 0) + ' accel / ' +
+                           (stats.harsh_corner_count || 0) + ' corner') +
+                  statTile('Peak braking', fmtG(stats.max_brake_mps2)) +
+                  statTile('Peak cornering', fmtG(stats.max_lat_mps2)) +
+                '</div>';
+            }
         }
 
         var body;
@@ -262,9 +313,11 @@ import { createChart } from './chart-utils.js';
                   '<td class="small d-none d-sm-table-cell">' + fmtDuration(t.duration_s) + '</td>' +
                   '<td>' + fmtMph(t.avg_speed_mps) + '</td>' +
                   '<td class="d-none d-sm-table-cell">' + fmtMph(t.max_speed_mps) + '</td>' +
+                  '<td class="d-none d-md-table-cell fw-bold">' +
+                      fmtScore(t.smoothness_score) + '</td>' +
                 '</tr>' +
                 '<tr class="d-none" id="trip-detail-' + escape(t.trip_id) + '">' +
-                  '<td colspan="6" class="bg-light small p-3">' + tripDetail(t) + '</td>' +
+                  '<td colspan="7" class="bg-light small p-3">' + tripDetail(t) + '</td>' +
                 '</tr>';
             }).join('');
             body =
@@ -274,6 +327,7 @@ import { createChart } from './chart-utils.js';
                   '<th>When</th><th>Route</th><th>Distance</th>' +
                   '<th class="d-none d-sm-table-cell">Time</th>' +
                   '<th>Avg</th><th class="d-none d-sm-table-cell">Max</th>' +
+                  '<th class="d-none d-md-table-cell">Style</th>' +
                 '</tr></thead><tbody>' + rows + '</tbody>' +
               '</table>' +
             '</div>';
@@ -304,7 +358,95 @@ import { createChart } from './chart-utils.js';
             '<button class="btn btn-sm btn-outline-danger" data-del-trip="' + escape(t.trip_id) + '">' +
               '<i class="fas fa-trash me-1"></i>Delete</button>' +
           '</div>' +
+        '</div>' +
+        behaviourDetail(t) +
+        // Filled in on first expand — see loadTripEvents. Events are the only
+        // part of a trip not already in the list response, and fetching every
+        // trip's up front would be a hundred requests to render a table.
+        '<div id="trip-events-' + escape(t.trip_id) + '" class="mt-2"></div>';
+    }
+
+    /**
+     * The inertial half of a trip. Absent entirely when the phone had no
+     * motion sensing, rather than shown as a row of dashes: a trip recorded
+     * before this existed is not a trip with nothing to report.
+     */
+    function behaviourDetail(t) {
+        if (!t.motion_fix_count) return '';
+
+        function cell(label, value, cls) {
+            return '<div class="col-6 col-sm-3 col-lg-2">' +
+                     '<strong>' + label + '</strong><br>' +
+                     '<span class="' + (cls || '') + '">' + value + '</span>' +
+                   '</div>';
+        }
+
+        var counts =
+            (t.harsh_brake_count || 0) + ' <span class="text-muted">brake</span> · ' +
+            (t.harsh_accel_count || 0) + ' <span class="text-muted">accel</span> · ' +
+            (t.harsh_corner_count || 0) + ' <span class="text-muted">corner</span>';
+
+        return '<hr class="my-2">' +
+        '<div class="row g-2">' +
+          cell('Driving style', fmtScore(t.smoothness_score) +
+               '<span class="text-muted"> / 100</span>', 'fw-bold') +
+          cell('Harsh events', counts) +
+          cell('Peak braking', fmtG(t.max_brake_mps2)) +
+          cell('Peak acceleration', fmtG(t.max_accel_mps2)) +
+          cell('Peak cornering', fmtG(t.max_lat_mps2)) +
+          // RMS vertical acceleration: a smooth A-road sits near 0.5 m/s²,
+          // a broken urban surface several times that.
+          cell('Road roughness', t.roughness_mps2 == null ? '—'
+               : t.roughness_mps2.toFixed(2) + ' m/s²') +
+          cell('Stops', t.stop_count == null ? '—' : t.stop_count,
+               '') +
+          cell('Idling', t.idle_s == null ? '—' : fmtDuration(t.idle_s)) +
+          cell('Climb', t.climb_m == null ? '—' : Math.round(t.climb_m) + ' m') +
         '</div>';
+    }
+
+    /**
+     * Fetch and render one trip's event timeline.
+     *
+     * Runs once per trip per page load; the rendered markup is left in place
+     * so collapsing and re-expanding a row costs nothing.
+     */
+    async function loadTripEvents(tripId) {
+        var host = document.getElementById('trip-events-' + tripId);
+        if (!host || host.dataset.loaded) return;
+        host.dataset.loaded = '1';
+
+        var trip;
+        try {
+            var r = await fetch('/api/journeys/' + encodeURIComponent(tripId),
+                                { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            trip = await r.json();
+        } catch (e) {
+            log.warn('trip events fetch failed', e);
+            // Leave the panel empty rather than showing an error: the summary
+            // above it is complete on its own, and the events are detail.
+            return;
+        }
+
+        var evs = trip.events || [];
+        if (!evs.length) return;
+
+        var start = trip.started_at || (evs[0] && evs[0].ts) || 0;
+        host.innerHTML =
+          '<strong>Events</strong>' +
+          '<div class="d-flex flex-wrap gap-1 mt-1">' +
+          evs.map(function (e) {
+              var k = eventKinds[e.kind] || eventKinds.harsh;
+              var into = Math.max(0, Math.round((e.ts - start) / 60));
+              return '<span class="badge bg-' + k.cls + '-subtle text-' + k.cls +
+                     '-emphasis border border-' + k.cls + '-subtle">' +
+                       '<i class="fas ' + k.icon + ' me-1"></i>' +
+                       escape(k.label) + ' ' + fmtG(e.peak_mps2) +
+                       ' <span class="opacity-75">@ ' + into + ' min</span>' +
+                     '</span>';
+          }).join('') +
+          '</div>';
     }
 
     function bindJourneyHandlers() {
@@ -316,8 +458,11 @@ import { createChart } from './chart-utils.js';
 
         document.querySelectorAll('.drive-trip-row').forEach(function (row) {
             row.onclick = function () {
-                var d = document.getElementById('trip-detail-' + row.getAttribute('data-trip'));
-                if (d) d.classList.toggle('d-none');
+                var id = row.getAttribute('data-trip');
+                var d = document.getElementById('trip-detail-' + id);
+                if (!d) return;
+                d.classList.toggle('d-none');
+                if (!d.classList.contains('d-none')) loadTripEvents(id);
             };
         });
 
