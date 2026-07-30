@@ -788,7 +788,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # watcher logs a drift warning when this top-up is expected to do real work.
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.txt
+    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
 DOCKERFILE_REQS
 
     # Part 3 — application source and final image config (always present)
