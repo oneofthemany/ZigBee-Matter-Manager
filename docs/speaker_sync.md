@@ -183,9 +183,20 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
 - **Media → Group** — now two sub-tabs:
   - *WiiM multiroom*: the pre-existing native LinkPlay builder, unchanged.
   - *Speaker sync (beta)*: create/delete named groups of ≥ 2 Cast speakers,
-    **Test** (starts the click-track session on all members), live per-member
-    trim sliders, connection pills and stats (offset / RTT / late / resyncs),
-    refreshed in place every 3 s so slider drags aren't disturbed.
+    a **source picker** (sync test signal, favourite stations, recently
+    played), session length, **Test/Play**, live per-member trim sliders,
+    connection pills and stats (offset / RTT / late / resyncs), refreshed in
+    place every 3 s so slider drags aren't disturbed.
+
+    The source choice is remembered per group in `localStorage`, keyed
+    `zmm.syncsrc.<gid>` — a group tends to be "the kitchen radio", so it should
+    survive a reload the way the test duration does. Favourites are stored as
+    `fav:<uuid>` and resolved server-side at start, so a station whose stream
+    URL has moved since it was favourited still plays. Tidal is deliberately
+    absent from the picker: its stream URLs are time-limited and the sync
+    source decodes one URL for the life of the session, so a long session would
+    die when the token expired. While a session runs the card shows what is
+    playing and the running underrun count.
 
 ## One-time Cast console registration
 
@@ -209,7 +220,7 @@ Full steps also in `static/cast/README.md`.
 | Endpoint | Method | Body / Returns |
 |---|---|---|
 | `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, source:{kind, buffered_s, underruns, restarts, …}, resampler:{kind, soxr, …}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
-| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url, title?, loop?}}` — omit `media` for the test signal |
+| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid, title?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start |
 | `/api/media/sync/stop` | POST | — |
 | `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
 | `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active}]}` |

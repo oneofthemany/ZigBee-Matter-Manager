@@ -111,6 +111,7 @@ export function initMedia() {
     window.mediaSyncStart = syncStartGroup;
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncDur = syncSetDuration;
+    window.mediaSyncSrc = syncSetSource;
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
@@ -1663,11 +1664,12 @@ async function renderSyncPane() {
                            title="Play a chirp on each speaker and measure the real in-air offsets with the server microphone — sets the trims automatically (takes ~15 s)">
                      <i class="fas fa-microphone me-1"></i>Calibrate</button>
                    <button class="btn btn-sm btn-danger" onclick="window.mediaSyncStop()">
-                     <i class="fas fa-stop me-1"></i>Stop test
+                     <i class="fas fa-stop me-1"></i>${(((_syncStatus || {}).source || {}).kind === 'media') ? 'Stop' : 'Stop test'}
                      <span id="syncRemain" class="ms-1"></span></button>`
-                : `<select class="form-select form-select-sm w-auto" id="syncdur-${esc(g.id)}"
+                : `${_syncSrcSelect(g.id, running || disabled)}
+                   <select class="form-select form-select-sm w-auto" id="syncdur-${esc(g.id)}"
                            ${running || disabled ? 'disabled' : ''}
-                           title="Test length — fixed windows keep sessions comparable in the Sync Lab"
+                           title="Session length — fixed windows keep sessions comparable in the Sync Lab"
                            onchange="window.mediaSyncDur('${esc(g.id)}', this.value)">
                      ${[[120, '2 min'], [300, '5 min'], [600, '10 min'], [0, 'Until stopped']]
                          .map(([v, l]) => `<option value="${v}" ${v === _syncDurFor(g.id) ? 'selected' : ''}>${l}</option>`)
@@ -1675,14 +1677,16 @@ async function renderSyncPane() {
                    </select>
                    <button class="btn btn-sm btn-outline-primary" ${running || disabled ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
-                           title="Play the sync test signal (clicks every 2 s) on all members">
-                     <i class="fas fa-play me-1"></i>Test</button>`}
+                           title="${_syncSrcFor(g.id)
+                               ? esc('Play ' + _syncSrcLabel(g.id) + ' on all members, clock-aligned')
+                               : 'Play the sync test signal (clicks every 2 s) on all members'}">
+                     <i class="fas fa-play me-1"></i>${_syncSrcFor(g.id) ? 'Play' : 'Test'}</button>`}
             <button class="btn btn-sm btn-outline-secondary" onclick="window.mediaSyncLab('${esc(g.id)}')"
                     title="Sync Lab — session analysis &amp; learned model"><i class="fas fa-wave-square"></i></button>
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
           </div>
-          ${g.active ? '<div class="small text-muted mt-1">Stand between the speakers and drag each trim until the clicks land together. Positive = plays later.</div>' : ''}
+          ${g.active ? _syncActiveHint() : ''}
           ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
         </div>
       </div>`).join('');
@@ -1738,6 +1742,10 @@ async function refreshSyncStats() {
             if (stat) stat.textContent = _syncStatLine(d);
             _syncMeterPaint(d.player_id, d);
         }
+        // Refresh the source line in place (underruns tick up mid-session).
+        // It sits above the member rows, so this can't disturb a trim drag.
+        const hint = document.getElementById('syncActiveHint');
+        if (hint) hint.outerHTML = _syncActiveHint();
     } catch (e) { /* transient — next tick */ }
 }
 
@@ -1773,6 +1781,102 @@ function syncSetDuration(gid, val) {
     localStorage.setItem('zmm.syncdur.' + gid, String(Number(val) || 0));
 }
 
+// ── Sync source picker ──────────────────────────────────────────────────────
+// Stored per group as a stable key — "" (test signal), "fav:<uuid>" or
+// "url:<url>" — never a list index, because favourites and recently-played
+// both reorder underneath us. Split on the FIRST colon so a URL keeps its own.
+function _syncSrcFor(gid) {
+    return localStorage.getItem('zmm.syncsrc.' + gid) || '';
+}
+
+function syncSetSource(gid, val) {
+    if (val) localStorage.setItem('zmm.syncsrc.' + gid, val);
+    else localStorage.removeItem('zmm.syncsrc.' + gid);
+    renderSyncPane();                     // the start button follows the choice
+}
+
+function _syncSrcParts(gid) {
+    const v = _syncSrcFor(gid);
+    const i = v.indexOf(':');
+    return i < 0 ? null : { kind: v.slice(0, i), id: v.slice(i + 1) };
+}
+
+// The `media` body for /sync/start, or null for the generated test signal
+// (which the API expresses as an absent body).
+function _syncMediaFor(gid) {
+    const p = _syncSrcParts(gid);
+    if (!p) return null;
+    // Favourites travel by id, not URL: the server re-resolves them, so a
+    // station that moved still starts.
+    if (p.kind === 'fav') return { station_uuid: p.id };
+    const it = _recentCache.find(x => x.url === p.id);
+    return { url: p.id, title: (it && it.title) || 'Media' };
+}
+
+function _syncSrcLabel(gid) {
+    const p = _syncSrcParts(gid);
+    if (!p) return 'Sync test';
+    if (p.kind === 'fav') {
+        const f = _radioFavs.find(x => x.uuid === p.id);
+        return f ? f.name : 'Favourite station';
+    }
+    const it = _recentCache.find(x => x.url === p.id);
+    return (it && it.title) || 'Media';
+}
+
+// Recently-played entries worth offering. Tidal is excluded on purpose: its
+// stream URLs are time-limited and the sync source decodes one URL for the
+// life of the session, so a long session would die when the token expired.
+function _syncRecentPickable() {
+    const seen = new Set();
+    return _recentCache.filter(it => {
+        if (!it.url || it.media_type === 'tidal' || seen.has(it.url)) return false;
+        seen.add(it.url);
+        return true;
+    }).slice(0, 8);
+}
+
+// While a session runs, say what it is playing and give advice that matches:
+// "until the clicks land together" is meaningless over music.
+function _syncActiveHint() {
+    const src = (_syncStatus || {}).source || {};
+    const generated = src.kind !== 'media';
+    const what = src.title || (generated ? 'Sync test signal' : 'Media');
+    const under = (src.underruns || 0) > 0
+        ? ` <span class="text-warning" title="The decoder could not keep up — ${src.underrun_ms} ms of silence so far">
+              <i class="fas fa-triangle-exclamation"></i> ${src.underruns} underrun${src.underruns === 1 ? '' : 's'}</span>`
+        : '';
+    const advice = generated
+        ? 'Stand between the speakers and drag each trim until the clicks land together. Positive = plays later.'
+        : 'Drag each trim until the speakers stop echoing. Positive = plays later — tune on the test signal first, the clicks are far easier to align by ear.';
+    return `<div class="small text-muted mt-1" id="syncActiveHint">
+              <i class="fas fa-music me-1"></i><span class="fw-semibold">${esc(what)}</span>${under}
+              <div>${advice}</div>
+            </div>`;
+}
+
+function _syncSrcSelect(gid, disabled) {
+    const sel = _syncSrcFor(gid);
+    const opt = (v, label) =>
+        `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
+    const favs = _radioFavs.length
+        ? `<optgroup label="Favourite stations">
+             ${_radioFavs.map(f => opt('fav:' + f.uuid, f.name)).join('')}</optgroup>`
+        : '';
+    const recent = _syncRecentPickable();
+    const recents = recent.length
+        ? `<optgroup label="Recently played">
+             ${recent.map(it => opt('url:' + it.url, it.title || it.url)).join('')}</optgroup>`
+        : '';
+    return `
+      <select class="form-select form-select-sm w-auto" id="syncsrc-${esc(gid)}"
+              ${disabled ? 'disabled' : ''}
+              title="What this group plays. The test signal is the tuning ruler; anything else is real audio, equalised and clock-aligned server-side."
+              onchange="window.mediaSyncSrc('${esc(gid)}', this.value)">
+        ${opt('', 'Sync test signal')}${favs}${recents}
+      </select>`;
+}
+
 function _fmtRemain(s) {
     if (s == null || !isFinite(s)) return '';
     const m = Math.floor(s / 60), sec = Math.max(0, Math.round(s % 60));
@@ -1780,12 +1884,16 @@ function _fmtRemain(s) {
 }
 
 async function syncStartGroup(gid) {
-    const r = await apiPost('/api/media/sync/start',
-        { group_id: gid, duration_s: _syncDurFor(gid) });
+    const media = _syncMediaFor(gid);
+    const r = await apiPost('/api/media/sync/start', {
+        group_id: gid, duration_s: _syncDurFor(gid),
+        ...(media ? { media } : {}),      // omitted body = generated test signal
+    });
     if (!r.success) { toast(r.error || 'Start failed', 'error'); return; }
+    const what = _syncSrcLabel(gid);
     toast(r.duration_s
-        ? `Sync test starting — ${Math.round(r.duration_s / 60)} min window`
-        : 'Sync test starting — speakers join within a few seconds', 'success');
+        ? `${what} starting — ${Math.round(r.duration_s / 60)} min window`
+        : `${what} starting — speakers join within a few seconds`, 'success');
     renderSyncPane();
 }
 

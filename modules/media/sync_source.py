@@ -88,7 +88,7 @@ class GeneratedSource:
         pass
 
     def stats(self) -> dict:
-        return {"kind": self.kind, "delay_s": 0.0}
+        return {"kind": self.kind, "title": "Sync test signal", "delay_s": 0.0}
 
 
 # ----------------------------------------------------------------------
@@ -159,8 +159,10 @@ class MediaSource:
     def __init__(self, url: str, epoch: float, delay_s: float = 2.0,
                  capacity_s: float = 20.0, eq_chain=None,
                  rate: int = RATE, channels: int = CHANNELS,
-                 ffmpeg: str = "", loop_forever: bool = False):
+                 ffmpeg: str = "", loop_forever: bool = False,
+                 title: str = ""):
         self.url = url
+        self.title = title
         self.epoch = epoch
         self.delay_s = float(delay_s)
         self.channels = channels
@@ -368,6 +370,7 @@ class MediaSource:
         buffered = (self._ring.end - self._ring.start) / self._rate
         return {
             "kind": self.kind,
+            "title": self.title,
             "url": self.url[:120],
             "delay_s": self.delay_s,
             "buffered_s": round(buffered, 2),

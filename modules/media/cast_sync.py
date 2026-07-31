@@ -369,7 +369,8 @@ class CastSyncPoc:
         src = MediaSource(media["url"].strip(), self._epoch,
                           delay_s=self._source_delay_s,
                           capacity_s=self._ring_capacity_s, eq_chain=chain,
-                          loop_forever=bool(media.get("loop")))
+                          loop_forever=bool(media.get("loop")),
+                          title=(media.get("title") or "").strip())
         try:
             await src.start()
         except Exception as e:

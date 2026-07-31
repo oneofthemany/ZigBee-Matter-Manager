@@ -16,6 +16,7 @@ logger = logging.getLogger("routes.cast_sync")
 
 class SyncMediaBody(BaseModel):
     url: str = ""                # anything ffmpeg can open; "" = test signal
+    station_uuid: str = ""       # ...or a radio-directory id, resolved here
     title: str = ""
     loop: bool = False           # for finite sources (a file); ignored on live
 
@@ -63,11 +64,24 @@ def register_cast_sync_routes(app: FastAPI, get_media):
                     "error": "Sync PoC disabled — set media.cast.sync.enabled"}
         if not body.player_ids and not body.group_id:
             return {"success": False, "error": "No players or group given"}
+        media = body.media.model_dump() if body.media else None
+        if media and media.get("station_uuid") and not media.get("url"):
+            # Resolve here rather than storing a URL in the picker: directory
+            # stream URLs move, and a favourite saved months ago should still
+            # start. Same source the ordinary play path uses.
+            svc = get_media()
+            station = None
+            if svc is not None and getattr(svc, "radio", None) is not None:
+                station = await svc.radio.get_station(media["station_uuid"])
+            if station is None:
+                return {"success": False,
+                        "error": "Radio station not found (or directory unreachable)"}
+            media["url"] = station.url
+            media["title"] = media.get("title") or station.name
         return await sync.start_session(body.player_ids, group_id=body.group_id,
                                         duration_s=min(max(body.duration_s, 0),
                                                        3600),
-                                        media=body.media.model_dump()
-                                        if body.media else None)
+                                        media=media)
 
     @app.post("/api/media/sync/stop")
     async def sync_stop():
