@@ -6,42 +6,57 @@ unity: ``ratio = 1 + ε̂ + s(t)``. Two backends implement it, both reading the
 master timeline by absolute sample position so a device's stream can be cut,
 jumped or trimmed without the resampler needing to know.
 
-``soxr``   libsoxr in variable-rate mode via ctypes. The reference path, and
-           the default. libsoxr is already present in the image (ffmpeg links
-           it), so this costs no build change and no new wheel — it ships as a
-           code patch. VR mode is selected by passing ``SOXR_VR`` as the
-           *flags* argument of ``soxr_quality_spec``; passing it as the recipe,
-           or omitting it, makes ``soxr_set_io_ratio`` fail with "varying O/I
-           ratio is not supported with this quality level". VR is available at
-           every quality level, so we ask for VHQ.
+``rust``   The default. Stateless windowed-sinc fractional-delay filter,
+           evaluated in ``zmm_eq.interp_block``. Because the ratio never leaves
+           ±1000 ppm of unity this is not really a sample-rate conversion — it
+           is a fractional delay, and a delay filter can be evaluated at an
+           arbitrary position with no history. That statelessness is worth a
+           lot here: output length is exactly what was asked for, a jump is
+           just a different position, and there is no filter memory to clear
+           or latency to book-keep.
 
-``sinc``   Stateless windowed-sinc fractional-delay filter in numpy. Because
-           the ratio never leaves ±1000 ppm of unity this is not really a
-           sample-rate conversion — it is a fractional delay, and a delay
-           filter can be evaluated at an arbitrary position with no history.
-           That statelessness is worth a lot here: output length is exactly
-           what was asked for, a jump is just a different position, and there
-           is no filter memory to clear or latency to book-keep.
+``sinc``   The same filter in numpy, and the automatic fallback where the
+           ``zmm_eq`` wheel is absent. Identical output (agrees with the Rust
+           path to float32 epsilon); it just allocates a frames×32×channels
+           gather per block, which the Rust path does not.
+
+This module used to bind ``libsoxr`` in variable-rate mode through ``ctypes``,
+which was the reference path. It was removed after it aborted the process with
+``double free or corruption (out)``: it handed raw numpy heap pointers to a C
+library across a hand-declared ABI and freed a ``soxr_t`` by hand, from a
+``close()`` that the session teardown could race against a live stream
+generator. The replacement has no handle, no C ABI and no state, so that entire
+class of failure is gone rather than narrowed. What was lost with it is real
+but small: libsoxr's true variable-rate SRC tracked a +500 ppm command to
++498.87 ppm, where a fractional-delay filter is exact by construction because
+it never resamples — it only reads the timeline at a different position.
 
 ``linear`` The original sub-sample linear interpolation. Measured −84 dBFS on
            the band-limited test signal, but its fraction-dependent HF response
            (−5 dB at 10 kHz at the interpolation midpoint) is audible on
            programme material. Kept for reproducing earlier measurements.
 
-Both stateless backends satisfy §4.2's requirements trivially: ratio resolution
-is float (≪ 0.1 ppm), the ratio may change every block with no discontinuity
-because there is no state to discontinue, and THD+N is set by the filter
-kernel, not by the ratio.
+Every backend here is stateless, and all three satisfy §4.2's requirements
+trivially: ratio resolution is float (≪ 0.1 ppm), the ratio may change every
+block with no discontinuity because there is no state to discontinue, and
+THD+N is set by the filter kernel, not by the ratio.
 """
 from __future__ import annotations
 
-import ctypes as C
 import logging
-from typing import Optional
 
 import numpy as np
 
 logger = logging.getLogger("modules.media.sync_resample")
+
+try:
+    import zmm_eq as _dsp
+    _HAVE_RUST = hasattr(_dsp, "interp_block")
+except ImportError:
+    _dsp = None
+    _HAVE_RUST = False
+
+_WARNED_NO_RUST = False
 
 # Windowed-sinc kernel. 32 taps of Lanczos-16 is flat to ~20 kHz at 44.1 kHz
 # and puts image rejection below the s16 noise floor; the phase table quantises
@@ -83,7 +98,13 @@ def read_grid(source, i0: int, n: int, extra=None) -> np.ndarray:
     ``extra`` is the calibration chirp as ``(start_sample, mono_wave)``. It is
     mixed onto the integer grid *before* interpolation so it rides through the
     resampler exactly like programme material — which is the whole point: the
-    chirp must measure the same path the audio takes."""
+    chirp must measure the same path the audio takes.
+
+    Requires ``source.read`` to return a fresh array rather than a view of its
+    delay line: the chirp is mixed in with ``+=``, so a view would write the
+    calibration signal permanently into the shared timeline and every other
+    device would then play it too. Both sources allocate (``_Ring.read`` zero-
+    fills a new block; the generated timeline is closed-form)."""
     src = source.read(i0, n)
     if extra is not None:
         c0, wave = extra
@@ -137,174 +158,66 @@ class SincInterp(_Stateless):
         return np.einsum("ft,ftc->fc", w, gather, optimize=True)
 
 
-# ----------------------------------------------------------------------
-# libsoxr variable-rate (ctypes)
-# ----------------------------------------------------------------------
-SOXR_FLOAT32_I = 0
-SOXR_VHQ = 6
-SOXR_VR = 32                  # quality-spec FLAGS bit, not a recipe
+class RustSinc(_Stateless):
+    """The `sinc` filter evaluated in ``zmm_eq.interp_block``.
 
+    ``block`` is overridden rather than ``_interp`` because the point of the
+    Rust path is the temporaries it does *not* create: the numpy version
+    materialises a (frames, 32, channels) gather — 2.2 MB per block at the
+    stream block size — where this passes a window and a position and gets the
+    finished block back."""
 
-class _IoSpec(C.Structure):
-    _fields_ = [("itype", C.c_int), ("otype", C.c_int), ("scale", C.c_double),
-                ("e", C.c_void_p), ("flags", C.c_ulong)]
-
-
-class _QualitySpec(C.Structure):
-    _fields_ = [("precision", C.c_double), ("phase_response", C.c_double),
-                ("passband_end", C.c_double), ("stopband_begin", C.c_double),
-                ("e", C.c_void_p), ("flags", C.c_ulong)]
-
-
-def _load_soxr():
-    for name in ("libsoxr.so.0", "libsoxr.so"):
-        try:
-            lib = C.CDLL(name)
-        except OSError:
-            continue
-        lib.soxr_io_spec.restype = _IoSpec
-        lib.soxr_io_spec.argtypes = [C.c_int, C.c_int]
-        lib.soxr_quality_spec.restype = _QualitySpec
-        lib.soxr_quality_spec.argtypes = [C.c_ulong, C.c_ulong]
-        lib.soxr_create.restype = C.c_void_p
-        lib.soxr_create.argtypes = [C.c_double, C.c_double, C.c_uint,
-                                    C.POINTER(C.c_char_p), C.POINTER(_IoSpec),
-                                    C.POINTER(_QualitySpec), C.c_void_p]
-        lib.soxr_process.restype = C.c_char_p
-        lib.soxr_process.argtypes = [C.c_void_p, C.c_void_p, C.c_size_t,
-                                     C.POINTER(C.c_size_t), C.c_void_p,
-                                     C.c_size_t, C.POINTER(C.c_size_t)]
-        lib.soxr_set_io_ratio.restype = C.c_char_p
-        lib.soxr_set_io_ratio.argtypes = [C.c_void_p, C.c_double, C.c_size_t]
-        lib.soxr_delay.restype = C.c_double
-        lib.soxr_delay.argtypes = [C.c_void_p]
-        lib.soxr_clear.restype = C.c_char_p
-        lib.soxr_clear.argtypes = [C.c_void_p]
-        lib.soxr_delete.argtypes = [C.c_void_p]
-        lib.soxr_version.restype = C.c_char_p
-        return lib
-    return None
-
-
-_SOXR = _load_soxr()
-
-
-def soxr_version() -> str:
-    return _SOXR.soxr_version().decode() if _SOXR else ""
-
-
-class SoxrVR:
-    """One libsoxr VR instance per device stream.
-
-    Unlike the stateless backends this holds filter memory, so it cannot be
-    evaluated at an arbitrary position: it is fed the timeline sequentially and
-    told what ratio to run at. Two consequences the caller must respect —
-    ``block`` returns how many timeline samples it *actually* consumed (which
-    is only asymptotically ``adv``, because libsoxr buffers internally), and a
-    deliberate jump must call ``reset`` so stale filter memory is not carried
-    across the discontinuity."""
-
-    stateful = True
-    name = "soxr"
-
-    def __init__(self, rate: int, channels: int, quality: int = SOXR_VHQ):
-        if _SOXR is None:
-            raise RuntimeError("libsoxr not available")
-        self._ch = channels
-        self._rate = rate
-        err = C.c_char_p()
-        io = _SOXR.soxr_io_spec(SOXR_FLOAT32_I, SOXR_FLOAT32_I)
-        q = _SOXR.soxr_quality_spec(quality, SOXR_VR)
-        self._h = _SOXR.soxr_create(float(rate), float(rate), channels,
-                                    C.byref(err), C.byref(io), C.byref(q), None)
-        if not self._h:
-            raise RuntimeError(f"soxr_create failed: {err.value!r}")
-        self._carry = np.zeros((0, channels), dtype=np.float32)
-        self._ratio = 1.0
-
-    def _set_ratio(self, ratio: float) -> None:
-        if ratio != self._ratio:
-            e = _SOXR.soxr_set_io_ratio(self._h, float(ratio), 0)
-            if e:
-                raise RuntimeError(f"soxr_set_io_ratio: {e.decode()}")
-            self._ratio = ratio
+    name = "rust-sinc"
 
     def block(self, source, pos: float, frames: int, adv: float,
               extra=None) -> tuple:
-        # io_ratio is input-per-output: consuming `adv` timeline samples to
-        # emit `frames` output samples is exactly adv/frames.
-        self._set_ratio(adv / frames)
-        out = [self._carry] if len(self._carry) else []
-        have = len(self._carry)
-        consumed = 0.0
-        read_at = int(np.floor(pos))
-        frac0 = pos - read_at
-        # Honour the sub-sample part of `pos` once, on entry: libsoxr tracks
-        # phase itself from there on.
-        if frac0 and not len(self._carry):
-            read_at += 1
-            consumed += 1.0 - frac0
-        guard = 0
-        while have < frames:
-            want = max(1024, int(round((frames - have) * self._ratio)) + 64)
-            src = np.ascontiguousarray(read_grid(source, read_at, want, extra))
-            buf = np.zeros((want + 256, self._ch), dtype=np.float32)
-            idone, odone = C.c_size_t(), C.c_size_t()
-            e = _SOXR.soxr_process(self._h, src.ctypes.data, want,
-                                   C.byref(idone), buf.ctypes.data, len(buf),
-                                   C.byref(odone))
-            if e:
-                raise RuntimeError(f"soxr_process: {e.decode()}")
-            read_at += idone.value
-            consumed += idone.value
-            if odone.value:
-                out.append(buf[:odone.value])
-                have += odone.value
-            guard += 1
-            if guard > 64:
-                raise RuntimeError("soxr_process made no progress")
-        merged = np.concatenate(out) if len(out) > 1 else out[0]
-        self._carry = merged[frames:].copy()
-        return merged[:frames], consumed
-
-    def delay_samples(self) -> float:
-        return float(_SOXR.soxr_delay(self._h)) if self._h else 0.0
-
-    def reset(self) -> None:
-        if self._h:
-            _SOXR.soxr_clear(self._h)
-            self._ratio = 1.0
-        self._carry = np.zeros((0, self._ch), dtype=np.float32)
-
-    def close(self) -> None:
-        if self._h:
-            _SOXR.soxr_delete(self._h)
-            self._h = None
+        step = adv / frames
+        i0 = int(np.floor(pos))
+        last = int(np.floor(pos + (frames - 1) * step))
+        # Window start carries the kernel's left margin; the +1 is slack so the
+        # rightmost tap of the last output sample lands strictly inside.
+        lo = i0 - _HALF + 1
+        n = last - i0 + 1 + _TAPS
+        src = np.ascontiguousarray(read_grid(source, lo, n, extra),
+                                   dtype=np.float32)
+        ch = src.shape[1]
+        # `pos - lo` reduces an absolute timeline index (which reaches into the
+        # hundreds of millions on a long session) to a window offset near zero
+        # before it is used for phase arithmetic.
+        raw = _dsp.interp_block(src, ch, pos - lo, step, frames)
+        return np.frombuffer(raw, dtype="<f4").reshape(frames, ch), adv
 
 
-_KINDS = {"linear": LinearInterp, "sinc": SincInterp}
+_KINDS = {"rust": RustSinc, "rust-sinc": RustSinc,
+          "sinc": SincInterp, "linear": LinearInterp}
 
 
 def available() -> dict:
-    return {"soxr": _SOXR is not None, "soxr_version": soxr_version(),
-            "kinds": ["soxr"] * bool(_SOXR) + list(_KINDS)}
+    return {"backend": "rust" if _HAVE_RUST else "numpy",
+            "rust": _HAVE_RUST,
+            "kinds": ["rust"] * _HAVE_RUST + ["sinc", "linear"]}
 
 
 def make(kind: str, rate: int, channels: int):
-    """Build a resampler. ``soxr`` falls back to the windowed-sinc filter when
-    libsoxr is missing — degraded per §4.2, but never a dead stream."""
-    kind = (kind or "soxr").lower()
+    """Build a resampler.
+
+    ``soxr`` is accepted as a deprecated alias so existing config keeps
+    working — the libsoxr binding it named is gone (see the module docstring).
+    The Rust backend falls back to the numpy filter when the ``zmm_eq`` wheel
+    is absent: same output, more allocation, never a dead stream."""
+    kind = (kind or "rust").lower()
     if kind == "soxr":
-        if _SOXR is not None:
-            try:
-                return SoxrVR(rate, channels)
-            except Exception as e:
-                logger.warning(f"libsoxr VR unavailable ({e}) — using windowed-sinc")
-        else:
-            logger.warning("libsoxr not found — using windowed-sinc interpolation")
-        return SincInterp()
+        kind = "rust"
     cls = _KINDS.get(kind)
     if cls is None:
         logger.warning(f"Unknown resampler '{kind}' — using windowed-sinc")
+        return SincInterp()
+    if cls is RustSinc and not _HAVE_RUST:
+        global _WARNED_NO_RUST
+        if not _WARNED_NO_RUST:      # once, not once per device per session
+            _WARNED_NO_RUST = True
+            logger.warning("zmm_eq wheel not installed — using numpy "
+                           "windowed-sinc interpolation (identical output, "
+                           "higher CPU)")
         return SincInterp()
     return cls()

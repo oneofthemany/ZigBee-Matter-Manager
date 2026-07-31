@@ -307,6 +307,13 @@ class _Stream:
         self.player_id = player_id
         self.name = name
         self.connected = False       # WAV stream currently being consumed
+        # Which fetch of this stream's URL is the live one. A Cast device
+        # re-fetches on buffer restarts and seeks — observed twice within
+        # 300 ms at session start — and without this both generators run,
+        # both advance `pos`, and the device is served two interleaved halves
+        # of the timeline. The newest fetch wins; older ones drop out at their
+        # next block boundary.
+        self.gen = 0
         self.pos: Optional[float] = None  # next timeline sample (fractional)
         self.start_pos: int = 0      # timeline sample of the first PCM byte
         self.shift: float = 0.0      # cumulative deliberate moves (samples)
@@ -400,7 +407,9 @@ class CastSyncPoc:
         # media; the rest of the engine only ever addresses it by sample
         # position, so the two are interchangeable (sync_source.py).
         self._source = _GENERATED
-        self._resampler_kind = str(cfg.get("resampler", "soxr"))
+        # "soxr" is still accepted here as a deprecated alias for "rust"
+        # (sync_resample.make); config written before the port keeps working.
+        self._resampler_kind = str(cfg.get("resampler", "rust"))
         # §4.1: the delay line must span the source delay plus the widest
         # per-device pre-compensation, because the furthest-behind device
         # reads history the furthest-ahead device has long passed.
@@ -433,6 +442,13 @@ class CastSyncPoc:
         self._launch_tasks: List[asyncio.Task] = []
 
         self.running = False
+        # Serialises start/stop against each other. `start_session` stops any
+        # running session first, and that await used to be a window two
+        # concurrent starts could both pass through — producing two live
+        # sessions on one set of devices, each with its own source, epoch and
+        # streams, and only one of them reachable through `self` afterwards.
+        # The other kept decoding and casting with nothing able to stop it.
+        self._session_lock = asyncio.Lock()
         self._epoch: float = 0.0
         self._buffer: List[bytes] = []                 # last N framed chunks
         self._receivers: Dict[str, _Receiver] = {}     # sid -> _Receiver
@@ -723,6 +739,14 @@ class CastSyncPoc:
                             group_id: str = "", duration_s: int = 0,
                             media: Optional[dict] = None,
                             crossfade_s: Optional[float] = None) -> dict:
+        async with self._session_lock:
+            return await self._start_session_locked(
+                player_ids, group_id, duration_s, media, crossfade_s)
+
+    async def _start_session_locked(self, player_ids: Optional[List[str]],
+                                    group_id: str, duration_s: int,
+                                    media: Optional[dict],
+                                    crossfade_s: Optional[float]) -> dict:
         if group_id:
             group = self._groups.get(group_id)
             if not group:
@@ -731,7 +755,7 @@ class CastSyncPoc:
         if not player_ids:
             return {"success": False, "error": "No players to start"}
         if self.running:
-            await self.stop_session()
+            await self._stop_session_locked()
         self._active_group = group_id
         stream_mode = not self.app_id   # no registered receiver -> default receiver
         self._session_id = uuid_mod.uuid4().hex[:8]
@@ -844,6 +868,10 @@ class CastSyncPoc:
             pass
 
     async def stop_session(self) -> dict:
+        async with self._session_lock:
+            return await self._stop_session_locked()
+
+    async def _stop_session_locked(self) -> dict:
         self.running = False
         for t in self._launch_tasks:
             t.cancel()
@@ -864,10 +892,13 @@ class CastSyncPoc:
         self._auto_stop = None
         if self._streams:    # persist what this session taught the model
             self._write_json(self._model_file, self._model)
+        # Backends are stateless and hold no native resource, so this is a
+        # no-op today — kept because a stream generator can still be mid-block
+        # here, and a close() that races one must stay safe by construction.
         for st in self._streams.values():
             if st.resampler is not None:
                 try:
-                    st.resampler.close()      # frees the libsoxr instance
+                    st.resampler.close()
                 except Exception:
                     pass
         self._streams = {}   # generators see running=False and finish
@@ -1856,10 +1887,13 @@ class CastSyncPoc:
     async def _pcm_stream(self, st: _Stream):
         """Async generator: endless WAV cut from the shared timeline for one
         device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
+        st.gen += 1
+        mine = st.gen
         st.connected = True
         st.cooldown_until = max(st.cooldown_until,
                                 time.monotonic() + STREAM_CONNECT_GRACE_S)
-        logger.info(f"Sync stream opened: {st.name}")
+        logger.info(f"Sync stream opened: {st.name}"
+                    f"{f' (fetch #{mine}, superseding #{mine - 1})' if mine > 1 else ''}")
         try:
             yield _wav_header()
             source = self._source
@@ -1889,7 +1923,8 @@ class CastSyncPoc:
                     st.pos = floor
                 st.start_pos = st.pos
             block = int(RATE * STREAM_BLOCK_S)
-            while self.running and self._streams.get(st.sid) is st:
+            while (self.running and self._streams.get(st.sid) is st
+                   and st.gen == mine):
                 # `ahead` measures serve-ahead against real time, so the
                 # constant source delay is added back before comparing —
                 # without it a delayed source reads as permanently behind and
@@ -1913,11 +1948,13 @@ class CastSyncPoc:
                     rm = max(-lim, min(lim, st.slew_s))
                     st.slew_s -= rm
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
-                # A stateful backend (libsoxr) buffers internally, so what it
-                # actually consumed is only asymptotically `adv`. Book-keep the
-                # real figure: `pos` must track what was read off the timeline
-                # or the ring reads drift, and `shift`/`moved_s` must track
-                # true timeline motion or the drift fit sees our corrections.
+                # Book-keep what the backend reports it consumed rather than
+                # what was commanded: `pos` must track what was read off the
+                # timeline or the ring reads drift, and `shift`/`moved_s` must
+                # track true timeline motion or the drift fit sees our own
+                # corrections. Every current backend is stateless and consumes
+                # exactly `adv`; the distinction is kept because it costs
+                # nothing and a buffering backend would silently break it.
                 out, used = st.resampler.block(source, st.pos, block, adv, st.chirp)
                 st.pos += used
                 st.shift += used - block
@@ -1929,8 +1966,14 @@ class CastSyncPoc:
         except asyncio.CancelledError:
             pass
         finally:
-            st.connected = False
-            logger.info(f"Sync stream closed: {st.name}")
+            # Only the live fetch owns `connected`: a superseded generator
+            # finishing after its replacement opened must not mark the device
+            # disconnected underneath it, or the monitor drops a device that
+            # is in fact playing.
+            if st.gen == mine:
+                st.connected = False
+            logger.info(f"Sync stream closed: {st.name}"
+                        f"{'' if st.gen == mine else f' (superseded fetch #{mine})'}")
 
     # ------------------------------------------------------------------
     # Chunk producer
