@@ -65,20 +65,18 @@ const _dark = () => document.documentElement.getAttribute('data-theme') === 'dar
 
 /** Write innerHTML only when it actually changed — live ticks re-render
  *  every 3 s and must not wipe hover/focus state or flicker static text.
- *  Any scroll position inside the block survives the write.
- *  Returns true when the DOM was touched (callers rebind handlers then). */
+ *  Returns true when the DOM was touched (callers rebind handlers then).
+ *
+ *  This is the blunt instrument: it destroys and rebuilds. Reach for _patch
+ *  instead for anything a reader is looking at while it updates, and keep any
+ *  scrolling container OUT of the replaced html so the browser keeps its
+ *  position for you. */
 function _setHtml(el, html) {
     if (!el) return false;
     if (el._zmmPrev === html) return false;
-    const tops = [...el.querySelectorAll('[data-keep-scroll]')]
-        .map(n => [n.dataset.keepScroll, n.scrollTop]);
     el._zmmPrev = html;
     el._zmmKey = null;          // structure replaced — _patch must rebuild
     el.innerHTML = html;
-    for (const [k, top] of tops) {
-        const n = el.querySelector(`[data-keep-scroll="${k}"]`);
-        if (n && top) n.scrollTop = top;
-    }
     return true;
 }
 
@@ -95,6 +93,11 @@ function _setHtml(el, html) {
 function _patch(el, key, buildHtml, values) {
     if (!el) return;
     if (el._zmmKey !== key) {
+        // A rebuild is a visible teardown. Expected on open and on a session
+        // or speaker-set change; anything else logged here is a bug.
+        if (el._zmmKey !== null) {
+            log.debug(`rebuild #${el.id || '?'}: ${el._zmmKey} → ${key}`);
+        }
         el._zmmKey = key;
         el._zmmVals = {};
         el._zmmPrev = null;              // keep _setHtml's cache honest
@@ -219,7 +222,47 @@ async function _loadAll() {
     if (!_selected || !_sessions.some(x => x.session_id === _selected)) {
         _selected = _sessions.length ? _sessions[0].session_id : '';
     }
+    // Opening the Lab, switching group, picking a session: all user-initiated,
+    // all news by definition — including "this group has nothing in it", which
+    // the regression guard would otherwise discard, leaving the previous
+    // group's table on screen. Only the live poll needs the guard.
     _detail = _selected ? await _fetchDetail(_selected) : null;
+}
+
+/** The ONLY place _detail is replaced on an automatic refresh, so the rule
+ *  lives in one spot: a populated session never regresses to an empty one.
+ *  A failed fetch must not wipe a table the reader is looking at — that is the
+ *  "data vanished and came back" flash. A genuinely different session always
+ *  lands, empty or not: that IS news, and a fresh session legitimately has
+ *  nothing in it yet. */
+function _setDetail(next) {
+    if (!next) return;
+    // Structural check, because emptiness is not the only way a payload can be
+    // useless. A series row always carries the speaker it belongs to; one that
+    // does not cannot be plotted or attributed, and a handful of them render
+    // as blank tiles and an empty table — visually identical to no data, but
+    // passing every length test on the way in. Refusing them here keeps a
+    // malformed response from reaching the DOM and says so out loud, rather
+    // than leaving a silent blank to be explained later.
+    const rows = next.series, who = next.players;
+    const badSeries = rows?.length
+        && !rows.some(r => r && typeof r.player_id === 'string');
+    const badPlayers = who?.length
+        && who.some(p => typeof p?.player_id !== 'string');
+    if (badSeries || badPlayers) {
+        log.warn('discarded a malformed detail payload — rows do not name a speaker',
+                 { session: next.session_id, badSeries, badPlayers,
+                   series: rows?.length ?? null, players: who?.length ?? null,
+                   sample: rows?.[0] ?? who?.[0] });
+        return;
+    }
+    const same = _detail && next.session_id === _detail.session_id;
+    if (same && !rows?.length && _detail.series?.length) {
+        log.debug('ignored an empty payload for the session already on screen',
+                  { session: next.session_id });
+        return;
+    }
+    _detail = next;
 }
 
 async function _fetchDetail(sessionId) {
@@ -255,14 +298,7 @@ function _startLive() {
                     fetch(`/api/media/sync/trend?group_id=${encodeURIComponent(_gid)}`)
                         .then(r => r.json()).catch(() => null),
                 ]);
-                // A failed/empty fetch is a transient (auth blip, poll race)
-                // — keep showing the last good data rather than blanking
-                // the charts for a tick. A genuinely fresh session has a
-                // new id, so its (legitimately) empty detail still lands.
-                if (detail && (detail.series?.length
-                               || detail.session_id !== _detail?.session_id)) {
-                    _detail = detail;
-                }
+                _setDetail(detail);
                 if (tr && tr.trend) _trend = tr.trend;
                 _renderDetail(true);   // merged in-place update — no reset
             }
@@ -414,6 +450,15 @@ function _renderDetail(merge = false) {
             ? 'badge bg-success' : 'badge bg-light text-muted border';
     }
     if (!_detail || !_detail.series || !_detail.series.length) {
+        // Blanks the headline, the table and the ledger in one go. Legitimate
+        // on a fresh session; if it fires mid-run it is the "data vanished and
+        // came back" flash, so say which of the two reasons it was.
+        log.debug('detail EMPTY — blanking stats/table/ledger', {
+            hasDetail: !!_detail,
+            detailSession: _detail?.session_id,
+            selected: _selected,
+            series: _detail?.series?.length ?? null,
+        });
         _renderHeadline([]);
         _renderSpeakers([], []);
         _setChart(_spreadChart, _emptyOption(''), false, true);
@@ -473,23 +518,31 @@ function _renderHeadline(spread, lockAt = 0) {
     const median = sorted[Math.floor(sorted.length / 2)];
     const now = spread[spread.length - 1][1];
     const inSyncPct = Math.round(100 * vals.filter(v => v <= AUDIBLE_MS).length / vals.length);
-    const stat = (k, label, sub) => `
+    // The window caption is a VALUE, not structure. It used to be baked into
+    // the patch key, so the moment a late speaker locked — which raises lockAt,
+    // shrinks the settled window back under 3 polls and flips the caption — the
+    // three tiles were torn out and rebuilt mid-session. Keyed on nothing now:
+    // the block is built once and every tick writes six leaves.
+    const stat = (k, label) => `
       <div class="col-4">
         <div class="border rounded p-2 text-center h-100">
           <div data-v="${k}" data-cls-base="fs-4 fw-semibold" class="fs-4 fw-semibold"></div>
-          <div class="small text-muted">${label}${sub ? `<br>${sub}` : ''}</div>
+          <div class="small text-muted">${label}<br><span data-v="sub:${k}"></span></div>
         </div>
       </div>`;
     const good = ok => ok ? 'text-success' : 'text-warning';
     const win = settled.length >= 3 ? 'after lock' : 'whole session';
-    _patch(el, `headline:${win}`,
-        () => stat('now', 'group spread now', 'latest poll')
-            + stat('median', 'median spread', win)
-            + stat('pct', 'time in sync', `within ±${AUDIBLE_MS} ms, ${win}`),
+    _patch(el, 'headline',
+        () => stat('now', 'group spread now')
+            + stat('median', 'median spread')
+            + stat('pct', 'time in sync'),
         {
             now: { text: `${now} ms`, cls: good(now <= AUDIBLE_MS) },
             median: { text: `${median} ms`, cls: good(median <= AUDIBLE_MS) },
             pct: { text: `${inSyncPct}%`, cls: good(inSyncPct >= 80) },
+            'sub:now': 'latest poll',
+            'sub:median': win,
+            'sub:pct': `within ±${AUDIBLE_MS} ms, ${win}`,
         });
 }
 
@@ -702,37 +755,50 @@ function _renderSpeakers(series, players) {
             };
         })));
 
-    // The ledger only changes when an adjustment actually happens, so it is
-    // its own element: a tick that merely moved a ppm reading leaves the
-    // reader's scroll position in the list alone.
-    _setHtml(document.getElementById('syncLabLedger'), shown.length ? `
+    // The ledger is two pieces on purpose. The shell — disclosure, count,
+    // overflow note — is patched and so is never rebuilt, which is what the
+    // reader actually sees while it is collapsed. Only the row list inside is
+    // re-written, and only when a correction has actually landed. Because the
+    // scrolling div itself is part of the shell and survives, the reader's
+    // position in the list is kept by the browser rather than restored by us.
+    const led = document.getElementById('syncLabLedger');
+    if (!shown.length) {
+        _setHtml(led, '<div class="small text-muted">No discrete corrections — '
+                      + 'the group held on the rate loop alone.</div>');
+        return;
+    }
+    const hidden = events.length - shown.length;
+    _patch(led, 'ledger', () => `
       <details class="small" ${_ledgerOpen ? 'open' : ''} id="syncLabLedgerBox">
         <summary class="text-muted">When each correction happened
-          (${events.length})</summary>
-        <div class="mt-2" data-keep-scroll="ledger"
-             style="max-height:200px;overflow-y:auto">
-          <table class="table table-sm small mb-0">
-            <tbody>
-              ${shown.map(e => `
-                <tr>
-                  <td class="text-muted py-1" style="width:3.5rem">${_clock(e.t)}</td>
-                  <td class="py-1"><span class="rounded-circle me-1" aria-hidden="true"
-                        style="display:inline-block;width:8px;height:8px;background:${_colorFor(e.pid)}"></span>
-                    ${esc(_nameFor(e.pid))}</td>
-                  <td class="py-1"><i class="fas ${e.icon} text-${e.cls} me-1"
-                        aria-hidden="true"></i>${e.label}
-                    ${e.count > 1 ? `<span class="text-muted">(${e.count} steps)</span>` : ''}
-                    ${e.audible ? '' : '<span class="text-muted">(inaudible)</span>'}</td>
-                  <td class="py-1 text-end font-monospace">${e.amount}</td>
-                </tr>`).join('')}
-            </tbody>
-          </table>
+          (<span data-v="lg:n"></span>)</summary>
+        <div class="mt-2" style="max-height:200px;overflow-y:auto">
+          <div id="syncLabLedgerRows"></div>
         </div>
-        ${events.length > shown.length
-          ? `<div class="small text-muted mt-1">${events.length - shown.length} earlier
-               adjustment(s) not shown.</div>` : ''}
-      </details>`
-      : '<div class="small text-muted">No discrete corrections — the group held on the rate loop alone.</div>');
+        <div data-v="lg:more" data-cls-base="small text-muted"
+             class="small text-muted d-none"></div>
+      </details>`, {
+        'lg:n': String(events.length),
+        'lg:more': { text: hidden ? `${hidden} earlier adjustment(s) not shown.` : '',
+                     cls: hidden ? 'mt-1' : 'd-none' },
+    });
+    _setHtml(document.getElementById('syncLabLedgerRows'), `
+      <table class="table table-sm small mb-0">
+        <tbody>
+          ${shown.map(e => `
+            <tr>
+              <td class="text-muted py-1" style="width:3.5rem">${_clock(e.t)}</td>
+              <td class="py-1"><span class="rounded-circle me-1" aria-hidden="true"
+                    style="display:inline-block;width:8px;height:8px;background:${_colorFor(e.pid)}"></span>
+                ${esc(_nameFor(e.pid))}</td>
+              <td class="py-1"><i class="fas ${e.icon} text-${e.cls} me-1"
+                    aria-hidden="true"></i>${e.label}
+                ${e.count > 1 ? `<span class="text-muted">(${e.count} steps)</span>` : ''}
+                ${e.audible ? '' : '<span class="text-muted">(inaudible)</span>'}</td>
+              <td class="py-1 text-end font-monospace">${e.amount}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`);
     // Collapsed by default, and it stays however the reader left it: a live
     // tick that re-renders the list must not shut it.
     const box = document.getElementById('syncLabLedgerBox');

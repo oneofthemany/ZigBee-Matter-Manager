@@ -8,6 +8,18 @@ zmm_telemetry Rust appender. Each file is only ever opened by this process,
 one cached connection per group, so DuckDB's single-writer model is
 respected without touching the appender's file.
 
+Every statement runs on its own ``cursor()`` off that connection, and this is
+load-bearing rather than tidiness. Reads and writes here reach DuckDB from
+different threads — the API routes and the monitor's sample writer both go
+through ``asyncio.to_thread`` — and a DuckDBPyConnection holds ONE result set.
+Two threads issuing statements on the same connection object therefore hand
+each other their results: measured on real session data, 19% of concurrent
+reads came back with the writer's single INSERT count row in place of the
+14,279 rows they asked for, with no exception raised anywhere. A cursor is a
+separate connection over the same database instance, so it keeps its own
+result while the file lock stays where it belongs. Never call execute() on the
+cached connection itself.
+
 A device can belong to several groups; model training therefore reads
 across ALL group files (per-group session aggregates in SQL, exact medians
 merged in Python — medians can't be combined across files in SQL without
@@ -76,8 +88,7 @@ def write_samples(group_id: str, rows: List[Dict[str, Any]]):
     explicit 'ts' (datetime) — omitted means now()."""
     if not rows:
         return
-    con = _get_con(group_id)
-    con.executemany("""
+    _cur(group_id).executemany("""
         INSERT INTO lag_samples (
             ts, session_id, player_id, kind,
             lag_s, error_ms, rate_ppm, trim_ms, precomp_s, target_lag_s
@@ -90,17 +101,23 @@ def write_samples(group_id: str, rows: List[Dict[str, Any]]):
     ])
 
 
+def _cur(group_id: str):
+    """A private cursor on the group's DB — see the module docstring for why
+    nothing may run on the cached connection directly."""
+    return _get_con(group_id).cursor()
+
+
 def _con_if_exists(group_id: str):
-    """Connection only if the group's DB already exists. Read endpoints must
+    """Cursor only if the group's DB already exists. Read endpoints must
     never mint a database for an arbitrary group id — a client once queried
     with a literal "null" and left an empty null.duckdb behind."""
     gid = _gid(group_id)
     with _lock:
         if gid in _cons:
-            return _cons[gid]
+            return _cons[gid].cursor()
     if not os.path.exists(os.path.join(DB_DIR, f"{gid}.duckdb")):
         return None
-    return _get_con(group_id)
+    return _cur(group_id)
 
 
 def _all_group_ids() -> List[str]:
@@ -135,7 +152,7 @@ def query_device_model(days: int = 30) -> Dict[str, Dict[str, Any]]:
     ppm_vals: Dict[str, List[tuple]] = {}    # pid -> [(started, ppm), ...]
     for gid in _all_group_ids():
         try:
-            con = _get_con(gid)
+            con = _cur(gid)
             for pid, started, lag in con.execute(f"""
                 SELECT player_id, min(ts), any_value(lag_s - COALESCE(precomp_s, 0))
                 FROM lag_samples
