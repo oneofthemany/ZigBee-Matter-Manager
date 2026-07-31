@@ -295,14 +295,27 @@ Both are gated on `media.resume_max_age_s` (default 600). Waking the house
 because the box was down since midnight is a worse failure than a stream that
 stayed stopped. Set `media.resume_after_restart: false` to disable entirely.
 
-The gap is dominated by boot order, not by the resume itself. On the reference
-deployment the device-audio listener comes up ~67 s after container start —
-it depends only on `MediaService`, but sits behind Zigbee and Matter bring-up.
-That is well past the point a Cast device stops retrying a dropped stream,
-which is why the relaunch is necessary rather than merely letting the device
-reconnect. Moving the audio listeners earlier in boot would cut the outage to
-roughly the time it takes uvicorn to bind, and is the single biggest
-improvement available here.
+**Boot order dominates the gap, not the resume.** The audio listeners are
+therefore started at the very top of the lifespan, ahead of everything else.
+Measured on the reference deployment before that change, `:8011` came up 67 s
+after container start:
+
+| | |
+|---|---|
+| ~11 s | process start → interpreter up, imports done, loop monitor running |
+| ~35 s | telemetry DB auto-rebuild check + `warm()` (DuckDB open/migration) |
+| ~20 s | MQTT, Zigbee network, Matter server, bridge, monitors |
+| **67 s** | **device-audio listener binds** |
+
+Media depends on none of it — `MediaService` is constructed at import, and
+`start()` only binds the two listeners and spawns its own poll loop. Starting
+it immediately after the loop monitor puts the listeners up at roughly the
+11 s mark instead, which is inside the window a Cast device will still retry a
+dropped stream. `start()` is idempotent, so the original call later in
+bring-up remains as a safety net for the case where the early one raised.
+
+The relaunch machinery above stays regardless: it is what covers a device that
+gave up anyway, or a sync session whose members must be re-launched.
 
 ## Known limitations
 

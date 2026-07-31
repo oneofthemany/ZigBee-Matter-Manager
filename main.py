@@ -458,6 +458,27 @@ async def lifespan(app: FastAPI):
     loop_monitor.start()
     app.state.loop_monitor = loop_monitor
 
+    # Media goes up FIRST, ahead of everything else in bring-up.
+    #
+    # When a Cast player has EQ on, or a sync group is running, the speaker is
+    # not fetching its own source — it is pulling PCM from listeners inside
+    # this process (:8011 device audio, :8010 sync). A restart therefore stops
+    # the music, and how long it stays stopped is decided entirely by how far
+    # down the boot order those two listeners sit. Measured before this moved:
+    # 67 s, of which ~35 s was the telemetry DB open/migration below and ~20 s
+    # was Zigbee and Matter bring-up — none of which media depends on. That is
+    # far past the point a Cast device gives up retrying a dropped stream, so
+    # every restart needed the deliberate relaunch to recover.
+    #
+    # Nothing here touches Zigbee, Matter, MQTT or telemetry: the service is
+    # already constructed at import, and start() only binds the two listeners
+    # and spawns its own poll loop. Failure must not hold up the rest of boot.
+    try:
+        media_service.start()
+        logger.info("Media service initialised (early — audio listeners first)")
+    except Exception as e:
+        logger.error(f"Media service early start failed: {e}")
+
     # Open/migrate the telemetry DB in a worker BEFORE any service touches it:
     # the first _get_db() holds _db_lock for the whole open/migration
     # (seconds), and any loop-thread write landing during that window stalls
@@ -785,9 +806,11 @@ async def lifespan(app: FastAPI):
         octopus_service.start()
         logger.info("Octopus Energy service initialised")
 
-        # media (multi-room audio: Cast / WiiM / radio)
+        # media (multi-room audio: Cast / WiiM / radio) — already started at the
+        # top of the lifespan so the audio listeners bind before the slow parts
+        # of bring-up. Kept as a no-op safety net: start() is idempotent, and
+        # this still covers the case where the early call raised.
         media_service.start()
-        logger.info("Media service initialised")
 
         # heating
         heating_advisor.start()

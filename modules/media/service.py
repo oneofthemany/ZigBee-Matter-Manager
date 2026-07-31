@@ -298,6 +298,8 @@ class MediaService:
         if not self.enabled:
             logger.info("Media service disabled")
             return
+        if self._task is not None:      # idempotent: a second poll loop would
+            return                      # double every device poll and save
         self._task = asyncio.create_task(self._run())
         if self.cast_sync is not None:
             self.cast_sync.start()      # brings up the plain-HTTP sync listener
