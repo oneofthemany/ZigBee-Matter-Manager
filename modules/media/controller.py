@@ -62,18 +62,75 @@ class MediaController:
     # Session persistence (survive restart/upgrade — keep controlling casts)
     # ------------------------------------------------------------------
     def sessions_snapshot(self) -> dict:
-        """Serialisable per-player queue state for persistence."""
-        return self._queue.snapshot()
+        """Serialisable state for persistence: the per-player queues, plus which
+        players were actually playing at the time.
+
+        The queues alone are not enough to resume anything. A queue says what
+        *would* play next; it does not say whether the speaker was mid-stream
+        when the process went down, and resuming something the user had already
+        stopped would be worse than not resuming at all."""
+        return {"queues": self._queue.snapshot(),
+                "playback": self._playback_snapshot()}
+
+    def _playback_snapshot(self) -> dict:
+        out = {}
+        for pid, st in self._cache.items():
+            if st.state not in _ACTIVE:
+                continue
+            q = self._queue.get(pid)
+            cur = q.current() if q else None
+            if cur is None:
+                continue
+            eq = self._eq_engine
+            out[pid] = {
+                "title": cur.item.title or st.title or "",
+                # Whether we were in this player's audio path. If we were not,
+                # the speaker is fetching the source itself and a restart is
+                # invisible to it — there is nothing to resume.
+                "proxied": bool(eq and eq.wants(pid, cur.item.media_type)),
+            }
+        return out
 
     def restore_sessions(self, data: dict) -> int:
         """Restore queues saved before a restart so next/prev + the Tidal source
         linkage (lyrics, artist, now_playing_id) keep working. The cursor is
         reconciled to the device's actual now-playing on the next poll."""
-        n = self._queue.restore(data)
+        # Files written before playback state was persisted are a bare
+        # player_id -> queue mapping.
+        queues = (data or {}).get("queues")
+        if queues is None:
+            queues = {k: v for k, v in (data or {}).items()
+                      if k not in ("playback", "saved_at")}
+        n = self._queue.restore(queues)
         if n:
-            self._needs_reconcile = set((data or {}).keys())
+            self._needs_reconcile = set(queues.keys())
             logger.info(f"Restored {n} media session(s) from persistence")
         return n
+
+    async def resume_players(self, player_ids) -> int:
+        """Re-issue playback for players that were streaming through us when the
+        process went down. Call after a refresh, so the live state is known.
+
+        A player that is already playing is left strictly alone: either its
+        audio never passed through us and survived the restart untouched, or it
+        recovered on its own, and interrupting it to 'resume' it would be the
+        one visible fault this whole mechanism exists to avoid."""
+        resumed = 0
+        for pid in list(player_ids or []):
+            st = self._cache.get(pid)
+            if st is None or not st.available or st.state in _ACTIVE:
+                continue
+            q = self._queue.get(pid)
+            cur = q.current() if q else None
+            if cur is None:
+                continue
+            try:
+                await self.play_url(pid, cur.item)
+                resumed += 1
+                logger.info(f"Resumed {pid} after restart — {cur.item.title}")
+            except Exception as e:
+                logger.warning(f"Could not resume {pid} after restart: {e}")
+        return resumed
 
     # ------------------------------------------------------------------
     # Registration / lifecycle

@@ -149,6 +149,8 @@ media:
       http_port: 8010    # plain-HTTP listener (receiver page + WS)
       app_id: ""         # Cast console App ID of the registered receiver
       resampler: soxr    # soxr | sinc | linear (open-zone.md §4.2)
+      # (restart resume lives on the media root, not here:
+      #  media.resume_after_restart / media.resume_max_age_s)
       source_delay_s: 2.0    # how far behind the live edge a media session runs
       ring_capacity_s: 20.0  # delay-line depth (§4.1) — size for the spread
 ```
@@ -268,6 +270,38 @@ Failure modes to watch:
 | Session opens with a few seconds of silence | Delay line primed short — check the "primed only Xs" warning and `source.underruns`; raise `source_delay_s` or `ring_capacity_s` |
 | Silence on one member only, others fine | That device's pre-compensation was clamped at launch — see the "clamped … forward" warning |
 | `source.restarts` climbing | Station keeps dropping; each restart is a gap, not a permanent offset |
+
+## Surviving a restart
+
+A sync session cannot survive a container restart on its own. Every member is
+pulling PCM from a listener inside the process, so when the process goes the
+audio goes with it and the devices are left holding a URL that no longer
+answers. Nothing can keep that TCP stream alive — the bytes were being produced
+by something that no longer exists.
+
+What happens instead is a relaunch. While a session runs, enough to stand it
+back up is written into `data/media_sessions.json` under `sync` — group id,
+members, the media, and the remaining window. On boot, after device adoption,
+the session is started again with the window reduced by however long the outage
+lasted; if that leaves nothing, it is not resumed.
+
+The same applies to an ordinary Cast player with EQ on, which is also fetching
+its audio from us. That one is recorded under `playback`, and is re-issued only
+if the speaker is **not** already playing — a player with EQ *off* is fetching
+its source directly, never noticed the restart, and must not be interrupted.
+
+Both are gated on `media.resume_max_age_s` (default 600). Waking the house
+because the box was down since midnight is a worse failure than a stream that
+stayed stopped. Set `media.resume_after_restart: false` to disable entirely.
+
+The gap is dominated by boot order, not by the resume itself. On the reference
+deployment the device-audio listener comes up ~67 s after container start —
+it depends only on `MediaService`, but sits behind Zigbee and Matter bring-up.
+That is well past the point a Cast device stops retrying a dropped stream,
+which is why the relaunch is necessary rather than merely letting the device
+reconnect. Moving the audio listeners earlier in boot would cut the outage to
+roughly the time it takes uvicorn to bind, and is the single biggest
+improvement available here.
 
 ## Known limitations
 

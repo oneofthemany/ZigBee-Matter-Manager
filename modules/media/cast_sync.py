@@ -277,6 +277,7 @@ class CastSyncPoc:
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
+        self._session_media: Optional[dict] = None  # media of the running session
         # Learned per-device latency model (stream mode): startup lag +
         # clock-drift rate, EMA-updated every session so later sessions
         # start pre-aligned. player_id -> {lag_s, drift_ppm, sessions}
@@ -352,6 +353,52 @@ class CastSyncPoc:
     # ------------------------------------------------------------------
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
+
+    # ------------------------------------------------------------------
+    # Restart survival
+    # ------------------------------------------------------------------
+    def session_snapshot(self) -> dict:
+        """What it would take to stand this session back up, or {} when idle.
+
+        A sync session cannot survive a restart on its own: every member is
+        pulling PCM from a listener inside this process, so when the process
+        goes the audio goes with it and the devices are left on a URL that no
+        longer answers. Re-launching them is the only route back."""
+        if not self.running or not self._streams:
+            return {}
+        snap = {
+            "group_id": self._active_group,
+            "player_ids": [st.player_id for st in self._streams.values()],
+            "media": self._session_media,
+        }
+        if self._duration_s:
+            # Wall clock: monotonic does not survive the restart this exists for.
+            elapsed = time.monotonic() - self._epoch
+            snap["remaining_s"] = max(0, int(self._duration_s - elapsed))
+        return snap
+
+    async def resume_session(self, rec: dict, age_s: float) -> bool:
+        """Re-launch a session that a restart interrupted."""
+        if self.running or not rec:
+            return False
+        remaining = rec.get("remaining_s")
+        if remaining is not None:
+            remaining = int(remaining - age_s)
+            if remaining <= 5:
+                logger.info("Not resuming sync session — its window had expired")
+                return False
+        players = rec.get("player_ids") or []
+        gid = rec.get("group_id") or ""
+        if not gid and not players:
+            return False
+        logger.info(f"Resuming sync session after restart ({age_s:.0f}s gap)")
+        res = await self.start_session(players if not gid else None,
+                                       group_id=gid,
+                                       duration_s=int(remaining or 0),
+                                       media=rec.get("media"))
+        if not res.get("success"):
+            logger.warning(f"Sync session resume failed: {res.get('error')}")
+        return bool(res.get("success"))
 
     async def _build_source(self, media: Optional[dict], group_id: str):
         """Master timeline for this session: real media when given, else the
@@ -437,6 +484,7 @@ class CastSyncPoc:
             self._active_group = ""
             return {"success": False, "error": f"Could not open media: {err}"}
         self._source = source
+        self._session_media = media or None
         self.running = True
 
         # If the model knows every member's startup lag, fix the session
@@ -555,6 +603,7 @@ class CastSyncPoc:
                     logger.debug(f"quit_app failed for {info['player_id']}: {e}")
         self._pending = {}
         self._active_group = ""
+        self._session_media = None
         logger.info("Cast sync session stopped")
         return {"success": True}
 

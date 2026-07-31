@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import List, Optional
 
 from modules.media.controller import MediaController
@@ -45,6 +46,13 @@ class MediaService:
         self._adopt_sessions = bool(config.get("adopt_sessions", True))
         self._sessions_file = config.get("sessions_file", "./data/media_sessions.json")
         self._sessions_blob = None             # last-written JSON, to debounce saves
+        self._sessions_written_at = 0.0        # ...and when, to keep saved_at fresh
+        self._restored: dict = {}              # the file as loaded, for resume
+        # Restart resume: re-issue playback the app was serving when it went
+        # down. Only meaningful where we are in the audio path — a speaker
+        # fetching its source directly never notices a restart.
+        self._resume_enabled = bool(config.get("resume_after_restart", True))
+        self._resume_max_age_s = float(config.get("resume_max_age_s", 600))
 
         # "Karaoke mode": cast synced lyrics (+ art) to the custom receiver.
         # Default from config, then overridden by the persisted runtime toggle.
@@ -317,6 +325,7 @@ class MediaService:
             try:
                 data = self._load_sessions()
                 if data:
+                    self._restored = data
                     self.controller.restore_sessions(data)
             except Exception as e:
                 logger.warning(f"Session restore failed: {e}")
@@ -331,6 +340,39 @@ class MediaService:
                 logger.info(f"Adopted {n} cast device(s) for live control")
         except Exception as e:
             logger.debug(f"Cast adoption failed: {e}")
+        try:
+            await self._resume_playback()
+        except Exception as e:
+            logger.warning(f"Playback resume after restart failed: {e}")
+
+    async def _resume_playback(self):
+        """Put back what we were serving when the process went down.
+
+        Only reached for players that were *playing*, and only those not
+        playing now — a speaker fetching its source directly sailed through the
+        restart and must not be interrupted. The age limit is the guard against
+        a long outage: waking the house at 3am because the box was down since
+        midnight is a worse failure than a stream that stayed stopped."""
+        if not self._resume_enabled:
+            return
+        rec = (self._restored or {}).get("playback") or {}
+        sync_rec = (self._restored or {}).get("sync") or {}
+        if not rec and not sync_rec:
+            return
+        age = time.time() - float((self._restored or {}).get("saved_at") or 0)
+        if age > self._resume_max_age_s:
+            logger.info(
+                f"Not resuming playback — last session is {age / 60:.0f} min old "
+                f"(limit {self._resume_max_age_s / 60:.0f} min)")
+            return
+        await self.controller.refresh()          # live state before deciding
+        if rec:
+            n = await self.controller.resume_players(rec.keys())
+            if n:
+                logger.info(f"Resumed {n} player(s) after restart "
+                            f"({age:.0f}s gap)")
+        if sync_rec and self.cast_sync is not None:
+            await self.cast_sync.resume_session(sync_rec, age)
 
     async def _poll_loop(self):
         while True:
@@ -366,15 +408,28 @@ class MediaService:
         import json, os, tempfile
         try:
             snap = self.controller.sessions_snapshot()
+            if self.cast_sync is not None:
+                s = self.cast_sync.session_snapshot()
+                if s:
+                    snap["sync"] = s
             blob = json.dumps(snap, sort_keys=True)
-            if blob == self._sessions_blob:        # unchanged → skip the write
+            now = time.time()
+            # `saved_at` dates the state, and the resume age limit is measured
+            # from it — so during steady playback it has to keep ticking even
+            # though nothing else changed, or an hour-long stream would look an
+            # hour stale. Refreshed at most once a minute, and only while
+            # something is actually playing; idle costs no writes at all.
+            active = bool(snap.get("playback") or snap.get("sync"))
+            stale = (now - self._sessions_written_at) > 60
+            if blob == self._sessions_blob and not (active and stale):
                 return
             self._sessions_blob = blob
+            self._sessions_written_at = now
             d = os.path.dirname(self._sessions_file) or "."
             os.makedirs(d, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(blob)
+                json.dump({**snap, "saved_at": now}, f, sort_keys=True)
             os.replace(tmp, self._sessions_file)
         except Exception as e:
             logger.debug(f"Could not write {self._sessions_file}: {e}")
