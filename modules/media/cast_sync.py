@@ -382,8 +382,8 @@ class CastSyncPoc:
     # Trims (per device, defaulting to what the model is known to need)
     # ------------------------------------------------------------------
     def _model_key(self, player_id: str) -> str:
-        get = getattr(self.cast, "model_key", None)
         try:
+            get = getattr(getattr(self, "cast", None), "model_key", None)
             return get(player_id) if callable(get) else ""
         except Exception:
             return ""
