@@ -3,7 +3,8 @@
  *
  * Renders into #syncLabHost (Media → Group → OpenZone → Results) from the
  * group's own DuckDB via /api/media/sync/{sessions,session,model,trend}:
- *   - guidance: what to do next, one fixed row per speaker
+ *   - guidance: what to do next — exceptions only, so a healthy group gets one
+ *     line and not a row per speaker saying "nothing to do"
  *   - three group headline stats, counted after the group locked
  *   - ONE per-speaker table: the session's measurements and the corrections
  *     applied to it, side by side, plus the cross-session learned model —
@@ -93,6 +94,12 @@ function _setHtml(el, html) {
  *  say) and every subsequent tick only writes the leaf `[data-v]` nodes
  *  whose value actually moved. Values are strings, or {text, cls} when the
  *  node also carries a state colour.
+ *
+ *  {cls} alone — no `text` — leaves the node's contents untouched and only
+ *  restyles it. That is how a row that is sometimes absent stays in the built
+ *  structure and is shown or hidden with a class: appearing and disappearing
+ *  rows would otherwise force a rebuild, which is the one thing this exists
+ *  to avoid.
  */
 function _patch(el, key, buildHtml, values) {
     if (!el) return;
@@ -109,7 +116,7 @@ function _patch(el, key, buildHtml, values) {
         el._zmmVals[k] = val;
         const n = el.querySelector(`[data-v="${CSS.escape(k)}"]`);
         if (!n) continue;
-        if (n.textContent !== val.text) n.textContent = val.text;
+        if (val.text !== undefined && n.textContent !== val.text) n.textContent = val.text;
         if (val.cls !== undefined && n.dataset.clsBase !== undefined) {
             n.className = `${n.dataset.clsBase} ${val.cls}`.trim();
         }
@@ -411,12 +418,19 @@ function _refreshPicker() {
 // ---------------------------------------------------------------------------
 // Detail (tiles, charts, table)
 // ---------------------------------------------------------------------------
+/** True only when the session ON SCREEN is the one still running. `_live` alone
+ *  says the group is playing, which is not the same thing once the reader has
+ *  picked an older session out of the dropdown — and a finished session's gaps
+ *  are faults where a running one's are just the first half-minute. */
+function _running() {
+    return !!(_live && _sessions.length && _selected === _sessions[0].session_id);
+}
+
 function _renderDetail(merge = false) {
     const live = document.getElementById('syncLabLive');
     if (live) {
-        const isLatest = _sessions.length && _selected === _sessions[0].session_id;
-        live.textContent = _live && isLatest ? 'live' : 'recorded';
-        live.className = _live && isLatest
+        live.textContent = _running() ? 'live' : 'recorded';
+        live.className = _running()
             ? 'badge bg-success' : 'badge bg-light text-muted border';
     }
     if (!_detail || !_detail.series || !_detail.series.length) {
@@ -542,25 +556,28 @@ function _renderSpread(spread, merge = false) {
 // it is already draining it; a sensor-INVISIBLE one (output-pipeline
 // latency) can only be seen by the mic, which is what Calibrate is for.
 // ---------------------------------------------------------------------------
-// Advice is state, not telemetry, and it is read while it is being written.
-// Two things kept it from settling down:
+// This panel is exceptions only. It used to carry one unconditional row per
+// speaker, which meant that on a healthy group — the normal state of a system
+// that corrects itself — it was a dozen lines of prose that all resolved to
+// "nothing to do". Worse, the two commonest rows were pure telemetry wearing
+// advice's clothes: a settled bias is the rate loop's job and its own text
+// said so ("needs no help"), and the number is already a column in the table
+// below. Filler in a panel headed "what to do next" trains the reader to skip
+// it, which costs them the one line that ever matters.
 //
-//   - the panel was rebuilt every 3 s, and its rows appeared and disappeared
-//     as speakers crossed a threshold, so the block changed height under the
-//     reader and shoved the charts below it around;
-//   - the thresholds were bare comparisons, so a speaker sitting on ±10 ms
-//     flipped its advice on every poll;
-//   - and the advice strings themselves ran from a dozen words to sixty, so
-//     even a legitimate, well-damped category change re-wrapped the row and
-//     moved everything below it. During the first minute of a live session
-//     every speaker walks nolock → converging → off → ok, so this fired on
-//     the one view most likely to be watched.
+// So a row appears only when a human could act on it:
 //
-// So: one fixed row per speaker (never added, never removed), values patched
-// in place, both the categories and the numbers move only when they have
-// moved enough to mean something, and each row's copy is bounded to one line
-// with the paragraph behind a collapsed detail.
-let _guideState = {};     // player_id | 'group' → last category, for hysteresis
+//   - a speaker that never locked, judged at session END — during the first
+//     30 s of a live run nothing has locked yet and that is not a fault;
+//   - a speaker resyncing hard enough to say its link is bad;
+//   - a group that is jittery or audibly apart.
+//
+// Everything else collapses to one line: still settling, or nothing to do.
+// That also happens to fix the reflow that the per-speaker rows caused, and
+// for a better reason than bounded copy did — the rows that remain are rare,
+// monotonic (resyncs only ever climb) and worth a jump when they arrive, so
+// their remediation is inline rather than hidden behind a disclosure.
+let _guideState = {};     // 'group' → last category, for hysteresis
 let _sticky = {};         // key → last shown number, for the same reason
 
 /** A number that only changes when it has changed enough to be worth reading. */
@@ -571,36 +588,19 @@ function _stick(key, v, tol = 3) {
     return v;
 }
 
-/** Which advice a speaker gets. Sticky at the edges: the exit threshold sits
- *  inside the entry one, so noise around the boundary cannot make the row
- *  oscillate. Priority is worst-first — an unstable link outranks an offset,
- *  because it explains it. */
-function _guideCat(p) {
-    const pid = p.player_id;
-    if (p.lock_s == null) return (_guideState[pid] = 'nolock');
-    if (p.settled_bias_ms == null) return (_guideState[pid] = 'converging');
-    if ((p.resyncs ?? 0) >= 3) return (_guideState[pid] = 'unstable');
-    const b = Math.abs(p.settled_bias_ms);
-    const was = _guideState[pid];
-    const off = was === 'off' ? b >= 8 : b > 12;
-    return (_guideState[pid] = off ? 'off' : 'ok');
-}
-
 function _renderGuidance(players, spread = [], lockAt = 0) {
     const el = document.getElementById('syncLabGuide');
     if (!el) return;
-    if (!players.length) { el.style.minHeight = ''; el._zmmMinH = 0; _setHtml(el, ''); return; }
+    if (!players.length) { _setHtml(el, ''); return; }
 
-    // --- group verdict ---------------------------------------------------
+    // --- group ------------------------------------------------------------
     // Two different truths, and quoting only the first made the verdict read
     // as "echo-free" over a stats row saying half the polls were outside the
     // band. The medians say where each speaker SITS; the poll-by-poll spread
-    // says how much it WANDERS around that, and the ear hears both.
+    // says how much it WANDERS around that, and the ear hears both. Only the
+    // two bad outcomes surface here: tight and close need no one's attention.
     const locked = players.filter(p => p.lock_s != null && p.settled_bias_ms != null);
-    let verdict = { cls: 'secondary', icon: 'fa-headphones',
-                    text: 'needs two speakers reporting after lock.',
-                    why: 'Two speakers have to lock before there is a group spread to '
-                         + 'judge at all.' };
+    let group = null;
     if (locked.length >= 2) {
         const biases = locked.map(p => p.settled_bias_ms);
         const centres = _stick('centres',
@@ -617,115 +617,86 @@ function _renderGuidance(players, spread = [], lockAt = 0) {
         const cat = !steady ? 'jittery'
             : centres <= 20 ? 'tight' : centres <= 45 ? 'close' : 'apart';
         _guideState.group = cat;
-        // The one-liner carries the category; the numbers that justify it live
-        // in the detail. The jitter is not dropped by that — it IS the category
-        // when it matters, so the short line still says so.
-        const head = {
-            tight: `within ${centres} ms after lock — echo-free to the ear.`,
-            close: `within ${centres} ms after lock — still closing.`,
-            apart: `${centres} ms apart after lock — audibly apart.`,
-            jittery: `within ${centres} ms on average, but jittery.`,
-        }[cat];
-        const tail = {
-            tight: 'Echo-free to the ear.',
-            close: 'Close; the rate loop is still closing it.',
-            apart: 'Audibly apart; if it persists, calibrate with the mic.',
-            jittery: 'Aligned on average but jittery, which is a link problem, not '
-                     + 'an alignment one: check WiFi before trimming.',
-        }[cat];
-        verdict = {
-            cls: cat === 'tight' ? 'success' : cat === 'close' ? 'secondary' : 'primary',
-            icon: 'fa-headphones',
-            text: head,
-            why: `The speakers sit within ${centres} ms of each other after lock`
-                 + (p90 == null ? '. ' : `, wandering up to ${p90} ms apart poll to `
-                                       + 'poll (9 in 10). ')
-                 + tail,
-        };
+        if (cat === 'jittery') {
+            group = { cls: 'warning', icon: 'fa-wifi',
+                      text: `jittery — up to ${p90} ms of wander poll to poll (9 in 10), `
+                            + `though the speakers sit within ${centres} ms of each other `
+                            + 'on average. That is a link problem, not an alignment one: '
+                            + 'check WiFi before trimming.' };
+        } else if (cat === 'apart') {
+            group = { cls: 'primary', icon: 'fa-headphones',
+                      text: `${centres} ms apart after lock — audibly apart. The rate `
+                            + 'loop should close this; if the same gap comes back every '
+                            + 'session, calibrate with the mic.' };
+        }
     }
 
-    // --- one row per speaker, always ------------------------------------
-    // Every category speaks twice: `text` is a bounded one-liner that holds the
-    // row at one line, `why` is the paragraph behind the collapsed detail. They
-    // used to be one string, and that was the bug — `ok` was a dozen words and
-    // `off` was sixty, so a speaker crossing a threshold changed this panel's
-    // height by four wrapped lines and shoved five charts down the page. The
-    // hysteresis below stops the flicker; only bounded copy stops the reflow.
-    const ADVICE = {
-        nolock: { cls: 'warning', icon: 'fa-triangle-exclamation',
-                  text: () => 'never locked this session.',
-                  why: () => 'It reported no position the engine could lock onto — check '
-                             + 'it is powered and on WiFi, then re-run the test.' },
-        converging: { cls: 'secondary', icon: 'fa-hourglass-half',
-                      text: () => 'still converging.',
-                      why: () => 'The rate loop needs another minute of measurements '
-                                 + 'before its settled numbers mean anything.' },
-        unstable: { cls: 'warning', icon: 'fa-wifi',
-                    text: p => `${p.resyncs} hard resyncs — an unstable link.`,
-                    why: () => 'Hard resyncs are audible steps, and this many of them '
-                               + 'means the stream keeps arriving late. Prefer 5 GHz '
-                               + 'WiFi, reduce congestion, or move the speaker closer '
-                               + 'to the AP.' },
-        off: { cls: 'primary', icon: 'fa-sliders',
-               text: p => `settles ${Math.abs(Math.round(p.settled_bias_ms))} ms `
-                          + `${p.settled_bias_ms > 0 ? 'behind' : 'ahead of'} the group.`,
-               why: () => 'The rate loop is still trickling that in (≤20 ppm, inaudible) '
-                          + 'and needs no help. If the same offset returns every session '
-                          + 'it is output-pipeline latency the position sensor cannot '
-                          + 'see: run Calibrate (mic) to set its trim from the sound in '
-                          + 'the air.' },
-        ok: { cls: 'success', icon: 'fa-check',
-              text: p => `in sync, ${_sign(_stick('b:' + p.player_id,
-                                                  Math.round(p.settled_bias_ms), 2))} ms `
-                         + 'from target — nothing to do.',
-              why: () => `Its settled median sits inside the ±${AUDIBLE_MS} ms the ear `
-                         + 'cannot resolve; there is nothing to trim.' },
-    };
-
-    const vals = { 'v:text': verdict.text,
-                   'v:why': verdict.why,
-                   'v:icon': { text: '', cls: `fas ${verdict.icon} text-${verdict.cls}` } };
+    // --- per speaker: faults only ------------------------------------------
+    // A settled bias is deliberately NOT a fault. The rate loop is already
+    // draining it, the number is a column in the table below, and saying so
+    // in five rows every session is how the panel became unreadable.
+    const faults = {};
     for (const p of players) {
-        const a = ADVICE[_guideCat(p)];
-        vals[`g:${p.player_id}`] = a.text(p);
-        vals[`w:${p.player_id}`] = a.why(p);
-        vals[`i:${p.player_id}`] = { text: '', cls: `fas ${a.icon} text-${a.cls}` };
+        if ((p.resyncs ?? 0) >= 3) {
+            faults[p.player_id] = { cls: 'warning', icon: 'fa-wifi',
+                text: `${p.resyncs} hard resyncs — an unstable link. Hard resyncs are `
+                      + 'audible steps, and this many of them means the stream keeps '
+                      + 'arriving late. Prefer 5 GHz WiFi, reduce congestion, or move '
+                      + 'it closer to the AP.' };
+        } else if (p.lock_s == null && !_running()) {
+            // Only once the session is over. Mid-run, "hasn't locked yet" is
+            // just the first half-minute doing what it always does.
+            faults[p.player_id] = { cls: 'warning', icon: 'fa-triangle-exclamation',
+                text: 'never locked this session — check it is powered and on WiFi, '
+                      + 'then re-run the test.' };
+        }
     }
 
-    const key = `guide:${players.map(p => p.player_id).join('|')}`;
-    if (el._zmmKey !== key) { el._zmmMinH = 0; el.style.minHeight = ''; }
-    _patch(el, key, () => `
+    // --- the one line shown when nothing above fired ------------------------
+    const nFaults = Object.keys(faults).length + (group ? 1 : 0);
+    let status = null;
+    if (!nFaults) {
+        const lockedN = players.filter(p => p.lock_s != null).length;
+        status = _running() && locked.length < players.length
+            ? { cls: 'secondary', icon: 'fa-hourglass-half',
+                text: `Still settling — ${lockedN} of ${players.length} speakers locked.` }
+            : locked.length >= 2
+                ? { cls: 'success', icon: 'fa-check',
+                    text: 'Nothing to do — the group is holding itself together.' }
+                : { cls: 'secondary', icon: 'fa-headphones',
+                    text: 'Needs two speakers reporting after lock.' };
+    }
+
+    // Every row exists in the built structure from the start; a tick only
+    // restyles the wrapper to show or hide it and writes the text leaf. The
+    // block is never rebuilt while a session is open, so nothing below it
+    // moves except when a row genuinely arrives or clears.
+    const ROW = 'small d-flex align-items-baseline gap-2 mb-1';
+    const vals = {};
+    const put = (id, adv) => {
+        vals[`row:${id}`] = { cls: adv ? '' : 'd-none' };
+        if (!adv) return;
+        vals[`t:${id}`] = adv.text;
+        vals[`i:${id}`] = { text: '', cls: `fas ${adv.icon} text-${adv.cls}` };
+    };
+    put('status', status);
+    put('group', group);
+    for (const p of players) put(p.player_id, faults[p.player_id]);
+
+    const row = (id, label) => `
+      <div data-v="row:${esc(id)}" data-cls-base="${ROW}" class="${ROW} d-none">
+        <i data-v="i:${esc(id)}" data-cls-base="" class="fas fa-check"
+           aria-hidden="true" style="width:14px;flex:0 0 14px"></i>
+        <span>${label}<span data-v="t:${esc(id)}"></span></span>
+      </div>`;
+    _patch(el, `guide:${players.map(p => p.player_id).join('|')}`, () => `
       <div class="border rounded p-2">
         <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
-        <div class="small d-flex align-items-baseline gap-2 mb-1">
-          <i data-v="v:icon" data-cls-base="" class="fas fa-headphones"
-             aria-hidden="true" style="width:14px;flex:0 0 14px"></i>
-          <span><strong>Group verdict:</strong> <span data-v="v:text"></span></span>
-        </div>
-        ${players.map(p => `
-          <div class="small d-flex align-items-baseline gap-2 mb-1">
-            <i data-v="i:${esc(p.player_id)}" data-cls-base="" class="fas fa-check"
-               aria-hidden="true" style="width:14px;flex:0 0 14px"></i>
-            <span><strong>${esc(_nameFor(p.player_id))}</strong>
-              <span data-v="g:${esc(p.player_id)}"></span></span>
-          </div>`).join('')}
-        <details class="small mt-2">
-          <summary class="text-muted">Why, and what to do about it</summary>
-          <div class="mt-1">
-            <div class="mb-1"><strong>Group</strong> <span data-v="v:why"></span></div>
-            ${players.map(p => `
-              <div class="mb-1"><strong>${esc(_nameFor(p.player_id))}</strong>
-                <span data-v="w:${esc(p.player_id)}"></span></div>`).join('')}
-          </div>
-        </details>
+        ${row('status', '')}
+        ${row('group', '<strong>Group</strong> ')}
+        ${players.map(p => row(p.player_id,
+                               `<strong>${esc(_nameFor(p.player_id))}</strong> `)).join('')}
       </div>`, vals);
-
-    // Belt and braces: the rows are one line by construction, but a narrow
-    // viewport can still wrap one. Hold the panel at the tallest it has been
-    // for this set of speakers, so a wrap costs the reader one jump rather
-    // than one per tick. Reset above whenever the structure is rebuilt.
-    const h = el.firstElementChild ? el.firstElementChild.offsetHeight : 0;
-    if (h > (el._zmmMinH || 0)) { el._zmmMinH = h; el.style.minHeight = `${h}px`; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,4 +1038,3 @@ function _renderCharts(series, pids, merge = false) {
         })),
     }, merge);
 }
-
