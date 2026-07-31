@@ -296,6 +296,20 @@ class EqStreamEngine:
             if self._sessions.get(player_id) is session:
                 self._sessions.pop(player_id, None)
 
+    def make_chain(self, player_id: str):
+        """A configured filter chain for a caller that owns its own decode
+        loop (the sync engine). Returns None when EQ is off for this id or the
+        DSP wheel is absent, which the caller reads as "pass audio through"."""
+        if not _HAVE_DSP:
+            return None
+        c = self._conf(player_id)
+        if not c["enabled"]:
+            return None
+        chain = zmm_eq.EqChain(RATE)
+        chain.set_gains(c["gains"])
+        chain.set_enabled(True)
+        return chain
+
     async def release(self, player_id: str) -> bool:
         """Tear down this player's proxy stream and invalidate its token.
 

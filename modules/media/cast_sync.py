@@ -1,10 +1,19 @@
 """
-CastSyncPoc — proof-of-concept synchronised multi-speaker casting.
+CastSyncPoc — synchronised multi-speaker casting.
 
-Goal: measure whether we can play the SAME audio on several Cast devices in
-sync (echo-free) WITHOUT a Google-Home group, using our own custom Web
-Receiver (static/cast/sync_receiver.html) that schedules timestamped PCM
-chunks with the Web Audio API against a shared server clock.
+Plays the SAME audio on several Cast devices in sync (echo-free) WITHOUT a
+Google-Home group, using our own custom Web Receiver
+(static/cast/sync_receiver.html) that schedules timestamped PCM chunks with the
+Web Audio API against a shared server clock.
+
+Why not just use a Google group: a Cast group is hosted by one elected member,
+and everything — discovery, the control channel, the media fetch — hangs off
+that one device. When the election moves (a member reboots, Wi-Fi roams, a
+nested stereo pair re-elects) the group's advertised address moves with it, any
+held connection is pointing at a device that no longer speaks for the group,
+and playback collapses onto whichever speaker still has the session. There is
+no API to observe or influence the election. Here each device is an independent
+target holding its own stream, so there is no leader to lose.
 
 How it works
   * A tiny plain-HTTP listener (uvicorn, config ``media.cast.sync.http_port``)
@@ -15,8 +24,10 @@ How it works
     receiver in the Cast console and put its App ID in config.
   * The server clock is ``time.monotonic()``. Receivers estimate their offset
     to it NTP-style over the WebSocket (ping/pong, min-RTT filtering).
-  * Audio is a generated test signal (soft chord pad + a sharp click every
-    2 s — clicks make even ~10 ms misalignment audible as flam/echo).
+  * Audio comes from a timeline source (sync_source.py): either real media —
+    ffmpeg-decoded and optionally equalised into a ring buffer — or, when a
+    session names no media, a generated test signal (soft chord pad + a sharp
+    click every 2 s; clicks make even ~10 ms misalignment audible as flam).
     44.1 kHz stereo s16le, CHUNK_SECONDS per chunk, each chunk prefixed with
     the server-clock time it must start playing (8-byte big-endian double).
   * Chunks are produced AHEAD_SECONDS before their play time and fanned out to
@@ -28,19 +39,27 @@ Fallback stream mode (no Cast console account)
   * When ``media.cast.sync.app_id`` is EMPTY, sessions run in "stream mode":
     each device gets the built-in default media receiver (CC1AD845 — no
     registration, no $5 console fee) pointed at a per-device live WAV stream
-    (``/sync/stream/<sid>.wav``) cut from the same shared timeline. Because
-    the test signal is a pure function of timeline position, the server can
-    seek any device's stream instantly: a monitor polls each device's
+    (``/sync/stream/<sid>.wav``) cut from the same shared timeline. Every
+    device's stream is addressed by absolute sample position, so the server
+    can move any one of them independently: a monitor polls each device's
     reported media time and computes its lag against the server clock.
     Hard stream jumps are reserved for acquisition/rebuffer (>±100 ms);
     every smaller correction — clock drift, residual offset, trim changes —
-    goes through a per-device fractional-position resampler as a bounded
-    rate slew (fast 1000 ppm ≈ 1.7 cents, steady-state 20 ppm), so
-    corrections are inaudible and the buffer never steps (open-zone.md §7.1).
+    goes through a per-device variable-ratio resampler as a bounded rate slew
+    (fast 1000 ppm ≈ 1.7 cents, steady-state 20 ppm), so corrections are
+    inaudible and the buffer never steps (open-zone.md §7.1).
     Needs nothing from Google; manual trim does the final alignment by ear.
 
-This is deliberately PoC-scoped: one global session, generated audio only,
-stats surfaced via /api/media/sync/status and the sync_test.html page.
+Source delay. The generated signal is closed-form and seekable anywhere, so it
+has no delay. Real media is not: you cannot serve a live stream ahead of its
+own arrival. A media session therefore runs the whole group a fixed
+``source_delay_s`` behind the live edge, which is also the headroom the
+per-device serve-ahead is cut from. The ring buffer must span that delay plus
+the widest startup-lag pre-compensation, because the furthest-behind device is
+reading history the furthest-ahead device passed seconds ago (§4.1).
+
+Still single-session by design: one group plays at a time, stats surfaced via
+/api/media/sync/status and the sync_test.html page.
 """
 from __future__ import annotations
 
@@ -72,11 +91,12 @@ except Exception:                                    # pragma: no cover
     _sdb = None
 
 from modules.media import sync_chirp as _chirp
+from modules.media import sync_resample as _rs
+from modules.media.sync_source import (RATE, CHANNELS, GeneratedSource,
+                                       MediaSource)
 
 logger = logging.getLogger("modules.media.cast_sync")
 
-RATE = 44100
-CHANNELS = 2
 CHUNK_SECONDS = 0.5
 CHUNK_FRAMES = int(RATE * CHUNK_SECONDS)
 LEAD_SECONDS = 2.0       # first chunk plays this long after session start
@@ -137,69 +157,24 @@ STREAM_RATE_EMA = 0.25           # max blend of a new fit into rate_ppm
 STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
 
 
-def _gen_float(n0: int, frames: int) -> np.ndarray:
-    """Test-signal samples (float mono) for ``frames`` samples starting at
-    absolute timeline sample ``n0`` — pure function of the sample position,
-    so any receiver or stream joining/seeking later gets a bit-identical
-    timeline. Chord pad with a slow swell + a 1 kHz click every 2 s.
-    This is the integer-grid source the resampler interpolates over; step 2
-    replaces it with the real-media ring buffer — at which point the linear
-    interpolator must be upgraded too (soxr per open-zone.md §4.2): linear is
-    clean on this ≤1 kHz signal but rolls off HF audibly on real music."""
-    t = (n0 + np.arange(frames)) / RATE
-    sig = (0.10 * np.sin(2 * np.pi * 220.0 * t)
-           + 0.08 * np.sin(2 * np.pi * 277.18 * t)
-           + 0.08 * np.sin(2 * np.pi * 329.63 * t))
-    sig *= 0.7 + 0.3 * np.sin(2 * np.pi * 0.05 * t)
-    ph = np.mod(t, 2.0)
-    m = ph < 0.008
-    if m.any():   # sharp exponentially-decaying tick — the sync "ruler"
-        sig[m] += 0.85 * np.sin(2 * np.pi * 1000.0 * ph[m]) * np.exp(-ph[m] / 0.002)
-    return sig
+# The timeline the Sync Lab runs on when no media is given. Module-level so
+# the calibrator and the receiver page keep a single shared reference.
+_GENERATED = GeneratedSource()
 
 
-def _encode_s16(sig: np.ndarray) -> bytes:
-    s16 = (np.clip(sig, -0.98, 0.98) * 32767).astype("<i2")
-    return np.repeat(s16[:, None], CHANNELS, axis=1).tobytes()
+def _encode_s16(pcm: np.ndarray) -> bytes:
+    """Interleaved s16le from float samples shaped ``(frames, CHANNELS)``."""
+    return (np.clip(pcm, -0.98, 0.98) * 32767).astype("<i2").tobytes()
 
 
 def _gen_samples(n0: int, frames: int) -> bytes:
     """Unity-ratio PCM straight off the integer grid (WS/chunk mode)."""
-    return _encode_s16(_gen_float(n0, frames))
+    return _encode_s16(_GENERATED.read(n0, frames))
 
 
-def _resample_block(pos: float, frames: int, adv: float,
-                    extra=None) -> bytes:
-    """Fractional-position resampler (the open-zone.md §4.2 actuator): emit
-    ``frames`` output samples reading the timeline from float sample
-    position ``pos``, consuming ``adv`` timeline samples in total, i.e. a
-    ratio of adv/frames modulated a few hundred ppm around unity. Sub-sample
-    linear interpolation between adjacent integer-grid samples — at unity
-    ratio from an integer position it degenerates to a bit-exact copy; at
-    fractional positions the worst-case error on this test signal is about
-    −84 dBFS (measured) — a shade above the −90 dBFS s16 LSB, far below
-    audibility. Real media needs soxr instead (see _gen_float note)."""
-    idx = pos + np.arange(frames) * (adv / frames)
-    base = np.floor(idx).astype(np.int64)
-    frac = idx - base
-    i0 = int(base[0])
-    n = int(base[-1]) - i0 + 2
-    src = _gen_float(i0, n)
-    if extra is not None:
-        # Per-device timeline-domain injection (calibration chirp): mixed
-        # into the integer grid before interpolation, so it rides through
-        # the resampler exactly like programme material.
-        c0, wave = extra
-        a, b = max(i0, c0), min(i0 + n, c0 + len(wave))
-        if a < b:
-            src[a - i0:b - i0] += wave[a - c0:b - c0]
-    rel = base - i0
-    return _encode_s16(src[rel] * (1.0 - frac) + src[rel + 1] * frac)
-
-
-def _gen_chunk(index: int) -> bytes:
+def _chunk_pcm(source, index: int) -> bytes:
     """WS-mode framing: fixed CHUNK_FRAMES chunk ``index`` of the timeline."""
-    return _gen_samples(index * CHUNK_FRAMES, CHUNK_FRAMES)
+    return _encode_s16(source.read(index * CHUNK_FRAMES, CHUNK_FRAMES))
 
 
 def _wav_header() -> bytes:
@@ -283,6 +258,9 @@ class _Stream:
         self.chirp: Optional[tuple] = None
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
+        # This device's variable-ratio resampler (open-zone.md §4.2). One per
+        # stream: streams differ in content phase, so no instance is shared.
+        self.resampler = None
 
 
 class CastSyncPoc:
@@ -310,6 +288,20 @@ class CastSyncPoc:
         self._mic_device = cfg.get("mic_device") or None
         self._calibrating = False
         self._mic_cache: Optional[Tuple[float, dict]] = None
+
+        # Master timeline. Generated test signal unless a session supplies
+        # media; the rest of the engine only ever addresses it by sample
+        # position, so the two are interchangeable (sync_source.py).
+        self._source = _GENERATED
+        self._resampler_kind = str(cfg.get("resampler", "soxr"))
+        # §4.1: the delay line must span the source delay plus the widest
+        # per-device pre-compensation, because the furthest-behind device
+        # reads history the furthest-ahead device has long passed.
+        self._source_delay_s = float(cfg.get("source_delay_s", 2.0))
+        self._ring_capacity_s = float(cfg.get("ring_capacity_s", 20.0))
+        # Optional EqStreamEngine, so a sync group can carry the same
+        # server-side EQ a single Cast player gets. Wired by MediaService.
+        self._eq_engine = None
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -358,8 +350,55 @@ class CastSyncPoc:
     # ------------------------------------------------------------------
     # Session control (called from routes)
     # ------------------------------------------------------------------
+    def set_eq_engine(self, engine) -> None:
+        self._eq_engine = engine
+
+    async def _build_source(self, media: Optional[dict], group_id: str):
+        """Master timeline for this session: real media when given, else the
+        generated test signal. Failing to open the media is reported rather
+        than silently falling back — a group playing a test tone when the user
+        asked for a station is worse than an error."""
+        if not media or not (media.get("url") or "").strip():
+            return _GENERATED, ""
+        chain = None
+        if self._eq_engine is not None:
+            try:
+                chain = self._eq_engine.make_chain(f"syncgroup:{group_id}")
+            except Exception as e:
+                logger.debug(f"Sync EQ chain unavailable: {e}")
+        src = MediaSource(media["url"].strip(), self._epoch,
+                          delay_s=self._source_delay_s,
+                          capacity_s=self._ring_capacity_s, eq_chain=chain,
+                          loop_forever=bool(media.get("loop")))
+        try:
+            await src.start()
+        except Exception as e:
+            await src.close()
+            return None, str(e)
+        return src, ""
+
+    async def _prime_source(self, max_precomp_s: float) -> None:
+        """Fill the delay line before any device reads from it.
+
+        Depth has to cover the source delay *plus* the deepest startup
+        pre-compensation, because that device starts reading that much further
+        back than the others. Priming short is not fatal — the reads are
+        zero-filled — but it is audible as silence at the top of a session, so
+        it is worth saying out loud in the log."""
+        src = self._source
+        if src is _GENERATED:
+            return
+        target = src.delay_s + max(0.0, max_precomp_s)
+        if await src.prime(timeout=target + 3.0, target_s=target):
+            logger.info(f"Sync source primed {target:.1f}s of timeline")
+        else:
+            logger.warning(
+                f"Sync source primed only {src.buffered_s():.1f}s of the "
+                f"{target:.1f}s needed — expect silence at session start")
+
     async def start_session(self, player_ids: Optional[List[str]] = None,
-                            group_id: str = "", duration_s: int = 0) -> dict:
+                            group_id: str = "", duration_s: int = 0,
+                            media: Optional[dict] = None) -> dict:
         if group_id:
             group = self._groups.get(group_id)
             if not group:
@@ -392,9 +431,12 @@ class CastSyncPoc:
         self._streams = {}
         self._pending = {}
         self._target_lag = None
+        source, err = await self._build_source(media, group_id)
+        if source is None:
+            self._active_group = ""
+            return {"success": False, "error": f"Could not open media: {err}"}
+        self._source = source
         self.running = True
-        if not stream_mode:
-            self._producer = asyncio.create_task(self._produce())
 
         # If the model knows every member's startup lag, fix the session
         # target now and pre-compensate each stream so devices start already
@@ -404,6 +446,16 @@ class CastSyncPoc:
         if stream_mode and all(v is not None for v in model_lags.values()):
             self._target_lag = max(model_lags.values()) + STREAM_LAG_MARGIN_S
             logger.info(f"Sync stream target lag from model: {self._target_lag:.2f}s")
+        # Deepest pre-compensation any member will start at, which sets how
+        # much timeline has to exist before the launch tasks go out.
+        max_precomp = max((max(0.0, (self._target_lag or 0.0) - (lag or 0.0))
+                           for lag in model_lags.values()), default=0.0)
+        await self._prime_source(max_precomp)
+        # After priming, never before: the chunk producer reads the timeline at
+        # a fixed offset from the epoch and would otherwise sit on the ring's
+        # write head with no margin at all.
+        if not stream_mode:
+            self._producer = asyncio.create_task(self._produce())
 
         launched, errors = [], {}
         for pid in player_ids:
@@ -413,6 +465,7 @@ class CastSyncPoc:
             try:
                 if stream_mode:
                     st = _Stream(sid, pid, name)
+                    st.resampler = _rs.make(self._resampler_kind, RATE, CHANNELS)
                     m = self._model.get(pid, {})
                     if self._target_lag is not None and m.get("lag_s") is not None:
                         st.precomp_s = max(0.0, self._target_lag - m["lag_s"])
@@ -436,9 +489,11 @@ class CastSyncPoc:
                 self._auto_stop_after(self._duration_s))
         logger.info(f"Cast sync session started for {len(launched)} device(s) "
                     f"({'default-receiver stream' if stream_mode else 'custom receiver'} mode"
+                    f", source={self._source.kind}"
                     f"{f', {self._duration_s}s window' if self._duration_s else ''})")
         return {"success": True, "launched": launched, "errors": errors,
                 "mode": "stream" if stream_mode else "receiver",
+                "source": self._source.kind,
                 "duration_s": self._duration_s}
 
     async def _auto_stop_after(self, secs: int):
@@ -469,7 +524,19 @@ class CastSyncPoc:
         self._auto_stop = None
         if self._streams:    # persist what this session taught the model
             self._write_json(self._model_file, self._model)
+        for st in self._streams.values():
+            if st.resampler is not None:
+                try:
+                    st.resampler.close()      # frees the libsoxr instance
+                except Exception:
+                    pass
         self._streams = {}   # generators see running=False and finish
+        if self._source is not _GENERATED:
+            try:
+                await self._source.close()
+            except Exception as e:
+                logger.debug(f"Sync source close failed: {e}")
+            self._source = _GENERATED
         for r in list(self._receivers.values()):
             try:
                 await r.ws.close()
@@ -548,6 +615,8 @@ class CastSyncPoc:
             "remaining_s": (max(0, self._duration_s - elapsed)
                             if self.running and self._duration_s else None),
             "mic": self._mic_status(),
+            "source": self._source.stats(),
+            "resampler": {"kind": self._resampler_kind, **_rs.available()},
             "devices": devices,
         }
 
@@ -899,6 +968,12 @@ class CastSyncPoc:
                         st.shift += med3 * RATE
                         st.moved_s += med3
                         st.slew_s = 0.0       # jump supersedes any pending slew
+                        # A jump is a deliberate discontinuity in the timeline.
+                        # A stateful resampler holds filter memory and buffered
+                        # output from before the jump; carrying either across
+                        # would smear the two sides together.
+                        if st.resampler is not None:
+                            st.resampler.reset()
                         st.resyncs += 1
                         st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
                         st.err_hist = []
@@ -1101,15 +1176,40 @@ class CastSyncPoc:
         logger.info(f"Sync stream opened: {st.name}")
         try:
             yield _wav_header()
+            source = self._source
+            delay = source.delay_s
             if st.pos is None:
                 trim = int(self._trims.get(st.player_id, 0) * RATE / 1000)
                 precomp = int(st.precomp_s * RATE)
-                st.pos = (int((time.monotonic() - self._epoch) * RATE)
+                # Real media cannot be served ahead of its own arrival, so the
+                # whole group reads `delay` behind the live edge (§4.1). The
+                # generated timeline has no such limit and sets delay 0, which
+                # leaves this expression exactly as it was.
+                st.pos = (int((time.monotonic() - self._epoch - delay) * RATE)
                           - trim - precomp)
+                # Never start behind the oldest sample the source still holds:
+                # reads before it are silence, and silence carries no timing
+                # information, so the monitor could not recover from it. Losing
+                # some pre-compensation is recoverable; opening on silence is
+                # not. Unbounded for the closed-form timeline.
+                # Plus the kernel margin: an interpolator reads context either
+                # side of its position, so sitting exactly on the oldest sample
+                # still pulls zeros into the convolution.
+                floor = source.earliest_sample() + _rs.READ_MARGIN
+                if st.pos < floor:
+                    logger.warning(
+                        f"Sync stream {st.name} clamped {(floor - st.pos) / RATE:.2f}s "
+                        f"forward — delay line was short at launch")
+                    st.pos = floor
                 st.start_pos = st.pos
             block = int(RATE * STREAM_BLOCK_S)
             while self.running and self._streams.get(st.sid) is st:
-                ahead = (st.pos - st.shift) / RATE - (time.monotonic() - self._epoch)
+                # `ahead` measures serve-ahead against real time, so the
+                # constant source delay is added back before comparing —
+                # without it a delayed source reads as permanently behind and
+                # this loop would spin against the live edge.
+                ahead = ((st.pos - st.shift) / RATE + delay
+                         - (time.monotonic() - self._epoch))
                 if ahead > STREAM_AHEAD_S:
                     await asyncio.sleep(STREAM_BLOCK_S / 2)
                     continue
@@ -1127,11 +1227,16 @@ class CastSyncPoc:
                     rm = max(-lim, min(lim, st.slew_s))
                     st.slew_s -= rm
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
-                pcm = _resample_block(st.pos, block, adv, st.chirp)
-                st.pos += adv
-                st.shift += adv - block
-                st.moved_s += (adv - block) / RATE   # decompensate drift fit
-                yield pcm
+                # A stateful backend (libsoxr) buffers internally, so what it
+                # actually consumed is only asymptotically `adv`. Book-keep the
+                # real figure: `pos` must track what was read off the timeline
+                # or the ring reads drift, and `shift`/`moved_s` must track
+                # true timeline motion or the drift fit sees our corrections.
+                out, used = st.resampler.block(source, st.pos, block, adv, st.chirp)
+                st.pos += used
+                st.shift += used - block
+                st.moved_s += (used - block) / RATE   # decompensate drift fit
+                yield _encode_s16(out)
         except asyncio.CancelledError:
             pass
         finally:
@@ -1152,7 +1257,7 @@ class CastSyncPoc:
                 wait = (play_at - AHEAD_SECONDS) - time.monotonic()
                 if wait > 0:
                     await asyncio.sleep(wait)
-                pcm = await asyncio.to_thread(_gen_chunk, i)
+                pcm = await asyncio.to_thread(_chunk_pcm, self._source, i)
                 frame = struct.pack(">d", play_at) + pcm
                 self._buffer.append(frame)
                 if len(self._buffer) > BUFFER_CHUNKS:

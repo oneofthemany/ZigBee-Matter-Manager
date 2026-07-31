@@ -103,11 +103,34 @@ The governing invariant: **all timing manipulation occurs in the PCM domain, ups
 
 A ring buffer over the master PCM feed, read at a per-device offset with single-sample resolution. Depth must cover the worst inter-vendor bulk-latency disparity; 4 s is provisioned (Cast devices buffer 0.5–2 s in buffered modes and considerably more on live streams; AirPlay ≈ 2 s; Sonos 75 ms–2 s depending on mode). Group playback consequently runs behind the source by approximately the largest device latency — acceptable for music, disqualifying for lip-synchronised video.
 
+Implemented as `MediaSource` in `modules/media/sync_source.py`: an ffmpeg decoder, optionally through the EQ chain, writing float32 into a ring indexed by absolute timeline sample. Two sizing constraints, both load-bearing:
+
+- **The ring must span the source delay plus the widest startup-lag pre-compensation, not merely the delay.** Pre-compensation offsets each device backwards by `θ_max − θ_i` (§3), so with the reference deployment's 0.5 s and 6.3 s devices the fastest reads ~5.8 s of history that the slowest passed long ago. Capacity is `media.cast.sync.ring_capacity_s`, default 20 s (≈7 MB at 44.1 kHz stereo float32) — sized for the spread, not for the delay.
+- **A live source cannot be served ahead of its own arrival.** The per-device serve-ahead is cut from `source_delay_s` (default 2.0 s), which must therefore exceed `STREAM_AHEAD_S`; below that the stream loop chases the live edge and underruns every block. The generated timeline is closed-form and declares zero delay, which collapses these expressions to their original form.
+
+The write head is throttled against the play point rather than left to run free: a live station paces itself, but a file, or a station bursting after reconnect, would otherwise overwrite the history the furthest-behind device is still reading. A decoder exit is restarted with backoff and decoding resumes at the current write head, so an outage costs a gap of silence rather than a permanent offset in everything downstream. Reads outside the buffered window are zero-filled and counted, never raised — a hiccup should cost a gap, not a dead session on every speaker.
+
 #### 4.2 Variable Resampler
 
 An arbitrary-ratio resampler per device, its ratio modulated around unity by a control signal expressed in ppm. Requirements: ratio resolution ≤ 0.1 ppm, continuous ratio changes without discontinuity, and negligible THD+N impact at ±200 ppm. `libsoxr` in variable-rate mode satisfies all three. Tempo-domain processors (`pitch`, `scaletempo`) are unsuitable.
 
-For synthetic test material band-limited below ~1 kHz, sub-sample linear interpolation is a measured −84 dBFS approximation of the ideal resampler and is used in the reference implementation; programme material requires the soxr path, since linear interpolation's fraction-dependent high-frequency response (−5 dB at 10 kHz at the interpolation midpoint) is audible on wideband audio.
+For synthetic test material band-limited below ~1 kHz, sub-sample linear interpolation is a measured −84 dBFS approximation of the ideal resampler; programme material does not tolerate it, since linear interpolation's fraction-dependent high-frequency response is audible on wideband audio. That response is exactly `|cos(πf/Fs)|` at the interpolation midpoint — **−2.42 dB at 10 kHz** at 44.1 kHz, worsening to −6 dB by 14.7 kHz. (An earlier revision of this section quoted −5 dB at 10 kHz; the closed form and the measurement both give −2.42 dB.)
+
+Three backends are implemented, selected by `media.cast.sync.resampler`:
+
+| Backend | Mechanism | Notes |
+|---|---|---|
+| `soxr` (default) | `libsoxr` variable-rate via `ctypes` | Reference path. Measured **+498.87 ppm against a +500 ppm command**; internal delay 100 samples (2.27 ms) at 44.1 kHz |
+| `sinc` | 32-tap Lanczos-16 fractional delay, 2048-phase table | Stateless. Bit-exact at integer positions, −0.01 dB at 10 kHz |
+| `linear` | Sub-sample linear interpolation | Retained only to reproduce earlier measurements |
+
+Two implementation notes that cost time to establish:
+
+**`SOXR_VR` is the `flags` argument of `soxr_quality_spec`, not a recipe and not an OR into one.** Passing it as the recipe, or omitting it, yields a resampler that creates successfully and then fails the first `soxr_set_io_ratio` with *"varying O/I ratio is not supported with this quality level"*. VR is available at every quality level; the implementation requests VHQ. libsoxr is already linked by ffmpeg in the image, so the `ctypes` binding adds no build dependency and ships as a code patch rather than a wheel rebuild.
+
+**The soxr path is stateful and the rest of the engine is not.** The delay line is addressed by absolute sample position, which is what makes a jump, a trim, or a late-joining device a matter of picking a different index. libsoxr instead holds filter memory and buffers internally, with three consequences the caller carries: the resampler consumes only asymptotically the commanded input per block, so position book-keeping must use the *actual* figure it reports; a deliberate jump must clear the instance, or filter memory smears the two sides of the discontinuity together; and its 2.27 ms delay is a constant addition to θ. That last one is uniform across devices and therefore cancels in Δ_ij (§3) — it shifts the group against the source, never the devices against each other.
+
+The `sinc` backend exists because at ±1000 ppm this is not really sample-rate conversion — it is fractional delay, and a delay filter needs no history. It sidesteps all three consequences above, and is the automatic fallback where `libsoxr` is unavailable.
 
 The ratio command has two components:
 
@@ -242,7 +265,9 @@ Reference deployment: two Google Cast devices (Chromecast-class and Nest Audio),
 
 ### 11. Future Work
 
-Programme-correlated acoustic tracking (§6.2) for continuous closed-loop operation; ingest of arbitrary programme material into the master timeline with the soxr resampler path (§4.2); RAOP and UPnP transport senders alongside the Cast implementation; multi-microphone operation and cached per-model latency profiles; migration of the fan-out, resampling, and transport hot path to a compiled daemon.
+Programme-correlated acoustic tracking (§6.2) for continuous closed-loop operation; RAOP and UPnP transport senders alongside the Cast implementation; multi-microphone operation and cached per-model latency profiles; migration of the fan-out, resampling, and transport hot path to a compiled daemon; concurrent independent sessions, the engine still being single-session by construction.
+
+Ingest of arbitrary programme material (§4.1) and the soxr resampler path (§4.2) are implemented and no longer future work. The empirical figures in §9 predate them and were taken on the generated timeline; they have not yet been re-measured against programme material, where the sensor is unchanged but the correction domain now carries real spectral content.
 
 ---
 

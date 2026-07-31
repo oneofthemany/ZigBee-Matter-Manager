@@ -139,6 +139,9 @@ class MediaService:
             try:
                 from modules.media.cast_sync import CastSyncPoc
                 self.cast_sync = CastSyncPoc(self.cast, sync_cfg)
+                # Lets a sync group carry the same server-side EQ a single
+                # Cast player gets, keyed "syncgroup:<gid>".
+                self.cast_sync.set_eq_engine(self.eq_stream)
             except Exception as e:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 

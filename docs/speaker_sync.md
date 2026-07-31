@@ -2,9 +2,10 @@
 
 Play the same audio on several Google Cast speakers in sync (echo-free),
 using groups defined **in ZigBee Manager** instead of the Google Home app.
-Currently a **proof-of-concept**: it plays a generated test signal so sync
-quality can be measured and tuned; routing real audio (radio/Tidal) through
-the same pipeline is the follow-up once the PoC validates on real hardware.
+Sessions play either real media — anything ffmpeg can open, optionally through
+the server-side EQ — or a generated test signal, which is what the Sync Lab
+uses to measure and tune alignment. Both travel the same pipeline; the only
+difference is where the samples come from.
 
 ---
 
@@ -78,10 +79,22 @@ few ms.
 - Wire format: 8-byte big-endian float64 `play_at` + raw PCM
   (`struct.pack(">d", play_at) + pcm`). ~706 kbps per speaker — trivial on a
   LAN, no codec needed (and old Cast devices lack WebCodecs).
-- The PoC signal is a pure function of the absolute sample index (chord pad +
-  a sharp 1 kHz click every 2 s), so every receiver renders a bit-identical
-  timeline regardless of when it joined. The clicks make even ~10 ms of
-  misalignment audible as a flam — that's the tuning "ruler".
+- The timeline is addressed by absolute sample index, so what a receiver
+  renders depends only on *where* it reads, never on when it joined.
+- The test signal is a pure function of that index (chord pad + a sharp 1 kHz
+  click every 2 s) and is therefore seekable anywhere, in either direction,
+  with no buffering. The clicks make even ~10 ms of misalignment audible as a
+  flam — that's the tuning "ruler".
+- Real media comes from an ffmpeg decoder writing into a ring buffer
+  (`sync_source.py`). It is seekable only within what the ring holds, and it
+  cannot be served ahead of its own arrival — so a media session runs the whole
+  group `source_delay_s` (default 2 s) behind the live edge, and the ring is
+  sized for the *spread* of device read positions rather than for the delay
+  alone. See open-zone.md §4.1 for the sizing argument; get either wrong and
+  the symptom is silence or per-block underruns, not subtle drift.
+- EQ is applied once, server-side, before fan-out — so every speaker in the
+  group gets identical equalised samples. Settings are keyed
+  `syncgroup:<group_id>` in `data/media_eq.json`.
 
 ### Receiver scheduling
 
@@ -135,13 +148,29 @@ media:
       enabled: false     # bring up the :8010 listener at boot
       http_port: 8010    # plain-HTTP listener (receiver page + WS)
       app_id: ""         # Cast console App ID of the registered receiver
+      resampler: soxr    # soxr | sinc | linear (open-zone.md §4.2)
+      source_delay_s: 2.0    # how far behind the live edge a media session runs
+      ring_capacity_s: 20.0  # delay-line depth (§4.1) — size for the spread
 ```
 
 Requires `media.enabled` and `media.cast.enabled`. The container must expose
 `http_port` on the LAN (host networking already does).
 
+`resampler` defaults to `soxr`, which binds `libsoxr` in variable-rate mode
+through `ctypes`. libsoxr is already in the image (ffmpeg links it), so this
+needs no build change; where it is missing the engine falls back to `sinc`
+automatically and says so in the log. `sinc` is stateless and slightly simpler
+to reason about; `linear` exists only to reproduce earlier measurements and
+should not be used on real music.
+
+`source_delay_s` must stay above `STREAM_AHEAD_S` (1.2 s) — the per-device
+serve-ahead is cut from it. Raising `ring_capacity_s` costs ~350 kB per second
+and is the right response to underruns on a group whose devices have widely
+different startup latencies.
+
 Data files: `data/cast_sync_trims.json` (player_id → trim ms),
-`data/cast_sync_groups.json` (gid → {name, members}).
+`data/cast_sync_groups.json` (gid → {name, members}),
+`data/cast_sync_model.json` (learned per-device lag + drift).
 
 ---
 
@@ -179,8 +208,8 @@ Full steps also in `static/cast/README.md`.
 
 | Endpoint | Method | Body / Returns |
 |---|---|---|
-| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
-| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}` |
+| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, source:{kind, buffered_s, underruns, restarts, …}, resampler:{kind, soxr, …}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
+| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url, title?, loop?}}` — omit `media` for the test signal |
 | `/api/media/sync/stop` | POST | — |
 | `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
 | `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active}]}` |
@@ -192,12 +221,12 @@ Receiver stats fields: `offset_ms`, `rtt_ms`, `out_latency_ms`, `ctx_rate`,
 
 ---
 
-## Evaluating the PoC
+## Evaluating alignment
 
 Good result = clicks indistinguishable (≲ 10 ms) after trim tuning, stable
-over 15+ minutes, `late` ≈ 0, few `resyncs`. That green-lights the real
-feature: sync groups as ordinary play targets for radio/Tidal (server decodes
-the source to PCM and feeds this same pipeline).
+over 15+ minutes, `late` ≈ 0, few `resyncs`. Tune on the test signal — the
+clicks are the ruler — then switch the group to real media, which travels the
+same pipeline from the same timeline.
 
 Failure modes to watch:
 
@@ -207,10 +236,13 @@ Failure modes to watch:
 | Steady echo that trim fixes, but value changes per session | Clock sync unstable — check `rtt_ms`/offset jitter in stats (Wi-Fi congestion) |
 | Rising `late` count | Producer starved or network stall; audio will gap |
 | Audible ticks every few seconds | Offset slew fighting a noisy clock estimate — see `resyncs` |
+| Session opens with a few seconds of silence | Delay line primed short — check the "primed only Xs" warning and `source.underruns`; raise `source_delay_s` or `ring_capacity_s` |
+| Silence on one member only, others fine | That device's pre-compensation was clamped at launch — see the "clamped … forward" warning |
+| `source.restarts` climbing | Station keeps dropping; each restart is a gap, not a permanent offset |
 
-## Known limitations (PoC scope)
+## Known limitations
 
-- One global session; test signal only (no real sources yet).
+- One session at a time — starting a second stops the first.
 - Cast devices only (WiiM has native multiroom; mixing ecosystems in one sync
   group would need this pipeline on WiiM too).
 - Group volume isn't fanned out yet — use each speaker's own volume.
@@ -223,6 +255,8 @@ Failure modes to watch:
 | File | Role |
 |---|---|
 | `modules/media/cast_sync.py` | Service: HTTP listener, producer, WS protocol, launch, groups/trims |
+| `modules/media/sync_source.py` | Master timeline: generated signal, or ffmpeg + EQ into the ring-buffer delay line |
+| `modules/media/sync_resample.py` | Variable-ratio resampler backends (soxr VR via ctypes, windowed sinc, linear) |
 | `static/cast/sync_receiver.html` | CAF receiver: clock sync + Web Audio scheduling |
 | `routes/cast_sync_routes.py` | REST endpoints (main app) |
 | `static/js/speaker-sync.js` | Settings → Audio tab |

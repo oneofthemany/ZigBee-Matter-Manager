@@ -6,7 +6,7 @@ as ``media_service.cast_sync``; None unless media.cast.sync.enabled). Same
 lazy-getter pattern as the other media routes.
 """
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -14,10 +14,17 @@ from pydantic import BaseModel
 logger = logging.getLogger("routes.cast_sync")
 
 
+class SyncMediaBody(BaseModel):
+    url: str = ""                # anything ffmpeg can open; "" = test signal
+    title: str = ""
+    loop: bool = False           # for finite sources (a file); ignored on live
+
+
 class SyncStartBody(BaseModel):
     player_ids: List[str] = []   # cast:<uuid> ids (individual devices, not groups)
     group_id: str = ""           # ...or a saved sync-group id
     duration_s: int = 0          # auto-stop after this many seconds (0 = manual)
+    media: Optional[SyncMediaBody] = None   # omit for the generated test signal
 
 
 class SyncTrimBody(BaseModel):
@@ -58,7 +65,9 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             return {"success": False, "error": "No players or group given"}
         return await sync.start_session(body.player_ids, group_id=body.group_id,
                                         duration_s=min(max(body.duration_s, 0),
-                                                       3600))
+                                                       3600),
+                                        media=body.media.model_dump()
+                                        if body.media else None)
 
     @app.post("/api/media/sync/stop")
     async def sync_stop():
