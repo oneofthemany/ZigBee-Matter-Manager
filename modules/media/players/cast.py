@@ -45,6 +45,12 @@ def _is_group(info) -> bool:
     return str(getattr(info, "cast_type", "")).lower() == "group"
 
 
+def _addr(info) -> str:
+    """The address a cast target is currently advertising. A group is hosted by
+    one elected member, so this moves to a different device on re-election."""
+    return f"{getattr(info, 'host', '')}:{getattr(info, 'port', '')}"
+
+
 class CastPlayerProvider(PlayerProvider):
     provider = "cast"
 
@@ -86,11 +92,27 @@ class CastPlayerProvider(PlayerProvider):
 
         def _removed(uuid, _service, _cast_info):
             self._infos.pop(str(uuid), None)
+            self._drop_cast(str(uuid))
 
         def _updated(uuid, _service):
             info = self._browser.devices.get(uuid) if self._browser else None
-            if info is not None:
-                self._infos[str(uuid)] = info
+            if info is None:
+                return
+            key = str(uuid)
+            prev = self._infos.get(key)
+            self._infos[key] = info
+            # A cached Chromecast stays bound to the address it was built from.
+            # When a group re-elects its host the advertised address moves to
+            # another member, and every control call then goes to a device that
+            # no longer speaks for the group — playback lands on one speaker
+            # instead of all of them. Drop the connection so the next call
+            # rebuilds it against the address being advertised now.
+            if prev is not None and _addr(prev) != _addr(info):
+                logger.info(
+                    f"Cast {getattr(info, 'friendly_name', key)} moved "
+                    f"{_addr(prev)} → {_addr(info)}; dropping cached connection"
+                )
+                self._drop_cast(key)
 
         listener = SimpleCastListener(
             add_callback=_added, remove_callback=_removed, update_callback=_updated
@@ -102,12 +124,22 @@ class CastPlayerProvider(PlayerProvider):
     async def stop(self) -> None:
         await asyncio.to_thread(self._stop_browser)
 
+    def _drop_cast(self, uuid_str: str) -> None:
+        """Discard a cached connection so the next control call reconnects to
+        the current address. Runs on the zeroconf discovery thread, so it must
+        not block: ``disconnect()`` without a timeout does not join the socket
+        thread. Safe to call for a uuid we never connected to."""
+        cast = self._casts.pop(uuid_str, None)
+        if cast is None:
+            return
+        try:
+            cast.disconnect()
+        except Exception as e:
+            logger.debug(f"Cast disconnect failed for {uuid_str}: {e}")
+
     def _stop_browser(self):
-        for cast in list(self._casts.values()):
-            try:
-                cast.disconnect(blocking=False)
-            except Exception:
-                pass
+        for uuid_str in list(self._casts):
+            self._drop_cast(uuid_str)
         self._casts.clear()
         if self._browser:
             try:

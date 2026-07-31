@@ -256,7 +256,25 @@ class MediaController:
             raise ValueError(f"Unknown action: {action}")
         if action == "stop":
             self._advancing.discard(player_id)
+            # Release the proxy even if the device call fails — otherwise an
+            # unreachable speaker leaves the decoder running with a live token.
+            try:
+                await self._dispatch(player_id, method)
+            finally:
+                await self._release_eq(player_id)
+            return
         await self._dispatch(player_id, method)
+
+    async def _release_eq(self, player_id: str) -> None:
+        """Drop any server-side EQ stream feeding this player. No-op when EQ is
+        off or unbuilt; never lets a proxy failure break the control call."""
+        eq = self._eq_engine
+        if eq is None:
+            return
+        try:
+            await eq.release(player_id)
+        except Exception as e:
+            logger.warning(f"EQ release failed for {player_id}: {e}")
 
     # ------------------------------------------------------------------
     # Queue (automation-ready)
@@ -310,9 +328,12 @@ class MediaController:
     def get_queue(self, player_id: str) -> Optional[dict]:
         return self._queue.summary(player_id)
 
-    def clear_queue(self, player_id: str) -> None:
+    async def clear_queue(self, player_id: str) -> None:
         self._queue.clear(player_id)
         self._advancing.discard(player_id)
+        # Clearing the queue is the UI's "delete" — it must not leave the
+        # decoder running behind an emptied queue.
+        await self._release_eq(player_id)
 
     # ------------------------------------------------------------------
     # Auto-advance (called from the service poll loop after refresh)

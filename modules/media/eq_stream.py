@@ -276,15 +276,19 @@ class EqStreamEngine:
                 pass
         drain_task = asyncio.create_task(_drain())
 
+        # Hold our own handle: close() nulls session.proc, and it can be called
+        # from another task (a superseding fetch, or release() on stop) while
+        # we are mid-read.
+        proc = session.proc
         yield _wav_header()
         try:
             while True:
-                chunk = await session.proc.stdout.read(CHUNK)
+                chunk = await proc.stdout.read(CHUNK)
                 if not chunk:
                     break
                 # ~30 µs per chunk in Rust, GIL released — no executor needed.
                 yield session.chain.process(chunk)
-            rc = await session.proc.wait()
+            rc = await proc.wait()
             logger.info(f"EQ stream finished for {player_id} (decoder rc={rc})")
         finally:
             drain_task.cancel()
@@ -292,10 +296,26 @@ class EqStreamEngine:
             if self._sessions.get(player_id) is session:
                 self._sessions.pop(player_id, None)
 
+    async def release(self, player_id: str) -> bool:
+        """Tear down this player's proxy stream and invalidate its token.
+
+        ``mc.stop()`` only stops the receiver: without this the decoder keeps
+        running and ``knows()`` keeps saying yes, so the device — or the member
+        that takes over a Cast group next — can re-fetch the same URL and
+        resume a stream the user stopped. Returns True if a session was live."""
+        self._pending.pop(player_id, None)
+        session = self._sessions.pop(player_id, None)
+        if session is None:
+            return False
+        await session.close()
+        logger.info(f"EQ stream released for {player_id}")
+        return True
+
     async def stop_all(self) -> None:
         for s in list(self._sessions.values()):
             await s.close()
         self._sessions.clear()
+        self._pending.clear()
 
     # ------------------------------------------------------------------
     # Persistence (same atomic-replace pattern as the media prefs)

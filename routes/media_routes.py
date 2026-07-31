@@ -511,7 +511,7 @@ def register_media_routes(app: FastAPI, get_media_service):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        svc.controller.clear_queue(body.player_id)
+        await svc.controller.clear_queue(body.player_id)
         return {"success": True}
 
     # ------------------------------------------------------------------
