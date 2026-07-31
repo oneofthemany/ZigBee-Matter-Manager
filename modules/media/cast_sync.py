@@ -351,6 +351,11 @@ class CastSyncPoc:
         # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
         self._url_resolver = None      # async (media_type, source_id) -> url
+        self._queue_resolver = None    # async (media_type, kind, id) -> [items]
+        # The session's playlist, expanded once at start. One entry for a
+        # single track or a URL; many for a Tidal album/playlist/mix/artist.
+        self._queue: List[dict] = []
+        self._queue_pos = 0
         self._trim_learn_tasks: Dict[str, asyncio.Task] = {}
         # Set once the group has locked; until then the streams serve silence
         # so acquisition jumps happen where nobody can hear them.
@@ -410,6 +415,20 @@ class CastSyncPoc:
         """``async (media_type, source_id) -> url`` for sources whose URLs
         expire. Wired by MediaService; absent means URL-only sources."""
         self._url_resolver = fn
+
+    def set_queue_resolver(self, fn) -> None:
+        """``async (media_type, kind, id) -> [MediaItem-ish dicts]``, which is
+        what makes a Tidal album, playlist, mix or artist playable to a zone
+        rather than just a single track. Wired by MediaService."""
+        self._queue_resolver = fn
+
+    def now_playing(self) -> dict:
+        """The item a zone is currently on, for the UI and the Cast display."""
+        q, i = self._queue, self._queue_pos
+        item = q[i] if 0 <= i < len(q) else {}
+        return {"title": item.get("title", ""), "artist": item.get("artist", ""),
+                "artwork_url": item.get("artwork_url", ""),
+                "index": i if q else 0, "count": len(q)}
 
     # ------------------------------------------------------------------
     # Trims (per device, defaulting to what the model is known to need)
@@ -534,17 +553,56 @@ class CastSyncPoc:
         # now to fail fast on a bad id or a logged-out session, and keep the
         # resolver so the decoder can get a fresh one every time it restarts.
         provider = None
+        self._queue, self._queue_pos = [], 0
         stype, sid = media.get("media_type") or "", media.get("source_id") or ""
+        kind = (media.get("kind") or "track").strip() or "track"
+        loop_forever = bool(media.get("loop"))
         if sid and self._url_resolver is not None:
-            async def provider():
-                return await self._url_resolver(stype, sid)
+            # A container (album, playlist, mix, artist) becomes the session's
+            # queue; a bare track is a queue of one, so there is one code path
+            # from here down.
+            if kind != "track" and self._queue_resolver is not None:
+                try:
+                    self._queue = list(await self._queue_resolver(stype, kind, sid))
+                except Exception as e:
+                    return None, f"could not open {kind}: {e}"
+                if not self._queue:
+                    return None, (f"that {kind} is empty, unavailable, or needs "
+                                  f"a signed-in {stype or 'source'} account")
+            else:
+                self._queue = [{"source_id": sid,
+                                "title": (media.get("title") or "").strip(),
+                                "artwork_url": media.get("artwork_url") or ""}]
+
+            async def provider(last_rc=None):
+                # Advance only on a clean play-out; anything else is the same
+                # item wanting a fresh (re-signed) URL. Walking off the end
+                # returns "" and the source finishes — unless the zone was
+                # asked to loop, which sends it back to the top.
+                if last_rc == 0:
+                    self._queue_pos += 1
+                    if self._queue_pos >= len(self._queue):
+                        if not loop_forever:
+                            return ""
+                        self._queue_pos = 0
+                item = self._queue[self._queue_pos]
+                url = await self._url_resolver(stype, item.get("source_id") or "")
+                if not url:
+                    return ""
+                # The title travels with the URL so the source (and the Sync
+                # Lab's now-playing line) follows the queue.
+                return {"url": url, "title": item.get("title") or ""}
+
             try:
-                media["url"] = await provider()
+                first = await provider()
             except Exception as e:
                 return None, f"could not resolve {stype or 'source'}: {e}"
+            media["url"] = (first or {}).get("url") if isinstance(first, dict) else first
             if not media["url"]:
                 return None, (f"{stype or 'source'} returned no playable stream "
                               f"(is the account still signed in?)")
+            media.setdefault("title", "")
+            media["title"] = media["title"] or self._queue[0].get("title") or ""
         if not media or not (media.get("url") or "").strip():
             return _GENERATED, ""
         chain = None
@@ -556,7 +614,7 @@ class CastSyncPoc:
         src = MediaSource(media["url"].strip(), self._epoch,
                           delay_s=self._source_delay_s,
                           capacity_s=self._ring_capacity_s, eq_chain=chain,
-                          loop_forever=bool(media.get("loop")),
+                          loop_forever=loop_forever,
                           title=(media.get("title") or "").strip(),
                           url_provider=provider)
         try:
@@ -748,6 +806,7 @@ class CastSyncPoc:
         self._pending = {}
         self._active_group = ""
         self._session_media = None
+        self._queue, self._queue_pos = [], 0
         self._fade_start = None
         for t in self._trim_learn_tasks.values():
             t.cancel()
@@ -816,6 +875,7 @@ class CastSyncPoc:
             "remaining_s": (max(0, self._duration_s - elapsed)
                             if self.running and self._duration_s else None),
             "mic": self._mic_status(),
+            "now_playing": self.now_playing(),
             "source": self._source.stats(),
             "resampler": {"kind": self._resampler_kind, **_rs.available()},
             "devices": devices,
@@ -1107,11 +1167,45 @@ class CastSyncPoc:
                                f"for {player_id}: {e}")
                 await asyncio.sleep(2)
 
+    def _session_art(self) -> tuple:
+        """(artwork_url, title, artist) for what this zone is playing.
+
+        A queue shows itself by its container (the album, the playlist), which
+        is what the LOAD can carry; a single track or station shows itself."""
+        m = self._session_media or {}
+        title = (m.get("title") or "").strip() or "ZMM OpenZone"
+        art = (m.get("artwork_url") or "").strip()
+        artist = (m.get("artist") or "").strip()
+        if not art and self._queue:
+            art = (self._queue[0].get("artwork_url") or "").strip()
+        if len(self._queue) > 1:
+            artist = artist or f"{len(self._queue)} tracks"
+        return art, title, artist
+
     def _play_stream(self, cast, url: str):
         cast.wait(timeout=10)
         mc = cast.media_controller
-        mc.play_media(url, "audio/wav", stream_type="LIVE",
-                      title="ZMM OpenZone test")
+        # Screened members of a zone (Nest Hub, Pixel Tablet) show whatever the
+        # LOAD carries, so give them the same album art / station logo a single
+        # Cast player gets — otherwise a zone is the one place in the app that
+        # displays a bare filename. metadataType 3 == MUSIC_TRACK.
+        #
+        # It rides on the LOAD and only on the LOAD: changing it later means
+        # re-loading, which restarts the device's buffering and would cost the
+        # zone its alignment. A queue therefore shows the set, not the track —
+        # the per-track detail lives in the app, where it costs nothing.
+        art, title, artist = self._session_art()
+        meta = {"metadataType": 3, "title": title, "artist": artist}
+        if art:
+            meta["images"] = [{"url": art}]
+        kwargs = dict(content_type="audio/wav", stream_type="LIVE",
+                      title=title, thumb=art or None, metadata=meta)
+        try:
+            mc.play_media(url, **kwargs)
+        except TypeError:
+            # Older pychromecast without one of the kwargs — audio matters
+            # more than the picture.
+            mc.play_media(url, "audio/wav", stream_type="LIVE", title=title)
         mc.block_until_active(timeout=15)
         deadline = time.time() + 8
         while time.time() < deadline:
@@ -1119,6 +1213,23 @@ class CastSyncPoc:
                 return
             time.sleep(0.5)
         raise RuntimeError(f"media did not start (state={mc.status.player_state})")
+
+    def _source_spent(self) -> bool:
+        """True once the material has run out AND been heard.
+
+        A finite track (Tidal) ends when its decoder stops, but at that moment
+        every device is still playing out of the delay line and its own buffer
+        — the group is a whole target-lag behind the write head. Tearing the
+        session down on the decoder's last byte would cut the end off the
+        track, so the tail is allowed to drain first."""
+        src = self._source
+        if not getattr(src, "finished", False):
+            return False
+        try:
+            head_s = float(src.stats().get("head_s") or 0.0)
+        except Exception:
+            return True
+        return (time.monotonic() - self._epoch) >= head_s + (self._target_lag or 0.0)
 
     async def _stream_monitor(self):
         """Converge all stream-mode devices onto a common lag behind the
@@ -1128,6 +1239,12 @@ class CastSyncPoc:
         try:
             while self.running:
                 await asyncio.sleep(self._poll_interval())
+                if self._source_spent():
+                    logger.info("Sync source finished and drained — "
+                                "stopping the session")
+                    # Not awaited: stop_session cancels this very task.
+                    asyncio.create_task(self.stop_session())
+                    return
                 # Measure all devices concurrently — one poll pass costs one
                 # device's round-trip instead of N, and the readings land
                 # close together in time (less skew inside a spread sample).

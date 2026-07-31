@@ -67,6 +67,7 @@ class GeneratedSource:
     kind = "generated"
     delay_s = 0.0
     channels = CHANNELS
+    finished = False           # a closed-form timeline never runs out
 
     def read(self, n0: int, frames: int) -> np.ndarray:
         mono = _gen_float_mono(n0, frames).astype(np.float32)
@@ -163,12 +164,24 @@ class MediaSource:
                  title: str = "", url_provider=None):
         self.url = url
         self.title = title
-        # Optional ``async () -> url``, consulted before every decoder start.
+        # Optional ``async (last_rc) -> url | {"url", "title"} | ""``,
+        # consulted before every decoder start.
+        #
         # Some sources issue URLs that expire (Tidal signs them for minutes,
         # not hours); a session outliving one would otherwise decode to EOF and
         # stay dead. Re-resolving on each start turns expiry into the same
         # thing as a station dropping: a gap, then it continues.
+        #
+        # ``last_rc`` is why the previous decode ended, and it is the whole
+        # difference between a retry and an advance: None on the first start
+        # (or when the decoder raised rather than exited), 0 when a finite
+        # track played out cleanly, non-zero when ffmpeg failed. Only the
+        # provider can know what should follow, so it decides — returning ""
+        # after a clean end means "nothing follows", and the source finishes
+        # instead of re-resolving the same track forever.
         self._url_provider = url_provider
+        self._last_rc: Optional[int] = None
+        self._finished = False
         self.epoch = epoch
         self.delay_s = float(delay_s)
         self.channels = channels
@@ -296,17 +309,35 @@ class MediaSource:
         backoff = 0.5
         while self._running:
             try:
-                rc = await self._decode_once()
+                head = self._ring.end
+                self._last_rc = await self._decode_once()
                 if not self._running:
                     return
+                if self._finished:      # the provider said there is no more
+                    logger.info(f"Sync source finished: {self.title or self.url[:60]}")
+                    return
+                # A finite item that played out is not a fault: it costs no
+                # restart in the health stats and, crucially, no backoff —
+                # the gap before the next item is audible. Guarded on having
+                # produced audio, so a URL that decodes to nothing falls
+                # through to the error path instead of spinning.
+                if (self._last_rc == 0 and self._url_provider is not None
+                        and self._ring.end > head):
+                    logger.info("Sync source item ended: "
+                                f"{self.title or self.url[:60]}")
+                    backoff = 0.5
+                    continue
                 self._restarts += 1
                 logger.warning(f"Sync decoder for {self.url[:60]} exited "
-                               f"(rc={rc}) — restarting in {backoff:.1f}s")
+                               f"(rc={self._last_rc}) — restarting in {backoff:.1f}s")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 if not self._running:
                     return
+                # Raised rather than exited: no return code to reason about,
+                # so the provider is told nothing and retries the same track.
+                self._last_rc = None
                 self._last_error = str(e)
                 self._restarts += 1
                 logger.warning(f"Sync decoder error for {self.url[:60]}: {e} "
@@ -318,18 +349,38 @@ class MediaSource:
         if self._url_provider is None:
             return
         try:
-            fresh = await self._url_provider()
+            # The provider is told why the last decode ended: a clean exit is a
+            # finite track finishing, which for a queue means "next one"; an
+            # error is the same track needing another go with a fresh URL.
+            fresh = await self._url_provider(self._last_rc)
         except Exception as e:
+            # Keep the URL we have and let the supervisor retry. A resolver
+            # blip (expired session, network) must not end the session when
+            # the next attempt may well succeed.
             logger.warning(f"Sync source URL refresh failed: {e}")
             return
-        if fresh and fresh != self.url:
-            logger.info("Sync source URL re-resolved (previous one expired "
-                        "or rotated)")
-        if fresh:
-            self.url = fresh
+        title = ""
+        if isinstance(fresh, dict):     # queue-aware provider: url + metadata
+            title, fresh = (fresh.get("title") or ""), (fresh.get("url") or "")
+        if not fresh:
+            if self._last_rc == 0:
+                # Played out cleanly and nothing follows: this is the end of
+                # the material, not a failure. Say so, and let the supervisor
+                # stop rather than re-resolve the same track for ever.
+                self._finished = True
+            return
+        if fresh != self.url:
+            logger.info(
+                "Sync source URL re-resolved "
+                f"({'next item' if self._last_rc == 0 else 'previous one expired or rotated'})")
+        self.url = fresh
+        if title:
+            self.title = title
 
     async def _decode_once(self) -> Optional[int]:
         await self._refresh_url()
+        if self._finished:
+            return self._last_rc      # nothing more to play — don't start ffmpeg
         if not self.url:
             raise RuntimeError("no playable URL for this source")
         self._proc = await asyncio.create_subprocess_exec(
@@ -398,6 +449,13 @@ class MediaSource:
             await asyncio.sleep(0.05)
 
     # -- timeline -----------------------------------------------------
+    @property
+    def finished(self) -> bool:
+        """The material ran out: everything played and the provider had
+        nothing to follow it with. The session owner polls this to stop the
+        group instead of leaving it on silence."""
+        return self._finished
+
     def read(self, n0: int, frames: int) -> np.ndarray:
         return self._ring.read(n0, frames)
 
@@ -414,6 +472,7 @@ class MediaSource:
             "underrun_ms": round(self._ring.underrun_samples * 1000 / self._rate, 1),
             "restarts": self._restarts,
             "decoding": bool(self._proc and self._proc.returncode is None),
+            "finished": self._finished,
             "eq": self._eq is not None,
             **({"last_error": self._last_error[:200]} if self._last_error else {}),
         }
