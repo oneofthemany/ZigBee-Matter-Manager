@@ -72,6 +72,7 @@ import struct
 import tempfile
 import time
 import uuid as uuid_mod
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -124,6 +125,18 @@ STREAM_STATUS_READS_ACQ = 5      # ...while acquiring: denser + more robust.
 #                                  reads re-sample the same value — the DB is
 #                                  not the constraint, information is.
 STREAM_STATUS_WAIT_S = 0.2       # wait for each status push to land
+# adjusted_current_time extrapolates the last report forward at playback rate.
+# That is a measurement while the report is fresh and a guess once it is not:
+# a device that rebuffered is still credited with playing through the gap, and
+# the reads within one poll all extrapolate the SAME stale report, so their
+# median cannot reject it — it only lends the guess false confidence. Past this
+# age the read is discarded and the poll falls back to fewer (or no) samples.
+# Set at two steady-state poll intervals: tight enough that a rebuffer's worth
+# of extrapolation never reaches the ladder, loose enough that a device which
+# simply answers slowly still gets measured. A device whose reports never
+# arrive inside it goes uncorrected, so the discards are surfaced in stats
+# rather than dropped silently — dark is worse than noisy here.
+STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
 #                                  (device drains its HTTP buffer; wall-time
 #                                  so the fast cadence doesn't shorten it)
@@ -160,6 +173,15 @@ STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
 # from zero" bar; below it the fit is noise and the seeded model value — which
 # has many sessions behind it — is the better estimate.
 STREAM_FIT_MIN_SIGMA = 2.0
+# A jump clears the drift baseline, which must then rebuild past
+# STREAM_FIT_APPLY_SPAN_S before any fit runs again. Jumps arriving faster than
+# that leave the last fit in place indefinitely, so a value the estimator would
+# never produce again is held as if it were still supported — including one
+# pinned at the ±STREAM_RATE_MAX_PPM clamp, where it injects the maximum
+# differential drift the loop exists to remove. An estimate with no live
+# evidence behind it decays back to the model prior instead of persisting.
+STREAM_RATE_STALE_S = 90.0       # unsupported this long → fall back to prior
+STREAM_RATE_DECAY = 0.05         # per poll, toward rate_prior
 # A trim slider reports every intermediate position; only a value that stops
 # moving is a measurement worth teaching the per-model store.
 TRIM_MODEL_AGREE_MS = 25         # units of one model trimmed further apart
@@ -294,6 +316,9 @@ class _Stream:
         # Calibration chirp scheduled on this stream: (timeline_sample, wave)
         self.chirp: Optional[tuple] = None
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
+        # When the baseline was last cleared. Marks how long rate_ppm has been
+        # running on an estimate nothing currently supports (see _pll_update).
+        self.fit_lost_at: float = 0.0
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
         # This device's variable-ratio resampler (open-zone.md §4.2). One per
         # stream: streams differ in content phase, so no instance is shared.
@@ -1294,15 +1319,11 @@ class CastSyncPoc:
                     # Deciding on the raw error re-corrected work already
                     # scheduled (a 68 ms trim slew once triggered a jump).
                     st.err_hist = (st.err_hist + [error])[-3:]
-                    med3 = sorted(st.err_hist)[len(st.err_hist) // 2]
+                    med3 = self._median(st.err_hist)
                     residual = med3 - st.slew_s
                     # Correction ladder (open-zone.md §7.1): buffer jumps only
                     # for acquisition/rebuffer; everything inside ±100 ms is
-                    # a bounded rate slew through the resampler. Jumps also
-                    # wait for 2 agreeing polls and act on the median — a
-                    # single reading can be wrong by 100s of ms right after
-                    # (re)connect, and jumping on it caused an audible
-                    # overshoot-then-jump-back at every session start.
+                    # a bounded rate slew through the resampler.
                     # Before first lock the jump threshold drops to the slew
                     # window: the device isn't audibly in the group yet, so
                     # stepping a 30–100 ms startup offset away instantly
@@ -1312,8 +1333,26 @@ class CastSyncPoc:
                     if not st.acquired and len(st.err_hist) >= 2 \
                             and abs(med3) <= STREAM_SLEW_FAST_THRESH_S:
                         st.acquired = True
+                    # A jump is the only correction a listener hears as a
+                    # discontinuity, so once the device is part of the group it
+                    # takes the whole window to authorise one: three readings,
+                    # every one past the threshold and all of one sign. Two
+                    # readings cannot outvote a transient — and a jump clears
+                    # err_hist, so two was exactly the state each jump left
+                    # behind, making the next one cheaper to trigger than the
+                    # last. The loop paid for that: it would step hundreds of
+                    # ms into a correctly aligned speaker on a two-poll spike,
+                    # sit out the cooldown, then step back by the same amount —
+                    # two audible jumps that net to nothing, and a wiped drift
+                    # baseline each time. Acquisition keeps the fast path: a
+                    # device nobody is listening to yet is better stepped than
+                    # slewed, and it has no history to spend.
+                    concordant = (len(st.err_hist) >= 3
+                                  and min(abs(e) for e in st.err_hist) > jump_min
+                                  and min(st.err_hist) * max(st.err_hist) > 0)
                     if abs(residual) > jump_min \
-                            and len(st.err_hist) >= 2:
+                            and (concordant
+                                 or (not st.acquired and len(st.err_hist) >= 2)):
                         st.pos += med3 * RATE
                         st.shift += med3 * RATE
                         st.moved_s += med3
@@ -1328,6 +1367,7 @@ class CastSyncPoc:
                         st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
                         st.err_hist = []
                         st.lag_hist = []      # device-buffer transient follows
+                        st.fit_lost_at = time.monotonic()
                         batch.append(self._sample_row(st, "resync", lag=lag,
                                                       error=med3))
                         logger.info(f"Sync stream resync {st.name}: "
@@ -1386,6 +1426,19 @@ class CastSyncPoc:
             logger.debug(f"Sync sample write failed: {e}")
 
     @staticmethod
+    def _median(xs: List[float]) -> float:
+        """True median. ``sorted(xs)[len(xs) // 2]`` is the upper of the two
+        middle values on an even-length list, so on two samples it returns the
+        MORE POSITIVE one rather than their midpoint — a selector biased toward
+        reporting a device as behind, and toward reporting the larger of any
+        pair. Every jump ran through that expression."""
+        s = sorted(xs)
+        n = len(s)
+        if not n:
+            return 0.0
+        return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+    @staticmethod
     def _fit_slope(pts: List[tuple]) -> Optional[float]:
         """Least-squares slope of (t, y) points; None if degenerate."""
         got = CastSyncPoc._fit_slope_se(pts)
@@ -1432,7 +1485,19 @@ class CastSyncPoc:
         span = st.lag_hist[-1][0] - st.lag_hist[0][0]
         if len(st.lag_hist) < STREAM_FIT_MIN_POINTS \
                 or span < STREAM_FIT_APPLY_SPAN_S:
+            # No fit is possible yet. Holding the previous value is right for a
+            # short gap and wrong for a long one: while jumps keep clearing the
+            # baseline faster than it rebuilds, nothing can ever revise or
+            # retire the last estimate, so whatever it happened to be — a
+            # clamped one included — becomes permanent for the session. Feed-
+            # forward with no live evidence should relax to the value many
+            # sessions agree on, not to whichever fit ran last.
+            if st.fit_lost_at and (time.monotonic() - st.fit_lost_at
+                                   > STREAM_RATE_STALE_S):
+                st.rate_ppm += STREAM_RATE_DECAY * (st.rate_prior - st.rate_ppm)
+                st.stats["drift_fit"] = "stale — decaying to prior"
             return
+        st.fit_lost_at = 0.0
         slope = self._fit_slope(st.lag_hist)
         if slope is None:
             return
@@ -1457,6 +1522,7 @@ class CastSyncPoc:
         # baseline over instead.
         if abs(slope) * 1e6 > 4 * STREAM_RATE_MAX_PPM:
             st.lag_hist = st.lag_hist[-1:]
+            st.fit_lost_at = time.monotonic()
             return
         # Significance gate (§7.2). A span threshold alone is a proxy for
         # "is this fit informative", and a poor one: sensor noise differs
@@ -1491,9 +1557,22 @@ class CastSyncPoc:
         # learned over many sessions, and only a fit that is clearly better
         # than the prior displaces it.
         w = confidence * min(1.0, span / STREAM_RATE_EMA_SPAN_S)
-        st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
-                          min(STREAM_RATE_MAX_PPM,
-                              w * slope * 1e6 + (1.0 - w) * st.rate_prior))
+        blended = w * slope * 1e6 + (1.0 - w) * st.rate_prior
+        # Saturating the crystal bound is not a value to be clipped into range,
+        # it is evidence the window holds something that is not drift — the
+        # disturbance gate above catches the gross cases, but a fit between the
+        # bound and 4× it lands here. Clamping stores the bad number AS the
+        # estimate, and since the baseline that produced it is about to be
+        # restarted, the clamp is what the device then runs on. Reject and
+        # rebuild: two speakers held +50.0 ppm for the last quarter-hour of a
+        # session this way.
+        if abs(blended) >= STREAM_RATE_MAX_PPM:
+            st.rate_ppm = st.rate_prior
+            st.lag_hist = st.lag_hist[-1:]
+            st.fit_lost_at = time.monotonic()
+            st.stats["drift_fit"] = f"rejected {blended:+.0f} ppm (at bound)"
+            return
+        st.rate_ppm = blended
         if span >= STREAM_RATE_EMA_SPAN_S:
             self._model_learn(st, "drift_ppm", st.rate_ppm)
 
@@ -1536,6 +1615,30 @@ class CastSyncPoc:
             status = mc.status
             if getattr(status, "player_state", "") != "PLAYING":
                 return None
+            # adjusted_current_time credits the device with having played
+            # continuously since last_updated. That holds while the report is
+            # fresh and fails exactly when it matters: a device that rebuffered
+            # is reported as still playing, and when the next report finally
+            # lands the position snaps back by the whole gap — a step of
+            # hundreds of ms, arriving as if it were a measurement. Refusing to
+            # extrapolate past the age bound turns that into a missing sample,
+            # which the ladder already handles, instead of a false error.
+            # Defensive about the timestamp itself: a naive datetime from a
+            # different pychromecast build would raise here, and inside this
+            # try that would return None for every read on every device — the
+            # loop would stop correcting and look merely quiet. An unusable
+            # timestamp means the age is unknown, so fall through and use the
+            # reading rather than blinding the sensor over it.
+            lu = getattr(status, "last_updated", None)
+            if lu is not None:
+                try:
+                    ref = datetime.now(lu.tzinfo) if lu.tzinfo else datetime.now()
+                    age = (ref - lu).total_seconds()
+                except Exception:
+                    age = 0.0
+                if age > STREAM_STATUS_MAX_AGE_S or age < -1.0:
+                    st.stats["stale_reads"] = st.stats.get("stale_reads", 0) + 1
+                    return None
             ct = getattr(status, "adjusted_current_time", None)
             if ct is None:
                 ct = getattr(status, "current_time", None)
@@ -1567,7 +1670,9 @@ class CastSyncPoc:
                 reads.append(lag)
         if not reads:
             return None
-        return sorted(reads)[len(reads) // 2]
+        # Discarded reads (stale report, device not PLAYING) make this list any
+        # length, so it needs the real median rather than the upper-middle one.
+        return self._median(reads)
 
     def _group_locked(self) -> bool:
         """Every connected device has been measured and pulled into place."""
