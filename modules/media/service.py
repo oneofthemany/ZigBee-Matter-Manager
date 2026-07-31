@@ -155,6 +155,10 @@ class MediaService:
                 # device-specific manifest.
                 self.cast_sync.set_url_resolver(
                     lambda mt, sid: self.controller.resolve_source_url(mt, sid))
+                # Lets a zone play a Tidal album/playlist/mix/artist, not just
+                # one track: the engine walks this list and re-resolves each
+                # item's (expiring) URL as it reaches it.
+                self.cast_sync.set_queue_resolver(self.sync_queue_items)
             except Exception as e:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 
@@ -282,6 +286,21 @@ class MediaService:
         if not items:
             raise ValueError("Nothing to play (empty, not found, or login required)")
         return items
+
+    async def sync_queue_items(self, media_type: str, kind: str,
+                               container_id: str) -> List[dict]:
+        """Expand a container into the plain rows the sync engine walks.
+
+        Only the fields it needs: the id it re-resolves a fresh stream URL
+        from, and what to show while that item plays. Same expansion the
+        single-player path uses, so a playlist means the same thing in a zone
+        as it does on one speaker."""
+        if media_type != "tidal":
+            return []
+        items = await self.tidal_items(kind, container_id)
+        return [{"source_id": i.source_id, "title": i.title,
+                 "artist": i.artist, "artwork_url": i.artwork_url}
+                for i in items if i.source_id]
 
     async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
                          mode: str = "play") -> dict:

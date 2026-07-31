@@ -34,6 +34,7 @@ let _pane = null;            // mobile pane: 'players' | 'browse' (null = not ye
 let _tidalState = null;      // last known tidal status state string
 let _recentCache = [];       // recently-played items, for replay-by-index
 let _tidalTab = 'search';    // tidal sub-tab: search | mixes | playlists | albums | artists
+let _tidalLib = {};          // library rows by kind, cached for the zone picker
 let _radioFavs = [];         // pinned radio stations (full dicts)
 let _radioSearchCache = [];  // last radio search results, for star-toggle by index
 let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth progress
@@ -119,6 +120,8 @@ export function initMedia() {
     window.mediaSyncSrc = syncSetSource;
     window.mediaSyncUrl = syncSetCustomUrl;
     window.mediaSyncLoop = syncSetLoop;
+    window.mediaSyncTidalKind = syncTidalKind;
+    window.mediaSyncTidalItem = syncTidalItem;
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
@@ -1692,7 +1695,7 @@ async function renderSyncPane() {
     // charts don't blink out while the pane refreshes.
     const hadContent = el.childElementCount > 0;
     if (!hadContent) el.innerHTML = '<div class="text-muted small">Loading…</div>';
-    try { await _syncFetch(); }
+    try { await Promise.all([_syncFetch(), _ensureTidalState()]); }
     catch (e) { el.innerHTML = warn('Could not load sync groups: ' + e.message); return; }
     // Keep a live Sync Lab (charts, zoom, scroll) across pane rebuilds —
     // rebuilding the lab from scratch every time is exactly the "charts
@@ -1755,7 +1758,9 @@ async function renderSyncPane() {
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
           </div>
-          ${g.active ? _syncActiveHint() : _syncCustomRow(g.id, running || disabled)}
+          ${g.active ? _syncActiveHint()
+                     : _syncCustomRow(g.id, running || disabled)
+                       + _syncTidalRow(g.id, running || disabled)}
           ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
         </div>
       </div>`).join('');
@@ -1805,6 +1810,12 @@ async function renderSyncPane() {
     else restoreSyncLab();
     _syncLabKeep = document.getElementById('syncLabHost');
     _applySyncSubTab();
+    // A group already set to a Tidal container needs its list on first sight,
+    // not only after the kind select is touched.
+    for (const g of _syncGroups) {
+        const t = _syncTidalPick(g.id);
+        if (t) { _syncLoadTidalLib(t.kind); break; }
+    }
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
@@ -1900,6 +1911,50 @@ function syncSetLoop(gid, on) {
     else localStorage.removeItem('zmm.syncloop.' + gid);
 }
 
+/** Load one slice of the library, once. The picker renders "Loading…" until
+ *  it lands; `null` marks a fetch in flight so a re-render can't start a
+ *  second one. */
+async function _syncLoadTidalLib(kind) {
+    if (_tidalLib[kind] !== undefined) return;
+    _tidalLib[kind] = null;
+    try {
+        const d = await apiGet(`/api/media/tidal/library?kind=${encodeURIComponent(kind)}`);
+        _tidalLib[kind] = d.success ? (d.items || []) : [];
+        if (!d.success) toast(d.error || 'Tidal library unavailable', 'error');
+    } catch (e) {
+        _tidalLib[kind] = [];
+        toast('Tidal library unavailable: ' + e.message, 'error');
+    }
+    renderSyncPane();
+}
+
+/** Tidal status without needing the search tab to have been opened — the
+ *  zone picker offers the library only when there is one to offer. */
+async function _ensureTidalState() {
+    if (_tidalState !== null) return;
+    try {
+        const d = await apiGet('/api/media/tidal/status');
+        _tidalState = (d.success && d.status && d.status.state) || 'unavailable';
+    } catch (e) {
+        _tidalState = 'unavailable';
+    }
+}
+
+/** Switch which slice of the Tidal library the zone picker is showing.
+ *  Clears the chosen item: an album id means nothing under Artists. */
+async function syncTidalKind(gid, kind) {
+    localStorage.setItem('zmm.syncsrc.' + gid, `tc:${kind}`);
+    renderSyncPane();                     // shows "Loading…" against the list
+    await _syncLoadTidalLib(kind);
+}
+
+function syncTidalItem(gid, id) {
+    const t = _syncTidalPick(gid) || { kind: 'playlists' };
+    localStorage.setItem('zmm.syncsrc.' + gid,
+                         id ? `tc:${t.kind}:${id}` : `tc:${t.kind}`);
+    renderSyncPane();                     // enables Play once something is set
+}
+
 function _syncSrcParts(gid) {
     const v = _syncSrcFor(gid);
     if (!v) return null;
@@ -1910,6 +1965,23 @@ function _syncSrcParts(gid) {
     return i < 0 ? null : { kind: v.slice(0, i), id: v.slice(i + 1) };
 }
 
+/** A Tidal container choice, stored as "tc:<kind>:<id>" — the id is empty
+ *  while the pickers below are still being filled in. */
+function _syncTidalPick(gid) {
+    const p = _syncSrcParts(gid);
+    if (!p || p.kind !== 'tc') return null;
+    const i = p.id.indexOf(':');
+    return i < 0 ? { kind: p.id || 'playlists', id: '' }
+                 : { kind: p.id.slice(0, i), id: p.id.slice(i + 1) };
+}
+
+/** The chosen library row, if it has been loaded. */
+function _syncTidalItem(gid) {
+    const t = _syncTidalPick(gid);
+    if (!t || !t.id) return null;
+    return (_tidalLib[t.kind] || []).find(x => String(x.id) === t.id) || null;
+}
+
 // The `media` body for /sync/start, or null for the generated test signal
 // (which the API expresses as an absent body).
 function _syncMediaFor(gid) {
@@ -1918,11 +1990,28 @@ function _syncMediaFor(gid) {
     // Favourites travel by id, not URL: the server re-resolves them, so a
     // station that moved still starts.
     if (p.kind === 'fav') return { station_uuid: p.id };
+    if (p.kind === 'tc') {
+        const t = _syncTidalPick(gid);
+        if (!t || !t.id) return null;     // nothing picked yet
+        const row = _syncTidalItem(gid);
+        return {
+            source_id: t.id, media_type: 'tidal',
+            // The library lists plurals; the API names one item.
+            kind: { mixes: 'mix', playlists: 'playlist',
+                    albums: 'album', artists: 'artist' }[t.kind] || 'playlist',
+            title: (row && (row.title || row.name)) || 'Tidal',
+            artist: (row && row.artist) || '',
+            artwork_url: (row && (row.artwork || row.artwork_url)) || '',
+            ...(_syncLoopFor(gid) ? { loop: true } : {}),
+        };
+    }
     if (!p.id) return null;               // custom, nothing entered yet
     if (p.kind === 'tidal') {
         const t = _recentCache.find(x => x.source_id === p.id);
-        return { source_id: p.id, media_type: 'tidal',
-                 title: (t && t.title) || 'Tidal' };
+        return { source_id: p.id, media_type: 'tidal', kind: 'track',
+                 title: (t && t.title) || 'Tidal',
+                 artwork_url: (t && t.artwork_url) || '',
+                 ...(_syncLoopFor(gid) ? { loop: true } : {}) };
     }
     const it = _recentCache.find(x => x.url === p.id);
     const media = { url: p.id, title: (it && it.title) || _syncUrlName(p.id) };
@@ -1941,10 +2030,12 @@ function _syncUrlName(url) {
     } catch (e) { return url; }
 }
 
-// "Custom URL…" picked but nothing typed yet — there is nothing to start, and
+// A source picked but not yet specified — there is nothing to start, and
 // silently falling back to the test signal would be a lie.
 function _syncNeedsUrl(gid) {
-    return _syncSrcFor(gid) === 'custom' && !_syncCustomUrl(gid);
+    if (_syncSrcFor(gid) === 'custom' && !_syncCustomUrl(gid)) return true;
+    const t = _syncTidalPick(gid);
+    return !!t && !t.id;
 }
 
 function _syncSrcLabel(gid) {
@@ -1953,6 +2044,10 @@ function _syncSrcLabel(gid) {
     if (p.kind === 'fav') {
         const f = _radioFavs.find(x => x.uuid === p.id);
         return f ? f.name : 'Favourite station';
+    }
+    if (p.kind === 'tc') {
+        const row = _syncTidalItem(gid);
+        return (row && (row.title || row.name)) || 'Tidal library';
     }
     if (!p.id) return 'Custom URL';
     if (p.kind === 'tidal') {
@@ -1989,8 +2084,16 @@ function _syncRecentPickable() {
 // "until the clicks land together" is meaningless over music.
 function _syncActiveHint() {
     const src = (_syncStatus || {}).source || {};
+    const np = (_syncStatus || {}).now_playing || {};
     const generated = src.kind !== 'media';
     const what = src.title || (generated ? 'Sync test signal' : 'Media');
+    // A queue says where it is; the speakers' own displays can't (their
+    // metadata is fixed at load, or the zone would re-buffer per track).
+    const pos = np.count > 1
+        ? ` <span class="text-muted">· ${np.index + 1} of ${np.count}</span>` : '';
+    const art = np.artwork_url
+        ? `<img src="${esc(np.artwork_url)}" alt="" class="rounded me-2"
+                style="width:34px;height:34px;object-fit:cover;vertical-align:middle">` : '';
     const under = (src.underruns || 0) > 0
         ? ` <span class="text-warning" title="The decoder could not keep up — ${src.underrun_ms} ms of silence so far">
               <i class="fas fa-triangle-exclamation"></i> ${src.underruns} underrun${src.underruns === 1 ? '' : 's'}</span>`
@@ -1998,9 +2101,15 @@ function _syncActiveHint() {
     const advice = generated
         ? 'Stand between the speakers and drag each trim until the clicks land together. Positive = plays later.'
         : 'Drag each trim until the speakers stop echoing. Positive = plays later — tune on the test signal first, the clicks are far easier to align by ear.';
-    return `<div class="small text-muted mt-1" id="syncActiveHint">
-              <i class="fas fa-music me-1"></i><span class="fw-semibold">${esc(what)}</span>${under}
-              <div>${advice}</div>
+    return `<div class="small text-muted mt-1 d-flex align-items-start" id="syncActiveHint">
+              ${art}
+              <div>
+                <div><i class="fas fa-music me-1"></i>
+                  <span class="fw-semibold">${esc(np.title || what)}</span>
+                  ${np.artist ? `<span class="text-muted"> — ${esc(np.artist)}</span>` : ''}
+                  ${pos}${under}</div>
+                <div>${advice}</div>
+              </div>
             </div>`;
 }
 
@@ -2024,8 +2133,61 @@ function _syncSrcSelect(gid, disabled) {
               title="What this group plays. The test signal is the tuning ruler; anything else is real audio, equalised and clock-aligned server-side."
               onchange="window.mediaSyncSrc('${esc(gid)}', this.value)">
         ${opt('', 'Sync test signal')}${favs}${recents}
+        ${_tidalState === 'logged_in'
+            ? `<option value="tc:${esc(_syncTidalPick(gid)?.kind || 'playlists')}"
+                       ${sel.startsWith('tc:') ? 'selected' : ''}>Tidal library…</option>`
+            : ''}
         ${opt('custom', 'Custom URL…')}
       </select>`;
+}
+
+/** Second row for "Tidal library…": what kind, then which one.
+ *
+ *  Two small selects rather than one giant flat list — a library runs to
+ *  hundreds of albums, and the whole point of a zone picker is to stay one
+ *  line tall next to the Play button. The list loads only when its kind is
+ *  chosen, and is cached for the session. */
+function _syncTidalRow(gid, disabled) {
+    const t = _syncTidalPick(gid);
+    if (!t) return '';
+    const rows = _tidalLib[t.kind];
+    const KINDS = [['mixes', 'Mixes'], ['playlists', 'Playlists'],
+                   ['albums', 'Albums'], ['artists', 'Artists']];
+    const label = it => {
+        const name = it.title || it.name || '(untitled)';
+        const sub = it.artist || it.subtitle || '';
+        return sub ? `${name} — ${sub}` : name;
+    };
+    return `
+      <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+        <select class="form-select form-select-sm w-auto" ${disabled ? 'disabled' : ''}
+                title="Which part of your Tidal library"
+                onchange="window.mediaSyncTidalKind('${esc(gid)}', this.value)">
+          ${KINDS.map(([k, l]) =>
+              `<option value="${k}" ${k === t.kind ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+        <select class="form-select form-select-sm" style="max-width: 22rem"
+                ${disabled || !rows || !rows.length ? 'disabled' : ''}
+                title="Plays the whole set, in order, across the zone"
+                onchange="window.mediaSyncTidalItem('${esc(gid)}', this.value)">
+          ${!rows
+              ? '<option>Loading…</option>'
+              : !rows.length
+                  ? `<option value="">No ${t.kind} in your library</option>`
+                  : `<option value="" ${t.id ? '' : 'selected'}>Choose a ${
+                        { mixes: 'mix', playlists: 'playlist', albums: 'album',
+                          artists: 'artist' }[t.kind]}…</option>`
+                    + rows.map(it => `<option value="${esc(String(it.id))}"
+                          ${String(it.id) === t.id ? 'selected' : ''}>${esc(label(it))}</option>`).join('')}
+        </select>
+        <div class="form-check mb-0 flex-shrink-0">
+          <input class="form-check-input" type="checkbox" id="synctloop-${esc(gid)}"
+                 ${_syncLoopFor(gid) ? 'checked' : ''} ${disabled ? 'disabled' : ''}
+                 onchange="window.mediaSyncLoop('${esc(gid)}', this.checked)">
+          <label class="form-check-label small text-nowrap" for="synctloop-${esc(gid)}"
+                 title="Start again from the top when the set finishes">Repeat</label>
+        </div>
+      </div>`;
 }
 
 // Shown under the group row while "Custom URL…" is picked. Anything ffmpeg can

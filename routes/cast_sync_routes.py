@@ -19,7 +19,11 @@ class SyncMediaBody(BaseModel):
     station_uuid: str = ""       # ...or a radio-directory id, resolved here
     source_id: str = ""          # ...or a source id (Tidal), re-resolved as
     media_type: str = ""         #    it expires; needs media_type to route it
+    kind: str = "track"          # track | album | playlist | artist | mix —
+    #                              anything but "track" is expanded to a queue
     title: str = ""
+    artwork_url: str = ""        # album art / station logo for the displays
+    artist: str = ""
     loop: bool = False           # for finite sources (a file); ignored on live
 
 
@@ -80,7 +84,18 @@ def register_cast_sync_routes(app: FastAPI, get_media):
                         "error": "Radio station not found (or directory unreachable)"}
             media["url"] = station.url
             media["title"] = media.get("title") or station.name
+            # The directory's logo is what a screened speaker shows while the
+            # station plays — same picture the single-player path sends.
+            media["artwork_url"] = media.get("artwork_url") or station.favicon
         if media:
+            kind = (media.get("kind") or "track").strip().lower()
+            if kind not in ("track", "album", "playlist", "artist", "mix"):
+                return {"success": False,
+                        "error": "kind must be track|album|playlist|artist|mix"}
+            media["kind"] = kind
+            if kind != "track" and not media.get("source_id"):
+                return {"success": False,
+                        "error": f"a {kind} needs a source_id to expand"}
             url = (media.get("url") or "").strip()
             # A source_id block carries no URL yet on purpose — the engine
             # resolves one at session start and again whenever it expires.
