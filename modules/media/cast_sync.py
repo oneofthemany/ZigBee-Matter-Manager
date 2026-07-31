@@ -160,6 +160,17 @@ STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
 # from zero" bar; below it the fit is noise and the seeded model value — which
 # has many sessions behind it — is the better estimate.
 STREAM_FIT_MIN_SIGMA = 2.0
+# A trim slider reports every intermediate position; only a value that stops
+# moving is a measurement worth teaching the per-model store.
+STREAM_TRIM_SETTLE_S = 3.0
+# Acquisition happens under silence. A group needs several seconds to measure
+# where each device actually landed and to jump it into place, and those jumps
+# are large — hundreds of milliseconds — because startup lag varies session to
+# session. Playing programme material through that window is what "all over the
+# place at the start" is; holding the output at zero until the group has locked
+# and then fading in makes every one of those corrections inaudible.
+STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
+STREAM_FADE_IN_S = 0.4
 
 
 # The timeline the Sync Lab runs on when no media is given. Module-level so
@@ -322,6 +333,10 @@ class CastSyncPoc:
         # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
         self._url_resolver = None      # async (media_type, source_id) -> url
+        self._trim_learn_tasks: Dict[str, asyncio.Task] = {}
+        # Set once the group has locked; until then the streams serve silence
+        # so acquisition jumps happen where nobody can hear them.
+        self._fade_start: Optional[float] = None
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -397,13 +412,33 @@ class CastSyncPoc:
         return int(self._model_trims.get(key, 0)) if key else 0
 
     def _learn_model_trim(self, player_id: str, trim_ms: int) -> None:
+        """Record a settled trim against the device's model.
+
+        Debounced, because the slider reports every intermediate position: a
+        single drag from 0 to 209 would otherwise teach the model +6, +5, +4,
+        +3, +2, +1 and write the file each time. Only where the value stops
+        moving is it a measurement of anything."""
         key = self._model_key(player_id)
-        if not key or self._model_trims.get(key) == trim_ms:
+        if not key:
             return
-        self._model_trims[key] = int(trim_ms)
-        self._write_json(self._model_trims_file, self._model_trims)
-        logger.info(f"Learned trim {trim_ms:+d} ms for model '{key}' — new "
-                    f"devices of this model will start pre-aligned")
+        task = self._trim_learn_tasks.pop(key, None)
+        if task is not None:
+            task.cancel()
+
+        async def _settle():
+            try:
+                await asyncio.sleep(STREAM_TRIM_SETTLE_S)
+            except asyncio.CancelledError:
+                return
+            self._trim_learn_tasks.pop(key, None)
+            if self._model_trims.get(key) == trim_ms:
+                return
+            self._model_trims[key] = int(trim_ms)
+            self._write_json(self._model_trims_file, self._model_trims)
+            logger.info(f"Learned trim {trim_ms:+d} ms for model '{key}' — new "
+                        f"devices of this model will start pre-aligned")
+
+        self._trim_learn_tasks[key] = asyncio.create_task(_settle())
 
     # ------------------------------------------------------------------
     # Restart survival
@@ -547,6 +582,7 @@ class CastSyncPoc:
         self._streams = {}
         self._pending = {}
         self._target_lag = None
+        self._fade_start = None      # every session re-acquires under silence
         source, err = await self._build_source(media, group_id)
         if source is None:
             self._active_group = ""
@@ -673,6 +709,10 @@ class CastSyncPoc:
         self._pending = {}
         self._active_group = ""
         self._session_media = None
+        self._fade_start = None
+        for t in self._trim_learn_tasks.values():
+            t.cancel()
+        self._trim_learn_tasks = {}
         logger.info("Cast sync session stopped")
         return {"success": True}
 
@@ -1351,6 +1391,34 @@ class CastSyncPoc:
             return None
         return sorted(reads)[len(reads) // 2]
 
+    def _group_locked(self) -> bool:
+        """Every connected device has been measured and pulled into place."""
+        live = [s for s in self._streams.values() if s.connected]
+        return bool(live) and all(s.acquired for s in live)
+
+    def _acquire_gain(self, frames: int):
+        """Output gain for one block: None means unity (the common case).
+
+        Zero while the group is still acquiring, then a short linear ramp. The
+        ramp is computed across the block rather than applied as one number per
+        block so the fade has no steps in it. Capped by
+        STREAM_ACQUIRE_MAX_S — one device that never reports must not leave the
+        whole house silent."""
+        if self._fade_start is None:
+            elapsed = time.monotonic() - self._epoch
+            if self._group_locked() or elapsed > STREAM_ACQUIRE_MAX_S:
+                self._fade_start = time.monotonic()
+                logger.info(
+                    f"Sync group locked after {elapsed:.1f}s — fading in"
+                    f"{'' if self._group_locked() else ' (acquisition timed out)'}")
+            else:
+                return np.zeros(frames, dtype=np.float32)
+        t0 = time.monotonic() - self._fade_start
+        if t0 >= STREAM_FADE_IN_S:
+            return None
+        ramp = (t0 + np.arange(frames) / RATE) / STREAM_FADE_IN_S
+        return np.clip(ramp, 0.0, 1.0).astype(np.float32)
+
     async def _pcm_stream(self, st: _Stream):
         """Async generator: endless WAV cut from the shared timeline for one
         device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
@@ -1420,6 +1488,9 @@ class CastSyncPoc:
                 st.pos += used
                 st.shift += used - block
                 st.moved_s += (used - block) / RATE   # decompensate drift fit
+                gain = self._acquire_gain(block)
+                if gain is not None:
+                    out = out * gain[:, None]
                 yield _encode_s16(out)
         except asyncio.CancelledError:
             pass
