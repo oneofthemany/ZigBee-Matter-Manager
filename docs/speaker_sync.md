@@ -116,10 +116,22 @@ compensated automatically when the device reports it.
 
 What remains after clock sync is each device's fixed output-pipeline latency
 (DAC/decoder), which — unlike Cast session buffering — is constant per
-hardware model. The ±ms trim (positive = play later) covers it: tune once per
-speaker by ear, it stays valid. Trims are stored **per device** (not per
-group) in `data/cast_sync_trims.json` and pushed live over the WebSocket when
-changed, so slider drags are audible immediately.
+hardware model. The reported-position sensor cannot see any of it (§6.1): the
+loop can align two devices' reported positions to ~10 ms and a screened device
+will still be a fifth of a second late in the air. The ±ms trim (positive =
+play later) covers it: tune once by ear, it stays valid.
+
+Because that latency is a property of the **hardware, not the unit**, a trim
+set on one device is also recorded against its model — `cast_type/model_name`,
+e.g. `cast/Nest Hub` — in `data/cast_sync_model_trims.json`. Any other device
+of that model with no trim of its own inherits it, so adding a second display
+to a group does not mean measuring the same 200-odd milliseconds again. An
+explicit per-device trim in `data/cast_sync_trims.json` always wins, and trims
+are pushed live over the WebSocket when changed so slider drags are audible
+immediately.
+
+The mic calibrator sets both automatically when it can hear the speakers; by
+ear is the documented fallback (§10.4) and feeds the same model learning.
 
 ### Device launch flow
 
@@ -207,10 +219,17 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
     (no effect on a live stream, which never ends). Start is disabled until a
     URL is entered rather than quietly falling back to the test signal.
 
-    Tidal is deliberately absent: its stream URLs are time-limited and the sync
-    source decodes one URL for the life of the session, so a long session would
-    die when the token expired. While a session runs the card shows what is
-    playing and the running underrun count.
+    **Tidal** travels by source id, never by URL: its streams are signed for
+    minutes, so a stored URL would be dead before it was next used. The engine
+    resolves an id at session start — failing loudly on a bad id or a
+    signed-out account rather than falling back to the test tone — and
+    re-resolves every time the decoder restarts, which is what lets a session
+    outlive the token expiring underneath it. Expiry then costs the same as a
+    station dropping: a gap, then it continues. Server-side decoding means the
+    plain AAC form is requested, not the Cast-only DASH manifest.
+
+    While a session runs the card shows what is playing and the running
+    underrun count.
 
     Note that a custom URL is opened by ffmpeg *on the server*, so it reaches
     whatever the server can reach. This is the same capability the ordinary

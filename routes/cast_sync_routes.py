@@ -17,6 +17,8 @@ logger = logging.getLogger("routes.cast_sync")
 class SyncMediaBody(BaseModel):
     url: str = ""                # anything ffmpeg can open; "" = test signal
     station_uuid: str = ""       # ...or a radio-directory id, resolved here
+    source_id: str = ""          # ...or a source id (Tidal), re-resolved as
+    media_type: str = ""         #    it expires; needs media_type to route it
     title: str = ""
     loop: bool = False           # for finite sources (a file); ignored on live
 
@@ -80,9 +82,11 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             media["title"] = media.get("title") or station.name
         if media:
             url = (media.get("url") or "").strip()
-            if not url:
+            # A source_id block carries no URL yet on purpose — the engine
+            # resolves one at session start and again whenever it expires.
+            if not url and not media.get("source_id"):
                 return {"success": False,
-                        "error": "Media given with neither url nor station_uuid"}
+                        "error": "Media given with no url, station_uuid or source_id"}
             if url.startswith("-"):
                 # The decoder takes its input as a bare argument, so a leading
                 # dash would be read as an option instead of a source.

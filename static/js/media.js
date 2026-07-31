@@ -1841,6 +1841,11 @@ function _syncMediaFor(gid) {
     // station that moved still starts.
     if (p.kind === 'fav') return { station_uuid: p.id };
     if (!p.id) return null;               // custom, nothing entered yet
+    if (p.kind === 'tidal') {
+        const t = _recentCache.find(x => x.source_id === p.id);
+        return { source_id: p.id, media_type: 'tidal',
+                 title: (t && t.title) || 'Tidal' };
+    }
     const it = _recentCache.find(x => x.url === p.id);
     const media = { url: p.id, title: (it && it.title) || _syncUrlName(p.id) };
     // Looping only makes sense for something finite, which in practice means a
@@ -1872,18 +1877,32 @@ function _syncSrcLabel(gid) {
         return f ? f.name : 'Favourite station';
     }
     if (!p.id) return 'Custom URL';
+    if (p.kind === 'tidal') {
+        const t = _recentCache.find(x => x.source_id === p.id);
+        return (t && t.title) || 'Tidal track';
+    }
     const it = _recentCache.find(x => x.url === p.id);
     return (it && it.title) || _syncUrlName(p.id);
 }
 
-// Recently-played entries worth offering. Tidal is excluded on purpose: its
-// stream URLs are time-limited and the sync source decodes one URL for the
-// life of the session, so a long session would die when the token expired.
+// Recently-played entries worth offering. Tidal travels by source id, never by
+// URL: its stream URLs are signed for minutes, so a stored one would be dead
+// before it was next used. The engine resolves an id at session start and
+// again each time the decoder restarts, which is what makes a long session
+// survive the token expiring underneath it.
+function _syncRecentKey(it) {
+    if (it.media_type === 'tidal') {
+        return it.source_id ? 'tidal:' + it.source_id : '';
+    }
+    return it.url ? 'url:' + it.url : '';
+}
+
 function _syncRecentPickable() {
     const seen = new Set();
     return _recentCache.filter(it => {
-        if (!it.url || it.media_type === 'tidal' || seen.has(it.url)) return false;
-        seen.add(it.url);
+        const k = _syncRecentKey(it);
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
         return true;
     }).slice(0, 8);
 }
@@ -1918,7 +1937,8 @@ function _syncSrcSelect(gid, disabled) {
     const recent = _syncRecentPickable();
     const recents = recent.length
         ? `<optgroup label="Recently played">
-             ${recent.map(it => opt('url:' + it.url, it.title || it.url)).join('')}</optgroup>`
+             ${recent.map(it => opt(_syncRecentKey(it),
+                                    it.title || it.url)).join('')}</optgroup>`
         : '';
     return `
       <select class="form-select form-select-sm w-auto" id="syncsrc-${esc(gid)}"
