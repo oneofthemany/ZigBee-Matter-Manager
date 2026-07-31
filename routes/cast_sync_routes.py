@@ -78,6 +78,16 @@ def register_cast_sync_routes(app: FastAPI, get_media):
                         "error": "Radio station not found (or directory unreachable)"}
             media["url"] = station.url
             media["title"] = media.get("title") or station.name
+        if media:
+            url = (media.get("url") or "").strip()
+            if not url:
+                return {"success": False,
+                        "error": "Media given with neither url nor station_uuid"}
+            if url.startswith("-"):
+                # The decoder takes its input as a bare argument, so a leading
+                # dash would be read as an option instead of a source.
+                return {"success": False, "error": "URL may not start with '-'"}
+            media["url"] = url
         return await sync.start_session(body.player_ids, group_id=body.group_id,
                                         duration_s=min(max(body.duration_s, 0),
                                                        3600),

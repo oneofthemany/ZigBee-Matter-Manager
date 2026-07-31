@@ -112,6 +112,8 @@ export function initMedia() {
     window.mediaSyncStop = syncStopSession;
     window.mediaSyncDur = syncSetDuration;
     window.mediaSyncSrc = syncSetSource;
+    window.mediaSyncUrl = syncSetCustomUrl;
+    window.mediaSyncLoop = syncSetLoop;
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
@@ -1675,18 +1677,21 @@ async function renderSyncPane() {
                          .map(([v, l]) => `<option value="${v}" ${v === _syncDurFor(g.id) ? 'selected' : ''}>${l}</option>`)
                          .join('')}
                    </select>
-                   <button class="btn btn-sm btn-outline-primary" ${running || disabled ? 'disabled' : ''}
+                   <button class="btn btn-sm btn-outline-primary"
+                           ${running || disabled || _syncNeedsUrl(g.id) ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
-                           title="${_syncSrcFor(g.id)
-                               ? esc('Play ' + _syncSrcLabel(g.id) + ' on all members, clock-aligned')
-                               : 'Play the sync test signal (clicks every 2 s) on all members'}">
+                           title="${_syncNeedsUrl(g.id)
+                               ? 'Enter a URL below first'
+                               : _syncSrcFor(g.id)
+                                   ? esc('Play ' + _syncSrcLabel(g.id) + ' on all members, clock-aligned')
+                                   : 'Play the sync test signal (clicks every 2 s) on all members'}">
                      <i class="fas fa-play me-1"></i>${_syncSrcFor(g.id) ? 'Play' : 'Test'}</button>`}
             <button class="btn btn-sm btn-outline-secondary" onclick="window.mediaSyncLab('${esc(g.id)}')"
                     title="Sync Lab — session analysis &amp; learned model"><i class="fas fa-wave-square"></i></button>
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
           </div>
-          ${g.active ? _syncActiveHint() : ''}
+          ${g.active ? _syncActiveHint() : _syncCustomRow(g.id, running || disabled)}
           ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
         </div>
       </div>`).join('');
@@ -1782,11 +1787,21 @@ function syncSetDuration(gid, val) {
 }
 
 // ── Sync source picker ──────────────────────────────────────────────────────
-// Stored per group as a stable key — "" (test signal), "fav:<uuid>" or
-// "url:<url>" — never a list index, because favourites and recently-played
-// both reorder underneath us. Split on the FIRST colon so a URL keeps its own.
+// Stored per group as a stable key — "" (test signal), "fav:<uuid>",
+// "url:<url>" or "custom" — never a list index, because favourites and
+// recently-played both reorder underneath us. Split on the FIRST colon so a
+// URL keeps its own. The custom URL and its loop flag live in their own keys
+// so switching away to a favourite and back doesn't lose what was typed.
 function _syncSrcFor(gid) {
     return localStorage.getItem('zmm.syncsrc.' + gid) || '';
+}
+
+function _syncCustomUrl(gid) {
+    return (localStorage.getItem('zmm.syncurl.' + gid) || '').trim();
+}
+
+function _syncLoopFor(gid) {
+    return localStorage.getItem('zmm.syncloop.' + gid) === '1';
 }
 
 function syncSetSource(gid, val) {
@@ -1795,8 +1810,24 @@ function syncSetSource(gid, val) {
     renderSyncPane();                     // the start button follows the choice
 }
 
+function syncSetCustomUrl(gid, val) {
+    const u = String(val || '').trim();
+    if (u) localStorage.setItem('zmm.syncurl.' + gid, u);
+    else localStorage.removeItem('zmm.syncurl.' + gid);
+    renderSyncPane();                     // enables/disables the start button
+}
+
+function syncSetLoop(gid, on) {
+    if (on) localStorage.setItem('zmm.syncloop.' + gid, '1');
+    else localStorage.removeItem('zmm.syncloop.' + gid);
+}
+
 function _syncSrcParts(gid) {
     const v = _syncSrcFor(gid);
+    if (!v) return null;
+    // "custom" carries no id of its own — the URL is edited separately and may
+    // legitimately be empty while the user is still typing it.
+    if (v === 'custom') return { kind: 'custom', id: _syncCustomUrl(gid) };
     const i = v.indexOf(':');
     return i < 0 ? null : { kind: v.slice(0, i), id: v.slice(i + 1) };
 }
@@ -1809,8 +1840,28 @@ function _syncMediaFor(gid) {
     // Favourites travel by id, not URL: the server re-resolves them, so a
     // station that moved still starts.
     if (p.kind === 'fav') return { station_uuid: p.id };
+    if (!p.id) return null;               // custom, nothing entered yet
     const it = _recentCache.find(x => x.url === p.id);
-    return { url: p.id, title: (it && it.title) || 'Media' };
+    const media = { url: p.id, title: (it && it.title) || _syncUrlName(p.id) };
+    // Looping only makes sense for something finite, which in practice means a
+    // custom file — a station never ends, and the server ignores it there.
+    if (p.kind === 'custom' && _syncLoopFor(gid)) media.loop = true;
+    return media;
+}
+
+// A readable name for a bare URL: last path segment, else the host.
+function _syncUrlName(url) {
+    try {
+        const u = new URL(url, 'file:///');
+        const last = (u.pathname || '').split('/').filter(Boolean).pop();
+        return decodeURIComponent(last || u.hostname || url);
+    } catch (e) { return url; }
+}
+
+// "Custom URL…" picked but nothing typed yet — there is nothing to start, and
+// silently falling back to the test signal would be a lie.
+function _syncNeedsUrl(gid) {
+    return _syncSrcFor(gid) === 'custom' && !_syncCustomUrl(gid);
 }
 
 function _syncSrcLabel(gid) {
@@ -1820,8 +1871,9 @@ function _syncSrcLabel(gid) {
         const f = _radioFavs.find(x => x.uuid === p.id);
         return f ? f.name : 'Favourite station';
     }
+    if (!p.id) return 'Custom URL';
     const it = _recentCache.find(x => x.url === p.id);
-    return (it && it.title) || 'Media';
+    return (it && it.title) || _syncUrlName(p.id);
 }
 
 // Recently-played entries worth offering. Tidal is excluded on purpose: its
@@ -1874,7 +1926,31 @@ function _syncSrcSelect(gid, disabled) {
               title="What this group plays. The test signal is the tuning ruler; anything else is real audio, equalised and clock-aligned server-side."
               onchange="window.mediaSyncSrc('${esc(gid)}', this.value)">
         ${opt('', 'Sync test signal')}${favs}${recents}
+        ${opt('custom', 'Custom URL…')}
       </select>`;
+}
+
+// Shown under the group row while "Custom URL…" is picked. Anything ffmpeg can
+// open works — a stream, or a file path reachable inside the container.
+function _syncCustomRow(gid, disabled) {
+    if (_syncSrcFor(gid) !== 'custom') return '';
+    const url = _syncCustomUrl(gid);
+    return `
+      <div class="d-flex align-items-center gap-2 mt-2">
+        <input type="text" class="form-control form-control-sm" id="syncurl-${esc(gid)}"
+               ${disabled ? 'disabled' : ''}
+               placeholder="https://stream.example/live.mp3  or  /data/music/album.flac"
+               value="${esc(url)}"
+               title="Any source ffmpeg can open, reachable from the server"
+               onchange="window.mediaSyncUrl('${esc(gid)}', this.value)">
+        <div class="form-check mb-0 flex-shrink-0">
+          <input class="form-check-input" type="checkbox" id="syncloop-${esc(gid)}"
+                 ${_syncLoopFor(gid) ? 'checked' : ''} ${disabled ? 'disabled' : ''}
+                 onchange="window.mediaSyncLoop('${esc(gid)}', this.checked)">
+          <label class="form-check-label small text-nowrap" for="syncloop-${esc(gid)}"
+                 title="Repeat a finite source forever. No effect on a live stream.">Loop</label>
+        </div>
+      </div>`;
 }
 
 function _fmtRemain(s) {
