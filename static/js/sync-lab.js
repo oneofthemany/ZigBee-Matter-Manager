@@ -58,13 +58,53 @@ const _dark = () => document.documentElement.getAttribute('data-theme') === 'dar
 
 /** Write innerHTML only when it actually changed — live ticks re-render
  *  every 3 s and must not wipe hover/focus state or flicker static text.
+ *  Any scroll position inside the block survives the write.
  *  Returns true when the DOM was touched (callers rebind handlers then). */
 function _setHtml(el, html) {
     if (!el) return false;
     if (el._zmmPrev === html) return false;
+    const tops = [...el.querySelectorAll('[data-keep-scroll]')]
+        .map(n => [n.dataset.keepScroll, n.scrollTop]);
     el._zmmPrev = html;
+    el._zmmKey = null;          // structure replaced — _patch must rebuild
     el.innerHTML = html;
+    for (const [k, top] of tops) {
+        const n = el.querySelector(`[data-keep-scroll="${k}"]`);
+        if (n && top) n.scrollTop = top;
+    }
     return true;
+}
+
+/** Refresh live numbers WITHOUT rebuilding the block around them.
+ *
+ *  A 3 s tick that rewrites a whole panel's innerHTML costs the reader
+ *  everything they were doing: selection and hover die, and any change in
+ *  wrapped-line count reflows the page under the cursor — the charts below
+ *  visibly jump. So structure is built once per `key` (the set of speakers,
+ *  say) and every subsequent tick only writes the leaf `[data-v]` nodes
+ *  whose value actually moved. Values are strings, or {text, cls} when the
+ *  node also carries a state colour.
+ */
+function _patch(el, key, buildHtml, values) {
+    if (!el) return;
+    if (el._zmmKey !== key) {
+        el._zmmKey = key;
+        el._zmmVals = {};
+        el._zmmPrev = null;              // keep _setHtml's cache honest
+        el.innerHTML = buildHtml();
+    }
+    for (const [k, v] of Object.entries(values)) {
+        const val = typeof v === 'string' ? { text: v } : v;
+        const prev = el._zmmVals[k];
+        if (prev && prev.text === val.text && prev.cls === val.cls) continue;
+        el._zmmVals[k] = val;
+        const n = el.querySelector(`[data-v="${CSS.escape(k)}"]`);
+        if (!n) continue;
+        if (n.textContent !== val.text) n.textContent = val.text;
+        if (val.cls !== undefined && n.dataset.clsBase !== undefined) {
+            n.className = `${n.dataset.clsBase} ${val.cls}`.trim();
+        }
+    }
 }
 const _pal = () => _dark() ? PALETTE.dark : PALETTE.light;
 const fmtMs = v => (v == null || !isFinite(v)) ? '—' : `${Math.round(v)} ms`;
@@ -86,19 +126,45 @@ function _nameFor(pid) {
 // ---------------------------------------------------------------------------
 // Public API (wired from media.js)
 // ---------------------------------------------------------------------------
+/** The group whose lab is on screen, or null. Lets the host pane decide
+ *  whether its Results tab needs a group picker. */
+export function syncLabGroup() { return _gid; }
+
+/** Fired on the document whenever the lab opens or closes, so the pane
+ *  around it can follow without polling. Silent during a switch: the
+ *  close-then-open midpoint is not a state anyone should react to (a
+ *  listener that re-opens "whatever should be showing" would race the
+ *  open still in flight). */
+let _switching = false;
+function _announce() {
+    if (_switching) return;
+    document.dispatchEvent(new CustomEvent('synclabchange', { detail: { gid: _gid } }));
+}
+
 export async function openSyncLab(gid, group, opts = {}) {
-    if (_gid === gid) { closeSyncLab(); return; }   // toggle
-    closeSyncLab();
-    _gid = gid;
-    _group = group || { id: gid, name: gid, members: [] };
-    await _loadAll();
-    _renderShell();
-    _renderDetail();
-    _startLive();
-    if (!_themeHook) {
-        _themeHook = () => { if (_gid) { _renderShell(); _renderDetail(); } };
-        document.addEventListener('themechange', _themeHook);
+    // Re-selecting the open group from a tab or a picker means "show me
+    // this", never "close it" — only the toolbar button toggles.
+    if (_gid === gid) {
+        if (opts.toggle) closeSyncLab();
+        return;
     }
+    _switching = true;
+    try {
+        closeSyncLab();
+        _gid = gid;
+        _group = group || { id: gid, name: gid, members: [] };
+        await _loadAll();
+        _renderShell();
+        _renderDetail();
+        _startLive();
+        if (!_themeHook) {
+            _themeHook = () => { if (_gid) { _renderShell(); _renderDetail(); } };
+            document.addEventListener('themechange', _themeHook);
+        }
+    } finally {
+        _switching = false;
+    }
+    _announce();
     // Only jump the viewport on a user-initiated open — a restore after a
     // pane rebuild must not yank the page around mid-test.
     if (!opts.restore) {
@@ -117,6 +183,7 @@ export function closeSyncLab() {
     const host = document.getElementById('syncLabHost');
     if (host) host.innerHTML = '';
     _gid = null; _group = null; _detail = null; _sessions = []; _selected = '';
+    _announce();
 }
 
 /** Re-open after the sync pane re-renders with a FRESH host (the normal
@@ -210,6 +277,12 @@ function _renderShell() {
     if (_spreadChart) { _spreadChart.dispose(); _spreadChart = null; }
     if (_convChart) { _convChart.dispose(); _convChart = null; }
     if (_pllChart) { _pllChart.dispose(); _pllChart = null; }
+    // The trend pair is recreated below too — dropping the old instances on
+    // the floor leaks their ResizeObserver and themechange listener, and the
+    // orphaned listener re-inits a chart into a detached node on every theme
+    // toggle.
+    if (_trendAChart) { _trendAChart.dispose(); _trendAChart = null; }
+    if (_trendBChart) { _trendBChart.dispose(); _trendBChart = null; }
     host.innerHTML = `
       <div class="card mt-3" id="syncLab">
         <div class="card-header bg-light d-flex align-items-center gap-2 py-2 flex-wrap">
@@ -222,20 +295,25 @@ function _renderShell() {
                   title="Close Sync Lab"><i class="fas fa-times"></i></button>
         </div>
         <div class="card-body">
-          <p class="small text-muted mb-3">
-            Each speaker pulls its own PCM stream cut from one server timeline and reports
-            its playback position back every 1–3&nbsp;s (fast while acquiring, relaxed once
-            locked; each report is the median of 3–5 reads). Deviation from the group target is
-            plotted below: only past ±${JUMP_MS}&nbsp;ms (startup, rebuffer) is the stream
-            hard-resynced (<span aria-hidden="true">◆</span>); every smaller correction is
-            an inaudible parts-per-million rate slew (<span aria-hidden="true">▽</span>)
-            while a drift estimator cancels each device's clock error. Manual trims show
-            as <span aria-hidden="true">▲</span>. Startup latency and drift learned here
-            pre-align the next session.
+          <p class="small text-muted mb-2">
+            One server timeline, one PCM stream cut from it per speaker. Each reports its
+            playback position every 1–3&nbsp;s — the median of 3–5 reads, polled fast while
+            acquiring and relaxed once locked — and the charts below plot how far that sits
+            from the group target. Whatever this session measures about startup latency and
+            clock drift pre-aligns the next one.
           </p>
+          <div class="d-flex flex-wrap gap-3 small text-muted mb-3">
+            <span><span aria-hidden="true">◆</span> <strong>hard resync</strong> — a buffer
+              jump, only past ±${JUMP_MS}&nbsp;ms (startup, rebuffer). Audible.</span>
+            <span><span aria-hidden="true">▽</span> <strong>rate slew</strong> — everything
+              smaller, corrected in parts per million. Inaudible.</span>
+            <span><span aria-hidden="true">▲</span> <strong>trim</strong> — set by hand or by
+              mic calibration.</span>
+          </div>
           <div id="syncLabGuide" class="mb-3"></div>
           <div class="row g-2 mb-3" id="syncLabHeadline"></div>
           <div class="row g-2 mb-3" id="syncLabTiles"></div>
+          <div id="syncLabAdjust" class="mb-3"></div>
           <div class="fw-semibold small mb-1">Group spread — how far apart the speakers are</div>
           <p class="small text-muted mb-1">Worst pairwise gap at each poll. Inside the
             shaded ±${AUDIBLE_MS}&nbsp;ms band the group sounds echo-free.</p>
@@ -294,17 +372,25 @@ function _refreshPicker() {
         return;
     }
     sel.disabled = false;
-    _setHtml(sel, _sessions.map((s, i) => {
+    // The running session's label changes every tick (it gets longer). Only
+    // the label text is patched — rewriting the <option> list would drop the
+    // selection and, in some browsers, shut an open dropdown.
+    const label = (s, i) => {
         const d = new Date(s.started);
         const when = d.toLocaleString([], { month: 'short', day: 'numeric',
                                             hour: '2-digit', minute: '2-digit' });
         const dur = s.duration_s >= 60
             ? `${Math.floor(s.duration_s / 60)}m${String(Math.round(s.duration_s % 60)).padStart(2, '0')}s`
             : `${Math.round(s.duration_s)}s`;
-        return `<option value="${esc(s.session_id)}" ${s.session_id === _selected ? 'selected' : ''}>
-                  ${when} · ${dur} · ${s.players} speakers · ${s.resyncs} resyncs${i === 0 ? ' (latest)' : ''}
-                </option>`;
-    }).join(''));
+        return `${when} · ${dur} · ${s.players} speakers · ${s.resyncs} resyncs`
+             + `${i === 0 ? ' (latest)' : ''}`;
+    };
+    _patch(sel, `sessions:${_sessions.map(s => s.session_id).join('|')}`,
+        () => _sessions.map(s => `
+            <option value="${esc(s.session_id)}"
+                    data-v="opt:${esc(s.session_id)}"></option>`).join(''),
+        Object.fromEntries(_sessions.map((s, i) => [`opt:${s.session_id}`, label(s, i)])));
+    if (sel.value !== _selected) sel.value = _selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +407,8 @@ function _renderDetail(merge = false) {
     if (!_detail || !_detail.series || !_detail.series.length) {
         _renderTiles([]);
         _renderHeadline([]);
+        _renderGuidance([]);
+        _renderAdjustments([], []);
         _setChart(_spreadChart, _emptyOption(''), false, true);
         _setChart(_convChart, _emptyOption('No measurements in this session yet'),
                   false, true);
@@ -331,9 +419,12 @@ function _renderDetail(merge = false) {
     }
     const players = _detail.players || [];
     const spread = _spreadSeries(_detail.series, players.map(p => p.player_id));
-    _renderGuidance(players);
-    _renderHeadline(spread);
+    // The group is locked once its slowest member is.
+    const lockAt = Math.max(0, ...players.map(p => p.lock_s ?? 0));
+    _renderGuidance(players, spread, lockAt);
+    _renderHeadline(spread, lockAt);
     _renderTiles(players);
+    _renderAdjustments(_detail.series, players);
     _renderSpread(spread, merge);
     _renderCharts(_detail.series, players.map(p => p.player_id), merge);
     _renderTrend(merge);
@@ -362,26 +453,42 @@ function _spreadSeries(series, pids) {
     return out;
 }
 
-function _renderHeadline(spread) {
+/** Headline stats, counted AFTER the group locked.
+ *
+ *  Including the acquisition phase made the three panels contradict each
+ *  other: a session where the slowest speaker took 24 s to lock read "49% in
+ *  sync" next to a verdict of "within 4 ms, echo-free", and both were true of
+ *  different windows. Startup is measured on its own (time-to-lock, the trend
+ *  charts); what these three answer is "once it settled, how did it hold?"
+ */
+function _renderHeadline(spread, lockAt = 0) {
     const el = document.getElementById('syncLabHeadline');
     if (!el) return;
     if (!spread.length) { _setHtml(el, ''); return; }
-    const vals = spread.map(p => p[1]);
+    const settled = spread.filter(p => p[0] >= lockAt);
+    const vals = (settled.length >= 3 ? settled : spread).map(p => p[1]);
     const sorted = [...vals].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
-    const now = vals[vals.length - 1];
+    const now = spread[spread.length - 1][1];
     const inSyncPct = Math.round(100 * vals.filter(v => v <= AUDIBLE_MS).length / vals.length);
-    const stat = (label, value, sub, good) => `
+    const stat = (k, label, sub) => `
       <div class="col-4">
         <div class="border rounded p-2 text-center h-100">
-          <div class="fs-4 fw-semibold ${good == null ? '' : good ? 'text-success' : 'text-warning'}">${value}</div>
+          <div data-v="${k}" data-cls-base="fs-4 fw-semibold" class="fs-4 fw-semibold"></div>
           <div class="small text-muted">${label}${sub ? `<br>${sub}` : ''}</div>
         </div>
       </div>`;
-    _setHtml(el,
-        stat('group spread now', `${now} ms`, '', now <= AUDIBLE_MS)
-        + stat('median spread', `${median} ms`, 'this session', median <= AUDIBLE_MS)
-        + stat('time in sync', `${inSyncPct}%`, `within ±${AUDIBLE_MS} ms`, inSyncPct >= 80));
+    const good = ok => ok ? 'text-success' : 'text-warning';
+    const win = settled.length >= 3 ? 'after lock' : 'whole session';
+    _patch(el, `headline:${win}`,
+        () => stat('now', 'group spread now', 'latest poll')
+            + stat('median', 'median spread', win)
+            + stat('pct', 'time in sync', `within ±${AUDIBLE_MS} ms, ${win}`),
+        {
+            now: { text: `${now} ms`, cls: good(now <= AUDIBLE_MS) },
+            median: { text: `${median} ms`, cls: good(median <= AUDIBLE_MS) },
+            pct: { text: `${inSyncPct}%`, cls: good(inSyncPct >= 80) },
+        });
 }
 
 function _renderSpread(spread, merge = false) {
@@ -416,13 +523,22 @@ function _renderSpread(spread, merge = false) {
 
 // ---------------------------------------------------------------------------
 // Guidance — turn the numbers into actions
+//
+// Deliberately offers no per-speaker "apply this trim" button. The settled
+// bias it would be computed from is measured with the trim EXCLUDED
+// (cast_sync._measure_lag_once), so a trim can never move that number:
+// the suggestion would survive being applied, invite a second application,
+// and integrate open-loop. A sensor-VISIBLE bias is the rate loop's job and
+// it is already draining it; a sensor-INVISIBLE one (output-pipeline
+// latency) can only be seen by the mic, which is what Calibrate is for.
 // ---------------------------------------------------------------------------
-function _renderGuidance(players) {
+function _renderGuidance(players, spread = [], lockAt = 0) {
     const el = document.getElementById('syncLabGuide');
     if (!el) return;
-    if (!players.length) { el.innerHTML = ''; return; }
+    if (!players.length) { _setHtml(el, ''); return; }
     const items = [];
     const locked = [];
+    const fine = [];          // in sync — one collective line, not one each
     for (const p of players) {
         const name = esc(_nameFor(p.player_id));
         if (p.lock_s == null) {
@@ -434,25 +550,22 @@ function _renderGuidance(players) {
         const bias = p.settled_bias_ms;
         if (bias == null) {
             items.push({ cls: 'secondary', icon: 'fa-hourglass-half',
-                html: `<strong>${name}</strong> is still converging — give the
-                       auto-correction another minute before trimming.` });
+                html: `<strong>${name}</strong> is still converging — the rate loop
+                       needs another minute of measurements.` });
             continue;
         }
         locked.push(p);
         if (Math.abs(bias) <= 10) {
-            items.push({ cls: 'success', icon: 'fa-check',
-                html: `<strong>${name}</strong> is in sync (bias ${bias > 0 ? '+' : ''}${Math.round(bias)} ms)
-                       — no action needed.` });
+            fine.push(`${name} <span class="text-muted">${_sign(bias)} ms</span>`);
         } else {
-            const suggested = Math.max(-500, Math.min(500,
-                Math.round((p.trim_ms ?? 0) - bias)));
             items.push({ cls: 'primary', icon: 'fa-sliders',
-                html: `<strong>${name}</strong> plays ${Math.abs(Math.round(bias))} ms
-                       ${bias > 0 ? 'late' : 'early'} after lock — suggested trim
-                       <strong>${suggested} ms</strong> (now ${p.trim_ms ?? 0} ms)
-                       <button class="btn btn-sm btn-primary py-0 ms-1 syncGuideApply"
-                               data-pid="${esc(p.player_id)}" data-trim="${suggested}">
-                         Apply</button>` });
+                html: `<strong>${name}</strong> settles ${Math.abs(Math.round(bias))} ms
+                       ${bias > 0 ? 'behind' : 'ahead of'} the group — the rate loop is
+                       still trickling that in (≤20&nbsp;ppm, inaudible) and needs no
+                       help. If the same offset returns every session it is
+                       output-pipeline latency the position sensor cannot see: run
+                       <strong>Calibrate</strong> (mic) to set its trim from the sound
+                       in the air.` });
         }
         if ((p.resyncs ?? 0) >= 3) {
             items.push({ cls: 'warning', icon: 'fa-wifi',
@@ -461,19 +574,46 @@ function _renderGuidance(players) {
                        the speaker closer to the AP.` });
         }
     }
-    if (locked.length >= 2) {
-        const biases = locked.map(p => p.settled_bias_ms);
-        const spread = Math.round(Math.max(...biases) - Math.min(...biases));
-        items.unshift({
-            cls: spread <= 20 ? 'success' : spread <= 45 ? 'secondary' : 'primary',
-            icon: 'fa-headphones',
-            html: `<strong>Group verdict:</strong> speakers are within
-                   <strong>${spread} ms</strong> of each other after lock
-                   ${spread <= 20 ? '— echo-free to the ear.'
-                     : spread <= 45 ? '— close; a small trim will tighten it.'
-                     : '— audibly apart; apply the suggested trims below.'}` });
+    if (fine.length) {
+        items.push({ cls: 'success', icon: 'fa-check',
+            // Alignment only. Whether anything needs doing is the verdict's
+            // call — it also weighs the jitter, and the two must not argue.
+            html: `${fine.length === players.length ? 'All ' : ''}${fine.length}
+                   speaker${fine.length > 1 ? 's sit' : ' sits'} where the group
+                   wants ${fine.length > 1 ? 'them' : 'it'}: ${fine.join(', ')}.` });
     }
-    const changed = _setHtml(el, `
+    if (locked.length >= 2) {
+        // Two different truths, and quoting only the first made the verdict
+        // read as "echo-free" over a stats row saying half the polls were
+        // outside the band. The medians say where each speaker SITS; the
+        // poll-by-poll spread says how much it WANDERS around that, and the
+        // ear hears both.
+        const biases = locked.map(p => p.settled_bias_ms);
+        const centres = Math.round(Math.max(...biases) - Math.min(...biases));
+        const settled = spread.filter(p => p[0] >= lockAt).map(p => p[1]);
+        const sorted = [...settled].sort((a, b) => a - b);
+        const p90 = sorted.length
+            ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]
+            : null;
+        const steady = p90 == null || p90 <= AUDIBLE_MS;
+        items.unshift({
+            cls: centres <= 20 && steady ? 'success'
+                 : centres <= 45 ? 'secondary' : 'primary',
+            icon: 'fa-headphones',
+            html: `<strong>Group verdict:</strong> the speakers sit within
+                   <strong>${centres} ms</strong> of each other after lock`
+                + (p90 == null ? '' :
+                   `, wandering up to <strong>${p90} ms</strong> apart poll to poll (9 in 10)`)
+                + ` ${centres <= 20 && steady
+                        ? '— echo-free to the ear.'
+                        : centres <= 45 && steady
+                            ? '— close; the rate loop is still closing it.'
+                            : steady
+                                ? '— audibly apart; if it persists, calibrate with the mic.'
+                                : '— aligned on average but jittery, which is a link '
+                                  + 'problem, not an alignment one: check WiFi before trimming.'}` });
+    }
+    _setHtml(el, `
       <div class="border rounded p-2">
         <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
         ${items.map(i => `
@@ -482,25 +622,168 @@ function _renderGuidance(players) {
             <span>${i.html}</span>
           </div>`).join('')}
       </div>`);
-    if (!changed) return;
-    el.querySelectorAll('.syncGuideApply').forEach(btn => {
-        btn.onclick = async () => {
-            btn.disabled = true;
-            try {
-                const r = await fetch('/api/media/sync/trim', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ player_id: btn.dataset.pid,
-                                           trim_ms: Number(btn.dataset.trim) }),
-                }).then(x => x.json());
-                if (window.toast) window.toast(r.success
-                    ? `Trim set to ${btn.dataset.trim} ms` : (r.error || 'Trim failed'),
-                    r.success ? 'success' : 'error');
-                _detail = await _fetchDetail(_selected);
-                _renderDetail();
-            } catch (e) { btn.disabled = false; }
-        };
-    });
+}
+
+// ---------------------------------------------------------------------------
+// Adjustments — what the engine actually DID to each speaker, and when
+//
+// The corrections are the interesting record: they are the work that kept
+// the group together, and their size, kind and cadence say more about a
+// speaker's link than any single settled number. Split by audibility,
+// because that is the distinction that matters to the listener: a buffer
+// jump is a heard discontinuity, a rate slew is not.
+// ---------------------------------------------------------------------------
+const TRIM_RUN_GAP_S = 30;      // trims closer than this are one adjustment
+const _clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const _sign = v => `${v > 0 ? '+' : ''}${Math.round(v)}`;
+
+/** One row per adjustment event, newest first, plus a per-speaker tally. */
+function _renderAdjustments(series, players) {
+    const el = document.getElementById('syncLabAdjust');
+    if (!el) return;
+    if (!players.length) { _setHtml(el, ''); return; }
+
+    const KIND = {
+        resync: { label: 'buffer jump', icon: 'fa-forward-step', cls: 'warning',
+                  audible: true },
+        trim:   { label: 'trim set',    icon: 'fa-sliders',      cls: 'primary',
+                  audible: true },
+        chirp:  { label: 'mic calibration', icon: 'fa-microphone', cls: 'info',
+                  audible: false },
+        slew:   { label: 'rate slew',   icon: 'fa-angles-right', cls: 'secondary',
+                  audible: false },
+    };
+    const tally = {};
+    for (const p of players) {
+        tally[p.player_id] = { jump: 0, jumpMs: 0, slew: 0, slewMax: 0,
+                               trim: 0, chirp: 0 };
+    }
+    const events = [];
+    for (const r of series) {
+        const k = KIND[r.kind];
+        const t = tally[r.player_id];
+        if (!k || !t) continue;
+        if (r.kind === 'resync') { t.jump++; t.jumpMs += Math.abs(r.error_ms || 0); }
+        else if (r.kind === 'slew') {
+            t.slew++;
+            t.slewMax = Math.max(t.slewMax, Math.abs(r.error_ms || 0));
+        } else if (r.kind === 'chirp') t.chirp++;
+        // 'trim' is tallied after coalescing — see below.
+        // Aligning by ear is a RUN of nudges — fifty ±1 ms taps land as fifty
+        // rows and bury everything the engine did. One run, one row: where it
+        // ended up and how many taps it took.
+        const prev = events[events.length - 1];
+        if (r.kind === 'trim' && prev && prev.kind === 'trim'
+                && prev.pid === r.player_id && r.elapsed_s - prev.t <= TRIM_RUN_GAP_S) {
+            prev.t = r.elapsed_s;
+            prev.count += 1;
+            prev.amount = `→ ${r.trim_ms ?? 0} ms`;
+            continue;
+        }
+        events.push({
+            t: r.elapsed_s, pid: r.player_id, kind: r.kind, count: 1, ...k,
+            amount: r.kind === 'trim'
+                ? `→ ${r.trim_ms ?? 0} ms`
+                : (r.error_ms == null ? '' : `${_sign(r.error_ms)} ms`),
+        });
+    }
+    // One tuning run is one adjustment in the count as well as in the list,
+    // or the table would say 30 where the ledger shows a single entry.
+    for (const e of events) if (e.kind === 'trim') tally[e.pid].trim++;
+    events.reverse();                    // newest first — live sessions grow
+    const shown = events.slice(0, 60);
+
+    // Structure once per speaker set; only the tallies and the ledger move.
+    const pids = players.map(p => p.player_id);
+    _patch(el, `adj:${pids.join('|')}`, () => `
+      <div class="border rounded p-2">
+        <div class="fw-semibold small mb-1">
+          <i class="fas fa-wrench me-1"></i>Adjustments applied this session</div>
+        <p class="small text-muted mb-2">Every correction the engine made, and when.
+          Buffer jumps and trims are steps you could hear; rate slews and the drift
+          term are parts-per-million changes you cannot. <em>Start offset</em> is how
+          far this speaker was held back at launch so it would land with the slowest
+          one. Fewer and smaller over successive sessions means the model is learning
+          this group.</p>
+        <div class="table-responsive">
+        <table class="table table-sm small mb-0" style="font-variant-numeric: tabular-nums">
+          <thead><tr class="text-muted">
+            <th class="fw-normal">Speaker</th>
+            <th class="fw-normal text-end" title="Buffer jumps — audible steps">jumps</th>
+            <th class="fw-normal text-end" title="Rate slews — inaudible, parts per million">slews</th>
+            <th class="fw-normal text-end" title="Trim adjustments (a run of nudges counts once)">trims</th>
+            <th class="fw-normal text-end" title="Mic (chirp) calibrations">mic</th>
+            <th class="fw-normal text-end" title="Held back at start to line up with the slowest speaker">start offset</th>
+            <th class="fw-normal text-end">trim now</th>
+          </tr></thead>
+          <tbody>
+            ${players.map(p => {
+                const id = esc(p.player_id);
+                return `
+              <tr>
+                <td><span class="rounded-circle me-1" aria-hidden="true"
+                      style="display:inline-block;width:9px;height:9px;background:${_colorFor(p.player_id)}"></span>
+                  ${esc(_nameFor(p.player_id))}</td>
+                <td class="text-end" data-v="jump:${id}" data-cls-base="text-end"></td>
+                <td class="text-end" data-v="slew:${id}"></td>
+                <td class="text-end" data-v="trim:${id}"></td>
+                <td class="text-end" data-v="chirp:${id}"></td>
+                <td class="text-end text-muted" data-v="pre:${id}"></td>
+                <td class="text-end" data-v="std:${id}"></td>
+              </tr>`; }).join('')}
+          </tbody>
+        </table>
+        </div>
+        <div id="syncLabLedger"></div>
+      </div>`,
+        // Fixed columns, tabular figures: a tick that moves a count changes
+        // one cell's glyphs and nothing else on the page can shift. The
+        // sentence form this replaced re-wrapped whenever a number gained a
+        // digit, which is what made the panel feel restless.
+        Object.assign({}, ...players.map(p => {
+            const t = tally[p.player_id];
+            const pre = p.precomp_s == null ? null : p.precomp_s * 1000;
+            return {
+                [`jump:${p.player_id}`]: {
+                    text: t.jump ? `${t.jump} (Σ ${Math.round(t.jumpMs)} ms)` : '—',
+                    cls: t.jump ? 'text-end text-warning' : 'text-end text-muted',
+                },
+                [`slew:${p.player_id}`]: t.slew
+                    ? `${t.slew} (≤ ${Math.round(t.slewMax)} ms)` : '—',
+                [`trim:${p.player_id}`]: t.trim ? String(t.trim) : '—',
+                [`chirp:${p.player_id}`]: t.chirp ? String(t.chirp) : '—',
+                [`pre:${p.player_id}`]: fmtMs(pre),
+                [`std:${p.player_id}`]: `${p.trim_ms ?? 0} ms`,
+            };
+        })));
+
+    // The ledger only changes when an adjustment actually happens, so it is
+    // its own element: a tick that merely moved a ppm reading leaves the
+    // reader's scroll position in the list alone.
+    _setHtml(document.getElementById('syncLabLedger'), shown.length ? `
+      <div class="mt-2" data-keep-scroll="ledger"
+           style="max-height:200px;overflow-y:auto">
+        <table class="table table-sm small mb-0">
+          <tbody>
+            ${shown.map(e => `
+              <tr>
+                <td class="text-muted py-1" style="width:3.5rem">${_clock(e.t)}</td>
+                <td class="py-1"><span class="rounded-circle me-1" aria-hidden="true"
+                      style="display:inline-block;width:8px;height:8px;background:${_colorFor(e.pid)}"></span>
+                  ${esc(_nameFor(e.pid))}</td>
+                <td class="py-1"><i class="fas ${e.icon} text-${e.cls} me-1"
+                      aria-hidden="true"></i>${e.label}
+                  ${e.count > 1 ? `<span class="text-muted">(${e.count} steps)</span>` : ''}
+                  ${e.audible ? '' : '<span class="text-muted">(inaudible)</span>'}</td>
+                <td class="py-1 text-end font-monospace">${e.amount}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${events.length > shown.length
+        ? `<div class="small text-muted mt-1">${events.length - shown.length} earlier
+             adjustment(s) not shown.</div>` : ''}`
+      : '<div class="small text-muted mt-1">No discrete corrections — the group held on the rate loop alone.</div>');
 }
 
 function _renderTrend(merge = false) {
@@ -533,12 +816,11 @@ function _renderTrend(merge = false) {
     _setChart(_trendBChart, bar(_trend.map(t => t.lock_s), 's'), merge);
 }
 
+/** Tile skeleton — every live figure is an empty [data-v] node filled by
+ *  _patch, so a tick never rewrites the row (see _patch). */
 function _tile(p) {
     const c = _colorFor(p.player_id);
-    const m = _model[p.player_id];
-    const modelLine = m
-        ? `model: lag ${fmtMs(m.lag_s * 1000)} · drift ${fmtPpm(m.drift_ppm)} · ${m.sessions} sessions`
-        : 'model: not trained yet';
+    const id = esc(p.player_id);
     return `
       <div class="col-md-6 col-xl-3">
         <div class="border rounded p-2 h-100" style="border-left: 4px solid ${c} !important">
@@ -547,22 +829,37 @@ function _tile(p) {
                   style="display:inline-block;width:9px;height:9px;background:${c}"></span>
             <span class="fw-semibold text-truncate">${esc(_nameFor(p.player_id))}</span>
           </div>
-          <div class="fs-5 fw-semibold mt-1">${fmtMs(p.settled_med_ms)}
+          <div class="fs-5 fw-semibold mt-1"><span data-v="med:${id}"></span>
             <span class="small fw-normal text-muted">settled median</span></div>
-          <div class="small text-muted">
-            p95 ${fmtMs(p.settled_p95_ms)} · lock ${fmtS(p.lock_s)} ·
-            start ${fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000)}<br>
-            ${p.resyncs} resyncs · drift ${fmtPpm(p.final_ppm)} · trim ${p.trim_ms ?? 0} ms
-          </div>
-          <div class="small text-muted fst-italic mt-1">${modelLine}</div>
+          <div class="small text-muted" data-v="det:${id}"></div>
+          <div class="small text-muted fst-italic mt-1" data-v="mdl:${id}"></div>
         </div>
       </div>`;
 }
 
 function _renderTiles(players) {
-    _setHtml(document.getElementById('syncLabTiles'),
-        players.map(_tile).join('')
-        || '<div class="col text-muted small">No speakers reported in this session.</div>');
+    const el = document.getElementById('syncLabTiles');
+    if (!el) return;
+    if (!players.length) {
+        _setHtml(el, '<div class="col text-muted small">No speakers reported in this session.</div>');
+        return;
+    }
+    const vals = {};
+    for (const p of players) {
+        const m = _model[p.player_id];
+        vals[`med:${p.player_id}`] = fmtMs(p.settled_med_ms);
+        vals[`det:${p.player_id}`] =
+            `p95 ${fmtMs(p.settled_p95_ms)} · lock ${fmtS(p.lock_s)}`
+            + ` · start ${fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000)}`
+            + ` · ${p.resyncs} resync${p.resyncs === 1 ? '' : 's'}`
+            + ` · drift ${fmtPpm(p.final_ppm)}`
+            + ` · trim ${p.trim_ms ?? 0} ms`;
+        vals[`mdl:${p.player_id}`] = m
+            ? `model: lag ${fmtMs(m.lag_s * 1000)} · drift ${fmtPpm(m.drift_ppm)} · ${m.sessions} sessions`
+            : 'model: not trained yet';
+    }
+    _patch(el, `tiles:${players.map(p => p.player_id).join('|')}`,
+           () => players.map(_tile).join(''), vals);
 }
 
 function _emptyOption(text) {
@@ -680,10 +977,27 @@ function _renderCharts(series, pids, merge = false) {
     }, merge);
 }
 
+const _TABLE_COLS = ['start', 'precomp', 'lock', 'med', 'p95', 'resyncs',
+                     'drift', 'trim'];
+
 function _renderTable(players) {
     const el = document.getElementById('syncLabTable');
     if (!el) return;
-    _setHtml(el, `
+    const vals = {};
+    for (const p of players) {
+        const v = {
+            start: fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000),
+            precomp: fmtMs(p.precomp_s == null ? null : p.precomp_s * 1000),
+            lock: fmtS(p.lock_s),
+            med: fmtMs(p.settled_med_ms),
+            p95: fmtMs(p.settled_p95_ms),
+            resyncs: String(p.resyncs ?? 0),
+            drift: fmtPpm(p.final_ppm),
+            trim: `${p.trim_ms ?? 0} ms`,
+        };
+        for (const c of _TABLE_COLS) vals[`t:${p.player_id}:${c}`] = v[c];
+    }
+    _patch(el, `table:${players.map(p => p.player_id).join('|')}`, () => `
       <table class="table table-sm align-middle mb-0">
         <thead><tr>
           <th>Speaker</th><th>Startup lag</th><th>Pre-comp</th><th>Time to lock</th>
@@ -696,15 +1010,9 @@ function _renderTable(players) {
               <td><span class="rounded-circle me-1" aria-hidden="true"
                     style="display:inline-block;width:8px;height:8px;background:${_colorFor(p.player_id)}"></span>
                   ${esc(_nameFor(p.player_id))}</td>
-              <td>${fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000)}</td>
-              <td>${fmtMs(p.precomp_s == null ? null : p.precomp_s * 1000)}</td>
-              <td>${fmtS(p.lock_s)}</td>
-              <td>${fmtMs(p.settled_med_ms)}</td>
-              <td>${fmtMs(p.settled_p95_ms)}</td>
-              <td>${p.resyncs ?? 0}</td>
-              <td>${fmtPpm(p.final_ppm)}</td>
-              <td>${p.trim_ms ?? 0} ms</td>
+              ${_TABLE_COLS.map(c =>
+                  `<td data-v="t:${esc(p.player_id)}:${c}"></td>`).join('')}
             </tr>`).join('')}
         </tbody>
-      </table>`);
+      </table>`, vals);
 }

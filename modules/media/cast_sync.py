@@ -164,6 +164,8 @@ STREAM_FIT_MIN_SIGMA = 2.0
 # moving is a measurement worth teaching the per-model store.
 TRIM_MODEL_AGREE_MS = 25         # units of one model trimmed further apart
 #                                  than this disprove a per-model default
+STREAM_TRIM_QUIET_MS = 10        # trim steps at or below this are inside the
+#                                  sensor's noise — no cooldown, no history wipe
 STREAM_TRIM_SETTLE_S = 3.0
 # Acquisition happens under silence. A group needs several seconds to measure
 # where each device actually landed and to jump it into place, and those jumps
@@ -850,15 +852,24 @@ class CastSyncPoc:
         for s in self._streams.values():
             if s.player_id != player_id:
                 continue
-            delta_s = (trim_ms - s.trim_ms) / 1000.0
+            delta_ms = trim_ms - s.trim_ms
+            delta_s = delta_ms / 1000.0
             s.trim_ms = trim_ms
             if s.pos is None:
                 continue          # not serving yet: picked up when it opens
             s.pos -= delta_s * RATE
             s.shift -= delta_s * RATE
             s.moved_s -= delta_s
-            s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
-            s.err_hist = []       # baseline moved — old medians invalid
+            # Only a step big enough to disturb the device's buffer earns the
+            # blackout. Aligning by ear is a RUN of ±1 ms taps — fifty of them
+            # is fifty 7 s cooldowns with the median history wiped each time,
+            # which leaves the correction loop blind for the entire tuning
+            # session and lets real error accumulate unopposed while the user
+            # is listening for exactly that error. A tap this small is well
+            # inside the sensor's own noise; the loop can absorb it.
+            if abs(delta_ms) > STREAM_TRIM_QUIET_MS:
+                s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+                s.err_hist = []   # baseline moved — old medians invalid
             await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 

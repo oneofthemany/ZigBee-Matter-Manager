@@ -104,7 +104,21 @@ export function createChart(el, initOpts = {}) {
     let inst = echarts.init(el, currentTheme(), initOpts);
     let lastOption = null;
 
-    const ro = new ResizeObserver(() => inst.resize());
+    // Resize only when the box REALLY changed, and at most once per frame.
+    // ResizeObserver fires on sub-pixel reflow too, and a live view that
+    // repaints its panels every few seconds would otherwise make every chart
+    // on the page re-render (and re-animate) in sympathy — the charts appear
+    // to reset while you are reading them. A zero-size box means the view is
+    // hidden; resizing to that throws the layout away for the next open.
+    let lastW = 0, lastH = 0, queued = false;
+    const ro = new ResizeObserver(() => {
+        const w = Math.round(el.clientWidth), h = Math.round(el.clientHeight);
+        if (!w || !h || (w === lastW && h === lastH)) return;
+        lastW = w; lastH = h;
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(() => { queued = false; inst.resize(); });
+    });
     ro.observe(el);
 
     // ECharts has no live theme swap — re-init and replay the last raw option.

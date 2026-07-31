@@ -9,7 +9,7 @@
 const log = zmmLog('media');
 
 import { confirmDialog } from './dialogs.js';
-import { openSyncLab, restoreSyncLab } from './sync-lab.js';
+import { openSyncLab, restoreSyncLab, syncLabGroup } from './sync-lab.js';
 import * as local from './local-player.js';
 import { LOCAL_ID } from './local-player.js';
 import * as eq from './eq.js';
@@ -24,6 +24,11 @@ let _syncStatus = null;     // last /api/media/sync/status snapshot
 let _syncTimer = null;      // stats poll while the sync pane is open
 let _syncLabKeep = null;    // live Sync Lab DOM node — survives pane wipes so
 //                             charts are re-attached, never rebuilt mid-test
+// OpenZone splits in two: the zones you build and run, and the results you
+// read. They were stacked, which put a page of charts under every control —
+// a tab keeps each one a screenful.
+let _syncSub = localStorage.getItem('zmm.openzone.tab') === 'results'
+    ? 'results' : 'zones';
 let _searchSource = 'radio'; // 'radio' | 'tidal' | 'therapy'
 let _pane = null;            // mobile pane: 'players' | 'browse' (null = not yet chosen)
 let _tidalState = null;      // last known tidal status state string
@@ -117,7 +122,22 @@ export function initMedia() {
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
-    window.mediaSyncLab = (gid) => openSyncLab(gid, _syncGroups.find(g => g.id === gid));
+    // The group card's lab button now also switches to the Results tab —
+    // opening a view you cannot see is worse than not opening it.
+    window.mediaSyncLab = (gid) => {
+        if (_syncSub !== 'results') window.mediaSyncSubTab('results');
+        return openSyncLab(gid, _syncGroups.find(g => g.id === gid));
+    };
+    window.mediaSyncSubTab = (tab) => {
+        _syncSub = tab === 'results' ? 'results' : 'zones';
+        localStorage.setItem('zmm.openzone.tab', _syncSub);
+        _applySyncSubTab();
+    };
+    // The lab's own close button leaves the Results tab empty — put the
+    // group picker back rather than a blank panel.
+    document.addEventListener('synclabchange', () => {
+        if (_syncSub === 'results') _syncResultsPick();
+    });
     // Phase 2
     window.mediaSetSource = setSource;
     window.mediaSearch = doSearch;
@@ -1618,6 +1638,50 @@ function _syncMemberRow(m, groupActive) {
       </div>`;
 }
 
+/** Show one OpenZone sub-tab. Both panes stay in the DOM — the hidden one
+ *  is still being painted by the stats poller, and a live Sync Lab must not
+ *  be torn down and rebuilt just because you looked at the controls. */
+function _applySyncSubTab() {
+    const zones = document.getElementById('syncZonesPane');
+    const results = document.getElementById('syncResultsPane');
+    if (!zones || !results) return;
+    zones.classList.toggle('d-none', _syncSub !== 'zones');
+    results.classList.toggle('d-none', _syncSub !== 'results');
+    document.getElementById('syncSubTabZones')
+        ?.classList.toggle('active', _syncSub === 'zones');
+    document.getElementById('syncSubTabResults')
+        ?.classList.toggle('active', _syncSub === 'results');
+    if (_syncSub === 'results') _syncResultsPick();
+}
+
+/** On the Results tab: open the obvious group's lab, or offer the choice.
+ *  "Obvious" is the one that is playing, or the only one there is. */
+function _syncResultsPick() {
+    const picker = document.getElementById('syncLabPicker');
+    if (!picker) return;
+    const open = syncLabGroup();
+    if (!open) {
+        const active = _syncGroups.find(g => g.active);
+        const only = _syncGroups.length === 1 ? _syncGroups[0] : null;
+        const auto = active || only;
+        if (auto) { window.mediaSyncLab(auto.id); return; }
+    }
+    if (!_syncGroups.length) {
+        picker.innerHTML = '<div class="text-muted small">No sync groups yet — '
+            + 'create one on the Zones tab.</div>';
+        return;
+    }
+    picker.innerHTML = `
+      <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+        <span class="small text-muted">Session results for</span>
+        ${_syncGroups.map(g => `
+          <button class="btn btn-sm ${g.id === open ? 'btn-primary' : 'btn-outline-secondary'}"
+                  onclick="window.mediaSyncLab('${esc(g.id)}')">
+            ${esc(g.name)}${g.active ? ' <span class="badge bg-success ms-1">live</span>' : ''}
+          </button>`).join('')}
+      </div>`;
+}
+
 async function renderSyncPane() {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
@@ -1697,6 +1761,15 @@ async function renderSyncPane() {
       </div>`).join('');
 
     el.innerHTML = `
+      <ul class="nav nav-tabs mb-2" role="tablist">
+        <li class="nav-item"><button class="nav-link py-1 px-3" id="syncSubTabZones"
+              onclick="window.mediaSyncSubTab('zones')" role="tab">
+            <i class="fas fa-sliders me-1"></i>Zones</button></li>
+        <li class="nav-item"><button class="nav-link py-1 px-3" id="syncSubTabResults"
+              onclick="window.mediaSyncSubTab('results')" role="tab">
+            <i class="fas fa-wave-square me-1"></i>Results</button></li>
+      </ul>
+      <div id="syncZonesPane">
       ${banner}
       <p class="small text-muted mb-2">Sync groups play the same audio on several Cast speakers,
         clock-aligned by ZigBee Manager — no Google-Home group required. Per-speaker trim (±ms)
@@ -1719,7 +1792,11 @@ async function renderSyncPane() {
           <button class="btn btn-sm btn-primary mt-2" onclick="window.mediaSyncCreate()">Create sync group</button>`}
         </div>
       </div>
-      <div id="syncLabHost"></div>`;
+      </div>
+      <div id="syncResultsPane">
+        <div id="syncLabPicker"></div>
+        <div id="syncLabHost"></div>
+      </div>`;
 
     // Poll while a session runs so pills + stats stay live (in place — a full
     // re-render would fight an in-progress trim drag).
@@ -1727,6 +1804,7 @@ async function renderSyncPane() {
     if (keepLab) document.getElementById('syncLabHost').replaceWith(savedLab);
     else restoreSyncLab();
     _syncLabKeep = document.getElementById('syncLabHost');
+    _applySyncSubTab();
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
