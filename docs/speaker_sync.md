@@ -130,6 +130,23 @@ explicit per-device trim in `data/cast_sync_trims.json` always wins, and trims
 are pushed live over the WebSocket when changed so slider drags are audible
 immediately.
 
+That inheritance rests on the trim measuring the hardware. Two units of one
+model trimmed more than `TRIM_MODEL_AGREE_MS` (25 ms) apart disprove it — in
+that house the trim is also absorbing placement or distance — so the model
+default is **dropped** rather than overwritten, and untrimmed siblings go back
+to where the loop puts them. No default beats a wrong one applied to a speaker
+nobody touched.
+
+A trim only changes a device's timing through `set_trim()`, which moves the
+served timeline and the value the measurement subtracts in the same breath,
+and only for that player. Everything else — including a model default learned
+while a session is running — lands at the next session start, because each
+stream latches the trim it was built with (`_Stream.trim_ms`). Re-reading the
+effective trim per poll meant a slider drag on one speaker could shift the
+subtracted term on a *different* speaker of the same model with no matching
+move of its timeline; the monitor read the difference as error and hard-
+resynced audio that was already aligned.
+
 The mic calibrator sets both automatically when it can hear the speakers; by
 ear is the documented fallback (§10.4) and feeds the same model learning.
 
