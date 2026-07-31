@@ -150,6 +150,40 @@ resynced audio that was already aligned.
 The mic calibrator sets both automatically when it can hear the speakers; by
 ear is the documented fallback (§10.4) and feeds the same model learning.
 
+### Queues, expiring URLs, and what the displays show
+
+A zone plays one server timeline, so "a playlist" cannot mean what it means on
+a single speaker (a queue the *device* walks). It is the **decoder** that
+walks it, and the seam between two tracks is the only place a zone can change
+what it is playing without disturbing anyone's alignment.
+
+`MediaSource` therefore asks its URL provider for a URL before every decoder
+start, and hands it **why the last decode ended** — that one value is the
+whole mechanism:
+
+| `last_rc` | Means | Provider does |
+|---|---|---|
+| `None` | first start, or the decoder raised | resolve the current item |
+| `0` | the item played out cleanly | advance; `""` at the end of the set |
+| non-zero | ffmpeg failed — usually an expired signature | re-resolve the **same** item |
+
+Returning `""` after a clean end sets `finished`, the supervisor stops instead
+of restarting, and `_source_spent()` waits for the tail already in the delay
+line and the devices' own buffers to be *heard* before the session is torn
+down. Without that wait, teardown would cut the end off the last track.
+
+The policy lives in the provider `cast_sync` builds, not in the source: a
+zone has no queue behind it unless one was expanded for it, so a bare track
+that ends cleanly ends the session rather than silently repeating.
+
+**Artwork** rides on the Cast LOAD (`metadataType 3`, `images`, `thumb`), the
+same shape a single Cast player gets, so screened members show album art or a
+station logo instead of a bare title. It is set once, at launch: changing it
+later means re-loading, which restarts the device's buffering and would cost
+the zone its alignment. A queue therefore shows the *set* on the speakers,
+while `now_playing` in the status payload tracks the individual item for the
+app, where it is free.
+
 ### Device launch flow
 
 1. `CastPlayerProvider._get_cast()` connects to the device (pychromecast).
@@ -213,11 +247,21 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
   slice (merged key-wise server-side, so it can't clobber other tabs).
 - **Media → Group** — now two sub-tabs:
   - *WiiM multiroom*: the pre-existing native LinkPlay builder, unchanged.
-  - *Speaker sync (beta)*: create/delete named groups of ≥ 2 Cast speakers,
-    a **source picker** (sync test signal, favourite stations, recently
-    played, custom URL), session length, **Test/Play**, live per-member trim
-    sliders, connection pills and stats (offset / RTT / late / resyncs),
-    refreshed in place every 3 s so slider drags aren't disturbed.
+  - *OpenZone (beta)*: itself split in two — **Zones** (build and run) and
+    **Results** (the Sync Lab), because a page of charts under every control
+    made both halves hard to read. Zones holds create/delete for named groups
+    of ≥ 2 Cast speakers, a **source picker** (sync test signal, favourite
+    stations, recently played, the Tidal library, custom URL), session length,
+    **Test/Play**, live per-member trim sliders, connection pills and stats
+    (offset / RTT / late / resyncs), refreshed in place every 3 s so slider
+    drags aren't disturbed.
+
+    Picking **Tidal library…** reveals a second row: which slice (Mixes,
+    Playlists, Albums, Artists) and which item. A container becomes the
+    session's queue — the engine plays it in order, re-resolving each track's
+    signed URL as it reaches it, and stops at the end unless *Repeat* is set.
+    Lists load on demand and are cached, so the picker stays one line tall
+    next to Play instead of unrolling a library into a select.
 
     The source choice is remembered per group in `localStorage` — a group tends
     to be "the kitchen radio", so it should survive a reload the way the test
@@ -225,7 +269,8 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
 
     | Key | Holds |
     |---|---|
-    | `zmm.syncsrc.<gid>` | `""` (test signal), `fav:<uuid>`, `url:<url>` or `custom` |
+    | `zmm.syncsrc.<gid>` | `""` (test signal), `fav:<uuid>`, `url:<url>`, `tidal:<track id>`, `tc:<kind>[:<id>]` (Tidal container, id absent while still being picked) or `custom` |
+    | `zmm.openzone.tab` | `zones` or `results` — which sub-tab to open on |
     | `zmm.syncurl.<gid>` | the custom URL text, kept separately so switching away to a favourite and back doesn't lose it |
     | `zmm.syncloop.<gid>` | `1` when the custom source should repeat |
 
@@ -275,8 +320,8 @@ Full steps also in `static/cast/README.md`.
 
 | Endpoint | Method | Body / Returns |
 |---|---|---|
-| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, source:{kind, buffered_s, underruns, restarts, …}, resampler:{kind, soxr, …}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
-| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid, title?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start; a `media` block that resolves to no URL, or a URL starting with `-`, is rejected rather than passed to the decoder |
+| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, now_playing:{title, artist, artwork_url, index, count}, source:{kind, buffered_s, underruns, restarts, finished, …}, resampler:{kind, soxr, …}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
+| `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid \| source_id+media_type, kind?, title?, artist?, artwork_url?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start (and carries its logo through as `artwork_url`); `kind` is `track` (default) or `album\|playlist\|artist\|mix`, which expands into the session queue; a `media` block that resolves to no URL, or a URL starting with `-`, is rejected rather than passed to the decoder |
 | `/api/media/sync/stop` | POST | — |
 | `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
 | `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active}]}` |
