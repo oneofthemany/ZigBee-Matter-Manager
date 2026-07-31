@@ -128,7 +128,7 @@ export function initWS() {
                     break;
 
                 case 'presence_user_updated':
-                    if (window.handlePresenceUpdate) window.handlePresenceUpdate(payload);
+                    if (window.handlePresenceUpdate) window.handlePresenceUpdate(msg.payload);
                     break;
 
                 // Messages are pushed rather than waited for: the recipient
@@ -136,7 +136,7 @@ export function initWS() {
                 case 'message_created':
                 case 'messages_read':
                     if (window.zmmHandleMessageEvent) {
-                        window.zmmHandleMessageEvent(msg.type, payload);
+                        window.zmmHandleMessageEvent(msg.type, msg.payload);
                     }
                     break;
 
