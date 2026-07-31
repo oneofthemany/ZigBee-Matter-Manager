@@ -1745,6 +1745,7 @@ async function renderSyncPane() {
                          .join('')}
                    </select>
                    <button class="btn btn-sm btn-outline-primary"
+                           id="syncstart-${esc(g.id)}"
                            ${running || disabled || _syncNeedsUrl(g.id) ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
                            title="${_syncNeedsUrl(g.id)
@@ -2219,13 +2220,48 @@ function _fmtRemain(s) {
     return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+/** Bees circling a comb cell. Markup only — see .hive-loader in
+ *  hive-components.css. Child order matters: the cell is first. */
+function _hiveLoader(cls = '') {
+    return `<span class="hive-loader ${cls}" role="status" aria-hidden="true">
+              <span class="hive-loader__cell"></span>
+              <span class="hive-loader__orbit"><span class="hive-loader__bee"></span></span>
+              <span class="hive-loader__orbit"><span class="hive-loader__bee"></span></span>
+              <span class="hive-loader__orbit"><span class="hive-loader__bee"></span></span>
+            </span>`;
+}
+
 async function syncStartGroup(gid) {
     const media = _syncMediaFor(gid);
-    const r = await apiPost('/api/media/sync/start', {
-        group_id: gid, duration_s: _syncDurFor(gid),
-        ...(media ? { media } : {}),      // omitted body = generated test signal
-    });
-    if (!r.success) { toast(r.error || 'Start failed', 'error'); return; }
+    // /sync/start does not return until the delay line holds enough timeline
+    // for the deepest-pre-compensated member to read from, which is bounded by
+    // how fast the source arrives — a live stream yields one second of buffer
+    // per second, so this is a wait of seconds with nothing else to show for
+    // it. Say what is happening for the whole of it, and name the reason:
+    // "buffering" is the difference between a slow start and a broken button.
+    const btn = document.getElementById(`syncstart-${gid}`);
+    const restore = btn?.innerHTML;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `${_hiveLoader('hive-loader--inline')}`
+            + `<span class="ms-2">Buffering…</span>`;
+    }
+    let r;
+    try {
+        r = await apiPost('/api/media/sync/start', {
+            group_id: gid, duration_s: _syncDurFor(gid),
+            ...(media ? { media } : {}),  // omitted body = generated test signal
+        });
+    } catch (e) {
+        r = { success: false, error: e.message };
+    }
+    if (!r.success) {
+        // Only on the failure path: a success re-renders the whole pane below,
+        // which replaces this button with the running state anyway.
+        if (btn) { btn.disabled = false; btn.innerHTML = restore; }
+        toast(r.error || 'Start failed', 'error');
+        return;
+    }
     const what = _syncSrcLabel(gid);
     toast(r.duration_s
         ? `${what} starting — ${Math.round(r.duration_s / 60)} min window`

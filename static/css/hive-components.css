@@ -539,3 +539,104 @@ body {
 @media (prefers-reduced-motion: reduce) {
     .zmm-media-progress { transition: none; }
 }
+
+
+/* ----------------------------------------------------------
+   HIVE LOADER — bees circling a comb cell
+   ---------------------------------------------------------- */
+/* For waits that are structural rather than incidental. Starting a sync
+   session has to fill the delay line before any speaker may read from it, and
+   that costs as long as the audio it buffers — the group's spread of startup
+   latencies, so seconds, not milliseconds. A button that merely goes disabled
+   for that span reads as a dropped click, which is why the wait gets a face.
+   Built from the same hexagon the frames grid uses so it belongs to the hive
+   rather than arriving as a generic spinner. */
+.hive-loader {
+    --hive-size: 2.5rem;
+    position: relative;
+    display: inline-block;
+    flex: 0 0 auto;
+    width: var(--hive-size);
+    height: var(--hive-size);
+    vertical-align: middle;
+}
+
+/* Sized to sit on a text baseline inside a button. Not smaller: below about
+   this the bees fall under a pixel and the whole thing reads as a jiggling
+   dot. */
+.hive-loader--inline { --hive-size: 1.6rem; }
+
+.hive-loader__cell {
+    position: absolute;
+    inset: 26%;
+    clip-path: var(--hexclip);
+    background: linear-gradient(155deg, var(--honey-soft), var(--honey-deep));
+    animation: hive-breathe 1.9s ease-in-out infinite;
+}
+
+/* One ring per bee. The ring spins; the bee is pushed out along it, so the
+   orbit radius scales with the loader instead of being pinned to one size. */
+.hive-loader__orbit {
+    position: absolute;
+    inset: 0;
+    animation: hive-orbit var(--dur, 1.7s) linear infinite;
+    animation-delay: var(--delay, 0s);
+}
+
+/* Children 2-4 — child 1 is the comb cell, so nth-child counts from there.
+   Differing periods keep the three from locking into a rosette; the variety is
+   carried by those rather than by the radii, which are boxed in at both ends.
+   A bee is 15% wide, so a radius over 0.425 puts it outside the loader and
+   onto whatever sits next to it (the button label), while under about 0.30 it
+   clips the comb cell on the way past. */
+.hive-loader__orbit:nth-child(2) { --dur: 1.6s; --delay: 0s;    --r: 0.40; }
+.hive-loader__orbit:nth-child(3) { --dur: 2.3s; --delay: -0.6s; --r: 0.33; }
+.hive-loader__orbit:nth-child(4) { --dur: 2.9s; --delay: -1.3s; --r: 0.37; }
+
+/* Deliberately round: at this size a bee is a few pixels across, so the shape
+   that survives is a high-contrast dot. No counter-rotation needed for it. */
+/* Kept well under the cell it circles — a bee the size of the hive reads as
+   two competing blobs rather than as something orbiting. */
+.hive-loader__bee {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 15%;
+    height: 15%;
+    margin: -7.5% 0 0 -7.5%;
+    border-radius: 50%;
+    background: var(--honey-ink);
+    transform: translateX(calc(var(--hive-size) * var(--r, 0.42)));
+}
+
+/* The wing. Small and offset, so it separates the bee from a plain dot at the
+   sizes where that is visible and simply disappears at the sizes where it is
+   not — rather than growing into a second body. */
+.hive-loader__bee::after {
+    content: "";
+    position: absolute;
+    top: -22%;
+    left: 48%;
+    width: 58%;
+    height: 58%;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.7);
+}
+
+@keyframes hive-orbit {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes hive-breathe {
+    0%, 100% { transform: scale(1);    opacity: 1;    }
+    50%      { transform: scale(0.88); opacity: 0.75; }
+}
+
+/* Motion is the whole point here, so with it suppressed the component still
+   has to say "working" — the bees stay parked on their ring and the cell
+   holds a dimmed steady state rather than vanishing. */
+@media (prefers-reduced-motion: reduce) {
+    .hive-loader__cell,
+    .hive-loader__orbit { animation: none; }
+    .hive-loader__cell { opacity: 0.8; }
+}
