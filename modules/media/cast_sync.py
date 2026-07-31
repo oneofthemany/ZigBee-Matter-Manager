@@ -162,6 +162,8 @@ STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
 STREAM_FIT_MIN_SIGMA = 2.0
 # A trim slider reports every intermediate position; only a value that stops
 # moving is a measurement worth teaching the per-model store.
+TRIM_MODEL_AGREE_MS = 25         # units of one model trimmed further apart
+#                                  than this disprove a per-model default
 STREAM_TRIM_SETTLE_S = 3.0
 # Acquisition happens under silence. A group needs several seconds to measure
 # where each device actually landed and to jump it into place, and those jumps
@@ -251,6 +253,20 @@ class _Stream:
         self.start_pos: int = 0      # timeline sample of the first PCM byte
         self.shift: float = 0.0      # cumulative deliberate moves (samples)
         self.natural_lag: Optional[float] = None   # first stable lag (s)
+        # The trim this stream's timeline was actually built with — LATCHED,
+        # not re-read from the trims store on every poll.
+        #
+        # The measurement subtracts the trim so the loop cannot fight it
+        # (§6.1), which only holds while the value subtracted is the value
+        # baked into `pos`. Re-reading the effective trim meant a model-trim
+        # write (learned from a slider drag on ANY device of the same model)
+        # silently changed this device's subtracted term with no matching
+        # move of its timeline: the next poll read a step of the full trim
+        # delta and the monitor hard-resynced real audio to "correct" it —
+        # wrecking an alignment the user had set by hand, on a speaker they
+        # had not touched. Only set_trim() for THIS player moves both halves
+        # together; everything else lands at the next session.
+        self.trim_ms: int = 0
         self.cooldown_until: float = 0.0   # skip polls until then after a jump
         self.resyncs: int = 0
         self.stats: dict = {}
@@ -417,7 +433,16 @@ class CastSyncPoc:
         Debounced, because the slider reports every intermediate position: a
         single drag from 0 to 209 would otherwise teach the model +6, +5, +4,
         +3, +2, +1 and write the file each time. Only where the value stops
-        moving is it a measurement of anything."""
+        moving is it a measurement of anything.
+
+        Abandoned entirely once two units of the same model are trimmed to
+        materially different values. The premise of a model default is that
+        the trim measures the HARDWARE's output pipeline; two units needing
+        different numbers is proof that in this house it is measuring
+        something else as well (placement, distance to the listener, room),
+        and a default extrapolated from one of them is then just a wrong
+        number applied to a speaker nobody touched. No default is better than
+        that: an untrimmed device stays where the loop puts it."""
         key = self._model_key(player_id)
         if not key:
             return
@@ -431,6 +456,17 @@ class CastSyncPoc:
             except asyncio.CancelledError:
                 return
             self._trim_learn_tasks.pop(key, None)
+            peers = [int(v) for pid, v in self._trims.items()
+                     if pid != player_id and self._model_key(pid) == key]
+            disputed = [v for v in peers if abs(v - trim_ms) > TRIM_MODEL_AGREE_MS]
+            if disputed:
+                if self._model_trims.pop(key, None) is not None:
+                    self._write_json(self._model_trims_file, self._model_trims)
+                logger.info(
+                    f"Model trim for '{key}' dropped: units disagree "
+                    f"({trim_ms:+d} ms vs {', '.join(f'{v:+d}' for v in disputed)} ms) "
+                    f"— this trim is positional, not a property of the hardware")
+                return
             if self._model_trims.get(key) == trim_ms:
                 return
             self._model_trims[key] = int(trim_ms)
@@ -618,6 +654,7 @@ class CastSyncPoc:
             try:
                 if stream_mode:
                     st = _Stream(sid, pid, name)
+                    st.trim_ms = self.trim_ms(pid)   # latched for the session
                     st.resampler = _rs.make(self._resampler_kind, RATE, CHANNELS)
                     m = self._model.get(pid, {})
                     if self._target_lag is not None and m.get("lag_s") is not None:
@@ -759,7 +796,10 @@ class CastSyncPoc:
                 "player_id": info["player_id"],
                 "name": info["name"],
                 "connected": (r is not None) or (s is not None and s.connected),
-                "trim_ms": self.trim_ms(info["player_id"]),
+                # A serving stream reports the trim it is actually built with,
+                # not what the store would resolve to now (_Stream.trim_ms).
+                "trim_ms": (s.trim_ms if s is not None
+                            else self.trim_ms(info["player_id"])),
                 "stats": (r.stats if r else (s.stats if s else {})),
             })
         elapsed = (time.monotonic() - self._epoch) if self.running else 0
@@ -781,7 +821,6 @@ class CastSyncPoc:
 
     async def set_trim(self, player_id: str, trim_ms: int) -> dict:
         trim_ms = max(-2000, min(2000, int(trim_ms)))
-        old = self.trim_ms(player_id)
         self._trims[player_id] = trim_ms
         self._write_json(self._trims_file, self._trims)
         # Teach the model too. Aligning one screened device by ear is a
@@ -803,15 +842,24 @@ class CastSyncPoc:
         # its baseline; the cooldown covers the device-buffer transient.
         # The chirp calibrator will set trims automatically; the slider then
         # remains as a manual override for taste.
-        delta_s = (trim_ms - old) / 1000.0
+        #
+        # The step and the latched value move together and only here: the
+        # timeline shift and the term the measurement subtracts must change
+        # in the same breath, or the very next poll reads the difference as
+        # a real error and corrects audio that was already where it belonged.
         for s in self._streams.values():
-            if s.player_id == player_id and s.pos is not None:
-                s.pos -= delta_s * RATE
-                s.shift -= delta_s * RATE
-                s.moved_s -= delta_s
-                s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
-                s.err_hist = []       # baseline moved — old medians invalid
-                await self._record_samples([self._sample_row(s, "trim")])
+            if s.player_id != player_id:
+                continue
+            delta_s = (trim_ms - s.trim_ms) / 1000.0
+            s.trim_ms = trim_ms
+            if s.pos is None:
+                continue          # not serving yet: picked up when it opens
+            s.pos -= delta_s * RATE
+            s.shift -= delta_s * RATE
+            s.moved_s -= delta_s
+            s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+            s.err_hist = []       # baseline moved — old medians invalid
+            await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
     # ------------------------------------------------------------------
@@ -860,7 +908,7 @@ class CastSyncPoc:
         for i, s in enumerate(streams):
             slot_s = head_s + _chirp.CHIRP_LEAD_S + i * _chirp.CHIRP_GAP_S
             s.chirp = (int(slot_s * RATE), wave)
-            trim_s = self.trim_ms(s.player_id) / 1000.0
+            trim_s = s.trim_ms / 1000.0
             plan.append((s, slot_s + self._target_lag + trim_s))
         rec_start = time.monotonic() - self._epoch
         rec_dur = (max(t for _, t in plan) - rec_start
@@ -914,7 +962,7 @@ class CastSyncPoc:
                 continue
             rel = deltas[s.sid] - mean_d
             info["rel_ms"] = round(rel * 1000, 1)
-            new_trim = int(round(self.trim_ms(s.player_id) - rel * 1000))
+            new_trim = int(round(s.trim_ms - rel * 1000))
             info["trim_ms"] = max(-2000, min(2000, new_trim))
             rows.append(self._sample_row(s, "chirp", error=rel))
             await self.set_trim(s.player_id, new_trim)
@@ -1197,7 +1245,7 @@ class CastSyncPoc:
                 "player_id": st.player_id, "kind": kind, "lag_s": lag,
                 "error_ms": None if error is None else error * 1000,
                 "rate_ppm": st.rate_ppm,
-                "trim_ms": self.trim_ms(st.player_id),
+                "trim_ms": st.trim_ms,
                 "precomp_s": st.precomp_s, "target_lag_s": self._target_lag}
 
     async def _record_samples(self, rows: List[dict]):
@@ -1370,7 +1418,9 @@ class CastSyncPoc:
             return None
         now = time.monotonic()
         played_timeline_s = (st.start_pos + st.shift) / RATE + float(ct)
-        trim_s = self.trim_ms(st.player_id) / 1000.0
+        # The LATCHED trim, so this cancels exactly the trim that is baked
+        # into start_pos/shift (see _Stream.trim_ms).
+        trim_s = st.trim_ms / 1000.0
         return (now - self._epoch) - played_timeline_s - trim_s
 
     async def _measure_lag(self, st: _Stream) -> Optional[float]:
@@ -1431,7 +1481,7 @@ class CastSyncPoc:
             source = self._source
             delay = source.delay_s
             if st.pos is None:
-                trim = int(self.trim_ms(st.player_id) * RATE / 1000)
+                trim = int(st.trim_ms * RATE / 1000)
                 precomp = int(st.precomp_s * RATE)
                 # Real media cannot be served ahead of its own arrival, so the
                 # whole group reads `delay` behind the live edge (§4.1). The
