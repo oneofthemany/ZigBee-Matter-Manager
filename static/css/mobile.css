@@ -1245,13 +1245,12 @@ body.controlling {
     white-space: nowrap;
 }
 
+/* The scope's housing lives in hive-components.css (EQ SCOPE), which loads
+   after this file — only the local strip's height belongs here, because it is
+   a layout decision about this panel rather than about the instrument. */
 .zmm-eq-spec {
-    width: 100%;
     height: 46px;
-    display: block;
     margin-bottom: .25rem;
-    border-radius: 4px;
-    background: var(--bs-secondary-bg);
 }
 
 /* Bigger touch targets where fingers, not pointers, do the dragging. */

@@ -73,6 +73,10 @@ class GeneratedSource:
         mono = _gen_float_mono(n0, frames).astype(np.float32)
         return np.repeat(mono[:, None], CHANNELS, axis=1)
 
+    def peek(self, n0: int, frames: int) -> np.ndarray:
+        """Observer read. Closed-form, so identical to read()."""
+        return self.read(n0, frames)
+
     async def start(self) -> None:
         pass
 
@@ -125,7 +129,11 @@ class _Ring:
         self.end += n
         self.start = max(self.start, self.end - self._cap)
 
-    def read(self, n0: int, frames: int) -> np.ndarray:
+    def read(self, n0: int, frames: int, count: bool = True) -> np.ndarray:
+        """``count=False`` for observers — the spectrum tap reads the timeline
+        to look at it, not to play it, so a read that lands outside the window
+        is its own problem and must not show up as a decoder underrun in the
+        session's health stats."""
         out = np.zeros((frames, self._ch), dtype=np.float32)
         lo, hi = max(n0, self.start), min(n0 + frames, self.end)
         if hi > lo:
@@ -138,7 +146,7 @@ class _Ring:
         missing = frames - max(0, hi - lo)
         # Before the first write the timeline legitimately has nothing: that is
         # pipeline pre-roll, not a decoder underrun, and must not be counted.
-        if missing > 0 and self.end > self.start:
+        if count and missing > 0 and self.end > self.start:
             self.underruns += 1
             self.underrun_samples += missing
         return out
@@ -458,6 +466,10 @@ class MediaSource:
 
     def read(self, n0: int, frames: int) -> np.ndarray:
         return self._ring.read(n0, frames)
+
+    def peek(self, n0: int, frames: int) -> np.ndarray:
+        """Observer read — see ``_Ring.read``'s ``count`` flag."""
+        return self._ring.read(n0, frames, count=False)
 
     def stats(self) -> dict:
         buffered = (self._ring.end - self._ring.start) / self._rate

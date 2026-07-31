@@ -640,3 +640,38 @@ body {
     .hive-loader__orbit { animation: none; }
     .hive-loader__cell { opacity: 0.8; }
 }
+
+
+/* ----------------------------------------------------------
+   EQ SCOPE — the studio display behind the equaliser
+   ---------------------------------------------------------- */
+/* Instrument, not decoration: it is read against a grid, so it commits to a
+   dark field in both themes rather than following the surface. A spectrum on
+   a light background loses the quiet detail near the floor — which is most of
+   the picture — and the grid lines have to fight the plot instead of sitting
+   under it. Drawing is in eq-scope.js; everything here is the housing. */
+.zmm-eq-spec {
+    width: 100%;
+    display: block;
+    border-radius: 5px;
+    background:
+        radial-gradient(120% 140% at 50% 0%,
+                        rgba(242, 169, 59, 0.10), transparent 62%),
+        linear-gradient(180deg, #12202e 0%, #0b1622 100%);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    /* Inset shadow reads as recessed glass; without it the panel floats and
+       looks like an image dropped onto the card. */
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+/* The zone scope carries more information than the local strip — it is the
+   only picture of what the speakers are doing — so it gets the height to
+   resolve the bottom octaves. */
+.zmm-zone-spec {
+    height: 84px;
+    margin: 0.35rem 0 0.5rem;
+}
+
+@media (max-width: 575.98px) {
+    .zmm-zone-spec { height: 64px; }
+}

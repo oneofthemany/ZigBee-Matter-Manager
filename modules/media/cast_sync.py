@@ -198,10 +198,43 @@ STREAM_TRIM_SETTLE_S = 3.0
 STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
 STREAM_FADE_IN_S = 0.4
 
+# Zone spectrum feed (the EQ display's signal). A picture of the audio, so the
+# constants are chosen for the eye, not for measurement: 2048 samples is ~46 ms
+# and ~21 Hz of resolution, enough to separate the bottom octaves while still
+# tracking a transient, and 48 log-spaced bands is about as fine as a panel of
+# this width can show. The floor sets what "silence" looks like — deeper and
+# the noise floor of quiet passages becomes visible clutter.
+SPECTRUM_FFT_N = 2048
+SPECTRUM_BANDS = 48
+SPECTRUM_FPS = 15                # display cadence; see _spectrum_feed on cost
+SPECTRUM_F_LO = 25.0
+SPECTRUM_F_HI = 18000.0
+SPECTRUM_FLOOR_DB = -72.0
+
 
 # The timeline the Sync Lab runs on when no media is given. Module-level so
 # the calibrator and the receiver page keep a single shared reference.
 _GENERATED = GeneratedSource()
+
+
+def _ws_clients() -> bool:
+    """Whether any browser is connected. Imported lazily and defensively: the
+    spectrum feed is decoration, and a websocket layer that is absent or
+    mid-reload must degrade to "no display" rather than raise into the
+    session."""
+    try:
+        from routes.websocket_routes import manager
+        return bool(manager.active_connections)
+    except Exception:
+        return False
+
+
+async def _broadcast_spectrum(payload: dict) -> None:
+    try:
+        from routes.websocket_routes import broadcast_event
+        await broadcast_event("zone_spectrum", payload)
+    except Exception:
+        pass
 
 
 def _encode_s16(pcm: np.ndarray) -> bytes:
@@ -402,6 +435,7 @@ class CastSyncPoc:
         # Stream (default-receiver) mode:
         self._streams: Dict[str, _Stream] = {}         # sid -> _Stream
         self._monitor: Optional[asyncio.Task] = None
+        self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
 
     # ------------------------------------------------------------------
@@ -760,6 +794,7 @@ class CastSyncPoc:
                 errors[pid] = str(e)
         if stream_mode:
             self._monitor = asyncio.create_task(self._stream_monitor())
+        self._spectrum = asyncio.create_task(self._spectrum_feed())
         if self._duration_s:
             self._auto_stop = asyncio.create_task(
                 self._auto_stop_after(self._duration_s))
@@ -793,6 +828,9 @@ class CastSyncPoc:
         if self._monitor:
             self._monitor.cancel()
             self._monitor = None
+        if self._spectrum:
+            self._spectrum.cancel()
+            self._spectrum = None
         # May be called FROM the auto-stop task — cancelling ourselves here
         # would abort the rest of this cleanup.
         if self._auto_stop and self._auto_stop is not asyncio.current_task():
@@ -1406,6 +1444,84 @@ class CastSyncPoc:
             pass
         except Exception as e:
             logger.error(f"Sync stream monitor died: {e}")
+
+    async def _spectrum_feed(self) -> None:
+        """Broadcast the zone's live spectrum for the EQ display.
+
+        The tap is a READ of the master timeline, not a branch of the signal
+        path — no audio is copied, buffered or diverted, so nothing here can
+        affect what the speakers get.
+
+        It reads at the AUDIBLE position, not at the write head. The write head
+        runs a whole group latency ahead (§4.1), so a display fed from it would
+        show every transient seconds before the room heard it — legible as a
+        meter, wrong as a picture of the music. Subtracting the session target
+        lag puts the analysis window on the audio leaving the speakers now.
+
+        One rFFT of 2048 samples measures 81 us, so at this cadence the cost is
+        ~0.1% of a core and it stays on the loop; that stops being true if the
+        window or the frame rate grows, in which case it belongs in a thread."""
+        n = SPECTRUM_FFT_N
+        win = np.hanning(n).astype(np.float32)
+        # Log-spaced band edges, resolved to FFT bins once — the mapping only
+        # depends on constants, so recomputing it per frame is pure waste.
+        edges = SPECTRUM_F_LO * (SPECTRUM_F_HI / SPECTRUM_F_LO) ** (
+            np.arange(SPECTRUM_BANDS + 1) / SPECTRUM_BANDS)
+        bins = np.clip((edges / (RATE / 2) * (n // 2)).astype(int), 0, n // 2)
+        try:
+            while self.running:
+                await asyncio.sleep(1.0 / SPECTRUM_FPS)
+                src = self._source
+                if src is None:
+                    continue
+                # Nobody is looking: the whole point of a display feed is that
+                # it costs nothing when there is no display.
+                if not _ws_clients():
+                    continue
+                lag = self._target_lag if self._target_lag is not None \
+                    else getattr(src, "delay_s", 0.0)
+                n0 = int((time.monotonic() - self._epoch - lag) * RATE)
+                if n0 < getattr(src, "earliest_sample", lambda: 0)():
+                    continue
+                block = src.peek(n0, n)
+                if block is None or len(block) < n:
+                    continue
+                mono = block.mean(axis=1) * win
+                mag = np.abs(np.fft.rfft(mono))
+                # Peak per band, not mean: a mean over a wide top band buries
+                # a narrow transient among its quiet neighbours, and it is the
+                # transient the eye is looking for.
+                out = np.empty(SPECTRUM_BANDS, dtype=np.float32)
+                for b in range(SPECTRUM_BANDS):
+                    i0 = bins[b]
+                    i1 = max(i0 + 1, bins[b + 1])
+                    out[b] = mag[i0:i1].max()
+                # dBFS, then mapped onto the display floor as 0-255. Integers
+                # because this is a picture: a byte is finer than the eye at
+                # this scale and keeps a frame to a few hundred bytes on the
+                # wire.
+                #
+                # The 4/n — not 2/n — is the Hann window's coherent gain of
+                # 0.5 divided back out. Without it every reading sits 6 dB low,
+                # a full-scale signal tops out around four-fifths of the
+                # display height, and the meter quietly lies about headroom.
+                db = 20.0 * np.log10(np.maximum(out * (4.0 / n), 1e-7))
+                lvl = np.clip((db - SPECTRUM_FLOOR_DB)
+                              / (0.0 - SPECTRUM_FLOOR_DB), 0.0, 1.0)
+                await _broadcast_spectrum({
+                    "group_id": self._active_group,
+                    "session_id": self._session_id,
+                    "bands": [int(v) for v in np.round(lvl * 255)],
+                    "f_lo": SPECTRUM_F_LO, "f_hi": SPECTRUM_F_HI,
+                    "floor_db": SPECTRUM_FLOOR_DB,
+                    "peak_db": round(float(db.max()), 1),
+                    "eq": bool(getattr(src, "_eq", None) is not None),
+                })
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            # A display feed must never be able to take the session with it.
+            logger.debug(f"Sync spectrum feed stopped: {e}")
 
     def _sample_row(self, st: _Stream, kind: str, lag: Optional[float] = None,
                     error: Optional[float] = None) -> dict:

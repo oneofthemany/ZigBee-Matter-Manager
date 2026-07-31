@@ -13,6 +13,7 @@ import { openSyncLab, restoreSyncLab, syncLabGroup } from './sync-lab.js';
 import * as local from './local-player.js';
 import { LOCAL_ID } from './local-player.js';
 import * as eq from './eq.js';
+import { mountScope, unmountScope } from './eq-scope.js';
 
 let _remote = [];           // players from /api/media/players (Cast / WiiM)
 let _players = [];          // _remote + the "This device" entry, as rendered
@@ -417,7 +418,7 @@ function renderPlayers() {
         </div>`;
     }).join('');
     for (const pid of _eqOpen) renderEqPanel(pid);
-    if (!_eqOpen.has(LOCAL_ID)) eq.eqSpectrumStop();
+    if (!_eqOpen.has(LOCAL_ID)) unmountScope('eqspec-local');
     updateSearchTarget();
 }
 
@@ -474,7 +475,16 @@ function renderEqPanel(pid) {
     if (!p) { box.innerHTML = ''; return; }
     if (p.provider === 'local') {
         box.innerHTML = eqLocalHtml();
-        eq.eqSpectrumStart('eqspec-local');
+        // Local playback: the analyser is in this tab, and the curve is drawn
+        // from the same gains the biquads are running.
+        mountScope('eqspec-local', {
+            getFrame: () => eq.eqFrame(),
+            getEq: () => {
+                const s = eq.eqState();
+                return { enabled: s.enabled, gains: s.gains,
+                         bands: eq.BANDS, rate: eq.eqRate() };
+            },
+        });
         return;
     }
     const c = _eqDev[pid];
@@ -1759,7 +1769,7 @@ async function renderSyncPane() {
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
           </div>
-          ${g.active ? _syncActiveHint()
+          ${g.active ? _syncZoneScope(g.id) + _syncActiveHint()
                      : _syncCustomRow(g.id, running || disabled)
                        + _syncTidalRow(g.id, running || disabled)}
           ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
@@ -1817,6 +1827,7 @@ async function renderSyncPane() {
         const t = _syncTidalPick(g.id);
         if (t) { _syncLoadTidalLib(t.kind); break; }
     }
+    _mountZoneScopes();
     _stopSyncPoll();
     if (running) _syncTimer = setInterval(refreshSyncStats, 3000);
 }
@@ -2083,6 +2094,51 @@ function _syncRecentPickable() {
 
 // While a session runs, say what it is playing and give advice that matches:
 // "until the clicks land together" is meaningless over music.
+/** The zone's scope. Markup only — mounting happens after the pane is in the
+ *  DOM (renderSyncPane), because the renderer looks the canvas up by id. */
+function _syncZoneScope(gid) {
+    return `<canvas id="zonespec-${esc(gid)}" class="zmm-eq-spec zmm-zone-spec"
+                    aria-hidden="true"></canvas>`;
+}
+
+/** Mount a scope per active zone and drop the rest. Called on every pane
+ *  render: groups start and stop, and a scope on a canvas that no longer
+ *  exists would burn a rAF loop for the life of the page. */
+function _mountZoneScopes() {
+    for (const g of (_syncGroups || [])) {
+        const id = `zonespec-${g.id}`;
+        if (!g.active || !document.getElementById(id)) { unmountScope(id); continue; }
+        mountScope(id, {
+            getFrame: () => _zoneFrame(g.id),
+            getEq: () => _zoneEq[g.id] || null,
+        });
+        if (!(g.id in _zoneEq)) _zoneEqFetch(g.id);
+    }
+}
+
+// The zone's EQ curve comes from the server chain (eq_stream keys it
+// "syncgroup:<id>"), not from this browser's local EQ — different filters,
+// different gains. Fetched once per group and refreshed when the pane
+// re-renders after a settings change.
+const _zoneEq = {};
+
+async function _zoneEqFetch(gid) {
+    _zoneEq[gid] = null;                       // in flight — don't refetch
+    try {
+        const r = await fetch('/api/media/eq?player_id='
+                              + encodeURIComponent('syncgroup:' + gid))
+            .then(x => x.json());
+        _zoneEq[gid] = {
+            enabled: !!r.enabled,
+            gains: Array.isArray(r.gains) ? r.gains : [],
+            bands: eq.BANDS,
+            rate: 44100,                       // the sync timeline's rate
+        };
+    } catch {
+        _zoneEq[gid] = { enabled: false, gains: [], bands: eq.BANDS, rate: 44100 };
+    }
+}
+
 function _syncActiveHint() {
     const src = (_syncStatus || {}).source || {};
     const np = (_syncStatus || {}).now_playing || {};
@@ -2212,6 +2268,26 @@ function _syncCustomRow(gid, disabled) {
                  title="Repeat a finite source forever. No effect on a live stream.">Loop</label>
         </div>
       </div>`;
+}
+
+// ── Zone spectrum (server-analysed, arrives over the websocket) ─────────
+// Held as one latest-frame slot rather than a queue: frames arrive faster than
+// the display repaints on a slow tab, and a backlog of spectra is worthless —
+// only the newest is the present.
+let _zoneSpec = null;
+
+window.addEventListener('zmm-zone-spectrum', (ev) => {
+    const p = ev.detail;
+    if (!p || !Array.isArray(p.bands)) return;
+    _zoneSpec = { bands: p.bands, fLo: p.f_lo, fHi: p.f_hi,
+                  scale255: true, groupId: p.group_id, at: performance.now() };
+});
+
+/** Latest frame for a group, or null if the newest one belongs elsewhere —
+ *  a zone that is not this one must not paint into this canvas. */
+function _zoneFrame(gid) {
+    if (!_zoneSpec || _zoneSpec.groupId !== gid) return null;
+    return _zoneSpec;
 }
 
 function _fmtRemain(s) {

@@ -179,52 +179,45 @@ export function eqApplyPreset(name) {
     _applyAll();
 }
 
-// ── Spectrum (the panel's live backdrop) ────────────────────────────────
-// One rAF loop, target canvas looked up by id each frame — re-renders of the
-// player list can replace the canvas node without anyone re-wiring.
+// ── Spectrum source ─────────────────────────────────────────────────────
+// Drawing lives in eq-scope.js; this only turns the AnalyserNode into the
+// same shape the server sends for a zone, so one renderer serves both. The
+// band edges, count and dB floor are deliberately identical to
+// cast_sync.SPECTRUM_* — the local player and the zone must not produce
+// visibly different pictures of the same music.
 
-let _specRaf = 0, _specId = null;
+const SPEC_BANDS = 48, SPEC_F_LO = 25, SPEC_F_HI = 18000, SPEC_FLOOR_DB = -72;
+let _specBuf = null;
 
-export function eqSpectrumStart(canvasId) {
-    _specId = canvasId;
-    if (!_specRaf) _specRaf = requestAnimationFrame(_specFrame);
-}
-
-export function eqSpectrumStop() {
-    _specId = null;
-    if (_specRaf) { cancelAnimationFrame(_specRaf); _specRaf = 0; }
-}
-
-function _specFrame() {
-    _specRaf = 0;
-    if (!_specId) return;
-    const cv = document.getElementById(_specId);
-    if (cv && _analyser) {
-        const ctx2d = cv.getContext('2d');
-        const W = cv.width = cv.clientWidth || cv.width;
-        const H = cv.height;
-        ctx2d.clearRect(0, 0, W, H);
-        const data = new Uint8Array(_analyser.frequencyBinCount);
-        _analyser.getByteFrequencyData(data);
-        // Log-frequency bars so the display lines up with the sliders below.
-        const bars = 48, nyq = _ctx.sampleRate / 2;
-        const fLo = 25, fHi = Math.min(18000, nyq);
-        const accent = getComputedStyle(document.documentElement)
-            .getPropertyValue('--bs-primary').trim() || '#0d6efd';
-        ctx2d.fillStyle = accent;
-        ctx2d.globalAlpha = 0.45;
-        for (let b = 0; b < bars; b++) {
-            const f0 = fLo * Math.pow(fHi / fLo, b / bars);
-            const f1 = fLo * Math.pow(fHi / fLo, (b + 1) / bars);
-            const i0 = Math.floor(f0 / nyq * data.length);
-            const i1 = Math.max(i0 + 1, Math.ceil(f1 / nyq * data.length));
-            let peak = 0;
-            for (let i = i0; i < i1 && i < data.length; i++) peak = Math.max(peak, data[i]);
-            const h = (peak / 255) * (H - 2);
-            const w = W / bars;
-            ctx2d.fillRect(b * w + 1, H - h, w - 2, h);
-        }
-        ctx2d.globalAlpha = 1;
+/** One frame of log-spaced band levels (0..1), or null when nothing is
+ *  routed through the graph. */
+export function eqFrame() {
+    if (!_analyser || !_ctx) return null;
+    if (!_specBuf || _specBuf.length !== _analyser.frequencyBinCount) {
+        _specBuf = new Uint8Array(_analyser.frequencyBinCount);
     }
-    _specRaf = requestAnimationFrame(_specFrame);
+    _analyser.getByteFrequencyData(_specBuf);
+    const nyq = _ctx.sampleRate / 2;
+    const fHi = Math.min(SPEC_F_HI, nyq);
+    const out = new Float32Array(SPEC_BANDS);
+    for (let b = 0; b < SPEC_BANDS; b++) {
+        const f0 = SPEC_F_LO * Math.pow(fHi / SPEC_F_LO, b / SPEC_BANDS);
+        const f1 = SPEC_F_LO * Math.pow(fHi / SPEC_F_LO, (b + 1) / SPEC_BANDS);
+        const i0 = Math.floor(f0 / nyq * _specBuf.length);
+        const i1 = Math.max(i0 + 1, Math.ceil(f1 / nyq * _specBuf.length));
+        let peak = 0;
+        for (let i = i0; i < i1 && i < _specBuf.length; i++) {
+            if (_specBuf[i] > peak) peak = _specBuf[i];
+        }
+        // getByteFrequencyData is already dB, mapped over the analyser's
+        // min/maxDecibels. Re-map onto the server's floor so the two feeds
+        // put the same music at the same height.
+        const db = _analyser.minDecibels
+            + (peak / 255) * (_analyser.maxDecibels - _analyser.minDecibels);
+        out[b] = Math.max(0, Math.min(1, (db - SPEC_FLOOR_DB) / (0 - SPEC_FLOOR_DB)));
+    }
+    return { bands: out, fLo: SPEC_F_LO, fHi, scale255: false };
 }
+
+/** Sample rate the local filters actually run at, for the response curve. */
+export function eqRate() { return _ctx ? _ctx.sampleRate : 48000; }

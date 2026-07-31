@@ -99,6 +99,17 @@ export function initWS() {
                 return;
             }
 
+            // The zone spectrum arrives ~15x a second while a sync session is
+            // running. It goes straight out as its own event and returns here:
+            // routing a display feed through the main switch below would run
+            // the whole dispatch — and anything else listening on it — at
+            // frame rate for a decoration.
+            if (msg.type === 'zone_spectrum') {
+                window.dispatchEvent(
+                    new CustomEvent('zmm-zone-spectrum', { detail: msg.payload }));
+                return;
+            }
+
             // Forward upgrade events to any listening modules
             if (msg.type === 'upgrade_available' || msg.type === 'upgrade_status') {
                 window.dispatchEvent(new CustomEvent('zmm-ws-message', { detail: msg }));
