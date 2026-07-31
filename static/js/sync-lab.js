@@ -549,11 +549,17 @@ function _renderSpread(spread, merge = false) {
 //     as speakers crossed a threshold, so the block changed height under the
 //     reader and shoved the charts below it around;
 //   - the thresholds were bare comparisons, so a speaker sitting on ±10 ms
-//     flipped its advice on every poll.
+//     flipped its advice on every poll;
+//   - and the advice strings themselves ran from a dozen words to sixty, so
+//     even a legitimate, well-damped category change re-wrapped the row and
+//     moved everything below it. During the first minute of a live session
+//     every speaker walks nolock → converging → off → ok, so this fired on
+//     the one view most likely to be watched.
 //
 // So: one fixed row per speaker (never added, never removed), values patched
-// in place, and both the categories and the numbers move only when they have
-// moved enough to mean something.
+// in place, both the categories and the numbers move only when they have
+// moved enough to mean something, and each row's copy is bounded to one line
+// with the paragraph behind a collapsed detail.
 let _guideState = {};     // player_id | 'group' → last category, for hysteresis
 let _sticky = {};         // key → last shown number, for the same reason
 
@@ -583,7 +589,7 @@ function _guideCat(p) {
 function _renderGuidance(players, spread = [], lockAt = 0) {
     const el = document.getElementById('syncLabGuide');
     if (!el) return;
-    if (!players.length) { _setHtml(el, ''); return; }
+    if (!players.length) { el.style.minHeight = ''; el._zmmMinH = 0; _setHtml(el, ''); return; }
 
     // --- group verdict ---------------------------------------------------
     // Two different truths, and quoting only the first made the verdict read
@@ -592,7 +598,9 @@ function _renderGuidance(players, spread = [], lockAt = 0) {
     // says how much it WANDERS around that, and the ear hears both.
     const locked = players.filter(p => p.lock_s != null && p.settled_bias_ms != null);
     let verdict = { cls: 'secondary', icon: 'fa-headphones',
-                    text: 'Needs two speakers reporting after lock.' };
+                    text: 'needs two speakers reporting after lock.',
+                    why: 'Two speakers have to lock before there is a group spread to '
+                         + 'judge at all.' };
     if (locked.length >= 2) {
         const biases = locked.map(p => p.settled_bias_ms);
         const centres = _stick('centres',
@@ -609,58 +617,84 @@ function _renderGuidance(players, spread = [], lockAt = 0) {
         const cat = !steady ? 'jittery'
             : centres <= 20 ? 'tight' : centres <= 45 ? 'close' : 'apart';
         _guideState.group = cat;
+        // The one-liner carries the category; the numbers that justify it live
+        // in the detail. The jitter is not dropped by that — it IS the category
+        // when it matters, so the short line still says so.
+        const head = {
+            tight: `within ${centres} ms after lock — echo-free to the ear.`,
+            close: `within ${centres} ms after lock — still closing.`,
+            apart: `${centres} ms apart after lock — audibly apart.`,
+            jittery: `within ${centres} ms on average, but jittery.`,
+        }[cat];
         const tail = {
-            tight: '— echo-free to the ear.',
-            close: '— close; the rate loop is still closing it.',
-            apart: '— audibly apart; if it persists, calibrate with the mic.',
-            jittery: '— aligned on average but jittery, which is a link problem, not '
+            tight: 'Echo-free to the ear.',
+            close: 'Close; the rate loop is still closing it.',
+            apart: 'Audibly apart; if it persists, calibrate with the mic.',
+            jittery: 'Aligned on average but jittery, which is a link problem, not '
                      + 'an alignment one: check WiFi before trimming.',
         }[cat];
         verdict = {
             cls: cat === 'tight' ? 'success' : cat === 'close' ? 'secondary' : 'primary',
             icon: 'fa-headphones',
-            text: `the speakers sit within ${centres} ms of each other after lock`
-                  + (p90 == null ? ' ' : `, wandering up to ${p90} ms apart poll to `
-                                       + 'poll (9 in 10) ')
-                  + tail,
+            text: head,
+            why: `The speakers sit within ${centres} ms of each other after lock`
+                 + (p90 == null ? '. ' : `, wandering up to ${p90} ms apart poll to `
+                                       + 'poll (9 in 10). ')
+                 + tail,
         };
     }
 
     // --- one row per speaker, always ------------------------------------
+    // Every category speaks twice: `text` is a bounded one-liner that holds the
+    // row at one line, `why` is the paragraph behind the collapsed detail. They
+    // used to be one string, and that was the bug — `ok` was a dozen words and
+    // `off` was sixty, so a speaker crossing a threshold changed this panel's
+    // height by four wrapped lines and shoved five charts down the page. The
+    // hysteresis below stops the flicker; only bounded copy stops the reflow.
     const ADVICE = {
         nolock: { cls: 'warning', icon: 'fa-triangle-exclamation',
-                  text: () => 'never locked this session — check it is powered and on '
-                              + 'WiFi, then re-run the test.' },
+                  text: () => 'never locked this session.',
+                  why: () => 'It reported no position the engine could lock onto — check '
+                             + 'it is powered and on WiFi, then re-run the test.' },
         converging: { cls: 'secondary', icon: 'fa-hourglass-half',
-                      text: () => 'still converging — the rate loop needs another minute '
-                                  + 'of measurements.' },
+                      text: () => 'still converging.',
+                      why: () => 'The rate loop needs another minute of measurements '
+                                 + 'before its settled numbers mean anything.' },
         unstable: { cls: 'warning', icon: 'fa-wifi',
-                    text: p => `${p.resyncs} hard resyncs — an unstable link. Prefer `
-                               + '5 GHz WiFi, reduce congestion, or move the speaker '
-                               + 'closer to the AP.' },
+                    text: p => `${p.resyncs} hard resyncs — an unstable link.`,
+                    why: () => 'Hard resyncs are audible steps, and this many of them '
+                               + 'means the stream keeps arriving late. Prefer 5 GHz '
+                               + 'WiFi, reduce congestion, or move the speaker closer '
+                               + 'to the AP.' },
         off: { cls: 'primary', icon: 'fa-sliders',
                text: p => `settles ${Math.abs(Math.round(p.settled_bias_ms))} ms `
-                          + `${p.settled_bias_ms > 0 ? 'behind' : 'ahead of'} the group `
-                          + '— the rate loop is still trickling that in (≤20 ppm, '
-                          + 'inaudible) and needs no help. If the same offset returns '
-                          + 'every session it is output-pipeline latency the position '
-                          + 'sensor cannot see: run Calibrate (mic) to set its trim '
-                          + 'from the sound in the air.' },
+                          + `${p.settled_bias_ms > 0 ? 'behind' : 'ahead of'} the group.`,
+               why: () => 'The rate loop is still trickling that in (≤20 ppm, inaudible) '
+                          + 'and needs no help. If the same offset returns every session '
+                          + 'it is output-pipeline latency the position sensor cannot '
+                          + 'see: run Calibrate (mic) to set its trim from the sound in '
+                          + 'the air.' },
         ok: { cls: 'success', icon: 'fa-check',
-              text: p => `in sync, sitting ${_sign(_stick('b:' + p.player_id,
-                                                          Math.round(p.settled_bias_ms), 2))} ms `
-                         + 'from the group target — nothing to do.' },
+              text: p => `in sync, ${_sign(_stick('b:' + p.player_id,
+                                                  Math.round(p.settled_bias_ms), 2))} ms `
+                         + 'from target — nothing to do.',
+              why: () => `Its settled median sits inside the ±${AUDIBLE_MS} ms the ear `
+                         + 'cannot resolve; there is nothing to trim.' },
     };
 
     const vals = { 'v:text': verdict.text,
+                   'v:why': verdict.why,
                    'v:icon': { text: '', cls: `fas ${verdict.icon} text-${verdict.cls}` } };
     for (const p of players) {
         const a = ADVICE[_guideCat(p)];
         vals[`g:${p.player_id}`] = a.text(p);
+        vals[`w:${p.player_id}`] = a.why(p);
         vals[`i:${p.player_id}`] = { text: '', cls: `fas ${a.icon} text-${a.cls}` };
     }
 
-    _patch(el, `guide:${players.map(p => p.player_id).join('|')}`, () => `
+    const key = `guide:${players.map(p => p.player_id).join('|')}`;
+    if (el._zmmKey !== key) { el._zmmMinH = 0; el.style.minHeight = ''; }
+    _patch(el, key, () => `
       <div class="border rounded p-2">
         <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
         <div class="small d-flex align-items-baseline gap-2 mb-1">
@@ -675,7 +709,23 @@ function _renderGuidance(players, spread = [], lockAt = 0) {
             <span><strong>${esc(_nameFor(p.player_id))}</strong>
               <span data-v="g:${esc(p.player_id)}"></span></span>
           </div>`).join('')}
+        <details class="small mt-2">
+          <summary class="text-muted">Why, and what to do about it</summary>
+          <div class="mt-1">
+            <div class="mb-1"><strong>Group</strong> <span data-v="v:why"></span></div>
+            ${players.map(p => `
+              <div class="mb-1"><strong>${esc(_nameFor(p.player_id))}</strong>
+                <span data-v="w:${esc(p.player_id)}"></span></div>`).join('')}
+          </div>
+        </details>
       </div>`, vals);
+
+    // Belt and braces: the rows are one line by construction, but a narrow
+    // viewport can still wrap one. Hold the panel at the tallest it has been
+    // for this set of speakers, so a wrap costs the reader one jump rather
+    // than one per tick. Reset above whenever the structure is rebuilt.
+    const h = el.firstElementChild ? el.firstElementChild.offsetHeight : 0;
+    if (h > (el._zmmMinH || 0)) { el._zmmMinH = h; el.style.minHeight = `${h}px`; }
 }
 
 // ---------------------------------------------------------------------------
