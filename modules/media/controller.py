@@ -107,6 +107,22 @@ class MediaController:
             logger.info(f"Restored {n} media session(s) from persistence")
         return n
 
+    async def resolve_source_url(self, media_type: str, source_id: str,
+                                 player_id: Optional[str] = None) -> str:
+        """Current playable URL for a source that issues time-limited ones.
+
+        Callers that decode server-side pass no player_id: the source then
+        hands back its plain single-URL form (Tidal → AAC) rather than a
+        device-specific manifest, which is what ffmpeg wants."""
+        resolver = self._resolvers.get(media_type)
+        if not resolver or not source_id:
+            return ""
+        provider = player_id.split(":", 1)[0] if player_id else None
+        fresh = await resolver(source_id, provider)
+        if isinstance(fresh, dict):
+            return fresh.get("url") or ""
+        return fresh or ""
+
     async def resume_players(self, player_ids) -> int:
         """Re-issue playback for players that were streaming through us when the
         process went down. Call after a refresh, so the live state is known.

@@ -280,6 +280,16 @@ class CastSyncPoc:
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
         self._trims: Dict[str, int] = {
             k: int(v) for k, v in self._read_json(self._trims_file).items()}
+        # Per-MODEL trim defaults, learned from whatever the user (or the
+        # calibrator) sets on one device. Output-pipeline latency is a property
+        # of the hardware, so a value measured on one Nest Hub is the right
+        # starting point for every other one — including a device seen for the
+        # first time, which otherwise starts at zero and has to be trimmed by
+        # hand all over again. A per-device trim always wins over this.
+        self._model_trims_file = cfg.get("model_trims_file",
+                                         "./data/cast_sync_model_trims.json")
+        self._model_trims: Dict[str, int] = {
+            k: int(v) for k, v in self._read_json(self._model_trims_file).items()}
         # Named sync groups (built in the Media tab's group builder):
         # gid -> {"name": str, "members": [player_id, ...]}
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
@@ -311,6 +321,7 @@ class CastSyncPoc:
         # Optional EqStreamEngine, so a sync group can carry the same
         # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
+        self._url_resolver = None      # async (media_type, source_id) -> url
 
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
@@ -361,6 +372,38 @@ class CastSyncPoc:
     # ------------------------------------------------------------------
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
+
+    def set_url_resolver(self, fn) -> None:
+        """``async (media_type, source_id) -> url`` for sources whose URLs
+        expire. Wired by MediaService; absent means URL-only sources."""
+        self._url_resolver = fn
+
+    # ------------------------------------------------------------------
+    # Trims (per device, defaulting to what the model is known to need)
+    # ------------------------------------------------------------------
+    def _model_key(self, player_id: str) -> str:
+        get = getattr(self.cast, "model_key", None)
+        try:
+            return get(player_id) if callable(get) else ""
+        except Exception:
+            return ""
+
+    def trim_ms(self, player_id: str) -> int:
+        """Effective trim: an explicit per-device value, else whatever this
+        model has been found to need, else nothing."""
+        if player_id in self._trims:
+            return int(self._trims[player_id])
+        key = self._model_key(player_id)
+        return int(self._model_trims.get(key, 0)) if key else 0
+
+    def _learn_model_trim(self, player_id: str, trim_ms: int) -> None:
+        key = self._model_key(player_id)
+        if not key or self._model_trims.get(key) == trim_ms:
+            return
+        self._model_trims[key] = int(trim_ms)
+        self._write_json(self._model_trims_file, self._model_trims)
+        logger.info(f"Learned trim {trim_ms:+d} ms for model '{key}' — new "
+                    f"devices of this model will start pre-aligned")
 
     # ------------------------------------------------------------------
     # Restart survival
@@ -413,6 +456,22 @@ class CastSyncPoc:
         generated test signal. Failing to open the media is reported rather
         than silently falling back — a group playing a test tone when the user
         asked for a station is worse than an error."""
+        media = dict(media or {})
+        # A source_id source (Tidal) hands out URLs that expire. Resolve one
+        # now to fail fast on a bad id or a logged-out session, and keep the
+        # resolver so the decoder can get a fresh one every time it restarts.
+        provider = None
+        stype, sid = media.get("media_type") or "", media.get("source_id") or ""
+        if sid and self._url_resolver is not None:
+            async def provider():
+                return await self._url_resolver(stype, sid)
+            try:
+                media["url"] = await provider()
+            except Exception as e:
+                return None, f"could not resolve {stype or 'source'}: {e}"
+            if not media["url"]:
+                return None, (f"{stype or 'source'} returned no playable stream "
+                              f"(is the account still signed in?)")
         if not media or not (media.get("url") or "").strip():
             return _GENERATED, ""
         chain = None
@@ -425,7 +484,8 @@ class CastSyncPoc:
                           delay_s=self._source_delay_s,
                           capacity_s=self._ring_capacity_s, eq_chain=chain,
                           loop_forever=bool(media.get("loop")),
-                          title=(media.get("title") or "").strip())
+                          title=(media.get("title") or "").strip(),
+                          url_provider=provider)
         try:
             await src.start()
         except Exception as e:
@@ -659,7 +719,7 @@ class CastSyncPoc:
                 "player_id": info["player_id"],
                 "name": info["name"],
                 "connected": (r is not None) or (s is not None and s.connected),
-                "trim_ms": self._trims.get(info["player_id"], 0),
+                "trim_ms": self.trim_ms(info["player_id"]),
                 "stats": (r.stats if r else (s.stats if s else {})),
             })
         elapsed = (time.monotonic() - self._epoch) if self.running else 0
@@ -681,9 +741,13 @@ class CastSyncPoc:
 
     async def set_trim(self, player_id: str, trim_ms: int) -> dict:
         trim_ms = max(-2000, min(2000, int(trim_ms)))
-        old = self._trims.get(player_id, 0)
+        old = self.trim_ms(player_id)
         self._trims[player_id] = trim_ms
         self._write_json(self._trims_file, self._trims)
+        # Teach the model too. Aligning one screened device by ear is a
+        # measurement of that hardware's output pipeline, not of that unit, and
+        # the next one added to a group should not have to be measured again.
+        self._learn_model_trim(player_id, trim_ms)
         for r in self._receivers.values():
             if r.player_id == player_id:
                 try:
@@ -756,7 +820,7 @@ class CastSyncPoc:
         for i, s in enumerate(streams):
             slot_s = head_s + _chirp.CHIRP_LEAD_S + i * _chirp.CHIRP_GAP_S
             s.chirp = (int(slot_s * RATE), wave)
-            trim_s = self._trims.get(s.player_id, 0) / 1000.0
+            trim_s = self.trim_ms(s.player_id) / 1000.0
             plan.append((s, slot_s + self._target_lag + trim_s))
         rec_start = time.monotonic() - self._epoch
         rec_dur = (max(t for _, t in plan) - rec_start
@@ -810,7 +874,7 @@ class CastSyncPoc:
                 continue
             rel = deltas[s.sid] - mean_d
             info["rel_ms"] = round(rel * 1000, 1)
-            new_trim = int(round(self._trims.get(s.player_id, 0) - rel * 1000))
+            new_trim = int(round(self.trim_ms(s.player_id) - rel * 1000))
             info["trim_ms"] = max(-2000, min(2000, new_trim))
             rows.append(self._sample_row(s, "chirp", error=rel))
             await self.set_trim(s.player_id, new_trim)
@@ -833,7 +897,7 @@ class CastSyncPoc:
                 "members": [{
                     "player_id": pid,
                     "name": self._player_name(pid),
-                    "trim_ms": self._trims.get(pid, 0),
+                    "trim_ms": self.trim_ms(pid),
                 } for pid in g.get("members", [])],
                 "active": self.running and self._active_group == gid,
             })
@@ -889,7 +953,7 @@ class CastSyncPoc:
         payload = {
             "type": "start",
             "sid": sid,
-            "trim_ms": self._trims.get(player_id, 0),
+            "trim_ms": self.trim_ms(player_id),
         }
         deadline = time.monotonic() + 30
         while self.running and time.monotonic() < deadline:
@@ -1093,7 +1157,7 @@ class CastSyncPoc:
                 "player_id": st.player_id, "kind": kind, "lag_s": lag,
                 "error_ms": None if error is None else error * 1000,
                 "rate_ppm": st.rate_ppm,
-                "trim_ms": self._trims.get(st.player_id, 0),
+                "trim_ms": self.trim_ms(st.player_id),
                 "precomp_s": st.precomp_s, "target_lag_s": self._target_lag}
 
     async def _record_samples(self, rows: List[dict]):
@@ -1266,7 +1330,7 @@ class CastSyncPoc:
             return None
         now = time.monotonic()
         played_timeline_s = (st.start_pos + st.shift) / RATE + float(ct)
-        trim_s = self._trims.get(st.player_id, 0) / 1000.0
+        trim_s = self.trim_ms(st.player_id) / 1000.0
         return (now - self._epoch) - played_timeline_s - trim_s
 
     async def _measure_lag(self, st: _Stream) -> Optional[float]:
@@ -1299,7 +1363,7 @@ class CastSyncPoc:
             source = self._source
             delay = source.delay_s
             if st.pos is None:
-                trim = int(self._trims.get(st.player_id, 0) * RATE / 1000)
+                trim = int(self.trim_ms(st.player_id) * RATE / 1000)
                 precomp = int(st.precomp_s * RATE)
                 # Real media cannot be served ahead of its own arrival, so the
                 # whole group reads `delay` behind the live edge (§4.1). The
@@ -1445,7 +1509,7 @@ class CastSyncPoc:
                             "type": "hello_ack",
                             "rate": RATE, "channels": CHANNELS,
                             "chunk_s": CHUNK_SECONDS,
-                            "trim_ms": self._trims.get(info["player_id"], 0),
+                            "trim_ms": self.trim_ms(info["player_id"]),
                         })
                         # Catch the joiner up with still-future buffered chunks.
                         now = time.monotonic()

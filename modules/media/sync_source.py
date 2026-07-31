@@ -160,9 +160,15 @@ class MediaSource:
                  capacity_s: float = 20.0, eq_chain=None,
                  rate: int = RATE, channels: int = CHANNELS,
                  ffmpeg: str = "", loop_forever: bool = False,
-                 title: str = ""):
+                 title: str = "", url_provider=None):
         self.url = url
         self.title = title
+        # Optional ``async () -> url``, consulted before every decoder start.
+        # Some sources issue URLs that expire (Tidal signs them for minutes,
+        # not hours); a session outliving one would otherwise decode to EOF and
+        # stay dead. Re-resolving on each start turns expiry into the same
+        # thing as a station dropping: a gap, then it continues.
+        self._url_provider = url_provider
         self.epoch = epoch
         self.delay_s = float(delay_s)
         self.channels = channels
@@ -308,7 +314,24 @@ class MediaSource:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
+    async def _refresh_url(self) -> None:
+        if self._url_provider is None:
+            return
+        try:
+            fresh = await self._url_provider()
+        except Exception as e:
+            logger.warning(f"Sync source URL refresh failed: {e}")
+            return
+        if fresh and fresh != self.url:
+            logger.info("Sync source URL re-resolved (previous one expired "
+                        "or rotated)")
+        if fresh:
+            self.url = fresh
+
     async def _decode_once(self) -> Optional[int]:
+        await self._refresh_url()
+        if not self.url:
+            raise RuntimeError("no playable URL for this source")
         self._proc = await asyncio.create_subprocess_exec(
             *self._cmd(), stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)

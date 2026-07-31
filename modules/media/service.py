@@ -150,6 +150,11 @@ class MediaService:
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)
+                # No player_id: the sync engine decodes server-side, so it
+                # wants the plain single-URL form (Tidal → AAC), not a
+                # device-specific manifest.
+                self.cast_sync.set_url_resolver(
+                    lambda mt, sid: self.controller.resolve_source_url(mt, sid))
             except Exception as e:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 

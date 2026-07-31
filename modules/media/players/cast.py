@@ -124,6 +124,22 @@ class CastPlayerProvider(PlayerProvider):
     async def stop(self) -> None:
         await asyncio.to_thread(self._stop_browser)
 
+    def model_key(self, player_id: str) -> str:
+        """A stable identity for "devices that behave like this one".
+
+        Output-pipeline latency — decode to DAC to speaker — is a property of
+        the hardware, not of the individual unit, so anything measured for one
+        device applies to every other of the same model. ``cast_type`` is kept
+        in the key because Google reports it per form factor ('audio' for
+        speakers, 'cast' for screened devices), and the screened ones are
+        exactly where the long pipelines live."""
+        info = self._infos.get(player_id.split(":", 1)[-1])
+        if info is None:
+            return ""
+        model = (getattr(info, "model_name", "") or "").strip()
+        ctype = str(getattr(info, "cast_type", "") or "").lower()
+        return f"{ctype}/{model}" if model else ""
+
     def _drop_cast(self, uuid_str: str) -> None:
         """Discard a cached connection so the next control call reconnects to
         the current address. Runs on the zeroconf discovery thread, so it must
