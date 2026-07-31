@@ -405,6 +405,10 @@ class CastSyncPoc:
         # reads history the furthest-ahead device has long passed.
         self._source_delay_s = float(cfg.get("source_delay_s", 2.0))
         self._ring_capacity_s = float(cfg.get("ring_capacity_s", 20.0))
+        # Overlap between queue items. Bounded by source_delay_s, since the
+        # fade is paid for out of written-but-unserved timeline (§4.1a) — ask
+        # for more than that and every seam quietly falls back to a splice.
+        self._crossfade_s = float(cfg.get("crossfade_s", 0.0))
         # Optional EqStreamEngine, so a sync group can carry the same
         # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
@@ -675,7 +679,8 @@ class CastSyncPoc:
                           capacity_s=self._ring_capacity_s, eq_chain=chain,
                           loop_forever=loop_forever,
                           title=(media.get("title") or "").strip(),
-                          url_provider=provider)
+                          url_provider=provider,
+                          crossfade_s=self._crossfade_s)
         try:
             await src.start()
         except Exception as e:

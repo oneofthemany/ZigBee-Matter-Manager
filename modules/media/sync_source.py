@@ -40,6 +40,19 @@ RATE = 44100
 CHANNELS = 2
 _S16_SCALE = 1.0 / 32768.0
 
+# Crossfade bounds. The guard is the slack left between the end of the fade and
+# the play point while the incoming head is being fetched — without it a slow
+# first block lands behind the readers and the fade is written into audio that
+# has already been served. The minimum is the point below which an overlap
+# stops being a transition and becomes a click with extra steps.
+XFADE_GUARD_S = 0.35
+XFADE_MIN_S = 0.25
+# Just under the serve path's hard clip (cast_sync._to_s16 clips at 0.98).
+XFADE_PEAK_CEIL = 0.97
+# Gain-envelope window for that guard: long enough that the reduction itself is
+# inaudible, short enough not to duck audio either side of a brief peak.
+XFADE_GUARD_WIN_S = 0.005
+
 
 # ----------------------------------------------------------------------
 # Generated test signal (the original PoC timeline)
@@ -97,6 +110,113 @@ class GeneratedSource:
 
 
 # ----------------------------------------------------------------------
+# Crossfade law
+# ----------------------------------------------------------------------
+def fade_pair(n: int, p: float) -> tuple:
+    """Complementary fade-out/fade-in envelopes over ``n`` samples.
+
+        g_out = cos(pi*t/2)**p        g_in = sin(pi*t/2)**p
+
+    One exponent spans the two laws a crossfade has to choose between, and
+    both ends are exact rather than approximate:
+
+        p = 1  ->  g_out^2 + g_in^2 == 1   constant POWER
+        p = 2  ->  g_out   + g_in   == 1   constant AMPLITUDE
+
+    Which one is correct depends on the material, and getting it wrong is
+    audible as a dip in the middle of the fade — the thing that makes a
+    crossfade sound like a crossfade instead of a transition. Uncorrelated
+    tracks add as power, so equal-amplitude gains dip 3 dB at the midpoint;
+    correlated ones add as amplitude, so equal-power *gains* 3 dB. Setting
+    p = 1 + |r| from the measured correlation puts the level where it belongs
+    at both extremes and slides between them, holding the envelope within
+    +0.26 dB of unity at every correlation in between.
+
+    That bound is on LEVEL, not on sample peak, and the difference matters:
+    two uncorrelated signals can hold a flat RMS through the fade while their
+    instantaneous peaks still add to +3 dB. Clipping is :func:`_peak_guard`'s
+    job, not this function's.
+    """
+    t = np.linspace(0.0, 1.0, int(n), endpoint=True, dtype=np.float32)
+    # Clamped before the power, and this is load-bearing rather than tidy:
+    # cos(pi/2) evaluates a hair BELOW zero in float32, and a negative base
+    # raised to a fractional exponent is NaN. Only the integer exponents (the
+    # two endpoint laws) survive without this, so every adaptive fade would
+    # write NaN onto the timeline — silence at best on whatever consumes it.
+    a = np.maximum(np.cos(np.pi * t / 2.0), 0.0) ** p
+    b = np.maximum(np.sin(np.pi * t / 2.0), 0.0) ** p
+    return a.astype(np.float32), b.astype(np.float32)
+
+
+def _peak_guard(mixed: np.ndarray, src_peak: float,
+                rate: int = RATE) -> np.ndarray:
+    """Keep the overlap from peaking higher than the material going into it.
+
+    :func:`fade_pair` holds the *level* constant, which is what the ear tracks,
+    but level is not peak: two uncorrelated signals at equal power keep a flat
+    RMS while their instantaneous peaks still add, and two loud tracks can
+    touch +3 dB for a sample or two mid-fade. The serve path clips hard at 0.98
+    (``cast_sync._to_s16``), so left alone that is audible distortion placed
+    exactly where the listener is paying attention.
+
+    The ceiling is the louder source's own peak, not an absolute number, and
+    that distinction is the whole design. At the edges of the fade the mix *is*
+    one source at unity gain, so an absolute ceiling below that source's peak
+    would demand a trim that cannot be applied without stepping the level
+    against the audio either side. The job here is only to remove the excess
+    the SUM creates — material that was already hot stays exactly as hot as it
+    was, and is clipped (or not) by the serve path on the same terms as the
+    rest of the track.
+
+    The reduction is a per-sample gain envelope, not one scaled shape over the
+    whole region. A single depth cannot satisfy constraints that sit at
+    different places: one overshoot near an edge, where any fixed shape gives
+    little reduction, forces a depth that annihilates the middle — measured at
+    −47 dB mid-fade before this was a running envelope.
+
+    So: the exact gain each sample needs, a running minimum over a short window
+    to give the reduction look-ahead and release, smoothing so the gain movement
+    is itself inaudible, and a final elementwise minimum because smoothing a
+    running minimum can rise back above what a sample actually needed.
+    """
+    ceiling = max(XFADE_PEAK_CEIL, float(src_peak))
+    amp = np.abs(mixed).max(axis=1)
+    if not (amp > ceiling).any():
+        return mixed
+    need = np.minimum(1.0, ceiling / np.maximum(amp, 1e-9)).astype(np.float32)
+    w = max(3, (int(XFADE_GUARD_WIN_S * rate) | 1))     # odd, for a centred window
+    pad = w // 2
+    win = np.lib.stride_tricks.sliding_window_view(
+        np.pad(need, pad, mode="edge"), w)
+    g = win.min(axis=1)
+    k = np.hanning(w).astype(np.float32)
+    k /= k.sum()
+    g = np.convolve(np.pad(g, pad, mode="edge"), k, mode="same")[pad:pad + len(need)]
+    g = np.minimum(g, need)
+    return mixed * g[:, None]
+
+
+def fade_exponent(tail: np.ndarray, head: np.ndarray) -> float:
+    """``p`` for :func:`fade_pair`, from the correlation of the two overlaps.
+
+    Correlation is measured on the level-normalised mono sum: what decides the
+    law is whether the two signals reinforce or add in quadrature, and that is
+    a property of their shapes, not of which one happens to be louder."""
+    n = min(len(tail), len(head))
+    if n < 2:
+        return 1.0
+    a = tail[:n].mean(axis=1).astype(np.float64)
+    b = head[:n].mean(axis=1).astype(np.float64)
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < 1e-9 or nb < 1e-9:
+        # One side is silence. Nothing to reinforce, and equal-power is the
+        # law that leaves the audible side untouched at the midpoint.
+        return 1.0
+    r = float(np.dot(a, b) / (na * nb))
+    return 1.0 + min(1.0, abs(r))
+
+
+# ----------------------------------------------------------------------
 # Ring buffer (§4.1 delay line)
 # ----------------------------------------------------------------------
 class _Ring:
@@ -128,6 +248,23 @@ class _Ring:
             self._buf[:n - first] = block[first:]
         self.end += n
         self.start = max(self.start, self.end - self._cap)
+
+    def splice(self, block: np.ndarray, at: int) -> int:
+        """Overwrite resident samples in place, WITHOUT moving ``end``."""
+        n = len(block)
+        if n == 0:
+            return 0
+        lo, hi = max(at, self.start), min(at + n, self.end)
+        if hi <= lo:
+            return 0
+        block = block[lo - at:hi - at]
+        p = lo % self._cap
+        m = hi - lo
+        first = min(m, self._cap - p)
+        self._buf[p:p + first] = block[:first]
+        if m > first:
+            self._buf[:m - first] = block[first:]
+        return m
 
     def read(self, n0: int, frames: int, count: bool = True) -> np.ndarray:
         """``count=False`` for observers — the spectrum tap reads the timeline
@@ -169,7 +306,8 @@ class MediaSource:
                  capacity_s: float = 20.0, eq_chain=None,
                  rate: int = RATE, channels: int = CHANNELS,
                  ffmpeg: str = "", loop_forever: bool = False,
-                 title: str = "", url_provider=None):
+                 title: str = "", url_provider=None,
+                 crossfade_s: float = 0.0):
         self.url = url
         self.title = title
         # Optional ``async (last_rc) -> url | {"url", "title"} | ""``,
@@ -206,6 +344,14 @@ class MediaSource:
         self._running = False
         self._restarts = 0
         self._last_error = ""
+
+        self._xfade_s = max(0.0, float(crossfade_s))
+        self._xfade_arm = False
+        self._xfade_head: Optional[list] = None   # incoming blocks, pre-commit
+        self._xfade_have = 0                      # samples collected so far
+        self._xfade_want = 0                      # 0 = not collecting
+        self._xfades = 0
+        self._xfade_last = ""
 
     # -- lifecycle ----------------------------------------------------
     async def start(self) -> None:
@@ -333,6 +479,7 @@ class MediaSource:
                         and self._ring.end > head):
                     logger.info("Sync source item ended: "
                                 f"{self.title or self.url[:60]}")
+                    self._xfade_arm = self._xfade_s > 0
                     backoff = 0.5
                     continue
                 self._restarts += 1
@@ -391,6 +538,7 @@ class MediaSource:
             return self._last_rc      # nothing more to play — don't start ffmpeg
         if not self.url:
             raise RuntimeError("no playable URL for this source")
+        self._xfade_open()
         self._proc = await asyncio.create_subprocess_exec(
             *self._cmd(), stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -421,11 +569,82 @@ class MediaSource:
                         self._eq = None
                 pcm = (np.frombuffer(data, dtype="<i2")
                        .reshape(-1, self.channels).astype(np.float32) * _S16_SCALE)
-                self._ring.write(pcm)
+                if self._xfade_want:
+                    self._xfade_collect(pcm)
+                else:
+                    self._ring.write(pcm)
             return await proc.wait() if proc.returncode is None else proc.returncode
         finally:
             drain.cancel()
+            # An item that ends while its head is still being collected never
+            # reached the ring at all. Commit what there is: a short fade is a
+            # worse crossfade, silently dropping the audio is a worse bug.
+            if self._xfade_want:
+                self._xfade_commit()
             self._kill_nowait()
+
+    # -- crossfade --------------------------------------------
+    def _unserved_samples(self) -> int:
+        """Timeline written but not yet reached by the furthest-ahead reader."""
+        play_now = (time.monotonic() - self.epoch) * self._rate
+        return int(max(0, self._ring.end - play_now))
+
+    def _xfade_open(self) -> None:
+        """Decide the overlap for the item about to start."""
+        if not self._xfade_arm:
+            return
+        self._xfade_arm = False
+        # Leave the readers room to reach the fade before it is written: the
+        # incoming head takes time to arrive, and a fade committed behind the
+        # play point is audio that has already gone out.
+        room = self._unserved_samples() - int(XFADE_GUARD_S * self._rate)
+        want = min(int(self._xfade_s * self._rate), room)
+        if want < int(XFADE_MIN_S * self._rate):
+            self._xfade_last = "no headroom at the seam"
+            logger.debug("Sync crossfade skipped — "
+                         f"only {max(0, room) / self._rate:.2f}s unserved")
+            return
+        self._xfade_want = want
+        self._xfade_have = 0
+        self._xfade_head = []
+
+    def _xfade_collect(self, pcm: np.ndarray) -> None:
+        """Hold the incoming item's head back until the overlap is complete."""
+        self._xfade_head.append(pcm)
+        self._xfade_have += len(pcm)
+        if self._xfade_have >= self._xfade_want:
+            self._xfade_commit()
+
+    def _xfade_commit(self) -> None:
+        """Mix the collected head over the outgoing tail, then resume."""
+        blocks, want = self._xfade_head or [], self._xfade_want
+        self._xfade_head, self._xfade_want, self._xfade_have = None, 0, 0
+        if not blocks:
+            return
+        head = np.concatenate(blocks)
+        # Re-check: collecting took wall time and the readers used it.
+        n = min(want, len(head), self._unserved_samples())
+        if n < int(XFADE_MIN_S * self._rate):
+            self._xfade_last = "headroom gone while collecting"
+            logger.debug("Sync crossfade abandoned — writing plain seam")
+            self._ring.write(head)
+            return
+        at = self._ring.end - n
+        tail = self._ring.read(at, n, count=False)
+        p = fade_exponent(tail, head[:n])
+        g_out, g_in = fade_pair(n, p)
+        mixed = tail * g_out[:, None] + head[:n] * g_in[:, None]
+        mixed = _peak_guard(mixed, max(float(np.abs(tail).max()),
+                                       float(np.abs(head[:n]).max())),
+                            self._rate)
+        self._ring.splice(mixed, at)
+        # Whatever came in past the overlap is ordinary new timeline.
+        if len(head) > n:
+            self._ring.write(head[n:])
+        self._xfades += 1
+        self._xfade_last = f"{n / self._rate:.2f}s, p={p:.2f}"
+        logger.info(f"Sync crossfade {n / self._rate:.2f}s "
+                    f"(p={p:.2f}) into {self.title or self.url[:40]}")
 
     async def _drain_stderr(self, proc) -> None:
         """A full stderr pipe stalls the decoder on a long-running stream."""
@@ -486,5 +705,8 @@ class MediaSource:
             "decoding": bool(self._proc and self._proc.returncode is None),
             "finished": self._finished,
             "eq": self._eq is not None,
+            "crossfade_s": self._xfade_s,
+            "crossfades": self._xfades,
+            **({"crossfade_last": self._xfade_last} if self._xfade_last else {}),
             **({"last_error": self._last_error[:200]} if self._last_error else {}),
         }

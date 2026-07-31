@@ -114,6 +114,34 @@ The write head is throttled against the play point rather than left to run free:
 
 Declining to supply a successor ends the material. The session is not torn down at that instant: at the moment the decoder stops, every device is still playing out of the delay line and its own buffer, an entire group latency behind the write head, so teardown waits until the tail has been *heard*. Cutting at the last decoded byte would truncate the end of the last item on every speaker.
 
+#### 4.1a Crossfade at the Item Boundary
+
+The seam between two items (§4.1) is a butt splice by default. Overlapping them instead is, in this architecture, a property of the delay line rather than a feature bolted beside it — and the placement is what makes it cheap.
+
+**The overlap is paid for out of headroom that already exists.** Readers sit a group latency behind the write head, so the newest stretch of the ring is audio that has been decoded but served to nobody. It can still be reworked in place. The outgoing item's tail is faded down where it already lies, the incoming item's head is mixed over it, and no audio is held back and no latency is added. Systems that emit into a per-player stream cannot do this: once bytes leave, they are gone, and a crossfade there has to be built by buffering both sides ahead of the mix.
+
+The budget is also the hard limit, and it is not knowable in advance — it depends on where the previous item happened to end relative to the write head. The length is therefore decided at the seam, re-checked at commit (collecting the incoming head consumes real time, during which readers advance), and **abandoned rather than forced** when it no longer fits. A seam that cannot afford a fade splices exactly as it did before. The practical ceiling is `source_delay_s` less a guard, so ~1.5 s at the default settings; longer overlaps need the incoming decoder started early against a known item duration, which is a separate mechanism.
+
+Because the mix happens in the timeline domain, upstream of the per-device delay and resampler, the crossfade is sample-identical on every speaker and cannot perturb alignment — the same invariant that lets the calibration chirp be injected there (§6.2). Crossfade and multi-room synchronisation are not interacting features here; they are the same buffer.
+
+**Fade law.** A crossfade sounds like a *dip* when the law does not match the material, and the two standard laws are each wrong for half of it: uncorrelated signals add as power, so equal-amplitude gains dip 3 dB at the midpoint; correlated ones add as amplitude, so equal-power *gains* 3 dB. One exponent spans both, exactly rather than approximately:
+
+```
+g_out = cos(πt/2)^p        g_in = sin(πt/2)^p
+
+p = 1  ->  g_out² + g_in² == 1     constant power
+p = 2  ->  g_out  + g_in  == 1     constant amplitude
+```
+
+`p = 1 + |r|`, with `r` the normalised cross-correlation of the two overlap segments measured on the level-normalised mono sum — what decides the law is whether the signals reinforce or add in quadrature, which is a property of their shapes and not of which is louder. Measured across correlations, the envelope holds within +0.26 dB of unity, against a 3 dB error for either fixed law at the wrong extreme:
+
+| material | fixed power | fixed amplitude | adaptive |
+|---|---|---|---|
+| uncorrelated | −0.25 dB | **−3.06 dB** | −0.28 dB |
+| correlated | **+2.95 dB** | −0.00 dB | −0.00 dB |
+
+**Level is not peak, and the distinction is load-bearing.** A flat envelope does not bound instantaneous samples: two uncorrelated signals hold a constant RMS through the fade while their peaks still add, measured at +3.01 dB, and the serve path clips hard. A gain envelope over the overlap removes that excess — per-sample requirement, running minimum for look-ahead and release, smoothed so the reduction is itself inaudible. Its ceiling is the louder *source's* own peak rather than an absolute number: at the edges of the fade the mix **is** one source at unity gain, so an absolute ceiling below that source's peak would demand a reduction that cannot be applied without stepping the level against the audio either side. The guard removes only the excess the sum creates; material that was already hot stays as hot as it was and meets the serve path on the same terms as the rest of the track.
+
 #### 4.2 Variable Resampler
 
 An arbitrary-ratio resampler per device, its ratio modulated around unity by a control signal expressed in ppm. Requirements: ratio resolution ≤ 0.1 ppm, continuous ratio changes without discontinuity, and negligible THD+N impact at ±200 ppm. `libsoxr` in variable-rate mode satisfies all three. Tempo-domain processors (`pitch`, `scaletempo`) are unsuitable.

@@ -33,6 +33,11 @@ media:
                               # (the Cast device rejects our self-signed HTTPS).
       app_id: ""              # Cast console App ID registered for
                               # http://<zmm-host>:8010/cast/sync_receiver.html
+      crossfade_s: 0.0        # overlap between queue items, 0 = plain seam.
+                              # Paid for out of written-but-unserved timeline,
+                              # so it cannot exceed source_delay_s (2.0) less a
+                              # ~0.35s guard; ask for more and each seam just
+                              # falls back to a splice. 1.2 is a good start.
   wiim:
     enabled: false
     devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
