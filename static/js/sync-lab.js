@@ -1,8 +1,15 @@
 /**
  * sync-lab.js — Sync Lab: per-session analysis of speaker-sync tests.
  *
- * Renders into #syncLabHost (Media → Group → sync pane) from the group's
- * own DuckDB via /api/media/sync/{sessions,session,model}:
+ * Renders into #syncLabHost (Media → Group → OpenZone → Results) from the
+ * group's own DuckDB via /api/media/sync/{sessions,session,model,trend}:
+ *   - guidance: what to do next, one fixed row per speaker
+ *   - three group headline stats, counted after the group locked
+ *   - ONE per-speaker table: the session's measurements and the corrections
+ *     applied to it, side by side, plus the cross-session learned model —
+ *     it replaced a grid of cards and a separate data table, because the
+ *     question here is always "how do these two compare?"
+ *   - a collapsed ledger: when each correction happened
  *   - group spread chart (the headline): how far apart the speakers are,
  *     against the ±20 ms "audibly together" band
  *   - convergence chart: per-speaker playback error vs elapsed time, with
@@ -10,14 +17,16 @@
  *     rate-slew (▽) and manual-trim (▲) events
  *   - PLL chart: per-speaker stream rate correction (ppm) locking onto the
  *     device's true clock offset
- *   - per-speaker tiles: startup lag, time-to-lock, settled median/p95
- *     error, resyncs, final drift — plus the cross-session learned model
- *   - a data table (accessibility relief + exact numbers)
  *
  * Colours: fixed per speaker by group-member order (colour follows the
  * entity), palette validated for CVD + both themes (dataviz procedure).
- * Live mode: while this group's session is running, refreshes every 3 s
- * IN PLACE — merged chart updates, stable DOM — so nothing visibly resets.
+ *
+ * Live mode: while this group's session is running it refreshes every 3 s,
+ * and the whole rendering layer exists to make that invisible — charts merge,
+ * every panel's structure is built once and only its [data-v] leaves are
+ * written (_patch), advice categories and displayed numbers have hysteresis
+ * so nothing flips or twitches, and scroll positions survive. A live view
+ * that reflows under the reader is worse than one that updates slowly.
  */
 import { createChart } from './chart-utils.js';
 
@@ -183,6 +192,7 @@ export function closeSyncLab() {
     const host = document.getElementById('syncLabHost');
     if (host) host.innerHTML = '';
     _gid = null; _group = null; _detail = null; _sessions = []; _selected = '';
+    _guideState = {}; _sticky = {};
     _announce();
 }
 
@@ -312,8 +322,15 @@ function _renderShell() {
           </div>
           <div id="syncLabGuide" class="mb-3"></div>
           <div class="row g-2 mb-3" id="syncLabHeadline"></div>
-          <div class="row g-2 mb-3" id="syncLabTiles"></div>
-          <div id="syncLabAdjust" class="mb-3"></div>
+          <div class="fw-semibold small mb-1">Per speaker — how it held, and what was done to it</div>
+          <p class="small text-muted mb-2">One row each: the session's measurements on the
+            left, the corrections the engine applied on the right. Buffer jumps and trims are
+            steps you could hear; rate slews and the drift term are parts-per-million changes
+            you cannot. <em>pre-align</em> is how far a speaker was held back at launch so it
+            would land with the slowest one. Fewer and smaller corrections over successive
+            sessions means the model is learning this group.</p>
+          <div id="syncLabSpeakers" class="mb-3"></div>
+          <div id="syncLabLedger" class="mb-3"></div>
           <div class="fw-semibold small mb-1">Group spread — how far apart the speakers are</div>
           <p class="small text-muted mb-1">Worst pairwise gap at each poll. Inside the
             shaded ±${AUDIBLE_MS}&nbsp;ms band the group sounds echo-free.</p>
@@ -341,16 +358,14 @@ function _renderShell() {
                    aria-label="Time to lock per session"></div>
             </div>
           </div>
-          <details class="mt-3 small">
-            <summary class="text-muted">Session data table</summary>
-            <div class="table-responsive mt-2" id="syncLabTable"></div>
-          </details>
         </div>
       </div>`;
     document.getElementById('syncLabClose').onclick = () => closeSyncLab();
     const sel = document.getElementById('syncLabSession');
     sel.onchange = async () => {
         _selected = sel.value;
+        _guideState = {};        // another session's history proves nothing
+        _sticky = {};
         _detail = await _fetchDetail(_selected);
         _renderDetail();
     };
@@ -405,16 +420,13 @@ function _renderDetail(merge = false) {
             ? 'badge bg-success' : 'badge bg-light text-muted border';
     }
     if (!_detail || !_detail.series || !_detail.series.length) {
-        _renderTiles([]);
         _renderHeadline([]);
         _renderGuidance([]);
-        _renderAdjustments([], []);
+        _renderSpeakers([], []);
         _setChart(_spreadChart, _emptyOption(''), false, true);
         _setChart(_convChart, _emptyOption('No measurements in this session yet'),
                   false, true);
         _setChart(_pllChart, _emptyOption(''), false, true);
-        const tbl = document.getElementById('syncLabTable');
-        if (tbl) _setHtml(tbl, '<div class="text-muted">No data.</div>');
         return;
     }
     const players = _detail.players || [];
@@ -423,12 +435,10 @@ function _renderDetail(merge = false) {
     const lockAt = Math.max(0, ...players.map(p => p.lock_s ?? 0));
     _renderGuidance(players, spread, lockAt);
     _renderHeadline(spread, lockAt);
-    _renderTiles(players);
-    _renderAdjustments(_detail.series, players);
+    _renderSpeakers(_detail.series, players);
     _renderSpread(spread, merge);
     _renderCharts(_detail.series, players.map(p => p.player_id), merge);
     _renderTrend(merge);
-    _renderTable(players);
 }
 
 // ---------------------------------------------------------------------------
@@ -532,96 +542,140 @@ function _renderSpread(spread, merge = false) {
 // it is already draining it; a sensor-INVISIBLE one (output-pipeline
 // latency) can only be seen by the mic, which is what Calibrate is for.
 // ---------------------------------------------------------------------------
+// Advice is state, not telemetry, and it is read while it is being written.
+// Two things kept it from settling down:
+//
+//   - the panel was rebuilt every 3 s, and its rows appeared and disappeared
+//     as speakers crossed a threshold, so the block changed height under the
+//     reader and shoved the charts below it around;
+//   - the thresholds were bare comparisons, so a speaker sitting on ±10 ms
+//     flipped its advice on every poll.
+//
+// So: one fixed row per speaker (never added, never removed), values patched
+// in place, and both the categories and the numbers move only when they have
+// moved enough to mean something.
+let _guideState = {};     // player_id | 'group' → last category, for hysteresis
+let _sticky = {};         // key → last shown number, for the same reason
+
+/** A number that only changes when it has changed enough to be worth reading. */
+function _stick(key, v, tol = 3) {
+    const prev = _sticky[key];
+    if (prev != null && Math.abs(v - prev) < tol) return prev;
+    _sticky[key] = v;
+    return v;
+}
+
+/** Which advice a speaker gets. Sticky at the edges: the exit threshold sits
+ *  inside the entry one, so noise around the boundary cannot make the row
+ *  oscillate. Priority is worst-first — an unstable link outranks an offset,
+ *  because it explains it. */
+function _guideCat(p) {
+    const pid = p.player_id;
+    if (p.lock_s == null) return (_guideState[pid] = 'nolock');
+    if (p.settled_bias_ms == null) return (_guideState[pid] = 'converging');
+    if ((p.resyncs ?? 0) >= 3) return (_guideState[pid] = 'unstable');
+    const b = Math.abs(p.settled_bias_ms);
+    const was = _guideState[pid];
+    const off = was === 'off' ? b >= 8 : b > 12;
+    return (_guideState[pid] = off ? 'off' : 'ok');
+}
+
 function _renderGuidance(players, spread = [], lockAt = 0) {
     const el = document.getElementById('syncLabGuide');
     if (!el) return;
     if (!players.length) { _setHtml(el, ''); return; }
-    const items = [];
-    const locked = [];
-    const fine = [];          // in sync — one collective line, not one each
-    for (const p of players) {
-        const name = esc(_nameFor(p.player_id));
-        if (p.lock_s == null) {
-            items.push({ cls: 'warning', icon: 'fa-triangle-exclamation',
-                html: `<strong>${name}</strong> never locked this session — check it's
-                       powered and on WiFi, then re-run the test.` });
-            continue;
-        }
-        const bias = p.settled_bias_ms;
-        if (bias == null) {
-            items.push({ cls: 'secondary', icon: 'fa-hourglass-half',
-                html: `<strong>${name}</strong> is still converging — the rate loop
-                       needs another minute of measurements.` });
-            continue;
-        }
-        locked.push(p);
-        if (Math.abs(bias) <= 10) {
-            fine.push(`${name} <span class="text-muted">${_sign(bias)} ms</span>`);
-        } else {
-            items.push({ cls: 'primary', icon: 'fa-sliders',
-                html: `<strong>${name}</strong> settles ${Math.abs(Math.round(bias))} ms
-                       ${bias > 0 ? 'behind' : 'ahead of'} the group — the rate loop is
-                       still trickling that in (≤20&nbsp;ppm, inaudible) and needs no
-                       help. If the same offset returns every session it is
-                       output-pipeline latency the position sensor cannot see: run
-                       <strong>Calibrate</strong> (mic) to set its trim from the sound
-                       in the air.` });
-        }
-        if ((p.resyncs ?? 0) >= 3) {
-            items.push({ cls: 'warning', icon: 'fa-wifi',
-                html: `<strong>${name}</strong> needed ${p.resyncs} hard resyncs — an
-                       unstable link. Prefer 5&nbsp;GHz WiFi, reduce congestion, or move
-                       the speaker closer to the AP.` });
-        }
-    }
-    if (fine.length) {
-        items.push({ cls: 'success', icon: 'fa-check',
-            // Alignment only. Whether anything needs doing is the verdict's
-            // call — it also weighs the jitter, and the two must not argue.
-            html: `${fine.length === players.length ? 'All ' : ''}${fine.length}
-                   speaker${fine.length > 1 ? 's sit' : ' sits'} where the group
-                   wants ${fine.length > 1 ? 'them' : 'it'}: ${fine.join(', ')}.` });
-    }
+
+    // --- group verdict ---------------------------------------------------
+    // Two different truths, and quoting only the first made the verdict read
+    // as "echo-free" over a stats row saying half the polls were outside the
+    // band. The medians say where each speaker SITS; the poll-by-poll spread
+    // says how much it WANDERS around that, and the ear hears both.
+    const locked = players.filter(p => p.lock_s != null && p.settled_bias_ms != null);
+    let verdict = { cls: 'secondary', icon: 'fa-headphones',
+                    text: 'Needs two speakers reporting after lock.' };
     if (locked.length >= 2) {
-        // Two different truths, and quoting only the first made the verdict
-        // read as "echo-free" over a stats row saying half the polls were
-        // outside the band. The medians say where each speaker SITS; the
-        // poll-by-poll spread says how much it WANDERS around that, and the
-        // ear hears both.
         const biases = locked.map(p => p.settled_bias_ms);
-        const centres = Math.round(Math.max(...biases) - Math.min(...biases));
-        const settled = spread.filter(p => p[0] >= lockAt).map(p => p[1]);
+        const centres = _stick('centres',
+                               Math.round(Math.max(...biases) - Math.min(...biases)));
+        const settled = spread.filter(s => s[0] >= lockAt).map(s => s[1]);
         const sorted = [...settled].sort((a, b) => a - b);
         const p90 = sorted.length
-            ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]
+            ? _stick('p90', sorted[Math.min(sorted.length - 1,
+                                            Math.floor(sorted.length * 0.9))])
             : null;
-        const steady = p90 == null || p90 <= AUDIBLE_MS;
-        items.unshift({
-            cls: centres <= 20 && steady ? 'success'
-                 : centres <= 45 ? 'secondary' : 'primary',
+        const was = _guideState.group;
+        const steady = p90 == null
+            || (was === 'jittery' ? p90 <= AUDIBLE_MS - 4 : p90 <= AUDIBLE_MS + 4);
+        const cat = !steady ? 'jittery'
+            : centres <= 20 ? 'tight' : centres <= 45 ? 'close' : 'apart';
+        _guideState.group = cat;
+        const tail = {
+            tight: '— echo-free to the ear.',
+            close: '— close; the rate loop is still closing it.',
+            apart: '— audibly apart; if it persists, calibrate with the mic.',
+            jittery: '— aligned on average but jittery, which is a link problem, not '
+                     + 'an alignment one: check WiFi before trimming.',
+        }[cat];
+        verdict = {
+            cls: cat === 'tight' ? 'success' : cat === 'close' ? 'secondary' : 'primary',
             icon: 'fa-headphones',
-            html: `<strong>Group verdict:</strong> the speakers sit within
-                   <strong>${centres} ms</strong> of each other after lock`
-                + (p90 == null ? '' :
-                   `, wandering up to <strong>${p90} ms</strong> apart poll to poll (9 in 10)`)
-                + ` ${centres <= 20 && steady
-                        ? '— echo-free to the ear.'
-                        : centres <= 45 && steady
-                            ? '— close; the rate loop is still closing it.'
-                            : steady
-                                ? '— audibly apart; if it persists, calibrate with the mic.'
-                                : '— aligned on average but jittery, which is a link '
-                                  + 'problem, not an alignment one: check WiFi before trimming.'}` });
+            text: `the speakers sit within ${centres} ms of each other after lock`
+                  + (p90 == null ? ' ' : `, wandering up to ${p90} ms apart poll to `
+                                       + 'poll (9 in 10) ')
+                  + tail,
+        };
     }
-    _setHtml(el, `
+
+    // --- one row per speaker, always ------------------------------------
+    const ADVICE = {
+        nolock: { cls: 'warning', icon: 'fa-triangle-exclamation',
+                  text: () => 'never locked this session — check it is powered and on '
+                              + 'WiFi, then re-run the test.' },
+        converging: { cls: 'secondary', icon: 'fa-hourglass-half',
+                      text: () => 'still converging — the rate loop needs another minute '
+                                  + 'of measurements.' },
+        unstable: { cls: 'warning', icon: 'fa-wifi',
+                    text: p => `${p.resyncs} hard resyncs — an unstable link. Prefer `
+                               + '5 GHz WiFi, reduce congestion, or move the speaker '
+                               + 'closer to the AP.' },
+        off: { cls: 'primary', icon: 'fa-sliders',
+               text: p => `settles ${Math.abs(Math.round(p.settled_bias_ms))} ms `
+                          + `${p.settled_bias_ms > 0 ? 'behind' : 'ahead of'} the group `
+                          + '— the rate loop is still trickling that in (≤20 ppm, '
+                          + 'inaudible) and needs no help. If the same offset returns '
+                          + 'every session it is output-pipeline latency the position '
+                          + 'sensor cannot see: run Calibrate (mic) to set its trim '
+                          + 'from the sound in the air.' },
+        ok: { cls: 'success', icon: 'fa-check',
+              text: p => `in sync, sitting ${_sign(_stick('b:' + p.player_id,
+                                                          Math.round(p.settled_bias_ms), 2))} ms `
+                         + 'from the group target — nothing to do.' },
+    };
+
+    const vals = { 'v:text': verdict.text,
+                   'v:icon': { text: '', cls: `fas ${verdict.icon} text-${verdict.cls}` } };
+    for (const p of players) {
+        const a = ADVICE[_guideCat(p)];
+        vals[`g:${p.player_id}`] = a.text(p);
+        vals[`i:${p.player_id}`] = { text: '', cls: `fas ${a.icon} text-${a.cls}` };
+    }
+
+    _patch(el, `guide:${players.map(p => p.player_id).join('|')}`, () => `
       <div class="border rounded p-2">
         <div class="fw-semibold small mb-1"><i class="fas fa-lightbulb me-1"></i>What to do next</div>
-        ${items.map(i => `
+        <div class="small d-flex align-items-baseline gap-2 mb-1">
+          <i data-v="v:icon" data-cls-base="" class="fas fa-headphones"
+             aria-hidden="true" style="width:14px;flex:0 0 14px"></i>
+          <span><strong>Group verdict:</strong> <span data-v="v:text"></span></span>
+        </div>
+        ${players.map(p => `
           <div class="small d-flex align-items-baseline gap-2 mb-1">
-            <i class="fas ${i.icon} text-${i.cls}" aria-hidden="true" style="width:14px"></i>
-            <span>${i.html}</span>
+            <i data-v="i:${esc(p.player_id)}" data-cls-base="" class="fas fa-check"
+               aria-hidden="true" style="width:14px;flex:0 0 14px"></i>
+            <span><strong>${esc(_nameFor(p.player_id))}</strong>
+              <span data-v="g:${esc(p.player_id)}"></span></span>
           </div>`).join('')}
-      </div>`);
+      </div>`, vals);
 }
 
 // ---------------------------------------------------------------------------
@@ -634,14 +688,36 @@ function _renderGuidance(players, spread = [], lockAt = 0) {
 // jump is a heard discontinuity, a rate slew is not.
 // ---------------------------------------------------------------------------
 const TRIM_RUN_GAP_S = 30;      // trims closer than this are one adjustment
+let _ledgerOpen = false;        // reader's choice, kept across live ticks
 const _clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const _sign = v => `${v > 0 ? '+' : ''}${Math.round(v)}`;
 
 /** One row per adjustment event, newest first, plus a per-speaker tally. */
-function _renderAdjustments(series, players) {
-    const el = document.getElementById('syncLabAdjust');
+// Columns of the one per-speaker table: session measurements first, then the
+// corrections applied to it. Key, header, tooltip.
+const _SPK_COLS = [
+    ['med',   'median',    'Settled median |error| after lock — how tightly it held'],
+    ['p95',   'p95',       '95th-percentile |error| after lock — its worst moments'],
+    ['bias',  'bias',      'Median signed error after lock — where it sits relative to the group'],
+    ['lock',  'lock',      'Time from session start to first lock'],
+    ['start', 'start lag', 'Startup latency measured at launch — feeds the model'],
+    ['pre',   'pre-align', 'Held back at launch so it would land with the slowest speaker'],
+    ['jump',  'jumps',     'Buffer jumps — audible steps'],
+    ['slew',  'slews',     'Rate slews — inaudible, parts per million'],
+    ['trims', 'trims',     'Trim adjustments (a run of by-ear nudges counts once)'],
+    ['mic',   'mic',       'Mic (chirp) calibrations'],
+    ['drift', 'drift',     'Rate correction currently held against this device clock'],
+    ['trim',  'trim',      'Standing trim, re-applied every session'],
+];
+
+function _renderSpeakers(series, players) {
+    const el = document.getElementById('syncLabSpeakers');
     if (!el) return;
-    if (!players.length) { _setHtml(el, ''); return; }
+    if (!players.length) {
+        _setHtml(el, '<div class="text-muted small">No speakers reported in this session.</div>');
+        _setHtml(document.getElementById('syncLabLedger'), '');
+        return;
+    }
 
     const KIND = {
         resync: { label: 'buffer jump', icon: 'fa-forward-step', cls: 'warning',
@@ -693,48 +769,38 @@ function _renderAdjustments(series, players) {
     events.reverse();                    // newest first — live sessions grow
     const shown = events.slice(0, 60);
 
-    // Structure once per speaker set; only the tallies and the ledger move.
+    // One row per speaker, every figure in it: what the session measured and
+    // what the engine did about it. The card grid this replaced said the same
+    // things in five stacked blocks, which made comparing two speakers — the
+    // only question anyone actually has here — a scrolling exercise.
     const pids = players.map(p => p.player_id);
-    _patch(el, `adj:${pids.join('|')}`, () => `
-      <div class="border rounded p-2">
-        <div class="fw-semibold small mb-1">
-          <i class="fas fa-wrench me-1"></i>Adjustments applied this session</div>
-        <p class="small text-muted mb-2">Every correction the engine made, and when.
-          Buffer jumps and trims are steps you could hear; rate slews and the drift
-          term are parts-per-million changes you cannot. <em>Start offset</em> is how
-          far this speaker was held back at launch so it would land with the slowest
-          one. Fewer and smaller over successive sessions means the model is learning
-          this group.</p>
-        <div class="table-responsive">
-        <table class="table table-sm small mb-0" style="font-variant-numeric: tabular-nums">
+    _patch(el, `spk:${pids.join('|')}`, () => `
+      <div class="table-responsive">
+        <table class="table table-sm small mb-0 align-middle"
+               style="font-variant-numeric: tabular-nums">
           <thead><tr class="text-muted">
             <th class="fw-normal">Speaker</th>
-            <th class="fw-normal text-end" title="Buffer jumps — audible steps">jumps</th>
-            <th class="fw-normal text-end" title="Rate slews — inaudible, parts per million">slews</th>
-            <th class="fw-normal text-end" title="Trim adjustments (a run of nudges counts once)">trims</th>
-            <th class="fw-normal text-end" title="Mic (chirp) calibrations">mic</th>
-            <th class="fw-normal text-end" title="Held back at start to line up with the slowest speaker">start offset</th>
-            <th class="fw-normal text-end">trim now</th>
+            ${_SPK_COLS.map(([k, label, tip]) =>
+                `<th class="fw-normal text-end" title="${esc(tip)}">${label}</th>`).join('')}
           </tr></thead>
           <tbody>
             ${players.map(p => {
                 const id = esc(p.player_id);
                 return `
               <tr>
-                <td><span class="rounded-circle me-1" aria-hidden="true"
-                      style="display:inline-block;width:9px;height:9px;background:${_colorFor(p.player_id)}"></span>
-                  ${esc(_nameFor(p.player_id))}</td>
-                <td class="text-end" data-v="jump:${id}" data-cls-base="text-end"></td>
-                <td class="text-end" data-v="slew:${id}"></td>
-                <td class="text-end" data-v="trim:${id}"></td>
-                <td class="text-end" data-v="chirp:${id}"></td>
-                <td class="text-end text-muted" data-v="pre:${id}"></td>
-                <td class="text-end" data-v="std:${id}"></td>
+                <td>
+                  <span class="rounded-circle me-1" aria-hidden="true"
+                        style="display:inline-block;width:9px;height:9px;background:${_colorFor(p.player_id)}"></span>
+                  ${esc(_nameFor(p.player_id))}
+                  <div class="text-muted fst-italic" style="font-size:.75rem"
+                       data-v="mdl:${id}"></div>
+                </td>
+                ${_SPK_COLS.map(([k]) =>
+                    `<td class="text-end" data-v="${k}:${id}"
+                         data-cls-base="text-end"></td>`).join('')}
               </tr>`; }).join('')}
           </tbody>
         </table>
-        </div>
-        <div id="syncLabLedger"></div>
       </div>`,
         // Fixed columns, tabular figures: a tick that moves a count changes
         // one cell's glyphs and nothing else on the page can shift. The
@@ -742,18 +808,31 @@ function _renderAdjustments(series, players) {
         // digit, which is what made the panel feel restless.
         Object.assign({}, ...players.map(p => {
             const t = tally[p.player_id];
-            const pre = p.precomp_s == null ? null : p.precomp_s * 1000;
+            const id = p.player_id;
+            const m = _model[id];
+            const dash = v => v || '—';
             return {
-                [`jump:${p.player_id}`]: {
+                [`mdl:${id}`]: m
+                    ? `model: lag ${fmtMs(m.lag_s * 1000)} · drift ${fmtPpm(m.drift_ppm)}`
+                      + ` · ${m.sessions} sessions`
+                    : 'model: not trained yet',
+                [`med:${id}`]: fmtMs(p.settled_med_ms),
+                [`p95:${id}`]: fmtMs(p.settled_p95_ms),
+                [`bias:${id}`]: p.settled_bias_ms == null ? '—'
+                    : `${_sign(p.settled_bias_ms)} ms`,
+                [`lock:${id}`]: fmtS(p.lock_s),
+                [`start:${id}`]: fmtMs(p.startup_lag_s == null
+                                       ? null : p.startup_lag_s * 1000),
+                [`pre:${id}`]: fmtMs(p.precomp_s == null ? null : p.precomp_s * 1000),
+                [`jump:${id}`]: {
                     text: t.jump ? `${t.jump} (Σ ${Math.round(t.jumpMs)} ms)` : '—',
                     cls: t.jump ? 'text-end text-warning' : 'text-end text-muted',
                 },
-                [`slew:${p.player_id}`]: t.slew
-                    ? `${t.slew} (≤ ${Math.round(t.slewMax)} ms)` : '—',
-                [`trim:${p.player_id}`]: t.trim ? String(t.trim) : '—',
-                [`chirp:${p.player_id}`]: t.chirp ? String(t.chirp) : '—',
-                [`pre:${p.player_id}`]: fmtMs(pre),
-                [`std:${p.player_id}`]: `${p.trim_ms ?? 0} ms`,
+                [`slew:${id}`]: dash(t.slew && `${t.slew} (≤ ${Math.round(t.slewMax)} ms)`),
+                [`trims:${id}`]: dash(t.trim && String(t.trim)),
+                [`mic:${id}`]: dash(t.chirp && String(t.chirp)),
+                [`drift:${id}`]: fmtPpm(p.final_ppm),
+                [`trim:${id}`]: `${p.trim_ms ?? 0} ms`,
             };
         })));
 
@@ -761,29 +840,37 @@ function _renderAdjustments(series, players) {
     // its own element: a tick that merely moved a ppm reading leaves the
     // reader's scroll position in the list alone.
     _setHtml(document.getElementById('syncLabLedger'), shown.length ? `
-      <div class="mt-2" data-keep-scroll="ledger"
-           style="max-height:200px;overflow-y:auto">
-        <table class="table table-sm small mb-0">
-          <tbody>
-            ${shown.map(e => `
-              <tr>
-                <td class="text-muted py-1" style="width:3.5rem">${_clock(e.t)}</td>
-                <td class="py-1"><span class="rounded-circle me-1" aria-hidden="true"
-                      style="display:inline-block;width:8px;height:8px;background:${_colorFor(e.pid)}"></span>
-                  ${esc(_nameFor(e.pid))}</td>
-                <td class="py-1"><i class="fas ${e.icon} text-${e.cls} me-1"
-                      aria-hidden="true"></i>${e.label}
-                  ${e.count > 1 ? `<span class="text-muted">(${e.count} steps)</span>` : ''}
-                  ${e.audible ? '' : '<span class="text-muted">(inaudible)</span>'}</td>
-                <td class="py-1 text-end font-monospace">${e.amount}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-      ${events.length > shown.length
-        ? `<div class="small text-muted mt-1">${events.length - shown.length} earlier
-             adjustment(s) not shown.</div>` : ''}`
-      : '<div class="small text-muted mt-1">No discrete corrections — the group held on the rate loop alone.</div>');
+      <details class="small" ${_ledgerOpen ? 'open' : ''} id="syncLabLedgerBox">
+        <summary class="text-muted">When each correction happened
+          (${events.length})</summary>
+        <div class="mt-2" data-keep-scroll="ledger"
+             style="max-height:200px;overflow-y:auto">
+          <table class="table table-sm small mb-0">
+            <tbody>
+              ${shown.map(e => `
+                <tr>
+                  <td class="text-muted py-1" style="width:3.5rem">${_clock(e.t)}</td>
+                  <td class="py-1"><span class="rounded-circle me-1" aria-hidden="true"
+                        style="display:inline-block;width:8px;height:8px;background:${_colorFor(e.pid)}"></span>
+                    ${esc(_nameFor(e.pid))}</td>
+                  <td class="py-1"><i class="fas ${e.icon} text-${e.cls} me-1"
+                        aria-hidden="true"></i>${e.label}
+                    ${e.count > 1 ? `<span class="text-muted">(${e.count} steps)</span>` : ''}
+                    ${e.audible ? '' : '<span class="text-muted">(inaudible)</span>'}</td>
+                  <td class="py-1 text-end font-monospace">${e.amount}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${events.length > shown.length
+          ? `<div class="small text-muted mt-1">${events.length - shown.length} earlier
+               adjustment(s) not shown.</div>` : ''}
+      </details>`
+      : '<div class="small text-muted">No discrete corrections — the group held on the rate loop alone.</div>');
+    // Collapsed by default, and it stays however the reader left it: a live
+    // tick that re-renders the list must not shut it.
+    const box = document.getElementById('syncLabLedgerBox');
+    if (box) box.ontoggle = () => { _ledgerOpen = box.open; };
 }
 
 function _renderTrend(merge = false) {
@@ -814,52 +901,6 @@ function _renderTrend(merge = false) {
     });
     _setChart(_trendAChart, bar(_trend.map(t => t.start_misalign_ms), 'ms'), merge);
     _setChart(_trendBChart, bar(_trend.map(t => t.lock_s), 's'), merge);
-}
-
-/** Tile skeleton — every live figure is an empty [data-v] node filled by
- *  _patch, so a tick never rewrites the row (see _patch). */
-function _tile(p) {
-    const c = _colorFor(p.player_id);
-    const id = esc(p.player_id);
-    return `
-      <div class="col-md-6 col-xl-3">
-        <div class="border rounded p-2 h-100" style="border-left: 4px solid ${c} !important">
-          <div class="d-flex align-items-center small">
-            <span class="rounded-circle me-1" aria-hidden="true"
-                  style="display:inline-block;width:9px;height:9px;background:${c}"></span>
-            <span class="fw-semibold text-truncate">${esc(_nameFor(p.player_id))}</span>
-          </div>
-          <div class="fs-5 fw-semibold mt-1"><span data-v="med:${id}"></span>
-            <span class="small fw-normal text-muted">settled median</span></div>
-          <div class="small text-muted" data-v="det:${id}"></div>
-          <div class="small text-muted fst-italic mt-1" data-v="mdl:${id}"></div>
-        </div>
-      </div>`;
-}
-
-function _renderTiles(players) {
-    const el = document.getElementById('syncLabTiles');
-    if (!el) return;
-    if (!players.length) {
-        _setHtml(el, '<div class="col text-muted small">No speakers reported in this session.</div>');
-        return;
-    }
-    const vals = {};
-    for (const p of players) {
-        const m = _model[p.player_id];
-        vals[`med:${p.player_id}`] = fmtMs(p.settled_med_ms);
-        vals[`det:${p.player_id}`] =
-            `p95 ${fmtMs(p.settled_p95_ms)} · lock ${fmtS(p.lock_s)}`
-            + ` · start ${fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000)}`
-            + ` · ${p.resyncs} resync${p.resyncs === 1 ? '' : 's'}`
-            + ` · drift ${fmtPpm(p.final_ppm)}`
-            + ` · trim ${p.trim_ms ?? 0} ms`;
-        vals[`mdl:${p.player_id}`] = m
-            ? `model: lag ${fmtMs(m.lag_s * 1000)} · drift ${fmtPpm(m.drift_ppm)} · ${m.sessions} sessions`
-            : 'model: not trained yet';
-    }
-    _patch(el, `tiles:${players.map(p => p.player_id).join('|')}`,
-           () => players.map(_tile).join(''), vals);
 }
 
 function _emptyOption(text) {
@@ -977,42 +1018,3 @@ function _renderCharts(series, pids, merge = false) {
     }, merge);
 }
 
-const _TABLE_COLS = ['start', 'precomp', 'lock', 'med', 'p95', 'resyncs',
-                     'drift', 'trim'];
-
-function _renderTable(players) {
-    const el = document.getElementById('syncLabTable');
-    if (!el) return;
-    const vals = {};
-    for (const p of players) {
-        const v = {
-            start: fmtMs(p.startup_lag_s == null ? null : p.startup_lag_s * 1000),
-            precomp: fmtMs(p.precomp_s == null ? null : p.precomp_s * 1000),
-            lock: fmtS(p.lock_s),
-            med: fmtMs(p.settled_med_ms),
-            p95: fmtMs(p.settled_p95_ms),
-            resyncs: String(p.resyncs ?? 0),
-            drift: fmtPpm(p.final_ppm),
-            trim: `${p.trim_ms ?? 0} ms`,
-        };
-        for (const c of _TABLE_COLS) vals[`t:${p.player_id}:${c}`] = v[c];
-    }
-    _patch(el, `table:${players.map(p => p.player_id).join('|')}`, () => `
-      <table class="table table-sm align-middle mb-0">
-        <thead><tr>
-          <th>Speaker</th><th>Startup lag</th><th>Pre-comp</th><th>Time to lock</th>
-          <th>Settled median</th><th>Settled p95</th><th>Resyncs</th>
-          <th>Final drift</th><th>Trim</th>
-        </tr></thead>
-        <tbody>
-          ${players.map(p => `
-            <tr>
-              <td><span class="rounded-circle me-1" aria-hidden="true"
-                    style="display:inline-block;width:8px;height:8px;background:${_colorFor(p.player_id)}"></span>
-                  ${esc(_nameFor(p.player_id))}</td>
-              ${_TABLE_COLS.map(c =>
-                  `<td data-v="t:${esc(p.player_id)}:${c}"></td>`).join('')}
-            </tr>`).join('')}
-        </tbody>
-      </table>`, vals);
-}
