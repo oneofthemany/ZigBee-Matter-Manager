@@ -267,6 +267,7 @@ Failure modes to watch:
 | Steady echo that trim fixes, but value changes per session | Clock sync unstable — check `rtt_ms`/offset jitter in stats (Wi-Fi congestion) |
 | Rising `late` count | Producer starved or network stall; audio will gap |
 | Audible ticks every few seconds | Offset slew fighting a noisy clock estimate — see `resyncs` |
+| One speaker consistently late by a fixed amount, and the stats say it is aligned | Output-pipeline latency, which the reported-position sensor cannot see (§6.1). Screened devices are typically worst. Fix with trim — by mic if you have one in the room, otherwise by ear. It is stored per device and re-applied every session |
 | Session opens with a few seconds of silence | Delay line primed short — check the "primed only Xs" warning and `source.underruns`; raise `source_delay_s` or `ring_capacity_s` |
 | Silence on one member only, others fine | That device's pre-compensation was clamped at launch — see the "clamped … forward" warning |
 | `source.restarts` climbing | Station keeps dropping; each restart is a gap, not a permanent offset |

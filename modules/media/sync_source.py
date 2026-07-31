@@ -210,10 +210,22 @@ class MediaSource:
         target = self.delay_s if target_s is None else float(target_s)
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
-            if self.buffered_s() >= target:
+            if self._primed_for(target):
                 return True
             await asyncio.sleep(0.05)
-        return self.buffered_s() >= target
+        return self._primed_for(target)
+
+    def _primed_for(self, target: float) -> bool:
+        """Buffer depth alone is not the condition.
+
+        A reader's start position is derived from *elapsed* time since the
+        epoch, not from how much audio happens to be buffered. A source that
+        bursts on connect — most HTTP streams do — fills the ring far faster
+        than the clock advances, so depth is reached while elapsed is still
+        short and the reader lands before the start of the timeline. Both have
+        to be satisfied: enough audio, and enough clock."""
+        return (self.buffered_s() >= target
+                and (time.monotonic() - self.epoch) >= target)
 
     async def close(self) -> None:
         """Stop decoding and reap the decoder. Bounded at every step: session

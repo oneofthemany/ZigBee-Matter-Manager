@@ -155,6 +155,11 @@ STREAM_FIT_MAX_POINTS = 360      # ≈20 min of polls
 STREAM_FIT_APPLY_SPAN_S = 60.0   # shorter baselines are all noise — hold off
 STREAM_RATE_EMA = 0.25           # max blend of a new fit into rate_ppm
 STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
+# How far a fitted slope must stand clear of its own standard error before it
+# is allowed to move the actuator. Two sigma is the usual "distinguishable
+# from zero" bar; below it the fit is noise and the seeded model value — which
+# has many sessions behind it — is the better estimate.
+STREAM_FIT_MIN_SIGMA = 2.0
 
 
 # The timeline the Sync Lab runs on when no media is given. Module-level so
@@ -241,6 +246,9 @@ class _Stream:
         # Software PLL: the resampler serves fractionally more/fewer timeline
         # samples per output second to cancel the device's clock drift.
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
+        # The model's learned drift for this device, held separately as the
+        # value an uninformative fit falls back to (see _pll_update).
+        self.rate_prior: float = 0.0
         self.slew_s: float = 0.0     # pending offset to slew away (s, >0 =
         #                              device behind → consume timeline faster)
         # Cumulative deliberate timeline motion (s): rate term + drained slew
@@ -523,6 +531,7 @@ class CastSyncPoc:
                     st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
                                       min(STREAM_RATE_MAX_PPM,
                                           float(m.get("drift_ppm", 0.0))))
+                    st.rate_prior = st.rate_ppm
                     self._streams[sid] = st
                     task = asyncio.create_task(self._launch_stream(pid, sid))
                 else:
@@ -778,6 +787,17 @@ class CastSyncPoc:
                 info["detected"] = True
             devices.append(info)
         if len(deltas) < 2:
+            # Say so in the log, not only in the HTTP response. A calibration
+            # that quietly does nothing looks identical to one that ran and
+            # found no correction needed, and the difference matters: the
+            # first means the trims are still whatever they were.
+            detail = ", ".join(f"{d['name']} peak×{d['quality']}"
+                               f"{'' if d['detected'] else ' (no chirp)'}"
+                               for d in devices)
+            logger.warning(
+                f"Chirp calibration found no usable arrivals — trims unchanged. "
+                f"Needs a mic that can hear the speakers (min peak ratio "
+                f"{_chirp.MIN_PEAK_RATIO}): {detail}")
             return {"success": False, "devices": devices,
                     "error": "Chirps not detected on enough speakers — "
                              "check the mic and its input level"}
@@ -1088,13 +1108,33 @@ class CastSyncPoc:
     @staticmethod
     def _fit_slope(pts: List[tuple]) -> Optional[float]:
         """Least-squares slope of (t, y) points; None if degenerate."""
+        got = CastSyncPoc._fit_slope_se(pts)
+        return None if got is None else got[0]
+
+    @staticmethod
+    def _fit_slope_se(pts: List[tuple]) -> Optional[tuple]:
+        """Least-squares slope **and its standard error**.
+
+        The standard error is the part that matters here. Slope noise goes as
+        σ/(span·√n): at this sensor's ~12 ms poll noise and a 2.5 s cadence
+        that is on the order of ±140 ppm at a 60 s baseline and still ±18 ppm
+        at 240 s — far larger than the few ppm of real crystal drift being
+        looked for. A slope that cannot be told apart from zero carries no
+        information, and feeding it to the actuator injects exactly the
+        differential rate error the loop exists to remove."""
         n = len(pts)
+        if n < 3:
+            return None
         tm = sum(p[0] for p in pts) / n
         ym = sum(p[1] for p in pts) / n
         den = sum((p[0] - tm) ** 2 for p in pts)
         if den <= 0:
             return None
-        return sum((p[0] - tm) * (p[1] - ym) for p in pts) / den
+        slope = sum((p[0] - tm) * (p[1] - ym) for p in pts) / den
+        resid = [p[1] - (ym + slope * (p[0] - tm)) for p in pts]
+        # Residual variance on n-2 degrees of freedom, the usual OLS estimate.
+        s2 = sum(r * r for r in resid) / (n - 2)
+        return slope, (s2 / den) ** 0.5
 
     def _pll_update(self, st: _Stream, lag: float):
         """Drift estimator (open-zone.md §7.2): fit the slope of the device's
@@ -1123,12 +1163,14 @@ class CastSyncPoc:
         ym = sum(p[1] for p in st.lag_hist) / n
         resid = [p[1] - (ym + slope * (p[0] - tm)) for p in st.lag_hist]
         sd = (sum(r * r for r in resid) / n) ** 0.5
+        fit = self._fit_slope_se(st.lag_hist)
         if sd > 0:
             kept = [p for p, r in zip(st.lag_hist, resid) if abs(r) <= 3 * sd]
             if STREAM_FIT_MIN_POINTS <= len(kept) < n:
-                slope = self._fit_slope(kept)
-                if slope is None:
-                    return
+                fit = self._fit_slope_se(kept)
+        if fit is None:
+            return
+        slope, se = fit
         # A slope no crystal can produce means a step landed in the window —
         # a server stall (observed: 4 s event-loop freeze), a device pipeline
         # hiccup — not drift. Learning from it rails the clamp; start the
@@ -1136,14 +1178,42 @@ class CastSyncPoc:
         if abs(slope) * 1e6 > 4 * STREAM_RATE_MAX_PPM:
             st.lag_hist = st.lag_hist[-1:]
             return
+        # Significance gate (§7.2). A span threshold alone is a proxy for
+        # "is this fit informative", and a poor one: sensor noise differs
+        # per device — measured p90 |error| of 8.8 ms on one speaker against
+        # 22.8 ms on another in the same group — so the same baseline buys
+        # them very different confidence. Require the slope to stand clear of
+        # its own standard error, and weight what is applied by how clearly.
+        # Below the bar the seeded model value is kept, which is the right
+        # answer: a model trained over many sessions separates two devices to
+        # ~0.01 ppm, where a single session's fit cannot do better than tens.
+        if se <= 0 or abs(slope) < STREAM_FIT_MIN_SIGMA * se:
+            st.stats["drift_fit"] = "below noise"
+            return
+        # Ramps from nothing at the 2σ bar to full weight at 3σ. The rate term
+        # is feed-forward only — the slew loop is the fast actuator and mops up
+        # whatever this leaves — so the costs are asymmetric: under-tracking a
+        # real drift means a slow-draining slew, while over-trusting a noisy
+        # fit means permanent differential wander. Conservative is correct.
+        confidence = min(1.0, abs(slope) / se - STREAM_FIT_MIN_SIGMA)
+        st.stats["drift_fit"] = f"{slope * 1e6:+.1f}±{se * 1e6:.1f} ppm"
         # slope = d(free-running lag)/dt: device clock slow → lag grows →
-        # positive ppm → serve faster. The EMA gain scales with the fit's
-        # baseline (short spans are noise-dominated); clamp to the physical
-        # crystal bound. The model only learns span-backed estimates.
-        ema = STREAM_RATE_EMA * min(1.0, span / STREAM_RATE_EMA_SPAN_S)
+        # positive ppm → serve faster.
+        #
+        # Blended against the MODEL PRIOR, not against the previous estimate.
+        # Feeding the previous output back — rate += g·(slope − rate) — is a
+        # random walk when the slope is noise: every poll steps toward a fresh
+        # noisy target and nothing pulls it back, so a chance excursion is
+        # integrated rather than forgotten. Consecutive fits share almost all
+        # their points, so such an excursion persists for many polls and walks
+        # the estimate into the clamp. Anchoring to the prior gives the loop a
+        # restoring force: an uninformative fit decays to what the model has
+        # learned over many sessions, and only a fit that is clearly better
+        # than the prior displaces it.
+        w = confidence * min(1.0, span / STREAM_RATE_EMA_SPAN_S)
         st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
                           min(STREAM_RATE_MAX_PPM,
-                              st.rate_ppm + ema * (slope * 1e6 - st.rate_ppm)))
+                              w * slope * 1e6 + (1.0 - w) * st.rate_prior))
         if span >= STREAM_RATE_EMA_SPAN_S:
             self._model_learn(st, "drift_ppm", st.rate_ppm)
 
