@@ -93,6 +93,7 @@ except Exception:                                    # pragma: no cover
 
 from modules.media import sync_chirp as _chirp
 from modules.media import sync_resample as _rs
+from modules.media import sync_source as _src
 from modules.media.sync_source import (RATE, CHANNELS, GeneratedSource,
                                        MediaSource)
 
@@ -409,6 +410,7 @@ class CastSyncPoc:
         # fade is paid for out of written-but-unserved timeline (§4.1a) — ask
         # for more than that and every seam quietly falls back to a splice.
         self._crossfade_s = float(cfg.get("crossfade_s", 0.0))
+        self._session_crossfade_s = self._crossfade_s
         # Optional EqStreamEngine, so a sync group can carry the same
         # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
@@ -680,7 +682,7 @@ class CastSyncPoc:
                           loop_forever=loop_forever,
                           title=(media.get("title") or "").strip(),
                           url_provider=provider,
-                          crossfade_s=self._crossfade_s)
+                          crossfade_s=self._session_crossfade_s)
         try:
             await src.start()
         except Exception as e:
@@ -707,9 +709,20 @@ class CastSyncPoc:
                 f"Sync source primed only {src.buffered_s():.1f}s of the "
                 f"{target:.1f}s needed — expect silence at session start")
 
+    def _crossfade_max(self) -> float:
+        """Longest overlap the delay line can fund (open-zone.md §4.1a).
+
+        The fade is taken out of timeline that is written but not yet served,
+        and the throttle caps that at ``source_delay_s``. The guard is what is
+        left for the incoming head to arrive in. Beyond this a request is not
+        an error — every seam just quietly falls back to a splice — which is
+        exactly why the number has to be reachable by the caller."""
+        return max(0.0, self._source_delay_s - _src.XFADE_GUARD_S)
+
     async def start_session(self, player_ids: Optional[List[str]] = None,
                             group_id: str = "", duration_s: int = 0,
-                            media: Optional[dict] = None) -> dict:
+                            media: Optional[dict] = None,
+                            crossfade_s: Optional[float] = None) -> dict:
         if group_id:
             group = self._groups.get(group_id)
             if not group:
@@ -725,6 +738,14 @@ class CastSyncPoc:
         # Fixed-length runs keep sessions comparable: the learned model and
         # the Sync Lab trends are evaluated over identical time windows.
         self._duration_s = max(0, int(duration_s or 0))
+        # Per-session, so a change takes effect on the next start rather than
+        # needing the process restarted (the config value is only the default).
+        # Clamped to what the delay line can actually fund: a longer request
+        # would not fail, it would degrade to a splice at every seam, and a
+        # control that silently does nothing is worse than one that says no.
+        self._session_crossfade_s = (
+            self._crossfade_s if crossfade_s is None
+            else min(max(float(crossfade_s), 0.0), self._crossfade_max()))
 
         # Prefer the DuckDB-trained model (robust medians over raw history,
         # across every group's DB); the in-memory/JSON EMAs remain the fallback.
@@ -946,6 +967,15 @@ class CastSyncPoc:
             "now_playing": self.now_playing(),
             "source": self._source.stats(),
             "resampler": {"kind": self._resampler_kind, **_rs.available()},
+            # The UI needs the ceiling to bound its control, and needs it
+            # before a session exists — so it is derived from configuration
+            # here rather than read off a running source.
+            "crossfade": {
+                "default_s": self._crossfade_s,
+                "session_s": self._session_crossfade_s,
+                "max_s": round(self._crossfade_max(), 2),
+                "min_s": _src.XFADE_MIN_S,
+            },
             "devices": devices,
         }
 

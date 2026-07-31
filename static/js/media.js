@@ -121,6 +121,7 @@ export function initMedia() {
     window.mediaSyncSrc = syncSetSource;
     window.mediaSyncUrl = syncSetCustomUrl;
     window.mediaSyncLoop = syncSetLoop;
+    window.mediaSyncXfade = syncSetCrossfade;
     window.mediaSyncTidalKind = syncTidalKind;
     window.mediaSyncTidalItem = syncTidalItem;
     window.mediaSyncCalibrate = syncCalibrate;
@@ -1771,7 +1772,8 @@ async function renderSyncPane() {
           </div>
           ${g.active ? _syncZoneScope(g.id) + _syncActiveHint()
                      : _syncCustomRow(g.id, running || disabled)
-                       + _syncTidalRow(g.id, running || disabled)}
+                       + _syncTidalRow(g.id, running || disabled)
+                       + _syncXfadeRow(g.id, running || disabled)}
           ${g.members.map(m => _syncMemberRow(m, g.active)).join('')}
         </div>
       </div>`).join('');
@@ -2155,6 +2157,18 @@ function _syncActiveHint() {
         ? ` <span class="text-warning" title="The decoder could not keep up — ${src.underrun_ms} ms of silence so far">
               <i class="fas fa-triangle-exclamation"></i> ${src.underruns} underrun${src.underruns === 1 ? '' : 's'}</span>`
         : '';
+    // What the last seam actually did. Shortening or abandoning a fade is
+    // normal — the overlap comes out of buffer that may not be there when an
+    // item happens to end — so without saying so, a listener who asked for
+    // 1.2s and heard a splice has no way to tell that from a broken feature.
+    const xf = src.crossfade_s > 0 ? (() => {
+        const n = src.crossfades || 0;
+        const last = src.crossfade_last || '';
+        const short = last && !/^\d/.test(last);   // a reason, not a duration
+        return ` <span class="${short ? 'text-muted' : ''}"
+                       title="Asked for ${src.crossfade_s}s. ${last ? 'Last seam: ' + esc(last) + '.' : ''}">
+                   <i class="fas fa-right-left"></i> ${n} crossfade${n === 1 ? '' : 's'}${short ? ' · last seam spliced' : ''}</span>`;
+    })() : '';
     const advice = generated
         ? 'Stand between the speakers and drag each trim until the clicks land together. Positive = plays later.'
         : 'Drag each trim until the speakers stop echoing. Positive = plays later — tune on the test signal first, the clicks are far easier to align by ear.';
@@ -2164,7 +2178,7 @@ function _syncActiveHint() {
                 <div><i class="fas fa-music me-1"></i>
                   <span class="fw-semibold">${esc(np.title || what)}</span>
                   ${np.artist ? `<span class="text-muted"> — ${esc(np.artist)}</span>` : ''}
-                  ${pos}${under}</div>
+                  ${pos}${under}${xf}</div>
                 <div>${advice}</div>
               </div>
             </div>`;
@@ -2270,6 +2284,63 @@ function _syncCustomRow(gid, disabled) {
       </div>`;
 }
 
+// ── Crossfade (per zone, applied at session start) ──────────────────────
+// Held client-side like duration, source and loop, and sent in the start body:
+// the engine reads it once when it builds the source, so a change takes effect
+// on the next session rather than the current one.
+
+const XFADE_FALLBACK_MAX_S = 1.65;   // until /status reports the real ceiling
+
+/** The longest fade this server can actually honour. The overlap is taken out
+ *  of written-but-unserved timeline, so the ceiling is a property of the
+ *  source delay — asking for more does not fail, it silently degrades to a
+ *  splice, which is precisely the confusion worth designing out. */
+function _syncXfadeMax() {
+    const m = Number(_syncStatus?.crossfade?.max_s);
+    return Number.isFinite(m) && m > 0 ? m : XFADE_FALLBACK_MAX_S;
+}
+
+function _syncXfadeFor(gid) {
+    const raw = localStorage.getItem('zmm.syncxfade.' + gid);
+    const dflt = Number(_syncStatus?.crossfade?.default_s) || 0;
+    const v = raw === null ? dflt : Number(raw);
+    return Number.isFinite(v) ? Math.min(Math.max(v, 0), _syncXfadeMax()) : 0;
+}
+
+function syncSetCrossfade(gid, val) {
+    const v = Math.min(Math.max(Number(val) || 0, 0), _syncXfadeMax());
+    localStorage.setItem('zmm.syncxfade.' + gid, String(v));
+    const out = document.getElementById(`syncxfv-${gid}`);
+    if (out) out.textContent = _syncXfadeLabel(v);
+}
+
+function _syncXfadeLabel(v) {
+    return v <= 0 ? 'off' : `${v.toFixed(2)}s`;
+}
+
+/** Slider rather than a preset list: the useful range is narrow, continuous,
+ *  and bounded by something the user cannot otherwise see. The max attribute
+ *  IS the ceiling, so an unhonourable value cannot be chosen in the first
+ *  place — better than accepting it and degrading quietly. */
+function _syncXfadeRow(gid, disabled) {
+    const v = _syncXfadeFor(gid);
+    const max = _syncXfadeMax();
+    return `
+      <div class="d-flex align-items-center gap-2 mt-2">
+        <label class="small text-muted text-nowrap mb-0" for="syncxf-${esc(gid)}"
+               title="Overlap between queue items. Taken from audio already buffered but not yet sent, so it costs no extra delay — and cannot exceed what that buffer holds.">
+          <i class="fas fa-right-left me-1"></i>Crossfade</label>
+        <input type="range" class="form-range flex-grow-1" id="syncxf-${esc(gid)}"
+               min="0" max="${max.toFixed(2)}" step="0.05" value="${v.toFixed(2)}"
+               ${disabled ? 'disabled' : ''}
+               oninput="window.mediaSyncXfade('${esc(gid)}', this.value)">
+        <span class="small font-monospace text-nowrap" id="syncxfv-${esc(gid)}"
+              style="min-width:3.2rem;text-align:right">${_syncXfadeLabel(v)}</span>
+        <span class="small text-muted text-nowrap" title="Ceiling for this server: the fade is paid for out of the source delay, less a guard.">
+          max ${max.toFixed(2)}s</span>
+      </div>`;
+}
+
 // ── Zone spectrum (server-analysed, arrives over the websocket) ─────────
 // Held as one latest-frame slot rather than a queue: frames arrive faster than
 // the display repaints on a slow tab, and a backlog of spectra is worthless —
@@ -2326,6 +2397,7 @@ async function syncStartGroup(gid) {
     try {
         r = await apiPost('/api/media/sync/start', {
             group_id: gid, duration_s: _syncDurFor(gid),
+            crossfade_s: _syncXfadeFor(gid),
             ...(media ? { media } : {}),  // omitted body = generated test signal
         });
     } catch (e) {
