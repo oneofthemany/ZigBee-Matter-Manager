@@ -197,6 +197,11 @@ STREAM_TRIM_SETTLE_S = 3.0
 # place at the start" is; holding the output at zero until the group has locked
 # and then fading in makes every one of those corrections inaudible.
 STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
+# How long after a session starts an identical start request is read as a
+# duplicate of the same click rather than a deliberate restart. Generous,
+# because the thing it is protecting against is a second request issued while
+# the first was still buffering — which is exactly the slow window.
+START_DEDUPE_S = 30.0
 STREAM_FADE_IN_S = 0.4
 
 # Zone spectrum feed (the EQ display's signal). A picture of the audio, so the
@@ -236,6 +241,18 @@ async def _broadcast_spectrum(payload: dict) -> None:
         await broadcast_event("zone_spectrum", payload)
     except Exception:
         pass
+
+
+def _media_key(media: Optional[dict]) -> tuple:
+    """Identity of a start request's media, for duplicate detection.
+
+    Only the fields that decide *what plays* — a differing title or artwork
+    URL is the same request with better metadata, and must not read as a
+    different one."""
+    m = media or {}
+    return (str(m.get("kind") or "track").lower(),
+            m.get("media_type") or "", m.get("source_id") or "",
+            m.get("station_uuid") or "", (m.get("url") or "").strip())
 
 
 def _encode_s16(pcm: np.ndarray) -> bytes:
@@ -391,6 +408,10 @@ class CastSyncPoc:
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
         self._session_media: Optional[dict] = None  # media of the running session
+        # Members and start time of the running session, held so a repeat of
+        # the request that started it can be recognised (see START_DEDUPE_S).
+        self._session_players: List[str] = []
+        self._session_started_at: float = 0.0
         # Learned per-device latency model (stream mode): startup lag +
         # clock-drift rate, EMA-updated every session so later sessions
         # start pre-aligned. player_id -> {lag_s, drift_ppm, sessions}
@@ -754,9 +775,33 @@ class CastSyncPoc:
             player_ids = group.get("members", [])
         if not player_ids:
             return {"success": False, "error": "No players to start"}
+        # Duplicate start: the same request, arriving while the session it asks
+        # for is already coming up. Serialising start/stop (see _session_lock)
+        # made this expensive rather than merely untidy — the second request
+        # waits out the first's priming, then tears the session down, quits the
+        # app on every speaker and builds the identical thing again, roughly
+        # doubling time-to-audio and bouncing the group mid-start. Answer with
+        # the session that is already running instead.
+        if (self.running
+                and self._active_group == group_id
+                and sorted(player_ids) == sorted(self._session_players)
+                and _media_key(media) == _media_key(self._session_media)
+                and time.monotonic() - self._session_started_at < START_DEDUPE_S):
+            logger.info("Duplicate sync start ignored — same request "
+                        f"{time.monotonic() - self._session_started_at:.1f}s "
+                        "after the session it asks for started")
+            return {"success": True, "duplicate": True,
+                    "launched": [{"player_id": i["player_id"],
+                                  "name": i["name"], "sid": sid}
+                                 for sid, i in self._pending.items()],
+                    "errors": {},
+                    "mode": "stream" if not self.app_id else "receiver",
+                    "source": self._source.kind,
+                    "duration_s": self._duration_s}
         if self.running:
             await self._stop_session_locked()
         self._active_group = group_id
+        self._session_players = list(player_ids)
         stream_mode = not self.app_id   # no registered receiver -> default receiver
         self._session_id = uuid_mod.uuid4().hex[:8]
         # Fixed-length runs keep sessions comparable: the learned model and
@@ -795,6 +840,10 @@ class CastSyncPoc:
         self._source = source
         self._session_media = media or None
         self.running = True
+        # Stamped here rather than on return: a duplicate request blocked on
+        # the session lock is measured from when this session began coming up,
+        # not from when it finished.
+        self._session_started_at = time.monotonic()
 
         # If the model knows every member's startup lag, fix the session
         # target now and pre-compensate each stream so devices start already
@@ -926,6 +975,8 @@ class CastSyncPoc:
         self._pending = {}
         self._active_group = ""
         self._session_media = None
+        self._session_players = []
+        self._session_started_at = 0.0
         self._queue, self._queue_pos = [], 0
         self._fade_start = None
         for t in self._trim_learn_tasks.values():
