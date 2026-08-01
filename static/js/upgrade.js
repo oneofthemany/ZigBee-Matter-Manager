@@ -194,6 +194,18 @@ function renderUpgradeCard() {
                 <input class="form-check-input" type="checkbox" id="upgradeLogAutoScroll" checked>
                 <label class="form-check-label small" for="upgradeLogAutoScroll">Auto-scroll</label>
               </div>
+              <span id="upgradeLogMeta" class="small text-muted me-2"></span>
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="upgradeLogFullBtn">
+                <i class="fas fa-angles-up me-1"></i> Load full log
+              </button>
+              <a class="btn btn-outline-secondary btn-sm" id="upgradeLogRawBtn"
+                 href="/api/upgrade/log/raw" target="_blank" rel="noopener">
+                <i class="fas fa-up-right-from-square me-1"></i> Raw
+              </a>
+              <a class="btn btn-outline-secondary btn-sm" id="upgradeLogDlBtn"
+                 href="/api/upgrade/log/raw?download=true">
+                <i class="fas fa-download me-1"></i> Download
+              </a>
               <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
             </div>
           </div>
@@ -1019,18 +1031,52 @@ async function showLog() {
     const modalEl = document.getElementById('upgradeLogModal');
     if (!modalEl) return;
     const modal = new window.bootstrap.Modal(modalEl);
+    // Reopening starts back on the tail: the full log can be tens of MB and
+    // is a deliberate request, not a default.
+    buildLogFull = false;
+    const btn = document.getElementById('upgradeLogFullBtn');
+    if (btn && !btn.dataset.bound) {
+        btn.dataset.bound = 'true';
+        btn.addEventListener('click', async () => {
+            buildLogFull = true;
+            btn.disabled = true;
+            await refreshBuildLog();
+        });
+    }
     await refreshBuildLog();
     modal.show();
 }
 
+// Lines fetched for the live tail. The poll runs while a build is in flight,
+// so it stays a tail — "Load full log" switches to the whole file, and that
+// choice sticks until the modal is reopened so a poll can't silently trim
+// what the user just asked to see.
+const BUILD_LOG_TAIL_LINES = 5000;
+let buildLogFull = false;
+
 async function refreshBuildLog() {
     try {
-        const res = await fetch('/api/upgrade/log?lines=500');
+        const want = buildLogFull ? 0 : BUILD_LOG_TAIL_LINES;
+        const res = await fetch(`/api/upgrade/log?lines=${want}`);
         const data = await res.json();
         if (!data.success) return;
         const pre = document.getElementById('upgradeLogPre');
         if (!pre) return;
-        pre.textContent = (data.lines || []).join('\n') || '(no output yet)';
+        const shown = data.lines || [];
+        pre.textContent = shown.join('\n') || '(no output yet)';
+
+        const meta = document.getElementById('upgradeLogMeta');
+        if (meta) {
+            const total = data.lines_in_file ?? shown.length;
+            const kb = Math.round((data.bytes || 0) / 1024);
+            meta.textContent = !data.exists ? ''
+                : (shown.length >= total
+                    ? `all ${total} lines (${kb} KB)`
+                    : `last ${shown.length} of ${total} lines (${kb} KB)`);
+        }
+        const btn = document.getElementById('upgradeLogFullBtn');
+        if (btn) btn.disabled = buildLogFull;
+
         const autoScroll = document.getElementById('upgradeLogAutoScroll');
         if (autoScroll?.checked) {
             pre.scrollTop = pre.scrollHeight;

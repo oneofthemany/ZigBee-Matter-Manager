@@ -9,7 +9,8 @@ Endpoints:
   POST /api/upgrade/rollback            — rollback to previous image
   POST /api/upgrade/cancel              — cancel in-progress build
   POST /api/upgrade/gc                  — garbage collect old images
-  GET  /api/upgrade/log                 — stream build log (tail)
+  GET  /api/upgrade/log                 — build log as JSON lines (0 = all)
+  GET  /api/upgrade/log/raw             — complete build log as text/plain
   GET  /api/upgrade/settings            — get upgrade settings
   POST /api/upgrade/settings            — update upgrade settings
   POST /api/upgrade/install-watcher     — request watcher install
@@ -186,13 +187,37 @@ def register_upgrade_routes(app: FastAPI):
             return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
     @app.get("/api/upgrade/log")
-    async def get_build_log(lines: int = Query(500, ge=1, le=5000)):
-        """Return the last N lines of the host-side build log."""
+    async def get_build_log(lines: int = Query(500, ge=0)):
+        """Return the last N lines of the host-side build log.
+
+        ``lines=0`` returns the whole log. There is no upper bound: a full
+        image build runs to tens of thousands of lines and the failing step is
+        rarely the last one, so capping the tail hides the diagnosis."""
         try:
             log = um.read_build_log(max_lines=lines)
-            return {"success": True, "lines": log}
+            return {"success": True, "lines": log, **um.build_log_info()}
         except Exception as e:
             logger.error(f"Log read failed: {e}")
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+    @app.get("/api/upgrade/log/raw")
+    async def get_build_log_raw(download: bool = Query(False)):
+        """The complete build log as text/plain — nothing trimmed.
+
+        Served off-thread: the log reaches tens of MB on a full build and this
+        handler runs on the event loop, which the audio stream generators
+        share."""
+        import asyncio
+        try:
+            text = "\n".join(await asyncio.to_thread(um.read_build_log, 0))
+            headers = {}
+            if download:
+                headers["Content-Disposition"] = (
+                    'attachment; filename="zmm-build.log"')
+            return Response(content=text, media_type="text/plain; charset=utf-8",
+                            headers=headers)
+        except Exception as e:
+            logger.error(f"Raw log read failed: {e}")
             return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
     @app.get("/api/upgrade/settings")

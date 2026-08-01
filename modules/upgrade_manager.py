@@ -584,16 +584,43 @@ def write_trigger(action: str, payload: Optional[Dict[str, Any]] = None) -> bool
 
 
 def read_build_log(max_lines: int = 500) -> List[str]:
-    """Read the last N lines of the build log."""
+    """Read the last N lines of the build log — ``max_lines <= 0`` for all.
+
+    A failed build is diagnosed from the step that first went wrong, which on
+    a full image build is thousands of lines above the tail, so a tail-only
+    reader can hide the very thing it is being opened to find."""
     if not os.path.exists(BUILD_LOG_FILE):
         return []
     try:
         with open(BUILD_LOG_FILE, "r", errors="replace") as f:
             lines = f.readlines()
-        return [ln.rstrip("\n") for ln in lines[-max_lines:]]
+        if max_lines > 0:
+            lines = lines[-max_lines:]
+        return [ln.rstrip("\n") for ln in lines]
     except Exception as e:
         logger.warning(f"Failed to read build log: {e}")
         return []
+
+
+def build_log_info() -> Dict[str, Any]:
+    """Path/size/line-count of the build log, for the UI to decide whether to
+    offer the whole thing inline or as a download.
+
+    Deliberately NOT keyed ``lines`` — the log endpoint merges this into a
+    payload whose ``lines`` is the log itself."""
+    empty = {"exists": False, "path": BUILD_LOG_FILE,
+             "bytes": 0, "lines_in_file": 0}
+    if not os.path.exists(BUILD_LOG_FILE):
+        return empty
+    try:
+        size = os.path.getsize(BUILD_LOG_FILE)
+        with open(BUILD_LOG_FILE, "rb") as f:
+            count = sum(1 for _ in f)
+        return {"exists": True, "path": BUILD_LOG_FILE,
+                "bytes": size, "lines_in_file": count}
+    except Exception as e:
+        logger.warning(f"Failed to stat build log: {e}")
+        return empty
 
 
 def watcher_installed() -> bool:
