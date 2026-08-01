@@ -344,7 +344,13 @@ The engine is single-threaded by construction: the delay line, the correction la
 - **`_Ring` has no lock.** Reads and writes are safe only because both happen on the loop. Moving either off-thread requires adding one first.
 - **Cast connection callbacks arrive on pychromecast's socket thread.** `_ConnWatch` therefore only assigns plain fields; it records the reconnect and lets the monitor decide what to do about it.
 
-Known exception, not yet resolved: the per-device resampler runs its DSP inside the streaming response, on the loop. The generator only suspends when it is more than `STREAM_AHEAD_S` ahead, so a device refilling hard after a reconnect can drive it through many blocks with no suspension point. This is the remaining path by which audio work can stall the loop (§11).
+- **The resampler is split across the thread boundary, and the split is where it is for a reason.** `window()` reads the delay line and must stay on the loop, because the ring is unlocked. `render()` is pure arithmetic over the private copy `window()` returns, and runs on a worker via `asyncio.to_thread` — the Rust filter releases the GIL, so this genuinely parallelises rather than merely moving the block.
+
+  The await is also the loop's only *guaranteed* suspension point per block. The generator sleeps only when it is more than `STREAM_AHEAD_S` ahead, so a device refilling hard after a reconnect holds `ahead` under that threshold indefinitely and, without an await in the body, produces block after block while every other task on the loop starves. Observed before the split: a 20 s stall with the sampled stack inside `interp_block`, taking the whole application down with it — the health endpoint stopped answering and the tunnel reported TLS handshake timeouts against the origin.
+
+  Of a 0.2 s block at 44.1 kHz stereo, the window read is 0.21 ms and the filter 0.68 ms on the Rust backend, so 77% of the work leaves the loop — 95% on the numpy fallback, where the filter is 3.60 ms. Simulating five devices producing flat out, worst-case loop scheduling delay falls from 136 ms to 1.8 ms (Rust) and from 702 ms to 0.9 ms (numpy). Wall-clock time for the same work also falls, roughly 2–3×, because the Rust filter releases the GIL and the renders genuinely run in parallel rather than merely being deferred.
+
+  Because the loop can now run between the window read and the filter, a correction may land mid-render. The generator compares the position it started from against the position on return and discards the block if they differ: rendering from a superseded position would play a block of pre-jump audio *after* the jump. Dropping it costs nothing, since the next block is rendered from the corrected position.
 
 #### A.2 The Delay Line
 
