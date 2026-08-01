@@ -269,6 +269,7 @@ function _showGeneratedRule(rule, explanation, source) {
     const condHtml = (rule.conditions || []).map(c => {
         if (c.type === 'time_window') return `<span class="badge bg-info">🕐 ${c.time_from}-${c.time_to}</span>`;
         if (c.type === 'sun') return `<span class="badge bg-info">🌅 ${c.from}→${c.to}</span>`;
+        if (c.type === 'zone') return `<span class="badge bg-primary">${c.event === 'leave' ? '🚶 leaves' : '📍 enters'} ${c.place}</span>`;
         return `<span class="badge bg-primary">${c.attribute} ${c.operator} ${c.value}</span>`;
     }).join(rule.condition_logic === 'or'
         ? ' <small style="color:#6f42c1;font-weight:600">OR</small> '

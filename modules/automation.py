@@ -17,6 +17,7 @@ Condition features:
   - NOT (negate) flag on any prerequisite
   - Inline conditions in if_then_else support AND/OR/NOT
   - Duration checks ("for" N seconds on inline conditions)
+  - Zone conditions: a person entering or leaving a named place (edge-triggered)
 
 Persistence: ./data/automations.json
 Hook:        core.py -> _debounced_device_update
@@ -50,6 +51,24 @@ WAIT_FOR_POLL_INTERVAL = 2
 TIME_SOURCE = "__time__"
 # Condition types that are time/astronomy based (no device attribute to watch).
 TEMPORAL_TYPES = ("time_window", "sun", "time")
+
+# ── ZONE (enter / leave a named place) ──
+# A presence user's location lives in one attribute: "home", "away", "unknown",
+# or a place id from modules/places.py. A zone condition is edge-triggered — it
+# asks which side of a boundary the person just crossed, which needs the value
+# they moved *from*, and the device's own state no longer holds that by the time
+# the engine is called. See AutomationEngine._last_values.
+ZONE_ATTR = "place"
+# "away"/"unknown" are the absence of a location rather than one you can stand
+# in, so they are never entered or left — leaving "the shops" for "away" is a
+# leave event for the shops, not an enter event for away.
+ZONE_NOWHERE = frozenset({"away", "unknown", "", None})
+ZONE_EVENTS = ("enter", "leave")
+# Matches any real location: "at a place, whichever one".
+ZONE_ANY = "any"
+# A zone may group several places ("work" = two offices). Capped at the number
+# of places a household can define, since grouping them all is what ZONE_ANY is.
+MAX_PLACES_PER_ZONE = 16
 
 OPERATORS = {
     "eq":  lambda a, b: a == b,
@@ -100,6 +119,11 @@ class AutomationEngine:
         self._cooldowns: Dict[str, float] = {}
         self._sustain_tracker: Dict[str, float] = {}
         self._rule_states: Dict[str, Optional[str]] = {}
+        # Per source device, its state as of the previous evaluation. Zone
+        # conditions compare it against the incoming change to tell an arrival
+        # from a departure; by the time evaluate() runs, device.state already
+        # holds the new value, so the old one has to be remembered here.
+        self._last_values: Dict[str, Dict[str, Any]] = {}
         self._running_sequences: Dict[str, asyncio.Task] = {}
         self._time_scheduler_task: Optional[asyncio.Task] = None
 
@@ -185,6 +209,10 @@ class AutomationEngine:
 
         # Evaluate on startup so initial state is set correctly
         await asyncio.sleep(2)  # Brief delay to let devices load
+        # Same delay buys the zone baseline: without it the first place change
+        # after a restart would have no "from" value, and a hub restarted
+        # mid-afternoon would miss that day's "leaves work".
+        self._seed_last_values()
         await self._evaluate_timed_rules()
 
         while True:
@@ -212,6 +240,45 @@ class AutomationEngine:
                 break
             except Exception as e:
                 logger.error(f"[AUTO] Time boundary loop error: {e}")
+
+    def _seed_last_values(self):
+        """Snapshot the current state of every rule source as the zone baseline.
+
+        Presence state is restored from disk at startup, so this recovers where
+        each person was before the restart rather than starting blind.
+        """
+        try:
+            devices = self._get_all_devices()
+        except Exception as e:                          # noqa: BLE001
+            logger.warning(f"[AUTO] zone baseline skipped: {e}")
+            return
+        for src in self._source_index:
+            dev = devices.get(src)
+            state = getattr(dev, "state", None) if dev else None
+            if state:
+                self._last_values[src] = dict(state)
+
+    @staticmethod
+    def _watched_attributes(conditions) -> set:
+        """Source attributes a rule's conditions read.
+
+        Temporal conditions watch the clock rather than the device, and zone
+        conditions watch the one attribute a person's location lives in.
+        """
+        watched = set()
+        for c in conditions:
+            ctype = c.get("type", "attribute")
+            if ctype in TEMPORAL_TYPES:
+                continue
+            if ctype == "zone":
+                watched.add(ZONE_ATTR)
+            elif c.get("attribute"):
+                watched.add(c["attribute"])
+        return watched
+
+    @staticmethod
+    def _has_zone(conditions) -> bool:
+        return any(c.get("type") == "zone" for c in conditions)
 
     @staticmethod
     def _condition_logic(rule) -> str:
@@ -269,6 +336,12 @@ class AutomationEngine:
                 continue
 
             if boundary_hhmm and boundary_hhmm not in self._rule_temporal_boundaries(rule):
+                continue
+
+            # A clock tick carries no place change, so a zone condition can only
+            # read FAIL here — and firing this rule's ELSE off that would invent
+            # a departure nobody made. Zone rules run from device updates only.
+            if self._has_zone(rule.get("conditions", [])):
                 continue
 
             rule_id = rule["id"]
@@ -497,6 +570,30 @@ class AutomationEngine:
                 err = self._validate_sun(c, f"Condition {i+1}")
                 if err:
                     return err
+            elif ctype == "zone":
+                if c.get("event") not in ZONE_EVENTS:
+                    return (f"Condition {i+1} (zone) 'event' must be "
+                            f"'enter' or 'leave'")
+                raw = c.get("place")
+                places = raw if isinstance(raw, (list, tuple)) else [raw]
+                places = [str(p or "").strip() for p in places]
+                places = [p for p in places if p]
+                if not places:
+                    return f"Condition {i+1} (zone) needs a place"
+                if len(places) > MAX_PLACES_PER_ZONE:
+                    return (f"Condition {i+1} (zone): max "
+                            f"{MAX_PLACES_PER_ZONE} places in one zone")
+                for p in places:
+                    if p in ZONE_NOWHERE:
+                        return (f"Condition {i+1} (zone): '{p}' is the absence of a "
+                                f"place, so it can't be entered or left — use a "
+                                f"named place, 'home', or '{ZONE_ANY}'")
+                if ZONE_ANY in places and len(places) > 1:
+                    return (f"Condition {i+1} (zone): '{ZONE_ANY}' already covers "
+                            f"every place, so it can't be combined with one")
+                # One place stays a plain string — a list is only meaningful
+                # when it groups several into a single zone.
+                c["place"] = places[0] if len(places) == 1 else places
             else:
                 for f in ("attribute", "operator", "value"):
                     if f not in c:
@@ -512,6 +609,17 @@ class AutomationEngine:
                         c["sustain"] = None
                 if not c.get("sustain"):
                     c.pop("sustain", None)
+        return None
+
+    def _validate_zone_source(self, conds: List[Dict], source_ieee: str) -> Optional[str]:
+        """Zone conditions read `place`, which only presence users have."""
+        if not self._has_zone(conds):
+            return None
+        dev = self._get_all_devices().get(source_ieee)
+        state = getattr(dev, "state", None) if dev else None
+        if not state or ZONE_ATTR not in state:
+            return ("Enters/leaves conditions need a presence user as the "
+                    "trigger — only people have a place.")
         return None
 
     def _validate_prerequisites(self, prereqs: List[Dict]) -> Optional[str]:
@@ -665,6 +773,9 @@ class AutomationEngine:
         elif source not in self._get_all_devices():
             return {"success": False, "error": f"Source not found: {source}"}
 
+        err = self._validate_zone_source(conditions, source)
+        if err: return {"success": False, "error": err}
+
         rule = {
             "id": f"auto_{uuid.uuid4().hex[:8]}",
             "name": data.get("name", ""),
@@ -693,6 +804,9 @@ class AutomationEngine:
             rule["name"] = str(updates["name"])[:100]
         if "conditions" in updates:
             err = self._validate_conditions(updates["conditions"])
+            if err: return {"success": False, "error": err}
+            err = self._validate_zone_source(updates["conditions"],
+                                             rule.get("source_ieee", ""))
             if err: return {"success": False, "error": err}
             rule["conditions"] = updates["conditions"]
         if "condition_logic" in updates:
@@ -810,6 +924,14 @@ class AutomationEngine:
             return
 
         full_state = source_device.state or {}
+        # What this device looked like before the update now being evaluated.
+        # First sight of a source (added after startup): everything it did not
+        # just change is still its old value, and the changed keys have no
+        # "before" — a zone condition treats that as "was nowhere".
+        prev_values = self._last_values.get(source_ieee)
+        if prev_values is None:
+            prev_values = {k: v for k, v in full_state.items() if k not in changed_data}
+
         self._trace("-", "entry", "EVALUATING",
                     f"State change on {source_name}: {list(changed_data.keys())} — {len(rule_ids)} rule(s)",
                     level="DEBUG", source_ieee=source_ieee)
@@ -826,15 +948,15 @@ class AutomationEngine:
             rule_name = rule.get("name") or rule_id
 
             # Relevance
-            watched = {c["attribute"] for c in conditions
-                       if c.get("type", "attribute") not in TEMPORAL_TYPES}
+            watched = self._watched_attributes(conditions)
             if watched and not watched.intersection(changed_data.keys()):
                 continue
 
             # --- CONDITIONS ---
             logic = self._condition_logic(rule)
+            has_zone = self._has_zone(conditions)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                conditions, rule_id, changed_data, full_state, now, logic)
+                conditions, rule_id, changed_data, full_state, now, logic, prev_values)
 
             if has_sustain:
                 self._trace(rule_id, "evaluate", "SUSTAIN_WAIT",
@@ -867,6 +989,12 @@ class AutomationEngine:
 
             # --- TRANSITION ---
             self._rule_states[rule_id] = new_state
+
+            # A zone rule triggers on a crossing, not on a state. "No crossing
+            # right now" is not the opposite crossing, so an unmatched pass must
+            # not run the ELSE path — leaving is its own rule with its own THEN.
+            if has_zone and new_state == "unmatched":
+                continue
 
             if prev_state == new_state:
                 if new_state == "matched":
@@ -911,16 +1039,23 @@ class AutomationEngine:
             self._running_sequences[rule_id] = task
 
             # ── EVENT ATTRIBUTE RESET ──
+            # Momentary triggers (a button press, a boundary crossing) have to
+            # re-arm: they are never "still true", so without this the second
+            # press — or the second arrival — would look like no transition.
             _EVENT_ATTRS = {"action", "click", "button_action", "event", "scene", "command"}
-            if any(c.get("attribute") in _EVENT_ATTRS for c in conditions):
+            if has_zone or any(c.get("attribute") in _EVENT_ATTRS for c in conditions):
                 self._rule_states[rule_id] = "unmatched"
+
+        # Baseline for the next update. full_state is already the new state, so
+        # this is the "before" that the next evaluation compares against.
+        self._last_values[source_ieee] = {**full_state, **changed_data}
 
     # =========================================================================
     # CONDITION / PREREQUISITE EVALUATION
     # =========================================================================
 
     def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
-                               now, logic="and"):
+                               now, logic="and", prev_values=None):
         """Evaluate source device conditions. Returns (matched, results, has_sustain).
 
         logic 'and' (default): every condition must pass; stops at the first failure.
@@ -937,7 +1072,7 @@ class AutomationEngine:
 
         for i, cond in enumerate(conditions):
             matched, result, sustain_pending = self._eval_one_condition(
-                cond, i, rule_id, changed_data, full_state, now)
+                cond, i, rule_id, changed_data, full_state, now, prev_values or {})
             results.append(result)
 
             if or_mode:
@@ -956,7 +1091,8 @@ class AutomationEngine:
 
         return block_ok, results, has_sustain
 
-    def _eval_one_condition(self, cond, i, rule_id, changed_data, full_state, now):
+    def _eval_one_condition(self, cond, i, rule_id, changed_data, full_state, now,
+                            prev_values=None):
         """Evaluate a single trigger condition.
 
         Returns (matched, result_dict, sustain_pending). sustain_pending is True when
@@ -964,6 +1100,9 @@ class AutomationEngine:
         matched is False in that case, the caller decides what to do with it.
         """
         ctype = cond.get("type", "attribute")
+
+        if ctype == "zone":
+            return self._eval_zone(cond, i, changed_data, prev_values or {})
 
         if ctype == "sun":
             import datetime
@@ -1060,6 +1199,65 @@ class AutomationEngine:
                          "value_source": src,
                          "result": "PASS" if matched else "FAIL"}, False
 
+
+    @staticmethod
+    def _is_somewhere(value) -> bool:
+        """Is this place value a real location rather than the absence of one?"""
+        return value not in ZONE_NOWHERE
+
+    @staticmethod
+    def _in_zone(value, target) -> bool:
+        """Is a person whose place is `value` inside the zone `target`?
+
+        `target` may be one place id or a list of them. A list is one zone made
+        of several places — "work" spanning two offices — so moving between its
+        members is movement *within* the zone, not a departure and an arrival.
+        """
+        if value in ZONE_NOWHERE:
+            return False
+        if target == ZONE_ANY:
+            return True
+        if isinstance(target, (list, tuple, set)):
+            return str(value) in {str(t) for t in target}
+        return str(value) == str(target)
+
+    def _eval_zone(self, cond, i, changed_data, prev_values):
+        """Evaluate one enter/leave condition. Returns (matched, result, False).
+
+        Edge-triggered: the crossing is the trigger, so this passes only on the
+        update that carries the place change. An evaluation with no place change
+        is not a crossing in the other direction — it is no crossing at all.
+        """
+        event = str(cond.get("event", "enter")).lower()
+        target = cond.get("place", ZONE_ANY)
+        result = {"index": i + 1, "type": "zone", "event": event, "place": target}
+
+        if ZONE_ATTR not in changed_data:
+            result.update({"result": "FAIL", "reason": "no place change in this update"})
+            return False, result, False
+
+        new = changed_data[ZONE_ATTR]
+        old = prev_values.get(ZONE_ATTR)
+
+        if target == ZONE_ANY:
+            # "Any place" is not one big zone you stay inside while hopping
+            # between places: every arrival is an arrival and every departure a
+            # departure, so a place-to-place move is both.
+            matched = self._is_somewhere(new) if event == "enter" \
+                else self._is_somewhere(old)
+        else:
+            was_in = self._in_zone(old, target)
+            now_in = self._in_zone(new, target)
+            matched = (now_in and not was_in) if event == "enter" \
+                else (was_in and not now_in)
+
+        result.update({
+            "from_place": old, "to_place": new,
+            "result": "PASS" if matched else "FAIL",
+        })
+        if not matched:
+            result["reason"] = f"{old!r} → {new!r} is not a {event} of {target!r}"
+        return matched, result, False
 
     def _eval_prerequisites(self, prereqs, devices, names):
         """Evaluate prerequisites. Temporal entries (time_window/sun) are OR'd;

@@ -26,6 +26,10 @@ class ConditionItem(BaseModel):
     days: Optional[List[int]] = None
     # time (alarm) field
     at: Optional[str] = None
+    # zone fields — a person entering or leaving a named place. `place` is one
+    # place id, "home", "any", or a list of ids forming a single zone.
+    event: Optional[str] = None
+    place: Optional[Any] = None
     # sun fields — wire names are "from"/"to" ("from" is a Python keyword)
     sun_from: Optional[str] = Field(default=None, alias="from")
     sun_to: Optional[str] = Field(default=None, alias="to")
@@ -94,6 +98,8 @@ def _conds_to_dicts(items):
         elif c.type == "time":
             r.append({"type": "time", "at": c.at,
                       "days": c.days if c.days is not None else list(range(7))})
+        elif c.type == "zone":
+            r.append({"type": "zone", "event": c.event, "place": c.place})
         elif c.type == "sun":
             r.append(_sun_dict(c))
         else:

@@ -83,6 +83,19 @@ function _attrVerb(type, attr, op, val) {
     return `${OPW[op] || op} ${_esc(dispVal)}${epTxt}`;
 }
 
+// "arrives at the Shops" / "leaves Home" — a zone condition as a verb phrase.
+// "home" is per-user rather than a configured place, so it isn't in the cache.
+function _zoneVerb(c) {
+    const one = p => p === 'any' ? 'any place'
+        : p === 'home' ? 'Home'
+        : (placeNameCache[p] || p);
+    // A zone of several places reads as one destination: "arrives at Slough or
+    // Osterley" — moving between them is movement inside the zone.
+    const name = Array.isArray(c.place) ? c.place.map(one).join(' or ') : one(c.place);
+    const verb = c.event === 'leave' ? 'leaves' : 'arrives at';
+    return `${verb} <b>${_esc(name)}</b>`;
+}
+
 // A trigger is the source device's first condition (or a schedule).
 // The text is a bare clause — the "When" label in the flow supplies the verb,
 // so we don't repeat it here ("When" + "Door opens", not "When When Door opens").
@@ -97,22 +110,33 @@ function _triggerPhrase(rule) {
         return { icon:'time', text:`the time is <b>${_esc(c.at)}</b>, ${_daySpan(c.days)}`, raw:`time ${c.at}` };
     if (c.type === 'sun')
         return { icon:'time', text:`🌅 it's between ${_esc(c.from)} and ${_esc(c.to)}`, raw:`sun ${c.from}→${c.to}` };
+    if (c.type === 'zone')
+        return { icon: src.type,
+                 text:`${_devSpan(rule.source_ieee)} ${_zoneVerb(c)}`,
+                 raw:`zone ${c.event} ${c.place}` };
     return { icon: src.type,
              text: `${_devSpan(rule.source_ieee)} ${_attrVerb(src.type, c.attribute, c.operator, c.value)}`,
              raw: `${_esc(c.attribute)} ${c.operator} ${_esc(c.value)}` };
 }
 
 // A prerequisite / extra condition → "ONLY IF …" phrase.
-function _condPhrase(p) {
+// Prerequisites name their own device; a rule's 2nd+ trigger condition doesn't,
+// because it is implicitly about the rule's source — hence sourceIeee, which
+// callers pass for trigger conditions and omit for prerequisites.
+function _condPhrase(p, sourceIeee) {
     const neg = p.negate ? '<span class="neg">NOT</span>' : '';
+    if (p.type === 'zone')
+        return { text:`${sourceIeee ? _devSpan(sourceIeee) + ' ' : ''}${_zoneVerb(p)}`,
+                 raw:`zone ${p.event} ${p.place}` };
     if (p.type === 'time_window')
         return { text:`${neg}${_timePhrase(p.time_from, p.time_to)}, ${_daySpan(p.days)}`,
                  raw:`time_window ${p.time_from}–${p.time_to}` };
     if (p.type === 'sun')
         return { text:`${neg}🌅 between ${_esc(p.from)} and ${_esc(p.to)}`, raw:`sun ${p.from}→${p.to}` };
-    const dev = _resolve(p.ieee);
-    return { text:`${neg}${_devSpan(p.ieee)} ${_attrVerb(dev.type, p.attribute, p.operator, p.value)}`,
-             raw:`${p.ieee && p.ieee.startsWith('group:') ? p.ieee + ' ' : ''}${_esc(p.attribute)} ${p.operator} ${_esc(p.value)}` };
+    const ieee = p.ieee || sourceIeee;
+    const dev = _resolve(ieee);
+    return { text:`${neg}${_devSpan(ieee)} ${_attrVerb(dev.type, p.attribute, p.operator, p.value)}`,
+             raw:`${ieee && ieee.startsWith('group:') ? ieee + ' ' : ''}${_esc(p.attribute)} ${p.operator} ${_esc(p.value)}` };
 }
 
 const _CMD_VERB = {
@@ -199,6 +223,7 @@ function _mediaStepText(s) {
 let allRulesCache = [];
 let devMapCache = {};
 let playerNameCache = {};  // player_id -> friendly name, for media steps
+let placeNameCache = {};   // place id -> friendly name, for zone conditions
 let filterDevice = '';
 let filterState = '';
 // Rules the user has expanded — cards render collapsed (one line) by default
@@ -244,6 +269,13 @@ export async function loadAutomationsPage() {
             playerNameCache = {};
             (pj.players || []).forEach(p => { playerNameCache[p.player_id] = p.name + (p.is_group ? ' (group)' : ''); });
         } catch { /* media service off — fall back to raw ids */ }
+
+        // Place names for humanizing zone (enter/leave) conditions.
+        try {
+            const plj = await (await fetch('/api/places')).json();
+            placeNameCache = {};
+            (plj.places || []).forEach(p => { placeNameCache[p.id] = p.name; });
+        } catch { /* fall back to raw place ids */ }
 
         // Is a location configured? Sun (sunrise/sunset) rules can't fire without
         // one. /api/sun/sunrise-sunset returns success:false when lat/lon are unset.
@@ -437,7 +469,7 @@ function _ruleCard(rule, src) {
     // rule's condition_logic — "and" (all must hold) or "or" (any one fires it).
     const joiner = rule.condition_logic === 'or' ? 'or' : 'and';
     (rule.conditions || []).slice(1).forEach(c => {
-        const cp = _condPhrase(c);
+        const cp = _condPhrase(c, rule.source_ieee);
         flow += step(joiner, joiner, `${cp.text}<span class="ap-raw">${_esc(cp.raw)}</span>`);
     });
 

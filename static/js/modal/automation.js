@@ -14,6 +14,7 @@ import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
+let cachedPlaces = [];    // named places (geofences) for zone conditions
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
 // How the trigger conditions combine: 'and' (all must hold) or 'or' (any one).
@@ -47,6 +48,37 @@ function _sunDesc(c) {
 }
 // Boundary choices for the Sun condition From/To pickers.
 const _SUN_OPTS = [['sunrise','Sunrise'],['sunset','Sunset'],['00:00','Start of day'],['23:59','End of day']];
+
+// ── Zone (enter/leave a place) ──
+// Only a presence user has a `place`, so the Zone condition type is offered
+// for people and nothing else.
+const _isPerson = ieee => String(ieee||'').startsWith('user::');
+// Friendly name for a place id. "home" is per-user rather than a configured
+// place, so it never appears in /api/places and is labelled here.
+function _placeName(id) {
+    if (id === 'any') return 'any place';
+    if (id === 'home') return 'Home';
+    return cachedPlaces.find(p => p.id === id)?.name || id;
+}
+// A zone may group several places, so render it the same way the Time/Day row
+// renders weekdays: "work" is one zone made of two offices, and moving between
+// them is movement within it rather than a departure and an arrival.
+const _placeLabel = p => Array.isArray(p) ? p.map(_placeName).join(' or ') : _placeName(p);
+
+// Places a crossing can be about: any real location, home, or a named place.
+// "away"/"unknown" are the absence of a place and are deliberately excluded —
+// you leave the shops *for* away, you don't arrive at it.
+function _placeIds() {
+    const attr = cachedAttributes.find(a => a.attribute === 'place');
+    const ids = (attr?.value_options || []).filter(v => v !== 'away' && v !== 'unknown');
+    if (!ids.includes('home')) ids.unshift('home');
+    return ids;
+}
+function _placeBoxes(id) {
+    return [['any','Any place'], ..._placeIds().map(i => [i, _placeName(i)])]
+        .map(([v,l]) => `<label class="me-2 small text-nowrap"><input type="checkbox" class="czp" data-id="${id}" data-place="${v}" ${v==='any'?'checked':''} onchange="window._aCZP(${id},this)"> ${l}</label>`)
+        .join('');
+}
 
 // ── Group optgroup builder ──
 function _devOpts(list, selectedIeee, extraAttrs='') {
@@ -166,6 +198,12 @@ export async function initAutomationTab(ieee) {
         const uj = await (await fetch('/api/presence/users')).json();
         cachedPresenceUsers = (uj.users||[]).filter(u=>u.enabled!==false);
     } catch(e) { cachedPresenceUsers = []; }
+    // Named places label the zone (enter/leave) pickers. Optional: without them
+    // the pickers fall back to raw place ids.
+    try {
+        const plj = await (await fetch('/api/places')).json();
+        cachedPlaces = plj.places || [];
+    } catch(e) { cachedPlaces = []; }
 }
 
 // ============================================================================
@@ -199,6 +237,8 @@ function _renderRules(rules) {
                 const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                 cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
+            } else if (c.type === 'zone') {
+                cDesc = `${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
             } else if (c.type === 'sun') {
                 cDesc = _sunDesc(c);
             } else {
@@ -283,6 +323,7 @@ function _showForm(rule, forceNew = false) {
         <div class="mb-3"><label class="form-label fw-bold small text-success">THEN sequence <span class="fw-normal text-muted">(conditions become true)</span></label>
             <div id="then-b"></div>${_addBtns('then')}</div>
         <div class="mb-3"><label class="form-label fw-bold small text-danger">ELSE sequence <span class="fw-normal text-muted">(conditions become false)</span></label>
+            <div id="a-else-note" class="small text-warning mb-1" style="display:none"><i class="fas fa-info-circle"></i> A zone trigger fires on the crossing itself, so this rule only runs its THEN sequence. For the opposite crossing, add a second rule with <strong>Leaves</strong>.</div>
             <div id="else-b"></div>${_addBtns('else')}</div>
         <div class="row g-2 mb-3">
             <div class="col-md-4"><label class="form-label small text-muted mb-0">Cooldown (s)</label><input type="number" class="form-control form-control-sm" id="a-cd" value="${isE?(rule.cooldown||5):5}" min="0"></div>
@@ -298,7 +339,10 @@ function _showForm(rule, forceNew = false) {
     if(isE && rule.conditions?.length) rule.conditions.forEach(()=>condRows.push(condIdC++));
     else condRows.push(condIdC++);
     _refConds();
-    if(isE && rule.conditions) setTimeout(()=>rule.conditions.forEach((c,i)=>{if(condRows[i]!==undefined)_setC(condRows[i],c);}),50);
+    if(isE && rule.conditions) setTimeout(()=>{
+        rule.conditions.forEach((c,i)=>{if(condRows[i]!==undefined)_setC(condRows[i],c);});
+        _refCondChrome();
+    },50);
 
     // Prerequisites
     prereqRows=[]; prereqIdC=0;
@@ -394,20 +438,34 @@ function _renderCond(id, ctype) {
     const alarmRow = `
         <div class="col-auto"><label class="small text-muted mb-0 me-1">At</label><input type="time" class="form-control form-control-sm ct-at" data-id="${id}" style="width:120px" value="07:00"></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
-    const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow : ctype==='sun' ? sunRow : attrRow;
+    const zoneRow = `
+        <div class="col-auto"><select class="form-select form-select-sm cz-ev" data-id="${id}" style="width:110px">
+            <option value="enter">Enters</option><option value="leave">Leaves</option></select></div>
+        <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${_placeBoxes(id)}</div></div>`;
+    const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow
+        : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : attrRow;
+    const zoneOpt = _isPerson(currentSourceIeee)
+        ? `<option value="zone" ${ctype==='zone'?'selected':''}>Zone</option>` : '';
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
-        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option></select></div>
+        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option>${zoneOpt}</select></div>
         <div style="display:contents">${body}</div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
-function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(id=>_renderCond(id)).join('');_refCLogicVis();}
+function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(id=>_renderCond(id)).join('');_refCondChrome();}
 
-// The AND/OR picker only means something with 2+ conditions.
-function _refCLogicVis(){
+// Bits of the form that depend on which condition rows exist right now.
+function _refCondChrome(){
+    // The AND/OR picker only means something with 2+ conditions.
     const sel=document.getElementById('a-clogic');
     if(sel)sel.style.display=condRows.length>1?'':'none';
+    // Zone rules never run their ELSE — say so where the ELSE steps are added.
+    const note=document.getElementById('a-else-note');
+    if(note){
+        const hasZone=condRows.some(id=>document.querySelector(`.ctype[data-id="${id}"]`)?.value==='zone');
+        note.style.display=hasZone?'':'none';
+    }
 }
 
 // Swap the joiner badges in place — re-rendering the rows would wipe values.
@@ -436,6 +494,18 @@ function _setC(id,c){
         const at = r2.querySelector('.ct-at'); if (at) at.value = c.at || '07:00';
         const days = c.days ?? [0,1,2,3,4,5,6];
         r2.querySelectorAll('.ctd').forEach(cb => { cb.checked = days.includes(parseInt(cb.dataset.day)); });
+    } else if (ctype === 'zone') {
+        const ev = r2.querySelector('.cz-ev'); if (ev) ev.value = c.event || 'enter';
+        const want = new Set((Array.isArray(c.place) ? c.place : [c.place ?? 'any']).map(String));
+        const box = r2.querySelector('.czp')?.closest('div');
+        r2.querySelectorAll('.czp').forEach(cb => { cb.checked = want.has(cb.dataset.place); });
+        // A place deleted since the rule was saved still appears, ticked. It is
+        // part of what the rule says even though it can no longer match, and
+        // dropping it silently would make the rule read narrower than it is.
+        [...want].filter(p => !r2.querySelector(`.czp[data-place="${p}"]`)).forEach(p => {
+            box?.insertAdjacentHTML('beforeend',
+                `<label class="me-2 small text-nowrap text-danger"><input type="checkbox" class="czp" data-id="${id}" data-place="${p}" checked onchange="window._aCZP(${id},this)"> ${p} (deleted)</label>`);
+        });
     } else if (ctype === 'sun') {
         const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
         const sf = r2.querySelector('.cs-from'); if (sf) sf.value = c.from || 'sunset';
@@ -947,13 +1017,21 @@ window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)retur
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
             else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}};}
     const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);};
-window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));_refCLogicVis();};
+window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));_refCondChrome();};
 window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);const row=document.getElementById(`c-${id}`);if(row)row.remove();
     if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.outerHTML='<span class="badge bg-primary small">IF</span>';}
         const rm=first.querySelector('.btn-outline-danger');if(rm)rm.closest('.col-auto').innerHTML='<div style="width:31px"></div>';}}
-    _refCLogicVis();};
+    _refCondChrome();};
 // AND = every condition must hold. OR = any one of them firing is enough.
 window._aCLogic=v=>{condLogic=(v==='or')?'or':'and';_refJoinBadges();};
+// "Any place" already covers everything, so it and a specific pick are mutually
+// exclusive rather than additive.
+window._aCZP=(id,cb)=>{
+    const boxes=document.querySelectorAll(`.czp[data-id="${id}"]`);
+    if(!cb.checked)return;
+    if(cb.dataset.place==='any') boxes.forEach(b=>{if(b!==cb)b.checked=false;});
+    else boxes.forEach(b=>{if(b.dataset.place==='any')b.checked=false;});
+};
 window._aCType = (id, sel) => {
     const ctype = sel.value;
     const row = document.getElementById(`c-${id}`);
@@ -965,6 +1043,7 @@ window._aCType = (id, sel) => {
     if (newRow && (ctype === 'time_window' || ctype === 'sun')) {
         const n = newRow.querySelector('.cn'); if (n) n.checked = neg;
     }
+    _refCondChrome();
 };
 // Prerequisites
 window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector(`#p-${id} .pa`);if(!aS||!ieee)return;
@@ -1099,6 +1178,13 @@ window._aSave=async()=>{
             if(!at){valid=false;return;}
             const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
             conditions.push({type:'time',at,days});
+        } else if(ctype==='zone'){
+            const ev=row.querySelector('.cz-ev')?.value||'enter';
+            const picked=[];row.querySelectorAll('.czp').forEach(cb=>{if(cb.checked)picked.push(cb.dataset.place);});
+            if(!picked.length){valid=false;return;}
+            // One place stays a plain string; several become a single zone.
+            const place=picked.includes('any')?'any':(picked.length===1?picked[0]:picked);
+            conditions.push({type:'zone',event:ev,place});
         } else if(ctype==='sun'){
             const frm=row.querySelector('.cs-from')?.value||'sunset';
             const to=row.querySelector('.cs-to')?.value||'sunrise';
@@ -1338,6 +1424,9 @@ async function _loadTr() {
                 }else if(c.type==='time'){
                     const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
                     cLine=`#${c.index} Alarm${c.negate?' NOT':''} ${c.at} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
+                }else if(c.type==='zone'){
+                    const move=c.from_place!==undefined?` ${c.from_place??'?'} → ${c.to_place??'?'}`:'';
+                    cLine=`#${c.index} ${c.event==='leave'?'Leaves':'Enters'} ${_placeLabel(c.place)}${move}`;
                 }else if(c.type==='sun'){
                     cLine=`#${c.index} Sun ${c.from}→${c.to}${c.resolved?` (${c.resolved})`:''} now=${c.now_time||''}`;
                 }else{

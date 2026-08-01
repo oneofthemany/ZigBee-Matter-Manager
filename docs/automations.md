@@ -67,6 +67,42 @@ The joiner badge on each row (`AND` amber / `OR` purple) reflects the current ch
 
 **Sustain** — optional hold timer (seconds). The condition must remain true for the specified duration before triggering.
 
+#### Condition types
+
+| Type          | Triggers on                                                        |
+|---------------|--------------------------------------------------------------------|
+| **Attr**      | An attribute on the source device meeting a comparison             |
+| **Alarm**     | A clock time on chosen days                                        |
+| **Time/Day**  | Being inside a time window on chosen days                          |
+| **Sun**       | Being between two sun/clock boundaries (tracks the seasons)        |
+| **Zone**      | A person entering or leaving a place — offered for presence users  |
+
+#### Zone: arriving and leaving
+
+Pick **Enters** or **Leaves**, then tick the places the crossing is about.
+
+- **Any place** — every arrival at, or departure from, any named place (or home).
+- **One place** — just that one.
+- **Several places** — they form a *single* zone. "Work" spanning two offices fires
+  once on arriving at either and once on leaving both; driving between the two is
+  movement *inside* the zone, so it triggers nothing. This is what you want for a
+  person with more than one site, and it's why ticking two places is not the same
+  as two OR'd conditions (those would fire on the hop between them).
+
+A zone condition is **edge-triggered**: the crossing is the trigger. That has two
+consequences worth knowing:
+
+- The rule only runs its **THEN** sequence. "Not arriving right now" is not the
+  same as leaving, so the ELSE sequence is never run — build the opposite crossing
+  as a second rule with **Leaves**.
+- The trigger re-arms after each crossing, so arriving tomorrow fires it again.
+
+Leaving somewhere for "away" counts as a departure from that place; "away" and
+"unknown" are the *absence* of a place, so they can't themselves be entered or left.
+
+After a hub restart the engine restores where each person was, so the first
+crossing after a restart is still reported correctly.
+
 ### Step 2: Prerequisites (Optional)
 
 Prerequisites check the current state of **other devices** before the rule fires. These support a **NOT** flag to negate the check.
@@ -222,6 +258,29 @@ rule covers both, rather than one rule per site.
 
 ---
 
+## Example: Arriving At and Leaving Work
+
+The same two offices as a **zone**, which is usually the better shape: it separates
+arriving from leaving into two rules that each do one thing, and it ignores the
+drive between the two sites.
+
+**Rule 1 — arriving**
+
+- Source: the presence user
+- IF **Zone** → **Enters** → ☑ Slough ☑ Osterley
+- THEN: 💬 Message "at work" → ⚡ Turn off Hall Light
+
+**Rule 2 — leaving**
+
+- Source: the presence user
+- IF **Zone** → **Leaves** → ☑ Slough ☑ Osterley
+- THEN: ⚡ Heating → on
+
+Neither rule needs an ELSE. Driving from Slough to Osterley fires nothing, because
+both sites are the same zone.
+
+---
+
 ## Example: Branching with If/Then/Else
 
 A more advanced example using inline branching — when motion is detected, check time of day and set appropriate brightness.
@@ -241,6 +300,7 @@ A more advanced example using inline branching — when motion is detected, chec
 
 - **Cooldown** prevents rapid re-firing. Set it based on how quickly your sensor re-triggers (motion sensors: 5-10s, contact sensors: 1-2s).
 - **Prerequisites** let you create context-aware rules without duplicating conditions across multiple rules.
+- **Zone** beats a `place` equality check whenever you care about the *moment* someone arrives or leaves rather than where they currently are — and it's the only way to act on a departure without an ELSE.
 - **Match ANY (OR)** collapses "one rule per value" duplicates into a single rule — and the ELSE sequence then means "none of them are true", which is usually what you want for a leaving/away action.
 - **Gates** are useful mid-sequence to bail out if conditions have changed since the sequence started.
 - **Wait For** is ideal for confirming a command took effect before proceeding.

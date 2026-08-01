@@ -101,6 +101,11 @@ Commands: on, off, toggle, brightness, color_temp, open, close, stop, position, 
 4. For "turn off X after Y minutes": source_ieee = X, condition = state eq ON, then_sequence = [delay, off command].
 5. For "turn on X when Y detects motion": source_ieee = Y (sensor), condition = occupancy/motion attribute, then command on X.
 6. For time restrictions, add a prerequisite with type "time_window": {{"type": "time_window", "time_from": "HH:MM", "time_to": "HH:MM"}}
+6b. For "when <person> arrives at / leaves <place>", use source_ieee = that presence
+    user and a zone condition: {{"type": "zone", "event": "enter"|"leave", "place": "<place_id>"}}.
+    place may be a place id, "home", or "any" (any named place). A zone rule fires on
+    the crossing itself, so put the actions in then_sequence and leave else_sequence
+    empty — arriving and leaving are two separate rules.
 7. Boolean values: true/false. ON/OFF values: string "ON"/"OFF".
 8. brightness range: 0-254. color_temp range: 153-500 (mireds).
 9. Groups use "group:<id>" for ieee.
@@ -355,8 +360,15 @@ class AIAutomations:
             rule["condition_logic"] = cl
 
         for i, c in enumerate(conds):
-            # time_window / sun / time conditions carry no operator.
+            # time_window / sun / time / zone conditions carry no operator.
             if c.get("type") in ("time_window", "sun", "time"):
+                continue
+            if c.get("type") == "zone":
+                if c.get("event") not in ("enter", "leave"):
+                    errors.append(
+                        f"Condition {i+1} (zone) event must be 'enter' or 'leave'")
+                if not str(c.get("place") or "").strip():
+                    errors.append(f"Condition {i+1} (zone) needs a place")
                 continue
             mapped = _normalize_operator(c.get("operator"))
             if mapped:
@@ -449,6 +461,9 @@ class AIAutomations:
         for c in conds:
             if c.get("type") == "time_window":
                 cond_parts.append(f"time is {c.get('time_from')}-{c.get('time_to')}")
+            elif c.get("type") == "zone":
+                verb = "leaves" if c.get("event") == "leave" else "arrives at"
+                cond_parts.append(f"{verb} {c.get('place')}")
             else:
                 cond_parts.append(f"{c.get('attribute')} {c.get('operator')} {c.get('value')}")
         joiner = " OR " if rule.get("condition_logic") == "or" else " AND "
