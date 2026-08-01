@@ -70,7 +70,7 @@ The synchronisation error between devices i and j at wall time t is `Δ_ij(t) = 
                          │  │                                     │     │
                          │  │  Delay line ──► Variable resampler  │     │
                          │  │  (sample-      (ppm slew,           │     │
-                         │  │   accurate)     soxr/ASRC)          │     │
+                         │  │   accurate)     frac. delay)        │     │
                          │  │        │                            │     │
                          │  │        ▼                            │     │
                          │  │  Encoder (LPCM preferred,           │     │
@@ -144,7 +144,7 @@ p = 2  ->  g_out  + g_in  == 1     constant amplitude
 
 #### 4.2 Variable Resampler
 
-An arbitrary-ratio resampler per device, its ratio modulated around unity by a control signal expressed in ppm. Requirements: ratio resolution ≤ 0.1 ppm, continuous ratio changes without discontinuity, and negligible THD+N impact at ±200 ppm. `libsoxr` in variable-rate mode satisfies all three. Tempo-domain processors (`pitch`, `scaletempo`) are unsuitable.
+An arbitrary-ratio resampler per device, its ratio modulated around unity by a control signal expressed in ppm. Requirements: ratio resolution ≤ 0.1 ppm, continuous ratio changes without discontinuity, and negligible THD+N impact at ±200 ppm. A stateless fractional-delay filter satisfies all three trivially, because it has no state for a ratio change to discontinue. Tempo-domain processors (`pitch`, `scaletempo`) are unsuitable.
 
 For synthetic test material band-limited below ~1 kHz, sub-sample linear interpolation is a measured −84 dBFS approximation of the ideal resampler; programme material does not tolerate it, since linear interpolation's fraction-dependent high-frequency response is audible on wideband audio. That response is exactly `|cos(πf/Fs)|` at the interpolation midpoint — **−2.42 dB at 10 kHz** at 44.1 kHz, worsening to −6 dB by 14.7 kHz. (An earlier revision of this section quoted −5 dB at 10 kHz; the closed form and the measurement both give −2.42 dB.)
 
@@ -152,17 +152,17 @@ Three backends are implemented, selected by `media.cast.sync.resampler`:
 
 | Backend | Mechanism | Notes |
 |---|---|---|
-| `soxr` (default) | `libsoxr` variable-rate via `ctypes` | Reference path. Measured **+498.87 ppm against a +500 ppm command**; internal delay 100 samples (2.27 ms) at 44.1 kHz |
-| `sinc` | 32-tap Lanczos-16 fractional delay, 2048-phase table | Stateless. Bit-exact at integer positions, −0.01 dB at 10 kHz |
+| `rust` (default) | 32-tap Lanczos-16 fractional delay, 2048-phase table, in `zmm_eq.interp_block` | Stateless. Bit-exact at integer positions, −0.01 dB at 10 kHz. ~290× realtime per core |
+| `sinc` | The same filter in numpy | Automatic fallback where the `zmm_eq` wheel is absent. Agrees with `rust` to float32 epsilon; ~70× realtime per core |
 | `linear` | Sub-sample linear interpolation | Retained only to reproduce earlier measurements |
 
-Two implementation notes that cost time to establish:
+`soxr` is still accepted in config as a deprecated alias for `rust`.
 
-**`SOXR_VR` is the `flags` argument of `soxr_quality_spec`, not a recipe and not an OR into one.** Passing it as the recipe, or omitting it, yields a resampler that creates successfully and then fails the first `soxr_set_io_ratio` with *"varying O/I ratio is not supported with this quality level"*. VR is available at every quality level; the implementation requests VHQ. libsoxr is already linked by ffmpeg in the image, so the `ctypes` binding adds no build dependency and ships as a code patch rather than a wheel rebuild.
+**This is fractional delay, not sample-rate conversion, and that is why it can be stateless.** At ±1000 ppm the ratio never leaves the neighbourhood of unity, so no material is being rate-converted — the timeline is simply read at a different position. A delay filter can be evaluated at an arbitrary position with no history, which is what lets the whole engine keep its central property: the delay line is addressed by absolute sample position, so a jump, a trim, or a late-joining device is a matter of picking a different index. Output length is exactly what was asked for, the commanded advance is consumed exactly, and there is no filter memory to clear across a discontinuity.
 
-**The soxr path is stateful and the rest of the engine is not.** The delay line is addressed by absolute sample position, which is what makes a jump, a trim, or a late-joining device a matter of picking a different index. libsoxr instead holds filter memory and buffers internally, with three consequences the caller carries: the resampler consumes only asymptotically the commanded input per block, so position book-keeping must use the *actual* figure it reports; a deliberate jump must clear the instance, or filter memory smears the two sides of the discontinuity together; and its 2.27 ms delay is a constant addition to θ. That last one is uniform across devices and therefore cancels in Δ_ij (§3) — it shifts the group against the source, never the devices against each other.
+**On the removal of the `libsoxr` backend.** Until v31.04.07.2026 the default was `libsoxr` in variable-rate mode, bound through `ctypes`, and it was the reference path: measured **+498.87 ppm against a +500 ppm command**, internal delay 100 samples (2.27 ms) at 44.1 kHz. It was removed after it aborted the process with `double free or corruption (out)` during a stream session. The binding passed raw numpy heap pointers (`ndarray.ctypes.data`) across a hand-declared ABI and freed a `soxr_t` by hand from a `close()` that session teardown could race against a live stream generator — while a Cast device re-fetching its URL could put two generators on one instance at the same time. The failure was in the ownership model, not in libsoxr.
 
-The `sinc` backend exists because at ±1000 ppm this is not really sample-rate conversion — it is fractional delay, and a delay filter needs no history. It sidesteps all three consequences above, and is the automatic fallback where `libsoxr` is unavailable.
+What the port gives up is genuine but small: a true variable-rate SRC tracked the commanded ratio to 1.13 ppm, where a fractional-delay filter is exact by construction because it never resamples. What it gains is that there is no handle, no C ABI, no filter state and nothing to free, so concurrent callers cannot corrupt each other and teardown cannot race playback. The 2.27 ms constant delay also disappears from θ; it was uniform across devices and cancelled in Δ_ij (§3) anyway, so this shifts the group against the source by that much and does not affect inter-device alignment.
 
 The ratio command has two components:
 
@@ -323,7 +323,7 @@ Reference deployment: two Google Cast devices (Chromecast-class and Nest Audio),
 
 Programme-correlated acoustic tracking (§6.2) for continuous closed-loop operation; RAOP and UPnP transport senders alongside the Cast implementation; multi-microphone operation and cached per-model latency profiles; migration of the fan-out, resampling, and transport hot path to a compiled daemon; concurrent independent sessions, the engine still being single-session by construction.
 
-Ingest of arbitrary programme material (§4.1) and the soxr resampler path (§4.2) are implemented and no longer future work. The empirical figures in §9 predate them and were taken on the generated timeline; they have not yet been re-measured against programme material, where the sensor is unchanged but the correction domain now carries real spectral content.
+Ingest of arbitrary programme material (§4.1) and the per-device resampler (§4.2) are implemented and no longer future work. The empirical figures in §9 predate them and were taken on the generated timeline; they have not yet been re-measured against programme material, where the sensor is unchanged but the correction domain now carries real spectral content.
 
 ---
 
