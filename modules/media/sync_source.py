@@ -1,28 +1,5 @@
 """
 Master PCM timeline sources for the sync engine (open-zone.md §4, §4.1).
-
-Everything downstream of here — the per-device delay, the variable resampler,
-the drift estimator, the chirp calibrator — addresses audio by absolute sample
-position on a single shared timeline whose origin is the session epoch. A
-source is just the thing that answers "give me ``frames`` samples starting at
-timeline sample ``n0``".
-
-``GeneratedSource`` answers from a closed-form test signal, so it is infinitely
-seekable in both directions and has no delay. That property is what the Sync
-Lab depends on: any device can be jumped anywhere on the timeline instantly.
-
-``MediaSource`` answers from a ring buffer fed by an ffmpeg decoder, which is
-the delay line of §4.1. Real audio is not seekable-in-the-future, so the
-timeline it serves runs a fixed ``delay_s`` behind the live edge; readers are
-offset back by the same amount and the group consequently plays that far
-behind the source. The ring must span the full spread of per-device read
-positions — the source delay, plus the largest startup-lag pre-compensation,
-plus manual trim — because the furthest-behind device is reading history the
-furthest-ahead device has long passed.
-
-Underruns (a read wholly or partly outside the buffered window) are filled with
-silence and counted rather than raised: a decoder hiccup should cost a gap, not
-a dead session on every speaker.
 """
 from __future__ import annotations
 
@@ -40,22 +17,13 @@ RATE = 44100
 CHANNELS = 2
 _S16_SCALE = 1.0 / 32768.0
 
-# Crossfade bounds. The guard is the slack left between the end of the fade and
-# the play point while the incoming head is being fetched — without it a slow
-# first block lands behind the readers and the fade is written into audio that
-# has already been served. The minimum is the point below which an overlap
-# stops being a transition and becomes a click with extra steps.
 XFADE_GUARD_S = 0.35
 XFADE_MIN_S = 0.25
-# Just under the serve path's hard clip (cast_sync._to_s16 clips at 0.98).
 XFADE_PEAK_CEIL = 0.97
-# Gain-envelope window for that guard: long enough that the reduction itself is
-# inaudible, short enough not to duck audio either side of a brief peak.
 XFADE_GUARD_WIN_S = 0.005
 
 
 # ----------------------------------------------------------------------
-# Generated test signal (the original PoC timeline)
 # ----------------------------------------------------------------------
 def _gen_float_mono(n0: int, frames: int) -> np.ndarray:
     """Chord pad with a slow swell plus a 1 kHz click every 2 s. The click is
@@ -110,39 +78,10 @@ class GeneratedSource:
 
 
 # ----------------------------------------------------------------------
-# Crossfade law
 # ----------------------------------------------------------------------
 def fade_pair(n: int, p: float) -> tuple:
-    """Complementary fade-out/fade-in envelopes over ``n`` samples.
-
-        g_out = cos(pi*t/2)**p        g_in = sin(pi*t/2)**p
-
-    One exponent spans the two laws a crossfade has to choose between, and
-    both ends are exact rather than approximate:
-
-        p = 1  ->  g_out^2 + g_in^2 == 1   constant POWER
-        p = 2  ->  g_out   + g_in   == 1   constant AMPLITUDE
-
-    Which one is correct depends on the material, and getting it wrong is
-    audible as a dip in the middle of the fade — the thing that makes a
-    crossfade sound like a crossfade instead of a transition. Uncorrelated
-    tracks add as power, so equal-amplitude gains dip 3 dB at the midpoint;
-    correlated ones add as amplitude, so equal-power *gains* 3 dB. Setting
-    p = 1 + |r| from the measured correlation puts the level where it belongs
-    at both extremes and slides between them, holding the envelope within
-    +0.26 dB of unity at every correlation in between.
-
-    That bound is on LEVEL, not on sample peak, and the difference matters:
-    two uncorrelated signals can hold a flat RMS through the fade while their
-    instantaneous peaks still add to +3 dB. Clipping is :func:`_peak_guard`'s
-    job, not this function's.
-    """
+    """Complementary fade-out/fade-in envelopes over ``n`` samples."""
     t = np.linspace(0.0, 1.0, int(n), endpoint=True, dtype=np.float32)
-    # Clamped before the power, and this is load-bearing rather than tidy:
-    # cos(pi/2) evaluates a hair BELOW zero in float32, and a negative base
-    # raised to a fractional exponent is NaN. Only the integer exponents (the
-    # two endpoint laws) survive without this, so every adaptive fade would
-    # write NaN onto the timeline — silence at best on whatever consumes it.
     a = np.maximum(np.cos(np.pi * t / 2.0), 0.0) ** p
     b = np.maximum(np.sin(np.pi * t / 2.0), 0.0) ** p
     return a.astype(np.float32), b.astype(np.float32)
@@ -150,35 +89,7 @@ def fade_pair(n: int, p: float) -> tuple:
 
 def _peak_guard(mixed: np.ndarray, src_peak: float,
                 rate: int = RATE) -> np.ndarray:
-    """Keep the overlap from peaking higher than the material going into it.
-
-    :func:`fade_pair` holds the *level* constant, which is what the ear tracks,
-    but level is not peak: two uncorrelated signals at equal power keep a flat
-    RMS while their instantaneous peaks still add, and two loud tracks can
-    touch +3 dB for a sample or two mid-fade. The serve path clips hard at 0.98
-    (``cast_sync._to_s16``), so left alone that is audible distortion placed
-    exactly where the listener is paying attention.
-
-    The ceiling is the louder source's own peak, not an absolute number, and
-    that distinction is the whole design. At the edges of the fade the mix *is*
-    one source at unity gain, so an absolute ceiling below that source's peak
-    would demand a trim that cannot be applied without stepping the level
-    against the audio either side. The job here is only to remove the excess
-    the SUM creates — material that was already hot stays exactly as hot as it
-    was, and is clipped (or not) by the serve path on the same terms as the
-    rest of the track.
-
-    The reduction is a per-sample gain envelope, not one scaled shape over the
-    whole region. A single depth cannot satisfy constraints that sit at
-    different places: one overshoot near an edge, where any fixed shape gives
-    little reduction, forces a depth that annihilates the middle — measured at
-    −47 dB mid-fade before this was a running envelope.
-
-    So: the exact gain each sample needs, a running minimum over a short window
-    to give the reduction look-ahead and release, smoothing so the gain movement
-    is itself inaudible, and a final elementwise minimum because smoothing a
-    running minimum can rise back above what a sample actually needed.
-    """
+    """Keep the overlap from peaking higher than the material going into it."""
     ceiling = max(XFADE_PEAK_CEIL, float(src_peak))
     amp = np.abs(mixed).max(axis=1)
     if not (amp > ceiling).any():
@@ -197,11 +108,7 @@ def _peak_guard(mixed: np.ndarray, src_peak: float,
 
 
 def fade_exponent(tail: np.ndarray, head: np.ndarray) -> float:
-    """``p`` for :func:`fade_pair`, from the correlation of the two overlaps.
-
-    Correlation is measured on the level-normalised mono sum: what decides the
-    law is whether the two signals reinforce or add in quadrature, and that is
-    a property of their shapes, not of which one happens to be louder."""
+    """``p`` for :func:`fade_pair`, from the correlation of the two overlaps."""
     n = min(len(tail), len(head))
     if n < 2:
         return 1.0
@@ -209,21 +116,17 @@ def fade_exponent(tail: np.ndarray, head: np.ndarray) -> float:
     b = head[:n].mean(axis=1).astype(np.float64)
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na < 1e-9 or nb < 1e-9:
-        # One side is silence. Nothing to reinforce, and equal-power is the
-        # law that leaves the audible side untouched at the midpoint.
         return 1.0
     r = float(np.dot(a, b) / (na * nb))
     return 1.0 + min(1.0, abs(r))
 
 
 # ----------------------------------------------------------------------
-# Ring buffer (§4.1 delay line)
 # ----------------------------------------------------------------------
 class _Ring:
     """Absolute-sample-indexed ring over the master PCM feed.
 
-    ``end`` is the timeline sample one past the newest written sample; ``start``
-    is the oldest still resident. Reads outside [start, end) are zero-filled."""
+    Unlocked: reads and writes are serialised by the event loop (§A.1)."""
 
     def __init__(self, capacity: int, channels: int, origin: int = 0):
         self._buf = np.zeros((capacity, channels), dtype=np.float32)
@@ -281,8 +184,6 @@ class _Ring:
             if n > first:
                 out[lo - n0 + first:hi - n0] = self._buf[:n - first]
         missing = frames - max(0, hi - lo)
-        # Before the first write the timeline legitimately has nothing: that is
-        # pipeline pre-roll, not a decoder underrun, and must not be counted.
         if count and missing > 0 and self.end > self.start:
             self.underruns += 1
             self.underrun_samples += missing
@@ -290,15 +191,9 @@ class _Ring:
 
 
 # ----------------------------------------------------------------------
-# Real media
 # ----------------------------------------------------------------------
 class MediaSource:
-    """ffmpeg-decoded audio on the shared timeline, optionally equalised.
-
-    The decoder is supervised: if it exits (station drop, transcode error) it
-    is restarted and decoding resumes at the *current* write head, so the
-    timeline stays continuous and the outage appears as a gap of silence rather
-    than as a permanent offset in everything downstream."""
+    """ffmpeg-decoded audio on the shared timeline, optionally equalised."""
 
     kind = "media"
 
@@ -310,21 +205,6 @@ class MediaSource:
                  crossfade_s: float = 0.0):
         self.url = url
         self.title = title
-        # Optional ``async (last_rc) -> url | {"url", "title"} | ""``,
-        # consulted before every decoder start.
-        #
-        # Some sources issue URLs that expire (Tidal signs them for minutes,
-        # not hours); a session outliving one would otherwise decode to EOF and
-        # stay dead. Re-resolving on each start turns expiry into the same
-        # thing as a station dropping: a gap, then it continues.
-        #
-        # ``last_rc`` is why the previous decode ended, and it is the whole
-        # difference between a retry and an advance: None on the first start
-        # (or when the decoder raised rather than exited), 0 when a finite
-        # track played out cleanly, non-zero when ffmpeg failed. Only the
-        # provider can know what should follow, so it decides — returning ""
-        # after a clean end means "nothing follows", and the source finishes
-        # instead of re-resolving the same track forever.
         self._url_provider = url_provider
         self._last_rc: Optional[int] = None
         self._finished = False
@@ -335,8 +215,6 @@ class MediaSource:
         self._eq = eq_chain
         self._loop = bool(loop_forever)
         self._ffmpeg = ffmpeg or shutil.which("ffmpeg") or ""
-        # The timeline origin is 0; readers sit `delay_s` behind real time, so
-        # the ring only ever needs history, never future.
         self._ring = _Ring(int(capacity_s * rate), channels, origin=0)
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._reaping: Optional[asyncio.subprocess.Process] = None
@@ -353,7 +231,6 @@ class MediaSource:
         self._xfades = 0
         self._xfade_last = ""
 
-    # -- lifecycle ----------------------------------------------------
     async def start(self) -> None:
         if self._task is not None:
             return
@@ -371,15 +248,7 @@ class MediaSource:
         return (self._ring.end - self._ring.start) / self._rate
 
     async def prime(self, timeout: float = 0.0, target_s: float = None) -> bool:
-        """Fill the delay line before any device reads from it.
-
-        Waiting for merely the first sample is not enough. A live decoder
-        produces at 1x real time while the reader also advances at 1x, so the
-        gap between the write head and the read position is whatever it was at
-        the start — permanently. That gap is the headroom the per-device
-        serve-ahead is drawn from, so it has to be established up front, and it
-        has to cover ``delay_s`` plus the widest startup pre-compensation of
-        any device about to join."""
+        """Fill the delay line before any device reads from it."""
         target = self.delay_s if target_s is None else float(target_s)
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
@@ -389,14 +258,7 @@ class MediaSource:
         return self._primed_for(target)
 
     def _primed_for(self, target: float) -> bool:
-        """Buffer depth alone is not the condition.
-
-        A reader's start position is derived from *elapsed* time since the
-        epoch, not from how much audio happens to be buffered. A source that
-        bursts on connect — most HTTP streams do — fills the ring far faster
-        than the clock advances, so depth is reached while elapsed is still
-        short and the reader lands before the start of the timeline. Both have
-        to be satisfied: enough audio, and enough clock."""
+        """Buffer depth alone is not the condition."""
         return (self.buffered_s() >= target
                 and (time.monotonic() - self.epoch) >= target)
 
@@ -416,11 +278,7 @@ class MediaSource:
         await self._kill()
 
     def _kill_nowait(self) -> None:
-        """Signal the decoder without awaiting it.
-
-        Called from the decode loop's ``finally``, which may be running because
-        the task was cancelled — and an ``await`` there can be re-cancelled
-        immediately or block indefinitely. Reaping is left to ``close``."""
+        """Signal the decoder without awaiting it."""
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
             try:
@@ -446,14 +304,11 @@ class MediaSource:
         except Exception:
             pass
 
-    # -- decoding -----------------------------------------------------
     def _cmd(self) -> list:
         cmd = [self._ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
         if self._loop:
             cmd += ["-stream_loop", "-1"]
         if self.url.startswith(("http://", "https://")):
-            # Ride out station hiccups inside ffmpeg before we resort to a
-            # restart, which costs a gap.
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "5"]
         return cmd + ["-i", self.url, "-vn", "-ac", str(self.channels),
@@ -470,11 +325,6 @@ class MediaSource:
                 if self._finished:      # the provider said there is no more
                     logger.info(f"Sync source finished: {self.title or self.url[:60]}")
                     return
-                # A finite item that played out is not a fault: it costs no
-                # restart in the health stats and, crucially, no backoff —
-                # the gap before the next item is audible. Guarded on having
-                # produced audio, so a URL that decodes to nothing falls
-                # through to the error path instead of spinning.
                 if (self._last_rc == 0 and self._url_provider is not None
                         and self._ring.end > head):
                     logger.info("Sync source item ended: "
@@ -490,8 +340,6 @@ class MediaSource:
             except Exception as e:
                 if not self._running:
                     return
-                # Raised rather than exited: no return code to reason about,
-                # so the provider is told nothing and retries the same track.
                 self._last_rc = None
                 self._last_error = str(e)
                 self._restarts += 1
@@ -504,14 +352,8 @@ class MediaSource:
         if self._url_provider is None:
             return
         try:
-            # The provider is told why the last decode ended: a clean exit is a
-            # finite track finishing, which for a queue means "next one"; an
-            # error is the same track needing another go with a fresh URL.
             fresh = await self._url_provider(self._last_rc)
         except Exception as e:
-            # Keep the URL we have and let the supervisor retry. A resolver
-            # blip (expired session, network) must not end the session when
-            # the next attempt may well succeed.
             logger.warning(f"Sync source URL refresh failed: {e}")
             return
         title = ""
@@ -519,9 +361,6 @@ class MediaSource:
             title, fresh = (fresh.get("title") or ""), (fresh.get("url") or "")
         if not fresh:
             if self._last_rc == 0:
-                # Played out cleanly and nothing follows: this is the end of
-                # the material, not a failure. Say so, and let the supervisor
-                # stop rather than re-resolve the same track for ever.
                 self._finished = True
             return
         if fresh != self.url:
@@ -544,7 +383,6 @@ class MediaSource:
             stderr=asyncio.subprocess.PIPE)
         proc = self._proc
         drain = asyncio.create_task(self._drain_stderr(proc))
-        # s16le frame = channels * 2 bytes; read whole frames only.
         frame = self.channels * 2
         want = frame * int(self._rate * 0.1)
         try:
@@ -576,14 +414,10 @@ class MediaSource:
             return await proc.wait() if proc.returncode is None else proc.returncode
         finally:
             drain.cancel()
-            # An item that ends while its head is still being collected never
-            # reached the ring at all. Commit what there is: a short fade is a
-            # worse crossfade, silently dropping the audio is a worse bug.
             if self._xfade_want:
                 self._xfade_commit()
             self._kill_nowait()
 
-    # -- crossfade --------------------------------------------
     def _unserved_samples(self) -> int:
         """Timeline written but not yet reached by the furthest-ahead reader."""
         play_now = (time.monotonic() - self.epoch) * self._rate
@@ -594,9 +428,6 @@ class MediaSource:
         if not self._xfade_arm:
             return
         self._xfade_arm = False
-        # Leave the readers room to reach the fade before it is written: the
-        # incoming head takes time to arrive, and a fade committed behind the
-        # play point is audio that has already gone out.
         room = self._unserved_samples() - int(XFADE_GUARD_S * self._rate)
         want = min(int(self._xfade_s * self._rate), room)
         if want < int(XFADE_MIN_S * self._rate):
@@ -622,7 +453,6 @@ class MediaSource:
         if not blocks:
             return
         head = np.concatenate(blocks)
-        # Re-check: collecting took wall time and the readers used it.
         n = min(want, len(head), self._unserved_samples())
         if n < int(XFADE_MIN_S * self._rate):
             self._xfade_last = "headroom gone while collecting"
@@ -638,7 +468,6 @@ class MediaSource:
                                        float(np.abs(head[:n]).max())),
                             self._rate)
         self._ring.splice(mixed, at)
-        # Whatever came in past the overlap is ordinary new timeline.
         if len(head) > n:
             self._ring.write(head[n:])
         self._xfades += 1
@@ -662,20 +491,13 @@ class MediaSource:
             pass
 
     async def _throttle(self) -> None:
-        """Hold the write head near ``delay_s`` ahead of the play point.
-
-        A live stream paces itself, but a file or a station that bursts on
-        reconnect would otherwise run away and overwrite the history the
-        furthest-behind device is still reading."""
+        """Hold the write head near ``delay_s`` ahead of the play point."""
         while self._running:
-            # time.monotonic(), not loop.time(): the session epoch in cast_sync
-            # is monotonic and every timeline conversion must share one clock.
             play_now = (time.monotonic() - self.epoch) * self._rate
             if self._ring.end <= play_now + self.delay_s * self._rate:
                 return
             await asyncio.sleep(0.05)
 
-    # -- timeline -----------------------------------------------------
     @property
     def finished(self) -> bool:
         """The material ran out: everything played and the provider had

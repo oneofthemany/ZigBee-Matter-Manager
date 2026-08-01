@@ -331,7 +331,54 @@ Ingest of arbitrary programme material (§4.1) and the per-device resampler (§4
 
 ---
 
-### Appendix A. Glossary
+### Appendix A. Implementation Invariants
+
+Rules the implementation depends on, kept here rather than in the source. Each one is a constraint whose violation has a specific consequence; the code carries a section reference where the hazard is not visible from the line itself.
+
+#### A.1 Threading
+
+The engine is single-threaded by construction: the delay line, the correction ladder, and every stream generator run on the asyncio event loop, and their mutual exclusion is the loop itself, not a lock.
+
+- **No DuckDB write may be issued from the loop thread.** Every `telemetry_db` and `sync_db` write helper is synchronous and takes a lock held for as long as DuckDB needs it — on first open after a restart, that is a full open/migration/WAL replay. Anything blocking the loop stops every stream generator with it, so the speakers drain their buffers and the group falls out of alignment by the length of the stall. Route writes through `asyncio.to_thread`, or buffer in memory and drain from a background task.
+- **`sync_db` statements run on a `cursor()`, never on the cached connection.** A `DuckDBPyConnection` holds one result set; two threads issuing statements on the same connection object hand each other their results, silently and without raising. A cursor is a separate connection over the same database instance, so the file lock stays where it belongs.
+- **`_Ring` has no lock.** Reads and writes are safe only because both happen on the loop. Moving either off-thread requires adding one first.
+- **Cast connection callbacks arrive on pychromecast's socket thread.** `_ConnWatch` therefore only assigns plain fields; it records the reconnect and lets the monitor decide what to do about it.
+
+Known exception, not yet resolved: the per-device resampler runs its DSP inside the streaming response, on the loop. The generator only suspends when it is more than `STREAM_AHEAD_S` ahead, so a device refilling hard after a reconnect can drive it through many blocks with no suspension point. This is the remaining path by which audio work can stall the loop (§11).
+
+#### A.2 The Delay Line
+
+- **The delay line is addressed by absolute sample position.** This is the property the whole engine rests on: a jump, a trim, or a late-joining device is a matter of choosing a different index, with no state to unwind.
+- **Resamplers must be stateless.** A stateful backend holds filter memory and buffered output, which means position book-keeping has to use the figure it *reports* consuming rather than the figure commanded, a deliberate jump has to clear the instance or filter memory smears both sides of the discontinuity together, and its internal delay is a constant addition to θ. The `libsoxr` backend was removed for the ownership problems this caused, not for its accuracy (§4.2).
+- **`read_grid` must return a fresh array, never a view.** The calibration chirp is mixed in with `+=`; a view would write the chirp permanently into the shared timeline and every other device would play it too.
+
+#### A.3 Measurement
+
+- **A reported position is used only if the device says `PLAYING` and the report is younger than `STREAM_STATUS_MAX_AGE_S`.** `adjusted_current_time` credits the device with having played continuously since `last_updated`, which holds while the report is fresh and fails exactly when it matters: a rebuffering device is reported as still playing, and when the next report lands the position snaps back by the whole gap — arriving as a step of hundreds of milliseconds that looks like a measurement. Refusing to extrapolate past the bound turns that into a missing sample, which the ladder already handles.
+- **An unusable timestamp means the age is unknown, so the reading is used.** Blinding the sensor on a timestamp the code failed to parse would stop correction on every device at once and look merely quiet.
+- **The median of the per-poll reads must be the true median**, not `sorted(xs)[len(xs) // 2]`, which returns the upper of the two middle values on an even-length list and biases the sensor toward reporting devices as behind.
+
+#### A.4 The Correction Ladder
+
+Beyond the ladder itself (§7.1):
+
+- **Decisions are made on the residual** — the 3-poll median minus the slew already scheduled — so work in flight is never re-corrected.
+- **A slew may never own more than the step threshold.** An unbounded slew drives the residual to zero and permanently disarms the rung above it (§7.1).
+- **A step past first lock needs the whole window**: three readings, each beyond the threshold, all of one sign. A step also clears the error history, so allowing a decision on the two readings that follow makes each step lower the bar for the next.
+- **The drift fit must never see our own corrections.** Deliberate timeline motion — rate term, drained slew, jumps — is accumulated and added back onto the measured lag before fitting, so the fit sees the device's free-running clock. Feeding corrections back into the fit is what railed the previous PLL.
+- **A settled rate only counts as evidence if the session ran long enough for the fit to update.** Otherwise the recorded rate is the seed it was given, re-recording old junk as fresh evidence.
+- **The trim is latched for the session.** The measurement subtracts the trim so the loop cannot fight it, which holds only while the value subtracted is the value baked into the timeline. Re-reading it means a model-trim write learned from another device of the same model silently changes this device's subtracted term with no matching move of its timeline — the next poll reads a step of the full delta and the monitor hard-resyncs real audio to "correct" it.
+- **After a control-socket reset, hold corrections for `STREAM_RECONNECT_GRACE_S` and clear the history.** The control socket is a separate connection from the audio fetch and drops on its own; across the reset the device keeps answering, but the positions it reports alternate between correct and seconds-adrift until it settles. The median filter must not straddle the reset, or it manufactures a step that was never played.
+
+#### A.5 Stream Lifecycle
+
+- **The newest fetch of a device's URL wins.** A Cast device re-fetches on buffer restarts and seeks — observed twice within 300 ms at session start — and without a generation counter both generators run, both advance the position, and the device is served two interleaved halves of the timeline.
+- **Only the live fetch owns `connected`.** A superseded generator finishing after its replacement opened must not mark the device disconnected underneath it.
+- **A display feed must never be able to take the session down with it.**
+
+---
+
+### Appendix B. Glossary
 
 - **PTS** — presentation timestamp: "play this sample at time T on the reference clock."
 - **ASRC** — asynchronous sample-rate converter; a resampler with a continuously adjustable ratio, used for ppm-level rate discipline.

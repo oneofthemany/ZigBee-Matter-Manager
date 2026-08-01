@@ -1,33 +1,5 @@
 """
 Per-group DuckDB stores for speaker-sync lag telemetry.
-
-One database file per sync group (``./data/sync/<group>.duckdb``,
-``adhoc.duckdb`` for sessions started from raw player ids) — deliberately
-separate from telemetry.duckdb, whose write lock belongs to the
-zmm_telemetry Rust appender. Each file is only ever opened by this process,
-one cached connection per group, so DuckDB's single-writer model is
-respected without touching the appender's file.
-
-Every statement runs on its own ``cursor()`` off that connection, and this is
-load-bearing rather than tidiness. Reads and writes here reach DuckDB from
-different threads — the API routes and the monitor's sample writer both go
-through ``asyncio.to_thread`` — and a DuckDBPyConnection holds ONE result set.
-Two threads issuing statements on the same connection object therefore hand
-each other their results: measured on real session data, 19% of concurrent
-reads came back with the writer's single INSERT count row in place of the
-14,279 rows they asked for, with no exception raised anywhere. A cursor is a
-separate connection over the same database instance, so it keeps its own
-result while the file lock stays where it belongs. Never call execute() on the
-cached connection itself.
-
-A device can belong to several groups; model training therefore reads
-across ALL group files (per-group session aggregates in SQL, exact medians
-merged in Python — medians can't be combined across files in SQL without
-attaching them into one connection, which would fight the per-group locks).
-
-Table ``lag_samples`` (one row per measurement, kinds: startup | poll |
-resync | trim) is the raw history behind /api/media/sync/history and the
-learned model in /api/media/sync/model.
 """
 from __future__ import annotations
 
@@ -102,8 +74,8 @@ def write_samples(group_id: str, rows: List[Dict[str, Any]]):
 
 
 def _cur(group_id: str):
-    """A private cursor on the group's DB — see the module docstring for why
-    nothing may run on the cached connection directly."""
+    """A private cursor on the group's DB (open-zone.md §A.1 — never run a
+    statement on the cached connection itself)."""
     return _get_con(group_id).cursor()
 
 
@@ -127,13 +99,6 @@ def _all_group_ids() -> List[str]:
         return []
 
 
-# Model-training hygiene. Drift: a session's settled rate only counts if the
-# session ran long enough for the drift fit to actually update (otherwise the
-# recorded rate is just the seed it was given — old junk re-recording itself
-# as fresh evidence, which is how −43.5 ppm kept resurrecting) and if it's
-# inside the physical crystal bound. Recency beats volume for both fields:
-# the estimator improves and device firmware changes, so only the newest few
-# qualifying sessions are aggregated.
 MODEL_DRIFT_MIN_SESSION_S = 240   # matches STREAM_RATE_EMA_SPAN_S
 MODEL_DRIFT_MAX_PPM = 50          # matches STREAM_RATE_MAX_PPM
 MODEL_DRIFT_SESSIONS = 5          # newest qualifying sessions per device
