@@ -156,6 +156,15 @@ STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
 # poll can't be told apart from noise, so fast slews also require the median
 # of the last 3 polls to agree (a lone spike must not move real audio).
 STREAM_SLEW_FAST_THRESH_S = 0.030
+# Ceiling on what one slew may own, and the reason the ladder can always
+# escalate. Jump decisions are made on the RESIDUAL (median minus pending
+# slew), so an unbounded slew that swallowed a whole offset would drive the
+# residual to zero and leave the jump branch permanently unarmed — while the
+# 1000 ppm actuator drained a multi-second offset at 1 ms/s. Holding the
+# ceiling at the jump threshold makes the two branches complementary by
+# construction: the slew owns everything up to STREAM_JUMP_MIN_S, and any
+# excess stays in the residual where the jump vote can still see it.
+STREAM_SLEW_MAX_S = STREAM_JUMP_MIN_S
 # Drift-cancel bounds: consumer DAC crystals sit within ±50 ppm, so any
 # estimate outside that is estimator noise, not clock error.
 STREAM_RATE_MAX_PPM = 50.0
@@ -1541,14 +1550,23 @@ class CastSyncPoc:
                         # +=: pending slew is already inside the measurement.
                         # Refreshes are routine while a slew drains — only a
                         # meaningful change is worth an event row.
+                        # Clamped: an offset past the ceiling is a rebuffer,
+                        # not drift, and belongs to the jump branch above. The
+                        # excess must stay in the residual so the next polls
+                        # can carry the jump vote (see STREAM_SLEW_MAX_S).
                         fresh = abs(med3 - st.slew_s) > 0.010
-                        st.slew_s = med3
+                        st.slew_s = max(-STREAM_SLEW_MAX_S,
+                                        min(STREAM_SLEW_MAX_S, med3))
                         if fresh:
                             batch.append(self._sample_row(st, "slew", lag=lag,
                                                           error=error))
                             logger.info(f"Sync stream slew {st.name}: "
-                                        f"{med3 * 1000:+.0f} ms @ "
-                                        f"{STREAM_SLEW_FAST_PPM:.0f} ppm")
+                                        f"{st.slew_s * 1000:+.0f} ms @ "
+                                        f"{STREAM_SLEW_FAST_PPM:.0f} ppm"
+                                        + (f" (of {med3 * 1000:+.0f} ms —"
+                                           " excess left for resync)"
+                                           if abs(med3) > STREAM_SLEW_MAX_S
+                                           else ""))
                         self._pll_update(st, lag)
                     else:
                         # Steady state: gentle trickle (≤20 ppm) on the

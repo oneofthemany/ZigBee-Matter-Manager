@@ -481,7 +481,9 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                 channels=range(11, 27), count=3, duration_exp=4
             )
             spectrum = {int(ch): int(energy) for ch, energy in results.items()}
-            save_scan(spectrum)
+            # Off-thread: save_scan takes the telemetry lock, and this handler
+            # shares the loop with the audio stream generators.
+            await asyncio.to_thread(save_scan, spectrum)
             best = select_best_channel(spectrum)
 
             current = None

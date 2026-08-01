@@ -417,10 +417,14 @@ class SystemMonitor:
                 )
                 self.latest = metrics
 
-                # Write to DuckDB
+                # Write to DuckDB. Off-thread without exception: the write
+                # helpers take the telemetry lock and block for as long as the
+                # appender holds it, and anything that blocks this thread stops
+                # every stream generator with it — speaker buffers drain and
+                # the group falls out of sync by the length of the stall.
                 try:
                     from modules.telemetry_db import write_system_metrics
-                    write_system_metrics(metrics)
+                    await asyncio.to_thread(write_system_metrics, metrics)
                 except Exception as e:
                     logger.debug(f"Telemetry write failed: {e}")
 

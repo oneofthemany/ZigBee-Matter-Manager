@@ -1494,11 +1494,14 @@ class HeatingController:
         self._last_decision_ts = time.time()
 
         # Persist this tick for anomaly detection & post-hoc analysis.
-        # Non-blocking in spirit: if the DB write fails we log and move on,
-        # we never want a telemetry issue to stop control.
+        # Non-blocking in fact, not just in spirit: the write takes the
+        # telemetry lock and waits however long the appender holds it, and
+        # this coroutine runs on the event loop — blocking here stalls every
+        # other loop task, stream generators included.
         if _write_heating_tick is not None:
             try:
-                _write_heating_tick(
+                await asyncio.to_thread(
+                    _write_heating_tick,
                     ts=self._last_decision_ts,
                     dry_run=self.dry_run,
                     circuits=circuits_out,

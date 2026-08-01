@@ -294,7 +294,9 @@ class SpectrumMonitor:
             )
             clean = {int(ch): int(e) for ch, e in results.items()}
 
-            save_scan(clean)
+            # Off-thread: save_scan takes the telemetry lock, and this
+            # coroutine shares the loop with the audio stream generators.
+            await asyncio.to_thread(save_scan, clean)
 
             self.last_scan = clean
             self.last_scan_ts = int(time.time())
