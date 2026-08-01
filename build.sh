@@ -668,20 +668,27 @@ RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
 WORKDIR /app
 DOCKERFILE_TOP
 
-    # Part 2 — Rust components (each independently optional).
-    #   zmm_telemetry — fast native DuckDB appender. Compiles the bundled
-    #                   DuckDB amalgamation, so it dominates build time
-    #                   (~5-15 min). A small/home network is fine on the
-    #                   Python executemany fallback, so this defaults off.
-    #   zmm_eq        — Cast EQ biquad DSP. pyo3-only, compiles in seconds.
-    #                   The Media-tab equaliser needs it and nothing else.
-    # The two are separate crates/wheels with no cross-dependency, so we build
-    # only what's requested. Deliberately placed BEFORE the Python requirements
-    # layers: the Rust sources change ~once per release cycle while requirements
-    # churn far more often, so this ordering keeps the toolchain download and
-    # crate compiles fully cached across ordinary dependency bumps. The wheels
-    # declare no Python dependencies, so installing them before requirements is
-    # safe.
+    # Part 2 — Rust toolchain, when any Rust component is requested.
+    #
+    # LAYER ORDER INVARIANT (please do not "tidy" this — it has been churned
+    # repeatedly and each ordering trades one rebuild cost for another):
+    #
+    #   Part 2  Rust toolchain      expensive, never changes  -> ABOVE reqs
+    #   Part 3  Python requirements churns on dependency bump
+    #   Part 4  Rust crate COPY     churns on Rust source edit -> BELOW reqs
+    #
+    # A COPY invalidates every layer beneath it. The toolchain layer (rustup
+    # download + maturin) is the expensive one and depends on nothing that
+    # churns, so it sits at the top and neither kind of edit re-runs it. The
+    # crate COPY+compile sits at the BOTTOM, below the requirements: with it
+    # above, a one-line lib.rs edit re-ran the full ~130-package lock install
+    # as well as the compile, which dominated the cost of a Rust-only change.
+    #
+    # The cost that moves in exchange is that a requirements bump now re-runs
+    # the crate compiles. That is the right way round here: dependency bumps
+    # are rarer than Rust edits, and the compiles are incremental anyway (the
+    # cargo registry and target dir are cache mounts that survive builds),
+    # where the lock install is not.
     if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
         info "Including Rust toolchain in image build (appender=${WITH_APPENDER}, eq=${WITH_EQ})"
         cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUST_TOOLCHAIN'
@@ -704,7 +711,88 @@ ARG BUILD_JOBS=4
 ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
 ENV MAKEFLAGS="-j${BUILD_JOBS}"
 DOCKERFILE_RUST_TOOLCHAIN
+    fi
 
+    # Part 3 — Python requirements (always present)
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
+
+# ── Application requirements (layer cache) ──
+# Install from the fully-pinned lockfile for reproducible builds/upgrades.
+# requirements.lock is generated from requirements.txt via scripts/regen_lock.sh
+# (uv pip compile, python 3.11, manylinux_2_31).
+# It already includes python-matter-server[server] (and its home-assistant-chip-core
+# native runtime), so no separate extras install is needed. The manylinux_2_31
+# platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
+#
+# The --mount=type=cache keeps pip's wheel/download cache in a host-side
+# buildah volume that survives across builds (it is NOT committed to the
+# image). When a release changes requirements, only the new/changed packages
+# are downloaded — everything else installs from the local cache. Supported
+# natively by podman/buildah; docker needs BuildKit (both fine here).
+# The base image's pip is deliberately NOT upgraded: it already handles every
+# tag in the lock, and upgrading it here re-ran on every lock change for no
+# benefit. PIP_ROOT_USER_ACTION silences the (irrelevant in a container)
+# root-user warning.
+COPY requirements.lock ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
+
+# Self-heal top-up, in its OWN layer: when the lock is complete this is a
+# no-op, but if a release added a package to requirements.txt without
+# regenerating the lock, this installs the missing package (at latest
+# resolvable version) instead of shipping an image that breaks at import
+# time. Split from the lock install so a txt-only edit rebuilds just this
+# small layer, not the full ~130-package lock install above. The upgrade
+# watcher logs a drift warning when this top-up is expected to do real work.
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
+DOCKERFILE_REQS
+
+    # Part 4 — runtime extras (always present).
+    # apt + cloudflared, deliberately ABOVE the Rust crate builds: they change
+    # ~never, and with them below a crate edit re-ran the apt install and
+    # re-downloaded cloudflared. See the layer-order invariant in Part 2.
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUNTIME'
+
+# Lightweight runtime extras — deliberately a LATE, separate apt layer so adding
+# them never invalidates the heavy SDK/OTBR/pip layers above (which would force
+# the 15-25 min OTBR recompile AND re-hit the rate-limited SiliconLabs GitHub
+# API). usbutils=lsusb for coordinator auto-detection; libportaudio2=PortAudio
+# runtime for the speaker-sync chirp; alsa-utils=arecord/aplay for audio debug.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        usbutils \
+        openssl \
+        libportaudio2 \
+        alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# cloudflared — static Go binary for the managed remote-access tunnel
+# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
+# Deliberately placed late in the file: a tiny download layer here keeps
+# the heavy SDK/OTBR/pip layers above fully cached.
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+         -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared \
+    && /usr/local/bin/cloudflared --version
+
+DOCKERFILE_RUNTIME
+
+    # Part 5 — Rust components (each independently optional).
+    #   zmm_telemetry — fast native DuckDB appender. Compiles the bundled
+    #                   DuckDB amalgamation, so it dominates build time
+    #                   (~5-15 min). A small/home network is fine on the
+    #                   Python executemany fallback, so this defaults off.
+    #   zmm_eq        — Cast EQ biquad DSP + the OpenZone sync resampler.
+    #                   pyo3-only, compiles in seconds. The Media-tab
+    #                   equaliser needs it; without it the sync engine falls
+    #                   back to the numpy resampler.
+    # Separate crates/wheels with no cross-dependency, so we build only what
+    # is requested. Both declare no Python dependencies, so installing them
+    # after the requirements is safe — and nothing can clobber them after.
+    # See the layer-order invariant in Part 2 before moving this.
+    if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
         # Cache mounts keep crates.io downloads and compiled artifacts in
         # host-side buildah volumes (never committed to the image), so even
         # when the crate sources DO change, the rebuild is incremental. NOTE:
@@ -755,67 +843,8 @@ ENV ZMM_TELEMETRY_BACKEND=python
 DOCKERFILE_NOAPPENDER
     fi
 
-    # Part 2.5 — Python requirements (always present)
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
-
-# ── Application requirements (layer cache) ──
-# Install from the fully-pinned lockfile for reproducible builds/upgrades.
-# requirements.lock is generated from requirements.txt via scripts/regen_lock.sh
-# (uv pip compile, python 3.11, manylinux_2_31).
-# It already includes python-matter-server[server] (and its home-assistant-chip-core
-# native runtime), so no separate extras install is needed. The manylinux_2_31
-# platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
-#
-# The --mount=type=cache keeps pip's wheel/download cache in a host-side
-# buildah volume that survives across builds (it is NOT committed to the
-# image). When a release changes requirements, only the new/changed packages
-# are downloaded — everything else installs from the local cache. Supported
-# natively by podman/buildah; docker needs BuildKit (both fine here).
-# The base image's pip is deliberately NOT upgraded: it already handles every
-# tag in the lock, and upgrading it here re-ran on every lock change for no
-# benefit. PIP_ROOT_USER_ACTION silences the (irrelevant in a container)
-# root-user warning.
-COPY requirements.lock ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
-
-# Self-heal top-up, in its OWN layer: when the lock is complete this is a
-# no-op, but if a release added a package to requirements.txt without
-# regenerating the lock, this installs the missing package (at latest
-# resolvable version) instead of shipping an image that breaks at import
-# time. Split from the lock install so a txt-only edit rebuilds just this
-# small layer, not the full ~130-package lock install above. The upgrade
-# watcher logs a drift warning when this top-up is expected to do real work.
-COPY requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
-DOCKERFILE_REQS
-
-    # Part 3 — application source and final image config (always present)
+    # Part 6 — application source and final image config (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_BOTTOM'
-
-# Lightweight runtime extras — deliberately a LATE, separate apt layer so adding
-# them never invalidates the heavy SDK/OTBR/pip layers above (which would force
-# the 15-25 min OTBR recompile AND re-hit the rate-limited SiliconLabs GitHub
-# API). usbutils=lsusb for coordinator auto-detection; libportaudio2=PortAudio
-# runtime for the speaker-sync chirp; alsa-utils=arecord/aplay for audio debug.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        usbutils \
-        openssl \
-        libportaudio2 \
-        alsa-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-# cloudflared — static Go binary for the managed remote-access tunnel
-# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
-# Deliberately placed late in the file: a tiny download layer here keeps
-# the heavy SDK/OTBR/pip layers above fully cached.
-RUN ARCH=$(dpkg --print-architecture) \
-    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
-         -o /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/cloudflared \
-    && /usr/local/bin/cloudflared --version
-
 # Application source
 COPY . .
 
