@@ -1,8 +1,9 @@
-//! zmm_eq — the server-side audio DSP for Cast playback. Two independent
-//! pieces, sharing a crate because they share a wheel and a build marker:
+//! zmm_eq — the server-side audio DSP for Cast playback. Independent pieces,
+//! sharing a crate because they share a wheel and a build marker:
 //!
 //!   * `EqChain`      — 10-band graphic equaliser over interleaved s16le PCM.
 //!   * `interp_block` — the OpenZone §4.2 variable-ratio resampler.
+//!   * `xfade_mix`    — the OpenZone §4.1a item-boundary crossfade.
 //!
 //! # 1. Equaliser
 //!
@@ -49,6 +50,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::{Mutex, OnceLock};
 
@@ -397,13 +399,263 @@ fn interp_block<'py>(
     Ok(PyBytes::new(py, &out))
 }
 
+// ----------------------------------------------------------------------
+// Item-boundary crossfade (open-zone.md §4.1a)
+// ----------------------------------------------------------------------
+
+/// Look-ahead gain envelope holding `need` without stepping the level:
+/// centred running minimum over `w`, Hann-smoothed, clamped back under `need`.
+/// Both stages O(n) — monotonic deque, and `k[d] = (0.5 − 0.5cos(ωd))/S` split
+/// into a box term and two quadrature terms (open-zone.md §4.1a).
+fn guard_envelope(need: &[f32], w: usize) -> Vec<f32> {
+    let n = need.len();
+    let pad = w / 2;
+    let m = n + 2 * pad;
+    let edge = |x: &[f32], i: isize| x[i.clamp(0, x.len() as isize - 1) as usize];
+
+    let mut dq: VecDeque<(usize, f32)> = VecDeque::new();
+    let mut rmin: Vec<f32> = Vec::with_capacity(n);
+    for i in 0..m {
+        let v = edge(need, i as isize - pad as isize);
+        while dq.back().is_some_and(|&(_, x)| x >= v) {
+            dq.pop_back();
+        }
+        dq.push_back((i, v));
+        if dq[0].0 + w <= i {
+            dq.pop_front();
+        }
+        if i + 1 >= w {
+            rmin.push(dq[0].1);
+        }
+    }
+
+    let om = 2.0 * PI / (w - 1) as f64;
+    let s = 0.5 * w as f64 - 0.5;
+    let mut pa: Vec<f64> = Vec::with_capacity(m + 1);
+    let mut pc: Vec<f64> = Vec::with_capacity(m + 1);
+    let mut ps: Vec<f64> = Vec::with_capacity(m + 1);
+    pa.push(0.0);
+    pc.push(0.0);
+    ps.push(0.0);
+    for i in 0..m {
+        let x = edge(&rmin, i as isize - pad as isize) as f64;
+        let (sn, cs) = (om * i as f64).sin_cos();
+        pa.push(pa[i] + x);
+        pc.push(pc[i] + x * cs);
+        ps.push(ps[i] + x * sn);
+    }
+    (0..n)
+        .map(|j| {
+            let (av, cv, dv) = (pa[j + w] - pa[j], pc[j + w] - pc[j], ps[j + w] - ps[j]);
+            let (sn, cs) = (om * j as f64).sin_cos();
+            let g = 0.5 / s * (av - cs * cv - sn * dv);
+            (g as f32).min(need[j])
+        })
+        .collect()
+}
+
+fn mix_guarded(
+    a: &[f32],
+    b: &[f32],
+    ch: usize,
+    n: usize,
+    p: f64,
+    peak_ceil: f32,
+    w: usize,
+) -> Vec<f32> {
+    let mut mixed = vec![0f32; n * ch];
+    let mut amp = vec![0f32; n];
+    let mut src_peak = 0f32;
+    let denom = if n > 1 { (n - 1) as f64 } else { 1.0 };
+    for i in 0..n {
+        let t = if n > 1 { i as f64 / denom } else { 0.0 };
+        let (sn, cs) = (PI * t / 2.0).sin_cos();
+        // Clamped before the power: cos(π/2) lands a hair below zero.
+        let g_out = cs.max(0.0).powf(p) as f32;
+        let g_in = sn.max(0.0).powf(p) as f32;
+        let mut peak = 0f32;
+        for c in 0..ch {
+            let (x, y) = (a[i * ch + c], b[i * ch + c]);
+            src_peak = src_peak.max(x.abs()).max(y.abs());
+            let v = x * g_out + y * g_in;
+            mixed[i * ch + c] = v;
+            peak = peak.max(v.abs());
+        }
+        amp[i] = peak;
+    }
+    let ceiling = peak_ceil.max(src_peak);
+    if amp.iter().any(|&v| v > ceiling) {
+        let need: Vec<f32> = amp
+            .iter()
+            .map(|&v| (ceiling / v.max(1e-9)).min(1.0))
+            .collect();
+        let g = guard_envelope(&need, w);
+        for i in 0..n {
+            for c in 0..ch {
+                mixed[i * ch + c] *= g[i];
+            }
+        }
+    }
+    mixed
+}
+
+/// Mix one item boundary: fade `tail` out under `head` in, peak-guarded
+/// (open-zone.md §4.1a).
+///
+/// `tail` and `head` are interleaved, C-contiguous float32 blocks of equal
+/// length. `p` is the fade exponent (1 = constant power, 2 = constant
+/// amplitude), `peak_ceil` the floor under the guard's ceiling, `guard_win`
+/// its odd look-ahead width. Returns `frames * channels` LE float32 samples.
+#[pyfunction]
+#[pyo3(signature = (tail, head, channels, p, peak_ceil, guard_win))]
+fn xfade_mix<'py>(
+    py: Python<'py>,
+    tail: PyBuffer<f32>,
+    head: PyBuffer<f32>,
+    channels: usize,
+    p: f64,
+    peak_ceil: f32,
+    guard_win: usize,
+) -> PyResult<Bound<'py, PyBytes>> {
+    if channels == 0 {
+        return Err(PyValueError::new_err("channels must be > 0"));
+    }
+    if guard_win < 3 || guard_win % 2 == 0 {
+        return Err(PyValueError::new_err("guard_win must be odd and >= 3"));
+    }
+    if !p.is_finite() || p <= 0.0 {
+        return Err(PyValueError::new_err("p must be finite and > 0"));
+    }
+    let a = tail.to_vec(py)?;
+    let b = head.to_vec(py)?;
+    if a.len() != b.len() {
+        return Err(PyValueError::new_err("tail and head differ in length"));
+    }
+    if a.len() % channels != 0 {
+        return Err(PyValueError::new_err(
+            "blocks are not a whole number of frames",
+        ));
+    }
+    let n = a.len() / channels;
+    if n == 0 {
+        return Err(PyValueError::new_err("empty overlap"));
+    }
+    let out = py.detach(move || {
+        let mixed = mix_guarded(&a, &b, channels, n, p, peak_ceil, guard_win);
+        let mut out = vec![0u8; mixed.len() * 4];
+        for (i, v) in mixed.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        out
+    });
+    Ok(PyBytes::new(py, &out))
+}
+
 #[pymodule]
 fn zmm_eq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EqChain>()?;
     m.add_function(wrap_pyfunction!(interp_block, m)?)?;
+    m.add_function(wrap_pyfunction!(xfade_mix, m)?)?;
     // The window margin the kernel reads either side of its position, so
     // Python never hardcodes it.
     m.add("RESAMPLE_HALF", HALF)?;
     m.add("RESAMPLE_TAPS", TAPS)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The O(n·w) forms `guard_envelope` replaces.
+    fn guard_envelope_direct(need: &[f32], w: usize) -> Vec<f32> {
+        let n = need.len();
+        let pad = w / 2;
+        let edge = |x: &[f32], i: isize| x[i.clamp(0, x.len() as isize - 1) as usize];
+        let rmin: Vec<f32> = (0..n)
+            .map(|i| {
+                (0..w).fold(f32::INFINITY, |acc, d| {
+                    acc.min(edge(need, (i + d) as isize - pad as isize))
+                })
+            })
+            .collect();
+        let kr: Vec<f64> = (0..w)
+            .map(|d| 0.5 - 0.5 * (2.0 * PI * d as f64 / (w - 1) as f64).cos())
+            .collect();
+        let ks: f64 = kr.iter().sum();
+        (0..n)
+            .map(|j| {
+                let g: f64 = (0..w)
+                    .map(|d| edge(&rmin, (j + d) as isize - pad as isize) as f64 * kr[d] / ks)
+                    .sum();
+                (g as f32).min(need[j])
+            })
+            .collect()
+    }
+
+    fn lcg(seed: &mut u64) -> f32 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+    }
+
+    #[test]
+    fn envelope_matches_direct_form() {
+        let mut seed = 7u64;
+        for &(n, w) in &[(400, 21), (400, 5), (1000, 51), (300, 221), (64, 21), (5, 3)] {
+            let need: Vec<f32> = (0..n).map(|_| 0.5 + 0.5 * lcg(&mut seed).abs()).collect();
+            let fast = guard_envelope(&need, w);
+            let slow = guard_envelope_direct(&need, w);
+            let d = fast
+                .iter()
+                .zip(&slow)
+                .fold(0f32, |acc, (a, b)| acc.max((a - b).abs()));
+            assert!(d < 1e-6, "n={n} w={w}: max |fast - direct| = {d:e}");
+        }
+    }
+
+    #[test]
+    fn envelope_never_exceeds_need_and_is_positive() {
+        let mut seed = 11u64;
+        let need: Vec<f32> = (0..2000).map(|_| 0.2 + 0.8 * lcg(&mut seed).abs()).collect();
+        let g = guard_envelope(&need, 221);
+        for (i, &v) in g.iter().enumerate() {
+            assert!(v > 0.0 && v <= need[i] + 1e-6, "i={i}: g={v} need={}", need[i]);
+        }
+    }
+
+    #[test]
+    fn mix_holds_the_louder_source_peak() {
+        let (n, ch) = (44100, 2);
+        let mut seed = 3u64;
+
+        let a: Vec<f32> = (0..n * ch).map(|_| 0.9 * lcg(&mut seed)).collect(); // uncorrelated
+        let b: Vec<f32> = (0..n * ch).map(|_| 0.9 * lcg(&mut seed)).collect();
+        let src = a.iter().chain(&b).fold(0f32, |m, v| m.max(v.abs()));
+        let unguarded = {
+            let mut m = 0f32;
+            let d = (n - 1) as f64;
+            for i in 0..n {
+                let (sn, cs) = (PI * i as f64 / d / 2.0).sin_cos();
+                for c in 0..ch {
+                    let v = a[i * ch + c] * cs as f32 + b[i * ch + c] * sn as f32;
+                    m = m.max(v.abs());
+                }
+            }
+            m
+        };
+        let out = mix_guarded(&a, &b, ch, n, 1.0, 0.97, 221);
+        let got = out.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(unguarded > src * 1.05, "test signal must actually overshoot");
+        assert!(got <= src.max(0.97) + 1e-4, "guard failed: {got} > {src}");
+    }
+
+    #[test]
+    fn mix_endpoints_are_the_sources_at_unity() {
+        let (n, ch) = (1000, 2);
+        let a = vec![0.5f32; n * ch];
+        let b = vec![-0.25f32; n * ch];
+        let out = mix_guarded(&a, &b, ch, n, 1.0, 0.97, 21);
+        assert!((out[0] - 0.5).abs() < 1e-6, "start = {}", out[0]);
+        assert!((out[out.len() - 1] + 0.25).abs() < 1e-6, "end = {}", out[out.len() - 1]);
+    }
 }

@@ -13,6 +13,13 @@ import numpy as np
 
 logger = logging.getLogger("modules.media.sync_source")
 
+try:
+    import zmm_eq as _dsp
+    _HAVE_RUST = hasattr(_dsp, "xfade_mix")
+except ImportError:
+    _dsp = None
+    _HAVE_RUST = False
+
 RATE = 44100
 CHANNELS = 2
 _S16_SCALE = 1.0 / 32768.0
@@ -24,6 +31,8 @@ XFADE_GUARD_WIN_S = 0.005
 
 # Slack between the furthest-ahead reader and anything reworked in place.
 XFADE_READER_MARGIN_S = 0.5
+# Rate limit for the gap warning; the counter in stats() carries the total.
+GAP_LOG_EVERY_S = 5.0
 
 
 # ----------------------------------------------------------------------
@@ -90,6 +99,11 @@ def fade_pair(n: int, p: float) -> tuple:
     return a.astype(np.float32), b.astype(np.float32)
 
 
+def _guard_win(rate: int) -> int:
+    """Look-ahead width of the peak guard, odd for a centred window."""
+    return max(3, (int(XFADE_GUARD_WIN_S * rate) | 1))
+
+
 def _peak_guard(mixed: np.ndarray, src_peak: float,
                 rate: int = RATE) -> np.ndarray:
     """Keep the overlap from peaking higher than the material going into it."""
@@ -98,7 +112,7 @@ def _peak_guard(mixed: np.ndarray, src_peak: float,
     if not (amp > ceiling).any():
         return mixed
     need = np.minimum(1.0, ceiling / np.maximum(amp, 1e-9)).astype(np.float32)
-    w = max(3, (int(XFADE_GUARD_WIN_S * rate) | 1))     # odd, for a centred window
+    w = _guard_win(rate)
     pad = w // 2
     win = np.lib.stride_tricks.sliding_window_view(
         np.pad(need, pad, mode="edge"), w)
@@ -122,6 +136,22 @@ def fade_exponent(tail: np.ndarray, head: np.ndarray) -> float:
         return 1.0
     r = float(np.dot(a, b) / (na * nb))
     return 1.0 + min(1.0, abs(r))
+
+
+def mix_overlap(tail: np.ndarray, head: np.ndarray, p: float,
+                rate: int = RATE) -> np.ndarray:
+    """Fade ``tail`` out under ``head`` in, peak-guarded. ``zmm_eq.xfade_mix``
+    where the wheel is present, numpy otherwise — identical output."""
+    if _HAVE_RUST:
+        raw = _dsp.xfade_mix(np.ascontiguousarray(tail, dtype=np.float32),
+                             np.ascontiguousarray(head, dtype=np.float32),
+                             tail.shape[1], float(p), XFADE_PEAK_CEIL,
+                             _guard_win(rate))
+        return np.frombuffer(raw, dtype="<f4").reshape(tail.shape)
+    g_out, g_in = fade_pair(len(tail), p)
+    mixed = tail * g_out[:, None] + head * g_in[:, None]
+    return _peak_guard(mixed, max(float(np.abs(tail).max()),
+                                  float(np.abs(head).max())), rate)
 
 
 # ----------------------------------------------------------------------
@@ -171,6 +201,20 @@ class _Ring:
         if m > first:
             self._buf[:m - first] = block[first:]
         return m
+
+    def fill_silence(self, upto: int) -> int:
+        """Commit ``[end, upto)`` as silence, fixing what readers past ``end``
+        were already served (open-zone.md §4.1)."""
+        n = upto - self.end
+        if n <= 0:
+            return 0
+        if n >= self._cap:
+            self._buf[:] = 0.0
+            self.end = upto
+            self.start = self.end - self._cap
+        else:
+            self.write(np.zeros((n, self._ch), dtype=np.float32))
+        return n
 
     def read(self, n0: int, frames: int, count: bool = True) -> np.ndarray:
         """``count=False`` for observers — the spectrum tap reads the timeline
@@ -234,6 +278,8 @@ class MediaSource:
         self._xfade_want = 0                      # 0 = not collecting
         self._xfades = 0
         self._xfade_last = ""
+        self._gap_samples = 0
+        self._gap_logged = 0.0
 
     async def start(self) -> None:
         if self._task is not None:
@@ -411,6 +457,8 @@ class MediaSource:
                         self._eq = None
                 pcm = (np.frombuffer(data, dtype="<i2")
                        .reshape(-1, self.channels).astype(np.float32) * _S16_SCALE)
+                if not self._xfade_want:
+                    self._gap_close()
                 if self._xfade_arm:
                     self._xfade_open()
                 if self._xfade_want:
@@ -424,20 +472,40 @@ class MediaSource:
                 self._xfade_commit()
             self._kill_nowait()
 
-    def _unserved_samples(self) -> int:
-        """Timeline written but not yet reached by the furthest-ahead reader.
+    def _reader_head(self) -> Optional[float]:
+        """Furthest-ahead reader, asked for rather than modelled (§4.1a).
+        None while nothing is reading — priming, or no group."""
+        if self._reader_pos is None:
+            return None
+        try:
+            return self._reader_pos()
+        except Exception:
+            return None
 
-        The reader head is asked for, not modelled (open-zone.md §4.1a)."""
-        head = None
-        if self._reader_pos is not None:
-            try:
-                head = self._reader_pos()
-            except Exception:
-                head = None
-        if head is None:            # nothing reading yet (priming, or no group)
+    def _unserved_samples(self) -> int:
+        """Timeline written but not yet reached by the furthest-ahead reader."""
+        head = self._reader_head()
+        if head is None:
             head = (time.monotonic() - self.epoch) * self._rate
         room = self._ring.end - head - XFADE_READER_MARGIN_S * self._rate
         return int(max(0, room))
+
+    def _gap_close(self) -> None:
+        """Commit an overrun before decoded audio lands on top of it (§4.1)."""
+        head = self._reader_head()
+        if head is None:
+            return
+        n = self._ring.fill_silence(int(head + XFADE_READER_MARGIN_S * self._rate))
+        if not n:
+            return
+        self._gap_samples += n
+        now = time.monotonic()
+        if now - self._gap_logged >= GAP_LOG_EVERY_S:   # a slow source gaps per block
+            self._gap_logged = now
+            logger.warning(
+                f"Sync source gap {self._gap_samples / self._rate:.2f}s total — "
+                "the readers overtook the write head; committed as silence so "
+                "every device hears the same thing")
 
     def _xfade_open(self) -> None:
         """Decide the overlap, on the incoming item's first decoded block —
@@ -485,11 +553,7 @@ class MediaSource:
         at = self._ring.end - n
         tail = self._ring.read(at, n, count=False)
         p = fade_exponent(tail, head[:n])
-        g_out, g_in = fade_pair(n, p)
-        mixed = tail * g_out[:, None] + head[:n] * g_in[:, None]
-        mixed = _peak_guard(mixed, max(float(np.abs(tail).max()),
-                                       float(np.abs(head[:n]).max())),
-                            self._rate)
+        mixed = mix_overlap(tail, head[:n], p, self._rate)
         self._ring.splice(mixed, at)
         if len(head) > n:
             self._ring.write(head[n:])
@@ -553,6 +617,7 @@ class MediaSource:
             "crossfade_s": self._xfade_s,
             "crossfades": self._xfades,
             "rework_s": round(self._unserved_samples() / self._rate, 2),
+            "gap_ms": round(self._gap_samples * 1000 / self._rate, 1),
             **({"crossfade_last": self._xfade_last} if self._xfade_last else {}),
             **({"last_error": self._last_error[:200]} if self._last_error else {}),
         }
