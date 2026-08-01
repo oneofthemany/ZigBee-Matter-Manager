@@ -67,11 +67,13 @@ class MotionWindow(BaseModel):
 
     long_peak / lat_peak / yaw_peak are optional because the phone genuinely
     may not know them: the forward axis is learned during a drive, and not
-    every phone has a gyroscope.
+    every phone has a gyroscope. horiz_peak needs neither, and is optional only
+    because builds predating it send windows without one.
     """
     n: int = Field(..., ge=1, le=1_000_000)
     vert_rms: float = Field(..., ge=0.0, le=200.0)
     jerk_peak: float = Field(..., ge=0.0, le=10_000.0)
+    horiz_peak: Optional[float] = Field(None, ge=0.0, le=200.0)
     long_peak: Optional[float] = Field(None, ge=-200.0, le=200.0)
     lat_peak: Optional[float] = Field(None, ge=0.0, le=200.0)
     yaw_peak: Optional[float] = Field(None, ge=0.0, le=100.0)

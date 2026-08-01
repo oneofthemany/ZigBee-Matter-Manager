@@ -185,6 +185,9 @@ _MIGRATIONS = (
     ("trip_fixes", "pressure_hpa", "DOUBLE"),
     ("trip_fixes", "long_peak_mps2", "DOUBLE"),
     ("trip_fixes", "lat_peak_mps2", "DOUBLE"),
+    # Unsigned horizontal magnitude; unlike the two above, not gated on the
+    # phone's forward axis, so populated for the whole of a drive.
+    ("trip_fixes", "horiz_peak_mps2", "DOUBLE"),
     ("trip_fixes", "vert_rms_mps2", "DOUBLE"),
     ("trip_fixes", "jerk_peak_mps3", "DOUBLE"),
     ("trip_fixes", "yaw_peak_rads", "DOUBLE"),
@@ -416,12 +419,13 @@ class JourneyManager:
             "INSERT INTO trip_fixes "
             "(trip_id, user_id, ts, lat, lon, speed_mps, bearing_deg, accuracy_m, "
             " altitude_m, pressure_hpa, long_peak_mps2, lat_peak_mps2, "
-            " vert_rms_mps2, jerk_peak_mps3, yaw_peak_rads) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " horiz_peak_mps2, vert_rms_mps2, jerk_peak_mps3, yaw_peak_rads) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [trip_id, user_id, ts, lat, lon, speed_mps, bearing_deg, accuracy_m,
              altitude_m,
              motion.get("pressure"), motion.get("long_peak"),
-             motion.get("lat_peak"), motion.get("vert_rms"),
+             motion.get("lat_peak"), motion.get("horiz_peak"),
+             motion.get("vert_rms"),
              motion.get("jerk_peak"), motion.get("yaw_peak")],
         )
         for e in events:
@@ -703,7 +707,8 @@ class JourneyManager:
             pts = self._con.execute(
                 "SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, "
                 "       altitude_m, long_peak_mps2, lat_peak_mps2, "
-                "       vert_rms_mps2, jerk_peak_mps3, yaw_peak_rads "
+                "       horiz_peak_mps2, vert_rms_mps2, jerk_peak_mps3, "
+                "       yaw_peak_rads "
                 "FROM trip_fixes WHERE trip_id = ? ORDER BY ts",
                 [trip_id],
             ).fetchall()
@@ -711,8 +716,8 @@ class JourneyManager:
                 {"ts": p[0], "lat": p[1], "lon": p[2], "speed_mps": p[3],
                  "bearing_deg": p[4], "accuracy_m": p[5], "altitude_m": p[6],
                  "long_peak_mps2": p[7], "lat_peak_mps2": p[8],
-                 "vert_rms_mps2": p[9], "jerk_peak_mps3": p[10],
-                 "yaw_peak_rads": p[11]}
+                 "horiz_peak_mps2": p[9], "vert_rms_mps2": p[10],
+                 "jerk_peak_mps3": p[11], "yaw_peak_rads": p[12]}
                 for p in pts
             ]
         return trip

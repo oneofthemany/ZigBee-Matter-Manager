@@ -429,13 +429,33 @@ import { createChart } from './chart-utils.js';
         none:  '#7a8894'
     };
 
-    /** Worst acceleration seen in the window ending at a track point. */
+    // Worst horizontal acceleration in the window ending at a track point.
+    // horiz_peak needs no forward axis, so it spans the whole drive; the
+    // long/lat pair is its calibration-gated fallback for older trips.
     function pointSeverity(p) {
         if (!p) return null;
+        if (p.horiz_peak_mps2 != null) return Math.abs(p.horiz_peak_mps2);
         var lon = p.long_peak_mps2 == null ? null : Math.abs(p.long_peak_mps2);
         var lat = p.lat_peak_mps2 == null ? null : Math.abs(p.lat_peak_mps2);
         if (lon == null && lat == null) return null;
         return Math.max(lon || 0, lat || 0);
+    }
+
+    // Peak acceleration from logged events, keyed by the segment holding them.
+    // Events are never calibration-gated, so this bands stretches of older
+    // trips that would otherwise be grey under their own pins.
+    function eventSeverityBySegment(trip, track) {
+        var out = {};
+        (trip.events || []).forEach(function (e) {
+            if (e.ts == null || e.peak_mps2 == null) return;
+            for (var i = 1; i < track.length; i++) {
+                if (e.ts > track[i - 1].ts && e.ts <= track[i].ts) {
+                    if (out[i] == null || e.peak_mps2 > out[i]) out[i] = e.peak_mps2;
+                    break;
+                }
+            }
+        });
+        return out;
     }
 
     function ragBand(sev) {
@@ -597,7 +617,7 @@ import { createChart } from './chart-utils.js';
             '<strong>Route</strong>' +
             '<span class="small">' +
               legendSwatch('green', 'Smooth') + legendSwatch('amber', 'Firm') +
-              legendSwatch('red', 'Harsh') +
+              legendSwatch('red', 'Harsh') + legendSwatch('none', 'No data') +
             '</span>' +
           '</div>' +
           '<div id="' + mapId + '" style="height:320px" class="rounded border"></div>';
@@ -615,9 +635,12 @@ import { createChart } from './chart-utils.js';
         // one. A drive is a few hundred segments, which Leaflet handles
         // comfortably.
         var bounds = [];
+        var evSeg = eventSeverityBySegment(trip, track);
         for (var i = 1; i < track.length; i++) {
             var a = track[i - 1], b = track[i];
-            var band = ragBand(pointSeverity(b));
+            var sev = pointSeverity(b);
+            if (evSeg[i] != null && (sev == null || evSeg[i] > sev)) sev = evSeg[i];
+            var band = ragBand(sev);
             L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
                 color: RAG_COLOURS[band],
                 weight: band === 'green' ? 4 : 6,
