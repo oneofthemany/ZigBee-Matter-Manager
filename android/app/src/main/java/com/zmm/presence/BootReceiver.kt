@@ -45,6 +45,10 @@ class BootReceiver : BroadcastReceiver() {
                 // The passive subscription dies with the reboot, like the
                 // geofences. Re-registering is idempotent too.
                 PassiveUpdates.register(context)
+                // Same again: activity transitions do not survive a restart,
+                // and a drive starting before they are back would be recorded
+                // with no way to tell the drive from the walk at the end of it.
+                ActivityMonitor.start(context)
             } else {
                 Log.w(TAG, "re-arm failed: $err")
                 prefs.armed = false

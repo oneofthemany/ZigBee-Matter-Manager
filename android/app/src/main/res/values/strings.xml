@@ -69,6 +69,10 @@
     <string name="bg_title">Allow location all the time</string>
     <string name="bg_body">Android will ask again, and this time you must choose \"Allow all the time\".\n\nWithout it, the geofence stops the moment you close the app — which is exactly when you need it (arriving home with your phone in your pocket).\n\nThis app only sends your position to your own hub, and only when you cross your home boundary.</string>
     <string name="bg_ok">Ask me</string>
+    <string name="activity_title">Allow physical activity</string>
+    <string name="activity_body">Drive mode starts when your car\'s Bluetooth connects, which also happens when you\'re sat in the car going nowhere — and it keeps recording while you walk away from a parked car.\n\nAllowing this lets the app tell driving from walking, so a journey is the drive and nothing else.\n\nIt is used on your phone only, and is never sent anywhere but your own hub.</string>
+    <string name="activity_ok">Ask me</string>
+    <string name="activity_denied">Physical activity denied — journeys will still record, but may include time parked or on foot.</string>
 
     <string name="bg_denied_title">Background location refused</string>
     <string name="bg_denied_body">Android won\'t ask again from inside the app. To enable it: Settings → Permissions → Location → Allow all the time.</string>

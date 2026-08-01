@@ -404,7 +404,11 @@ import { createChart } from './chart-utils.js';
           cell('Stops', t.stop_count == null ? '—' : t.stop_count,
                '') +
           cell('Idling', t.idle_s == null ? '—' : fmtDuration(t.idle_s)) +
-          cell('Climb', t.climb_m == null ? '—' : Math.round(t.climb_m) + ' m') +
+          // Kept apart rather than netted: a return trip nets to zero, which
+          // says nothing about the road it was driven on.
+          cell('Climb', t.climb_m == null ? '—' : '↑ ' + Math.round(t.climb_m) + ' m') +
+          cell('Descent', t.descent_m == null ? '—'
+               : '↓ ' + Math.round(t.descent_m) + ' m') +
         '</div>';
     }
 

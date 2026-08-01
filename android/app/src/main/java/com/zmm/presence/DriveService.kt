@@ -278,6 +278,7 @@ class DriveService : Service() {
                     altitudeM = if (loc.hasAltitude()) loc.altitude else null,
                     motion = window,
                     events = events,
+                    activity = prefs.currentActivity,
                 )
 
                 scope.launch {

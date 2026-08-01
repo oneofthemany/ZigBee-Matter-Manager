@@ -158,9 +158,10 @@ object HubClient {
         altitudeM: Double? = null,
         motion: MotionSampler.Window? = null,
         events: List<MotionSampler.Event> = emptyList(),
+        activity: String? = null,
     ): Result<Unit> = postRaw(prefs, fixPayload(
         lat, lon, accuracy, timestampSec, speedMps, bearingDeg, tripId,
-        altitudeM, motion, events,
+        altitudeM, motion, events, activity,
     ))
 
     /**
@@ -183,6 +184,7 @@ object HubClient {
         altitudeM: Double? = null,
         motion: MotionSampler.Window? = null,
         events: List<MotionSampler.Event> = emptyList(),
+        activity: String? = null,
     ): String = JSONObject().apply {
         put("lat", lat)
         put("lon", lon)
@@ -192,6 +194,10 @@ object HubClient {
         if (bearingDeg != null) put("bearing", bearingDeg.toDouble())
         if (tripId != null) put("trip_id", tripId)
         if (altitudeM != null) put("altitude", altitudeM)
+        // Omitted rather than sent as "unknown": the hub treats an absent
+        // activity as "no opinion" and counts the fix, which is the right
+        // default for every phone that cannot report one.
+        if (activity != null) put("activity", activity)
         // Motion rides only on a tagged drive: without a trip there is
         // nothing on the hub for it to belong to.
         if (tripId != null) {

@@ -200,6 +200,28 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putLong(KEY_TRIP_LAST, v).apply()
 
     /**
+     * Last activity transition seen, and when. Persisted because the receiver
+     * that writes it and the service that reads it are separate processes'
+     * worth of lifetime apart — either may be dead when the other runs.
+     */
+    var lastActivity: String
+        get() = sp.getString(KEY_ACTIVITY, "") ?: ""
+        set(v) = sp.edit().putString(KEY_ACTIVITY, v).apply()
+
+    var lastActivityMs: Long
+        get() = sp.getLong(KEY_ACTIVITY_MS, 0L)
+        set(v) = sp.edit().putLong(KEY_ACTIVITY_MS, v).apply()
+
+    /** The activity, or null once it is too old to describe the present. */
+    val currentActivity: String?
+        get() {
+            val a = lastActivity
+            if (a.isEmpty()) return null
+            val age = System.currentTimeMillis() - lastActivityMs
+            return if (age in 0..ActivityMonitor.STALE_MS) a else null
+        }
+
+    /**
      * Fuel grade the car app searches for, cycled from the head unit.
      *
      * Phone-side and not hub-decided, unlike the mode and journey settings:
@@ -269,6 +291,8 @@ class Prefs(context: Context) {
         private const val KEY_TRIP_ID = "drive_trip_id"
         private const val KEY_TRIP_LAST = "drive_trip_last_ms"
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_ACTIVITY = "last_activity"
+        private const val KEY_ACTIVITY_MS = "last_activity_ms"
 
         /** Hub cert chains to a system CA — ordinary validation, no pin. */
         const val TRUST_SYSTEM = "system"

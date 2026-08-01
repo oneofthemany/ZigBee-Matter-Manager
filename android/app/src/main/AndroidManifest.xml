@@ -46,6 +46,14 @@
          nothing about how it was driven. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Tells driving from walking (ActivityMonitor.kt), so a journey is the
+         drive and not the walk away from the parked car. Runtime from Android
+         10; the gms-namespaced one is the install-time equivalent below that. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission
+        android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION"
+        android:maxSdkVersion="28" />
+
     <!-- Required to use PlaceListMapTemplate (car/FuelScreen.kt). The host
          refuses the template without it, so the fuel screen never renders and
          the app is dropped from the car — nothing appears on the phone. -->
@@ -128,6 +136,13 @@
             android:name=".DriveService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- Activity transitions (ActivityMonitor.kt). exported=false: reached
+             only through our own explicit PendingIntent, which is the same
+             guarantee the geofence and passive receivers rely on. -->
+        <receiver
+            android:name=".ActivityReceiver"
+            android:exported="false" />
 
         <!-- Passive fill (PassiveUpdates.kt): Play Services delivers batched
              location fixes here via our own PendingIntent. exported=false —

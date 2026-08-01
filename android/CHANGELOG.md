@@ -14,6 +14,25 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.4.0 (6)
+
+Activity recognition, so a journey is the drive and nothing else.
+
+- `ActivityMonitor` subscribes to Play Services activity transitions and
+  `ActivityReceiver` records the current one. Drive mode is triggered by the
+  car's Bluetooth, which answers "near the car", not "the car is moving" —
+  so sitting in a parked car recorded a journey of GPS drift, and the walk
+  from the space to the door was inside the recorded distance.
+- Every drive fix now carries the activity. The hub keeps the fix but excludes
+  walking / running / on-foot / cycling from distance, speed, behaviour and the
+  drawn track. `still` is deliberately counted: a car at a red light reports
+  it, and dropping those would delete the idling being measured.
+- Drive mode stops on leaving the vehicle rather than waiting for Bluetooth to
+  drop, which head units hold while the car sits parked.
+- Needs ACTIVITY_RECOGNITION, requested after arming. Refusing it changes
+  nothing except that journeys may again include time parked or on foot.
+- It cannot tell a driver from a passenger — both are IN_VEHICLE.
+
 ## 1.3.1 (5)
 
 - Fixed the fuel screen never appearing in Android Auto. `PlaceListMapTemplate`

@@ -114,6 +114,41 @@ METRES_PER_HPA = 8.3
 CLIMB_DEADBAND_HPA = 0.1
 CLIMB_DEADBAND_M = 3.0
 
+#: Below this speed (m/s; ~11 mph) no gradient is reported. Gradient is a
+#: vertical rate divided by a horizontal one, so the divisor shrinking towards
+#: zero turns barometer noise into a cliff face. Crawling traffic gets NULL,
+#: which the UI can show as unknown; it cannot show a number as wrong.
+MIN_GRADIENT_SPEED_MPS = 5.0
+
+#: Gradient is only computed across gaps no longer than this (s). Wider than a
+#: fix interval to survive a dropped fix, short enough that the two pressures
+#: still describe one stretch of road.
+MAX_GRADIENT_GAP_S = 30.0
+
+#: Steeper than this (%) is not a public road — the steepest in the country are
+#: around a third, and a motorway is under 4. This catches gross artefacts only.
+#: The barometer sits in the cabin, so a window or the HVAC opening steps the
+#: pressure in a way no hill does, and a step small enough to land inside this
+#: range still reads as a hill for one fix interval. A sustained gradient is
+#: the trustworthy signal here; a single steep sample is not.
+MAX_PLAUSIBLE_GRADIENT_PCT = 25.0
+
+#: Activities that are certainly not the car moving. Fixes carrying one are
+#: kept in the table but excluded from every aggregate and from the drawn
+#: track — the walk from a parking space is otherwise distance the driver is
+#: credited with, and the drift while sat in a parked car is a journey that
+#: never happened.
+#:
+#: "still" is deliberately absent: a car at a red light reports it, and
+#: dropping those fixes would delete the idling and stops being measured.
+#: Anything unrecognised, and a NULL from a phone that cannot report at all,
+#: counts — the fix is trusted unless the phone actively says otherwise.
+NON_VEHICLE_ACTIVITIES = ("walking", "running", "on_foot", "on_bicycle")
+
+_VEHICLE_FILTER = "(activity IS NULL OR activity NOT IN ({}))".format(
+    ", ".join(f"'{a}'" for a in NON_VEHICLE_ACTIVITIES)
+)
+
 #: Trips shorter than this get no smoothness score (m). One firm brake on a
 #: 500 m drive is not a driving style, but per-distance normalisation would
 #: score it as if it were.
@@ -188,6 +223,8 @@ _MIGRATIONS = (
     # Unsigned horizontal magnitude; unlike the two above, not gated on the
     # phone's forward axis, so populated for the whole of a drive.
     ("trip_fixes", "horiz_peak_mps2", "DOUBLE"),
+    # What the phone said it was doing. NULL means it had no opinion.
+    ("trip_fixes", "activity", "TEXT"),
     ("trip_fixes", "vert_rms_mps2", "DOUBLE"),
     ("trip_fixes", "jerk_peak_mps3", "DOUBLE"),
     ("trip_fixes", "yaw_peak_rads", "DOUBLE"),
@@ -203,6 +240,9 @@ _MIGRATIONS = (
     ("trips", "idle_s", "DOUBLE"),
     ("trips", "stop_count", "BIGINT"),
     ("trips", "climb_m", "DOUBLE"),
+    # Descent as a positive magnitude. Separate from climb rather than netted
+    # into it: a round trip nets to zero, which says nothing about the road.
+    ("trips", "descent_m", "DOUBLE"),
     ("trips", "smoothness_score", "DOUBLE"),
     ("trips", "motion_fix_count", "BIGINT"),
 )
@@ -219,7 +259,7 @@ WITH seq AS (
            LAG(lat) OVER w AS plat,
            LAG(lon) OVER w AS plon
     FROM trip_fixes
-    WHERE trip_id = ?
+    WHERE trip_id = ? AND {_VEHICLE_FILTER}
     WINDOW w AS (ORDER BY ts)
 ),
 seg AS (
@@ -271,7 +311,7 @@ WITH seq AS (
            LAG(altitude_m)   OVER w AS palt,
            LAG(pressure_hpa) OVER w AS ppress
     FROM trip_fixes
-    WHERE trip_id = ?
+    WHERE trip_id = ? AND {_VEHICLE_FILTER}
     WINDOW w AS (ORDER BY ts)
 )
 SELECT COUNT(vert_rms_mps2)                       AS motion_fixes,
@@ -291,12 +331,66 @@ SELECT COUNT(vert_rms_mps2)                       AS motion_fixes,
                 THEN (ppress - pressure_hpa) * {METRES_PER_HPA} END)
                                                   AS climb_baro_m,
        SUM(CASE WHEN altitude_m - palt > {CLIMB_DEADBAND_M}
-                THEN altitude_m - palt END)       AS climb_gnss_m
+                THEN altitude_m - palt END)       AS climb_gnss_m,
+       -- Descent, same deadbands with the comparisons reversed. Summed as a
+       -- positive magnitude: "220 m of descent" is how it is spoken about.
+       SUM(CASE WHEN pressure_hpa - ppress > {CLIMB_DEADBAND_HPA}
+                THEN (pressure_hpa - ppress) * {METRES_PER_HPA} END)
+                                                  AS descent_baro_m,
+       SUM(CASE WHEN palt - altitude_m > {CLIMB_DEADBAND_M}
+                THEN palt - altitude_m END)       AS descent_gnss_m
 FROM seq
 """
 
 _EVENT_COUNT_SQL = """
 SELECT kind, COUNT(*) FROM trip_events WHERE trip_id = ? GROUP BY kind
+"""
+
+# The track, with a signed road gradient per fix.
+#
+# Gradient is a rate over a rate — metres climbed per metre travelled — so it
+# needs no phone orientation at all. That is the whole reason it is derived
+# this way: gravity cannot separate a cradle tilted 20 degrees from a hill of
+# 20 degrees, and asking the driver to mount the phone a particular way would
+# trade away the one property that makes the rest of this work anywhere.
+#
+# Barometric only. GNSS altitude is good to tens of metres, which over the few
+# hundred metres between two fixes is larger than the height change being
+# measured; a gradient from it would be noise with a plausible unit attached.
+# Phones without a barometer get NULL, and the UI says unknown.
+_TRACK_SQL = f"""
+WITH seq AS (
+    SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, altitude_m,
+           long_peak_mps2, lat_peak_mps2, horiz_peak_mps2, vert_rms_mps2,
+           jerk_peak_mps3, yaw_peak_rads, pressure_hpa, activity,
+           LAG(ts)           OVER w AS pts,
+           LAG(pressure_hpa) OVER w AS ppress
+    FROM trip_fixes
+    WHERE trip_id = ? AND {_VEHICLE_FILTER}
+    WINDOW w AS (ORDER BY ts)
+),
+grad AS (
+    SELECT *,
+           CASE WHEN ppress IS NOT NULL AND pressure_hpa IS NOT NULL
+                     AND pts IS NOT NULL AND ts - pts > 0
+                     AND ts - pts <= {MAX_GRADIENT_GAP_S}
+                     AND speed_mps >= {MIN_GRADIENT_SPEED_MPS}
+                -- Pressure FALLS as the car climbs, hence the reversed
+                -- subtraction. Vertical metres over horizontal metres, as a
+                -- percentage; speed is GPS Doppler, so the divisor is measured
+                -- rather than derived from the two positions.
+                THEN 100.0 * ((ppress - pressure_hpa) * {METRES_PER_HPA})
+                     / (speed_mps * (ts - pts))
+           END AS gradient_pct
+    FROM seq
+)
+SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, altitude_m,
+       long_peak_mps2, lat_peak_mps2, horiz_peak_mps2, vert_rms_mps2,
+       jerk_peak_mps3, yaw_peak_rads, activity,
+       CASE WHEN ABS(gradient_pct) <= {MAX_PLAUSIBLE_GRADIENT_PCT}
+            THEN gradient_pct END AS gradient_pct
+FROM grad
+ORDER BY ts
 """
 
 
@@ -376,6 +470,7 @@ class JourneyManager:
             altitude_m: Optional[float] = None,
             motion: Optional[Dict[str, Any]] = None,
             events: Optional[List[Dict[str, Any]]] = None,
+            activity: Optional[str] = None,
     ) -> None:
         """
         Append one drive fix; opens the trip on first sight of trip_id.
@@ -387,11 +482,11 @@ class JourneyManager:
         """
         await self._run(self._record_fix, user_id, trip_id, lat, lon, ts,
                         speed_mps, bearing_deg, accuracy_m, altitude_m,
-                        motion or {}, events or [])
+                        motion or {}, events or [], activity)
 
     def _record_fix(self, user_id, trip_id, lat, lon, ts,
                     speed_mps, bearing_deg, accuracy_m, altitude_m,
-                    motion, events) -> None:
+                    motion, events, activity) -> None:
         self._con.execute(
             "INSERT INTO trips (trip_id, user_id, started_at) VALUES (?, ?, ?) "
             "ON CONFLICT (trip_id) DO NOTHING",
@@ -419,14 +514,15 @@ class JourneyManager:
             "INSERT INTO trip_fixes "
             "(trip_id, user_id, ts, lat, lon, speed_mps, bearing_deg, accuracy_m, "
             " altitude_m, pressure_hpa, long_peak_mps2, lat_peak_mps2, "
-            " horiz_peak_mps2, vert_rms_mps2, jerk_peak_mps3, yaw_peak_rads) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " horiz_peak_mps2, vert_rms_mps2, jerk_peak_mps3, yaw_peak_rads, "
+            " activity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [trip_id, user_id, ts, lat, lon, speed_mps, bearing_deg, accuracy_m,
              altitude_m,
              motion.get("pressure"), motion.get("long_peak"),
              motion.get("lat_peak"), motion.get("horiz_peak"),
              motion.get("vert_rms"),
-             motion.get("jerk_peak"), motion.get("yaw_peak")],
+             motion.get("jerk_peak"), motion.get("yaw_peak"), activity],
         )
         for e in events:
             # The phone timestamps events itself, from the same clock as the
@@ -494,7 +590,7 @@ class JourneyManager:
                 "harsh_corner_count = ?, harsh_event_count = ?, "
                 "max_brake_mps2 = ?, max_accel_mps2 = ?, max_lat_mps2 = ?, "
                 "roughness_mps2 = ?, idle_s = ?, stop_count = ?, climb_m = ?, "
-                "smoothness_score = ?, motion_fix_count = ? "
+                "descent_m = ?, smoothness_score = ?, motion_fix_count = ? "
                 "WHERE trip_id = ?",
                 [fix_count, distance_m, (t1 - t0) if t0 is not None else None,
                  avg_v, max_v, min_v, sd_v, t0, t1,
@@ -502,7 +598,8 @@ class JourneyManager:
                  b["harsh_corner_count"], b["harsh_event_count"],
                  b["max_brake_mps2"], b["max_accel_mps2"], b["max_lat_mps2"],
                  b["roughness_mps2"], b["idle_s"], b["stop_count"],
-                 b["climb_m"], b["smoothness_score"], b["motion_fix_count"],
+                 b["climb_m"], b["descent_m"], b["smoothness_score"],
+                 b["motion_fix_count"],
                  trip_id],
             )
             closed.append((trip_id, user_id))
@@ -524,7 +621,8 @@ class JourneyManager:
         """
         counts = dict(self._con.execute(_EVENT_COUNT_SQL, [trip_id]).fetchall())
         (motion_fixes, roughness, max_lat, max_brake, max_accel,
-         idle_s, stop_count, climb_baro, climb_gnss) = \
+         idle_s, stop_count, climb_baro, climb_gnss,
+         descent_baro, descent_gnss) = \
             self._con.execute(_MOTION_SQL, [trip_id]).fetchone()
 
         measured = bool(motion_fixes)
@@ -546,7 +644,12 @@ class JourneyManager:
         # resolves a metre where GNSS altitude is good to tens of them. GNSS is
         # the fallback for phones without one, and is why climb is reported at
         # all rather than only for the subset of devices with a barometer.
-        climb = climb_baro if climb_baro is not None else climb_gnss
+        # Both directions take the same source, so a trip cannot report
+        # barometric climb against GNSS descent and appear to gain height it
+        # never lost.
+        use_baro = climb_baro is not None or descent_baro is not None
+        climb = climb_baro if use_baro else climb_gnss
+        descent = descent_baro if use_baro else descent_gnss
 
         return {
             "harsh_brake_count": brake if measured else None,
@@ -560,6 +663,7 @@ class JourneyManager:
             "idle_s": idle_s,
             "stop_count": stop_count,
             "climb_m": climb,
+            "descent_m": descent,
             "motion_fix_count": motion_fixes or 0,
             "smoothness_score": self._score(total, distance_m) if measured else None,
         }
@@ -659,7 +763,7 @@ class JourneyManager:
                   "harsh_corner_count", "harsh_event_count",
                   "max_brake_mps2", "max_accel_mps2", "max_lat_mps2",
                   "roughness_mps2", "idle_s", "stop_count", "climb_m",
-                  "smoothness_score", "motion_fix_count")
+                  "descent_m", "smoothness_score", "motion_fix_count")
 
     async def list_trips(self, user_id: Optional[str] = None,
                          limit: int = 50) -> List[Dict[str, Any]]:
@@ -704,20 +808,14 @@ class JourneyManager:
         ]
 
         if include_track:
-            pts = self._con.execute(
-                "SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, "
-                "       altitude_m, long_peak_mps2, lat_peak_mps2, "
-                "       horiz_peak_mps2, vert_rms_mps2, jerk_peak_mps3, "
-                "       yaw_peak_rads "
-                "FROM trip_fixes WHERE trip_id = ? ORDER BY ts",
-                [trip_id],
-            ).fetchall()
+            pts = self._con.execute(_TRACK_SQL, [trip_id]).fetchall()
             trip["track"] = [
                 {"ts": p[0], "lat": p[1], "lon": p[2], "speed_mps": p[3],
                  "bearing_deg": p[4], "accuracy_m": p[5], "altitude_m": p[6],
                  "long_peak_mps2": p[7], "lat_peak_mps2": p[8],
                  "horiz_peak_mps2": p[9], "vert_rms_mps2": p[10],
-                 "jerk_peak_mps3": p[11], "yaw_peak_rads": p[12]}
+                 "jerk_peak_mps3": p[11], "yaw_peak_rads": p[12],
+                 "activity": p[13], "gradient_pct": p[14]}
                 for p in pts
             ]
         return trip
@@ -751,7 +849,7 @@ class JourneyManager:
             "CASE WHEN SUM(distance_m) FILTER (WHERE smoothness_score IS NOT NULL) > 0 "
             "     THEN SUM(smoothness_score * distance_m) "
             "          / SUM(distance_m) FILTER (WHERE smoothness_score IS NOT NULL) END, "
-            "SUM(idle_s), SUM(climb_m), "
+            "SUM(idle_s), SUM(climb_m), SUM(descent_m), "
             "COUNT(*) FILTER (WHERE motion_fix_count > 0) "
             f"FROM trips {where}",
             params,
@@ -773,9 +871,10 @@ class JourneyManager:
             "smoothness_score": round(row[13], 1) if row[13] is not None else None,
             "total_idle_s": row[14],
             "total_climb_m": row[15],
+            "total_descent_m": row[16],
             # How many of those trips had motion sensing at all, so the UI can
             # say "no data" instead of drawing an empty behaviour panel.
-            "measured_trip_count": row[16] or 0,
+            "measured_trip_count": row[17] or 0,
         }
 
     async def delete_trip(self, trip_id: str) -> bool:

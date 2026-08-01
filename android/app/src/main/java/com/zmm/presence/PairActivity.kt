@@ -49,6 +49,18 @@ class PairActivity : AppCompatActivity() {
         else status(getString(R.string.car_bt_denied))
     }
 
+    /**
+     * Activity recognition is an enhancement, so a refusal is reported and
+     * then dropped: without it every fix simply counts, which is what the hub
+     * did before this existed.
+     */
+    private val requestActivity = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) ActivityMonitor.start(this)
+        else status(getString(R.string.activity_denied))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before super.onCreate: setDefaultNightMode recreates any started
         // activity to apply, so setting it after would build the whole screen
@@ -320,6 +332,27 @@ class PairActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Ask for activity recognition, once armed.
+     *
+     * Asked here rather than with the location prompts because it is only
+     * worth anything once the phone is actually reporting, and stacking a
+     * fourth dialog onto pairing is how people start refusing all of them.
+     * Below Android 10 the permission is install-time, so there is nothing
+     * to ask and the subscription just starts.
+     */
+    private fun requestActivityIfNeeded() {
+        if (ActivityMonitor.hasPermission(this)) { ActivityMonitor.start(this); return }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.activity_title)
+            .setMessage(R.string.activity_body)
+            .setPositiveButton(R.string.activity_ok) { _, _ ->
+                requestActivity.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun explainBackgroundRefusal() {
         // After a second refusal Android stops showing the prompt entirely, so
         // the only route left is the app's settings page. Say that, rather than
@@ -455,6 +488,7 @@ class PairActivity : AppCompatActivity() {
                     prefs.armed = true
                     HeartbeatWorker.schedule(this, prefs.heartbeatS)
                     PassiveUpdates.register(this)
+                    requestActivityIfNeeded()
                     status("Armed. Reporting your position…")
                     reportNow()
                 } else {
@@ -511,6 +545,7 @@ class PairActivity : AppCompatActivity() {
                 HeartbeatWorker.cancel(this)
                 DriveService.stop(this)
                 PassiveUpdates.unregister(this)
+                ActivityMonitor.stop(this)
                 status(if (err == null) "Disarmed." else "Disarm reported: $err")
                 render()
             }
@@ -526,6 +561,7 @@ class PairActivity : AppCompatActivity() {
                 HeartbeatWorker.cancel(this)
                 DriveService.stop(this)
                 PassiveUpdates.unregister(this)
+                ActivityMonitor.stop(this)
                 prefs.clear()
                 b.hubUrl.setText(""); b.userId.setText(""); b.token.setText("")
                 status("Forgotten. Revoke the token on the hub too.")

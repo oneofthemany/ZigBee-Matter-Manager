@@ -108,6 +108,14 @@ class FixReport(BaseModel):
     # client that does not.
     motion: Optional[MotionWindow] = None
     events: List[MotionEvent] = Field(default_factory=list, max_length=32)
+    # What the phone was doing, from Play Services activity recognition.
+    # Absent means "no opinion" — an older build, no permission, or a phone
+    # that has not seen a transition yet — and the hub counts the fix.
+    activity: Optional[str] = Field(
+        None,
+        pattern=r"^(in_vehicle|on_bicycle|walking|running|on_foot|still|"
+                r"tilting|unknown)$",
+    )
 
 
 class ManualSet(BaseModel):
@@ -400,6 +408,7 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
                             # would tie a DuckDB module to this API's schema.
                             motion=fix.motion.model_dump() if fix.motion else None,
                             events=[e.model_dump() for e in fix.events],
+                            activity=fix.activity,
                         )
                 except Exception as e:               # noqa: BLE001
                     logger.warning(f"[journeys] record_fix failed: {e}")
