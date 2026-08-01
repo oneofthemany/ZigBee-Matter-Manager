@@ -1,65 +1,5 @@
 """
 CastSyncPoc — synchronised multi-speaker casting.
-
-Plays the SAME audio on several Cast devices in sync (echo-free) WITHOUT a
-Google-Home group, using our own custom Web Receiver
-(static/cast/sync_receiver.html) that schedules timestamped PCM chunks with the
-Web Audio API against a shared server clock.
-
-Why not just use a Google group: a Cast group is hosted by one elected member,
-and everything — discovery, the control channel, the media fetch — hangs off
-that one device. When the election moves (a member reboots, Wi-Fi roams, a
-nested stereo pair re-elects) the group's advertised address moves with it, any
-held connection is pointing at a device that no longer speaks for the group,
-and playback collapses onto whichever speaker still has the session. There is
-no API to observe or influence the election. Here each device is an independent
-target holding its own stream, so there is no leader to lose.
-
-How it works
-  * A tiny plain-HTTP listener (uvicorn, config ``media.cast.sync.http_port``)
-    serves the receiver page and a same-origin WebSocket. Plain HTTP matters:
-    the main app's self-signed HTTPS is rejected by the Cast device's browser,
-    and an https page may not open a ws:// socket (mixed content). Register
-    ``http://<host>:<port>/cast/sync_receiver.html`` as a *development* custom
-    receiver in the Cast console and put its App ID in config.
-  * The server clock is ``time.monotonic()``. Receivers estimate their offset
-    to it NTP-style over the WebSocket (ping/pong, min-RTT filtering).
-  * Audio comes from a timeline source (sync_source.py): either real media —
-    ffmpeg-decoded and optionally equalised into a ring buffer — or, when a
-    session names no media, a generated test signal (soft chord pad + a sharp
-    click every 2 s; clicks make even ~10 ms misalignment audible as flam).
-    44.1 kHz stereo s16le, CHUNK_SECONDS per chunk, each chunk prefixed with
-    the server-clock time it must start playing (8-byte big-endian double).
-  * Chunks are produced AHEAD_SECONDS before their play time and fanned out to
-    every connected receiver, which schedules them sample-accurately and
-    corrects clock drift continuously. Per-device manual trim (±ms) covers the
-    device's fixed output-pipeline latency.
-
-Fallback stream mode (no Cast console account)
-  * When ``media.cast.sync.app_id`` is EMPTY, sessions run in "stream mode":
-    each device gets the built-in default media receiver (CC1AD845 — no
-    registration, no $5 console fee) pointed at a per-device live WAV stream
-    (``/sync/stream/<sid>.wav``) cut from the same shared timeline. Every
-    device's stream is addressed by absolute sample position, so the server
-    can move any one of them independently: a monitor polls each device's
-    reported media time and computes its lag against the server clock.
-    Hard stream jumps are reserved for acquisition/rebuffer (>±100 ms);
-    every smaller correction — clock drift, residual offset, trim changes —
-    goes through a per-device variable-ratio resampler as a bounded rate slew
-    (fast 1000 ppm ≈ 1.7 cents, steady-state 20 ppm), so corrections are
-    inaudible and the buffer never steps (open-zone.md §7.1).
-    Needs nothing from Google; manual trim does the final alignment by ear.
-
-Source delay. The generated signal is closed-form and seekable anywhere, so it
-has no delay. Real media is not: you cannot serve a live stream ahead of its
-own arrival. A media session therefore runs the whole group a fixed
-``source_delay_s`` behind the live edge, which is also the headroom the
-per-device serve-ahead is cut from. The ring buffer must span that delay plus
-the widest startup-lag pre-compensation, because the furthest-behind device is
-reading history the furthest-ahead device passed seconds ago (§4.1).
-
-Still single-session by design: one group plays at a time, stats surfaced via
-/api/media/sync/status and the sync_test.html page.
 """
 from __future__ import annotations
 
@@ -76,16 +16,9 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-# Module-level on purpose: with ``from __future__ import annotations`` the
-# ``ws: WebSocket`` annotation is a string FastAPI resolves against module
-# globals — imported inside _build_http_app it silently 403s every handshake.
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-# Per-group DuckDB stores (data/sync/<group>.duckdb) are the model's store
-# of record — separate files so the zmm_telemetry appender's lock on
-# telemetry.duckdb is never contended. The JSON model file is only the
-# fallback when duckdb is unavailable.
 try:
     from modules.media import sync_db as _sdb
 except Exception:                                    # pragma: no cover
@@ -111,114 +44,35 @@ STREAM_BLOCK_S = 0.2             # stream-mode PCM block size
 STREAM_AHEAD_S = 1.2             # serve at most this far ahead of the timeline
 STREAM_LAG_MARGIN_S = 0.35       # common target lag = max natural lag + this
 STREAM_POLL_S = 2.5              # monitor poll interval once baselines exist
-# Sensor improvements ahead of the acoustic calibrator: poll fast while any
-# device's drift-fit baseline is still building (more points → the slope
-# fit beats the noise sooner; a jump clears the baseline, so reacquisition
-# speeds itself up), and take several media-time reads per poll — the
-# median knocks per-measurement noise down ~√N and shrugs off one bogus
-# status. Neither changes what is measured, only how well.
 STREAM_POLL_FAST_S = 1.0         # cadence while acquiring
 STREAM_STATUS_READS = 3          # media-time reads per poll (median)
 STREAM_STATUS_READS_ACQ = 5      # ...while acquiring: denser + more robust.
-#                                  Beyond ~5 the returns die: consecutive
-#                                  reads share the device's underlying status
-#                                  report (quantised + extrapolated), so more
-#                                  reads re-sample the same value — the DB is
-#                                  not the constraint, information is.
 STREAM_STATUS_WAIT_S = 0.2       # wait for each status push to land
-# adjusted_current_time extrapolates the last report forward at playback rate.
-# That is a measurement while the report is fresh and a guess once it is not:
-# a device that rebuffered is still credited with playing through the gap, and
-# the reads within one poll all extrapolate the SAME stale report, so their
-# median cannot reject it — it only lends the guess false confidence. Past this
-# age the read is discarded and the poll falls back to fewer (or no) samples.
-# Set at two steady-state poll intervals: tight enough that a rebuffer's worth
-# of extrapolation never reaches the ladder, loose enough that a device which
-# simply answers slowly still gets measured. A device whose reports never
-# arrive inside it goes uncorrected, so the discards are surfaced in stats
-# rather than dropped silently — dark is worse than noisy here.
 STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
-#                                  (device drains its HTTP buffer; wall-time
-#                                  so the fast cadence doesn't shorten it)
 STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
-#                                  (re)connect — the device is still filling
-#                                  its buffer and its early media time is
-#                                  junk (observed: first poll off by 550 ms,
-#                                  causing a jump ping-pong at every start)
-# Correction policy (open-zone.md §7.1): jumps only for acquisition/rebuffer;
-# every correction below the jump threshold is applied as a bounded rate
-# slew through the fractional resampler — inaudible, no buffer steps.
+STREAM_RECONNECT_GRACE_S = 15.0
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
 STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
-# ~2σ of the media-time poll noise (measured ±10–25 ms): below this a single
-# poll can't be told apart from noise, so fast slews also require the median
-# of the last 3 polls to agree (a lone spike must not move real audio).
 STREAM_SLEW_FAST_THRESH_S = 0.030
-# Ceiling on what one slew may own, and the reason the ladder can always
-# escalate. Jump decisions are made on the RESIDUAL (median minus pending
-# slew), so an unbounded slew that swallowed a whole offset would drive the
-# residual to zero and leave the jump branch permanently unarmed — while the
-# 1000 ppm actuator drained a multi-second offset at 1 ms/s. Holding the
-# ceiling at the jump threshold makes the two branches complementary by
-# construction: the slew owns everything up to STREAM_JUMP_MIN_S, and any
-# excess stays in the residual where the jump vote can still see it.
 STREAM_SLEW_MAX_S = STREAM_JUMP_MIN_S
-# Drift-cancel bounds: consumer DAC crystals sit within ±50 ppm, so any
-# estimate outside that is estimator noise, not clock error.
 STREAM_RATE_MAX_PPM = 50.0
-# Drift-fit statistics: resolving ppm-grade slopes through ±12 ms poll noise
-# needs baseline, not cleverness — slope noise falls as span^1.5, so the
-# window GROWS (capped ~20 min to re-track thermal drift) and the fit is
-# applied only once the span can beat the noise (simulated: estimate lands
-# within ±2–4 ppm of true drift by ~6 min; a 100 s cap railed the clamp).
 STREAM_FIT_MIN_POINTS = 8        # polls needed before the drift fit runs
 STREAM_FIT_MAX_POINTS = 360      # ≈20 min of polls
 STREAM_FIT_APPLY_SPAN_S = 60.0   # shorter baselines are all noise — hold off
 STREAM_RATE_EMA = 0.25           # max blend of a new fit into rate_ppm
 STREAM_RATE_EMA_SPAN_S = 240.0   # EMA scales up linearly to full at this span
-# How far a fitted slope must stand clear of its own standard error before it
-# is allowed to move the actuator. Two sigma is the usual "distinguishable
-# from zero" bar; below it the fit is noise and the seeded model value — which
-# has many sessions behind it — is the better estimate.
 STREAM_FIT_MIN_SIGMA = 2.0
-# A jump clears the drift baseline, which must then rebuild past
-# STREAM_FIT_APPLY_SPAN_S before any fit runs again. Jumps arriving faster than
-# that leave the last fit in place indefinitely, so a value the estimator would
-# never produce again is held as if it were still supported — including one
-# pinned at the ±STREAM_RATE_MAX_PPM clamp, where it injects the maximum
-# differential drift the loop exists to remove. An estimate with no live
-# evidence behind it decays back to the model prior instead of persisting.
 STREAM_RATE_STALE_S = 90.0       # unsupported this long → fall back to prior
 STREAM_RATE_DECAY = 0.05         # per poll, toward rate_prior
-# A trim slider reports every intermediate position; only a value that stops
-# moving is a measurement worth teaching the per-model store.
 TRIM_MODEL_AGREE_MS = 25         # units of one model trimmed further apart
-#                                  than this disprove a per-model default
 STREAM_TRIM_QUIET_MS = 10        # trim steps at or below this are inside the
-#                                  sensor's noise — no cooldown, no history wipe
 STREAM_TRIM_SETTLE_S = 3.0
-# Acquisition happens under silence. A group needs several seconds to measure
-# where each device actually landed and to jump it into place, and those jumps
-# are large — hundreds of milliseconds — because startup lag varies session to
-# session. Playing programme material through that window is what "all over the
-# place at the start" is; holding the output at zero until the group has locked
-# and then fading in makes every one of those corrections inaudible.
 STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
-# How long after a session starts an identical start request is read as a
-# duplicate of the same click rather than a deliberate restart. Generous,
-# because the thing it is protecting against is a second request issued while
-# the first was still buffering — which is exactly the slow window.
 START_DEDUPE_S = 30.0
 STREAM_FADE_IN_S = 0.4
 
-# Zone spectrum feed (the EQ display's signal). A picture of the audio, so the
-# constants are chosen for the eye, not for measurement: 2048 samples is ~46 ms
-# and ~21 Hz of resolution, enough to separate the bottom octaves while still
-# tracking a transient, and 48 log-spaced bands is about as fine as a panel of
-# this width can show. The floor sets what "silence" looks like — deeper and
-# the noise floor of quiet passages becomes visible clutter.
 SPECTRUM_FFT_N = 2048
 SPECTRUM_BANDS = 48
 SPECTRUM_FPS = 15                # display cadence; see _spectrum_feed on cost
@@ -227,8 +81,6 @@ SPECTRUM_F_HI = 18000.0
 SPECTRUM_FLOOR_DB = -72.0
 
 
-# The timeline the Sync Lab runs on when no media is given. Module-level so
-# the calibrator and the receiver page keep a single shared reference.
 _GENERATED = GeneratedSource()
 
 
@@ -253,11 +105,7 @@ async def _broadcast_spectrum(payload: dict) -> None:
 
 
 def _media_key(media: Optional[dict]) -> tuple:
-    """Identity of a start request's media, for duplicate detection.
-
-    Only the fields that decide *what plays* — a differing title or artwork
-    URL is the same request with better metadata, and must not read as a
-    different one."""
+    """Identity of a start request's media, for duplicate detection."""
     m = media or {}
     return (str(m.get("kind") or "track").lower(),
             m.get("media_type") or "", m.get("source_id") or "",
@@ -333,63 +181,59 @@ class _Stream:
         self.player_id = player_id
         self.name = name
         self.connected = False       # WAV stream currently being consumed
-        # Which fetch of this stream's URL is the live one. A Cast device
-        # re-fetches on buffer restarts and seeks — observed twice within
-        # 300 ms at session start — and without this both generators run,
-        # both advance `pos`, and the device is served two interleaved halves
-        # of the timeline. The newest fetch wins; older ones drop out at their
-        # next block boundary.
-        self.gen = 0
+        self.gen = 0          # newest fetch wins (open-zone.md §A.5)
         self.pos: Optional[float] = None  # next timeline sample (fractional)
         self.start_pos: int = 0      # timeline sample of the first PCM byte
         self.shift: float = 0.0      # cumulative deliberate moves (samples)
         self.natural_lag: Optional[float] = None   # first stable lag (s)
-        # The trim this stream's timeline was actually built with — LATCHED,
-        # not re-read from the trims store on every poll.
-        #
-        # The measurement subtracts the trim so the loop cannot fight it
-        # (§6.1), which only holds while the value subtracted is the value
-        # baked into `pos`. Re-reading the effective trim meant a model-trim
-        # write (learned from a slider drag on ANY device of the same model)
-        # silently changed this device's subtracted term with no matching
-        # move of its timeline: the next poll read a step of the full trim
-        # delta and the monitor hard-resynced real audio to "correct" it —
-        # wrecking an alignment the user had set by hand, on a speaker they
-        # had not touched. Only set_trim() for THIS player moves both halves
-        # together; everything else lands at the next session.
-        self.trim_ms: int = 0
+        self.trim_ms: int = 0  # LATCHED for the session (open-zone.md §A.4)
         self.cooldown_until: float = 0.0   # skip polls until then after a jump
         self.resyncs: int = 0
+        self.reconnects: int = 0     # control-socket resets seen this session
         self.stats: dict = {}
-        # Software PLL: the resampler serves fractionally more/fewer timeline
-        # samples per output second to cancel the device's clock drift.
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
-        # The model's learned drift for this device, held separately as the
-        # value an uninformative fit falls back to (see _pll_update).
         self.rate_prior: float = 0.0
         self.slew_s: float = 0.0     # pending offset to slew away (s, >0 =
-        #                              device behind → consume timeline faster)
-        # Cumulative deliberate timeline motion (s): rate term + drained slew
-        # + jumps. Added back onto measured lag before drift fitting, so the
-        # fit sees the device's FREE-RUNNING clock, never our own corrections
-        # (feeding corrections into the fit is what railed the old PLL).
         self.moved_s: float = 0.0
         self.err_hist: List[float] = []   # last 3 poll errors (median filter)
-        # Until first lock nobody is listening to this device as part of a
-        # group yet, so sub-100 ms offsets are stepped away instantly rather
-        # than ground down by a 30 s slew (observed: 32 ms residuals taking
-        # half a minute to clear at every start). Sticky once locked.
         self.acquired: bool = False
-        # Calibration chirp scheduled on this stream: (timeline_sample, wave)
         self.chirp: Optional[tuple] = None
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
-        # When the baseline was last cleared. Marks how long rate_ppm has been
-        # running on an estimate nothing currently supports (see _pll_update).
         self.fit_lost_at: float = 0.0
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
-        # This device's variable-ratio resampler (open-zone.md §4.2). One per
-        # stream: streams differ in content phase, so no instance is shared.
         self.resampler = None
+
+
+class _ConnWatch:
+    """Control-socket status listener for one Cast device."""
+
+    __slots__ = ("st", "_dropped")
+
+    def __init__(self, st: Optional[_Stream] = None):
+        self.st = st
+        self._dropped = False
+
+    def new_connection_status(self, status) -> None:
+        st = self.st
+        state = getattr(status, "status", "") or ""
+        if state in ("DISCONNECTED", "LOST", "FAILED", "FAILED_RESOLVE"):
+            self._dropped = True
+            return
+        if state != "CONNECTED" or not self._dropped:
+            return          # first connect of the session is not a RE-connect
+        self._dropped = False
+        if st is None:
+            return
+        st.reconnects += 1
+        st.cooldown_until = max(st.cooldown_until,
+                                time.monotonic() + STREAM_RECONNECT_GRACE_S)
+        st.err_hist = []
+        st.lag_hist = []
+        st.fit_lost_at = time.monotonic()
+        st.stats["reconnects"] = st.reconnects
+        logger.info(f"Sync control socket reconnected: {st.name} — holding "
+                    f"corrections {STREAM_RECONNECT_GRACE_S:.0f}s "
+                    f"(reconnect #{st.reconnects})")
 
 
 class CastSyncPoc:
@@ -401,67 +245,36 @@ class CastSyncPoc:
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
         self._trims: Dict[str, int] = {
             k: int(v) for k, v in self._read_json(self._trims_file).items()}
-        # Per-MODEL trim defaults, learned from whatever the user (or the
-        # calibrator) sets on one device. Output-pipeline latency is a property
-        # of the hardware, so a value measured on one Nest Hub is the right
-        # starting point for every other one — including a device seen for the
-        # first time, which otherwise starts at zero and has to be trimmed by
-        # hand all over again. A per-device trim always wins over this.
         self._model_trims_file = cfg.get("model_trims_file",
                                          "./data/cast_sync_model_trims.json")
         self._model_trims: Dict[str, int] = {
             k: int(v) for k, v in self._read_json(self._model_trims_file).items()}
-        # Named sync groups (built in the Media tab's group builder):
-        # gid -> {"name": str, "members": [player_id, ...]}
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
         self._session_media: Optional[dict] = None  # media of the running session
-        # Members and start time of the running session, held so a repeat of
-        # the request that started it can be recognised (see START_DEDUPE_S).
+        self._conn_watch: Dict[str, _ConnWatch] = {}
         self._session_players: List[str] = []
         self._session_started_at: float = 0.0
-        # Learned per-device latency model (stream mode): startup lag +
-        # clock-drift rate, EMA-updated every session so later sessions
-        # start pre-aligned. player_id -> {lag_s, drift_ppm, sessions}
         self._model_file = cfg.get("model_file", "./data/cast_sync_model.json")
         self._model: Dict[str, dict] = self._read_json(self._model_file)
         self._session_id: str = ""
-        # Acoustic calibration (mic + chirps): optional input device name /
-        # index for sounddevice; None = system default.
         self._mic_device = cfg.get("mic_device") or None
         self._calibrating = False
         self._mic_cache: Optional[Tuple[float, dict]] = None
 
-        # Master timeline. Generated test signal unless a session supplies
-        # media; the rest of the engine only ever addresses it by sample
-        # position, so the two are interchangeable (sync_source.py).
         self._source = _GENERATED
-        # "soxr" is still accepted here as a deprecated alias for "rust"
-        # (sync_resample.make); config written before the port keeps working.
         self._resampler_kind = str(cfg.get("resampler", "rust"))
-        # §4.1: the delay line must span the source delay plus the widest
-        # per-device pre-compensation, because the furthest-behind device
-        # reads history the furthest-ahead device has long passed.
         self._source_delay_s = float(cfg.get("source_delay_s", 2.0))
         self._ring_capacity_s = float(cfg.get("ring_capacity_s", 20.0))
-        # Overlap between queue items. Bounded by source_delay_s, since the
-        # fade is paid for out of written-but-unserved timeline (§4.1a) — ask
-        # for more than that and every seam quietly falls back to a splice.
         self._crossfade_s = float(cfg.get("crossfade_s", 0.0))
         self._session_crossfade_s = self._crossfade_s
-        # Optional EqStreamEngine, so a sync group can carry the same
-        # server-side EQ a single Cast player gets. Wired by MediaService.
         self._eq_engine = None
         self._url_resolver = None      # async (media_type, source_id) -> url
         self._queue_resolver = None    # async (media_type, kind, id) -> [items]
-        # The session's playlist, expanded once at start. One entry for a
-        # single track or a URL; many for a Tidal album/playlist/mix/artist.
         self._queue: List[dict] = []
         self._queue_pos = 0
         self._trim_learn_tasks: Dict[str, asyncio.Task] = {}
-        # Set once the group has locked; until then the streams serve silence
-        # so acquisition jumps happen where nobody can hear them.
         self._fade_start: Optional[float] = None
 
         self._http_server = None                       # uvicorn.Server
@@ -472,26 +285,18 @@ class CastSyncPoc:
         self._launch_tasks: List[asyncio.Task] = []
 
         self.running = False
-        # Serialises start/stop against each other. `start_session` stops any
-        # running session first, and that await used to be a window two
-        # concurrent starts could both pass through — producing two live
-        # sessions on one set of devices, each with its own source, epoch and
-        # streams, and only one of them reachable through `self` afterwards.
-        # The other kept decoding and casting with nothing able to stop it.
         self._session_lock = asyncio.Lock()
         self._epoch: float = 0.0
         self._buffer: List[bytes] = []                 # last N framed chunks
         self._receivers: Dict[str, _Receiver] = {}     # sid -> _Receiver
         self._pending: Dict[str, dict] = {}            # sid -> {player_id, name}
         self._controllers: Dict[str, object] = {}      # cast uuid -> controller
-        # Stream (default-receiver) mode:
         self._streams: Dict[str, _Stream] = {}         # sid -> _Stream
         self._monitor: Optional[asyncio.Task] = None
         self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
 
     # ------------------------------------------------------------------
-    # Lifecycle (called from MediaService)
     # ------------------------------------------------------------------
     def start(self):
         """Bring up the plain-HTTP receiver/WS listener (idempotent)."""
@@ -517,7 +322,6 @@ class CastSyncPoc:
             _sdb.close_all()
 
     # ------------------------------------------------------------------
-    # Session control (called from routes)
     # ------------------------------------------------------------------
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
@@ -542,7 +346,6 @@ class CastSyncPoc:
                 "index": i if q else 0, "count": len(q)}
 
     # ------------------------------------------------------------------
-    # Trims (per device, defaulting to what the model is known to need)
     # ------------------------------------------------------------------
     def _model_key(self, player_id: str) -> str:
         try:
@@ -560,21 +363,7 @@ class CastSyncPoc:
         return int(self._model_trims.get(key, 0)) if key else 0
 
     def _learn_model_trim(self, player_id: str, trim_ms: int) -> None:
-        """Record a settled trim against the device's model.
-
-        Debounced, because the slider reports every intermediate position: a
-        single drag from 0 to 209 would otherwise teach the model +6, +5, +4,
-        +3, +2, +1 and write the file each time. Only where the value stops
-        moving is it a measurement of anything.
-
-        Abandoned entirely once two units of the same model are trimmed to
-        materially different values. The premise of a model default is that
-        the trim measures the HARDWARE's output pipeline; two units needing
-        different numbers is proof that in this house it is measuring
-        something else as well (placement, distance to the listener, room),
-        and a default extrapolated from one of them is then just a wrong
-        number applied to a speaker nobody touched. No default is better than
-        that: an untrimmed device stays where the loop puts it."""
+        """Record a settled trim against the device's model."""
         key = self._model_key(player_id)
         if not key:
             return
@@ -609,15 +398,9 @@ class CastSyncPoc:
         self._trim_learn_tasks[key] = asyncio.create_task(_settle())
 
     # ------------------------------------------------------------------
-    # Restart survival
     # ------------------------------------------------------------------
     def session_snapshot(self) -> dict:
-        """What it would take to stand this session back up, or {} when idle.
-
-        A sync session cannot survive a restart on its own: every member is
-        pulling PCM from a listener inside this process, so when the process
-        goes the audio goes with it and the devices are left on a URL that no
-        longer answers. Re-launching them is the only route back."""
+        """What it would take to stand this session back up, or {} when idle."""
         if not self.running or not self._streams:
             return {}
         snap = {
@@ -626,7 +409,6 @@ class CastSyncPoc:
             "media": self._session_media,
         }
         if self._duration_s:
-            # Wall clock: monotonic does not survive the restart this exists for.
             elapsed = time.monotonic() - self._epoch
             snap["remaining_s"] = max(0, int(self._duration_s - elapsed))
         return snap
@@ -660,18 +442,12 @@ class CastSyncPoc:
         than silently falling back — a group playing a test tone when the user
         asked for a station is worse than an error."""
         media = dict(media or {})
-        # A source_id source (Tidal) hands out URLs that expire. Resolve one
-        # now to fail fast on a bad id or a logged-out session, and keep the
-        # resolver so the decoder can get a fresh one every time it restarts.
         provider = None
         self._queue, self._queue_pos = [], 0
         stype, sid = media.get("media_type") or "", media.get("source_id") or ""
         kind = (media.get("kind") or "track").strip() or "track"
         loop_forever = bool(media.get("loop"))
         if sid and self._url_resolver is not None:
-            # A container (album, playlist, mix, artist) becomes the session's
-            # queue; a bare track is a queue of one, so there is one code path
-            # from here down.
             if kind != "track" and self._queue_resolver is not None:
                 try:
                     self._queue = list(await self._queue_resolver(stype, kind, sid))
@@ -686,10 +462,6 @@ class CastSyncPoc:
                                 "artwork_url": media.get("artwork_url") or ""}]
 
             async def provider(last_rc=None):
-                # Advance only on a clean play-out; anything else is the same
-                # item wanting a fresh (re-signed) URL. Walking off the end
-                # returns "" and the source finishes — unless the zone was
-                # asked to loop, which sends it back to the top.
                 if last_rc == 0:
                     self._queue_pos += 1
                     if self._queue_pos >= len(self._queue):
@@ -700,8 +472,6 @@ class CastSyncPoc:
                 url = await self._url_resolver(stype, item.get("source_id") or "")
                 if not url:
                     return ""
-                # The title travels with the URL so the source (and the Sync
-                # Lab's now-playing line) follows the queue.
                 return {"url": url, "title": item.get("title") or ""}
 
             try:
@@ -737,13 +507,7 @@ class CastSyncPoc:
         return src, ""
 
     async def _prime_source(self, max_precomp_s: float) -> None:
-        """Fill the delay line before any device reads from it.
-
-        Depth has to cover the source delay *plus* the deepest startup
-        pre-compensation, because that device starts reading that much further
-        back than the others. Priming short is not fatal — the reads are
-        zero-filled — but it is audible as silence at the top of a session, so
-        it is worth saying out loud in the log."""
+        """Fill the delay line before any device reads from it."""
         src = self._source
         if src is _GENERATED:
             return
@@ -756,13 +520,7 @@ class CastSyncPoc:
                 f"{target:.1f}s needed — expect silence at session start")
 
     def _crossfade_max(self) -> float:
-        """Longest overlap the delay line can fund (open-zone.md §4.1a).
-
-        The fade is taken out of timeline that is written but not yet served,
-        and the throttle caps that at ``source_delay_s``. The guard is what is
-        left for the incoming head to arrive in. Beyond this a request is not
-        an error — every seam just quietly falls back to a splice — which is
-        exactly why the number has to be reachable by the caller."""
+        """Longest overlap the delay line can fund (open-zone.md §4.1a)."""
         return max(0.0, self._source_delay_s - _src.XFADE_GUARD_S)
 
     async def start_session(self, player_ids: Optional[List[str]] = None,
@@ -784,13 +542,6 @@ class CastSyncPoc:
             player_ids = group.get("members", [])
         if not player_ids:
             return {"success": False, "error": "No players to start"}
-        # Duplicate start: the same request, arriving while the session it asks
-        # for is already coming up. Serialising start/stop (see _session_lock)
-        # made this expensive rather than merely untidy — the second request
-        # waits out the first's priming, then tears the session down, quits the
-        # app on every speaker and builds the identical thing again, roughly
-        # doubling time-to-audio and bouncing the group mid-start. Answer with
-        # the session that is already running instead.
         if (self.running
                 and self._active_group == group_id
                 and sorted(player_ids) == sorted(self._session_players)
@@ -813,20 +564,11 @@ class CastSyncPoc:
         self._session_players = list(player_ids)
         stream_mode = not self.app_id   # no registered receiver -> default receiver
         self._session_id = uuid_mod.uuid4().hex[:8]
-        # Fixed-length runs keep sessions comparable: the learned model and
-        # the Sync Lab trends are evaluated over identical time windows.
         self._duration_s = max(0, int(duration_s or 0))
-        # Per-session, so a change takes effect on the next start rather than
-        # needing the process restarted (the config value is only the default).
-        # Clamped to what the delay line can actually fund: a longer request
-        # would not fail, it would degrade to a splice at every seam, and a
-        # control that silently does nothing is worse than one that says no.
         self._session_crossfade_s = (
             self._crossfade_s if crossfade_s is None
             else min(max(float(crossfade_s), 0.0), self._crossfade_max()))
 
-        # Prefer the DuckDB-trained model (robust medians over raw history,
-        # across every group's DB); the in-memory/JSON EMAs remain the fallback.
         if stream_mode and _sdb is not None:
             try:
                 db_model = await asyncio.to_thread(_sdb.query_device_model)
@@ -849,27 +591,16 @@ class CastSyncPoc:
         self._source = source
         self._session_media = media or None
         self.running = True
-        # Stamped here rather than on return: a duplicate request blocked on
-        # the session lock is measured from when this session began coming up,
-        # not from when it finished.
         self._session_started_at = time.monotonic()
 
-        # If the model knows every member's startup lag, fix the session
-        # target now and pre-compensate each stream so devices start already
-        # roughly aligned (the monitor only mops up the residual).
         model_lags = {pid: self._model.get(pid, {}).get("lag_s")
                       for pid in player_ids}
         if stream_mode and all(v is not None for v in model_lags.values()):
             self._target_lag = max(model_lags.values()) + STREAM_LAG_MARGIN_S
             logger.info(f"Sync stream target lag from model: {self._target_lag:.2f}s")
-        # Deepest pre-compensation any member will start at, which sets how
-        # much timeline has to exist before the launch tasks go out.
         max_precomp = max((max(0.0, (self._target_lag or 0.0) - (lag or 0.0))
                            for lag in model_lags.values()), default=0.0)
         await self._prime_source(max_precomp)
-        # After priming, never before: the chunk producer reads the timeline at
-        # a fixed offset from the epoch and would otherwise sit on the ring's
-        # write head with no margin at all.
         if not stream_mode:
             self._producer = asyncio.create_task(self._produce())
 
@@ -886,8 +617,6 @@ class CastSyncPoc:
                     m = self._model.get(pid, {})
                     if self._target_lag is not None and m.get("lag_s") is not None:
                         st.precomp_s = max(0.0, self._target_lag - m["lag_s"])
-                    # Clamp to the physical bound — models trained before the
-                    # estimator fix may hold rail values (±300 ppm).
                     st.rate_ppm = max(-STREAM_RATE_MAX_PPM,
                                       min(STREAM_RATE_MAX_PPM,
                                           float(m.get("drift_ppm", 0.0))))
@@ -943,16 +672,11 @@ class CastSyncPoc:
         if self._spectrum:
             self._spectrum.cancel()
             self._spectrum = None
-        # May be called FROM the auto-stop task — cancelling ourselves here
-        # would abort the rest of this cleanup.
         if self._auto_stop and self._auto_stop is not asyncio.current_task():
             self._auto_stop.cancel()
         self._auto_stop = None
         if self._streams:    # persist what this session taught the model
             self._write_json(self._model_file, self._model)
-        # Backends are stateless and hold no native resource, so this is a
-        # no-op today — kept because a stream generator can still be mid-block
-        # here, and a close() that races one must stay safe by construction.
         for st in self._streams.values():
             if st.resampler is not None:
                 try:
@@ -960,6 +684,8 @@ class CastSyncPoc:
                 except Exception:
                     pass
         self._streams = {}   # generators see running=False and finish
+        for w in self._conn_watch.values():
+            w.st = None
         if self._source is not _GENERATED:
             try:
                 await self._source.close()
@@ -972,7 +698,6 @@ class CastSyncPoc:
             except Exception:
                 pass
         self._receivers = {}
-        # Quit our app on every device we launched so they drop back to idle.
         for info in list(self._pending.values()):
             uuid_str = info["player_id"].split(":", 1)[1]
             cast = self.cast._casts.get(uuid_str)
@@ -995,14 +720,7 @@ class CastSyncPoc:
         return {"success": True}
 
     def _mic_status(self) -> dict:
-        """Capture-device probe for the OpenZone mic badge (cached 30 s).
-
-        PortAudio snapshots the ALSA device list at init, so while no usable
-        mic is found we re-init on each expiry to pick up cards that appeared
-        since (never mid-calibration — that would kill the recording). Note
-        the container maps /dev/snd at CREATE time (build.sh): a mic
-        hot-plugged after start needs a container restart to appear at all.
-        """
+        """Capture-device probe for the OpenZone mic badge (cached 30 s)."""
         now = time.monotonic()
         if self._mic_cache and now - self._mic_cache[0] < 30.0:
             return self._mic_cache[1]
@@ -1037,8 +755,6 @@ class CastSyncPoc:
                 "player_id": info["player_id"],
                 "name": info["name"],
                 "connected": (r is not None) or (s is not None and s.connected),
-                # A serving stream reports the trim it is actually built with,
-                # not what the store would resolve to now (_Stream.trim_ms).
                 "trim_ms": (s.trim_ms if s is not None
                             else self.trim_ms(info["player_id"])),
                 "stats": (r.stats if r else (s.stats if s else {})),
@@ -1058,9 +774,6 @@ class CastSyncPoc:
             "now_playing": self.now_playing(),
             "source": self._source.stats(),
             "resampler": {"kind": self._resampler_kind, **_rs.available()},
-            # The UI needs the ceiling to bound its control, and needs it
-            # before a session exists — so it is derived from configuration
-            # here rather than read off a running source.
             "crossfade": {
                 "default_s": self._crossfade_s,
                 "session_s": self._session_crossfade_s,
@@ -1074,9 +787,6 @@ class CastSyncPoc:
         trim_ms = max(-2000, min(2000, int(trim_ms)))
         self._trims[player_id] = trim_ms
         self._write_json(self._trims_file, self._trims)
-        # Teach the model too. Aligning one screened device by ear is a
-        # measurement of that hardware's output pipeline, not of that unit, and
-        # the next one added to a group should not have to be measured again.
         self._learn_model_trim(player_id, trim_ms)
         for r in self._receivers.values():
             if r.player_id == player_id:
@@ -1084,20 +794,6 @@ class CastSyncPoc:
                     await r.ws.send_json({"type": "trim", "trim_ms": trim_ms})
                 except Exception as e:
                     logger.debug(f"trim push failed for {player_id}: {e}")
-        # Stream mode: positive trim = play later = serve older timeline.
-        # Trims apply as an IMMEDIATE buffer step, deliberately breaking the
-        # no-step rule (open-zone.md §7.4): trim exists for by-ear alignment, and a slewed
-        # trim takes |Δ|×1000 s to become audible — users chased ±400 ms in
-        # circles because they couldn't hear their own adjustments land.
-        # The step is decompensated via ``moved_s``, so the drift fit keeps
-        # its baseline; the cooldown covers the device-buffer transient.
-        # The chirp calibrator will set trims automatically; the slider then
-        # remains as a manual override for taste.
-        #
-        # The step and the latched value move together and only here: the
-        # timeline shift and the term the measurement subtracts must change
-        # in the same breath, or the very next poll reads the difference as
-        # a real error and corrects audio that was already where it belonged.
         for s in self._streams.values():
             if s.player_id != player_id:
                 continue
@@ -1109,13 +805,6 @@ class CastSyncPoc:
             s.pos -= delta_s * RATE
             s.shift -= delta_s * RATE
             s.moved_s -= delta_s
-            # Only a step big enough to disturb the device's buffer earns the
-            # blackout. Aligning by ear is a RUN of ±1 ms taps — fifty of them
-            # is fifty 7 s cooldowns with the median history wiped each time,
-            # which leaves the correction loop blind for the entire tuning
-            # session and lets real error accumulate unopposed while the user
-            # is listening for exactly that error. A tap this small is well
-            # inside the sensor's own noise; the loop can absorb it.
             if abs(delta_ms) > STREAM_TRIM_QUIET_MS:
                 s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
                 s.err_hist = []   # baseline moved — old medians invalid
@@ -1123,8 +812,6 @@ class CastSyncPoc:
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
     # ------------------------------------------------------------------
-    # Acoustic calibration (open-zone.md §6.2 chirp mode): measure the audio in
-    # the AIR, which the status sensor cannot see, and set trims from it.
     # ------------------------------------------------------------------
     async def calibrate(self) -> dict:
         """Chirp sequence → GCC-PHAT arrivals → trims. Runs during normal
@@ -1160,9 +847,6 @@ class CastSyncPoc:
 
     async def _run_chirp_sequence(self, streams: List[_Stream]) -> dict:
         wave = _chirp.chirp_wave(RATE)
-        # Slots must land beyond every serve head — audio already generated
-        # (and buffered device-side) can't be changed. Because devices
-        # buffer several seconds, the chirps sound target_lag later.
         head_s = max((s.pos - s.shift) / RATE for s in streams)
         plan = []          # (stream, expected arrival in elapsed-seconds)
         for i, s in enumerate(streams):
@@ -1199,10 +883,6 @@ class CastSyncPoc:
                 info["detected"] = True
             devices.append(info)
         if len(deltas) < 2:
-            # Say so in the log, not only in the HTTP response. A calibration
-            # that quietly does nothing looks identical to one that ran and
-            # found no correction needed, and the difference matters: the
-            # first means the trims are still whatever they were.
             detail = ", ".join(f"{d['name']} peak×{d['quality']}"
                                f"{'' if d['detected'] else ' (no chirp)'}"
                                for d in devices)
@@ -1213,8 +893,6 @@ class CastSyncPoc:
             return {"success": False, "devices": devices,
                     "error": "Chirps not detected on enough speakers — "
                              "check the mic and its input level"}
-        # Differencing: only relative arrival matters; the mean keeps the
-        # group's overall timing where it is.
         mean_d = sum(deltas.values()) / len(deltas)
         rows = []
         for info, (s, _) in zip(devices, plan):
@@ -1234,7 +912,6 @@ class CastSyncPoc:
                                    * 1000, 1)}
 
     # ------------------------------------------------------------------
-    # Named groups (managed from the Media tab's group builder)
     # ------------------------------------------------------------------
     def list_groups(self) -> dict:
         groups = []
@@ -1276,7 +953,6 @@ class CastSyncPoc:
         return {"success": True}
 
     # ------------------------------------------------------------------
-    # Device launch
     # ------------------------------------------------------------------
     def _player_name(self, player_id: str) -> str:
         uuid_str = player_id.split(":", 1)[1]
@@ -1317,7 +993,6 @@ class CastSyncPoc:
                            f"(app_id registered? device serial enabled for dev?)")
 
     # ------------------------------------------------------------------
-    # Stream (default-receiver) mode — no Cast console registration needed
     # ------------------------------------------------------------------
     def _local_ip_for(self, host: str) -> str:
         """Our LAN IP as seen from ``host`` (the cast device) — the stream
@@ -1340,6 +1015,7 @@ class CastSyncPoc:
         if not cast:
             logger.warning(f"Sync stream launch: {player_id} unreachable")
             return
+        self._watch_connection(cast, uuid_str, self._streams.get(sid))
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
             getattr(getattr(cast, "socket_client", None), "host", "")
         url = (f"http://{self._local_ip_for(host)}:{self.http_port}"
@@ -1356,11 +1032,27 @@ class CastSyncPoc:
                                f"for {player_id}: {e}")
                 await asyncio.sleep(2)
 
-    def _session_art(self) -> tuple:
-        """(artwork_url, title, artist) for what this zone is playing.
+    def _watch_connection(self, cast, uuid_str: str,
+                          st: Optional[_Stream]) -> None:
+        """Point this device's connection watcher at the current stream,
+        registering it with pychromecast the first time we see the device.
+        """
+        try:
+            watch = self._conn_watch.get(uuid_str)
+            if watch is None:
+                sock = getattr(cast, "socket_client", None)
+                reg = getattr(sock, "register_connection_listener", None)
+                if reg is None:
+                    return
+                watch = _ConnWatch()
+                reg(watch)
+                self._conn_watch[uuid_str] = watch
+            watch.st = st
+        except Exception as e:
+            logger.debug(f"Sync connection watch unavailable for {uuid_str}: {e}")
 
-        A queue shows itself by its container (the album, the playlist), which
-        is what the LOAD can carry; a single track or station shows itself."""
+    def _session_art(self) -> tuple:
+        """(artwork_url, title, artist) for what this zone is playing."""
         m = self._session_media or {}
         title = (m.get("title") or "").strip() or "ZMM OpenZone"
         art = (m.get("artwork_url") or "").strip()
@@ -1374,15 +1066,6 @@ class CastSyncPoc:
     def _play_stream(self, cast, url: str):
         cast.wait(timeout=10)
         mc = cast.media_controller
-        # Screened members of a zone (Nest Hub, Pixel Tablet) show whatever the
-        # LOAD carries, so give them the same album art / station logo a single
-        # Cast player gets — otherwise a zone is the one place in the app that
-        # displays a bare filename. metadataType 3 == MUSIC_TRACK.
-        #
-        # It rides on the LOAD and only on the LOAD: changing it later means
-        # re-loading, which restarts the device's buffering and would cost the
-        # zone its alignment. A queue therefore shows the set, not the track —
-        # the per-track detail lives in the app, where it costs nothing.
         art, title, artist = self._session_art()
         meta = {"metadataType": 3, "title": title, "artist": artist}
         if art:
@@ -1392,8 +1075,6 @@ class CastSyncPoc:
         try:
             mc.play_media(url, **kwargs)
         except TypeError:
-            # Older pychromecast without one of the kwargs — audio matters
-            # more than the picture.
             mc.play_media(url, "audio/wav", stream_type="LIVE", title=title)
         mc.block_until_active(timeout=15)
         deadline = time.time() + 8
@@ -1404,13 +1085,7 @@ class CastSyncPoc:
         raise RuntimeError(f"media did not start (state={mc.status.player_state})")
 
     def _source_spent(self) -> bool:
-        """True once the material has run out AND been heard.
-
-        A finite track (Tidal) ends when its decoder stops, but at that moment
-        every device is still playing out of the delay line and its own buffer
-        — the group is a whole target-lag behind the write head. Tearing the
-        session down on the decoder's last byte would cut the end off the
-        track, so the tail is allowed to drain first."""
+        """True once the material has run out AND been heard."""
         src = self._source
         if not getattr(src, "finished", False):
             return False
@@ -1431,12 +1106,8 @@ class CastSyncPoc:
                 if self._source_spent():
                     logger.info("Sync source finished and drained — "
                                 "stopping the session")
-                    # Not awaited: stop_session cancels this very task.
                     asyncio.create_task(self.stop_session())
                     return
-                # Measure all devices concurrently — one poll pass costs one
-                # device's round-trip instead of N, and the readings land
-                # close together in time (less skew inside a spread sample).
                 items = [(sid, st) for sid, st in list(self._streams.items())
                          if st.connected and st.pos is not None]
                 if not items:
@@ -1449,8 +1120,6 @@ class CastSyncPoc:
                     if isinstance(r, float)}
                 if not lags:
                     continue
-                # Fix the common target from the slowest starter, once. Don't
-                # wait forever for stragglers — after 25 s use whoever reports.
                 if self._target_lag is None:
                     n_connected = len([s for s in self._streams.values()
                                        if s.connected])
@@ -1477,40 +1146,14 @@ class CastSyncPoc:
                                 "drift_ppm": round(st.rate_ppm)}
                     batch.append(self._sample_row(st, "poll", lag=lag,
                                                   error=error))
-                    # The measured error still contains whatever slew is
-                    # pending (undrained), so decisions are made on the
-                    # RESIDUAL — what would remain once the slew finishes.
-                    # Deciding on the raw error re-corrected work already
-                    # scheduled (a 68 ms trim slew once triggered a jump).
                     st.err_hist = (st.err_hist + [error])[-3:]
                     med3 = self._median(st.err_hist)
                     residual = med3 - st.slew_s
-                    # Correction ladder (open-zone.md §7.1): buffer jumps only
-                    # for acquisition/rebuffer; everything inside ±100 ms is
-                    # a bounded rate slew through the resampler.
-                    # Before first lock the jump threshold drops to the slew
-                    # window: the device isn't audibly in the group yet, so
-                    # stepping a 30–100 ms startup offset away instantly
-                    # beats grinding it out over 30 s.
                     jump_min = (STREAM_JUMP_MIN_S if st.acquired
                                 else STREAM_SLEW_FAST_THRESH_S)
                     if not st.acquired and len(st.err_hist) >= 2 \
                             and abs(med3) <= STREAM_SLEW_FAST_THRESH_S:
                         st.acquired = True
-                    # A jump is the only correction a listener hears as a
-                    # discontinuity, so once the device is part of the group it
-                    # takes the whole window to authorise one: three readings,
-                    # every one past the threshold and all of one sign. Two
-                    # readings cannot outvote a transient — and a jump clears
-                    # err_hist, so two was exactly the state each jump left
-                    # behind, making the next one cheaper to trigger than the
-                    # last. The loop paid for that: it would step hundreds of
-                    # ms into a correctly aligned speaker on a two-poll spike,
-                    # sit out the cooldown, then step back by the same amount —
-                    # two audible jumps that net to nothing, and a wiped drift
-                    # baseline each time. Acquisition keeps the fast path: a
-                    # device nobody is listening to yet is better stepped than
-                    # slewed, and it has no history to spend.
                     concordant = (len(st.err_hist) >= 3
                                   and min(abs(e) for e in st.err_hist) > jump_min
                                   and min(st.err_hist) * max(st.err_hist) > 0)
@@ -1521,10 +1164,6 @@ class CastSyncPoc:
                         st.shift += med3 * RATE
                         st.moved_s += med3
                         st.slew_s = 0.0       # jump supersedes any pending slew
-                        # A jump is a deliberate discontinuity in the timeline.
-                        # A stateful resampler holds filter memory and buffered
-                        # output from before the jump; carrying either across
-                        # would smear the two sides together.
                         if st.resampler is not None:
                             st.resampler.reset()
                         st.resyncs += 1
@@ -1538,23 +1177,10 @@ class CastSyncPoc:
                                     f"{med3 * 1000:+.0f} ms")
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
                             or len(st.err_hist) < 2:
-                        # Fast slew still draining, or only one reading since
-                        # the history was reset — observe, don't act. (A
-                        # lone reading has been seen 550 ms wrong.)
                         self._pll_update(st, lag)
                     elif abs(med3) > STREAM_SLEW_FAST_THRESH_S:
-                        # Fast slew: 1000 ppm ≈ 1.7 cents, inaudible; drains
-                        # in |error| × 1000 s. Gated on the 3-poll median so
-                        # a single noise spike can't move real audio, and
-                        # slewing the median, not the spike. Assignment, not
-                        # +=: pending slew is already inside the measurement.
-                        # Refreshes are routine while a slew drains — only a
-                        # meaningful change is worth an event row.
-                        # Clamped: an offset past the ceiling is a rebuffer,
-                        # not drift, and belongs to the jump branch above. The
-                        # excess must stay in the residual so the next polls
-                        # can carry the jump vote (see STREAM_SLEW_MAX_S).
                         fresh = abs(med3 - st.slew_s) > 0.010
+                        # Ceiling keeps the jump rung armed (§A.4).
                         st.slew_s = max(-STREAM_SLEW_MAX_S,
                                         min(STREAM_SLEW_MAX_S, med3))
                         if fresh:
@@ -1569,8 +1195,6 @@ class CastSyncPoc:
                                            else ""))
                         self._pll_update(st, lag)
                     else:
-                        # Steady state: gentle trickle (≤20 ppm) on the
-                        # denoised error, drift fit on every poll.
                         st.slew_s = med3
                         self._pll_update(st, lag)
                     st.stats["slew_ms"] = round(st.slew_s * 1000, 1)
@@ -1581,25 +1205,9 @@ class CastSyncPoc:
             logger.error(f"Sync stream monitor died: {e}")
 
     async def _spectrum_feed(self) -> None:
-        """Broadcast the zone's live spectrum for the EQ display.
-
-        The tap is a READ of the master timeline, not a branch of the signal
-        path — no audio is copied, buffered or diverted, so nothing here can
-        affect what the speakers get.
-
-        It reads at the AUDIBLE position, not at the write head. The write head
-        runs a whole group latency ahead (§4.1), so a display fed from it would
-        show every transient seconds before the room heard it — legible as a
-        meter, wrong as a picture of the music. Subtracting the session target
-        lag puts the analysis window on the audio leaving the speakers now.
-
-        One rFFT of 2048 samples measures 81 us, so at this cadence the cost is
-        ~0.1% of a core and it stays on the loop; that stops being true if the
-        window or the frame rate grows, in which case it belongs in a thread."""
+        """Broadcast the zone's live spectrum for the EQ display."""
         n = SPECTRUM_FFT_N
         win = np.hanning(n).astype(np.float32)
-        # Log-spaced band edges, resolved to FFT bins once — the mapping only
-        # depends on constants, so recomputing it per frame is pure waste.
         edges = SPECTRUM_F_LO * (SPECTRUM_F_HI / SPECTRUM_F_LO) ** (
             np.arange(SPECTRUM_BANDS + 1) / SPECTRUM_BANDS)
         bins = np.clip((edges / (RATE / 2) * (n // 2)).astype(int), 0, n // 2)
@@ -1609,8 +1217,6 @@ class CastSyncPoc:
                 src = self._source
                 if src is None:
                     continue
-                # Nobody is looking: the whole point of a display feed is that
-                # it costs nothing when there is no display.
                 if not _ws_clients():
                     continue
                 lag = self._target_lag if self._target_lag is not None \
@@ -1623,23 +1229,11 @@ class CastSyncPoc:
                     continue
                 mono = block.mean(axis=1) * win
                 mag = np.abs(np.fft.rfft(mono))
-                # Peak per band, not mean: a mean over a wide top band buries
-                # a narrow transient among its quiet neighbours, and it is the
-                # transient the eye is looking for.
                 out = np.empty(SPECTRUM_BANDS, dtype=np.float32)
                 for b in range(SPECTRUM_BANDS):
                     i0 = bins[b]
                     i1 = max(i0 + 1, bins[b + 1])
                     out[b] = mag[i0:i1].max()
-                # dBFS, then mapped onto the display floor as 0-255. Integers
-                # because this is a picture: a byte is finer than the eye at
-                # this scale and keeps a frame to a few hundred bytes on the
-                # wire.
-                #
-                # The 4/n — not 2/n — is the Hann window's coherent gain of
-                # 0.5 divided back out. Without it every reading sits 6 dB low,
-                # a full-scale signal tops out around four-fifths of the
-                # display height, and the meter quietly lies about headroom.
                 db = 20.0 * np.log10(np.maximum(out * (4.0 / n), 1e-7))
                 lvl = np.clip((db - SPECTRUM_FLOOR_DB)
                               / (0.0 - SPECTRUM_FLOOR_DB), 0.0, 1.0)
@@ -1655,7 +1249,6 @@ class CastSyncPoc:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            # A display feed must never be able to take the session with it.
             logger.debug(f"Sync spectrum feed stopped: {e}")
 
     def _sample_row(self, st: _Stream, kind: str, lag: Optional[float] = None,
@@ -1697,15 +1290,7 @@ class CastSyncPoc:
 
     @staticmethod
     def _fit_slope_se(pts: List[tuple]) -> Optional[tuple]:
-        """Least-squares slope **and its standard error**.
-
-        The standard error is the part that matters here. Slope noise goes as
-        σ/(span·√n): at this sensor's ~12 ms poll noise and a 2.5 s cadence
-        that is on the order of ±140 ppm at a 60 s baseline and still ±18 ppm
-        at 240 s — far larger than the few ppm of real crystal drift being
-        looked for. A slope that cannot be told apart from zero carries no
-        information, and feeding it to the actuator injects exactly the
-        differential rate error the loop exists to remove."""
+        """Least-squares slope **and its standard error**."""
         n = len(pts)
         if n < 3:
             return None
@@ -1716,7 +1301,6 @@ class CastSyncPoc:
             return None
         slope = sum((p[0] - tm) * (p[1] - ym) for p in pts) / den
         resid = [p[1] - (ym + slope * (p[0] - tm)) for p in pts]
-        # Residual variance on n-2 degrees of freedom, the usual OLS estimate.
         s2 = sum(r * r for r in resid) / (n - 2)
         return slope, (s2 / den) ** 0.5
 
@@ -1736,13 +1320,6 @@ class CastSyncPoc:
         span = st.lag_hist[-1][0] - st.lag_hist[0][0]
         if len(st.lag_hist) < STREAM_FIT_MIN_POINTS \
                 or span < STREAM_FIT_APPLY_SPAN_S:
-            # No fit is possible yet. Holding the previous value is right for a
-            # short gap and wrong for a long one: while jumps keep clearing the
-            # baseline faster than it rebuilds, nothing can ever revise or
-            # retire the last estimate, so whatever it happened to be — a
-            # clamped one included — becomes permanent for the session. Feed-
-            # forward with no live evidence should relax to the value many
-            # sessions agree on, not to whichever fit ran last.
             if st.fit_lost_at and (time.monotonic() - st.fit_lost_at
                                    > STREAM_RATE_STALE_S):
                 st.rate_ppm += STREAM_RATE_DECAY * (st.rate_prior - st.rate_ppm)
@@ -1752,8 +1329,6 @@ class CastSyncPoc:
         slope = self._fit_slope(st.lag_hist)
         if slope is None:
             return
-        # One robust pass: drop >3σ outliers (bogus media status, WiFi
-        # hiccup) and refit — open-zone.md §7.2's outlier rejection.
         n = len(st.lag_hist)
         tm = sum(p[0] for p in st.lag_hist) / n
         ym = sum(p[1] for p in st.lag_hist) / n
@@ -1767,56 +1342,17 @@ class CastSyncPoc:
         if fit is None:
             return
         slope, se = fit
-        # A slope no crystal can produce means a step landed in the window —
-        # a server stall (observed: 4 s event-loop freeze), a device pipeline
-        # hiccup — not drift. Learning from it rails the clamp; start the
-        # baseline over instead.
         if abs(slope) * 1e6 > 4 * STREAM_RATE_MAX_PPM:
             st.lag_hist = st.lag_hist[-1:]
             st.fit_lost_at = time.monotonic()
             return
-        # Significance gate (§7.2). A span threshold alone is a proxy for
-        # "is this fit informative", and a poor one: sensor noise differs
-        # per device — measured p90 |error| of 8.8 ms on one speaker against
-        # 22.8 ms on another in the same group — so the same baseline buys
-        # them very different confidence. Require the slope to stand clear of
-        # its own standard error, and weight what is applied by how clearly.
-        # Below the bar the seeded model value is kept, which is the right
-        # answer: a model trained over many sessions separates two devices to
-        # ~0.01 ppm, where a single session's fit cannot do better than tens.
         if se <= 0 or abs(slope) < STREAM_FIT_MIN_SIGMA * se:
             st.stats["drift_fit"] = "below noise"
             return
-        # Ramps from nothing at the 2σ bar to full weight at 3σ. The rate term
-        # is feed-forward only — the slew loop is the fast actuator and mops up
-        # whatever this leaves — so the costs are asymmetric: under-tracking a
-        # real drift means a slow-draining slew, while over-trusting a noisy
-        # fit means permanent differential wander. Conservative is correct.
         confidence = min(1.0, abs(slope) / se - STREAM_FIT_MIN_SIGMA)
         st.stats["drift_fit"] = f"{slope * 1e6:+.1f}±{se * 1e6:.1f} ppm"
-        # slope = d(free-running lag)/dt: device clock slow → lag grows →
-        # positive ppm → serve faster.
-        #
-        # Blended against the MODEL PRIOR, not against the previous estimate.
-        # Feeding the previous output back — rate += g·(slope − rate) — is a
-        # random walk when the slope is noise: every poll steps toward a fresh
-        # noisy target and nothing pulls it back, so a chance excursion is
-        # integrated rather than forgotten. Consecutive fits share almost all
-        # their points, so such an excursion persists for many polls and walks
-        # the estimate into the clamp. Anchoring to the prior gives the loop a
-        # restoring force: an uninformative fit decays to what the model has
-        # learned over many sessions, and only a fit that is clearly better
-        # than the prior displaces it.
         w = confidence * min(1.0, span / STREAM_RATE_EMA_SPAN_S)
         blended = w * slope * 1e6 + (1.0 - w) * st.rate_prior
-        # Saturating the crystal bound is not a value to be clipped into range,
-        # it is evidence the window holds something that is not drift — the
-        # disturbance gate above catches the gross cases, but a fit between the
-        # bound and 4× it lands here. Clamping stores the bad number AS the
-        # estimate, and since the baseline that produced it is about to be
-        # restarted, the clamp is what the device then runs on. Reject and
-        # rebuild: two speakers held +50.0 ppm for the last quarter-hour of a
-        # session this way.
         if abs(blended) >= STREAM_RATE_MAX_PPM:
             st.rate_ppm = st.rate_prior
             st.lag_hist = st.lag_hist[-1:]
@@ -1866,20 +1402,6 @@ class CastSyncPoc:
             status = mc.status
             if getattr(status, "player_state", "") != "PLAYING":
                 return None
-            # adjusted_current_time credits the device with having played
-            # continuously since last_updated. That holds while the report is
-            # fresh and fails exactly when it matters: a device that rebuffered
-            # is reported as still playing, and when the next report finally
-            # lands the position snaps back by the whole gap — a step of
-            # hundreds of ms, arriving as if it were a measurement. Refusing to
-            # extrapolate past the age bound turns that into a missing sample,
-            # which the ladder already handles, instead of a false error.
-            # Defensive about the timestamp itself: a naive datetime from a
-            # different pychromecast build would raise here, and inside this
-            # try that would return None for every read on every device — the
-            # loop would stop correcting and look merely quiet. An unusable
-            # timestamp means the age is unknown, so fall through and use the
-            # reading rather than blinding the sensor over it.
             lu = getattr(status, "last_updated", None)
             if lu is not None:
                 try:
@@ -1900,8 +1422,6 @@ class CastSyncPoc:
             return None
         now = time.monotonic()
         played_timeline_s = (st.start_pos + st.shift) / RATE + float(ct)
-        # The LATCHED trim, so this cancels exactly the trim that is baked
-        # into start_pos/shift (see _Stream.trim_ms).
         trim_s = st.trim_ms / 1000.0
         return (now - self._epoch) - played_timeline_s - trim_s
 
@@ -1921,8 +1441,6 @@ class CastSyncPoc:
                 reads.append(lag)
         if not reads:
             return None
-        # Discarded reads (stale report, device not PLAYING) make this list any
-        # length, so it needs the real median rather than the upper-middle one.
         return self._median(reads)
 
     def _group_locked(self) -> bool:
@@ -1931,13 +1449,7 @@ class CastSyncPoc:
         return bool(live) and all(s.acquired for s in live)
 
     def _acquire_gain(self, frames: int):
-        """Output gain for one block: None means unity (the common case).
-
-        Zero while the group is still acquiring, then a short linear ramp. The
-        ramp is computed across the block rather than applied as one number per
-        block so the fade has no steps in it. Capped by
-        STREAM_ACQUIRE_MAX_S — one device that never reports must not leave the
-        whole house silent."""
+        """Output gain for one block: None means unity (the common case)."""
         if self._fade_start is None:
             elapsed = time.monotonic() - self._epoch
             if self._group_locked() or elapsed > STREAM_ACQUIRE_MAX_S:
@@ -1970,20 +1482,8 @@ class CastSyncPoc:
             if st.pos is None:
                 trim = int(st.trim_ms * RATE / 1000)
                 precomp = int(st.precomp_s * RATE)
-                # Real media cannot be served ahead of its own arrival, so the
-                # whole group reads `delay` behind the live edge (§4.1). The
-                # generated timeline has no such limit and sets delay 0, which
-                # leaves this expression exactly as it was.
                 st.pos = (int((time.monotonic() - self._epoch - delay) * RATE)
                           - trim - precomp)
-                # Never start behind the oldest sample the source still holds:
-                # reads before it are silence, and silence carries no timing
-                # information, so the monitor could not recover from it. Losing
-                # some pre-compensation is recoverable; opening on silence is
-                # not. Unbounded for the closed-form timeline.
-                # Plus the kernel margin: an interpolator reads context either
-                # side of its position, so sitting exactly on the oldest sample
-                # still pulls zeros into the convolution.
                 floor = source.earliest_sample() + _rs.READ_MARGIN
                 if st.pos < floor:
                     logger.warning(
@@ -1994,20 +1494,11 @@ class CastSyncPoc:
             block = int(RATE * STREAM_BLOCK_S)
             while (self.running and self._streams.get(st.sid) is st
                    and st.gen == mine):
-                # `ahead` measures serve-ahead against real time, so the
-                # constant source delay is added back before comparing —
-                # without it a delayed source reads as permanently behind and
-                # this loop would spin against the live edge.
                 ahead = ((st.pos - st.shift) / RATE + delay
                          - (time.monotonic() - self._epoch))
                 if ahead > STREAM_AHEAD_S:
                     await asyncio.sleep(STREAM_BLOCK_S / 2)
                     continue
-                # Actuator (open-zone.md §4.2): ratio = 1 + drift + slew. The
-                # drift term cancels the device clock; the slew term drains
-                # the scheduled offset at a bounded rate — fast (1000 ppm)
-                # above 15 ms remaining, gentle (20 ppm) below. All of it is
-                # fractional through the resampler; the buffer never steps.
                 rm = 0.0
                 if st.slew_s:
                     ppm = (STREAM_SLEW_FAST_PPM
@@ -2015,16 +1506,14 @@ class CastSyncPoc:
                            else STREAM_SLEW_GENTLE_PPM)
                     lim = (block / RATE) * ppm / 1e6
                     rm = max(-lim, min(lim, st.slew_s))
-                    st.slew_s -= rm
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
-                # Book-keep what the backend reports it consumed rather than
-                # what was commanded: `pos` must track what was read off the
-                # timeline or the ring reads drift, and `shift`/`moved_s` must
-                # track true timeline motion or the drift fit sees our own
-                # corrections. Every current backend is stateless and consumes
-                # exactly `adv`; the distinction is kept because it costs
-                # nothing and a buffering backend would silently break it.
-                out, used = st.resampler.block(source, st.pos, block, adv, st.chirp)
+                # Window on the loop, filter off it (open-zone.md §A.1).
+                pos0 = st.pos
+                win = st.resampler.window(source, st.pos, block, adv, st.chirp)
+                out, used = await asyncio.to_thread(st.resampler.render, win)
+                if st.pos != pos0:
+                    continue     # jump landed mid-render; drop, consume nothing
+                st.slew_s -= rm
                 st.pos += used
                 st.shift += used - block
                 st.moved_s += (used - block) / RATE   # decompensate drift fit
@@ -2035,17 +1524,12 @@ class CastSyncPoc:
         except asyncio.CancelledError:
             pass
         finally:
-            # Only the live fetch owns `connected`: a superseded generator
-            # finishing after its replacement opened must not mark the device
-            # disconnected underneath it, or the monitor drops a device that
-            # is in fact playing.
             if st.gen == mine:
                 st.connected = False
             logger.info(f"Sync stream closed: {st.name}"
                         f"{'' if st.gen == mine else f' (superseded fetch #{mine})'}")
 
     # ------------------------------------------------------------------
-    # Chunk producer
     # ------------------------------------------------------------------
     async def _produce(self):
         """Generate chunks on the shared timeline and fan out to receivers.
@@ -2075,7 +1559,6 @@ class CastSyncPoc:
             logger.error(f"Cast sync producer died: {e}")
 
     # ------------------------------------------------------------------
-    # HTTP sub-app (plain HTTP: receiver page + WebSocket)
     # ------------------------------------------------------------------
     def _build_http_app(self):
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -2107,7 +1590,6 @@ class CastSyncPoc:
                     msg = await ws.receive_json()
                     mtype = msg.get("type")
                     if mtype == "ping":
-                        # NTP-style: echo the receiver's timestamp + our clock.
                         await ws.send_json({"type": "pong", "t": msg.get("t"),
                                             "s": time.monotonic()})
                     elif mtype == "hello":
@@ -2128,7 +1610,6 @@ class CastSyncPoc:
                             "chunk_s": CHUNK_SECONDS,
                             "trim_ms": self.trim_ms(info["player_id"]),
                         })
-                        # Catch the joiner up with still-future buffered chunks.
                         now = time.monotonic()
                         for frame in list(self._buffer):
                             (play_at,) = struct.unpack(">d", frame[:8])
@@ -2149,7 +1630,6 @@ class CastSyncPoc:
         return app
 
     # ------------------------------------------------------------------
-    # JSON persistence (trims + groups)
     # ------------------------------------------------------------------
     @staticmethod
     def _read_json(path: str) -> dict:

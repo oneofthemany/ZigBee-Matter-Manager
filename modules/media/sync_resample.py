@@ -54,12 +54,18 @@ def read_grid(source, i0: int, n: int, extra=None) -> np.ndarray:
 
 class _Stateless:
     """Positional interpolators. ``block`` consumes exactly ``adv`` timeline
-    samples and returns exactly ``frames`` output samples."""
+    samples and returns exactly ``frames`` output samples.
+
+    Split into ``window`` and ``render`` so the caller can run the filter off
+    the event loop (open-zone.md §A.1): ``window`` touches the unlocked delay
+    line and must stay on the loop, ``render`` is pure arithmetic over the
+    private copy ``window`` returns and is safe on a worker thread."""
 
     stateful = False
 
-    def block(self, source, pos: float, frames: int, adv: float,
-              extra=None) -> tuple:
+    def window(self, source, pos: float, frames: int, adv: float,
+               extra=None) -> tuple:
+        """Read this block's source window. Loop thread only."""
         idx = pos + np.arange(frames) * (adv / frames)
         base = np.floor(idx).astype(np.int64)
         frac = idx - base
@@ -67,7 +73,16 @@ class _Stateless:
         lo = i0 - _HALF + 1
         n = int(base[-1]) - i0 + 1 + _TAPS
         src = read_grid(source, lo, n, extra)
-        return self._interp(src, base - lo, frac, frames), adv
+        return (src, base - lo, frac, frames, adv)
+
+    def render(self, win: tuple) -> tuple:
+        """Interpolate a window from ``window``. Any thread."""
+        src, rel, frac, frames, adv = win
+        return self._interp(src, rel, frac, frames), adv
+
+    def block(self, source, pos: float, frames: int, adv: float,
+              extra=None) -> tuple:
+        return self.render(self.window(source, pos, frames, adv, extra))
 
     def reset(self) -> None:
         pass
@@ -99,17 +114,23 @@ class RustSinc(_Stateless):
 
     name = "rust-sinc"
 
-    def block(self, source, pos: float, frames: int, adv: float,
-              extra=None) -> tuple:
+    def window(self, source, pos: float, frames: int, adv: float,
+               extra=None) -> tuple:
         step = adv / frames
         i0 = int(np.floor(pos))
         last = int(np.floor(pos + (frames - 1) * step))
         lo = i0 - _HALF + 1
         n = last - i0 + 1 + _TAPS
+        # Contiguous float32 here rather than in render(): the Rust side copies
+        # this buffer while holding the GIL before it detaches, so it must be
+        # an owned array nothing else can touch.
         src = np.ascontiguousarray(read_grid(source, lo, n, extra),
                                    dtype=np.float32)
-        ch = src.shape[1]
-        raw = _dsp.interp_block(src, ch, pos - lo, step, frames)
+        return (src, src.shape[1], pos - lo, step, frames, adv)
+
+    def render(self, win: tuple) -> tuple:
+        src, ch, off, step, frames, adv = win
+        raw = _dsp.interp_block(src, ch, off, step, frames)
         return np.frombuffer(raw, dtype="<f4").reshape(frames, ch), adv
 
 
