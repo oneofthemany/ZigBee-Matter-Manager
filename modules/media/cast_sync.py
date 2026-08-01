@@ -498,7 +498,8 @@ class CastSyncPoc:
                           loop_forever=loop_forever,
                           title=(media.get("title") or "").strip(),
                           url_provider=provider,
-                          crossfade_s=self._session_crossfade_s)
+                          crossfade_s=self._session_crossfade_s,
+                          reader_pos=self._reader_head)
         try:
             await src.start()
         except Exception as e:
@@ -519,8 +520,15 @@ class CastSyncPoc:
                 f"Sync source primed only {src.buffered_s():.1f}s of the "
                 f"{target:.1f}s needed — expect silence at session start")
 
+    def _reader_head(self) -> Optional[int]:
+        """Furthest-ahead device read position in timeline samples, for the
+        source's rework budget (open-zone.md §4.1a). None = nothing reading."""
+        heads = [st.pos for st in self._streams.values() if st.pos is not None]
+        return max(heads) if heads else None
+
     def _crossfade_max(self) -> float:
-        """Longest overlap the delay line can fund (open-zone.md §4.1a)."""
+        """Ceiling advertised to the UI. The overlap actually granted is
+        decided per seam against measured headroom (open-zone.md §4.1a)."""
         return max(0.0, self._source_delay_s - _src.XFADE_GUARD_S)
 
     async def start_session(self, player_ids: Optional[List[str]] = None,

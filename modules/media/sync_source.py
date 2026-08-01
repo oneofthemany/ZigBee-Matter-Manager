@@ -22,6 +22,9 @@ XFADE_MIN_S = 0.25
 XFADE_PEAK_CEIL = 0.97
 XFADE_GUARD_WIN_S = 0.005
 
+# Slack between the furthest-ahead reader and anything reworked in place.
+XFADE_READER_MARGIN_S = 0.5
+
 
 # ----------------------------------------------------------------------
 # ----------------------------------------------------------------------
@@ -202,7 +205,7 @@ class MediaSource:
                  rate: int = RATE, channels: int = CHANNELS,
                  ffmpeg: str = "", loop_forever: bool = False,
                  title: str = "", url_provider=None,
-                 crossfade_s: float = 0.0):
+                 crossfade_s: float = 0.0, reader_pos=None):
         self.url = url
         self.title = title
         self._url_provider = url_provider
@@ -213,6 +216,7 @@ class MediaSource:
         self.channels = channels
         self._rate = rate
         self._eq = eq_chain
+        self._reader_pos = reader_pos
         self._loop = bool(loop_forever)
         self._ffmpeg = ffmpeg or shutil.which("ffmpeg") or ""
         self._ring = _Ring(int(capacity_s * rate), channels, origin=0)
@@ -377,7 +381,7 @@ class MediaSource:
             return self._last_rc      # nothing more to play — don't start ffmpeg
         if not self.url:
             raise RuntimeError("no playable URL for this source")
-        self._xfade_open()
+        # The arm survives the spawn; _xfade_open runs on the first block.
         self._proc = await asyncio.create_subprocess_exec(
             *self._cmd(), stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -407,6 +411,8 @@ class MediaSource:
                         self._eq = None
                 pcm = (np.frombuffer(data, dtype="<i2")
                        .reshape(-1, self.channels).astype(np.float32) * _S16_SCALE)
+                if self._xfade_arm:
+                    self._xfade_open()
                 if self._xfade_want:
                     self._xfade_collect(pcm)
                 else:
@@ -419,12 +425,23 @@ class MediaSource:
             self._kill_nowait()
 
     def _unserved_samples(self) -> int:
-        """Timeline written but not yet reached by the furthest-ahead reader."""
-        play_now = (time.monotonic() - self.epoch) * self._rate
-        return int(max(0, self._ring.end - play_now))
+        """Timeline written but not yet reached by the furthest-ahead reader.
+
+        The reader head is asked for, not modelled (open-zone.md §4.1a)."""
+        head = None
+        if self._reader_pos is not None:
+            try:
+                head = self._reader_pos()
+            except Exception:
+                head = None
+        if head is None:            # nothing reading yet (priming, or no group)
+            head = (time.monotonic() - self.epoch) * self._rate
+        room = self._ring.end - head - XFADE_READER_MARGIN_S * self._rate
+        return int(max(0, room))
 
     def _xfade_open(self) -> None:
-        """Decide the overlap for the item about to start."""
+        """Decide the overlap, on the incoming item's first decoded block —
+        after its URL resolve and decoder start have been paid for."""
         if not self._xfade_arm:
             return
         self._xfade_arm = False
@@ -432,18 +449,22 @@ class MediaSource:
         want = min(int(self._xfade_s * self._rate), room)
         if want < int(XFADE_MIN_S * self._rate):
             self._xfade_last = "no headroom at the seam"
-            logger.debug("Sync crossfade skipped — "
-                         f"only {max(0, room) / self._rate:.2f}s unserved")
+            logger.info("Sync crossfade skipped — only "
+                        f"{max(0, room) / self._rate:.2f}s of reworkable "
+                        "timeline left once the next item opened")
             return
         self._xfade_want = want
         self._xfade_have = 0
         self._xfade_head = []
 
     def _xfade_collect(self, pcm: np.ndarray) -> None:
-        """Hold the incoming item's head back until the overlap is complete."""
+        """Hold the incoming item's head back until the overlap is complete,
+        or until the headroom that authorised it is down to what is in hand."""
         self._xfade_head.append(pcm)
         self._xfade_have += len(pcm)
-        if self._xfade_have >= self._xfade_want:
+        if (self._xfade_have >= self._xfade_want
+                or self._unserved_samples() <= self._xfade_have
+                                               + int(XFADE_GUARD_S * self._rate)):
             self._xfade_commit()
 
     def _xfade_commit(self) -> None:
@@ -453,10 +474,12 @@ class MediaSource:
         if not blocks:
             return
         head = np.concatenate(blocks)
+        # Last check before the ring is reworked.
         n = min(want, len(head), self._unserved_samples())
         if n < int(XFADE_MIN_S * self._rate):
             self._xfade_last = "headroom gone while collecting"
-            logger.debug("Sync crossfade abandoned — writing plain seam")
+            logger.info("Sync crossfade abandoned — the seam outlasted its "
+                        "headroom; writing a plain splice")
             self._ring.write(head)
             return
         at = self._ring.end - n
@@ -529,6 +552,7 @@ class MediaSource:
             "eq": self._eq is not None,
             "crossfade_s": self._xfade_s,
             "crossfades": self._xfades,
+            "rework_s": round(self._unserved_samples() / self._rate, 2),
             **({"crossfade_last": self._xfade_last} if self._xfade_last else {}),
             **({"last_error": self._last_error[:200]} if self._last_error else {}),
         }
