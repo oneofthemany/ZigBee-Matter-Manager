@@ -1,16 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM — Regenerate requirements.lock from requirements.txt
-#
-# One-command release step after editing requirements.txt:
-#   ./scripts/regen_lock.sh
-#
-# Runs the exact `uv pip compile` invocation the Containerfile expects
-# (python 3.11, manylinux_2_31 — matches the bookworm base image), then
-# verifies the lock actually pins every package in requirements.txt using
-# the same drift check the upgrade watcher runs at build time.
-#
-# Commit BOTH files (requirements.txt + requirements.lock) together.
 # =============================================================================
 set -euo pipefail
 
@@ -38,13 +28,6 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ── Compile ──────────────────────────────────────────────────────────────────
-# These flags MUST match the Containerfile's expectations (see build.sh
-# write_containerfile): the base image is python:3.11-slim-bookworm
-# (glibc 2.36), hence python 3.11 + manylinux_2_31.
-#
-# Run from the repo root with RELATIVE filenames: uv embeds the input path
-# as given into every "# via -r ..." comment, and the existing lock was
-# generated with relative paths — absolute paths would churn every line.
 info "Compiling requirements.txt -> requirements.lock ..."
 (
     cd "$REPO_ROOT"
@@ -55,8 +38,6 @@ info "Compiling requirements.txt -> requirements.lock ..."
 )
 
 # ── Drift check (same logic as upgrade.sh do_build) ─────────────────────────
-# Every non-comment package in requirements.txt must appear as a `pkg==`
-# pin in the lock. PyPI names are case-insensitive with - and _ interchangeable.
 drift=""
 while IFS= read -r pkg; do
     [[ -z "$pkg" ]] && continue

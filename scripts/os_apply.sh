@@ -1,24 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM OS Apply Worker
-#
-# Runs ON THE HOST (installed to ${DATA_DIR}/scripts by install_watcher.sh,
-# triggered by zmm-os-apply.path when the :8001 manager writes one of:
-#
-#   ${DATA_DIR}/data/os_updates/apply            — apply pending package updates
-#   ${DATA_DIR}/data/os_updates/release_upgrade  — upgrade to a new OS release
-#                                                  (file content = target, e.g. "43")
-#
-# Progress is written to ${DATA_DIR}/data/os_updates/apply_status.json and the
-# full command output to ${DATA_DIR}/logs/os_apply.log (streamable from the
-# manager's log viewer). After a package apply the collector re-runs so the
-# pending-updates card refreshes.
-#
-# NEEDS ROOT: runs as root when installed via system units; falls back to
-# passwordless sudo; otherwise reports an honest error in the status file.
-#
-# A release upgrade on Fedora ends with `dnf system-upgrade reboot` — THE HOST
-# REBOOTS. The manager UI warns about this before writing the trigger.
 # =============================================================================
 set -u
 
@@ -66,13 +48,11 @@ elif [[ -f "$APPLY_TRIGGER" ]]; then
     ACTION="apply"
     rm -f "$APPLY_TRIGGER" 2>/dev/null || true
 else
-    # Path unit fired but no trigger (e.g. our own rm re-fired it) — no-op.
     exit 0
 fi
 
 # ── Single instance ──────────────────────────────────────────────────────────
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    # Stale lock (> 2h old) gets cleared; otherwise refuse to double-run.
     if [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +120 2>/dev/null)" ]]; then
         log "clearing stale apply lock"
         rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -128,8 +108,6 @@ case "$ACTION:$PKG_MANAGER" in
             -o Dpkg::Options::=--force-confold full-upgrade; RC=$?
         ;;
     apply:rpm-ostree)
-        # Stages a new deployment; a reboot activates it (surfaced via the
-        # collector's reboot_required flag).
         run_logged $SUDO rpm-ostree upgrade; RC=$?
         ;;
     release_upgrade:dnf)
@@ -137,8 +115,6 @@ case "$ACTION:$PKG_MANAGER" in
             write_status "failed" "$ACTION" "no target release in trigger"
             exit 0
         fi
-        # system-upgrade lives in dnf5-plugins (dnf5) or
-        # dnf-plugin-system-upgrade (dnf4) — install whichever exists.
         if ! $SUDO dnf system-upgrade --help >/dev/null 2>&1; then
             run_logged $SUDO dnf -y install dnf5-plugins \
                 || run_logged $SUDO dnf -y install dnf-plugin-system-upgrade \
@@ -151,10 +127,6 @@ case "$ACTION:$PKG_MANAGER" in
                 "release $RELEASE_TARGET downloaded — rebooting to install; the host will be down for a while"
             log "rebooting into system-upgrade for Fedora $RELEASE_TARGET"
             sync
-            # dnf5 (Fedora 41+) stages an offline transaction that is activated
-            # by `dnf offline reboot`; the legacy `system-upgrade reboot` is
-            # dnf4-only and silently boots back into the old release on dnf5.
-            # Prefer offline reboot, fall back to the legacy command for dnf4.
             if $SUDO dnf offline --help >/dev/null 2>&1; then
                 log "using dnf5 offline reboot"
                 $SUDO dnf offline reboot >> "$LOG_FILE" 2>&1
@@ -188,6 +160,5 @@ else
     write_status "failed" "$ACTION" "exit $RC — see os_apply.log for details"
 fi
 
-# Refresh the pending-updates card so the UI reflects the new state.
 [[ -x "$COLLECTOR" ]] && ZMM_DATA_DIR="$DATA_DIR" bash "$COLLECTOR" || true
 exit 0

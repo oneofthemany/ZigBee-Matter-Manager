@@ -1,26 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM run_container helper — thin wrapper around build.sh's run_container()
-#
-# Called by upgrade.sh during swap/rollback. Sources build.sh so the run
-# arguments (caps, sysctls, volumes, devices) come from a single source of
-# truth instead of being duplicated here.
-#
-# Required env:
-#   RUNTIME         — podman or docker
-#   IMAGE_TAG       — full image ref to run (e.g. zigbee-matter-manager:2.0.1-amd64)
-#   CONTAINER_NAME  — name to give the container
-#   DATA_DIR        — persistent data directory (volumes)
-#
-# Optional env:
-#   HOST_PORT        — defaults to 8000
-#   HOST_MATTER_PORT — defaults to 5580
-#   ZMM_APP_DIR      — where build.sh lives (defaults to /opt/zigbee-matter-manager)
-#
-# Device resolution:
-#   Reads zigbee.port from config.yaml. Must be a /dev/* path or socket://
-#   URL. Failure is intentional — there is no auto-detection because the
-#   existing system is already configured for a specific device.
 # =============================================================================
 set -u
 set -o pipefail
@@ -51,8 +31,6 @@ if [[ -z "$DEVICE" ]]; then
     exit 1
 fi
 
-# Export USB_DEVICE for build.sh's run_container() to consume.
-# socket:// (MultiPAN bridge) → no /dev passthrough; leave USB_DEVICE empty.
 if [[ "$DEVICE" == socket://* ]]; then
     echo "Detected MultiPAN socket mode: $DEVICE"
     export USB_DEVICE=""
@@ -69,8 +47,6 @@ else
 fi
 
 # ── SOURCE build.sh AND DELEGATE ─────────────────────────────────────────────
-# build.sh exposes run_container(host_port, host_matter_port, image_tag).
-# It reads CONTAINER_NAME, RUNTIME, DATA_DIR, USB_DEVICE from the environment.
 if [[ -f "${APP_DIR}/build.sh" ]]; then
     BUILD_SH_PATH="${APP_DIR}/build.sh"
 elif [[ -f "${DATA_DIR}/scripts/build.sh" ]]; then
@@ -81,10 +57,8 @@ else
     exit 1
 fi
 
-# Re-export anything build.sh's run_container() reads from globals.
 export RUNTIME CONTAINER_NAME DATA_DIR
 
-# shellcheck disable=SC1090
 source "$BUILD_SH_PATH"
 
 run_container "$HOST_PORT" "$HOST_MATTER_PORT" "$IMAGE_TAG"

@@ -1,18 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM OS Updates Collector
-#
-# Runs ON THE HOST (installed to ${DATA_DIR}/scripts by install_watcher.sh,
-# scheduled by zmm-os-updates.timer every 6h + on boot, and re-run on demand
-# when the :8001 manager writes ${DATA_DIR}/data/os_updates/refresh — a
-# systemd path unit watches that file).
-#
-# Strictly READ-ONLY: checks the host package manager for pending updates and
-# writes ${DATA_DIR}/data/os_updates.json for the manager to surface. It never
-# installs, upgrades, or removes anything.
-#
-# Supports dnf (Fedora/RHEL) and apt (Debian/Ubuntu); anything else reports
-# pkg_manager=null with an "unsupported" error so the UI can say so honestly.
 # =============================================================================
 set -u
 
@@ -28,8 +16,6 @@ mkdir -p "${DATA_DIR}/data" "$TRIGGER_DIR" "${DATA_DIR}/logs" 2>/dev/null || tru
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE" 2>/dev/null || true; }
 
-# Consume the on-demand trigger (if any) up front, mirroring upgrade.sh's
-# consume-first rule so a re-fire during the run isn't lost.
 rm -f "$REFRESH_TRIGGER" 2>/dev/null || true
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -37,8 +23,6 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 0
 fi
 
-# Non-root best effort: use passwordless sudo when available (apt metadata
-# refresh needs root; dnf refreshes to a per-user cache fine without it).
 SUDO=""
 if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 \
    && sudo -n true 2>/dev/null; then
@@ -58,8 +42,6 @@ REBOOT=false
 PKGS_TSV=""           # name<TAB>current<TAB>candidate
 
 if [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
-    # Image-based host (Silverblue / IoT / CoreOS): updates come as one new
-    # deployment, not per-package. dnf can't answer here.
     PKG_MANAGER="rpm-ostree"
     log "checking updates via rpm-ostree"
     RAW=$(timeout "$NET_TIMEOUT" rpm-ostree upgrade --check 2>>"$LOG_FILE")
@@ -72,34 +54,27 @@ if [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
         ERR="rpm-ostree upgrade --check failed (exit $RC)"
         log "$ERR"
     fi
-    # A staged-but-not-booted deployment means a reboot finishes the update.
     rpm-ostree status 2>/dev/null | grep -q '(pending)' && REBOOT=true
 elif command -v dnf >/dev/null 2>&1; then
     PKG_MANAGER="dnf"
     log "checking updates via dnf"
-    # check-update exits 100 when updates exist, 0 when none — both are fine.
-    # dnf5 needs root even for read-only checks (system repo lock).
     RAW=$(timeout "$NET_TIMEOUT" $SUDO dnf -q --refresh check-update 2>>"$LOG_FILE")
     RC=$?
     if [[ $RC -ne 0 && $RC -ne 100 ]]; then
         ERR="dnf check-update failed (exit $RC)"
         log "$ERR"
     fi
-    # Lines: "name.arch  version  repo"; stop at the "Obsoleting" section.
     PKGS_TSV=$(printf '%s\n' "$RAW" | awk '
         /^Obsoleting/ {exit}
         NF==3 && $1 ~ /\./ {printf "%s\t\t%s\n", $1, $2}')
     SECURITY=$(timeout "$NET_TIMEOUT" $SUDO dnf -q updateinfo list --updates \
         --security 2>/dev/null | grep -c '/' || true)
-    # needs-restarting -r exits 1 when a reboot is required (dnf-utils).
     if dnf needs-restarting --help >/dev/null 2>&1; then
         $SUDO dnf needs-restarting -r >/dev/null 2>&1 || REBOOT=true
     fi
 elif command -v apt-get >/dev/null 2>&1; then
     PKG_MANAGER="apt"
     log "checking updates via apt"
-    # Metadata refresh needs root; without it we still list against the
-    # existing (possibly stale) metadata rather than failing outright.
     if [[ -n "$SUDO" || "$(id -u)" -eq 0 ]]; then
         timeout "$NET_TIMEOUT" $SUDO apt-get update -qq 2>>"$LOG_FILE" \
             || { ERR="apt-get update failed (using cached metadata)"; log "$ERR"; }
@@ -107,7 +82,6 @@ elif command -v apt-get >/dev/null 2>&1; then
         ERR="no root/sudo — package list may be stale (apt-get update skipped)"
         log "$ERR"
     fi
-    # Lines: "name/suite candidate arch [upgradable from: current]"
     RAW=$(timeout "$NET_TIMEOUT" apt list --upgradable 2>/dev/null | grep upgradable)
     PKGS_TSV=$(printf '%s\n' "$RAW" | awk -F'[/ ]' '
         NF>=3 {cur=""; if (match($0, /upgradable from: [^]]+/))
@@ -121,14 +95,6 @@ else
 fi
 
 # ── OS release-upgrade availability ─────────────────────────────────────────
-# Distro-agnostic within what each distro sanctions:
-#   Fedora — probe the mirrorlist for releasever+1 (cheap HTTP HEAD, no dnf
-#            metadata download); automated via dnf system-upgrade.
-#   Ubuntu — do-release-upgrade -c; automated via do-release-upgrade.
-#   Debian — compare the running VERSION_ID with the archive's current
-#            stable; DETECTED but flagged manual (Debian ships no official
-#            non-interactive release-upgrade tool — it's a sources rewrite).
-#   Everything else — null (the UI says nothing rather than guessing).
 OS_ID=""
 RELEASE_CURRENT=""
 RELEASE_AVAILABLE=""
@@ -139,9 +105,6 @@ if [[ -r /etc/os-release ]]; then
 fi
 if [[ "$OS_ID" == "fedora" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
    && command -v curl >/dev/null 2>&1; then
-    # Probe upward and report the HIGHEST reachable release, not just +1 — a
-    # host on 42 should be offered 44 if it exists, not left on 43. Fedora
-    # sanctions skipping up to two releases (N -> N+2), so cap the probe there.
     RELEASE_LATEST=""
     NEXT=$((RELEASE_CURRENT + 1))
     while (( NEXT <= RELEASE_CURRENT + 2 )); do
@@ -160,7 +123,6 @@ if [[ "$OS_ID" == "fedora" && "$RELEASE_CURRENT" =~ ^[0-9]+$ ]] \
         log "OS release upgrade available: Fedora $RELEASE_CURRENT -> $RELEASE_LATEST"
     fi
 elif [[ "$PKG_MANAGER" == "apt" ]] && command -v do-release-upgrade >/dev/null 2>&1; then
-    # Ubuntu (and derivatives that ship ubuntu-release-upgrader)
     DRU=$(timeout 120 do-release-upgrade -c 2>>"$LOG_FILE")
     if [[ $? -eq 0 ]]; then
         RELEASE_AVAILABLE=$(printf '%s\n' "$DRU" \

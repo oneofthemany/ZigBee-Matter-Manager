@@ -1,19 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM Upgrade — Host-Side Orchestrator
-#
-# Reads trigger files written by the running container and performs:
-#   build     — clone target tag, build new image tagged with version
-#   swap      — stop current container, rename, run new image, health-check
-#   rollback  — swap back to previous image
-#   cancel    — best-effort kill of in-progress build
-#   gc        — prune old images per retention count
-#
-# Runs on the host (user or root systemd, or fallback polling wrapper).
-# NEVER runs inside the container. Has full access to podman/docker.
-#
-# Works with Podman (preferred) and Docker. Rootful only — ZMM always runs as
-# root (the Zigbee USB coordinator and OTBR require it).
 # =============================================================================
 set -u  # NOTE: not -e; we want to catch errors and report them cleanly.
 set -o pipefail
@@ -24,22 +11,10 @@ APP_DIR="${ZMM_APP_DIR:-/opt/.zigbee-matter-manager/upgrade_build}"
 IMAGE_NAME="${ZMM_IMAGE_NAME:-zigbee-matter-manager}"
 CONTAINER_NAME="${ZMM_CONTAINER_NAME:-zigbee-matter-manager}"
 REPO_URL="${ZMM_REPO_URL:-https://github.com/oneofthemany/ZigBee-Matter-Manager.git}"
-# Seconds to wait for the new container to become healthy. Since v3.2.9 the
-# app serves the web UI immediately and finishes bring-up (Zigbee radio,
-# Matter server) in the background, reporting the phase via the health
-# endpoint's "bringup" field — wait_until_healthy() only counts a check once
-# bringup=ready, and a full bring-up can take 2-3 minutes on MultiPAN.
 HEALTH_TIMEOUT="${ZMM_HEALTH_TIMEOUT:-300}"
-# After the app first reports healthy, keep watching it for this long before
-# accepting the swap. The health gate above only proves the app BOOTED: it wants
-# two consecutive passes three seconds apart, so ~6s of evidence.
-# Any crash cycle shorter than this soak is now caught while rollback is still free.
 STABILITY_SOAK="${ZMM_STABILITY_SOAK:-180}"
 
-# Health check URL is auto-detected from config.yaml at health-check time —
-# see detect_health_url(). Override with $ZMM_HEALTH_URL if needed.
 HEALTH_URL="${ZMM_HEALTH_URL:-}"
-# The port published by the previous container — discovered from inspect if possible.
 
 # ── IPC paths (shared with container via volume mount) ───────────────────────
 UPGRADE_DIR="${DATA_DIR}/data/upgrade"
@@ -49,11 +24,9 @@ BUILD_LOG="${UPGRADE_DIR}/build.log"
 LOCK_FILE="${UPGRADE_DIR}/lock"
 WATCHER_MARKER="${UPGRADE_DIR}/.watcher_installed"
 
-# State file used by the app (read-only for us, but we update current/previous on swap)
 STATE_DIR="${DATA_DIR}/data/state"
 VERSION_STATE_FILE="${STATE_DIR}/version.json"
 
-# Log for the watcher itself (separate from build.log)
 WATCHER_LOG="${DATA_DIR}/logs/upgrade_watcher.log"
 
 mkdir -p "$UPGRADE_DIR" "$STATE_DIR" "$(dirname "$WATCHER_LOG")"
@@ -95,7 +68,6 @@ write_status() {
     local err="${5:-}"
     local started_at="${6:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 
-    # Quote target_version correctly
     local tv_json
     if [[ "$target_version" == "null" || -z "$target_version" ]]; then
         tv_json="null"
@@ -107,7 +79,6 @@ write_status() {
     if [[ -z "$err" ]]; then
         err_json="null"
     else
-        # escape quotes
         err_json="\"$(echo "$err" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
     fi
 
@@ -130,8 +101,6 @@ JSON
 }
 
 # ── LOCKING ──────────────────────────────────────────────────────────────────
-# A stale lock from a killed/crashed previous run will block ALL future runs
-# unless we detect-and-clear it. Lock file format: "PID TIMESTAMP ACTION"
 acquire_lock() {
     if [[ -f "$LOCK_FILE" ]]; then
         local held_pid
@@ -139,13 +108,11 @@ acquire_lock() {
         local held
         held=$(cat "$LOCK_FILE" 2>/dev/null || echo "unknown")
 
-        # Is the holder still alive?
         if [[ -n "$held_pid" ]] && kill -0 "$held_pid" 2>/dev/null; then
             log "Lock held by live PID $held_pid: $held"
             return 1
         fi
 
-        # Stale lock — clear it
         log "Removing stale lock (PID $held_pid not running): $held"
         rm -f "$LOCK_FILE"
     fi
@@ -158,15 +125,11 @@ release_lock() {
 }
 
 # ── TRIGGER CONSUMPTION ──────────────────────────────────────────────────────
-# CRITICAL: we MUST delete the trigger file before doing anything else.
-# Otherwise the systemd-path unit re-fires us in a tight loop.
 consume_trigger() {
     if [[ ! -f "$TRIGGER_FILE" ]]; then
         return 1
     fi
 
-    # Read contents into memory FIRST, then delete the file.
-    # If we crash after this, the path unit won't re-fire because the file is gone.
     local trigger_content
     trigger_content=$(cat "$TRIGGER_FILE" 2>/dev/null || echo "")
     rm -f "$TRIGGER_FILE"
@@ -208,30 +171,16 @@ detect_arch() {
 }
 
 # ── HEALTH CHECK URL DETECTION ──────────────────────────────────────────────
-# The app always serves HTTPS (self-signed cert auto-generated at boot); the
-# only time it serves plain HTTP is the error fallback when no usable cert
-# could be provisioned. So we probe https first and keep http as a last
-# resort — no config flag consulted.
-#
-# We build a list of candidate URLs to try, in priority order:
-#   1. $ZMM_HEALTH_URL (if set explicitly — overrides everything)
-#   2. https://127.0.0.1:${port}/api/system/health
-#   3. http://127.0.0.1:${port}/api/system/health    (cert-failure fallback)
-#
-# is_app_healthy() returns 0 if ANY of the candidates returns 200.
 detect_health_urls() {
     local config="${DATA_DIR}/config/config.yaml"
     local port="8000"
 
-    # If user has set ZMM_HEALTH_URL, use only that
     if [[ -n "${HEALTH_URL:-}" ]]; then
         echo "$HEALTH_URL"
         return 0
     fi
 
-    # Best-effort YAML parsing without yq dependency — just the web port.
     if [[ -f "$config" ]]; then
-        # Extract port (anywhere under "web:" stanza). Keep simple — first hit wins.
         local p
         p=$(awk '
             /^web:/         { in_web=1; next }
@@ -241,20 +190,11 @@ detect_health_urls() {
         [[ -n "$p" && "$p" =~ ^[0-9]+$ ]] && port="$p"
     fi
 
-    # Output candidate URLs, one per line, in priority order.
-    # We only check /api/system/health — the canonical health endpoint.
     echo "https://127.0.0.1:${port}/api/system/health"
     echo "http://127.0.0.1:${port}/api/system/health"
 }
 
 # ── SSL CERT ASSURANCE ──────────────────────────────────────────────────────
-# HTTPS is always on. Installs that predate always-on SSL (or ran http-only)
-# may have no cert pair in DATA_DIR — ensure one exists BEFORE the upgraded
-# container starts, so the post-swap https health probe and the launcher's
-# recovery standby find a cert immediately. Same rules as build.sh /
-# ssl_bootstrap.py: NEVER regenerate an existing pair (browser trust must
-# survive upgrades), host-side SANs (hostname + LAN IP), key locked to 0600.
-# The in-app generator remains the fallback if openssl is missing here.
 ensure_ssl_cert() {
     local cert_dir="${DATA_DIR}/data/certs"
     local cert="${cert_dir}/cert.pem"
@@ -292,14 +232,9 @@ ensure_ssl_cert() {
     fi
 }
 
-# Try each candidate URL once. Returns 0 if any succeeds, prints the URL that
-# worked to stdout (so caller can log it).
 is_app_healthy() {
     local urls=("$@")
     for url in "${urls[@]}"; do
-        # -k: accept self-signed certs. Most home setups use them.
-        # --max-time 3: don't wait more than 3s per URL per attempt.
-        # -fsS: silent, fail-on-non-2xx, but show error if curl itself fails.
         if curl -fsS -k --max-time 3 "$url" >/dev/null 2>&1; then
             echo "$url"
             return 0
@@ -309,9 +244,6 @@ is_app_healthy() {
 }
 
 # ── HELPER LOCATION ─────────────────────────────────────────────────────────
-# Locate run_container.sh in the canonical location ${APP_DIR}/scripts/.
-# Falls back to legacy ${DATA_DIR}/scripts/ for older installs that ran
-# install_watcher.sh before the single-source-of-truth migration.
 find_run_helper() {
     for candidate in \
         "${APP_DIR}/scripts/run_container.sh" \
@@ -327,11 +259,6 @@ find_run_helper() {
 }
 
 # ── PORT FREE WAITER ────────────────────────────────────────────────────────
-# After podman stop, the host TCP sockets can stay in TIME_WAIT for up to ~60s,
-# AND rogue child processes (or rootlessport itself) may still be holding the
-# port. We poll until the ports are actually bindable, with a timeout.
-#
-# Returns 0 if all ports become free within $timeout seconds, 1 otherwise.
 wait_for_ports_free() {
     local timeout="${1:-90}"
     local elapsed=0
@@ -340,20 +267,13 @@ wait_for_ports_free() {
     local stable_required=2  # require N consecutive checks to pass before declaring free
     local stable_count=0
 
-    # Initial settle delay — after SIGKILL, rootlessport needs ~1-2s to fully
-    # release its sockets before they appear truly free. The kernel may
-    # report no-LISTEN before the socket is actually bindable.
     sleep 1
 
     while (( elapsed < timeout )); do
         local all_free=1
 
-        # Check 1: Are any sockets listening or in active states on these ports?
-        # We check ANY state (not just LISTEN) because TIME_WAIT/CLOSE_WAIT also
-        # block bind. ss with -a includes all states.
         for port in "${ports[@]}"; do
             if command -v ss >/dev/null 2>&1; then
-                # Look for any non-empty result on either IPv4 or IPv6
                 if ss -tan "( sport = :$port or dport = :$port )" 2>/dev/null | \
                    awk 'NR>1 && $1!="LISTEN" {found=1} END {exit !found}' >/dev/null 2>&1; then
                     all_free=0
@@ -371,12 +291,8 @@ wait_for_ports_free() {
             fi
         done
 
-        # Check 2: Definitive test — try to actually bind to each port
-        # Only do this if Check 1 says ports look free, otherwise it's wasted effort
         if (( all_free == 1 )); then
             for port in "${ports[@]}"; do
-                # Use python or perl to attempt a real bind. Falls through to
-                # a /dev/tcp probe if neither is available.
                 if command -v python3 >/dev/null 2>&1; then
                     if ! python3 -c "
 import socket, sys
@@ -414,8 +330,6 @@ for af in (socket.AF_INET, socket.AF_INET6):
     return 1
 }
 
-# Best-effort kill of any host processes holding the ports we need.
-# Used as a last resort if wait_for_ports_free times out.
 kill_port_squatters() {
     local ports=("$@")
     if [[ ${#ports[@]} -eq 0 ]]; then
@@ -433,7 +347,6 @@ kill_port_squatters() {
         fi
 
         for pid in $pids; do
-            # Sanity: never kill PID 1 or systemd
             if [[ "$pid" == "1" ]] || [[ "$pid" == "$$" ]]; then
                 continue
             fi
@@ -446,17 +359,6 @@ kill_port_squatters() {
 }
 
 # ── HEALTH WAITER (stable + version-aware) ──────────────────────────────────
-# Poll the candidate URLs until the app answers 200 for N CONSECUTIVE checks
-# (a single 200 isn't enough — a container can answer once then crash-loop).
-#
-# If $expect_version is non-empty AND the health response includes a "version"
-# field, the version must match before a check counts. This catches the case
-# where the OLD image somehow ended up serving the port after the swap. It is
-# best-effort: a health response WITHOUT a version field (older image being
-# rolled back to) still passes, so we never break rollbacks to old tags.
-#
-# Args: timeout_seconds expect_version url...
-# Returns 0 once stable-healthy, 1 on timeout.
 wait_until_healthy() {
     local timeout="$1"; shift
     local expect_version="$1"; shift
@@ -481,10 +383,6 @@ wait_until_healthy() {
                     sleep 3; elapsed=$((elapsed + 3)); continue
                 fi
             fi
-            # Deferred bring-up (v3.2.9+): the app answers 200 while services
-            # are still booting and reports the phase in "bringup". Only count
-            # a check once bring-up is ready. Best-effort like the version
-            # check: a response WITHOUT the field (older image) still passes.
             local bring
             bring=$(printf '%s' "$body" \
                     | grep -oE '"bringup"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
@@ -508,10 +406,6 @@ wait_until_healthy() {
     return 1
 }
 
-
-# Watch an already-healthy app for a while and fail if it degrades.
-# Args: soak_seconds expect_version url...
-# Returns 0 if it stayed up for the whole soak, 1 if it did not.
 soak_until_stable() {
     local soak="$1"; shift
     local expect_version="$1"; shift
@@ -539,9 +433,6 @@ soak_until_stable() {
         bring=$(printf '%s' "$body" \
                 | grep -oE '"bringup"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
                 | sed -E 's/.*"bringup"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
-        # Falling back to "starting" AFTER it was ready means the process
-        # restarted underneath us — precisely the crash loop the short gate
-        # cannot see, because each fresh boot looks healthy again.
         if [[ -n "$bring" && "$bring" != "ready" ]]; then
             log "Soak: bringup=${bring} after already being ready — the app restarted"
             return 1
@@ -553,26 +444,14 @@ soak_until_stable() {
 }
 
 # ── HARDENED ROLLBACK ────────────────────────────────────────────────────────
-# Single rollback path used by every do_swap failure branch. Relies on do_swap's
-# locals ($previous_name, $target_version) via bash dynamic scope.
-#
-# Unlike the old inline rollback, this one:
-#   - waits for the dying container to release :8000/:5580 before restarting the
-#     previous one (otherwise the restore fails to bind and we end up with
-#     NOTHING running),
-#   - VERIFIES the restored container actually serves (not just "started"),
-#   - retries once with a port-squatter kill, and
-#   - reports an honest CRITICAL status if it genuinely cannot restore service.
 rollback_to_previous() {
     local reason="${1:-unknown failure}"
     log "Rollback: $reason — restoring $previous_name"
     write_status "rolling_back" "$target_version" 85 "Rolling back: $reason"
 
-    # Tear down the failed new container.
     "$RUNTIME" stop -t 10 "$CONTAINER_NAME" >/dev/null 2>&1 || true
     "$RUNTIME" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-    # Let the ports come free before we try to bind them again.
     if ! wait_for_ports_free 60; then
         log "Rollback: ports still busy — killing squatters"
         kill_port_squatters 8000 5580
@@ -592,7 +471,6 @@ rollback_to_previous() {
     unmask_unit_if_needed
     container_unit_start
 
-    # Build health candidates from config and CONFIRM the restored app serves.
     local health_candidates=()
     while IFS= read -r url; do [[ -n "$url" ]] && health_candidates+=("$url"); done < <(detect_health_urls)
 
@@ -603,7 +481,6 @@ rollback_to_previous() {
         return 1
     fi
 
-    # Restored container didn't come up — last-resort kill + restart.
     log "Rollback: restored container not healthy — last-resort restart"
     kill_port_squatters 8000 5580
     "$RUNTIME" restart "$CONTAINER_NAME" >>"$WATCHER_LOG" 2>&1 || true
@@ -636,7 +513,6 @@ do_build() {
     local started_at
     started_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    # Reset build log
     : > "$BUILD_LOG"
     log_to_build "=== ZMM Upgrade Build ==="
     log_to_build "Target version: $target_version"
@@ -648,22 +524,12 @@ do_build() {
     write_status "building" "$target_version" 5 "Preparing" "" "$started_at"
 
     # ── Sanity check: is APP_DIR in the expected state? ──────────────────────
-    # Before wiping APP_DIR, log what's there so the build log shows whether
-    # we found a sane prior install. This is informational only — we always
-    # proceed with the wipe-and-reclone because the new clone is authoritative,
-    # but if APP_DIR was in an unexpected state it goes in the log.
     if [[ -d "$APP_DIR" ]]; then
         local existing_version="(no VERSION file)"
         [[ -f "$APP_DIR/VERSION" ]] && existing_version=$(tr -d '[:space:]' < "$APP_DIR/VERSION")
         log_to_build "APP_DIR exists at $APP_DIR (VERSION=${existing_version}) — will be wiped and re-cloned"
 
-        # Cross-check against the running container's reported version. A
-        # mismatch means APP_DIR drifted from the image at some point — not
-        # fatal, but worth recording.
         local running_version
-        # timeout: podman exec can hang indefinitely if the container runtime
-        # is wedged, and this check is informational only — never block on it.
-        # (only if coreutils `timeout` exists; otherwise run unbounded).
         local exec_timeout=""
         command -v timeout >/dev/null 2>&1 && exec_timeout="timeout 10"
         running_version=$($exec_timeout "$RUNTIME" exec "$CONTAINER_NAME" cat /app/VERSION 2>/dev/null | tr -d '[:space:]' || echo "")
@@ -674,11 +540,6 @@ do_build() {
         log_to_build "APP_DIR does not exist at $APP_DIR — fresh clone"
     fi
 
-    # APP_DIR is the canonical app-code location and also the build workspace.
-    # Wiping and re-cloning here means the post-build state of APP_DIR exactly
-    # matches the image we're about to ship — including scripts/run_container.sh,
-    # which do_swap will invoke from this path. No drift between the helper
-    # script and the image possible.
     local work_dir="$APP_DIR"
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
@@ -688,7 +549,6 @@ do_build() {
 
     if ! git clone --depth 1 --branch "v${target_version}" "$REPO_URL" "$work_dir" >>"$BUILD_LOG" 2>&1; then
         log_to_build "ERROR: git clone failed for tag v${target_version}"
-        # Try without the 'v' prefix as a fallback
         rm -rf "$work_dir"
         mkdir -p "$work_dir"
         if ! git clone --depth 1 --branch "${target_version}" "$REPO_URL" "$work_dir" >>"$BUILD_LOG" 2>&1; then
@@ -698,20 +558,14 @@ do_build() {
         fi
     fi
 
-    # Stamp VERSION file into the clone so the image knows its own version
     echo "$target_version" > "$work_dir/VERSION"
 
     # ── requirements drift check ─────────────────────────────────────────────
-    # The image installs from requirements.lock; the Containerfile then tops
-    # up from requirements.txt so a stale lock can't ship a broken image.
-    # Still worth a loud warning in the build log: drift means the release
-    # forgot to regenerate the lock (uv pip compile requirements.txt ...).
     if [[ -f "$work_dir/requirements.txt" && -f "$work_dir/requirements.lock" ]]; then
         local drift=""
         local pkg pkg_re
         while IFS= read -r pkg; do
             [[ -z "$pkg" ]] && continue
-            # PyPI names are case-insensitive with - and _ interchangeable
             pkg_re=$(printf '%s' "$pkg" | sed 's/[-_]/[-_]/g')
             grep -qiE "^${pkg_re}==" "$work_dir/requirements.lock" || drift="${drift} ${pkg}"
         done < <(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$work_dir/requirements.txt" \
@@ -723,17 +577,10 @@ do_build() {
     fi
 
     # ── Appender choice: read the persisted marker from previous install ─────
-    # build.sh writes ${DATA_DIR}/data/state/appender.enabled at install time
-    # (containing 'true' or 'false') to record whether the user passed
-    # --with-appender. We read it here and propagate the choice to the new
-    # tag's write_containerfile via the WITH_APPENDER variable. If the marker
-    # is missing (e.g. install pre-dates this mechanism) we default to false,
-    # which is build.sh's default and matches the small/home-network use case.
     local appender_marker="${DATA_DIR}/data/state/appender.enabled"
     local with_appender="false"
     if [[ -f "$appender_marker" ]]; then
         with_appender=$(tr -d '[:space:]' < "$appender_marker")
-        # Coerce anything other than 'true' to 'false' to keep it strict.
         [[ "$with_appender" == "true" ]] || with_appender="false"
         log_to_build "Appender marker found: ${appender_marker} = ${with_appender}"
     else
@@ -741,11 +588,6 @@ do_build() {
     fi
 
     # ── EQ choice: separate marker (zmm_eq is an independent crate). ─────────
-    # Legacy migration: before the split, a single marker built BOTH crates,
-    # so an install that predates eq.enabled but has appender.enabled=true was
-    # also getting the EQ. When eq.enabled is missing we therefore inherit the
-    # appender value, so an upgrade never silently drops a working EQ. Once the
-    # UI writes eq.enabled explicitly the inheritance no longer applies.
     local eq_marker="${DATA_DIR}/data/state/eq.enabled"
     local with_eq="$with_appender"
     if [[ -f "$eq_marker" ]]; then
@@ -756,21 +598,13 @@ do_build() {
         log_to_build "EQ marker missing — inheriting WITH_EQ=${with_eq} from appender marker (legacy combined build)"
     fi
 
-    # Containerfile generation. With the new layout work_dir IS APP_DIR, so
-    # we can't copy "an existing Containerfile from APP_DIR" — they're the
-    # same path. The cloned tag's build.sh has write_containerfile() which
-    # produces the Containerfile expected by that version.
     if [[ ! -f "$work_dir/Containerfile" ]]; then
         if [[ -f "$work_dir/build.sh" ]]; then
             log_to_build "Generating Containerfile via target tag's build.sh write_containerfile() (WITH_APPENDER=${with_appender}, WITH_EQ=${with_eq})"
             (
                 set +u
-                # shellcheck disable=SC1090
                 source "$work_dir/build.sh" >/dev/null 2>&1 || true
                 if type write_containerfile >/dev/null 2>&1; then
-                    # write_containerfile reads CLONE_DIR for the output path
-                    # and WITH_APPENDER / WITH_EQ for the per-crate stanzas.
-                    # (Older tags ignore WITH_EQ harmlessly.)
                     CLONE_DIR="$work_dir" APP_DIR="$work_dir" \
                     WITH_APPENDER="$with_appender" \
                     WITH_EQ="$with_eq" \
@@ -786,7 +620,6 @@ do_build() {
         return 1
     fi
 
-    # Detect build jobs
     local build_jobs
     if command -v nproc >/dev/null 2>&1; then
         build_jobs=$(nproc)
@@ -802,17 +635,7 @@ do_build() {
 
     write_status "building" "$target_version" 20 "Compiling image (varies by host hardware)" "" "$started_at"
 
-    # Run the build in the BACKGROUND and watch for cancellation. The watcher
-    # is a single systemd oneshot: while this build runs, a cancel trigger
-    # can't start a second watcher instance, so this loop is the only thing
-    # that can act on it in time. (The polling fallback CAN run a second
-    # instance — that one handles cancel pre-lock and leaves CANCEL_MARKER.)
     rm -f "$CANCEL_MARKER"
-    # Pin the pull policy (podman only; docker's --pull is a plain boolean):
-    # if the base image were re-pulled whenever upstream publishes a newer
-    # python:3.11-slim-bookworm digest, the ENTIRE layer cache below it (apt,
-    # SiLabs SDK, OTBR compile, pip wheels) would be invalidated on that
-    # upgrade. "missing" reuses the local base image while it exists.
     local pull_args=()
     [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=missing)
     "$RUNTIME" build \
@@ -859,7 +682,6 @@ do_build() {
         return 1
     fi
 
-    # Also tag as :latest-<arch> for convenience
     "$RUNTIME" tag "$new_tag" "${IMAGE_NAME}:latest-${arch}" >>"$BUILD_LOG" 2>&1 || true
 
     log_to_build ""
@@ -876,12 +698,6 @@ UNIT_WAS_MASKED=0
 UNIT_OVERRIDE_DIR=""
 
 detect_container_unit() {
-    # POD deployments: the systemd unit is a Type=oneshot `pod start/stop` unit,
-    # NOT a per-container Restart=always supervisor. There's no auto-restart to
-    # suppress during a swap, and `systemctl stop` on it would tear down the WHOLE
-    # pod — including the always-on manager sidecar (the :8001 outage on swap).
-    # Report "no unit" so the mask/stop/start helpers become no-ops; the swap
-    # manages the app container directly and leaves the pod + manager running.
     if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null; then
         return 1
     fi
@@ -893,8 +709,6 @@ detect_container_unit() {
         "container-${CONTAINER_NAME}.service"
         "${CONTAINER_NAME}.service"
     )
-    # System scope only — ZMM always runs rootful, so the container/pod units
-    # are root system units. There is no `systemctl --user` (rootless) path.
     for unit in "${candidates[@]}"; do
         if systemctl --system cat "$unit" >/dev/null 2>&1; then
             echo "--system $unit"
@@ -904,8 +718,6 @@ detect_container_unit() {
     return 1
 }
 
-# Drop a runtime override that disables Restart= for the swap window, then
-# stop the unit. Pair with unmask_unit_if_needed.
 container_unit_mask_and_stop() {
     local unit_desc; unit_desc=$(detect_container_unit) || {
         log "Supervisor: no unit detected (continuing without override)"
@@ -915,7 +727,6 @@ container_unit_mask_and_stop() {
     read -r scope unit <<< "$unit_desc"
     log "Supervisor: disabling auto-restart on $scope $unit (runtime drop-in)"
 
-    # System scope only (rootful) — detect_container_unit never returns --user.
     local override_dir="/run/systemd/system/${unit}.d"
     mkdir -p "$override_dir"
     cat > "${override_dir}/zzz-zmm-upgrade-norestart.conf" <<EOF
@@ -929,7 +740,6 @@ EOF
     systemctl "$scope" stop "$unit" >>"$WATCHER_LOG" 2>&1 || true
 }
 
-# Remove the runtime override if we placed one. Idempotent.
 unmask_unit_if_needed() {
     if [[ "${UNIT_WAS_MASKED:-0}" == "1" ]]; then
         local unit_desc; unit_desc=$(detect_container_unit) || { UNIT_WAS_MASKED=0; return 0; }
@@ -948,7 +758,6 @@ unmask_unit_if_needed() {
     fi
 }
 
-# Start the supervisor unit. Call only after unmask_unit_if_needed.
 container_unit_start() {
     local unit_desc; unit_desc=$(detect_container_unit) || return 0
     local scope unit
@@ -959,28 +768,9 @@ container_unit_start() {
 }
 
 # ── HELPER SELF-HEAL ─────────────────────────────────────────────────────────
-# Compares the WATCHER_SCHEMA_VERSION baked into the currently-installed
-# systemd unit against the version bundled in the new image. If the new image
-# is strictly newer, copy the four helper scripts (build.sh, upgrade.sh,
-# run_container.sh, install_watcher.sh) out of the new image and re-run
-# install_watcher.sh from the freshly-extracted location. This rewrites the
-# systemd unit, reloads the daemon, and leaves $SCRIPTS_DIR + $APP_DIR/build.sh
-# matching the new image's expectations.
-#
-# Called from do_swap() AFTER a successful swap+healthcheck. Failure here
-# logs a warning but does not fail the upgrade — the user's system is up
-# and running the new image; only the host-side helpers are stale, which
-# blocks future upgrades but doesn't break what they have right now.
-#
-# Strict forward-only: never downgrades helpers.
 self_heal_helpers() {
     local new_tag="$1"
 
-    # Read the schema version baked into the currently-installed unit. We
-    # check the most likely unit file paths in order of likelihood. Default
-    # 0 if missing — this is correct: a unit without the comment line was
-    # installed by an old install_watcher.sh, so any schema-aware image
-    # should self-heal it.
     local current_schema=0
     local unit_candidates=(
         "/etc/systemd/system/zmm-upgrade.service"
@@ -1005,7 +795,6 @@ self_heal_helpers() {
         return 0
     fi
 
-    # Stage a stopped container from the new image so we can copy out files.
     local stage_name="zmm-self-heal-$$-$RANDOM"
     if ! "$RUNTIME" create --name "$stage_name" "$new_tag" >/dev/null 2>&1; then
         log "self_heal: WARN failed to create staging container from $new_tag — skipping"
@@ -1018,10 +807,8 @@ self_heal_helpers() {
         "$RUNTIME" rm -f "$stage_name" >/dev/null 2>&1 || true
         return 0
     }
-    # shellcheck disable=SC2064
     trap "\"$RUNTIME\" rm -f $stage_name >/dev/null 2>&1 || true; rm -rf $stage_dir" RETURN
 
-    # Copy the four helper files out of the staging container.
     local cp_failed=0
     "$RUNTIME" cp "$stage_name:/app/scripts/install_watcher.sh" "$stage_dir/install_watcher.sh" 2>/dev/null || cp_failed=1
     "$RUNTIME" cp "$stage_name:/app/scripts/upgrade.sh"         "$stage_dir/upgrade.sh"         2>/dev/null || cp_failed=1
@@ -1033,7 +820,6 @@ self_heal_helpers() {
         return 0
     fi
 
-    # Read the new image's schema version from the freshly-copied file.
     local new_schema
     new_schema=$(grep -oP '^WATCHER_SCHEMA_VERSION=\K[0-9]+' "$stage_dir/install_watcher.sh" 2>/dev/null | head -1)
     if [[ -z "$new_schema" ]]; then
@@ -1043,7 +829,6 @@ self_heal_helpers() {
 
     log "self_heal: current=${current_schema}, new=${new_schema}, unit=${found_unit}"
 
-    # STRICT forward-only comparison.
     if (( new_schema <= current_schema )); then
         log "self_heal: nothing to do (new schema is not greater than current)"
         return 0
@@ -1051,19 +836,12 @@ self_heal_helpers() {
 
     log "self_heal: schema bump detected (${current_schema} -> ${new_schema}) — refreshing helpers"
 
-    # Place build.sh at $APP_DIR/build.sh (run_container.sh sources it from there).
-    # Place install_watcher.sh, upgrade.sh, run_container.sh at $APP_DIR/scripts/
-    # so install_watcher.sh's find_script() picks them up when we re-invoke it.
     mkdir -p "${APP_DIR}/scripts" 2>/dev/null || true
     install -m 755 "$stage_dir/build.sh"           "${APP_DIR}/build.sh"                     || { log "self_heal: WARN failed to install build.sh"; return 0; }
     install -m 755 "$stage_dir/install_watcher.sh" "${APP_DIR}/scripts/install_watcher.sh"   || { log "self_heal: WARN failed to install install_watcher.sh"; return 0; }
     install -m 755 "$stage_dir/upgrade.sh"         "${APP_DIR}/scripts/upgrade.sh"           || { log "self_heal: WARN failed to install upgrade.sh"; return 0; }
     install -m 755 "$stage_dir/run_container.sh"   "${APP_DIR}/scripts/run_container.sh"     || { log "self_heal: WARN failed to install run_container.sh"; return 0; }
 
-    # Re-run install_watcher.sh from the freshly-installed location. It will
-    # rewrite the systemd unit (including the new WATCHER_SCHEMA_VERSION
-    # comment line), copy the scripts to $SCRIPTS_DIR, daemon-reload, and
-    # restart the watcher.
     log "self_heal: invoking ${APP_DIR}/scripts/install_watcher.sh"
     if ZMM_DATA_DIR="$DATA_DIR" ZMM_APP_DIR="$APP_DIR" \
             bash "${APP_DIR}/scripts/install_watcher.sh" >>"$BUILD_LOG" 2>&1; then
@@ -1076,12 +854,6 @@ self_heal_helpers() {
 }
 
 # ── SWAP: stop old container, rename, run new ────────────────────────────────
-# Linear flow:
-#   1. Mask + stop supervisor (so it can't auto-restart the old container)
-#   2. Stop the old container, rename to -previous
-#   3. Start new container
-#   4. Health check
-#   5. On failure → rollback. On success → unmask + start supervisor.
 do_swap() {
     local target_version
     target_version=$(echo "$TRIGGER_PAYLOAD" | jq -r '.target_version // empty')
@@ -1106,7 +878,6 @@ do_swap() {
 
     log "Swap: starting for v$target_version"
 
-    # Capture current state for rollback
     local current_image_tag current_version previous_name
     current_image_tag=$("$RUNTIME" inspect -f '{{.ImageName}}' "$CONTAINER_NAME" 2>/dev/null || echo "")
     if [[ -z "$current_image_tag" || "$current_image_tag" == "<nil>" ]]; then
@@ -1146,18 +917,12 @@ do_swap() {
         return 1
     fi
 
-    # The old container has stopped but the host ports may still be in TIME_WAIT
-    # (or rootlessport may not have released them yet). Wait for them to be
-    # bindable before starting the new container, otherwise it fails to bind
-    # :8000/:5580 and we'd needlessly roll back a perfectly good image.
     write_status "swapping" "$target_version" 55 "Waiting for ports to free"
     if ! wait_for_ports_free 60; then
         log "Swap: ports still busy after wait — killing squatters before start"
         kill_port_squatters 8000 5580
     fi
 
-    # Installs upgrading from an http-only era need a cert pair in place
-    # before the new (always-HTTPS) container boots.
     ensure_ssl_cert
 
     write_status "swapping" "$target_version" 60 "Starting new container"
@@ -1169,8 +934,6 @@ do_swap() {
     log_to_build "Helper: $run_helper"
     log_to_build ""
 
-    # Bound the start so a hung run_container.sh can't wedge the swap forever
-    # (only if coreutils `timeout` exists; otherwise run unbounded).
     local run_timeout=""
     command -v timeout >/dev/null 2>&1 && run_timeout="timeout 180"
 
@@ -1219,8 +982,6 @@ do_swap() {
     fi
 
     # ── STEP 4b: Stability soak ──────────────────────────────────────────────
-    # Healthy once is not the same as healthy. Keep watching before we commit,
-    # while rolling back is still a one-line call rather than a manual recovery.
     if ! soak_until_stable "$STABILITY_SOAK" "$target_version" "${health_candidates[@]}"; then
         log "Swap: new version did not stay healthy — rolling back"
 
@@ -1239,13 +1000,6 @@ do_swap() {
     unmask_unit_if_needed
     container_unit_start
 
-    # POD-SPECIFIC: the stopped -previous container is still a pod member, so a
-    # reboot's `podman pod start ${POD_NAME}` would start it alongside the new app
-    # and the two would fight for the host ports (the dual-container bug). Remove
-    # it. Rollback re-runs the previous IMAGE instead — it's recorded in
-    # version.json (previous_image_tag, set above), protected from GC by do_gc,
-    # and restarted through the same pod-aware run_container.sh. Standalone keeps
-    # the container as before.
     if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null; then
         "$RUNTIME" rm -f "$previous_name" >/dev/null 2>&1 || true
         log "Swap: removed pod member $previous_name (rollback uses the retained previous image)"
@@ -1253,14 +1007,8 @@ do_swap() {
         log "Swap: keeping $previous_name for rollback (standalone)"
     fi
 
-    # Self-heal host-side helpers if the new image bumped WATCHER_SCHEMA_VERSION.
     self_heal_helpers "$new_tag" || log "self_heal: returned non-zero (treated as non-fatal)"
 
-    # CP4: refresh the manager sidecar to the NEW image so manager-side changes
-    # ship through the upgrade. The manager IS the app image run as `python -m
-    # manager`, and the watcher runs on the host (not inside the manager), so it
-    # can recreate the sidecar directly via build.sh --refresh-manager. Done at
-    # the very end (app already healthy) — a brief :8001 blip, never fatal.
     if "$RUNTIME" pod exists "${ZMM_POD_NAME:-zmm}" 2>/dev/null \
        && "$RUNTIME" inspect "${CONTAINER_NAME}-manager" >/dev/null 2>&1; then
         _bsh=""
@@ -1274,14 +1022,9 @@ do_swap() {
         fi
     fi
 
-    # Clean up the build workspace to save disk space, but preserve the orchestration scripts
-    # that run_container.sh requires for future swaps and rollbacks.
     log "Swap: Cleaning up clone directory..."
     find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name 'build.sh' ! -name 'scripts' -exec rm -rf {} + 2>/dev/null || true
 
-    # Prune stale images now that the new version is healthy. Keeps the running
-    # and rollback (-previous) images; honours the configured retention. Runs in
-    # "auto" mode so it never writes status or fails the (already-successful) swap.
     log "Swap: running image GC (retention-based + dangling)"
     do_gc auto || log "Swap: GC returned non-zero (non-fatal)"
 
@@ -1297,7 +1040,6 @@ do_rollback() {
     previous_version=$(echo "$TRIGGER_PAYLOAD" | jq -r '.previous_version // empty')
 
     if [[ -z "$previous_image_tag" ]]; then
-        # Fallback: look for -previous container
         if "$RUNTIME" inspect "${CONTAINER_NAME}-previous" >/dev/null 2>&1; then
             log "Rollback: using ${CONTAINER_NAME}-previous"
             write_status "rolling_back" "$previous_version" 20 "Stopping current container"
@@ -1345,7 +1087,6 @@ do_rollback() {
     DATA_DIR="$DATA_DIR" \
     bash "$run_helper" >>"$WATCHER_LOG" 2>&1
 
-    # Clean up failed container
     "$RUNTIME" rm -f "$failed_name" >/dev/null 2>&1 || true
 
     update_version_state "$previous_version" "" "$previous_image_tag" ""
@@ -1356,11 +1097,6 @@ do_rollback() {
 }
 
 # ── CANCEL: kill in-progress build ───────────────────────────────────────────
-# Runs WITHOUT the lock (see main) — cancel exists precisely to interrupt the
-# lock holder. Killing only the `podman build` client orphans the RUN step's
-# compile processes (crun + gcc/cmake keep burning CPU — same issue build.sh's
-# on_interrupt fixes for Ctrl+C), so: snapshot the client's whole descendant
-# tree first, kill it, then remove leftover buildah working containers.
 CANCEL_MARKER="${UPGRADE_DIR}/.cancel_requested"
 
 list_descendants() {
@@ -1385,8 +1121,6 @@ kill_build_tree() {
 }
 
 cleanup_build_containers() {
-    # Buildah working containers left by an interrupted RUN step (external to
-    # normal podman ps). Never matches the app/manager containers.
     "$RUNTIME" ps -a --external --format '{{.ID}} {{.Names}}' 2>/dev/null \
         | awk '/working-container|buildah/ {print $1}' \
         | xargs -r "$RUNTIME" rm --force >/dev/null 2>&1 || true
@@ -1397,8 +1131,6 @@ do_cancel() {
     local pids
     pids=$(pgrep -f "$RUNTIME build.*$IMAGE_NAME" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
-        # Tell the build instance this was a cancel, not a failure, BEFORE
-        # killing — its wait() returns immediately after.
         touch "$CANCEL_MARKER"
         kill_build_tree $pids
         cleanup_build_containers
@@ -1407,20 +1139,9 @@ do_cancel() {
 }
 
 # ── GC: prune old images beyond retention + dangling layers ──────────────────
-# Bugs this replaces:
-#   - `grep "^${IMAGE_NAME}:"` never matched: podman prints repositories with a
-#     registry prefix (localhost/zigbee-matter-manager), so the anchored match
-#     found nothing and GC silently removed nothing.
-#   - dangling <none> images (old build layers from each rebuild) were never
-#     pruned, so they piled up at ~2GB each.
-#   - the running and rollback (-previous) images weren't explicitly protected.
-#
-# `mode` = "auto" when called internally from do_swap: suppress status writes
-# and never fail the caller.
 do_gc() {
     local mode="${1:-manual}"
 
-    # Retention: trigger payload first, then persisted state, default 2, min 1.
     local keep
     keep=$(echo "$TRIGGER_PAYLOAD" | jq -r '.retention_count // empty' 2>/dev/null || echo "")
     if [[ -z "$keep" || ! "$keep" =~ ^[0-9]+$ ]]; then
@@ -1430,7 +1151,6 @@ do_gc() {
     (( keep < 1 )) && keep=1
     log "GC: keeping $keep most recent version image(s) (mode=$mode)"
 
-    # Normalise any image id to a comparable 12-char form (strips sha256:).
     norm_id() { local x="${1#sha256:}"; echo "${x:0:12}"; }
 
     # ── Build the protected set: images we must never remove ─────────────────
@@ -1440,7 +1160,6 @@ do_gc() {
         iid=$("$RUNTIME" inspect -f '{{.Image}}' "$c" 2>/dev/null || echo "")
         [[ -n "$iid" ]] && protected+="$(norm_id "$iid")"$'\n'
     done
-    # The recorded rollback target tag, resolved to an id.
     local prev_tag prev_id
     prev_tag=$(jq -r '.previous_image_tag // empty' "$VERSION_STATE_FILE" 2>/dev/null || echo "")
     if [[ -n "$prev_tag" ]]; then
@@ -1451,10 +1170,6 @@ do_gc() {
     is_protected() { grep -qxF "$(norm_id "$1")" <<< "$protected"; }
 
     # ── Version-tagged candidates, newest first ──────────────────────────────
-    # Format: ID|REPO:TAG|CREATED_AT. Match the repo with an OPTIONAL registry
-    # prefix (localhost/, registry.example.com/ns/, …). Exclude latest* tags.
-    # Sort by the CreatedAt field (third '|' column) descending — robust to the
-    # spaces inside the timestamp.
     local listing
     listing=$("$RUNTIME" images --format '{{.ID}}|{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' 2>/dev/null \
         | grep -E "\|([^|]*/)?${IMAGE_NAME}:" \
@@ -1516,7 +1231,6 @@ update_version_state() {
     local new_image_tag="$3"
     local old_image_tag="$4"
 
-    # Use jq to update the version.json file atomically
     if [[ ! -f "$VERSION_STATE_FILE" ]]; then
         echo '{}' > "$VERSION_STATE_FILE"
     fi
@@ -1544,9 +1258,6 @@ update_version_state() {
 }
 
 # ── MAIN DISPATCH ────────────────────────────────────────────────────────────
-# Cleanup handler — runs on EXIT (any reason), and explicitly on SIGTERM.
-# Without explicit signal traps, a SIGKILL'd process won't run cleanup, but
-# SIGTERM (the polite signal systemd sends first) will.
 cleanup_on_exit() {
     local exit_code=$?
     release_lock
@@ -1560,13 +1271,9 @@ main() {
     detect_runtime || exit 1
 
     if ! consume_trigger; then
-        # No trigger present
         exit 0
     fi
 
-    # Cancel must not need the lock — it exists to interrupt the lock holder
-    # (the polling fallback reaches here mid-build; systemd mode never does,
-    # so do_build's own watch loop handles the trigger there).
     if [[ "$TRIGGER_ACTION" == "cancel" ]]; then
         do_cancel
         exit 0
@@ -1577,7 +1284,6 @@ main() {
         exit 2
     fi
 
-    # Install traps AFTER acquiring the lock — we want cleanup even on signal
     trap cleanup_on_exit EXIT
     trap 'log "Received SIGTERM — cleaning up"; exit 130' TERM
     trap 'log "Received SIGINT — cleaning up";  exit 130' INT

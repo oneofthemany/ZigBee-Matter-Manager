@@ -1,20 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # Beekeeper sidecar installer — the ZMM DNS ad/tracker blocker.
-#
-# Runs the always-on Beekeeper resolver as a SEPARATE container from the same
-# app image (which already has the beekeeper/ package + uvicorn/httpx), as
-# `python -m beekeeper`, with its own systemd unit (Restart=always) so a restart
-# or upgrade of the main app never drops household DNS.
-#
-# Uses host networking so the sinkhole can serve the whole LAN on <LAN-IP>:53.
-# That coexists with systemd-resolved, which by default listens only on
-# 127.0.0.53:53 — Beekeeper binds the host's LAN address instead (see
-# docs/beekeeper.md). This script detects the rare full-conflict case and prints
-# the one-line resolved fix rather than changing host DNS behind your back.
-#
-# Idempotent: re-running recreates the container and refreshes the unit.
-# Mirrors build.sh's run_manager_container()/install_manager_autostart().
 # =============================================================================
 set -euo pipefail
 
@@ -35,7 +21,6 @@ RUNTIME="$(command -v podman || command -v docker || true)"
 RUNTIME_NAME="$(basename "$RUNTIME")"
 [[ "$RUNTIME_NAME" == "podman" ]] || warn "Beekeeper is validated on podman; docker is best-effort."
 
-# Resolve the app image ref (prefer an existing tagged image).
 APP_IMAGE="${ZMM_APP_IMAGE:-}"
 if [[ -z "$APP_IMAGE" ]]; then
     if "$RUNTIME" image exists "${IMAGE_NAME}:latest" 2>/dev/null; then

@@ -1,42 +1,14 @@
 #!/bin/bash
 # =============================================================================
 # ZMM Upgrade Watcher Installer
-#
-# Installs the host-side watcher that reacts to upgrade triggers from the
-# running container.
-#
-# Prefers systemd-path units (event-driven, no CPU when idle). Falls back to
-# a polling loop (systemd user service or nohup-ed shell) when systemd-path
-# isn't available.
-#
-# Safe to re-run — idempotent.
 # =============================================================================
 set -euo pipefail
 
 # =============================================================================
 # WATCHER SCHEMA VERSION
 # =============================================================================
-# Single integer, bumped manually whenever a change to install_watcher.sh,
-# upgrade.sh, run_container.sh, or build.sh is incompatible with the
-# previously-installed watcher (e.g. ExecStart path moved, env vars added,
-# arg parsing changed).
-#
-# This value is:
-#   1. Embedded as a comment line into every systemd unit this script writes,
-#      so the host can read it back without invoking anything.
-#   2. Read by upgrade.sh's do_swap() AFTER a successful swap+healthcheck,
-#      compared against the version baked into the new image's
-#      install_watcher.sh, and used to trigger a one-shot self-heal that
-#      refreshes the four host-side helpers and re-installs the watcher.
-#
-# Bump rules:
-#   - Cosmetic changes (comments, log strings, whitespace) -> do NOT bump.
-#   - Behavioural changes that the watcher needs to know about -> bump by 1.
-#   - Never decrement. Self-heal compares `new > cur` strictly.
-# v7: added the Beekeeper firewall helper (script + zmm-beekeeper-firewall.{service,path}).
 WATCHER_SCHEMA_VERSION=7
 
-# Colours
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
 info()  { echo -e "${CYAN}${BOLD}[INFO]${NC} $*"; }
@@ -47,17 +19,12 @@ err()   { echo -e "${RED}${BOLD}[ERR ]${NC} $*" >&2; }
 DATA_DIR="${ZMM_DATA_DIR:-/opt/.zigbee-matter-manager}"
 APP_DIR="${ZMM_APP_DIR:-/opt/.zigbee-matter-manager/upgrade_build}"
 
-# IMPORTANT: scripts must live in a location systemd's init_t domain can
-# execute under SELinux. /root/ and ~/ are labelled admin_home_t/user_home_t
-# which init_t is denied execute access to. /opt/ is labelled usr_t which
-# init_t can execute, and is the FHS-standard location for add-on packages.
 SCRIPTS_DIR="${ZMM_SCRIPTS_DIR:-${DATA_DIR}/scripts}"
 
 UPGRADE_DIR="${DATA_DIR}/data/upgrade"
 STATE_DIR="${DATA_DIR}/data/state"
 LOG_DIR="${DATA_DIR}/logs"
 
-# /opt/zigbee-matter-manager needs root to create — sudo if we're not already root
 if [[ ! -d "$SCRIPTS_DIR" ]]; then
     if [[ "$(id -u)" -eq 0 ]]; then
         mkdir -p "$SCRIPTS_DIR"
@@ -69,10 +36,6 @@ fi
 
 mkdir -p "$UPGRADE_DIR" "$STATE_DIR" "$LOG_DIR"
 
-# Best-effort SELinux relabel of the scripts dir to ensure correct context.
-# /opt/ defaults to usr_t which is fine, but if the user has customised
-# things or the dir was created by tools that miss labelling, restorecon
-# will reset to whatever the policy says it should be.
 if command -v restorecon >/dev/null 2>&1 && [[ -e /sys/fs/selinux/enforce ]]; then
     if [[ "$(id -u)" -eq 0 ]]; then
         restorecon -R "$SCRIPTS_DIR" >/dev/null 2>&1 || true
@@ -104,8 +67,6 @@ fi
 ok "Prerequisites OK"
 
 # ── Copy scripts from repo clone or current dir ──────────────────────────────
-# The install script may be run directly from a curl|bash flow, from the
-# cloned repo under $APP_DIR/scripts, or from anywhere.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install_file() {
@@ -131,7 +92,6 @@ find_script() {
     return 1
 }
 
-# Locate build.sh — note it sits at $APP_DIR/build.sh, NOT $APP_DIR/scripts/.
 find_build_sh() {
     for candidate in \
         "${SRC_DIR}/../build.sh" \
@@ -145,10 +105,6 @@ find_build_sh() {
     return 1
 }
 
-# The watcher unit's ExecStart points at ${SCRIPTS_DIR}/upgrade.sh (and
-# upgrade.sh sources run_container.sh from the same dir). install_watcher.sh
-# itself is also placed here so the self-heal in do_swap can re-invoke it
-# after a podman cp from the new image.
 for script in upgrade.sh run_container.sh install_watcher.sh; do
     if src=$(find_script "$script"); then
         install_file "$src" "${SCRIPTS_DIR}/${script}"
@@ -160,8 +116,6 @@ for script in upgrade.sh run_container.sh install_watcher.sh; do
     fi
 done
 
-# OS updates collector (schema 4) — non-fatal: an older source tree simply
-# won't get host OS update visibility, everything else still works.
 HAVE_OS_UPDATES=false
 if src=$(find_script "os_updates.sh"); then
     install_file "$src" "${SCRIPTS_DIR}/os_updates.sh"
@@ -171,9 +125,6 @@ else
     warn "os_updates.sh not found — host OS update checks will be unavailable."
 fi
 
-# OS apply worker (schema 6) — applies package updates / OS release upgrades
-# when the manager writes the apply/release_upgrade triggers. Non-fatal like
-# the collector; without it the host card stays view-only.
 HAVE_OS_APPLY=false
 if src=$(find_script "os_apply.sh"); then
     install_file "$src" "${SCRIPTS_DIR}/os_apply.sh"
@@ -183,9 +134,6 @@ else
     warn "os_apply.sh not found — host OS updates stay view-only."
 fi
 
-# Beekeeper firewall helper — opens/checks DNS :53 across firewalld/ufw/nftables/
-# iptables when the manager writes the firewall_action trigger. Non-fatal; without
-# it the Beekeeper card's "Open :53" button is a no-op and users open the port by hand.
 HAVE_BK_FIREWALL=false
 if src=$(find_script "beekeeper_firewall.sh"); then
     install_file "$src" "${SCRIPTS_DIR}/beekeeper_firewall.sh"
@@ -195,17 +143,9 @@ else
     warn "beekeeper_firewall.sh not found — Beekeeper firewall button will be a no-op."
 fi
 
-# The manager writes this file to request an immediate re-check; the path
-# unit below watches it. Must exist as a DIRECTORY parent before the path
-# unit starts, or systemd can't watch it.
 mkdir -p "${DATA_DIR}/data/os_updates"
-# Same requirement for the Beekeeper firewall trigger's parent directory.
 mkdir -p "${DATA_DIR}/data/beekeeper"
 
-# build.sh is sourced by run_container.sh from $APP_DIR/build.sh. Keep it in
-# sync with the rest of the helpers — without this, a schema bump that
-# requires new run_container() behaviour would still pick up the OLD build.sh.
-# ADDITION: Also copy it to SCRIPTS_DIR to act as a fallback during OTA updates.
 if build_src=$(find_build_sh); then
     mkdir -p "$APP_DIR"
     install_file "$build_src" "${APP_DIR}/build.sh"
@@ -216,10 +156,6 @@ else
 fi
 
 # ── Mechanism selection ──────────────────────────────────────────────────────
-# System systemd (root) when available, else a polling fallback. There is no
-# rootless / `systemctl --user` path: ZMM always runs rootful (the Zigbee USB
-# coordinator and OTBR need root), so the watcher and its workers run as root
-# system units too.
 USE_SYSTEMD_SYSTEM=false
 USE_POLLING=false
 
@@ -327,8 +263,6 @@ PATHUNIT
     fi
 
     if $HAVE_OS_APPLY; then
-        # NOTE: no User= line — applying updates needs root, and system units
-        # run as root by default.
         sudo tee "$unit_dir/zmm-os-apply.service" >/dev/null <<SERVICE
 [Unit]
 Description=ZMM OS Apply Worker (oneshot — package updates / release upgrade)
@@ -361,7 +295,6 @@ PATHUNIT
     fi
 
     if $HAVE_BK_FIREWALL; then
-        # Runs as root (system unit) so it can drive firewalld/ufw/nft/iptables.
         sudo tee "$unit_dir/zmm-beekeeper-firewall.service" >/dev/null <<SERVICE
 [Unit]
 Description=ZMM Beekeeper firewall helper (oneshot — open/check DNS :53)
@@ -449,7 +382,6 @@ done
 POLL
     chmod +x "$poll_script"
 
-    # Try to wrap in a systemd service even without user systemd; otherwise launch via nohup
     if [[ "$(id -u)" -eq 0 ]] && command -v systemctl >/dev/null 2>&1; then
         cat > /etc/systemd/system/zmm-upgrade-poll.service <<SVC
 [Unit]
@@ -473,7 +405,6 @@ SVC
         return
     fi
 
-    # Last resort: nohup the poller, add to user's crontab with @reboot
     local pidfile="${DATA_DIR}/upgrade-poll.pid"
     if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
         ok "Polling watcher already running (PID $(cat "$pidfile"))"
@@ -483,7 +414,6 @@ SVC
         ok "Polling watcher started (PID $!)"
     fi
 
-    # Also register a @reboot crontab entry to survive restarts
     if command -v crontab >/dev/null 2>&1; then
         local current_cron
         current_cron=$(crontab -l 2>/dev/null || true)
@@ -511,7 +441,6 @@ touch "${UPGRADE_DIR}/.watcher_installed"
 
 # ── Seed VERSION state if missing ────────────────────────────────────────────
 if [[ ! -f "${STATE_DIR}/version.json" ]]; then
-    # Try to read VERSION from the running container
     RUNTIME=""
     if command -v podman >/dev/null 2>&1; then RUNTIME=podman; fi
     if [[ -z "$RUNTIME" ]] && command -v docker >/dev/null 2>&1; then RUNTIME=docker; fi

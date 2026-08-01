@@ -1,21 +1,6 @@
 #!/bin/bash
 # =============================================================================
 # ZMM Beekeeper firewall helper (runs ON THE HOST as root).
-#
-# Installed to ${DATA_DIR}/scripts by install_watcher.sh and triggered by
-# zmm-beekeeper-firewall.path when the :8001 manager writes:
-#
-#   ${DATA_DIR}/data/beekeeper/firewall_action   (content: "open" | "check")
-#
-# It opens (or just checks) DNS port 53/udp+tcp so Beekeeper can serve the LAN,
-# across whichever firewall the host actually runs — firewalld, ufw, nftables or
-# raw iptables — and writes the result to:
-#
-#   ${DATA_DIR}/data/beekeeper/firewall_status.json
-#
-# NOT Linux-agnostic by design: it probes for each backend and uses the matching
-# commands. Best-effort and non-fatal — an unsupported/locked-down host just
-# reports that in the status file rather than failing.
 # =============================================================================
 set -u
 
@@ -28,7 +13,6 @@ LOG="${DATA_DIR}/logs/beekeeper_firewall.log"
 mkdir -p "$BK_DIR" "${DATA_DIR}/logs" 2>/dev/null || true
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG" 2>/dev/null || true; }
 
-# Consume the trigger (default to a read-only check when run without one).
 ACTION="check"
 if [[ -f "$TRIGGER" ]]; then
     ACTION="$(tr -d '[:space:]' < "$TRIGGER" 2>/dev/null)"
@@ -36,7 +20,6 @@ if [[ -f "$TRIGGER" ]]; then
 fi
 [[ -z "$ACTION" ]] && ACTION="check"
 
-# Privilege: prefer being root (systemd unit); fall back to passwordless sudo.
 SUDO=""
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
@@ -90,7 +73,6 @@ open_port() {
             runp ufw allow 53/udp >>"$LOG" 2>&1
             runp ufw allow 53/tcp >>"$LOG" 2>&1 ;;
         nftables)
-            # Best-effort: append accepts to the inet filter input chain if present.
             runp nft add rule inet filter input udp dport 53 accept >>"$LOG" 2>&1 || \
                 log "nft: could not add udp rule (no inet/filter/input chain?)"
             runp nft add rule inet filter input tcp dport 53 accept >>"$LOG" 2>&1 || \
