@@ -53,10 +53,11 @@ KEY_PROPS = HERE / "keystore.properties"
 KEY_ALIAS = "zmm"
 PACKAGE_ID = "com.zmm.presence"      # must match applicationId in build.gradle.kts
 
-# Gradle 8.13 refuses to run on JDK 22+. Anything older than 17 can't build
-# this project. That window is why we hunt for a JDK instead of trusting
-# whatever `java` happens to be on PATH.
-JDK_MIN, JDK_MAX = 17, 21
+# Anything older than 17 can't build this project, and Gradle rejects a JDK
+# newer than it knows about. That window is why we hunt for a JDK instead of
+# trusting whatever `java` happens to be on PATH. Widen JDK_MAX when the
+# wrapper moves to a Gradle that supports a newer release.
+JDK_MIN, JDK_MAX = 17, 25
 
 
 # ---------------------------------------------------------------- output
@@ -147,7 +148,7 @@ def find_jdk() -> Path:
     if rejected:
         c, v = rejected[0]
         detail = (f"\n  Found JDK {v} at {c}, which is outside the supported "
-                  f"range.\n  Gradle 8.13 rejects JDK 22+.")
+                  f"range.\n  Gradle rejects a JDK newer than it supports.")
     raise Failed(
         f"No JDK between {JDK_MIN} and {JDK_MAX} found.{detail}\n"
         "  Install Android Studio (it bundles one) or set JAVA_HOME yourself."

@@ -46,6 +46,11 @@
          nothing about how it was driven. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Required to use PlaceListMapTemplate (car/FuelScreen.kt). The host
+         refuses the template without it, so the fuel screen never renders and
+         the app is dropped from the car — nothing appears on the phone. -->
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
+
     <!-- Motion sensing is an enhancement, never a requirement: a phone with no
          gyroscope still reports roughness and event magnitudes from the
          accelerometer alone, and one with no accelerometer at all still records

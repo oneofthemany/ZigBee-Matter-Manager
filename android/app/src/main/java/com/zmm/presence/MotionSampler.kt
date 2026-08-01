@@ -72,6 +72,12 @@ class MotionSampler(context: Context) : SensorEventListener {
         val longPeakMps2: Float,
         /** Largest lateral (cornering) acceleration, unsigned. NaN uncalibrated. */
         val latPeakMps2: Float,
+        /**
+         * Largest horizontal acceleration, any direction, unsigned. Needs no
+         * forward axis, so unlike the two above it is never NaN. Same quantity
+         * [detectEvent] thresholds.
+         */
+        val horizPeakMps2: Float,
         /** RMS vertical acceleration — road roughness. Always available. */
         val vertRmsMps2: Float,
         /** Peak rate of change of acceleration; high jerk is abrupt driving. */
@@ -132,6 +138,7 @@ class MotionSampler(context: Context) : SensorEventListener {
     private var longMin = 0f
     private var longMax = 0f
     private var latMax = 0f
+    private var horizMax = 0f
     private var jerkMax = 0f
     private var yawMax = 0f
     private var yawNow = 0f
@@ -251,6 +258,7 @@ class MotionSampler(context: Context) : SensorEventListener {
             samples = n,
             longPeakMps2 = longPeak,
             latPeakMps2 = if (calibrated) latMax else Float.NaN,
+            horizPeakMps2 = horizMax,
             vertRmsMps2 = sqrt(sumVertSq / n).toFloat(),
             jerkPeakMps3 = jerkMax,
             yawPeakRadS = if (gyro != null) yawMax else Float.NaN,
@@ -260,7 +268,8 @@ class MotionSampler(context: Context) : SensorEventListener {
         n = 0
         sumVertSq = 0.0
         sumHoriz = FloatArray(3)
-        longMin = 0f; longMax = 0f; latMax = 0f; jerkMax = 0f; yawMax = 0f
+        longMin = 0f; longMax = 0f; latMax = 0f; horizMax = 0f
+        jerkMax = 0f; yawMax = 0f
         pressureSum = 0.0; pressureN = 0
         w
     }
@@ -375,6 +384,7 @@ class MotionSampler(context: Context) : SensorEventListener {
         for (i in 0..2) smoothed[i] += alpha * (h[i] - smoothed[i])
 
         val mag = norm(smoothed)
+        if (mag > horizMax) horizMax = mag
 
         if (forwardFixes >= CALIB_MIN_FIXES) {
             val lon = smoothed[0] * forward[0] + smoothed[1] * forward[1] +

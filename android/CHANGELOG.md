@@ -14,6 +14,17 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.3.1 (5)
+
+- Fixed the fuel screen never appearing in Android Auto. `PlaceListMapTemplate`
+  requires `androidx.car.app.MAP_TEMPLATES`, which the manifest never declared;
+  the host refuses the template and drops the app, with nothing shown on the
+  phone. Enabling Unknown sources could not work around it.
+- `MotionSampler` now reports `horiz_peak` — peak horizontal acceleration,
+  which needs no forward axis and so covers a whole drive. The hub's route map
+  banded on `long_peak`/`lat_peak` alone, which the phone only sends once
+  calibration converges, so drives were drawn part green and the rest grey.
+
 ## 1.3.0 (4)
 
 Drive mode now requires a hub reachable from outside the home network.

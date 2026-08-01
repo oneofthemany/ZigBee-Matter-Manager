@@ -234,6 +234,7 @@ object HubClient {
         put("n", w.samples)
         put("vert_rms", round3(w.vertRmsMps2))
         put("jerk_peak", round3(w.jerkPeakMps3))
+        put("horiz_peak", round3(w.horizPeakMps2))
         if (!w.longPeakMps2.isNaN()) put("long_peak", round3(w.longPeakMps2))
         if (!w.latPeakMps2.isNaN()) put("lat_peak", round3(w.latPeakMps2))
         if (!w.yawPeakRadS.isNaN()) put("yaw_peak", round3(w.yawPeakRadS))

@@ -15,7 +15,7 @@ downloads.
 | | |
 |---|---|
 | **Android Studio** | Any recent version. Bundles the SDK and a suitable Java runtime. |
-| **JDK 17–21** | Only for command-line builds. Studio's bundled runtime already qualifies. |
+| **JDK 17–25** | Only for command-line builds. Studio's bundled runtime already qualifies. |
 | **A hub on HTTPS** | The app refuses plaintext. See [Hub prerequisites](#6-hub-prerequisites). |
 | **Google Play Services on the phone** | Non-negotiable: OS geofencing lives there. On a de-Googled phone this app cannot work. |
 
@@ -34,8 +34,8 @@ python3 build_release.py --setup     # first time: creates the signing key
 python3 build_release.py             # thereafter: build + verify
 ```
 
-It finds a usable JDK (Gradle 8.13 rejects JDK 22+, which is the most common
-first failure), locates the SDK, builds, and then verifies:
+It finds a usable JDK (a JDK outside the range Gradle supports is the most
+common first failure), locates the SDK, builds, and then verifies:
 
 - the APK is **actually signed** — a release build with no signing config still
   "succeeds" and emits an unsigned APK with only a warning, which you would
@@ -75,9 +75,10 @@ personal build that's genuinely enough; §5 covers when it isn't.
 
 ## 4. Command line
 
-`JAVA_HOME` must point at a JDK 17–21. **Gradle 8.13 rejects newer JDKs**, so
-if your system Java is 22+ the build fails with a version error until you set
-this. Studio's bundled runtime is the easiest source:
+`JAVA_HOME` must point at a JDK 17–25. **Gradle rejects a JDK newer than the
+wrapper's version supports**, so a bleeding-edge system Java fails with a
+version error until you set this. Studio's bundled runtime is the easiest
+source, and is what the IDE itself uses:
 
 ```bash
 # Linux (Toolbox install)
@@ -329,7 +330,8 @@ Presence → Permissions → Location.
 
 | Symptom | Cause |
 |---|---|
-| `Unsupported class file major version` | `JAVA_HOME` points at JDK 22+. See §4. |
+| `Unsupported class file major version` | `JAVA_HOME` points at a JDK the wrapper's Gradle doesn't support. See §4. |
+| `Unable to download toolchain matching the requirements` | A `gradle/gradle-daemon-jvm.properties` pinning a JDK you don't have. Delete it and Gradle uses the JVM that launched it — Studio's runtime in the IDE, `JAVA_HOME` on the command line. |
 | `SDK location not found` | Missing `local.properties`. See §4. |
 | `./gradlew: No such file` | Wrapper not generated. See §4. |
 | APK is `-unsigned` | `keystore.properties` missing or misplaced. See §5.3. |
