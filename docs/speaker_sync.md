@@ -211,7 +211,7 @@ media:
       enabled: false     # bring up the :8010 listener at boot
       http_port: 8010    # plain-HTTP listener (receiver page + WS)
       app_id: ""         # Cast console App ID of the registered receiver
-      resampler: soxr    # soxr | sinc | linear (open-zone.md §4.2)
+      resampler: rust    # rust | sinc | linear (open-zone.md §4.2)
       # (restart resume lives on the media root, not here:
       #  media.resume_after_restart / media.resume_max_age_s)
       source_delay_s: 2.0    # how far behind the live edge a media session runs
@@ -221,12 +221,15 @@ media:
 Requires `media.enabled` and `media.cast.enabled`. The container must expose
 `http_port` on the LAN (host networking already does).
 
-`resampler` defaults to `soxr`, which binds `libsoxr` in variable-rate mode
-through `ctypes`. libsoxr is already in the image (ffmpeg links it), so this
-needs no build change; where it is missing the engine falls back to `sinc`
-automatically and says so in the log. `sinc` is stateless and slightly simpler
-to reason about; `linear` exists only to reproduce earlier measurements and
-should not be used on real music.
+`resampler` defaults to `rust`: a stateless windowed-sinc fractional delay in
+the `zmm_eq` wheel. Where that wheel is absent the engine falls back to `sinc`
+— the identical filter in numpy, ~4x the CPU — automatically, and says so in
+the log. `linear` exists only to reproduce earlier measurements and should not
+be used on real music.
+
+The `soxr` backend (libsoxr variable-rate via `ctypes`) was removed in
+v31.04.07.2026 after it aborted the process with `double free or corruption`;
+the name is still accepted here as an alias for `rust`. See open-zone.md §4.2.
 
 `source_delay_s` must stay above `STREAM_AHEAD_S` (1.2 s) — the per-device
 serve-ahead is cut from it. Raising `ring_capacity_s` costs ~350 kB per second
@@ -320,7 +323,7 @@ Full steps also in `static/cast/README.md`.
 
 | Endpoint | Method | Body / Returns |
 |---|---|---|
-| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, now_playing:{title, artist, artwork_url, index, count}, source:{kind, buffered_s, underruns, restarts, finished, …}, resampler:{kind, soxr, …}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
+| `/api/media/sync/status` | GET | `{running, configured, http_port, group_id, elapsed_s, now_playing:{title, artist, artwork_url, index, count}, source:{kind, buffered_s, underruns, restarts, finished, …}, resampler:{kind, backend, rust, kinds}, devices:[{sid, player_id, name, connected, trim_ms, stats}]}` |
 | `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid \| source_id+media_type, kind?, title?, artist?, artwork_url?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start (and carries its logo through as `artwork_url`); `kind` is `track` (default) or `album\|playlist\|artist\|mix`, which expands into the session queue; a `media` block that resolves to no URL, or a URL starting with `-`, is rejected rather than passed to the decoder |
 | `/api/media/sync/stop` | POST | — |
 | `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
@@ -414,7 +417,7 @@ gave up anyway, or a sync session whose members must be re-launched.
 |---|---|
 | `modules/media/cast_sync.py` | Service: HTTP listener, producer, WS protocol, launch, groups/trims |
 | `modules/media/sync_source.py` | Master timeline: generated signal, or ffmpeg + EQ into the ring-buffer delay line |
-| `modules/media/sync_resample.py` | Variable-ratio resampler backends (soxr VR via ctypes, windowed sinc, linear) |
+| `modules/media/sync_resample.py` | Variable-ratio resampler backends (Rust windowed sinc, numpy windowed sinc, linear) |
 | `static/cast/sync_receiver.html` | CAF receiver: clock sync + Web Audio scheduling |
 | `routes/cast_sync_routes.py` | REST endpoints (main app) |
 | `static/js/speaker-sync.js` | Settings → Audio tab |
