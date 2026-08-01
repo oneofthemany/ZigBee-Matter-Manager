@@ -5,6 +5,7 @@
  *             if_then_else (branching), parallel (concurrent)
  *
  * Prerequisites support NOT (negate) flag.
+ * Trigger conditions support AND/OR logic (rule.condition_logic).
  * Inline conditions in if_then_else support AND/OR logic.
  */
 
@@ -15,6 +16,8 @@ let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPr
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
+// How the trigger conditions combine: 'and' (all must hold) or 'or' (any one).
+let condLogic = 'and';
 // Step trees stored in memory — rendered to DOM
 let thenTree = [], elseTree = [], stepIdC = 0;
 
@@ -181,8 +184,11 @@ function _renderRules(rules) {
         const run = rule._running?'<span class="badge bg-warning text-dark ms-1">⏳</span>':'';
 
         let cH = '';
+        const isOr = rule.condition_logic === 'or';
         (rule.conditions||[]).forEach((c,i) => {
-            const p = i===0?'<strong class="text-primary">IF</strong>':'<strong class="text-warning">AND</strong>';
+            const p = i===0 ? '<strong class="text-primary">IF</strong>'
+                : (isOr ? '<strong style="color:#6f42c1">OR</strong>'
+                        : '<strong class="text-warning">AND</strong>');
             let cDesc;
             if (c.type === 'time_window') {
                 const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -264,8 +270,14 @@ function _showForm(rule, forceNew = false) {
     <div class="card-body">
         <div class="mb-3"><label class="form-label small text-muted mb-0">Rule Name</label>
             <input type="text" class="form-control form-control-sm" id="a-name" value="${isE?(rule.name||''):''}"></div>
-        <div class="mb-3"><div class="d-flex justify-content-between mb-1"><label class="form-label fw-bold small mb-0">Trigger Conditions</label>
-            <button class="btn btn-sm btn-outline-primary" onclick="window._aAddCond()"><i class="fas fa-plus"></i></button></div><div id="cb"></div></div>
+        <div class="mb-3"><div class="d-flex justify-content-between align-items-center mb-1"><label class="form-label fw-bold small mb-0">Trigger Conditions</label>
+            <div class="d-flex align-items-center gap-2">
+                <select class="form-select form-select-sm" id="a-clogic" style="width:150px" title="How the conditions below combine" onchange="window._aCLogic(this.value)">
+                    <option value="and">Match ALL (AND)</option>
+                    <option value="or">Match ANY (OR)</option>
+                </select>
+                <button class="btn btn-sm btn-outline-primary" onclick="window._aAddCond()"><i class="fas fa-plus"></i></button>
+            </div></div><div id="cb"></div></div>
         <div class="mb-3"><div class="d-flex justify-content-between mb-1"><label class="form-label fw-bold small mb-0">Prerequisites <span class="text-muted fw-normal">(optional, supports NOT)</span></label>
             <button class="btn btn-sm btn-outline-info" onclick="window._aAddPrereq()"><i class="fas fa-plus"></i></button></div><div id="pb"></div></div>
         <div class="mb-3"><label class="form-label fw-bold small text-success">THEN sequence <span class="fw-normal text-muted">(conditions become true)</span></label>
@@ -281,6 +293,8 @@ function _showForm(rule, forceNew = false) {
 
     // Conditions
     condRows=[]; condIdC=0;
+    condLogic = (isE && rule.condition_logic === 'or') ? 'or' : 'and';
+    const clSel = document.getElementById('a-clogic'); if(clSel) clSel.value = condLogic;
     if(isE && rule.conditions?.length) rule.conditions.forEach(()=>condRows.push(condIdC++));
     else condRows.push(condIdC++);
     _refConds();
@@ -345,12 +359,18 @@ function _vI(cls, id, opts, cur, idAttr = 'data-id') {
 // CONDITIONS + PREREQUISITES (same pattern as before)
 // ============================================================================
 
+// Joiner badge shown on the 2nd+ condition row — OR gets its own colour so a
+// glance at the rows tells you which way the rule combines.
+const _joinBadge = () => condLogic === 'or'
+    ? `<span class="badge small" style="background:#6f42c1">OR</span>`
+    : `<span class="badge bg-warning text-dark small">AND</span>`;
+
 function _renderCond(id, ctype) {
     // Default new conditions on the virtual time source to an alarm (no attrs exist).
     ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
     const opts = _attrOptions(cachedAttributes, _dtype(currentSourceIeee));
     const idx=condRows.indexOf(id);
-    const badge = `<span class="badge ${idx===0?'bg-primary':'bg-warning text-dark'} small">${idx===0?'IF':'AND'}</span>`;
+    const badge = idx===0 ? `<span class="badge bg-primary small">IF</span>` : _joinBadge();
     const rmBtn = idx>0 ? `<button class="btn btn-sm btn-outline-danger" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>` : '<div style="width:31px"></div>';
     const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     const dayBoxes = DAYS.map((d,i) => `<label class="me-1 small"><input type="checkbox" class="ctd" data-id="${id}" data-day="${i}" checked> ${d}</label>`).join('');
@@ -382,7 +402,23 @@ function _renderCond(id, ctype) {
         <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
-function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(id=>_renderCond(id)).join('');}
+function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(id=>_renderCond(id)).join('');_refCLogicVis();}
+
+// The AND/OR picker only means something with 2+ conditions.
+function _refCLogicVis(){
+    const sel=document.getElementById('a-clogic');
+    if(sel)sel.style.display=condRows.length>1?'':'none';
+}
+
+// Swap the joiner badges in place — re-rendering the rows would wipe values.
+function _refJoinBadges(){
+    condRows.forEach((id,idx)=>{
+        if(idx===0)return;
+        const row=document.getElementById(`c-${id}`);
+        const b=row?.querySelector('.badge');
+        if(b)b.outerHTML=_joinBadge();
+    });
+}
 function _setC(id,c){
     const ctype = c.type || 'attribute';
     const row = document.getElementById(`c-${id}`);
@@ -911,10 +947,13 @@ window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)retur
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
             else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}};}
     const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);};
-window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));};
+window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));_refCLogicVis();};
 window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);const row=document.getElementById(`c-${id}`);if(row)row.remove();
-    if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.className='badge bg-primary small';b.textContent='IF';}
-        const rm=first.querySelector('.btn-outline-danger');if(rm)rm.closest('.col-auto').innerHTML='<div style="width:31px"></div>';}};};
+    if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.outerHTML='<span class="badge bg-primary small">IF</span>';}
+        const rm=first.querySelector('.btn-outline-danger');if(rm)rm.closest('.col-auto').innerHTML='<div style="width:31px"></div>';}}
+    _refCLogicVis();};
+// AND = every condition must hold. OR = any one of them firing is enough.
+window._aCLogic=v=>{condLogic=(v==='or')?'or':'and';_refJoinBadges();};
 window._aCType = (id, sel) => {
     const ctype = sel.value;
     const row = document.getElementById(`c-${id}`);
@@ -1125,7 +1164,7 @@ window._aSave=async()=>{
     if(!then_sequence.length&&!else_sequence.length)return window.toast.warning('Add at least one step.');
 
     const body={name:document.getElementById('a-name')?.value||'',source_ieee:currentSourceIeee,
-        conditions,prerequisites,then_sequence,else_sequence,
+        conditions,condition_logic:condLogic,prerequisites,then_sequence,else_sequence,
         cooldown:parseInt(document.getElementById('a-cd')?.value)||5,enabled:true};
     try{
         const res = editingRuleId
@@ -1286,7 +1325,11 @@ async function _loadTr() {
             h+=`<div class="border-bottom py-1 ${cl}"><span class="text-muted">${ts}</span> <span class="badge bg-dark">${e.phase||''}</span> <span class="badge bg-secondary">${r}</span> `;
             if(e.rule_id&&e.rule_id!=='-')h+=`<code>${e.rule_id}</code> `;
             h+=e.message||'';
-            if(e.conditions?.length){h+='<div class="ms-3">';e.conditions.forEach(c=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
+            if(e.conditions?.length){h+='<div class="ms-3">';
+                // OR rules log every condition they checked, so say which way they
+                // combine — otherwise a FAIL line looks like the rule should be dead.
+                if(e.condition_logic==='or')h+='<div class="small" style="color:#6f42c1">any one of (OR):</div>';
+                e.conditions.forEach(c=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
                 let cLine;
                 const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 if(c.type==='time_window'){

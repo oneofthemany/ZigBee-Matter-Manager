@@ -55,6 +55,8 @@ class AutomationCreateRequest(BaseModel):
     name: Optional[str] = ""
     source_ieee: str
     conditions: Optional[List[ConditionItem]] = None
+    # How the trigger conditions are joined: "and" (all) or "or" (any).
+    condition_logic: str = "and"
     attribute: Optional[str] = None
     operator: Optional[str] = None
     value: Optional[Any] = None
@@ -67,6 +69,7 @@ class AutomationCreateRequest(BaseModel):
 class AutomationUpdateRequest(BaseModel):
     name: Optional[str] = None
     conditions: Optional[List[ConditionItem]] = None
+    condition_logic: Optional[str] = None
     prerequisites: Optional[List[PrerequisiteItem]] = None
     then_sequence: Optional[List[Dict[str, Any]]] = None
     else_sequence: Optional[List[Dict[str, Any]]] = None

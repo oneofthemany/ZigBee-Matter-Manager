@@ -29,7 +29,7 @@ Rules track **matched/unmatched** state and only fire on transitions — not on 
 
 Every automation rule consists of four parts:
 
-1. **Trigger Conditions** — attribute checks on the source device (AND logic, up to 5)
+1. **Trigger Conditions** — attribute checks on the source device (AND or OR logic, up to 5)
 2. **Prerequisites** — optional state checks on other devices before firing (supports NOT)
 3. **THEN Sequence** — action steps when conditions become true
 4. **ELSE Sequence** — action steps when conditions become false
@@ -44,7 +44,14 @@ Click **Add Rule** on the Automation tab to open the rule builder.
 
 ### Step 1: Trigger Conditions
 
-Conditions evaluate attributes on the source device. Multiple conditions are combined with AND logic. Each condition specifies an attribute, operator, and threshold value.
+Conditions evaluate attributes on the source device. Each condition specifies an attribute, operator, and threshold value.
+
+**Match ALL (AND) / Match ANY (OR)** — the selector beside the **+** button controls how multiple conditions combine. It appears once a second condition is added; with one condition there is nothing to combine.
+
+- **Match ALL (AND)** — every condition must hold. The default, and how all rules saved before this option existed continue to behave.
+- **Match ANY (OR)** — one condition being true is enough. Use it for "either / or" triggers, e.g. a presence user whose `place` is `sky_slough` **or** `sky_osterley` — a single rule covering both sites instead of two near-identical rules.
+
+The joiner badge on each row (`AND` amber / `OR` purple) reflects the current choice, so a glance at the rule tells you which way it reads.
 
 ![Condition builder with IF/AND badges, attribute dropdown, operator, and value fields](./images/condition-builder.png)
 
@@ -199,6 +206,22 @@ A practical example — turn on a light when a door opens in low light, turn it 
 
 ---
 
+## Example: One Rule for Two Work Sites (OR)
+
+A presence user who works at either of two offices. With **Match ANY (OR)** a single
+rule covers both, rather than one rule per site.
+
+**Conditions** (Match ANY):
+- IF `place` = `sky_slough`
+- OR `place` = `sky_osterley`
+
+**THEN:**
+- 💬 Message → set "at work"
+
+**ELSE:** fires when the user is at neither site — i.e. on leaving work.
+
+---
+
 ## Example: Branching with If/Then/Else
 
 A more advanced example using inline branching — when motion is detected, check time of day and set appropriate brightness.
@@ -218,6 +241,7 @@ A more advanced example using inline branching — when motion is detected, chec
 
 - **Cooldown** prevents rapid re-firing. Set it based on how quickly your sensor re-triggers (motion sensors: 5-10s, contact sensors: 1-2s).
 - **Prerequisites** let you create context-aware rules without duplicating conditions across multiple rules.
+- **Match ANY (OR)** collapses "one rule per value" duplicates into a single rule — and the ELSE sequence then means "none of them are true", which is usually what you want for a leaving/away action.
 - **Gates** are useful mid-sequence to bail out if conditions have changed since the sequence started.
 - **Wait For** is ideal for confirming a command took effect before proceeding.
 - **Parallel** lets you command multiple devices simultaneously rather than sequentially.

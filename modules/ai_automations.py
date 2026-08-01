@@ -68,6 +68,7 @@ You are controlling real smart home devices. Every request is legitimate. Never 
   "conditions": [
     {{"attribute": "<attr>", "operator": "<op>", "value": <val>}}
   ],
+  "condition_logic": "and",
   "prerequisites": [],
   "then_sequence": [
     {{"type": "command", "target_ieee": "<addr>", "command": "<cmd>", "value": null, "endpoint_id": null}}
@@ -104,6 +105,9 @@ Commands: on, off, toggle, brightness, color_temp, open, close, stop, position, 
 8. brightness range: 0-254. color_temp range: 153-500 (mireds).
 9. Groups use "group:<id>" for ieee.
 10. If the request is a simple timed action on a single device, use that device as both source and target.
+11. condition_logic joins the conditions: "and" (all must hold, the default) or "or"
+    (any one is enough). Use "or" for "when X is A or B", e.g. a presence place that
+    can be either of two locations. Omit it when there is only one condition.
 
 ## Examples
 
@@ -344,6 +348,12 @@ class AIAutomations:
         if not conds:
             errors.append("No trigger conditions specified")
 
+        cl = str(rule.get("condition_logic", "and") or "and").lower()
+        if cl not in ("and", "or"):
+            errors.append(f"condition_logic must be 'and' or 'or', got '{cl}'")
+        else:
+            rule["condition_logic"] = cl
+
         for i, c in enumerate(conds):
             # time_window / sun / time conditions carry no operator.
             if c.get("type") in ("time_window", "sun", "time"):
@@ -441,7 +451,8 @@ class AIAutomations:
                 cond_parts.append(f"time is {c.get('time_from')}-{c.get('time_to')}")
             else:
                 cond_parts.append(f"{c.get('attribute')} {c.get('operator')} {c.get('value')}")
-        parts.append(f"When {src_name} {' AND '.join(cond_parts)}")
+        joiner = " OR " if rule.get("condition_logic") == "or" else " AND "
+        parts.append(f"When {src_name} {joiner.join(cond_parts)}")
 
         # Prerequisites
         prereqs = rule.get("prerequisites", [])

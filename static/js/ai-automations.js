@@ -270,7 +270,9 @@ function _showGeneratedRule(rule, explanation, source) {
         if (c.type === 'time_window') return `<span class="badge bg-info">🕐 ${c.time_from}-${c.time_to}</span>`;
         if (c.type === 'sun') return `<span class="badge bg-info">🌅 ${c.from}→${c.to}</span>`;
         return `<span class="badge bg-primary">${c.attribute} ${c.operator} ${c.value}</span>`;
-    }).join(' <small class="text-muted">AND</small> ');
+    }).join(rule.condition_logic === 'or'
+        ? ' <small style="color:#6f42c1;font-weight:600">OR</small> '
+        : ' <small class="text-muted">AND</small> ');
 
     // Steps summary
     const stepsHtml = s => (s || []).map(step => {

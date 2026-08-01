@@ -12,6 +12,7 @@ Step types (recursive):
   parallel     - Run multiple step branches simultaneously
 
 Condition features:
+  - AND / OR logic across a rule's trigger conditions (rule["condition_logic"])
   - AND / OR logic for prerequisites
   - NOT (negate) flag on any prerequisite
   - Inline conditions in if_then_else support AND/OR/NOT
@@ -212,6 +213,12 @@ class AutomationEngine:
             except Exception as e:
                 logger.error(f"[AUTO] Time boundary loop error: {e}")
 
+    @staticmethod
+    def _condition_logic(rule) -> str:
+        """'and' (default) or 'or' — how a rule joins its trigger conditions.
+        Rules saved before OR support carry no key, so they stay AND."""
+        return "or" if str(rule.get("condition_logic", "and")).lower() == "or" else "and"
+
     def _rule_temporal_boundaries(self, rule) -> set:
         """HH:MM strings at which this rule's temporal conditions can change state."""
         b: set = set()
@@ -271,8 +278,9 @@ class AutomationEngine:
             full_state = source_device.state if source_device else {}
 
             # Evaluate with empty changed_data — time_window conditions don't need it
+            logic = self._condition_logic(rule)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                rule.get("conditions", []), rule_id, {}, full_state, now)
+                rule.get("conditions", []), rule_id, {}, full_state, now, logic)
 
             if has_sustain:
                 continue
@@ -289,12 +297,14 @@ class AutomationEngine:
 
             if not all_matched:
                 self._trace(rule_id, "evaluate", "NO_MATCH",
-                            f"Conditions not met: {rule_name}",
-                            level="DEBUG", conditions=cond_results)
+                            f"Conditions ({logic.upper()}) not met: {rule_name}",
+                            level="DEBUG", conditions=cond_results,
+                            condition_logic=logic)
             elif not prereqs_met:
                 self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
                             f"Prerequisites not met: {rule_name}",
-                            conditions=cond_results, prerequisites=prereq_results)
+                            conditions=cond_results, prerequisites=prereq_results,
+                            condition_logic=logic)
 
             self._rule_states[rule_id] = new_state
 
@@ -323,7 +333,8 @@ class AutomationEngine:
 
             self._trace(rule_id, "transition", f"{path}_FIRING",
                         f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
-                        conditions=cond_results, prerequisites=prereq_results)
+                        conditions=cond_results, prerequisites=prereq_results,
+                        condition_logic=logic)
 
             self._cancel_sequence(rule_id)
             task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
@@ -622,6 +633,10 @@ class AutomationEngine:
         else:
             return {"success": False, "error": "Provide conditions list"}
 
+        cond_logic = str(data.get("condition_logic", "and") or "and").lower()
+        if cond_logic not in ("and", "or"):
+            return {"success": False, "error": "condition_logic must be 'and' or 'or'"}
+
         prereqs = data.get("prerequisites", [])
         if prereqs:
             err = self._validate_prerequisites(prereqs)
@@ -656,6 +671,7 @@ class AutomationEngine:
             "enabled": data.get("enabled", True),
             "source_ieee": source,
             "conditions": conditions,
+            "condition_logic": cond_logic,
             "prerequisites": prereqs,
             "then_sequence": then_seq,
             "else_sequence": else_seq,
@@ -679,6 +695,11 @@ class AutomationEngine:
             err = self._validate_conditions(updates["conditions"])
             if err: return {"success": False, "error": err}
             rule["conditions"] = updates["conditions"]
+        if "condition_logic" in updates:
+            cl = str(updates["condition_logic"] or "and").lower()
+            if cl not in ("and", "or"):
+                return {"success": False, "error": "condition_logic must be 'and' or 'or'"}
+            rule["condition_logic"] = cl
         if "prerequisites" in updates:
             p = updates["prerequisites"] or []
             if p:
@@ -811,13 +832,14 @@ class AutomationEngine:
                 continue
 
             # --- CONDITIONS ---
+            logic = self._condition_logic(rule)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                conditions, rule_id, changed_data, full_state, now)
+                conditions, rule_id, changed_data, full_state, now, logic)
 
             if has_sustain:
                 self._trace(rule_id, "evaluate", "SUSTAIN_WAIT",
                             f"Sustain pending: {rule_name}",
-                            conditions=cond_results)
+                            conditions=cond_results, condition_logic=logic)
                 continue
 
             # --- PREREQUISITES ---
@@ -834,12 +856,14 @@ class AutomationEngine:
 
             if not all_matched:
                 self._trace(rule_id, "evaluate", "NO_MATCH",
-                            f"Conditions not met: {rule_name}",
-                            level="DEBUG", conditions=cond_results)
+                            f"Conditions ({logic.upper()}) not met: {rule_name}",
+                            level="DEBUG", conditions=cond_results,
+                            condition_logic=logic)
             elif not prereqs_met:
                 self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
                             f"Prerequisites not met: {rule_name}",
-                            conditions=cond_results, prerequisites=prereq_results)
+                            conditions=cond_results, prerequisites=prereq_results,
+                            condition_logic=logic)
 
             # --- TRANSITION ---
             self._rule_states[rule_id] = new_state
@@ -879,7 +903,8 @@ class AutomationEngine:
 
             self._trace(rule_id, "transition", f"{path}_FIRING",
                         f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
-                        conditions=cond_results, prerequisites=prereq_results)
+                        conditions=cond_results, prerequisites=prereq_results,
+                        condition_logic=logic)
 
             self._cancel_sequence(rule_id)
             task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
@@ -894,122 +919,146 @@ class AutomationEngine:
     # CONDITION / PREREQUISITE EVALUATION
     # =========================================================================
 
-    def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state, now):
-        """Evaluate source device conditions (AND). Returns (all_matched, results, has_sustain)."""
+    def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
+                               now, logic="and"):
+        """Evaluate source device conditions. Returns (matched, results, has_sustain).
+
+        logic 'and' (default): every condition must pass; stops at the first failure.
+        logic 'or':            any one condition passing is enough; stops at the first
+                               pass, so the results list shows what was checked.
+
+        has_sustain means "a condition is mid-sustain, don't decide yet" — under OR
+        that only holds the rule back while nothing else has already passed.
+        """
+        or_mode = str(logic).lower() == "or"
         results = []
-        all_ok = True
+        block_ok = not or_mode          # AND starts true, OR starts false
         has_sustain = False
 
         for i, cond in enumerate(conditions):
-            ctype = cond.get("type", "attribute")
-            if ctype == "sun":
-                import datetime
-                matched, info = self._eval_sun(cond, datetime.datetime.now())
-                results.append({"index": i + 1, "type": "sun", **info,
-                                "result": "PASS" if matched else "FAIL"})
-                if not matched:
-                    all_ok = False; break
-                continue
-            if ctype == "time_window":
-                import datetime
-                negate = cond.get("negate", False)
-                now_dt = datetime.datetime.now()
-                now_time = now_dt.time()
-                weekday = now_dt.weekday()
-                t_from = datetime.time(*map(int, cond["time_from"].split(":")))
-                t_to   = datetime.time(*map(int, cond["time_to"].split(":")))
-                days   = cond.get("days", list(range(7)))
-                # An absent "days" key defaults to all 7 (handled by .get above);
-                # an explicitly empty list means "no days" → never matches.
-                day_ok = weekday in days
-                if t_from <= t_to:
-                    time_ok = t_from <= now_time <= t_to
-                else:
-                    time_ok = now_time >= t_from or now_time <= t_to
-                matched = day_ok and time_ok
-                if negate:
-                    matched = not matched
-                results.append({
-                    "index": i + 1, "type": "time_window",
-                    "time_from": cond["time_from"], "time_to": cond["time_to"],
-                    "days": days, "negate": negate,
-                    "now_time": now_dt.strftime("%H:%M"), "now_weekday": weekday,
-                    "result": "PASS" if matched else "FAIL",
-                })
-                if not matched:
-                    all_ok = False; break
-                continue
-            if ctype == "time":
-                # Point-in-time alarm: matched only during the exact HH:MM minute
-                # on the selected weekdays. Fires the THEN sequence once at that
-                # minute (the scheduler evaluates the boundary).
-                import datetime
-                negate = cond.get("negate", False)
-                now_dt = datetime.datetime.now()
-                at = str(cond.get("at", ""))
-                days = cond.get("days", list(range(7)))
-                matched = (now_dt.weekday() in days) and (now_dt.strftime("%H:%M") == at)
-                if negate:
-                    matched = not matched
-                results.append({
-                    "index": i + 1, "type": "time", "at": at, "days": days,
-                    "negate": negate, "now_time": now_dt.strftime("%H:%M"),
-                    "now_weekday": now_dt.weekday(),
-                    "result": "PASS" if matched else "FAIL",
-                })
-                if not matched:
-                    all_ok = False; break
-                continue
+            matched, result, sustain_pending = self._eval_one_condition(
+                cond, i, rule_id, changed_data, full_state, now)
+            results.append(result)
 
-            attr = cond["attribute"]
-            op = cond["operator"]
-            threshold = cond["value"]
-            sustain = cond.get("sustain", 0) or 0
-
-            if attr in changed_data:
-                val = changed_data[attr]; src = "changed_data"
-            elif attr in full_state:
-                val = full_state[attr]; src = "full_state"
+            if or_mode:
+                if sustain_pending:
+                    has_sustain = True
+                if matched:
+                    block_ok = True
+                    has_sustain = False
+                    break
             else:
-                results.append({"index": i+1, "attribute": attr, "result": "FAIL",
-                                "reason": f"'{attr}' not in state"})
-                all_ok = False; break
+                if sustain_pending:
+                    has_sustain = True
+                if not matched:
+                    block_ok = False
+                    break
 
-            try:
-                matched = self._evaluate_condition(val, op, threshold)
-            except Exception as e:
-                results.append({"index": i+1, "attribute": attr, "result": "ERROR", "reason": str(e)})
-                all_ok = False; break
+        return block_ok, results, has_sustain
 
-            skey = f"{rule_id}_{i}"
-            if matched and sustain > 0:
-                if skey not in self._sustain_tracker:
-                    self._sustain_tracker[skey] = now
-                el = now - self._sustain_tracker[skey]
-                if el < sustain:
-                    results.append({"index": i+1, "attribute": attr, "operator": op,
-                                    "threshold_raw": repr(threshold), "actual_raw": repr(val),
-                                    "actual_type": type(val).__name__, "value_source": src,
-                                    "result": "SUSTAIN_WAIT", "sustain_required": sustain,
-                                    "sustain_elapsed": round(el, 1),
-                                    "reason": f"Sustained {el:.1f}s / {sustain}s"})
-                    has_sustain = True; all_ok = False; break
+    def _eval_one_condition(self, cond, i, rule_id, changed_data, full_state, now):
+        """Evaluate a single trigger condition.
 
-            if matched:
-                self._sustain_tracker.pop(skey, None)
+        Returns (matched, result_dict, sustain_pending). sustain_pending is True when
+        the condition's value matched but its "for N seconds" window hasn't elapsed —
+        matched is False in that case, the caller decides what to do with it.
+        """
+        ctype = cond.get("type", "attribute")
+
+        if ctype == "sun":
+            import datetime
+            matched, info = self._eval_sun(cond, datetime.datetime.now())
+            return matched, {"index": i + 1, "type": "sun", **info,
+                             "result": "PASS" if matched else "FAIL"}, False
+
+        if ctype == "time_window":
+            import datetime
+            negate = cond.get("negate", False)
+            now_dt = datetime.datetime.now()
+            now_time = now_dt.time()
+            weekday = now_dt.weekday()
+            t_from = datetime.time(*map(int, cond["time_from"].split(":")))
+            t_to   = datetime.time(*map(int, cond["time_to"].split(":")))
+            days   = cond.get("days", list(range(7)))
+            # An absent "days" key defaults to all 7 (handled by .get above);
+            # an explicitly empty list means "no days" → never matches.
+            day_ok = weekday in days
+            if t_from <= t_to:
+                time_ok = t_from <= now_time <= t_to
             else:
-                self._sustain_tracker.pop(skey, None)
+                time_ok = now_time >= t_from or now_time <= t_to
+            matched = day_ok and time_ok
+            if negate:
+                matched = not matched
+            return matched, {
+                "index": i + 1, "type": "time_window",
+                "time_from": cond["time_from"], "time_to": cond["time_to"],
+                "days": days, "negate": negate,
+                "now_time": now_dt.strftime("%H:%M"), "now_weekday": weekday,
+                "result": "PASS" if matched else "FAIL",
+            }, False
 
-            results.append({"index": i+1, "attribute": attr, "operator": op,
-                            "threshold_raw": repr(threshold),
-                            "actual_raw": repr(val),
-                            "actual_type": type(val).__name__,
-                            "value_source": src,
-                            "result": "PASS" if matched else "FAIL"})
-            if not matched:
-                all_ok = False; break
+        if ctype == "time":
+            # Point-in-time alarm: matched only during the exact HH:MM minute
+            # on the selected weekdays. Fires the THEN sequence once at that
+            # minute (the scheduler evaluates the boundary).
+            import datetime
+            negate = cond.get("negate", False)
+            now_dt = datetime.datetime.now()
+            at = str(cond.get("at", ""))
+            days = cond.get("days", list(range(7)))
+            matched = (now_dt.weekday() in days) and (now_dt.strftime("%H:%M") == at)
+            if negate:
+                matched = not matched
+            return matched, {
+                "index": i + 1, "type": "time", "at": at, "days": days,
+                "negate": negate, "now_time": now_dt.strftime("%H:%M"),
+                "now_weekday": now_dt.weekday(),
+                "result": "PASS" if matched else "FAIL",
+            }, False
 
-        return all_ok, results, has_sustain
+        attr = cond["attribute"]
+        op = cond["operator"]
+        threshold = cond["value"]
+        sustain = cond.get("sustain", 0) or 0
+        skey = f"{rule_id}_{i}"
+
+        if attr in changed_data:
+            val = changed_data[attr]; src = "changed_data"
+        elif attr in full_state:
+            val = full_state[attr]; src = "full_state"
+        else:
+            self._sustain_tracker.pop(skey, None)
+            return False, {"index": i + 1, "attribute": attr, "result": "FAIL",
+                           "reason": f"'{attr}' not in state"}, False
+
+        try:
+            matched = self._evaluate_condition(val, op, threshold)
+        except Exception as e:
+            self._sustain_tracker.pop(skey, None)
+            return False, {"index": i + 1, "attribute": attr,
+                           "result": "ERROR", "reason": str(e)}, False
+
+        if matched and sustain > 0:
+            if skey not in self._sustain_tracker:
+                self._sustain_tracker[skey] = now
+            el = now - self._sustain_tracker[skey]
+            if el < sustain:
+                return False, {"index": i + 1, "attribute": attr, "operator": op,
+                               "threshold_raw": repr(threshold), "actual_raw": repr(val),
+                               "actual_type": type(val).__name__, "value_source": src,
+                               "result": "SUSTAIN_WAIT", "sustain_required": sustain,
+                               "sustain_elapsed": round(el, 1),
+                               "reason": f"Sustained {el:.1f}s / {sustain}s"}, True
+
+        self._sustain_tracker.pop(skey, None)
+
+        return matched, {"index": i + 1, "attribute": attr, "operator": op,
+                         "threshold_raw": repr(threshold),
+                         "actual_raw": repr(val),
+                         "actual_type": type(val).__name__,
+                         "value_source": src,
+                         "result": "PASS" if matched else "FAIL"}, False
 
 
     def _eval_prerequisites(self, prereqs, devices, names):

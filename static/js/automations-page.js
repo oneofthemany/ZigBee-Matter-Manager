@@ -433,10 +433,12 @@ function _ruleCard(rule, src) {
 
     let flow = step('When', 'when', `${trig.text}${trig.raw ? `<span class="ap-raw">${_esc(trig.raw)}</span>` : ''}`);
 
-    // Additional source conditions beyond the first are ANDed onto the trigger.
+    // Additional source conditions beyond the first join the trigger with the
+    // rule's condition_logic — "and" (all must hold) or "or" (any one fires it).
+    const joiner = rule.condition_logic === 'or' ? 'or' : 'and';
     (rule.conditions || []).slice(1).forEach(c => {
         const cp = _condPhrase(c);
-        flow += step('and', 'and', `${cp.text}<span class="ap-raw">${_esc(cp.raw)}</span>`);
+        flow += step(joiner, joiner, `${cp.text}<span class="ap-raw">${_esc(cp.raw)}</span>`);
     });
 
     (rule.prerequisites || []).forEach((p, i) => {
@@ -449,15 +451,21 @@ function _ruleCard(rule, src) {
     if ((rule.else_sequence || []).length)
         flow += step('Else', 'else', `<div class="ap-acts">${_renderSeq(rule.else_sequence)}</div>`);
 
-    // Collapsed one-line summary: "When <trigger> → n action(s)".
+    // Collapsed one-line summary: "When <trigger> → n action(s)". The summary
+    // only names the first condition, so an OR rule says how many alternatives
+    // it hides — otherwise it reads as a much narrower trigger than it is.
     const nActs = (rule.then_sequence || []).length;
+    const nMore = Math.max(0, (rule.conditions || []).length - 1);
+    const csumTrig = (joiner === 'or' && nMore)
+        ? `${trig.text} <span class="ap-or-more">or ${nMore} more</span>`
+        : trig.text;
     const isOpen = expandedRules.has(rule.id);
 
     return `<div class="ap-flowcard ${en ? '' : 'disabled'} ${isOpen ? '' : 'collapsed'}" id="ap-rule-${rule.id}">
         <div class="ap-crow" onclick="window._apToggleExpand('${rule.id}')" title="Expand">
             <span class="ap-idico sm">${_icon(src.type)}</span>
             ${nameHtml}
-            <span class="ap-csum">When ${trig.text} → ${nActs} action${nActs === 1 ? '' : 's'}</span>
+            <span class="ap-csum">When ${csumTrig} → ${nActs} action${nActs === 1 ? '' : 's'}</span>
             ${stateChip}
             <span class="ap-crow-btns" onclick="event.stopPropagation()">
                 <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._apTrace('${rule.id}')" title="Trace"><i class="fas fa-search"></i></button>

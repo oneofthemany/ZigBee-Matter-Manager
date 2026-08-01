@@ -89,6 +89,9 @@
 #ap-rules-list .ap-lab.when { color: var(--accent); }
 #ap-rules-list .ap-lab.if   { color: var(--ap-info); }
 #ap-rules-list .ap-lab.and  { color: var(--ap-info); opacity: .7; }
+/* OR-joined trigger conditions — full strength and its own hue, so an "any of
+   these" rule doesn't read like an "all of these" one at a glance. */
+#ap-rules-list .ap-lab.or   { color: #8b5cf6; }
 #ap-rules-list .ap-lab.do   { color: var(--status-ok); }
 #ap-rules-list .ap-lab.else { color: var(--status-bad); }
 
@@ -140,6 +143,7 @@
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 12.5px; color: var(--text-secondary);
 }
+#ap-rules-list .ap-crow .ap-or-more { color: #8b5cf6; font-weight: 600; }
 #ap-rules-list .ap-crow .ap-chev { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
 #ap-rules-list .ap-crow-btns { display: flex; gap: 5px; flex-shrink: 0; }
 #ap-rules-list .ap-crow-btns .btn { font-size: 11px; }
