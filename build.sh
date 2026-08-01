@@ -1,17 +1,10 @@
 #!/bin/bash
 # =============================================================================
 # Zigbee Matter Manager — Container Build & Deploy Script
-# Supports: Podman (preferred) and Docker
-#
-# Runs as a privileged container (required for OTBR network namespaces,
-# ipset, iptables, and Thread border routing).
-# Uses --network=host for direct Thread/mDNS/IPv6 access.
 # =============================================================================
 
 # =============================================================================
 # OTA HOTFIX: Diff Check & Live Patching
-# Compare newly cloned scripts against running scripts. If a diff exists,
-# invoke install_watcher to update the host orchestrator immediately.
 # =============================================================================
 if [[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]] && [[ -n "${ZMM_DATA_DIR:-}" || -n "${DATA_DIR:-}" ]]; then
     _SAFE_DIR="${ZMM_DATA_DIR:-${DATA_DIR:-/opt/.zigbee-matter-manager}}/scripts"
@@ -19,14 +12,12 @@ if [[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]] && [[ -n "${ZMM_DATA_DIR:-}" || -n "$
     _NEEDS_UPDATE=0
 
     if [[ -d "$_SAFE_DIR" && -d "$_SRC_DIR/scripts" ]]; then
-        # Check standard scripts
         for _script in upgrade.sh run_container.sh install_watcher.sh; do
             if ! cmp -s "$_SRC_DIR/scripts/$_script" "$_SAFE_DIR/$_script" 2>/dev/null; then
                 _NEEDS_UPDATE=1
                 break
             fi
         done
-        # Check build.sh
         if [[ -f "$_SRC_DIR/build.sh" ]] && ! cmp -s "$_SRC_DIR/build.sh" "$_SAFE_DIR/build.sh" 2>/dev/null; then
             _NEEDS_UPDATE=1
         fi
@@ -38,13 +29,6 @@ if [[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]] && [[ -n "${ZMM_DATA_DIR:-}" || -n "$
     fi
 fi
 # =============================================================================
-
-# This installer runs ENTIRELY as root. Rootful podman is required: the Zigbee
-# USB coordinator, OTBR network namespaces, ipset/iptables and the host systemd
-# units all need root, and a rootless pod created here would be invisible to the
-# root-owned boot units. ensure_root (called from main) re-execs under sudo when
-# needed. No user-session XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS is set —
-# those are rootless-podman artifacts and do not apply here.
 
 set -euo pipefail
 
@@ -58,8 +42,6 @@ detect_build_jobs() {
     else
         cores=2
     fi
-    # Cap at 8 — diminishing returns past that, and DuckDB's compile
-    # link step occasionally OOMs on -j16+ with only a few GB free.
     (( cores > 8 )) && cores=8
     echo "$cores"
 }
@@ -75,11 +57,6 @@ error()   { echo -e "${RED}${BOLD}[ERR ]${NC}  $*" >&2; }
 die()     { error "$*"; exit 1; }
 
 # ── Progress reporting ──────────────────────────────────────────────────────
-# Progress is reported in two layers:
-#   1. step_announce() — high-level phases ("Step 3 of 10: USB coordinator")
-#   2. build_progress_filter() — parses podman's STEP N/M output and renders
-#      an in-place progress bar. Falls back to plain pass-through if stdout
-#      isn't a TTY (e.g. when build.sh's output is being captured to a file).
 TOTAL_STEPS=11
 CURRENT_STEP=0
 
@@ -90,15 +67,6 @@ step_announce() {
     echo -e "${BOLD}${CYAN}▸ Step ${CURRENT_STEP} of ${TOTAL_STEPS}: ${desc}${NC}"
 }
 
-# In-place progress renderer — two stacked lines redrawn with \r + cursor moves:
-#   line 1 — overall image build: podman's STEP N/M as a bar
-#   line 2 — sub-progress WITHIN the current step. The long RUN steps (OTBR/CPC
-#            compile, pip install) stream ninja/cmake/git/apt/pip output but emit
-#            no new STEP line for minutes, so the overall bar looks frozen. We
-#            surface a real percentage when the inner tool reports one, else the
-#            latest activity line plus a spinner so a slow step still shows life.
-
-# Build a "████░░░░" bar of WIDTH columns for value/total.
 _bar_str() {
     local v="$1" t="$2" w="$3" i filled bar=""
     (( t > 0 )) || t=1
@@ -109,31 +77,22 @@ _bar_str() {
     printf '%s' "$bar"
 }
 
-# Repaint the in-place block (1 or 2 lines). _LINES_DRAWN is dynamically scoped
-# from build_progress_filter and tracks how many rows the block currently spans.
 _repaint() {
     local l1="$1" l2="$2" drawn=1
-    # Return the cursor to the top row of the previously drawn block.
     (( _LINES_DRAWN > 1 )) && printf '\033[%dA' $(( _LINES_DRAWN - 1 )) >&2
     printf '\r%s\033[K' "$l1" >&2
     if [[ -n "$l2" ]]; then
         printf '\n%s\033[K' "$l2" >&2
         drawn=2
     fi
-    # Shrinking (2 rows -> 1): wipe the now-stale row below, then step back up.
     (( _LINES_DRAWN > drawn )) && printf '\n\033[K\033[1A' >&2
     _LINES_DRAWN=$drawn
 }
 
-# Move the cursor below the block so normal output / errors start on a clean row.
 _end_block() {
     (( _LINES_DRAWN > 0 )) && { printf '\n' >&2; _LINES_DRAWN=0; }
 }
 
-# Compose both lines from the current state and repaint. An elapsed-seconds
-# timer (sub_idle) is shown right after the spinner/percent — BEFORE the text so
-# it survives truncation — whenever a step has gone quiet, proving liveness
-# during long silent phases (dpkg unpacking a big package, a stalled download).
 _render() {
     local mpct=0; (( total > 0 )) && mpct=$(( current * 100 / total ))
     local cached_suffix=""; (( cached > 0 )) && cached_suffix=" ${cached} cached"
@@ -149,20 +108,16 @@ _render() {
             printf -v l2 "   └ %s%s %s" "${SPIN[$spin_idx]}" "$idle_str" "$sub_text"
         fi
     fi
-    # Keep each line to one physical row (char count == display cols here).
     (( ${#l1} > TERM_W )) && l1="${l1:0:TERM_W}"
     (( ${#l2} > TERM_W )) && l2="${l2:0:$(( TERM_W - 1 ))}…"
     _repaint "$l1" "$l2"
 }
 
-# Filter podman build output: overall STEP bar + per-step sub-progress. Tees the
-# full log for post-mortem on failure. Plain pass-through when stderr isn't a TTY.
 build_progress_filter() {
     local log_file="$1"
     : > "$log_file"
 
     if [[ ! -t 2 ]]; then
-        # Not a TTY (output redirected) — just tee to log and pass through
         tee -a "$log_file"
         return
     fi
@@ -175,22 +130,11 @@ build_progress_filter() {
     (( TERM_W < 40 )) && TERM_W=80
 
     local line rc
-    # -t 1: wake at least once a second even with no new output, so the spinner
-    # and elapsed timer keep moving during long silent build phases (the display
-    # otherwise only repaints when podman emits a line and looks hung). Keep the
-    # read in the `if` condition — never `! read`, which clobbers $? so a timeout
-    # (rc>128) can't be told apart from EOF — and handle the no-line case in the
-    # matching `else`.
     while true; do
         if IFS= read -r -t 1 line; then
-            # Got a real line: reset the idle timer up front so the `continue`s
-            # below don't skip it.
             last_line_at=$SECONDS
             sub_idle=0
-            # Always log everything (raw)
             printf '%s\n' "$line" >> "$log_file"
-            # Collapse CR-updated progress (git/apt redraw a line with \r) to
-            # its final segment so we render the latest value, not the history.
             line="${line##*$'\r'}"
 
             if [[ "$line" =~ ^STEP\ ([0-9]+)/([0-9]+):\ (.*)$ ]]; then
@@ -198,7 +142,6 @@ build_progress_filter() {
                 last_op="${BASH_REMATCH[3]}"
                 last_op="${last_op#RUN }"; last_op="${last_op#COPY }"
                 last_op="${last_op#FROM }"; last_op="${last_op#ENV }"
-                # New step: reset sub-progress, seed the sub-line with its op.
                 sub_active=1; sub_percent=-1; sub_text="$last_op"
                 _render
             elif [[ "$line" == *"Using cache"* ]]; then
@@ -209,35 +152,26 @@ build_progress_filter() {
                 _end_block; printf '%s\n' "$line" >&2
             # ── Sub-progress WITHIN the current step ──────────────────────────
             elif [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\](.*)$ ]]; then
-                # ninja: "[132/487] Building CXX object ..."
                 local _n="${BASH_REMATCH[1]}" _m="${BASH_REMATCH[2]}"
                 (( _m > 0 )) && sub_percent=$(( _n * 100 / _m ))
                 sub_text="${BASH_REMATCH[3]# }"
                 sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
             elif [[ "$line" =~ ^\[\ *([0-9]+)%\](.*)$ ]]; then
-                # cmake/make: "[ 42%] Building ..."
                 sub_percent="${BASH_REMATCH[1]}"; sub_text="${BASH_REMATCH[2]# }"
                 sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
             elif [[ "$line" =~ (Receiving objects|Resolving deltas|Compressing objects|Counting objects|Unpacking objects):\ *([0-9]+)% ]]; then
-                # git clone / submodule fetch
                 sub_percent="${BASH_REMATCH[2]}"; sub_text="${BASH_REMATCH[1]}"
                 sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
             elif [[ "$line" =~ Progress:\ *\[\ *([0-9]+)%\] ]]; then
-                # apt-get progress meter
                 sub_percent="${BASH_REMATCH[1]}"; sub_text="installing packages"
                 sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
             elif [[ -n "${line//[[:space:]]/}" ]]; then
-                # Any other non-blank line = liveness (pip "Collecting…",
-                # compiler output, dpkg "Unpacking…"). Keep the last percent,
-                # refresh text + spinner.
                 sub_text="$line"
                 sub_active=1; spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} )); _render
             fi
-            # (blank lines fall through with no render)
         else
             rc=$?
             (( rc > 128 )) || break     # >128 = read timeout; else EOF → done
-            # No output this second — animate liveness while a step is running.
             if (( sub_active )); then
                 sub_idle=$(( SECONDS - last_line_at ))
                 spin_idx=$(( (spin_idx + 1) % ${#SPIN[@]} ))
@@ -260,9 +194,6 @@ CONTAINER_NAME="zigbee-matter-manager"
 INTERNAL_PORT=8000
 MATTER_INTERNAL_PORT=5580
 
-# Pod (podman only). The app — and, from CP2, the manager sidecar — run as members
-# of this pod. The pod's infra container owns the published ports for the whole
-# pod lifetime, so members join with --pod and never publish ports themselves.
 POD_NAME="${ZMM_POD_NAME:-zmm}"
 MANAGER_PORT="${ZMM_MANAGER_PORT:-8001}"
 MANAGER_CONTAINER_NAME="${CONTAINER_NAME}-manager"   # sidecar; runs the app image as `python -m manager`
@@ -270,9 +201,6 @@ MANAGER_CONTAINER_NAME="${CONTAINER_NAME}-manager"   # sidecar; runs the app ima
 # =============================================================================
 # PRE-FLIGHT: require root, then ensure the data directory exists
 # =============================================================================
-# The whole installer must run as root (rootful podman + host units). If it
-# isn't, re-exec under sudo when we're a real script file; when piped straight
-# from curl there is no file to re-exec, so tell the operator how to fix it.
 ensure_root() {
     [[ "$(id -u)" -eq 0 ]] && return 0
     local self="${BASH_SOURCE[0]:-$0}"
@@ -286,9 +214,6 @@ ensure_root() {
     exit 1
 }
 
-# DATA_DIR defaults to /opt/.zigbee-matter-manager — a root-owned location.
-# We're root by the time this runs (ensure_root), so a plain mkdir is enough,
-# and the tree stays root-owned to match rootful podman.
 ensure_data_dir() {
     if [[ -d "$DATA_DIR" ]]; then
         ok "Data directory present: ${BOLD}${DATA_DIR}${NC}"
@@ -319,10 +244,6 @@ detect_runtime() {
     trap on_interrupt INT TERM
 }
 
-# Ctrl+C kills this script and the podman/docker build client, but the
-# in-flight RUN step (buildah/crun children compiling the SDK or OTBR)
-# survives as orphans and keeps burning CPU. Reap our descendants and
-# remove leftover build containers so cancellation actually cancels.
 on_interrupt() {
     trap - INT TERM
     echo
@@ -334,8 +255,6 @@ on_interrupt() {
         sleep 2
         kill -KILL $kids 2>/dev/null || true
     fi
-    # Leftover working containers from the interrupted build (does NOT
-    # touch the running app container)
     "$RUNTIME" ps -a --external --format '{{.ID}} {{.Names}}' 2>/dev/null \
         | awk '/working-container|buildah/ {print $1}' \
         | xargs -r "$RUNTIME" rm --force >/dev/null 2>&1 || true
@@ -388,8 +307,6 @@ find_free_port() {
 }
 
 check_host_port() {
-    # With --network=host the container binds directly to host ports.
-    # Verify the port is free; if not, find an alternative and pass via env var.
     local preferred=$1
     if port_in_use "$preferred"; then
         local blocker
@@ -422,24 +339,11 @@ check_deps() {
 # CLONE / UPDATE REPO
 # =============================================================================
 fetch_repo() {
-    # We deliberately do NOT run 'git pull' here. Pulling would either:
-    #   - overwrite a deliberately-checked-out tag with main (wrong for upgrades), or
-    #   - abort with "local changes would be overwritten" if anything in the
-    #     tree was modified at runtime (which is exactly the swap-failure
-    #     symptom we are fixing).
-    #
-    # If the operator wants to refresh from origin/main, they should:
-    #   sudo rm -rf "$CLONE_DIR" && curl -fsSL <installer-url> | sudo bash
-    # or use the upgrade flow with target_version=<commit-or-tag>.
     if [[ -d "$CLONE_DIR/.git" ]]; then
         local current_ref
         current_ref=$(git -C "$CLONE_DIR" describe --tags --always --dirty 2>/dev/null || echo "unknown")
         ok "Repository already present at ${CLONE_DIR} (ref: ${current_ref}) — skipping fetch."
     elif [[ -d "$CLONE_DIR" ]] && [[ -n "$(ls -A "$CLONE_DIR" 2>/dev/null || true)" ]]; then
-        # Directory exists with content but no .git — could be a tarball
-        # extraction or a botched previous install. Leave it alone and let
-        # later steps (write_containerfile, build_image) decide whether the
-        # contents are usable.
         warn "${CLONE_DIR} exists but is not a git checkout — proceeding with whatever is there."
     else
         info "Cloning ${REPO_URL} → ${CLONE_DIR} ..."
@@ -458,7 +362,6 @@ detect_usb_coordinator() {
     local -a found_devices=()
     local -a found_labels=()
 
-    # Scan /dev/serial/by-id for known Zigbee coordinator patterns
     if [[ -d /dev/serial/by-id ]]; then
         for dev in /dev/serial/by-id/*; do
             [[ -e "$dev" ]] || continue
@@ -473,7 +376,6 @@ detect_usb_coordinator() {
         done
     fi
 
-    # Fallback to raw /dev/ttyACM* and /dev/ttyUSB*
     if [[ ${#found_devices[@]} -eq 0 ]]; then
         for dev in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyUSB1; do
             if [[ -c "$dev" ]]; then
@@ -553,25 +455,14 @@ _prompt_manual_usb() {
 # CONTAINERFILE
 # =============================================================================
 write_containerfile() {
-    # Backward/forward compatibility: this function is also sourced+called by
-    # the INSTALLED upgrade.sh, which may be an OLDER version that predates the
-    # Rust-component split and therefore does NOT export WITH_EQ (and may not
-    # export WITH_APPENDER). Under `set -u` an unbound reference below aborts
-    # the function mid-write, truncating the Containerfile (no app/entrypoint
-    # layers) and producing a broken image. Default them here so any caller is
-    # safe. WITH_EQ inherits WITH_APPENDER when unset, preserving the pre-split
-    # combined-toggle behaviour (appender on ⇒ EQ on).
     : "${WITH_APPENDER:=false}"
     : "${WITH_EQ:=$WITH_APPENDER}"
 
     cat > "$CLONE_DIR/Containerfile" << 'DOCKERFILE_TOP'
-# Zigbee Matter Manager — Root Container
 FROM python:3.11-slim-bookworm
 
-# Force Python to flush logs immediately so the first-run password is visible
 ENV PYTHONUNBUFFERED=1
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         lsb-release \
@@ -614,7 +505,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
     && rm -rf /var/lib/apt/lists/*
 
-# Fetch and install Silicon Labs packages matching Bookworm
 RUN DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SiliconLabs/simplicity_sdk/releases/latest | jq -r '.assets[] | select(.name=="debian-bookworm.zip") | .browser_download_url') \
     && wget "$DOWNLOAD_URL" -O debian-bookworm.zip \
     && unzip debian-bookworm.zip -d /tmp/silabs \
@@ -630,13 +520,11 @@ RUN DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SiliconLabs/simplicity_s
 # ── OTBR with SiLabs CPC MultiPAN support ──────────────────────────────
 ENV SDK_DIR=/tmp/silabs_sdk
 
-# 1. Sparse clone SiLabs SDK just to get the CPC vendor extension files
 RUN git clone --depth 1 --filter=blob:none --sparse \
         https://github.com/SiliconLabs/simplicity_sdk.git ${SDK_DIR} && \
     cd ${SDK_DIR} && \
     git sparse-checkout set protocol/openthread/platform-abstraction/posix
 
-# 2. Clone official OTBR, init submodules, clone matching cpc-daemon, then build
 RUN echo '#!/bin/sh' > /usr/local/bin/sudo && \
     echo 'if echo "$*" | grep -Eq "/proc/sys|sysctl"; then exit 0; fi' >> /usr/local/bin/sudo && \
     echo 'exec /usr/bin/sudo "$@"' >> /usr/local/bin/sudo && \
@@ -661,41 +549,55 @@ RUN echo '#!/bin/sh' > /usr/local/bin/sudo && \
     ./script/setup && \
     rm -f /usr/local/bin/sudo
 
-# 3. Disable systemd service (ZMM manages otbr-agent lifecycle) and clean up
 RUN systemctl disable otbr-agent 2>/dev/null || true
 RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
 
 WORKDIR /app
 DOCKERFILE_TOP
 
-    # Part 2 — Rust toolchain, when any Rust component is requested.
-    #
-    # LAYER ORDER INVARIANT (please do not "tidy" this — it has been churned
-    # repeatedly and each ordering trades one rebuild cost for another):
-    #
-    #   Part 2  Rust toolchain      expensive, never changes  -> ABOVE reqs
-    #   Part 3  Python requirements churns on dependency bump
-    #   Part 4  Rust crate COPY     churns on Rust source edit -> BELOW reqs
-    #
-    # A COPY invalidates every layer beneath it. The toolchain layer (rustup
-    # download + maturin) is the expensive one and depends on nothing that
-    # churns, so it sits at the top and neither kind of edit re-runs it. The
-    # crate COPY+compile sits at the BOTTOM, below the requirements: with it
-    # above, a one-line lib.rs edit re-ran the full ~130-package lock install
-    # as well as the compile, which dominated the cost of a Rust-only change.
-    #
-    # The cost that moves in exchange is that a requirements bump now re-runs
-    # the crate compiles. That is the right way round here: dependency bumps
-    # are rarer than Rust edits, and the compiles are incremental anyway (the
-    # cargo registry and target dir are cache mounts that survive builds),
-    # where the lock install is not.
+    # LAYER ORDER INVARIANT — nothing CONDITIONAL may precede the lock install:
+    #   Part 3  Python requirements  churns on dependency bump
+    #   Part 4  Runtime extras       unconditional, changes ~never
+    #   Part 5  Rust toolchain       CONDITIONAL      -> BELOW reqs
+    #   Part 5  Rust crate COPY      churns on Rust source edit -> BELOW reqs
+
+    # Part 3 — Python requirements (always present)
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
+
+# ── Application requirements (layer cache) ──
+COPY requirements.lock ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
+
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
+DOCKERFILE_REQS
+
+    # Part 4 — runtime extras (always present).
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUNTIME'
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        usbutils \
+        openssl \
+        libportaudio2 \
+        alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+         -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared \
+    && /usr/local/bin/cloudflared --version
+
+DOCKERFILE_RUNTIME
+
+    # Part 5 — Rust components (each independently optional).
     if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
         info "Including Rust toolchain in image build (appender=${WITH_APPENDER}, eq=${WITH_EQ})"
         cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUST_TOOLCHAIN'
 
 # ── Rust toolchain (shared by any Rust component built below) ──
-# maturin installs via the shared pip cache mount so a layer rebuild reuses
-# the downloaded wheel instead of re-fetching it.
 RUN --mount=type=cache,target=/root/.cache/pip \
     apt-get update && apt-get install -y --no-install-recommends \
         python3-dev \
@@ -711,93 +613,7 @@ ARG BUILD_JOBS=4
 ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
 ENV MAKEFLAGS="-j${BUILD_JOBS}"
 DOCKERFILE_RUST_TOOLCHAIN
-    fi
 
-    # Part 3 — Python requirements (always present)
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
-
-# ── Application requirements (layer cache) ──
-# Install from the fully-pinned lockfile for reproducible builds/upgrades.
-# requirements.lock is generated from requirements.txt via scripts/regen_lock.sh
-# (uv pip compile, python 3.11, manylinux_2_31).
-# It already includes python-matter-server[server] (and its home-assistant-chip-core
-# native runtime), so no separate extras install is needed. The manylinux_2_31
-# platform tag matches this bookworm base (glibc 2.36) and resolves for amd64+arm64.
-#
-# The --mount=type=cache keeps pip's wheel/download cache in a host-side
-# buildah volume that survives across builds (it is NOT committed to the
-# image). When a release changes requirements, only the new/changed packages
-# are downloaded — everything else installs from the local cache. Supported
-# natively by podman/buildah; docker needs BuildKit (both fine here).
-# The base image's pip is deliberately NOT upgraded: it already handles every
-# tag in the lock, and upgrading it here re-ran on every lock change for no
-# benefit. PIP_ROOT_USER_ACTION silences the (irrelevant in a container)
-# root-user warning.
-COPY requirements.lock ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
-
-# Self-heal top-up, in its OWN layer: when the lock is complete this is a
-# no-op, but if a release added a package to requirements.txt without
-# regenerating the lock, this installs the missing package (at latest
-# resolvable version) instead of shipping an image that breaks at import
-# time. Split from the lock install so a txt-only edit rebuilds just this
-# small layer, not the full ~130-package lock install above. The upgrade
-# watcher logs a drift warning when this top-up is expected to do real work.
-COPY requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
-DOCKERFILE_REQS
-
-    # Part 4 — runtime extras (always present).
-    # apt + cloudflared, deliberately ABOVE the Rust crate builds: they change
-    # ~never, and with them below a crate edit re-ran the apt install and
-    # re-downloaded cloudflared. See the layer-order invariant in Part 2.
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUNTIME'
-
-# Lightweight runtime extras — deliberately a LATE, separate apt layer so adding
-# them never invalidates the heavy SDK/OTBR/pip layers above (which would force
-# the 15-25 min OTBR recompile AND re-hit the rate-limited SiliconLabs GitHub
-# API). usbutils=lsusb for coordinator auto-detection; libportaudio2=PortAudio
-# runtime for the speaker-sync chirp; alsa-utils=arecord/aplay for audio debug.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        usbutils \
-        openssl \
-        libportaudio2 \
-        alsa-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-# cloudflared — static Go binary for the managed remote-access tunnel
-# (Settings → Security → Remote Access). Arch-aware: amd64/arm64.
-# Deliberately placed late in the file: a tiny download layer here keeps
-# the heavy SDK/OTBR/pip layers above fully cached.
-RUN ARCH=$(dpkg --print-architecture) \
-    && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
-         -o /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/cloudflared \
-    && /usr/local/bin/cloudflared --version
-
-DOCKERFILE_RUNTIME
-
-    # Part 5 — Rust components (each independently optional).
-    #   zmm_telemetry — fast native DuckDB appender. Compiles the bundled
-    #                   DuckDB amalgamation, so it dominates build time
-    #                   (~5-15 min). A small/home network is fine on the
-    #                   Python executemany fallback, so this defaults off.
-    #   zmm_eq        — Cast EQ biquad DSP + the OpenZone sync resampler.
-    #                   pyo3-only, compiles in seconds. The Media-tab
-    #                   equaliser needs it; without it the sync engine falls
-    #                   back to the numpy resampler.
-    # Separate crates/wheels with no cross-dependency, so we build only what
-    # is requested. Both declare no Python dependencies, so installing them
-    # after the requirements is safe — and nothing can clobber them after.
-    # See the layer-order invariant in Part 2 before moving this.
-    if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
-        # Cache mounts keep crates.io downloads and compiled artifacts in
-        # host-side buildah volumes (never committed to the image), so even
-        # when the crate sources DO change, the rebuild is incremental. NOTE:
-        # /root/.cargo/registry is a mount point here — do not rm -rf
-        # /root/.cargo in these layers.
         if [[ "$WITH_APPENDER" == true ]]; then
             info "Including zmm_telemetry Rust appender in image build"
             cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
@@ -833,37 +649,18 @@ DOCKERFILE_EQ
 
     if [[ "$WITH_APPENDER" != true ]]; then
         info "Skipping zmm_telemetry Rust appender — Python executemany fallback will be used"
-        # Bake an env var into the image so telemetry_db.py forces the Python
-        # path even if a stray zmm_telemetry wheel is somehow present at
-        # runtime. Independent of the EQ choice above.
         cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_NOAPPENDER'
 
-# Force Python executemany fallback (no Rust appender built into this image)
 ENV ZMM_TELEMETRY_BACKEND=python
 DOCKERFILE_NOAPPENDER
     fi
 
     # Part 6 — application source and final image config (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_BOTTOM'
-# Application source
 COPY . .
 
-# Application version control - used for upgrades
 COPY VERSION /app/VERSION
 
-# Release manifest — sha256 of every file that ships, so modules/live_edits.py
-# can tell live in-container edits from pristine release files WITHOUT needing
-# .git in the image. Deliberately NOT solved by shipping .git: a depth-1 .git is
-# ~7.5 MB of which ~5.6 MB is the screenshots/docs-images blobs that the
-# .dockerignore exists to strip (the pack carries them even though COPY skips
-# the working-tree copies). This manifest is ~40 KB and is content-based, so it
-# gives exact paths with no git binary and no mtime guesswork.
-#
-# Generated in-image (not from the build context) so it hashes exactly what
-# shipped and can never drift from the .dockerignore's filtering.
-# Excludes the runtime bind-mount targets (data/ logs/ config/) — those are
-# volume-mounted over at run time, so hashing them here is meaningless. Keep the
-# exclusions in sync with _IGNORE_PREFIXES in modules/live_edits.py.
 RUN cd /app \
  && find . -type f \
         -not -path './data/*' \
@@ -880,7 +677,6 @@ RUN cd /app \
   > /app/.release_manifest \
  && echo "release manifest: $(wc -l < /app/.release_manifest) files, $(du -h /app/.release_manifest | cut -f1)"
 
-# Required directories
 RUN mkdir -p /data /app/data/matter /app/data/backups /app/data/certs /app/logs /app/config /var/lib/thread \
         /usr/local/lib/python3.11/site-packages/credentials/development/paa-root-certs
 
@@ -897,33 +693,19 @@ CMD ["python", "launcher.py"]
 DOCKERFILE_BOTTOM
     ok "Containerfile written (appender=${WITH_APPENDER}, eq=${WITH_EQ})."
 
-    # Keep the image lean: exclude build-context cruft that `COPY . .` would
-    # otherwise bake in (~24 MB of .git + screenshots that are useless at
-    # runtime). Written next to the Containerfile so podman (.containerignore /
-    # .dockerignore) and docker (.dockerignore) both honour it, and so the
-    # upgrade flow — which also calls write_containerfile() — gets it for free.
-    #
-    # NOTE: docs/*.md is deliberately KEPT (it's ~100 KB and is what a future
-    # in-app wiki would render); only the heavy docs/images screenshots are cut.
     cat > "$CLONE_DIR/.dockerignore" << 'DOCKERIGNORE'
-# Version control / CI (never needed at runtime; .git alone is ~19 MB)
 .git
 .github
 .gitignore
 .gitattributes
 
-# Heavy docs/readme imagery — keep the markdown, drop the screenshots
 docs/images
 screenshots
 
-# Dev tooling / editor
-# NB: do NOT exclude test_*.py — modules/test_recovery.py and
-# routes/test_recovery_routes.py are RUNTIME modules, not pytest files.
 .idea
 .vscode
 *.code-workspace
 
-# Python / build caches
 **/__pycache__
 **/*.py[cod]
 *.egg-info
@@ -931,11 +713,9 @@ screenshots
 .ruff_cache
 .mypy_cache
 
-# Rust build artifacts (the wheels are built separately in the image)
 zmm_telemetry/target
 zmm_eq/target
 
-# Local/editor/OS noise
 *.log
 *.tmp
 *.swp
@@ -948,11 +728,8 @@ DOCKERIGNORE
 # =============================================================================
 # BUILD IMAGE
 # =============================================================================
-# The base image the Containerfile FROMs. Keep in sync with write_containerfile().
 BASE_IMAGE="python:3.11-slim-bookworm"
 
-# True if the base image is already in local storage (under any of the names
-# podman/docker may have stored it as).
 base_image_present() {
     local n
     for n in "$BASE_IMAGE" \
@@ -967,12 +744,6 @@ build_image() {
     local log_file="${ZMM_BUILD_LOG:-/tmp/zmm-build-$$.log}"
     local rc=0
 
-    # Decide the base-image pull policy. During dev / partial rebuilds the
-    # bookworm base is usually already local and fine to reuse — don't let the
-    # builder phone Docker Hub for it (needless network, and anonymous-pull rate
-    # limits show up as confusing "login"/auth errors). podman defaults can
-    # re-check the registry, so we pin the policy explicitly. docker's default
-    # already reuses a local base and only pulls when missing, so it needs no flag.
     local -a pull_args=()
     if base_image_present; then
         ok "Base image ${BOLD}${BASE_IMAGE}${NC} already in local storage — reusing it (no pull)"
@@ -985,7 +756,6 @@ build_image() {
     info "Building image ${BOLD}${IMAGE_NAME}${NC} with ${BUILD_JOBS} parallel jobs ..."
     info "(progress shown below; full build output saved to ${log_file})"
 
-    # set -o pipefail propagates podman's exit code through the pipe.
     "$RUNTIME" build \
         "${pull_args[@]}" \
         --format docker \
@@ -1022,13 +792,11 @@ prepare_data_dirs() {
         mkdir -p "$d"
     done
 
-    # Seed config.yaml from the clone (the only place a template config exists)
     if [[ ! -f "$DATA_DIR/config/config.yaml" ]] && [[ -f "$CLONE_DIR/config/config.yaml" ]]; then
         cp "$CLONE_DIR/config/config.yaml" "$DATA_DIR/config/config.yaml"
         ok "Default config.yaml seeded."
     fi
 
-    # Patch USB device into config.yaml
     if [[ -n "${USB_DEVICE:-}" && -f "$DATA_DIR/config/config.yaml" ]]; then
         sed -i "s|port:.*\/dev\/tty[A-Za-z]*[0-9]*|port: ${USB_DEVICE}|g" \
             "$DATA_DIR/config/config.yaml"
@@ -1040,17 +808,6 @@ prepare_data_dirs() {
     ok "Data directories ready at ${DATA_DIR}"
 }
 
-# Self-signed HTTPS cert, generated HOST-side on first install so it exists
-# before the container ever starts. Generating here (rather than only at first
-# app boot, which remains as a fallback in modules/ssl_bootstrap.py) buys two
-# things the in-container path cannot:
-#   - the SAN carries the HOST's hostname and LAN IP (inside the container
-#     gethostname() is just the container ID), so browsing to the printed
-#     https://<lan-ip>:PORT URL has a name-matching cert to trust;
-#   - launcher.py's recovery standby finds a cert even if the very first app
-#     boot crash-loops before main.py could generate one.
-# Same rules as ssl_bootstrap.py: NEVER regenerate an existing pair (browser
-# trust must survive rebuilds/upgrades), key locked to 0600.
 generate_ssl_cert() {
     local cert="$DATA_DIR/data/certs/cert.pem"
     local key="$DATA_DIR/data/certs/key.pem"
@@ -1073,8 +830,6 @@ generate_ssl_cert() {
     [[ -n "$lan_ip" ]] && san+=",IP:${lan_ip}"
 
     info "Generating self-signed SSL cert (CN=${host_name}, SAN: localhost, ${host_name}${lan_ip:+, ${lan_ip}}) ..."
-    # -addext needs openssl 1.1.1+ (2018); on failure fall back to the in-app
-    # generator rather than aborting the install over a cert.
     if openssl req -x509 -newkey rsa:2048 \
             -keyout "$key" -out "$cert" \
             -days 3650 -nodes \
@@ -1120,14 +875,6 @@ DBUS_POLICY
 # =============================================================================
 # RUN CONTAINER
 # =============================================================================
-# Create the pod the app (and later the manager sidecar) join. Idempotent: a
-# pre-existing pod is reused. Podman only.
-#
-# Host networking — NOT bridge — is required: Cast (pychromecast/zeroconf),
-# Thread/OTBR, and Matter all rely on LAN multicast/mDNS, which podman's default
-# bridge NAT does not pass. On the host network the pod members bind ports
-# directly (no --publish), and the manager sidecar (CP2) reaches the app on
-# 127.0.0.1 because they share the host netns.
 ensure_pod() {
     "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null && return 0
     info "Creating pod '${POD_NAME}' on the host network (mDNS/Cast/Thread/Matter)..."
@@ -1137,20 +884,13 @@ ensure_pod() {
 run_container() {
     local host_port=$1
     local host_matter_port=$2
-    # Optional 3rd arg: full image ref to run. Defaults to ${IMAGE_NAME}:latest
-    # for the build-and-deploy flow. The upgrade swap flow passes a specific
-    # versioned tag like zigbee-matter-manager:2.0.1-amd64.
     local image_tag="${3:-${IMAGE_NAME}:latest}"
 
-    # Remove existing container
     if "$RUNTIME" inspect "$CONTAINER_NAME" &>/dev/null 2>&1; then
         warn "Removing existing '${CONTAINER_NAME}' container..."
         "$RUNTIME" rm -f "$CONTAINER_NAME"
     fi
 
-    # Note: the net.* forwarding sysctls are NOT set here. They live in the network
-    # namespace, so podman rejects them on a --network=host container (and they
-    # must instead be applied to the host). They're added per-mode below.
     local run_args=(
         --detach
         --name "$CONTAINER_NAME"
@@ -1168,8 +908,6 @@ run_container() {
     )
 
     # ── Host timezone passthrough ──
-    # The app uses naive datetime.now() for time-based automations; without this
-    # the container runs on UTC and timed rules fire offset from wall-clock time.
     if [[ -e /etc/localtime ]]; then
         run_args+=(--volume /etc/localtime:/etc/localtime:ro)
         ok "Timezone: mounted host /etc/localtime into container"
@@ -1179,10 +917,6 @@ run_container() {
     if [[ "$RUNTIME" == "podman" ]]; then
         ensure_pod
         run_args+=(--pod "$POD_NAME")
-        # Host netns: per-container net.* sysctls are rejected by podman, so apply
-        # the Thread/OTBR forwarding sysctls to the HOST instead (live + persisted
-        # so they survive reboot). MQTT/Matter/Cast don't need these — only Thread
-        # border routing does — so failure here is non-fatal.
         sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
         sysctl -w net.ipv6.conf.all.forwarding=1   >/dev/null 2>&1 || true
         sysctl -w net.ipv4.conf.all.forwarding=1   >/dev/null 2>&1 || true
@@ -1211,13 +945,6 @@ SYSCTL
     fi
 
     # ── Serial coordinator passthrough (direct — root container has full access) ──
-    # Pass through EVERY serial coordinator candidate present at start, not just
-    # the one picked at build time. This is what lets the in-container setup
-    # wizard enumerate and auto-detect a coordinator — including one plugged in
-    # after the image was built. Without this, `--device` is only added when a
-    # dongle happened to be detected during the build, so a later-plugged adapter
-    # (e.g. a Nabu Casa ZBT-2 on /dev/ttyACM0) never reaches the container and
-    # the wizard reports "No serial ports detected".
     local -a serial_devs=()
     local _d _seen
     _add_serial_dev() {
@@ -1244,15 +971,11 @@ SYSCTL
         warn "or '${RUNTIME} rm -f ${CONTAINER_NAME}' and re-run) so it gets passed through."
     fi
 
-    # Also map the chosen device's stable by-id symlink (if it is one) so
-    # config.yaml can reference a path that survives re-enumeration.
     if [[ -n "${USB_DEVICE:-}" && -e "$USB_DEVICE" ]]; then
         local real_dev; real_dev=$(readlink -f "$USB_DEVICE" 2>/dev/null || echo "$USB_DEVICE")
         [[ "$USB_DEVICE" != "$real_dev" ]] && run_args+=(--device "${USB_DEVICE}:${USB_DEVICE}")
     fi
 
-    # Mount the by-id / by-path symlink tree (stable coordinator names) so the
-    # app and config can use a name that doesn't shift across reboots/replugs.
     if [[ -d /dev/serial ]]; then
         run_args+=(--volume /dev/serial:/dev/serial:ro)
         ok "Mounted /dev/serial (stable by-id coordinator names)"
@@ -1265,13 +988,6 @@ SYSCTL
     fi
 
     # ── ALSA audio devices for the speaker-sync chirp calibration ──
-    # sounddevice/PortAudio inside the container captures from the mic and plays
-    # the chirp. Passing the whole /dev/snd dir exposes every card at once — the
-    # internal codec AND any USB microphone — so the feature works without
-    # naming a specific device. Podman maps devices at CREATE time, so a USB mic
-    # plugged in AFTER the container starts needs a restart to appear (same as
-    # the serial coordinator). Pick the right capture card with
-    # media.cast.sync.mic_device in config (substring match, e.g. "USB").
     if [[ -d /dev/snd ]]; then
         run_args+=(--device /dev/snd)
         ok "Mounted /dev/snd (mic capture + playback for speaker-sync chirp)"
@@ -1280,12 +996,6 @@ SYSCTL
     fi
 
     # ── Container-runtime socket passthrough (for local AI / Ollama) ──
-    # ZMM is a root container with no podman/docker CLI inside it; to manage a
-    # sibling Ollama container it talks to the runtime's Docker-compatible REST
-    # API over this socket. Docker always exposes one. Podman's API socket
-    # usually isn't enabled (the CLI doesn't need it) — but we already run
-    # privileged and set up host state, so just enable it here (idempotent,
-    # non-fatal) rather than making it a manual prerequisite.
     local _rt_sock=""
     if [[ "$RUNTIME" == "podman" ]]; then
         _rt_sock="/run/podman/podman.sock"
@@ -1309,7 +1019,6 @@ SYSCTL
     "$RUNTIME" run "${run_args[@]}" "$image_tag"
     ok "Container started."
 
-    # Verify device access
     if [[ -n "${USB_DEVICE:-}" ]]; then
         sleep 2
         local real_dev
@@ -1327,19 +1036,11 @@ SYSCTL
 # =============================================================================
 # MANAGER SIDECAR (decoupled)
 # =============================================================================
-# Run the always-on manager as a SEPARATE container — NOT a pod member. It reuses
-# the app image (which has the manager/ package + uvicorn/httpx) run as
-# `python -m manager`, mounts the runtime socket so it can inspect containers, and
-# sits on its OWN bridge network so the app (a Thread border router that churns
-# the host netns on every start) can't knock it offline. It reaches the app via
-# host.containers.internal:8000 instead of 127.0.0.1, publishes :8001 itself, and
-# has its own systemd unit for reboot (the pod unit no longer covers it).
 run_manager_container() {
     [[ "$RUNTIME" == "podman" ]] || { info "Manager sidecar needs podman — skipping."; return 0; }
 
     local app_image="${1:-${IMAGE_NAME}:latest}"
 
-    # Resolve the runtime socket (enabled by run_container) for read-only inspection.
     local sock=""
     for s in "${ZMM_CONTAINER_SOCK:-}" /run/podman/podman.sock /var/run/podman/podman.sock; do
         [[ -n "$s" && -S "$s" ]] && { sock="$s"; break; }
@@ -1386,9 +1087,6 @@ run_manager_container() {
     fi
 }
 
-# Tiny systemd unit so the off-pod manager comes back on reboot (the pod unit
-# only covers pod members, which the manager no longer is). Podman-only; best-
-# effort. Mirrors the app unit's start/stop-a-named-container pattern.
 install_manager_autostart() {
     command -v systemctl >/dev/null 2>&1 || return 0
     [[ "$RUNTIME" == "podman" ]] || return 0
@@ -1404,12 +1102,6 @@ StartLimitIntervalSec=0
 [Service]
 Restart=always
 RestartSec=10
-# The container may already be running outside this unit (started by build.sh,
-# or left behind when a previous ExecStop timed out). 'start -a' on a running
-# container fails with 125 and the unit flaps forever — always stop first so
-# this unit takes ownership. The '-' prefix means: ignore failure when
-# nothing to stop. (NB: no backticks in this heredoc — unquoted delimiter,
-# so backticks would execute as command substitution.)
 ExecStartPre=-${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
 ExecStart=${runtime_bin} start -a ${MANAGER_CONTAINER_NAME}
 ExecStop=${runtime_bin} stop -t 10 ${MANAGER_CONTAINER_NAME}
@@ -1435,10 +1127,6 @@ install_autostart() {
     local runtime_bin
     runtime_bin=$(which "$RUNTIME")
 
-    # Wait for the Zigbee dongle before `podman start` so the boot doesn't race
-    # USB enumeration — a missing --device makes `podman start` itself fail and
-    # systemd restart it (the "frontend up → down → up" flap). Skipped for
-    # socket:// MultiPAN (no local device). USB_DEVICE is resolved by run_container.
     local device_pre=""
     if [[ -n "${USB_DEVICE:-}" ]]; then
         device_pre="ExecStartPre=/bin/bash -c 'for i in \$(seq 1 45); do [ -e \"${USB_DEVICE}\" ] && exit 0; sleep 1; done; echo \"device ${USB_DEVICE} absent after 45s; starting anyway\" >&2; exit 0'"
@@ -1447,8 +1135,6 @@ install_autostart() {
     local unit_file="/etc/systemd/system/${CONTAINER_NAME}.service"
 
     if [[ "$RUNTIME" == "podman" ]] && "$RUNTIME" pod exists "$POD_NAME" 2>/dev/null; then
-        # Pod deployment: start/stop the WHOLE pod (infra + members). `pod start`
-        # returns once members are up, so this is a oneshot + RemainAfterExit unit.
         sudo tee "$unit_file" > /dev/null << UNIT
 [Unit]
 Description=Zigbee Matter Manager Pod (${POD_NAME})
@@ -1468,13 +1154,9 @@ ExecStop=${runtime_bin} pod stop -t 15 ${POD_NAME}
 WantedBy=multi-user.target
 UNIT
     else
-        # Standalone (docker / non-pod): start/stop the single container.
         sudo tee "$unit_file" > /dev/null << UNIT
 [Unit]
 Description=Zigbee Matter Manager Container
-# Order after the network AND the clock is set — TLS/token checks fail if the
-# app starts before time sync. Don't let repeated early-boot retries trip the
-# systemd start limiter into giving up.
 After=network-online.target time-sync.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -1482,8 +1164,6 @@ StartLimitIntervalSec=0
 [Service]
 Restart=always
 RestartSec=10
-# MultiPAN/CPC bring-up can take 40-70s; don't let systemd kill a slow-but-fine
-# start. The launcher also waits for the device inside the container.
 TimeoutStartSec=300
 ${device_pre}
 ExecStart=${runtime_bin} start -a ${CONTAINER_NAME}
@@ -1550,12 +1230,7 @@ PREFERRED_PORT=$INTERNAL_PORT
 INSTALL_AUTOSTART=true
 FORCE_REBUILD=false
 WITH_APPENDER=false   # Build the Rust zmm_telemetry wheel into the image.
-                      # Default off — the Python executemany fallback in
-                      # telemetry_db.py is sufficient for small/medium
-                      # networks. Enable for large/enterprise debug captures.
 WITH_EQ=false         # Build the Rust zmm_eq wheel into the image. Default
-                      # off — enable to get the Media-tab Cast EQ. Separate
-                      # crate from the appender; compiles in seconds.
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1647,10 +1322,6 @@ else
 fi
 
 step_announce "Confirm app code location"
-# In the new single-source-dir layout CLONE_DIR == APP_DIR, so there is no
-# copy step. Verify the canonical files are present and executable, then
-# carry on. The 'Populate APP_DIR' phase used to live here; it's retained
-# as a sanity check and remains its own numbered step.
 mkdir -p "${APP_DIR}/scripts" "${DATA_DIR}/data/upgrade" "${DATA_DIR}/data/state"
 
 if [[ -f "${APP_DIR}/build.sh" ]]; then
@@ -1669,14 +1340,6 @@ else
 fi
 
 # ── Persist appender choice for upgrades ─────────────────────────────────────
-# The user's --with-appender / --with-eq choices at install time are recorded
-# in DATA_DIR/data/state/ so upgrade.sh's do_build can read them back when it
-# re-runs write_containerfile against the new tag — without needing the
-# operator to remember and re-pass the flags.
-#
-# DATA_DIR survives APP_DIR wipes during upgrades; APP_DIR does not. So this
-# is the right place for the markers. The two are independent (see build.sh
-# Part 2), so each gets its own marker file.
 APPENDER_MARKER="${DATA_DIR}/data/state/appender.enabled"
 EQ_MARKER="${DATA_DIR}/data/state/eq.enabled"
 if [[ "$WITH_APPENDER" == true ]]; then
@@ -1746,15 +1409,7 @@ echo
 # =============================================================================
 # ENTRY POINT GUARD
 # =============================================================================
-# Only run main() when this script is executed directly. When sourced (e.g.
-# by run_container.sh) the function definitions are loaded but no orchestration
-# runs.
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
-    # CP4: refresh ONLY the manager sidecar to match the running app — no app or
-    # pod changes. Called by the host watcher (upgrade.sh:do_swap) after a
-    # successful swap so the manager ships manager-side changes through upgrades.
-    # The manager is the app image run as `python -m manager`, so we recreate it
-    # from whatever image the app container currently runs.
     if [[ " $* " == *" --refresh-manager "* ]]; then
         detect_runtime || { error "No container runtime"; exit 1; }
         _base=$("$RUNTIME" inspect -f '{{.ImageName}}' "$CONTAINER_NAME" 2>/dev/null || echo "")
