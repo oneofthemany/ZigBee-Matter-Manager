@@ -1535,20 +1535,21 @@ function renderGroupBuilder() {
     let pane = document.getElementById('mediaGroupPane');
     if (!pane) {
         el.innerHTML = `
-          <ul class="nav nav-pills mb-2">
+          <ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs">
             <li class="nav-item">
-              <button class="nav-link py-1 px-3" id="mediaGroupTabWiim"
+              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabWiim"
                       onclick="window.mediaGroupTab('wiim')">
-                <i class="fas fa-volume-up me-1"></i>WiiM multiroom</button>
+                <i class="fas fa-volume-up me-1"></i>WiiM<span class="d-none d-sm-inline"> multiroom</span></button>
             </li>
             <li class="nav-item">
-              <button class="nav-link py-1 px-3" id="mediaGroupTabSync"
+              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSync"
                       onclick="window.mediaGroupTab('sync')">
                 <i class="zmm-openzone-icon me-1"></i>OpenZone <span class="badge bg-warning text-dark ms-1">beta</span></button>
             </li>
             <li class="nav-item ms-auto">
-              <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">
-                <i class="fas fa-xmark me-1"></i>Close</button>
+              <button class="nav-link py-1 px-3 text-nowrap" onclick="window.mediaOpenGroupBuilder()"
+                      aria-label="Close the group builder">
+                <i class="fas fa-xmark"></i><span class="d-none d-sm-inline ms-1">Close</span></button>
             </li>
           </ul>
           <div id="mediaGroupPane"></div>`;
@@ -1666,13 +1667,13 @@ function _syncMemberRow(m, groupActive) {
     return `
       <div class="border-top pt-2 mt-2">
         <div class="d-flex align-items-center small">
-          <span class="fw-semibold">${esc(m.name)}</span>
-          <span id="syncpill-${esc(m.player_id)}">${pill}</span>
-          <span class="ms-auto d-flex align-items-center gap-1">
-            <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="1 ms earlier"
+          <span class="fw-semibold text-truncate">${esc(m.name)}</span>
+          <span id="syncpill-${esc(m.player_id)}" class="flex-shrink-0">${pill}</span>
+          <span class="ms-auto d-flex align-items-center gap-1 flex-shrink-0">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms earlier"
                     onclick="window.mediaSyncNudge('${esc(m.player_id)}', -1)">−</button>
             <span class="text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
-            <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="1 ms later"
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms later"
                     onclick="window.mediaSyncNudge('${esc(m.player_id)}', 1)">+</button>
           </span>
         </div>
@@ -1767,10 +1768,12 @@ async function renderSyncPane() {
     const groupCards = _syncGroups.map(g => `
       <div class="card mb-2">
         <div class="card-body py-2">
-          <div class="d-flex align-items-center gap-2">
-            <span class="fw-semibold">${esc(g.name)}</span>
-            <span class="badge bg-light text-muted border">${g.members.length} speakers</span>
-            <span class="ms-auto"></span>
+          <div class="d-flex align-items-center gap-2 flex-wrap zmm-zone-head">
+            <div class="d-flex align-items-center gap-2 zmm-zone-name" style="min-width:0">
+              <span class="fw-semibold text-truncate">${esc(g.name)}</span>
+              <span class="badge bg-light text-muted border flex-shrink-0">${g.members.length} speakers</span>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-wrap ms-auto zmm-zone-actions">
             ${g.active
                 ? `<button class="btn btn-sm btn-outline-primary" id="syncCalBtn"
                            onclick="window.mediaSyncCalibrate()"
@@ -1788,7 +1791,7 @@ async function renderSyncPane() {
                          .map(([v, l]) => `<option value="${v}" ${v === _syncDurFor(g.id) ? 'selected' : ''}>${l}</option>`)
                          .join('')}
                    </select>
-                   <button class="btn btn-sm btn-outline-primary"
+                   <button class="btn btn-sm btn-outline-primary zmm-zone-play"
                            id="syncstart-${esc(g.id)}"
                            ${running || disabled || _syncNeedsUrl(g.id) ? 'disabled' : ''}
                            onclick="window.mediaSyncStart('${esc(g.id)}')"
@@ -1802,6 +1805,7 @@ async function renderSyncPane() {
                     title="Sync Lab — session analysis &amp; learned model"><i class="fas fa-wave-square"></i></button>
             <button class="btn btn-sm btn-outline-danger" onclick="window.mediaSyncDelete('${esc(g.id)}')"
                     title="Delete group"><i class="far fa-trash-alt"></i></button>
+            </div>
           </div>
           ${g.active ? _syncZoneScope(g.id) + _syncActiveHint()
                      : _syncCustomRow(g.id, running || disabled)
@@ -1812,10 +1816,10 @@ async function renderSyncPane() {
       </div>`).join('');
 
     el.innerHTML = `
-      <ul class="nav nav-tabs mb-2" role="tablist">
+      <ul class="nav nav-tabs mb-2 flex-nowrap" role="tablist">
         <li class="nav-item"><button class="nav-link py-1 px-3" id="syncSubTabZones"
               onclick="window.mediaSyncSubTab('zones')" role="tab">
-            <i class="fas fa-sliders me-1"></i>Zones</button></li>
+            <i class="zmm-openzone-icon me-1"></i>Zones</button></li>
         <li class="nav-item"><button class="nav-link py-1 px-3" id="syncSubTabResults"
               onclick="window.mediaSyncSubTab('results')" role="tab">
             <i class="fas fa-wave-square me-1"></i>Results</button></li>
@@ -2300,8 +2304,9 @@ function _syncCustomRow(gid, disabled) {
     if (_syncSrcFor(gid) !== 'custom') return '';
     const url = _syncCustomUrl(gid);
     return `
-      <div class="d-flex align-items-center gap-2 mt-2">
+      <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
         <input type="text" class="form-control form-control-sm" id="syncurl-${esc(gid)}"
+               style="flex:1 1 12rem"
                ${disabled ? 'disabled' : ''}
                placeholder="https://stream.example/live.mp3  or  /data/music/album.flac"
                value="${esc(url)}"
@@ -2359,7 +2364,7 @@ function _syncXfadeRow(gid, disabled) {
     const v = _syncXfadeFor(gid);
     const max = _syncXfadeMax();
     return `
-      <div class="d-flex align-items-center gap-2 mt-2">
+      <div class="d-flex align-items-center gap-2 mt-2 flex-wrap zmm-zone-xfade">
         <label class="small text-muted text-nowrap mb-0" for="syncxf-${esc(gid)}"
                title="Overlap between queue items. Taken from audio already buffered but not yet sent, so it costs no extra delay — and cannot exceed what that buffer holds.">
           <i class="fas fa-right-left me-1"></i>Crossfade</label>

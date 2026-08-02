@@ -1225,6 +1225,86 @@ body.controlling {
 }
 
 
+/* MEDIA TAB — OPENZONE (Group → OpenZone → Zones)
+   A zone card's head is name + badge + source + duration + Play + lab + bin on
+   one line. It was a single non-wrapping flex row, so on a phone the row grew
+   past the card and Play ended up outside the border. The row wraps now, with
+   the controls grouped so they move as a unit instead of one stray button at a
+   time. The selects are the other half of it: .w-auto sizes a <select> to its
+   longest option, and a Tidal playlist name is longer than any phone. */
+
+/* Both halves are needed: a flex item's automatic minimum size is its
+   min-content width, so without min-width:0 the row refuses to shrink below
+   the widest option and pushes Play out through the card border — capping the
+   select alone is not enough, and shrinking the row alone is not either. */
+#mediaGroupPane .zmm-zone-actions {
+    min-width: 0;
+}
+
+/* Every select on the pane, not just the zone head: the Tidal library picker
+   carries playlist titles that are longer than any phone is wide. */
+#mediaGroupPane .form-select,
+#mediaGroupPane .form-control {
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* The OpenZone mark is a mask, not a glyph — it has no intrinsic size to fall
+   back on, so it must keep its box wherever it sits beside shrinking text. */
+.nav-link .zmm-openzone-icon {
+    flex: 0 0 auto;
+}
+
+@media (max-width: 767.98px) {
+    /* Pill rows scroll rather than wrap into a two-storey tab bar. */
+    #mediaPlayers .zmm-group-tabs,
+    #mediaGroupPane .nav-tabs {
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    #mediaPlayers .zmm-group-tabs::-webkit-scrollbar,
+    #mediaGroupPane .nav-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    /* Zone name on top, its controls on a full-width row underneath —
+       ms-auto is a Bootstrap utility, hence the !important to unset it. */
+    #mediaGroupPane .zmm-zone-actions {
+        flex: 1 1 100%;
+        margin-left: 0 !important;
+    }
+
+    #mediaGroupPane .zmm-zone-actions .form-select {
+        flex: 1 1 8rem;
+    }
+
+    /* Play/Test is what the card is for — it takes the rest of the row. */
+    #mediaGroupPane .zmm-zone-play {
+        flex: 1 1 auto;
+    }
+
+    #mediaGroupPane .zmm-zone-actions .btn,
+    #mediaGroupPane .zmm-zone-actions .form-select {
+        min-height: 38px;
+    }
+
+    /* Crossfade: label and readout keep their line, the slider gets its own —
+       squeezed between them it was about 60px of usable travel. */
+    #mediaGroupPane .zmm-zone-xfade .form-range {
+        flex: 1 1 100%;
+        order: 1;
+    }
+
+    /* ±1 ms trim nudges are the finest control on the tab and were the
+       smallest targets on it. */
+    #mediaGroupPane .zmm-trim-step {
+        min-width: 34px;
+        min-height: 32px;
+    }
+}
+
+
 /* DOCS TAB — one pane at a time on phones: stacked, the 75vh list buried the
    article and a tapped doc looked like nothing happened. wiki.js adds
    .wiki-doc-open; the d-md-none back button swaps back. */
