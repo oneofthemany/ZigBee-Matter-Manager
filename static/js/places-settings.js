@@ -12,18 +12,24 @@
  * reading `place == the_shops` is clearer than `apiary == the_shops`, and
  * renaming a shipped attribute would silently break existing rules.
  *
- * Location is picked on a map rather than typed. Coordinates are the one field
- * users cannot sanity-check by reading them back — a transposed digit puts the
- * shops in another county and the only symptom is an automation that never
- * fires. Tiles come through the hub's caching proxy, so choosing a place does
- * not announce it to a third-party tile server.
+ * Location is confirmed on a map rather than typed. Coordinates are the one
+ * field users cannot sanity-check by reading them back — a transposed digit
+ * puts the shops in another county and the only symptom is an automation that
+ * never fires. Tiles come through the hub's caching proxy, so choosing a place
+ * does not announce it to a third-party tile server.
+ *
+ * Searching a postcode or town moves the map; it never sets the point. A postal
+ * centroid names a district, not a doorstep, so dropping the pin there would
+ * look precise while being wrong by a street or more. The search is for getting
+ * across the country quickly, and the click is still what commits.
  * --------------------------------------------------------------------------
  */
 (function () {
     'use strict';
 
     var HOST_ID = 'places-settings-host';
-    var state = { places: [], max: 32, map: null, marker: null, circle: null };
+    var state = { places: [], max: 32, map: null, marker: null, circle: null,
+                  geo: null };
 
     function esc(s) {
         return String(s == null ? '' : s)
@@ -48,6 +54,7 @@
         } catch (e) {
             state.places = [];
         }
+        await loadGeo();
         render();
     }
 
@@ -107,10 +114,12 @@
             '</table></div>' +
             (state.places.length >= state.max
                 ? '<div class="form-text text-warning">Maximum ' + state.max + ' places reached.</div>'
-                : '');
+                : '') +
+            locationDataSection();
 
         var add = document.getElementById('place-add-btn');
         if (add) add.onclick = function () { openEditor(null); };
+        bindLocationData();
 
         host.querySelectorAll('[data-place-edit]').forEach(function (b) {
             b.onclick = function () { openEditor(b.getAttribute('data-place-edit')); };
@@ -118,6 +127,207 @@
         host.querySelectorAll('[data-place-del]').forEach(function (b) {
             b.onclick = function () { remove(b.getAttribute('data-place-del')); };
         });
+    }
+
+    // ---- location data ----------------------------------------------------
+    //
+    // Postal datasets are downloaded per country so the search box has
+    // something local to answer from. Managed here, beside the picker that
+    // uses them, rather than in general settings — nothing else consults them.
+
+    function fmtRows(n) {
+        if (n == null) return '—';
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return Math.round(n / 1000) + 'k';
+        return String(n);
+    }
+
+    function locationDataSection() {
+        var g = state.geo;
+        if (!g) return '';
+
+        // One badge per country+source pair: the two are complementary, so a
+        // UK household normally runs both and needs to see and remove each.
+        var installed = (g.installed || []).map(function (d) {
+            return '<span class="badge bg-primary-subtle text-primary-emphasis ' +
+                     'border border-primary-subtle me-1 mb-1">' +
+                     esc(d.name) + ' <span class="opacity-75">' +
+                     esc(d.source_label || d.source) + ' · ' +
+                     fmtRows(d.row_count) + '</span> ' +
+                     '<a href="#" class="text-danger text-decoration-none ms-1" ' +
+                       'data-geo-del="' + esc(d.country) + '" ' +
+                       'data-geo-src="' + esc(d.source) + '" title="Remove">&times;</a>' +
+                   '</span>';
+        }).join('');
+
+        var countryOpts = (g.available || []).map(function (a) {
+            return '<option value="' + esc(a.country) + '">' + esc(a.name) + '</option>';
+        }).join('');
+
+        var sourceOpts = (g.sources || []).map(function (s) {
+            return '<option value="' + esc(s.id) + '" ' +
+                     'data-countries="' + esc((s.countries || []).join(',')) + '" ' +
+                     'data-note="' + esc(s.note || '') + '">' +
+                     esc(s.label) +
+                     (s.precision === 'unit' ? ' — exact' : ' — district') +
+                   '</option>';
+        }).join('');
+
+        return '<hr class="my-3">' +
+          '<div class="d-flex justify-content-between align-items-start flex-wrap gap-2">' +
+            '<div>' +
+              '<div class="fw-bold small"><i class="fas fa-database me-1"></i>Location data</div>' +
+              '<div class="text-muted small">' +
+                'Lets the location picker find a postcode or town by name. Stored on ' +
+                'the hub, so searches are instant, work offline, and never leave the house.' +
+              '</div>' +
+            '</div>' +
+            '<div class="d-flex align-items-center gap-1 flex-wrap">' +
+              '<select class="form-select form-select-sm w-auto" id="geo-country">' +
+                countryOpts + '</select>' +
+              '<select class="form-select form-select-sm w-auto" id="geo-source">' +
+                sourceOpts + '</select>' +
+              '<button class="btn btn-sm btn-outline-primary" id="geo-install">' +
+                '<i class="fas fa-download me-1"></i>Add</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="form-text small mt-1" id="geo-source-note"></div>' +
+          '<div class="mt-2">' +
+            (installed || '<span class="text-muted small">No countries installed yet.</span>') +
+          '</div>' +
+          '<div class="form-check form-switch mt-2">' +
+            '<input class="form-check-input" type="checkbox" id="geo-online"' +
+              (g.online_fallback ? ' checked' : '') + '>' +
+            '<label class="form-check-label small" for="geo-online">' +
+              'Also search online for street addresses and businesses' +
+              '<span class="text-muted"> — sends the typed search to OpenStreetMap. ' +
+              'Only used when the local data has no answer.</span>' +
+            '</label>' +
+          '</div>' +
+          // Licence conditions for the installed data, not a courtesy credit.
+          ((g.installed || []).length
+            ? '<div class="form-text small text-muted">' +
+                (g.installed || []).map(function (d) { return d.attribution; })
+                  .filter(function (a, i, all) { return a && all.indexOf(a) === i; })
+                  .map(esc).join('<br>') +
+              '</div>'
+            : '') +
+          '<div id="geo-status" class="form-text small" style="display:none"></div>';
+    }
+
+    function bindLocationData() {
+        var status = document.getElementById('geo-status');
+        function say(msg, cls) {
+            if (!status) return;
+            status.className = 'form-text small ' + (cls || 'text-muted');
+            status.innerHTML = msg;
+            status.style.display = msg ? '' : 'none';
+        }
+
+        var countrySel = document.getElementById('geo-country');
+        var sourceSel = document.getElementById('geo-source');
+        var note = document.getElementById('geo-source-note');
+
+        // A source that covers only certain countries is disabled elsewhere,
+        // rather than offered and then rejected by the server.
+        function syncSources() {
+            if (!countrySel || !sourceSel) return;
+            var cc = countrySel.value;
+            var firstEnabled = null;
+            Array.prototype.forEach.call(sourceSel.options, function (o) {
+                var only = (o.getAttribute('data-countries') || '').split(',')
+                             .filter(Boolean);
+                o.disabled = only.length > 0 && only.indexOf(cc) < 0;
+                if (!o.disabled && firstEnabled === null) firstEnabled = o.value;
+            });
+            if (sourceSel.selectedOptions[0] && sourceSel.selectedOptions[0].disabled) {
+                sourceSel.value = firstEnabled || '';
+            }
+            if (note) {
+                var sel = sourceSel.selectedOptions[0];
+                note.textContent = sel ? (sel.getAttribute('data-note') || '') : '';
+            }
+        }
+        if (countrySel) countrySel.onchange = syncSources;
+        if (sourceSel) sourceSel.onchange = syncSources;
+        syncSources();
+
+        var install = document.getElementById('geo-install');
+        if (install) install.onclick = async function () {
+            var cc = countrySel && countrySel.value;
+            var src = sourceSel && sourceSel.value;
+            if (!cc || !src) return;
+            install.disabled = true;
+            // Open Postcode Geo is ~100 MB and 1.7M rows, so this runs for a
+            // minute or two. Worth narrating rather than leaving as a dead
+            // button — and the warning is only shown for the big one.
+            say('<i class="fas fa-spinner fa-spin me-1"></i>Downloading and ' +
+                'indexing postal data… ' +
+                (src === 'open_postcode_geo'
+                    ? 'This one is large — it can take a couple of minutes.'
+                    : ''));
+            try {
+                var r = await fetch('/api/geocode/datasets/' + encodeURIComponent(cc) +
+                                    '?source=' + encodeURIComponent(src),
+                                    { method: 'POST', credentials: 'same-origin' });
+                var d = await r.json().catch(function () { return {}; });
+                if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+                say('Added ' + esc(d.name || cc) + ' (' + esc(d.source_label || src) +
+                    ') — ' + fmtRows(d.row_count) + ' postal codes.', 'text-success');
+                await loadGeo();
+                render();
+            } catch (e) {
+                say('Could not add that data: ' + esc(e.message || e), 'text-danger');
+                install.disabled = false;
+            }
+        };
+
+        document.querySelectorAll('[data-geo-del]').forEach(function (a) {
+            a.onclick = async function (ev) {
+                ev.preventDefault();
+                var cc = a.getAttribute('data-geo-del');
+                var src = a.getAttribute('data-geo-src');
+                try {
+                    await fetch('/api/geocode/datasets/' + encodeURIComponent(cc) +
+                                '?source=' + encodeURIComponent(src),
+                                { method: 'DELETE', credentials: 'same-origin' });
+                    await loadGeo();
+                    render();
+                } catch (e) { say('Remove failed.', 'text-danger'); }
+            };
+        });
+
+        var online = document.getElementById('geo-online');
+        if (online) online.onchange = async function () {
+            try {
+                var r = await fetch('/api/geocode/settings', {
+                    method: 'PUT', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ online_fallback: online.checked }),
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                var d = await r.json();
+                state.geo.online_fallback = d.online_fallback;
+                // Live but unsaved is a real state — a read-only config file
+                // means this reverts at the next restart, and silently telling
+                // the user it worked would make that look like a bug later.
+                say(d.persisted
+                    ? 'Saved to config.yaml.'
+                    : 'Applied, but could not be written to config.yaml — it ' +
+                      'will revert when the hub restarts.',
+                    d.persisted ? 'text-success' : 'text-warning-emphasis');
+            } catch (e) {
+                online.checked = !online.checked;
+                say('Could not change that setting.', 'text-danger');
+            }
+        };
+    }
+
+    async function loadGeo() {
+        try {
+            var r = await fetch('/api/geocode/datasets', { credentials: 'same-origin' });
+            state.geo = r.ok ? await r.json() : null;
+        } catch (e) { state.geo = null; }
     }
 
     async function remove(id) {
@@ -187,6 +397,20 @@
                   '</div>' +
                   '<div class="col-12">' +
                     '<label class="form-label small fw-bold">Location</label>' +
+                    // Search moves the map; the click still sets the point.
+                    // Keeping those separate is deliberate — a postcode
+                    // centroid is a district, not a doorstep, and dropping the
+                    // pin on it would look precise while being wrong.
+                    '<div class="input-group input-group-sm mb-2">' +
+                      '<span class="input-group-text"><i class="fas fa-search"></i></span>' +
+                      '<input id="pl-search" class="form-control" autocomplete="off" ' +
+                        'placeholder="Postcode, ZIP, town — or paste 51.5074, -0.1278">' +
+                      '<button type="button" class="btn btn-outline-secondary" id="pl-search-go">' +
+                        'Find</button>' +
+                    '</div>' +
+                    '<div id="pl-results" class="list-group list-group-flush mb-2" ' +
+                      'style="display:none;max-height:160px;overflow-y:auto"></div>' +
+                    '<div id="pl-search-note" class="form-text small mb-2" style="display:none"></div>' +
                     '<div id="pl-map" style="height:300px;background:#f2f2f2;border-radius:.375rem"></div>' +
                     '<div class="d-flex justify-content-between align-items-center mt-1">' +
                       '<span class="form-text small mb-0" id="pl-coords">' +
@@ -267,6 +491,106 @@
             var err = document.getElementById('pl-error');
             err.textContent = m; err.style.display = '';
         }
+
+        // ------------------------------------------------------------------
+        // Place search
+        // ------------------------------------------------------------------
+        // Coordinates pasted straight in. Handled here rather than sent to the
+        // server: it needs no lookup, and a coordinate someone typed is the one
+        // search term worth never transmitting.
+        var LATLON_RE = /^\s*(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/;
+
+        function searchNote(msg, cls) {
+            var n = document.getElementById('pl-search-note');
+            if (!msg) { n.style.display = 'none'; return; }
+            n.className = 'form-text small mb-2 ' + (cls || 'text-muted');
+            n.innerHTML = msg;
+            n.style.display = '';
+        }
+
+        function showResults(list, attribution) {
+            var host = document.getElementById('pl-results');
+            if (!list.length) { host.style.display = 'none'; return; }
+            host.innerHTML = list.map(function (r, i) {
+                return '<button type="button" class="list-group-item list-group-item-action ' +
+                         'py-1 px-2" data-result="' + i + '">' +
+                         '<span class="fw-bold small">' + esc(r.label) + '</span>' +
+                         (r.detail ? ' <span class="text-muted small">' +
+                                     esc(r.detail) + '</span>' : '') +
+                         '<span class="badge bg-light text-muted ms-1">' +
+                           esc(r.kind) + '</span>' +
+                       '</button>';
+            }).join('');
+            host.style.display = '';
+            host.querySelectorAll('[data-result]').forEach(function (b) {
+                b.onclick = function () {
+                    var r = list[parseInt(b.getAttribute('data-result'), 10)];
+                    // Zoom to what the match actually covers, so the whole of
+                    // it stays on screen instead of dropping the user into one
+                    // corner with no landmarks. A unit postcode is a street or
+                    // two; `approximate` marks a centroid averaged over a whole
+                    // district; a town is miles across.
+                    var zoom = r.kind === 'town' ? 13 : (r.approximate ? 14 : 16);
+                    if (state.map) state.map.setView([r.lat, r.lon], zoom);
+                    host.style.display = 'none';
+                    searchNote('Moved to <strong>' + esc(r.label) +
+                               '</strong>. Click the map to set the exact point.' +
+                               (attribution ? ' <span class="text-muted">· ' +
+                                              esc(attribution) + '</span>' : ''));
+                };
+            });
+        }
+
+        async function runSearch() {
+            var q = (document.getElementById('pl-search').value || '').trim();
+            document.getElementById('pl-results').style.display = 'none';
+            if (!q) { searchNote(''); return; }
+
+            var m = LATLON_RE.exec(q);
+            if (m) {
+                var lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+                if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+                    searchNote('Those coordinates are out of range.', 'text-danger');
+                    return;
+                }
+                setPoint(lat, lon);
+                if (state.map) state.map.setView([lat, lon], 17);
+                searchNote('Point set from coordinates.');
+                return;
+            }
+
+            searchNote('<i class="fas fa-spinner fa-spin me-1"></i>Searching…');
+            try {
+                var r = await fetch('/api/geocode?q=' + encodeURIComponent(q) + '&limit=6',
+                                    { credentials: 'same-origin' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                var d = await r.json();
+                if (d.results && d.results.length) {
+                    searchNote('');
+                    showResults(d.results, d.attribution);
+                } else if (!d.datasets_installed) {
+                    // The difference between "not found" and "nothing to search"
+                    // is the whole answer here, so it is spelled out.
+                    searchNote('No location data installed yet — add your country ' +
+                               'under <strong>Settings → Location data</strong>, ' +
+                               'or click the map directly.', 'text-warning-emphasis');
+                } else {
+                    searchNote('Nothing found for “' + esc(q) + '”. Try a postcode ' +
+                               'or a town name, or click the map.', 'text-muted');
+                }
+            } catch (e) {
+                searchNote('Search unavailable — click the map to set the location.',
+                           'text-muted');
+            }
+        }
+
+        document.getElementById('pl-search-go').onclick = runSearch;
+        document.getElementById('pl-search').onkeydown = function (ev) {
+            // Submit-only, never per-keystroke: the upstream fallback's usage
+            // policy forbids type-ahead, and Enter inside a modal would
+            // otherwise submit the form.
+            if (ev.key === 'Enter') { ev.preventDefault(); runSearch(); }
+        };
 
         document.getElementById('pl-here').onclick = function () {
             if (!navigator.geolocation) { showErr('This browser has no geolocation.'); return; }

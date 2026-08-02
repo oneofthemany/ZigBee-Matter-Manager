@@ -888,6 +888,17 @@ async def lifespan(app: FastAPI):
         set_journey_manager(journey_manager)
         app.state.journey_manager = journey_manager
 
+        # ── Place search (apiary location picker) ──
+        # Reference data, but still its own DuckDB file and worker thread for
+        # the same single-writer reason as journeys above.
+        from modules.geocode import Geocoder, set_geocoder
+        geocoder = Geocoder()
+        await geocoder.start()
+        geocoder.online_fallback = bool(
+            CONFIG.get("geocode", {}).get("online_fallback", False))
+        set_geocoder(geocoder)
+        app.state.geocoder = geocoder
+
 
         # Initialise AI Assistant
         ai_config = CONFIG.get("ai", {})
@@ -1035,6 +1046,9 @@ async def lifespan(app: FastAPI):
     journey_manager = getattr(app.state, "journey_manager", None)
     if journey_manager:
         await journey_manager.stop()
+    geocoder = getattr(app.state, "geocoder", None)
+    if geocoder:
+        await geocoder.stop()
     # Lazy singleton — only exists if someone searched for fuel this run.
     from modules import fuel_history as _fuel_history
     if _fuel_history._manager is not None:
