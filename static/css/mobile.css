@@ -1093,6 +1093,15 @@ body.controlling {
         display: none !important;
     }
 
+    /* Player controls stay folded away until the card's chevron asks for them.
+       Open on every card, the sliders line the whole scroll path: a swipe that
+       starts on one drags it to 100% instead of scrolling. media.js opens one
+       card at a time; the class is absent above lg, so the desktop cards are
+       untouched. */
+    #mediaPlayers .zmm-player-ctl:not(.zmm-ctl-open) {
+        display: none;
+    }
+
     /* Volume gets its own full-width row in each player card: inline next to
        the transport buttons the slider is a few px wide and impossible to
        grab. The −/+ buttons give a coarse ±5% without any dragging at all. */
@@ -1108,6 +1117,17 @@ body.controlling {
 
     #mediaPlayers .zmm-vol .form-range {
         height: 40px;
+    }
+
+    /* Second half of the same guard, for every horizontal slider on the tab
+       (volume, sync trim, crossfade). Section 8b sets touch-action:none on all
+       ranges so a thermostat drag can't pull-to-refresh — but that also means a
+       range swallows vertical swipes, so a scroll starting on one drags it
+       instead. pan-y hands the vertical gesture back to the page; a deliberate
+       sideways drag still reaches the control. The EQ bands are excluded by
+       selector: they are vertical, so a vertical swipe IS their drag. */
+    #media .form-range {
+        touch-action: pan-y;
     }
 
     #mediaPlayers .zmm-vol .form-range::-webkit-slider-thumb {

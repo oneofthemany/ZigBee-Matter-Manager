@@ -41,6 +41,7 @@ let _radioSearchCache = [];  // last radio search results, for star-toggle by in
 let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth progress
 let _posTimer = null;        // 1s interpolation ticker for the progress bars
 let _eqOpen = new Set();     // player_ids with their EQ panel expanded
+let _ctlOpen = new Set();    // player_ids with their controls expanded (touch only)
 let _eqDev = {};             // player_id -> cached /api/media/eq result (wiim/cast)
 let _eqSend = {};            // player_id -> {timer, gains} debounced slider POSTs
 
@@ -105,6 +106,8 @@ export function initMedia() {
     window.mediaSetVolume = setVolume;
     window.mediaVolStep = volStep;
     window.mediaSelect = selectPlayer;
+    window.mediaCtlToggle = ctlToggle;
+    window.mediaVolLabel = volLabel;
     window.mediaPane = setPane;
     window.mediaUngroup = ungroup;
     window.mediaSubmitGroup = submitGroup;
@@ -346,6 +349,7 @@ function renderPlayers() {
         const pid = esc(p.player_id);
         const q = p.queue;                       // queue summary or null
         const hasQueue = q && q.length > 1;
+        const ctlOpen = _ctlOpen.has(p.player_id);
         return `
         <div class="border rounded p-2 mb-2 ${selected ? 'border-primary bg-primary-subtle' : ''}"
              onclick="window.mediaSelect('${pid}')" style="cursor:pointer">
@@ -355,7 +359,18 @@ function renderPlayers() {
               <span class="fw-semibold">${esc(p.name)}</span>
               ${groupBadge(p)}
             </div>
-            ${stateBadge(p)}
+            <div class="d-flex align-items-center gap-2 flex-shrink-0">
+              ${stateBadge(p)}
+              <span class="small text-muted d-lg-none" id="volhd-${pidE}"
+                    style="font-variant-numeric:tabular-nums">${vol}%</span>
+              <button class="btn btn-sm btn-outline-secondary d-lg-none py-0 px-2"
+                      aria-expanded="${ctlOpen}" aria-controls="ctl-${pidE}"
+                      title="${ctlOpen ? 'Hide' : 'Show'} controls"
+                      aria-label="${ctlOpen ? 'Hide' : 'Show'} controls for ${esc(p.name)}"
+                      onclick="event.stopPropagation();window.mediaCtlToggle('${pid}')">
+                <i class="fas ${ctlOpen ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>
+              </button>
+            </div>
           </div>
           <div class="d-flex gap-2 align-items-center mt-1">
             ${art}
@@ -367,6 +382,7 @@ function renderPlayers() {
           </div>
           ${q ? `<div class="small text-muted">Track ${q.index + 1} of ${q.length}</div>` : ''}
           <div id="artist-${pidE}" class="mt-2"></div>
+          <div class="zmm-player-ctl${ctlOpen ? ' zmm-ctl-open' : ''}" id="ctl-${pidE}">
           <div class="d-flex align-items-center gap-2 mt-2 flex-wrap" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-outline-secondary" ${disabled} ${hasQueue ? '' : 'disabled'}
                     onclick="window.mediaControl('${pid}','prev')" title="Previous">
@@ -394,7 +410,7 @@ function renderPlayers() {
                 <i class="fas fa-volume-low"></i>
               </button>
               <input type="range" class="form-range flex-grow-1" id="vol-${pidE}" min="0" max="100" value="${vol}" ${disabled}
-                     oninput="document.getElementById('vol-lbl-${pidE}').textContent=this.value+'%'"
+                     oninput="window.mediaVolLabel('${pid}', this.value)"
                      onchange="window.mediaSetVolume('${pid}', this.value)">
               <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
                       onclick="window.mediaVolStep('${pid}', 5)" title="Volume up 5%">
@@ -409,6 +425,7 @@ function renderPlayers() {
           </div>
           <div id="eqp-${pidE}" onclick="event.stopPropagation()"></div>
           ${q && p.provider !== 'local' ? queueControls(p, q) : ''}
+          </div>
         </div>`;
     }).join('');
     for (const pid of _eqOpen) renderEqPanel(pid);
@@ -694,6 +711,28 @@ function eqBand(i, val) {
     }
 }
 
+// Below lg a card's controls are collapsed until asked for: with every card
+// open, a scroll that starts on a volume slider drags it instead of the page —
+// which is how a speaker ends up at 100%. One card open at a time keeps the
+// sliders that aren't being aimed at out of reach. Desktop ignores the class.
+function ctlToggle(pid) {
+    if (_ctlOpen.has(pid)) _ctlOpen.delete(pid);
+    else { _ctlOpen.clear(); _ctlOpen.add(pid); }
+    // An EQ panel inside a folded card is a canvas animating where nobody can
+    // see it — fold the card, close its equaliser.
+    for (const id of [..._eqOpen]) if (!_ctlOpen.has(id)) _eqOpen.delete(id);
+    renderPlayers();
+}
+
+// Slider drag → both readouts (the one beside it, and the collapsed-card one
+// in the header) without a re-render, which would fight the drag.
+function volLabel(pid, value) {
+    for (const id of ['vol-lbl-' + pid, 'volhd-' + pid]) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value + '%';
+    }
+}
+
 function selectPlayer(id) {
     _selectedId = id;
     renderPlayers();
@@ -808,8 +847,7 @@ function volStep(playerId, delta) {
     if (!slider || slider.disabled) return;
     const next = Math.max(0, Math.min(100, Number(slider.value) + delta));
     slider.value = next;
-    const lbl = document.getElementById('vol-lbl-' + playerId);
-    if (lbl) lbl.textContent = next + '%';
+    volLabel(playerId, next);
     setVolume(playerId, next);
 }
 
