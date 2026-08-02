@@ -1,18 +1,12 @@
-/**
- * messages-ui.js
- * --------------------------------------------------------------------------
- * Person-to-person messaging: navbar chat badge + conversation modal.
- *
- * Threads live on the hub
- * (modules/messages_store.py); delivery is websocket for open apps and web
- * push for pockets (see sw.js — a tapped notification opens '/#messages',
- * which this module reads at startup to open the panel).
- *
- * Views inside one modal:
- *   threads list  →  tap a person  →  conversation with composer
- * A "new message" picker starts a thread with any presence user's account.
- * --------------------------------------------------------------------------
- */
+/* messages-ui.js
+   Person-to-person messaging: navbar chat badge + conversation modal.
+   Threads live on the hub
+   (modules/messages_store.py); delivery is websocket for open apps and web
+   push for pockets (see sw.js — a tapped notification opens '/#messages',
+   which this module reads at startup to open the panel).
+   Views inside one modal:
+   threads list  →  tap a person  →  conversation with composer
+   A "new message" picker starts a thread with any presence user's account. */
 (function () {
     'use strict';
 
@@ -34,7 +28,7 @@
         return w ? w.username : null;
     }
 
-    // ---- data -------------------------------------------------------------
+    // data
 
     async function loadThreads() {
         if (!me()) { state.threads = []; renderBadge(); return; }
@@ -86,7 +80,7 @@
         return account;
     }
 
-    // ---- badge ------------------------------------------------------------
+    // badge
 
     function renderBadge() {
         var host = document.getElementById('messages-badge-host');
@@ -106,7 +100,7 @@
         if (btn) btn.onclick = function () { openModal(); };
     }
 
-    // ---- modal ------------------------------------------------------------
+    // modal
 
     function openModal(peer) {
         var prev = document.getElementById('messagesModal');
@@ -284,7 +278,7 @@
         }
     }
 
-    // ---- live updates -----------------------------------------------------
+    // live updates
 
     function onEvent(type, payload) {
         var who = me();
@@ -313,7 +307,6 @@
         }
     }
 
-    // ---- init -------------------------------------------------------------
 
     window.initMessagesUI = function () {
         loadThreads();

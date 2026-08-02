@@ -1,15 +1,10 @@
-/**
- * OTA Firmware Update Tab - Device Modal
- * =======================================
- * Provides check/update/notify controls per-device.
- * Listens for WebSocket 'ota_progress' events for live progress.
- */
+/* OTA Firmware Update Tab - Device Modal
+   Provides check/update/notify controls per-device.
+   Listens for WebSocket 'ota_progress' events for live progress. */
 const log = zmmLog('modal-ota');
 
 
-// ============================================================================
 // RENDER OTA TAB
-// ============================================================================
 
 export function renderOTATab(device) {
     const ieee = device.ieee;
@@ -49,9 +44,7 @@ export function renderOTATab(device) {
     </div>`;
 }
 
-// ============================================================================
 // API CALLS
-// ============================================================================
 
 window.otaCheckUpdate = async function(ieee) {
     const statusEl = document.getElementById('otaStatus');
@@ -143,9 +136,7 @@ window.otaCancelUpdate = async function(ieee) {
     }
 };
 
-// ============================================================================
 // PROGRESS HANDLING (called from WebSocket)
-// ============================================================================
 
 export function handleOTAProgress(data) {
     if (!data || !data.status) return;

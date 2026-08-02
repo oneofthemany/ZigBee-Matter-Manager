@@ -66,7 +66,7 @@
             .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
     }
 
-    // ---- badge ------------------------------------------------------------
+    // badge
 
     function renderBadge() {
         var host = document.getElementById('presence-badge-host');
@@ -96,7 +96,7 @@
         if (btn) btn.onclick = openModal;
     }
 
-    // ---- modal ------------------------------------------------------------
+    // modal
 
     function stateBadge(p) {
         if (p === 'home') return '<span class="badge bg-success">home</span>';
@@ -261,7 +261,7 @@
         }
     }
 
-    // ---- lifecycle --------------------------------------------------------
+    // lifecycle
 
     async function tick() {
         if (!canSee()) { renderBadge(); return; }

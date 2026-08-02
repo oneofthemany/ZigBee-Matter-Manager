@@ -6,25 +6,15 @@
 const log = zmmLog('settings');
 
 
- // ============================================================================
- // IMPORTS
- // ============================================================================
-
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
 
-// ============================================================================
-// STATE
-// ============================================================================
 
 let _spectrumChart = null;   // ECharts: live channel-energy bar chart
 let _historyChart = null;    // ECharts: live spectrum box-plot
 let _spectrumData = {};
 let _currentConfig = {};
 
-// ============================================================================
-// INIT
-// ============================================================================
 
 export function initSettings() {
     const tab = document.querySelector('[data-bs-target="#settings"]');
@@ -38,9 +28,7 @@ export async function loadSettingsPanel() {
     renderBackupRestoreSection();
 }
 
-// ============================================================================
 // STRUCTURED CONFIG LOAD / SAVE
-// ============================================================================
 
 async function loadStructuredConfig() {
     try {
@@ -81,9 +69,7 @@ async function saveStructuredConfig(silent = false) {
     }
 }
 
-// ============================================================================
 // CONFIG TAB RENDER
-// ============================================================================
 
 function renderConfigTab(config) {
     const z = config.zigbee || {};
@@ -318,9 +304,7 @@ function renderConfigTab(config) {
     renderOtaProviderRows(o.extra_providers || []);
 }
 
-// ============================================================================
 // OTA PROVIDER ROWS
-// ============================================================================
 
 // Known zigpy provider types. Free-text input is still allowed so future
 // types in newer zigpy versions don't require a UI release.
@@ -473,9 +457,7 @@ function collectOtaProviderRows() {
     return out;
 }
 
-// ============================================================================
 // SECURITY TAB RENDER
-// ============================================================================
 
 function renderSecurityTab(config) {
     const z = config.zigbee || {};
@@ -546,9 +528,7 @@ function renderSecurityTab(config) {
 }
 
 
-// ============================================================================
 // WEATHER TAB RENDER
-// ============================================================================
 
 function renderApisTab(config) {
     const el = document.getElementById('apisFormBody');
@@ -659,9 +639,7 @@ function renderWeatherSection(config) {
     `;
 }
 
-// ============================================================================
 // OCTOPUS ENERGY SECTION — lives in the External APIs tab
-// ============================================================================
 
 function renderOctopusSection(config) {
     const o = config.octopus || {};
@@ -752,9 +730,7 @@ function renderOctopusSection(config) {
     `;
 }
 
-// ============================================================================
 // MEDIA SECTION (Cast / WiiM / Radio) — lives in the External APIs tab
-// ============================================================================
 
 function renderMediaSection(config) {
     const m = config.media || {};
@@ -861,9 +837,7 @@ function renderMediaSection(config) {
     `;
 }
 
-// ============================================================================
 // AIR CON SECTION (Gree / Midea local LAN) — lives in the External APIs tab
-// ============================================================================
 // Unlike the other panes, AC units are managed live through /api/ac/* and
 // persist immediately — no Save / restart cycle.
 
@@ -1044,9 +1018,7 @@ window.acDelete = async function (unitId) {
     await window.loadAcUnits();
 };
 
-// ============================================================================
 // SECURITY SECTION (smart locks) — lives in the External APIs tab
-// ============================================================================
 // Providers are registry-driven: to add one (e.g. Yale) append an entry
 // here with its own render function — the sub-tabs build themselves.
 // Config fields save through the normal Save button (collectFormValues);
@@ -1098,7 +1070,7 @@ function renderSecuritySection(config) {
     `;
 }
 
-// ── Nuki ────────────────────────────────────────────────────────────────
+// Nuki
 
 function renderNukiSection(config) {
     const nuki = (config.security || {}).nuki || {};
@@ -1345,7 +1317,7 @@ window.nukiTestBridge = async function () {
     }
 };
 
-// ── Yale ────────────────────────────────────────────────────────────────
+// Yale
 // Matter-only by design: the Yale/August cloud API (yalexs) now requires
 // an official partner key (August) or OAuth brokered through Home
 // Assistant (Yale Home) — neither is available to a standalone app, so
@@ -1480,7 +1452,7 @@ function w_escape(s) {
     ));
 }
 
-// ---- Tidal login (lives in the Media settings section) ----
+// Tidal login (lives in the Media settings section)
 window.tidalLogin = async function () {
     const link = document.getElementById('tidalLoginLink');
     if (link) link.innerHTML = '<span class="small text-muted"><i class="fas fa-spinner fa-spin"></i> Requesting link…</span>';
@@ -1652,9 +1624,7 @@ window.refreshWeatherNow = async function() {
     }
 };
 
-// ============================================================================
 // CREDENTIAL REGENERATION
-// ============================================================================
 
 window.regenCredential = async function(type) {
     const labels = {
@@ -1705,9 +1675,7 @@ window.regenCredential = async function(type) {
     }
 };
 
-// ============================================================================
 // SPECTRUM ANALYSIS
-// ============================================================================
 
 export async function runSpectrumScan() {
     const btn = document.getElementById('spectrumScanBtn');
@@ -1868,9 +1836,7 @@ window.autoSelectChannel = async function() {
 };
 
 
-// ============================================================================
 // HISTORY CHART
-// ============================================================================
 
 export async function loadSpectrumHistory() {
     const hours = parseInt(document.getElementById('historyHours')?.value || 24);
@@ -2092,9 +2058,7 @@ function renderHistoryChart(stats, hours, container) {
 }
 
 
-// ============================================================================
 // FORM VALUE COLLECTION
-// ============================================================================
 
 function collectFormValues() {
     const get = id => document.getElementById(id)?.value?.trim() ?? null;
@@ -2213,9 +2177,7 @@ function collectFormValues() {
     };
 }
 
-// ============================================================================
 // BACKUP & RESTORE
-// ============================================================================
 
 let _pendingRestoreFile = null;
 
@@ -2432,9 +2394,7 @@ function cancelRestore() {
     document.getElementById('restoreStatus').innerHTML = '';
 }
 
-// ============================================================================
 // EXPORT GLOBALS FOR HTML INLINE ONCLICK
-// ============================================================================
 
 export async function saveSettingsConfig() {
     await saveStructuredConfig();
@@ -2462,9 +2422,6 @@ window.handleRestoreFile = handleRestoreFile;
 window.confirmRestore = confirmRestore;
 window.cancelRestore = cancelRestore;
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
 
 function showSettingsAlert(type, msg) {
     const el = document.getElementById('settingsAlert');

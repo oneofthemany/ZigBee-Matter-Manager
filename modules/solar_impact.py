@@ -1,48 +1,9 @@
 """
-solar_impact.py
-===============
-Measured solar heating impact per room, derived from telemetry the system
-already collects. This is the empirical counterpart to solar_gain.py: that
-module predicts what the sun *should* contribute from window geometry; this
-one reads what it *actually* contributed from the temperature record.
+Measured solar heating impact per room, from telemetry already collected.
 
-Method
-------
-1. Pull the room's temperature history and the controller's per-tick heating
-   state, and find heating-off cool-down windows using the same machinery
-   thermal_profile.py uses for τ learning.
-2. Classify every window with the clear-sky solar model:
-     • baseline — the model says the room's windows receive ~no direct sun
-       during the interval (night, or the facade is in shade throughout);
-     • sunlit  — the model expects meaningful gain (≥ SUNLIT_MIN_MODELLED_W);
-     • ambiguous — in between; excluded from both sides.
-3. Fit Newton cooling on the baseline windows only → the room's no-solar
-   time constant τ_night. This is the room's own control group.
-4. For each sunlit window, predict the end temperature from τ_night and the
-   outdoor record, and read the residual:
-       residual_c = observed_end − predicted_end     (> 0 ⇒ un-modelled heat)
-   Convert to average watts using the room's thermal capacitance
-       C [J/K] = UA [W/K] × τ_night [s]     (UA from the thermal profile)
-       measured_w = C × residual_c / duration_s
-5. Compare with the clear-sky model's average for the same window. The
-   median measured/modelled ratio is the room's solar calibration factor —
-   < 1 means shading/cloud/film is already attenuating the sun; > 1 means
-   the room heats up more than its glazing suggests (check loft/fabric).
-
-Everything degrades gracefully and reports *why* it stopped: no sensor, no
-telemetry, no cool-down windows, no location, no window geometry, or not
-enough baseline windows yet.
-
-Attribution caveat: daytime residuals also include internal gains (people,
-cooking, electronics). Using each room's own night-time baseline and the
-facade-lit classification keeps the signal dominated by solar, but treat
-single-window numbers as noisy — the medians are the story.
-
-Scale caveat: measured watts are proportional to the room's estimated
-thermal capacitance C = UA × τ, and UA comes from the thermal profile's
-mass model, which carries real uncertainty. Comparisons BETWEEN rooms and
-trends over time (e.g. before/after fitting window film) are trustworthy;
-absolute wattage is indicative only.
+The empirical counterpart to solar_gain.py: fits a no-solar baseline from
+night-time cool-down windows, then reads the residual warmth of sunlit ones.
+Method and its caveats: docs/heating.md.
 """
 
 from __future__ import annotations
@@ -294,7 +255,7 @@ def analyse_from_series(
                 pass
         return current_outdoor
 
-    # ── Classify windows against the clear-sky model ───────────────────
+    # Classify windows against the clear-sky model
     baseline_windows: List[Tuple[float, float, list]] = []
     sunlit_windows: List[Tuple[float, float, list, float]] = []
     has_geometry = result["has_window_geometry"]
@@ -318,7 +279,7 @@ def analyse_from_series(
     result["counts"]["baseline"] = len(baseline_windows)
     result["counts"]["sunlit"] = len(sunlit_windows)
 
-    # ── Baseline: the room's own no-solar cooling constant ─────────────
+    # Baseline: the room's own no-solar cooling constant
     taus: List[float] = []
     for (t0, t1, samples) in baseline_windows:
         out = _outdoor_at((t0 + t1) / 2)
@@ -334,7 +295,7 @@ def analyse_from_series(
     tau_night = _median(taus)
     result["tau_night_hours"] = round(tau_night / 3600.0, 2)
 
-    # ── Thermal capacitance from the room's profile ─────────────────────
+    # Thermal capacitance from the room's profile
     capacitance_j_per_k: Optional[float] = None
     try:
         profile = compute_profile(
@@ -355,7 +316,7 @@ def analyse_from_series(
     except Exception as e:
         logger.debug(f"solar_impact: profile failed for {room.get('id')}: {e}")
 
-    # ── Warm-up windows: heating off but temperature RISING ─────────────
+    # Warm-up windows: heating off but temperature RISING
     # The strongest solar events. Direct energy balance:
     #   W_solar = C·dT/dt + UA·(T_avg − T_out)
     warmups = _find_warmup_windows(temp_series, heating_state_getter=gate)
@@ -372,7 +333,7 @@ def analyse_from_series(
 
     w_per_k_val = result["thermal"]["w_per_k"]
 
-    # ── Sunlit residuals vs the night baseline ──────────────────────────
+    # Sunlit residuals vs the night baseline
     events: List[Dict[str, Any]] = []
     measured_ws: List[float] = []
     modelled_ws: List[float] = []
@@ -445,7 +406,7 @@ def analyse_from_series(
         if med_model and med_model > 0:
             result["solar"]["calibration_ratio"] = round(med_meas / med_model, 2)
 
-    # ── Confidence ───────────────────────────────────────────────────────
+    # Confidence
     n_sun = len(events)
     n_base = len(taus)
     if measured_ws and n_sun >= 5 and n_base >= 4:

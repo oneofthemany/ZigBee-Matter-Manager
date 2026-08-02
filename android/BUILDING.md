@@ -355,3 +355,42 @@ Presence → Permissions → Location.
 - Aggressive OEM battery managers (Xiaomi, Samsung, Huawei, OnePlus) kill
   background geofences. Exempt the app from battery optimisation on those.
 - No Play Services means no geofencing. There is no fallback.
+
+## `build_release.py`
+
+`android/build_release.py` wraps what this document describes by hand: locate a
+usable JDK, create a signing key if there is not one, build, then prove the
+result is actually signed and that the security config survived into the release
+variant.
+
+**The verification half is the point.** A release build that quietly produces an
+unsigned APK, or one that inherited the debug network config, still "succeeds"
+as far as Gradle is concerned — you find out when the phone refuses to install
+it, or worse, you never find out.
+
+Passwords are read with `getpass` and passed to `keytool` over stdin, so they
+stay out of shell history and out of the process list (`ps` shows every argument
+of every running command, including other users').
+
+```
+python3 build_release.py                    # build, signing if configured
+python3 build_release.py --setup            # create keystore + properties first
+python3 build_release.py --verify-only      # re-check an existing APK
+python3 build_release.py --debug            # debug APK instead
+python3 build_release.py --install          # ...then install; one device installs
+                                            # straight away, several prompt
+python3 build_release.py --install SERIAL   # ...to that device, no prompt
+python3 build_release.py --install --reinstall
+                                            # ...replacing a copy signed with a
+                                            # different key (e.g. the debug
+                                            # build). Discards the pairing.
+```
+
+Exit status is 0 only if every check passed — and, with `--install`, the install
+itself succeeded — so it is safe to use in a script.
+
+`ANDROID_HOME` is passed to Gradle explicitly rather than inherited: `find_sdk()`
+also accepts the SDK at its conventional path, so preflight can succeed on a
+machine where the variable is unset and no `local.properties` exists. Gradle has
+no such fallback and fails with "SDK location not found", which reads as a
+missing SDK rather than an unexported variable.

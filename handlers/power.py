@@ -9,9 +9,7 @@ from .base import ClusterHandler, register_handler
 
 logger = logging.getLogger("handlers.power")
 
-# ============================================================
 # ELECTRICAL MEASUREMENT CLUSTER (0x0B04)
-# ============================================================
 @register_handler(0x0B04)
 class ElectricalMeasurementHandler(ClusterHandler):
     CLUSTER_ID = 0x0B04
@@ -115,9 +113,7 @@ class ElectricalMeasurementHandler(ClusterHandler):
             {"component": "sensor", "object_id": f"current_{ep}", "config": {"name": f"Current {ep}", "device_class": "current", "unit_of_measurement": "A",  "value_template": f"{{{{ value_json.current_{ep} }}}}"}}
         ]
 
-# ============================================================
 # METERING CLUSTER (0x0702)
-# ============================================================
 @register_handler(0x0702)
 class MeteringHandler(ClusterHandler):
     CLUSTER_ID = 0x0702

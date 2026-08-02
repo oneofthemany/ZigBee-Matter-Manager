@@ -1,12 +1,11 @@
-"""Client for the Beekeeper DNS-sinkhole sidecar's loopback control API.
+"""
+Client for the Beekeeper sidecar's loopback control API.
 
-The ad-block engine runs as a separate always-on process (``python -m
-beekeeper``) so a restart/upgrade of this app never drops household DNS. This
-module is the thin bridge the main app uses to talk to it: it reads the
-control host/port from ``config.yaml`` and proxies requests, degrading
-gracefully to ``{"available": False}`` when the sidecar isn't reachable (not
-installed yet, disabled, or restarting) so the UI can render an "offline" state
-instead of erroring.
+The sinkhole runs as its own always-on process so a restart of this app never
+drops household DNS; this is the thin bridge to it. Reads the control host/port
+from config.yaml and degrades to {"available": False} when the sidecar is not
+reachable, so the UI renders an offline state rather than erroring.
+See docs/beekeeper.md.
 """
 from __future__ import annotations
 
@@ -62,7 +61,7 @@ class AdBlockClient:
             return data
         return {"available": True, "_status": r.status_code, "items": data}
 
-    # ── status / config ──────────────────────────────────────────────────────
+    # status / config
     async def status(self) -> Dict[str, Any]:
         return await self._request("GET", "/status")
 
@@ -72,7 +71,7 @@ class AdBlockClient:
     async def healthz(self) -> Dict[str, Any]:
         return await self._request("GET", "/healthz")
 
-    # ── service + toggles ────────────────────────────────────────────────────
+    # service + toggles
     async def service(self, action: str) -> Dict[str, Any]:
         if action not in ("start", "stop"):
             return {"available": True, "ok": False, "error": "action must be start|stop"}
@@ -87,7 +86,7 @@ class AdBlockClient:
     async def resume(self) -> Dict[str, Any]:
         return await self._request("POST", "/resume")
 
-    # ── blocklists ────────────────────────────────────────────────────────────
+    # blocklists
     async def refresh(self) -> Dict[str, Any]:
         return await self._request("POST", "/refresh")
 
@@ -104,7 +103,7 @@ class AdBlockClient:
         return await self._request("POST", "/lists/toggle",
                                    json={"key": key, "enabled": enabled})
 
-    # ── rules ─────────────────────────────────────────────────────────────────
+    # rules
     async def rules(self) -> Dict[str, Any]:
         return await self._request("GET", "/rules")
 
@@ -121,7 +120,7 @@ class AdBlockClient:
     async def dig(self, domain: str, qtype: int = 1) -> Dict[str, Any]:
         return await self._request("GET", "/dig", params={"domain": domain, "type": qtype})
 
-    # ── stats ─────────────────────────────────────────────────────────────────
+    # stats
     async def summary(self, hours: float = 24.0) -> Dict[str, Any]:
         return await self._request("GET", "/stats/summary", params={"hours": hours})
 

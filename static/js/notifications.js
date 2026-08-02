@@ -1,32 +1,14 @@
-/**
- * notifications.js
- * --------------------------------------------------------------------------
- * Settings → Notifications sub-tab.
- *
- * Lets the user create rules that fire browser / in-app notifications when
- * device events occur. Rules are stored in localStorage so they survive
- * across reloads. The actual delivery uses window.zbmSendNotification (set
- * up in pwa.js) so we get the same service-worker / native / in-app
- * fallback behaviour for free.
- *
- * Architecture mirrors the rest of the SPA:
- *   - initNotifications()  is called once at boot (from main.js)
- *   - on Settings sub-tab "shown.bs.tab" we render the rules list
- *   - a 5-second poll over window.state.deviceCache evaluates rules
- *
- * The rule engine is independent from pwa.js' four hard-coded toggles —
- * those continue to work via the navbar bell. This module adds *per-device*
- * + *per-event* rules with cooldowns, time windows, and condition logic.
- * --------------------------------------------------------------------------
- */
+/* Settings -> Notifications: per-device, per-event rules with cooldowns, time
+   windows and condition logic, stored in localStorage.
+
+   Delivery goes through window.zbmSendNotification (pwa.js) for the same
+   service-worker / native / in-app fallback. Independent of pwa.js' four
+   hard-coded toggles, which stay on the navbar bell. See docs/notifications.md. */
 
 import { state } from './state.js';
 
 const log = zmmLog('notifications');
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 const RULES_KEY = 'zbm-notification-rules';
 const POLL_INTERVAL_MS = 5000;
@@ -221,9 +203,7 @@ const COOLDOWN_OPTIONS = [
     { value: 60, label: '1 hour' },
 ];
 
-// ---------------------------------------------------------------------------
 // Persistence
-// ---------------------------------------------------------------------------
 
 function loadRules() {
     try {
@@ -245,9 +225,7 @@ function newRuleId() {
     return 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
 
-// ---------------------------------------------------------------------------
 // Rule engine
-// ---------------------------------------------------------------------------
 
 const previousStates = {};   // ieee → last seen merged state
 const lastFiredAt   = {};    // ruleId+ieee → epoch ms
@@ -360,9 +338,7 @@ function evaluateRules() {
     });
 }
 
-// ---------------------------------------------------------------------------
 // UI rendering
-// ---------------------------------------------------------------------------
 
 function escapeHtml(s) {
     return String(s ?? '')
@@ -471,9 +447,7 @@ function renderRulesList() {
     });
 }
 
-// ---------------------------------------------------------------------------
 // Rule editor modal
-// ---------------------------------------------------------------------------
 
 function openRuleEditor(ruleId) {
     const rules = loadRules();
@@ -729,9 +703,7 @@ function openRuleEditor(ruleId) {
     modal.show();
 }
 
-// ---------------------------------------------------------------------------
 // Sub-tab init
-// ---------------------------------------------------------------------------
 
 function renderNotificationsPane() {
     const pane = document.getElementById('settingsNotifications');

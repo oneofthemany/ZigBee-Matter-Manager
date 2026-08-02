@@ -46,11 +46,9 @@ class ClusterHandler:
     CLUSTER_ID: Optional[int] = None
     REPORT_CONFIG: list = []
 
-    # Command-driven clusters (e.g. Poll Control) carry no reportable
-    # attributes, so the capability layer flags them "not configurable" and the
-    # device configure loop would skip their configure() entirely. Handlers that
-    # still need configure() to run at join time (to bind, write intervals, etc.)
-    # set this True to opt out of the reportable-cluster gate.
+    # Command-driven clusters (e.g. Poll Control) have no reportable attributes,
+    # so the configure loop would skip them. Handlers that still need configure()
+    # at join time — to bind, write intervals — set this to opt out of that gate.
     ALWAYS_CONFIGURE: bool = False
 
     def __init__(self, device, cluster: 'Cluster'):
@@ -78,9 +76,7 @@ class ClusterHandler:
             )
             traceback.print_exc()
 
-    # ============================================================
     # UI & CONFIGURATION EXPOSURE
-    # ============================================================
 
     def get_configuration_options(self) -> List[Dict]:
         """
@@ -88,23 +84,19 @@ class ClusterHandler:
         """
         return []
 
-    # ============================================================
     # HOME ASSISTANT DISCOVERY
-    # ============================================================
     def get_discovery_configs(self) -> List[Dict]:
         """
         Return list of Home Assistant discovery configurations.
         """
         return []
 
-    # ============================================================
     # ZIGPY LISTENER INTERFACE
-    # ============================================================
 
     def attribute_updated(self, attrid: int, value: Any, timestamp: Optional[float] = None):
         packet_stats.record_rx(str(self.device.ieee))
 
-        # --- feed attribute history cache ---
+        # feed attribute history cache
         try:
             from modules.zigbee_cache import record_value
             record_value(
@@ -308,9 +300,7 @@ class ClusterHandler:
         """Called when device announces itself."""
         logger.debug(f"[{self.device.ieee}] device_announce: args={args}, kwargs={kwargs}")
 
-    # ============================================================
     # CONFIGURATION METHODS
-    # ============================================================
 
     async def configure(self):
         """Bind cluster and configure attribute reporting."""
@@ -434,9 +424,7 @@ class ClusterHandler:
 
         return results
 
-    # ============================================================
     # HELPER METHODS
-    # ============================================================
 
     def get_attr_name(self, attrid: int) -> str:
         """Convert attribute ID to human-readable name."""

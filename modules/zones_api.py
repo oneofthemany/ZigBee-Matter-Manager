@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
-# --- Pydantic models ---
+# Pydantic models
 class ZoneCreateRequest(BaseModel):
     name: str = Field(..., description="Zone name (e.g., 'Living Room')")
     device_ieees: List[str] = Field(..., description="Device IEEEs in zone")

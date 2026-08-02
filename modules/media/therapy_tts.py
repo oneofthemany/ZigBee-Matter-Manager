@@ -1,26 +1,10 @@
 """
 TherapyTTS — Wyoming (external piper) backend for the therapy SPA.
 
-Legacy/alternative engine: talks the Wyoming protocol to a wyoming-piper
-container (e.g. the one HA voice hosts already run), assembles the streamed
-PCM into a WAV, and caches results on disk keyed by (voice, speed, pitch,
-text). The default engine is the in-process KokoroTTS — see
-modules/media/kokoro_tts.py and the create_therapy_tts() factory below.
-
-Piper applies speech speed via length_scale, which wyoming-piper does not
-expose per-request, so speed != 1.0 is approximated here with a WSOLA
-time-stretch (pitch-preserving). numpy is required for the stretch; without
-it audio is returned at natural speed. Pitch is applied client-side by the
-SPA (playbackRate), never here.
-
-Config (config.yaml):
-  media:
-    therapy:
-      enabled: true
-      engine: wyoming       # kokoro (default, in-process) | wyoming
-      wyoming:
-        host: "127.0.0.1"   # wyoming-piper server, host network
-        port: 10200
+The alternative engine; the default is the in-process KokoroTTS. Speeds other
+than 1.0 use a pitch-preserving WSOLA stretch, since wyoming-piper does not
+expose length_scale per request; pitch is applied client-side, never here.
+See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -65,7 +49,7 @@ class TherapyTTS:
         self._sem = asyncio.Semaphore(2)
         self._stretch_warned = False
 
-    # ── Wyoming protocol ────────────────────────────────────────────────
+    # Wyoming protocol
     # Header line {"type", "version", "data_length"?, "payload_length"?}
     # + "\n" + data JSON bytes + payload bytes (matching wyoming's
     # async_write_event; data inline in the header is read-side only).
@@ -108,7 +92,6 @@ class TherapyTTS:
         return await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port), timeout=timeout)
 
-    # ── Public API ──────────────────────────────────────────────────────
 
     async def status(self) -> bool:
         """True when the piper container answers a describe round-trip."""
@@ -188,7 +171,7 @@ class TherapyTTS:
             logger.warning("TTS cache write failed: %s", exc)
         return wav
 
-    # ── Internals ───────────────────────────────────────────────────────
+    # Internals
 
     async def _synthesize_pcm(self, text: str, voice: str):
         # Generous timeout: wyoming-piper downloads a voice (~80 MB) the
@@ -279,7 +262,7 @@ class TherapyTTS:
             for stale in files[:_CACHE_TRIM_BATCH]:
                 stale.unlink(missing_ok=True)
 
-    # ── Setup (/api/tts/setup/*) — nothing to install for this engine ───
+    # Setup (/api/tts/setup/*) — nothing to install for this engine
 
     def setup_status(self) -> dict:
         return {"engine": "wyoming", "ready": None, "installable": False,

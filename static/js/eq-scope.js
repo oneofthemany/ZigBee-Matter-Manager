@@ -1,26 +1,15 @@
 /**
- * eq-scope.js — the studio display behind the graphic EQ.
+ * The studio display behind the graphic EQ.
  *
- * One renderer, two signal sources, because the audio is in two different
- * places depending on where it is playing:
+ * One renderer, two sources: "This device" analyses a Web Audio graph in this
+ * tab, while a sync zone is analysed server-side at the audible position and
+ * pushed over the websocket (cast_sync._spectrum_feed). Both arrive as N
+ * log-spaced band levels in 0..1, so everything below is drawing.
  *
- *   local  — "This device" plays through a Web Audio graph in this tab, so an
- *            AnalyserNode is right there and the browser does the FFT.
- *   zone   — a sync zone plays on the speakers and never touches the browser.
- *            The server analyses the master timeline at the AUDIBLE position
- *            and pushes bands over the websocket (cast_sync._spectrum_feed).
- *
- * Both arrive as the same thing — N log-spaced band levels in 0..1 — so
- * everything below this line is drawing, and neither source knows about the
- * other. A scope with no frames for a while fades out instead of freezing: a
- * still picture of a spectrum reads as live audio that has gone silent, which
- * is a lie when what actually happened is the feed stopped.
- *
- * The curve drawn over the spectrum is the EQ's own magnitude response,
- * computed from the band gains with the RBJ cookbook formulas — the same
- * design Web Audio's peaking/shelf biquads implement, so the line matches what
- * the local filters actually do rather than being a smoothed sketch of the
- * slider positions.
+ * A scope with no frames fades out rather than freezing — a still spectrum
+ * reads as live audio gone silent, which is a lie when the feed just stopped.
+ * The overlaid curve is the EQ's own magnitude response from the RBJ cookbook
+ * formulas, so it matches what the filters do rather than sketching the sliders.
  */
 const log = zmmLog('eq-scope');
 
@@ -48,13 +37,10 @@ function _tokens() {
 }
 
 /**
- * RBJ cookbook magnitude response, evaluated at one frequency.
- *
- * Returned in dB so it can be plotted straight onto the same axis as the grid.
- * Q matches the value eq.js gives its peaking biquads (1.25). It is not a free
- * parameter here: the point of computing the response rather than sketching it
- * is that the line is what the filters do, and a different Q would draw bells
- * narrower or wider than the ones in the signal path.
+ * RBJ cookbook magnitude response at one frequency, in dB so it plots onto the
+ * same axis as the grid. Q is not a free parameter: it matches the value eq.js
+ * gives its peaking biquads, or the bells would be drawn wider or narrower
+ * than the ones actually in the signal path.
  */
 const PEAK_Q = 1.25;
 
@@ -183,7 +169,7 @@ function _draw(cv, st, now) {
     const xOf = (hz) => padL + plotW * Math.log(hz / fLo) / Math.log(fHi / fLo);
     const yOf = (norm) => padT + plotH * (1 - norm);
 
-    // ── grid ────────────────────────────────────────────────────────────
+    // grid
     g.lineWidth = 1;
     g.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
     g.textBaseline = 'middle';
@@ -212,7 +198,7 @@ function _draw(cv, st, now) {
         g.globalAlpha = 1;
     }
 
-    // ── spectrum ────────────────────────────────────────────────────────
+    // spectrum
     const bands = st.frame?.bands;
     if (bands && bands.length && st.alpha > 0.01) {
         const n = bands.length;
@@ -251,7 +237,7 @@ function _draw(cv, st, now) {
         g.globalAlpha = 1;
     }
 
-    // ── EQ curve ────────────────────────────────────────────────────────
+    // EQ curve
     const eq = st.opts.getEq ? st.opts.getEq() : null;
     if (eq && eq.enabled && eq.gains?.some(v => v)) {
         const rate = eq.rate || 48000;

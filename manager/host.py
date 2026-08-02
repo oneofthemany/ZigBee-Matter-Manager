@@ -1,18 +1,10 @@
-"""Host OS status + updates for the manager.
+"""
+Host OS status and updates for the manager.
 
-The manager runs in a container and cannot touch the host package manager
-directly. Host-side helpers (installed by install_watcher.sh) do the work:
-
-  - scripts/os_updates.sh — read-only collector (6h timer + on-demand path
-    unit) writing ``${DATA_DIR}/data/os_updates.json``.
-  - scripts/os_apply.sh — apply worker (on-demand path unit) that applies
-    package updates or an OS release upgrade, writing progress to
-    ``${DATA_DIR}/data/os_updates/apply_status.json``.
-
-This module reads those files and requests work by writing the trigger files
-the hosts' systemd path units watch: ``refresh`` (re-check), ``apply``
-(install pending updates) and ``release_upgrade`` (distro upgrade — the host
-REBOOTS at the end; the dashboard warns before triggering it).
+The manager cannot touch the host package manager from inside a container, so
+host-side helpers installed by install_watcher.sh do the work and this module
+reads their output and writes the trigger files their systemd path units watch:
+refresh, apply, and release_upgrade — which REBOOTS the host at the end.
 """
 import json
 import logging

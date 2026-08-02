@@ -1,37 +1,11 @@
 """
-Presence Users — Per-user home/away tracking from the companion app.
+Per-user home/away tracking from the companion app.
 
-Each user is exposed to the rest of ZMM as a *virtual device* with attributes:
-    presence       : "home" | "away" | "unknown"
-    distance_m     : float (metres from home)
-    accuracy_m     : float (GPS reported accuracy)
-    source         : "pwa" | "manual"
-    last_update    : float (unix ts)
-    lat / lon      : float (latest reported position) — stored in memory only
-                      after persistence, NOT written to disk in long-term form.
-
-These virtual devices are merged into the automation engine's device registry
-(see main.py wiring), so existing rule-builder, AI automations and MQTT
-discovery all work without modification.
-
-Storage:
-    data/presence_users.yaml  — user definitions (no coordinates persisted
-                                across restarts unless explicitly enabled).
-    data/presence_state.json  — last known presence/place/last_seen per user,
-                                restored on startup so badges survive a
-                                restart. Deliberately contains NO coordinates:
-                                the privacy stance above is about positions,
-                                not about whether someone was home.
-
-Dependencies:
-    - mqtt_handler (optional, for HA discovery + state publish)
-    - event_emitter (websocket broadcast)
-    - automation_evaluator (instant rule trigger on state change)
-
-Privacy:
-    - We never log raw coordinates beyond DEBUG level.
-    - We persist only the configured home location and radius, not the
-      live position fixes.
+Each user is exposed to the rest of ZMM as a virtual device (presence,
+distance_m, accuracy_m, source, last_update), merged into the automation
+engine's device registry so rules, AI automations and MQTT discovery work
+unmodified. Live coordinates stay in memory and are never persisted; see
+docs/presence_detection.md.
 """
 
 from __future__ import annotations
@@ -49,9 +23,6 @@ import yaml
 
 logger = logging.getLogger("modules.presence_users")
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 PRESENCE_HOME = "home"
 PRESENCE_AWAY = "away"
@@ -62,22 +33,10 @@ DEFAULT_HYSTERESIS_M = 30.0       # extra buffer to leave home (radius + this)
 DEFAULT_STALE_AFTER_S = 30 * 60   # mark unknown after 30 min of silence
 DEFAULT_MIN_ACCURACY_M = 250.0    # ignore fixes worse than this
 
-# --- Reporting aggressiveness ---------------------------------------------
-#
-# Presence decays: a phone that only reports at boundary crossings goes silent
-# the moment it settles somewhere, and `stale_after_s` then flips the user to
-# "unknown" while they are sitting at home. So every mode carries a heartbeat,
-# and `stale_after_s` is derived from it rather than set independently — a
-# stale window shorter than the heartbeat would guarantee false "unknown".
-#
-# `heartbeat_s` is the phone's periodic report interval. 900 s is Android's
-# floor for periodic background work (WorkManager), so no mode can beat it
-# without exact alarms, which are a battery and permissions problem of their
-# own.
-#
-# `responsiveness_ms` is what the phone asks the OS for as crossing-detection
-# latency. It is a hint: the OS batches geofence events to save power and will
-# ignore a request it considers wasteful, so treat these as "no faster than".
+# Every mode carries a heartbeat, and stale_after_s is derived from it: a stale
+# window shorter than the heartbeat would guarantee false "unknown". 900 s is
+# Android's floor for periodic background work. responsiveness_ms is a hint the
+# OS may ignore — read it as "no faster than". See docs/presence_detection.md.
 PRESENCE_MODES: Dict[str, Dict[str, Any]] = {
     "battery": {
         "label": "Battery saver",
@@ -101,9 +60,8 @@ PRESENCE_MODES: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_PRESENCE_MODE = "balanced"
 
-# How long silence is tolerated, as a multiple of the heartbeat. Two missed
-# heartbeats plus slack: one missed report is routine (doze, no signal, a dead
-# spot) and should not flip someone to "unknown".
+# Tolerated silence, as a multiple of the heartbeat: two missed beats plus slack,
+# since one missed report is routine (doze, no signal, a dead spot).
 STALE_HEARTBEAT_FACTOR = 2.5
 
 
@@ -144,15 +102,10 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R * math.asin(math.sqrt(a))
 
 
-# ---------------------------------------------------------------------------
 # Data model
-# ---------------------------------------------------------------------------
 
-# Distinguishes "key absent" from "key present and null" when loading configs.
-# A legacy record with no `account` key is migrated to its user_id; a record
-# with `account: null` is a deliberate standalone tracker and must stay that
-# way. Plain `d.get("account")` returns None for both and would silently
-# re-link every standalone record on the next load.
+# Distinguishes "key absent" from "key present and null". d.get("account")
+# returns None for both and would silently re-link every standalone record.
 _MISSING = object()
 
 
@@ -160,19 +113,12 @@ _MISSING = object()
 class UserConfig:
     user_id: str                          # short stable id, e.g. "sean"
     display_name: str                     # "Sean"
-    # Login account this presence user belongs to, or None for a standalone
-    # record (a tracker with no human account behind it).
-    #
-    # This used to be implied by `user_id == username`. That convention broke in
-    # two directions: deleting an account left a presence user that still
-    # reported a location, and any policy keyed on the account — MFA in
-    # particular — resolved against a user record that no longer existed and
-    # failed closed for reasons nothing on screen explained. An explicit link
-    # can be verified, migrated, and cascaded; a convention can only be assumed.
+    # Login account, or None for a standalone tracker. Explicit rather than the
+    # old user_id == username convention, which broke in both directions.
+    # See docs/presence_detection.md.
     account: Optional[str] = None
-    # Reporting aggressiveness. See PRESENCE_MODES — the phone fetches the
-    # resolved parameters and applies them, so changing this here retunes the
-    # device without reinstalling or re-pairing it.
+    # See PRESENCE_MODES. The phone fetches the resolved parameters, so changing
+    # this retunes the device without reinstalling it.
     presence_mode: str = DEFAULT_PRESENCE_MODE
     home_lat: Optional[float] = None
     home_lon: Optional[float] = None
@@ -181,10 +127,8 @@ class UserConfig:
     stale_after_s: float = DEFAULT_STALE_AFTER_S
     min_accuracy_m: float = DEFAULT_MIN_ACCURACY_M
     enabled: bool = True
-    # Opt-in per user: record drive-mode fixes (car Bluetooth connected) as
-    # journeys with distance and speed statistics. Off by default because it
-    # persists movement history, which the rest of this module deliberately
-    # does not.
+    # Opt-in: persists movement history, which the rest of this module
+    # deliberately does not.
     journeys_enabled: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -192,12 +136,9 @@ class UserConfig:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "UserConfig":
-        # Migration: records written before `account` existed relied on the
-        # user_id == username convention, so adopt user_id as the link. This is
-        # what those records already meant; it does not invent a relationship.
-        # Whether that account still EXISTS is a separate question, answered by
-        # `orphaned` in the API rather than guessed at here — this module has no
-        # business importing the auth manager.
+        # Records written before `account` existed relied on user_id == username,
+        # so adopt user_id as the link — that is what they already meant. Whether
+        # the account still exists is answered by `orphaned` in the API.
         account = d.get("account", _MISSING)
         if account is _MISSING:
             account = str(d["user_id"])
@@ -215,10 +156,8 @@ class UserConfig:
             home_lon=d.get("home_lon"),
             radius_m=float(d.get("radius_m", DEFAULT_RADIUS_M)),
             hysteresis_m=float(d.get("hysteresis_m", DEFAULT_HYSTERESIS_M)),
-            # Derived from the mode, not stored independently. An explicit
-            # value shorter than the heartbeat would mark the user "unknown"
-            # between two perfectly healthy reports, and nothing on screen
-            # would explain why. One knob, one behaviour.
+            # Derived from the mode, never stored independently: a shorter value
+            # would mark the user "unknown" between two healthy reports.
             stale_after_s=float(mode_params(mode)["stale_after_s"]),
             min_accuracy_m=float(d.get("min_accuracy_m", DEFAULT_MIN_ACCURACY_M)),
             enabled=bool(d.get("enabled", True)),
@@ -226,9 +165,7 @@ class UserConfig:
         )
 
 
-# ---------------------------------------------------------------------------
 # Virtual device shim
-# ---------------------------------------------------------------------------
 
 class _Capabilities:
     """Minimal capabilities object so the automation engine treats us as
@@ -412,9 +349,7 @@ class PresenceUserDevice:
         }
 
 
-# ---------------------------------------------------------------------------
 # Manager
-# ---------------------------------------------------------------------------
 
 class PresenceUserManager:
     """
@@ -436,19 +371,13 @@ class PresenceUserManager:
         self.config_path = Path(config_path)
         self.state_path = Path(state_path)
 
-        # Presence users only. The household aggregate is deliberately NOT in
-        # here: every loop over this dict assumes each entry has a .cfg, and an
-        # entry without one broke config saving, the user list and the stale
-        # watcher and the user list at once. Exposed via
-        # automation_devices() instead, which is the only place it is wanted.
+        # Presence users only — the household aggregate has no .cfg, and every
+        # loop here assumes one. Exposed via automation_devices() instead.
         self.devices: Dict[str, PresenceUserDevice] = {}
         self.household = HouseholdDevice()
         self._stale_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     async def start(self) -> None:
         self._load_config()
         self._load_state()
@@ -466,9 +395,7 @@ class PresenceUserManager:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    # ------------------------------------------------------------------
     # Config persistence
-    # ------------------------------------------------------------------
     def _load_config(self) -> None:
         if not self.config_path.exists():
             return
@@ -495,18 +422,9 @@ class PresenceUserManager:
         except Exception as e:
             logger.error(f"Failed to save presence users config: {e}")
 
-    # ------------------------------------------------------------------
-    # Runtime-state persistence (survives restarts)
-    # ------------------------------------------------------------------
-    #
-    # Config persistence above answers "who are the users"; this answers
-    # "where did we last believe they were". Without it a restart flips every
-    # badge to "unknown" until the next heartbeat — up to an hour in battery
-    # mode — which reads on screen as the whole household vanishing.
-    #
-    # The file carries NO coordinates. presence/place/distance are exactly
-    # what the UI and MQTT already show; persisting them does not widen what
-    # is stored, only how long it survives.
+    # Where we last believed each user was, so a restart does not flip every badge
+    # to "unknown" until the next heartbeat (up to an hour in battery mode). Holds
+    # no coordinates: presence/place/distance are what the UI already shows.
 
     _STATE_KEYS = ("presence", "place", "distance_m", "accuracy_m",
                    "source", "last_update")
@@ -552,11 +470,9 @@ class PresenceUserManager:
             for k in self._STATE_KEYS:
                 if k in snap:
                     dev.state[k] = snap[k]
-            # The same staleness rule the live watcher applies: a snapshot
-            # older than the stale window is not evidence of anything, and
-            # restoring it verbatim would show a confidently wrong badge
-            # after a long outage. last_seen survives either way so the UI
-            # can still say how long ago the phone was heard from.
+            # Same staleness rule as the live watcher: a snapshot older than the
+            # stale window is not evidence, and restoring it would show a
+            # confidently wrong badge. last_seen survives either way.
             if not last_seen or now - last_seen > dev.cfg.stale_after_s:
                 dev.state["presence"] = PRESENCE_UNKNOWN
                 dev.state["place"] = PRESENCE_UNKNOWN
@@ -566,9 +482,7 @@ class PresenceUserManager:
         if restored:
             logger.info(f"Restored presence state for {restored} user(s)")
 
-    # ------------------------------------------------------------------
     # CRUD
-    # ------------------------------------------------------------------
     def automation_devices(self) -> Dict[str, Any]:
         """
         Presence users plus the household aggregate, for the automation engine.
@@ -634,9 +548,7 @@ class PresenceUserManager:
             await self._remove_discovery(dev)
             return {"success": True}
 
-    # ------------------------------------------------------------------
     # Ingest paths
-    # ------------------------------------------------------------------
     async def report_pwa_fix(
             self,
             user_id: str,
@@ -703,11 +615,9 @@ class PresenceUserManager:
             dev._last_lon = lon
             dev.last_seen = ts
 
-            # Named place, resolved here rather than on the phone: one
-            # implementation decides where someone is, and adding a place or
-            # widening its radius takes effect immediately for fixes already
-            # arriving. "home" wins over any place covering the same spot —
-            # being at home is the more meaningful answer.
+            # Resolved here, not on the phone, so one implementation decides and a
+            # new or widened place applies immediately. "home" wins over any place
+            # covering the same spot.
             new_place = PRESENCE_HOME if new_state == PRESENCE_HOME else "away"
             if new_state != PRESENCE_HOME:
                 try:
@@ -772,9 +682,7 @@ class PresenceUserManager:
             await self._fire_state_change(dev, {"presence": presence, "source": "manual"})
         return {"success": True, "user_id": user_id, "presence": presence}
 
-    # ------------------------------------------------------------------
     # State change pipeline
-    # ------------------------------------------------------------------
     async def _fire_state_change(
             self,
             dev: PresenceUserDevice,
@@ -806,9 +714,7 @@ class PresenceUserManager:
         except Exception as e:
             logger.debug(f"presence broadcast failed: {e}")
 
-    # ------------------------------------------------------------------
     # MQTT
-    # ------------------------------------------------------------------
     def _refresh_household(self) -> None:
         """
         Recalculate the aggregate after any change to a user's presence.
@@ -881,9 +787,7 @@ class PresenceUserManager:
             except Exception as e:
                 logger.debug(f"MQTT presence discovery removal failed: {e}")
 
-    # ------------------------------------------------------------------
     # Stale-fix watchdog
-    # ------------------------------------------------------------------
     async def _stale_watcher(self) -> None:
         """Mark users as 'unknown' if no fix has been received for too long."""
         try:
@@ -915,10 +819,6 @@ class PresenceUserManager:
         except Exception as e:
             logger.error(f"Stale watcher crashed: {e}")
 
-
-# ---------------------------------------------------------------------------
-# Singleton helper
-# ---------------------------------------------------------------------------
 
 _manager: Optional[PresenceUserManager] = None
 

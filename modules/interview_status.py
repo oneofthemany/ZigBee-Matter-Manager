@@ -1,31 +1,11 @@
 """
-interview_status.py — observe and report device interview state.
+Observe and report device interview state — never drives it, since zigpy owns
+the actual state machine.
 
-This module never drives the interview; it only observes. zigpy owns the
-actual interview state machine. We compute a higher-level status for the
-frontend based on:
-
-  - zigpy.device.is_initialized
-  - zigpy.device.node_desc (presence and contents)
-  - zigpy.device.endpoints (count and per-endpoint cluster population)
-  - last_seen on the wrapper (recent traffic = device probably awake)
-  - join_at timestamp recorded when the device first joined
-
-Thresholds reflect what's reasonable for the Zigbee protocol, not arbitrary
-choices:
-
-  - apsAckWaitDuration is ~1.6s; full interview is typically 5-15 round
-    trips. Mains devices that don't complete in 60s have a real problem.
-  - Battery devices may legitimately take much longer because they sleep
-    between transmissions, but if the user is keeping the device awake
-    (recent traffic is the proxy for this) the same 60s budget applies
-    plus headroom for poll intervals.
-  - 24 hours of "interviewing" is excessive regardless. At that point the
-    device should be considered failed and the user advised to re-pair.
-
-The state machine is purely derivative — call get_status(ieee) any time and
-get the current truth. Cached values are only kept to detect transitions
-for emitting WebSocket events; they're never the source of truth.
+Derives a frontend-facing status from is_initialized, node_desc, endpoints,
+last_seen and join_at. Purely derivative: get_status(ieee) is always current,
+and cached values exist only to detect transitions for websocket events.
+Threshold rationale: docs/onboarding.md.
 """
 from __future__ import annotations
 
@@ -40,9 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("modules.interview_status")
 
 
-# ---------------------------------------------------------------------------
 # Thresholds (seconds)
-# ---------------------------------------------------------------------------
 
 # Mains-powered device should complete interview in this window. Beyond it,
 # something is wrong (firmware, route, configuration).
@@ -64,9 +42,7 @@ _BATTERY_TOTAL_STALL_LIMIT = 30 * 60
 _HARD_FAIL_AFTER = 24 * 60 * 60
 
 
-# ---------------------------------------------------------------------------
 # State machine
-# ---------------------------------------------------------------------------
 
 # Interview state values returned to callers / frontend
 STATE_UNKNOWN = "unknown"           # No zigpy device or not yet observable
@@ -134,7 +110,7 @@ class InterviewStatusTracker:
         # ieee → step start timestamp for elapsed computation
         self._step_started: dict[str, float] = {}
 
-    # ----- lifecycle hooks -----
+    # lifecycle hooks
 
     def on_device_joined(self, ieee: str) -> None:
         """Call from service.device_joined."""
@@ -171,7 +147,6 @@ class InterviewStatusTracker:
             return
         self._emit(snapshot)
 
-    # ----- public API -----
 
     def get_status(self, ieee: str) -> Optional[InterviewSnapshot]:
         """
@@ -188,7 +163,7 @@ class InterviewStatusTracker:
         zdev = wrapper.zigpy_dev
         now = time.time()
 
-        # --- Elapsed since join ---
+        # Elapsed since join
         join_at = self._join_at.get(ieee)
         if join_at is None:
             # Device existed before tracker started — synthesise a join
@@ -199,13 +174,13 @@ class InterviewStatusTracker:
             self._join_at[ieee] = join_at
         elapsed_s = int(now - join_at)
 
-        # --- Last seen ---
+        # Last seen
         last_seen_ms = getattr(wrapper, "last_seen", 0) or 0
         last_seen_s_ago: Optional[int] = None
         if last_seen_ms:
             last_seen_s_ago = max(0, int(now - last_seen_ms / 1000.0))
 
-        # --- Power source from Node Descriptor (only fact, no inference) ---
+        # Power source from Node Descriptor (only fact, no inference)
         is_battery: Optional[bool] = None
         nd = getattr(zdev, "node_desc", None)
         if nd is not None:
@@ -224,7 +199,7 @@ class InterviewStatusTracker:
                 and last_seen_s_ago < _RECENT_TRAFFIC_WINDOW
         )
 
-        # --- Compute state ---
+        # Compute state
         if zdev.is_initialized:
             state = STATE_INTERVIEWED
             advice = "Device is fully interviewed and ready."
@@ -290,16 +265,16 @@ class InterviewStatusTracker:
                 state = STATE_INTERVIEWING
                 advice = "Waiting for the device to send its Node Descriptor."
 
-        # --- Current step ---
+        # Current step
         current_step = self._current_step.get(ieee)
 
-        # --- Facts dict ---
+        # Facts dict
         facts = self._gather_facts(zdev, wrapper)
 
-        # --- Missing dict ---
+        # Missing dict
         missing = self._gather_missing(zdev)
 
-        # --- Action flags ---
+        # Action flags
         can_retry = state in (STATE_INTERVIEWING, STATE_STALLED, STATE_FAILED)
         can_repair = state == STATE_FAILED
 
@@ -333,7 +308,7 @@ class InterviewStatusTracker:
                 out.append(snap.to_dict())
         return out
 
-    # ----- internals -----
+    # internals
 
     def _gather_facts(self, zdev, wrapper) -> dict:
         """

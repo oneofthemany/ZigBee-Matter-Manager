@@ -1,19 +1,11 @@
-"""Ollama sibling-container management for the manager sidecar.
-
-The AI stack runs Ollama as a separate host container (created from the app's
-Settings → AI via modules/ollama_manager.py). This module gives the manager its
-own view + controls: status for /status and the dashboard card, model
-list/pull/delete via the Ollama API, and an image update (pull latest, recreate
-the container, models survive in the named volume).
+"""
+Ollama sibling-container management for the manager sidecar — status, model
+list/pull/delete, and image update.
 
 Standalone by design: the manager is the disaster-recovery surface, so it never
-imports from modules/ — the container create-config, job bookkeeping and
-progress compaction below are duplicated BY CONVENTION from
-modules/ollama_manager.py (keep them in sync if that file changes).
-
-Reachability: Ollama publishes 11434 on the host; the manager runs off-pod with
-host.containers.internal mapped to the host gateway, so the default base URL
-works without extra deploy config (override with ZMM_OLLAMA_URL).
+imports from modules/. The container create-config and job bookkeeping are
+duplicated BY CONVENTION from modules/ollama_manager.py — keep them in sync.
+See docs/upgrades.md.
 """
 import asyncio
 import json
@@ -54,7 +46,7 @@ def updating() -> bool:
     return update_active
 
 
-# ── Job bookkeeping (duplicated from modules/ollama_manager.py) ──────────────
+# Job bookkeeping (duplicated from modules/ollama_manager.py)
 
 def _job_start(action: str, command: str, model: Optional[str] = None):
     global _job
@@ -97,7 +89,7 @@ def _compact_progress(line: str) -> Optional[str]:
     return status[:160] or None
 
 
-# ── Ollama API helpers ───────────────────────────────────────────────────────
+# Ollama API helpers
 
 async def _api_get(path: str, timeout: float = 5.0) -> Optional[Any]:
     """GET {OLLAMA_URL}{path} → parsed JSON, or None on any failure."""
@@ -148,7 +140,7 @@ def _job_public() -> Optional[Dict[str, Any]]:
     return dict(_job) if _job else None
 
 
-# ── Status ───────────────────────────────────────────────────────────────────
+# Status
 
 async def summary() -> Dict[str, Any]:
     """Cheap status for GET /status and the dashboard cells. Never raises."""
@@ -204,7 +196,7 @@ async def detail() -> Dict[str, Any]:
     return out
 
 
-# ── Model pull / delete (via the Ollama API) ─────────────────────────────────
+# Model pull / delete (via the Ollama API)
 
 def pull_model(model: str) -> Tuple[bool, str]:
     """Start a background model pull. Returns (accepted, message)."""
@@ -257,7 +249,7 @@ async def delete_model(model: str) -> Tuple[bool, str]:
         return False, str(e)
 
 
-# ── Image update: pull latest, recreate container (volume survives) ──────────
+# Image update: pull latest, recreate container (volume survives)
 
 def start_update() -> Tuple[bool, str]:
     """Start a background image update / container recreate."""

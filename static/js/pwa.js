@@ -1,6 +1,4 @@
-/* ============================================================
-   ZigBee Matter Manager — PWA + Browser Notifications
-   ============================================================ */
+/* ZigBee Matter Manager — PWA + Browser Notifications */
 
 (function () {
     'use strict';
@@ -20,9 +18,7 @@
     var notifHistory = {}; // Track sent notifications to avoid spam
     var previousStates = {}; // Track previous device states for diff
 
-    // ----------------------------------------------------------
     // 1. SERVICE WORKER REGISTRATION (PWA)
-    // ----------------------------------------------------------
 
     function registerServiceWorker() {
         if (!('serviceWorker' in navigator)) {
@@ -49,9 +45,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             });
     }
 
-    // ----------------------------------------------------------
     // 2. PLATFORM DETECTION & PREFERENCES
-    // ----------------------------------------------------------
 
     function getPrefs() {
         try {
@@ -80,17 +74,11 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     }
 
     function getNotificationSupport() {
-        // Secure context FIRST. The Notification and serviceWorker APIs exist
-        // on an insecure origin — they are simply refused at the point of use,
-        // so testing for their presence reports "full support" and delivery
-        // then fails with nothing to explain it.
-        //
-        // This is the common case here, not an edge case: reaching the hub at
-        // https://192.168.1.x with its self-signed certificate is a cert error,
-        // and a cert-error origin is NOT a secure context. Service worker
-        // registration is blocked and notification permission does not stick.
-        // Reached through the tunnel, with a publicly-issued certificate,
-        // everything works.
+        // Secure context FIRST: the Notification and serviceWorker APIs exist on
+        // an insecure origin and are refused only at the point of use, so feature
+        // detection reports full support and delivery then fails silently. A
+        // self-signed LAN origin is a cert error, so not a secure context.
+        // See docs/notifications.md.
         if (!window.isSecureContext) {
             return 'insecure';
         }
@@ -110,9 +98,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         return 'basic';
     }
 
-    // ----------------------------------------------------------
     // 2b. NOTIFICATION PERMISSION
-    // ----------------------------------------------------------
 
     async function requestPermission() {
         var support = getNotificationSupport();
@@ -170,21 +156,13 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     }
 
 
-    // ----------------------------------------------------------
     // WEB PUSH SUBSCRIPTION
-    // ----------------------------------------------------------
 
     /**
-     * Register this browser for server-initiated push.
-     *
-     * Distinct from Notification.permission: permission lets the PAGE raise a
-     * notification while it is running, a subscription lets the HUB raise one
-     * when nothing is open. Requests need the second — the whole point is
-     * reaching someone who is not looking at ZMM.
-     *
-     * Requires a trusted secure context. On the LAN self-signed address the
-     * service worker will not even register, so this is a no-op there; use the
-     * public/tunnel URL.
+     * Register this browser for server-initiated push. Distinct from
+     * Notification.permission: that lets the page notify while it runs, this
+     * lets the hub notify when nothing is open. Needs a trusted secure context,
+     * so it is a no-op on the self-signed LAN address.
      */
     async function subscribeToPush() {
         if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
@@ -332,22 +310,12 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         }
     }
 
-    // ----------------------------------------------------------
     // 3. SEND NOTIFICATION
-    // ----------------------------------------------------------
 
     /**
-     * Show a notification.
-     *
-     * Returns false ONLY when this channel is switched off, so a caller can
-     * fall back to its own in-app alert. Callers used to get that fallback
-     * for free because this function did not exist on pages that never
-     * loaded pwa.js; now that it always exists, "disabled" has to be
-     * reported rather than silently swallowed, or every notification rule
-     * goes quiet the moment the master toggle is off.
-     *
-     * A suppressed duplicate returns true: it was handled, and being quiet
-     * is the point.
+     * Show a notification. Returns false ONLY when this channel is switched off,
+     * so callers can fall back to their own in-app alert. A suppressed duplicate
+     * returns true — it was handled. See docs/notifications.md.
      */
     function sendNotification(title, body, tag, options) {
         var prefs = getPrefs();
@@ -439,9 +407,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         }
     }
 
-    // ----------------------------------------------------------
     // 4. DEVICE STATE MONITORING
-    // ----------------------------------------------------------
 
     function checkDeviceState(ieee, newState, deviceName) {
         var prefs = getPrefs();
@@ -450,7 +416,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         var prev = previousStates[ieee] || {};
         var name = deviceName || ieee.slice(-8);
 
-        // --- Device offline detection ---
+        // Device offline detection
         if (prefs.deviceOffline && prev.available === true && newState.available === false) {
             sendNotification(
                 'Device Offline',
@@ -460,7 +426,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             );
         }
 
-        // --- Device online detection ---
+        // Device online detection
         if (prefs.deviceOnline && prev.available === false && newState.available === true) {
             sendNotification(
                 'Device Online',
@@ -469,7 +435,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             );
         }
 
-        // --- Low battery warning ---
+        // Low battery warning
         if (prefs.lowBattery) {
             var battery = newState.battery || newState.battery_percentage;
             var prevBattery = prev.battery || prev.battery_percentage;
@@ -487,7 +453,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
             }
         }
 
-        // --- Thermostat target reached ---
+        // Thermostat target reached
         if (prefs.thermostatReached) {
             var target = newState.occupied_heating_setpoint || newState.heating_setpoint;
             var current = newState.internal_temperature || newState.temperature || newState.local_temperature;
@@ -517,9 +483,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     window.zbmCheckDeviceState = checkDeviceState;
     window.zbmSendNotification = sendNotification;
 
-    // ----------------------------------------------------------
     // 5. HOOK INTO WEBSOCKET UPDATES
-    // ----------------------------------------------------------
 
     var _hookTries = 0;
 
@@ -556,9 +520,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         }, 5000); // Check every 5 seconds
     }
 
-    // ----------------------------------------------------------
     // 6. NOTIFICATION BELL + SETTINGS PANEL
-    // ----------------------------------------------------------
 
     function createNotificationBell() {
         var navbar = document.querySelector('.navbar .d-flex.align-items-center.gap-3');
@@ -825,9 +787,7 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
         updateBellIcon();
     }
 
-    // ----------------------------------------------------------
     // 7. INIT
-    // ----------------------------------------------------------
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function () {
@@ -844,15 +804,9 @@ if (window.location.protocol !== 'https:' && !isLocalhost) {
     }
 
     /**
-     * Re-assert the push subscription on every page load.
-     *
-     * subscribeToPush() otherwise ran only at the moment permission was
-     * granted — so a subscription the browser rotated, a hub that was
-     * rebuilt, or a permission granted before the subscribe code shipped
-     * all left this device silently unreachable, while the local test
-     * button still "worked". subscribeToPush() already handles the
-     * existing-subscription case by re-posting it, so calling it whenever
-     * permission is granted is idempotent and self-healing.
+     * Re-assert the push subscription on every page load. Subscribing only at
+     * the moment permission was granted left devices silently unreachable after
+     * a browser-rotated subscription or a hub rebuild.
      */
     function healPushSubscription() {
         if (!window.isSecureContext) return;

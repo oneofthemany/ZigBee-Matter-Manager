@@ -1,30 +1,18 @@
 /**
- * Device Settings tab — state-driven layout.
+ * Device Settings tab — layout driven by interview state.
  *
- * The page layout depends on the current interview state:
+ *   INTERVIEWING — calm progress strip; the system is waiting for the device,
+ *                  not the user, so there is no call to action.
+ *   STALLED      — "Wake your device" with a live activity dot, one primary
+ *                  button ("Retry now"), diagnostics collapsed below.
+ *   FAILED       — "needs re-pairing", one primary button, diagnostics below.
+ *   INTERVIEWED  — "Ready" banner plus the maintenance row. Most users only
+ *                  ever see this.
+ *   UNKNOWN      — fallback for missing data.
  *
- *   INTERVIEWING — calm "in progress" view. Shows a progress strip and the
- *   advice text. No big call to action because the system is waiting for
- *   the device, not the user.
- *
- *   STALLED — wizard-style call to action. The dominant element is a
- *   "Wake your device" instruction with a live activity dot that lights
- *   up green when traffic from the device is detected. One big primary
- *   button: "Retry now". Diagnostic details collapsed below.
- *
- *   FAILED — a clear "this device needs re-pairing" message with one
- *   big primary button: "Delete & Pair Again". Diagnostic details
- *   collapsed below.
- *
- *   INTERVIEWED — minimal "Ready" banner plus the maintenance button row
- *   (Poll, Reconfigure, Re-Interview). Most users only ever see this.
- *
- *   UNKNOWN — fallback for missing data.
- *
- * Live updates from the backend arrive via the WebSocket
- * interview_status_update event (handled by websocket.js, which calls
- * applyInterviewStatusUpdate here). A separate device_activity event
- * gives us a "device just sent something" pulse for the activity dot.
+ * Live updates arrive via the interview_status_update websocket event
+ * (websocket.js calls applyInterviewStatusUpdate); device_activity pulses the
+ * activity dot.
  */
 
 import { state } from '../state.js';
@@ -33,9 +21,7 @@ import { getTimestamp } from '../utils.js';
 
 const log = zmmLog('modal-device-settings');
 
-// ---------------------------------------------------------------------------
 // Action result panel — updated by Poll / Reconfigure / Re-Interview
-// ---------------------------------------------------------------------------
 
 /**
  * Show or update the action result panel for a device.
@@ -83,14 +69,12 @@ function _actionError(label, error) {
     `;
 }
 
-// ---------------------------------------------------------------------------
 // Sequence counter per ieee — incremented on each Poll click.
 // applyPollResult only renders if the sequence matches, discarding
 // responses from previous polls that arrive late.
 const _pollSeq = new Map();
 
 // Poll result — called from websocket.js on poll_result events
-// ---------------------------------------------------------------------------
 
 /**
  * Called by websocket.js when a poll_result event arrives.
@@ -141,9 +125,7 @@ export function applyPollResult(payload) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Initial render — gives the modal something to show while we fetch real data
-// ---------------------------------------------------------------------------
 
 export function renderSettingsTab(device) {
     if (!device) return '';
@@ -168,9 +150,7 @@ export function renderSettingsTab(device) {
     `;
 }
 
-// ---------------------------------------------------------------------------
 // Tab activation — fetch initial status
-// ---------------------------------------------------------------------------
 
 export async function initSettingsTab(ieee) {
     if (!ieee) return;
@@ -195,9 +175,7 @@ export async function initSettingsTab(ieee) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Live update entry point — called from websocket.js
-// ---------------------------------------------------------------------------
 
 // Most-recent snapshot per ieee, used by the live activity pulse so we
 // know the current state when a device_activity event arrives.
@@ -241,9 +219,7 @@ export function pulseDeviceActivity(ieee) {
     }, 4000);
 }
 
-// ---------------------------------------------------------------------------
 // State-driven layouts
-// ---------------------------------------------------------------------------
 
 function _renderForState(snap) {
     switch (snap.state) {
@@ -256,7 +232,7 @@ function _renderForState(snap) {
     }
 }
 
-// --- Layout: INTERVIEWED ----------------------------------------------------
+// Layout: INTERVIEWED
 
 function _layoutInterviewed(snap) {
     return `
@@ -275,7 +251,7 @@ function _layoutInterviewed(snap) {
     `;
 }
 
-// --- Layout: STALLED — the important one ------------------------------------
+// Layout: STALLED — the important one
 
 function _layoutStalled(snap) {
     const wakeInstruction = _wakeInstructionFor(snap);
@@ -332,7 +308,7 @@ function _layoutStalled(snap) {
     `;
 }
 
-// --- Layout: FAILED ---------------------------------------------------------
+// Layout: FAILED
 
 function _layoutFailed(snap) {
     return `
@@ -376,7 +352,7 @@ function _layoutFailed(snap) {
     `;
 }
 
-// --- Layout: INTERVIEWING ---------------------------------------------------
+// Layout: INTERVIEWING
 
 function _layoutInterviewing(snap) {
     const stepLine = snap.current_step
@@ -410,7 +386,7 @@ function _layoutInterviewing(snap) {
     `;
 }
 
-// --- Layout: UNKNOWN --------------------------------------------------------
+// Layout: UNKNOWN
 
 function _layoutUnknown(snap) {
     return `
@@ -421,9 +397,7 @@ function _layoutUnknown(snap) {
     `;
 }
 
-// ---------------------------------------------------------------------------
 // Common bits
-// ---------------------------------------------------------------------------
 
 function _buttonRow(snap) {
     const ieee = snap.ieee;
@@ -553,9 +527,7 @@ function _renderMissing(missing) {
     return `<div class="alert alert-warning py-2 mb-0">${items}</div>`;
 }
 
-// ---------------------------------------------------------------------------
 // Action binding
-// ---------------------------------------------------------------------------
 
 function _bindActions(root, snap) {
     root.querySelectorAll('[data-action="retry-interview"]').forEach(btn => {
@@ -566,9 +538,7 @@ function _bindActions(root, snap) {
     });
 }
 
-// ---------------------------------------------------------------------------
 // Window-scoped handlers for poll / reconfigure — called from onclick attrs
-// ---------------------------------------------------------------------------
 
 window._settingsPoll = async function(ieee) {
     // Increment sequence so any in-flight response from a previous poll is ignored
@@ -617,9 +587,7 @@ window._settingsReconfigure = async function(ieee, aggressive) {
     }
 };
 
-// ---------------------------------------------------------------------------
 // Re-Interview flow — confirmation + invocation
-// ---------------------------------------------------------------------------
 
 export async function startRetryInterview(ieee) {
     if (!await window.zbmConfirm({
@@ -652,9 +620,7 @@ export async function startRetryInterview(ieee) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Delete-and-repair flow
-// ---------------------------------------------------------------------------
 
 export async function deleteAndRepair(ieee) {
     const ok = await window.zbmConfirm({
@@ -688,9 +654,6 @@ export async function deleteAndRepair(ieee) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function _wakeInstructionFor(snap) {
     // Use the manufacturer name (if known) to give a more specific hint.

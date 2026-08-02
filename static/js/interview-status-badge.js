@@ -1,17 +1,11 @@
 /**
- * Device list interview-status badge.
+ * Device-list interview-status badge. Renders nothing for INTERVIEWED devices;
+ * for interviewing, stalled or failed it adds a badge carrying the same advice
+ * text the Settings tab shows.
  *
- * Renders nothing for devices in INTERVIEWED state. For interviewing,
- * stalled, or failed states, adds a small badge next to the friendly
- * name with the same advice text the Settings tab shows.
- *
- * Data flow:
- *   1. On startup, loadInterviewStatusPending() fetches all non-
- *      interviewed devices and populates the cache.
- *   2. WebSocket interview_status_update events call updateInterviewBadge
- *      which updates the cache and re-renders that one row.
- *   3. Full table re-renders call applyAllBadges() to restore badges on
- *      the freshly-rendered DOM.
+ * Kept current by loadInterviewStatusPending() at startup,
+ * interview_status_update events, and applyAllBadges() after a full re-render.
+ * See docs/onboarding.md.
  */
 
 import { state } from './state.js';

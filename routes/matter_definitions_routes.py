@@ -1,15 +1,6 @@
 """
-Matter Definition API — routes for endpoint scanning and definition CRUD.
-=========================================================================
-
-Endpoints:
-  GET  /api/matter/nodes/{node_id}/scan-endpoints  — Scan & map all endpoints
-  POST /api/matter/nodes/{node_id}/generate-definition — Auto-generate a definition draft
-  GET  /api/matter/definitions         — List all saved definitions
-  GET  /api/matter/definitions/{file}  — Get a specific definition
-  POST /api/matter/definitions         — Save a new/updated definition
-  DELETE /api/matter/definitions/{file} — Delete a definition
-  POST /api/matter/definitions/reload  — Reload definitions from disk
+Matter definition API — endpoint scanning, auto-generated definition drafts, and
+definition CRUD with reload-from-disk. See docs/matter.md.
 """
 
 import logging
@@ -41,7 +32,7 @@ def register_matter_definition_routes(app: FastAPI, get_matter_bridge):
             raise HTTPException(404, f"Matter node {node_id} not found")
         return bridge.devices[ieee]
 
-    # ── Endpoint Scanning ──────────────────────────────────────────────
+    # Endpoint Scanning
 
     @app.get("/api/matter/nodes/{node_id}/scan-endpoints", tags=["matter-definitions"])
     async def scan_node_endpoints(node_id: int):
@@ -84,7 +75,7 @@ def register_matter_definition_routes(app: FastAPI, get_matter_bridge):
             "definition": draft,
         }
 
-    # ── Definition CRUD ─────────────────────────────────────────────────
+    # Definition CRUD
 
     @app.get("/api/matter/definitions", tags=["matter-definitions"])
     async def list_definitions():

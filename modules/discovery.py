@@ -1,18 +1,12 @@
 """
-mDNS advertisement — so the companion app can find the hub on the home network.
+mDNS advertisement — so the companion app can find the hub.
 
-The point is not to save typing an IP address. It is to hand the phone the
-*public* URL while it is somewhere it can be trusted.
-
-A geofence reports when you leave home, which is exactly when a LAN address
-stops resolving. The app therefore has to be paired against the tunnel URL, and
-that URL is the one thing a user cannot guess and will mistype. Advertising it
-over mDNS means: while the phone is on the home network — where an attacker
-would already have to be inside — it learns the address to use everywhere else.
-
-The advertisement carries no secrets. It is a hostname and a URL, and pairing
-still requires a token and, for a self-signed certificate, a fingerprint the
-user confirms by hand. Discovery removes typing, not authentication.
+The point is not saving an IP address: a geofence reports when you leave home,
+exactly when a LAN address stops resolving, so the app must pair against the
+tunnel URL — the one thing a user cannot guess and will mistype. Advertising it
+on the home network hands the phone that address while it is somewhere
+trustworthy. It carries no secrets; pairing still needs a token and, for a
+self-signed cert, a hand-confirmed fingerprint.
 """
 
 from __future__ import annotations

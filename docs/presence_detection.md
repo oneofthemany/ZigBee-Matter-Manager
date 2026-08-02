@@ -295,3 +295,110 @@ is `{Zone Name} Occupancy`. Use it in automations exactly like you
 would a motion sensor — except this one doesn't go `VACANT` the moment
 you stop moving, which for most "lights on while I'm in the room" use
 cases is exactly what you want.
+## Implementation notes
+
+Extracted from `modules/presence_users.py` so the module itself stays terse.
+
+### Reporting aggressiveness
+
+Presence decays. A phone that only reports at boundary crossings goes silent
+the moment it settles somewhere, and `stale_after_s` then flips the user to
+"unknown" while they are sitting at home. So every mode carries a heartbeat,
+and `stale_after_s` is **derived** from it rather than set independently — a
+stale window shorter than the heartbeat would guarantee false "unknown".
+
+- `heartbeat_s` is the phone's periodic report interval. 900 s is Android's
+  floor for periodic background work (WorkManager), so no mode can beat it
+  without exact alarms, which are a battery and permissions problem of their
+  own.
+- `responsiveness_ms` is what the phone asks the OS for as crossing-detection
+  latency. It is a hint: the OS batches geofence events to save power and will
+  ignore a request it considers wasteful, so read these as "no faster than".
+- `STALE_HEARTBEAT_FACTOR = 2.5` — two missed heartbeats plus slack. One missed
+  report is routine (doze, no signal, a dead spot) and must not flip someone to
+  "unknown".
+
+The phone fetches the resolved parameters and applies them, so changing
+`presence_mode` on the hub retunes the device without reinstalling or
+re-pairing it.
+
+### The `account` link
+
+`account` is the login account a presence user belongs to, or `None` for a
+standalone record — a tracker with no human account behind it.
+
+This used to be implied by `user_id == username`. That convention broke in two
+directions: deleting an account left a presence user still reporting a
+location, and any policy keyed on the account — MFA in particular — resolved
+against a user record that no longer existed and failed closed for reasons
+nothing on screen explained. An explicit link can be verified, migrated and
+cascaded; a convention can only be assumed.
+
+`_MISSING` distinguishes "key absent" from "key present and null" when loading
+configs. A legacy record with no `account` key is migrated to its `user_id`; a
+record with `account: null` is a deliberate standalone tracker and must stay
+that way. A plain `d.get("account")` returns `None` for both and would silently
+re-link every standalone record on the next load.
+
+Migration adopts `user_id` as the link because that is what those records
+already meant — it does not invent a relationship. Whether the account still
+*exists* is a separate question, answered by `orphaned` in the API rather than
+guessed at here; this module has no business importing the auth manager.
+
+### `self.devices` holds presence users only
+
+The household aggregate is deliberately not in that dict: every loop over it
+assumes each entry has a `.cfg`, and an entry without one broke config saving,
+the user list and the stale watcher at once. It is exposed via
+`automation_devices()` instead, which is the only place it is wanted.
+
+### Journeys opt-in
+
+`journeys_enabled` is off by default because it persists movement history,
+which the rest of this module deliberately does not. See [journeys](journeys.md).
+
+## Named places
+
+"Home" is a property of each presence user — people can live in different
+places, and a lodger's home is not yours. A **place** is the opposite: "the
+shops", "the school", "work" mean the same coordinates for everyone in the
+household, so `modules/places.py` keeps them in one shared registry rather than
+duplicating them per person.
+
+**Resolution is server-side.** The phone registers a geofence per place, but only
+so the OS wakes it on a crossing; the fix it then posts is resolved against this
+registry on the hub. That split matters:
+
+- the phone stays dumb, so changing a radius or adding a place needs no app
+  update and no re-pair;
+- one implementation decides where someone is, rather than the phone and the hub
+  disagreeing about a boundary;
+- places added while a phone is offline still resolve correctly for the fixes it
+  sends afterwards.
+
+"home" wins over any place covering the same spot — being at home is the more
+meaningful answer.
+
+**Storage** is `data/places.yaml`. Coordinates of *places* are configuration and
+are persisted; coordinates of *people* are not, and that asymmetry is deliberate.
+
+The apiary UI (Settings → Presence → Apiary) confirms a location on a map rather
+than accepting typed coordinates: they are the one field a user cannot
+sanity-check by reading back, and a transposed digit puts the shops in another
+county with no symptom but an automation that never fires. See
+[place search](place-search.md) for why searching moves the map but never sets
+the point.
+
+## API scopes
+
+| Scope | Grants |
+| --- | --- |
+| `admin` | full control over presence users |
+| `presence:read` | list and view presence state for all users |
+| `presence:write` | update any user's location |
+| `presence:write:<user_id>` | update only that user's location |
+
+The fix endpoint is the hot path, called by the companion app every few minutes
+or on geofence transitions. To minimise attack surface, mobile tokens are issued
+with **only** `presence:write:<user_id>` and nothing else, so a leaked phone
+token can update one person's location and nothing more.

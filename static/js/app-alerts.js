@@ -1,18 +1,12 @@
-/**
- * app-alerts.js
- * --------------------------------------------------------------------------
- * Application alert center (backend-originated problems).
- *
- * Backed by /api/alerts (modules/app_alerts.py). Live alerts arrive over
- * the WebSocket as `app_alert` events — websocket.js re-dispatches them as
- * a `zmm-app-alert` CustomEvent which this module consumes.
- *
- * Distinct from notifications.js (user-defined device-event rules): these
- * are errors/warnings the application itself raises — disabled automations,
- * repeated device write failures, subsystem errors — so problems surface
- * in the UI instead of dying quietly in the log.
- * --------------------------------------------------------------------------
- */
+/* app-alerts.js
+   Application alert center (backend-originated problems).
+   Backed by /api/alerts (modules/app_alerts.py). Live alerts arrive over
+   the WebSocket as `app_alert` events — websocket.js re-dispatches them as
+   a `zmm-app-alert` CustomEvent which this module consumes.
+   Distinct from notifications.js (user-defined device-event rules): these
+   are errors/warnings the application itself raises — disabled automations,
+   repeated device write failures, subsystem errors — so problems surface
+   in the UI instead of dying quietly in the log. */
 
 const SEV_ICON = {
     error:   'fa-exclamation-circle text-danger',
@@ -37,9 +31,7 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-// ---------------------------------------------------------------------------
 // Navbar bell + badge
-// ---------------------------------------------------------------------------
 
 function createBell() {
     if (document.getElementById('zbm-alerts-bell')) return;
@@ -78,9 +70,7 @@ function updateBadge() {
     badge.style.display = n > 0 ? 'inline-block' : 'none';
 }
 
-// ---------------------------------------------------------------------------
 // Panel
-// ---------------------------------------------------------------------------
 
 function togglePanel() {
     panelOpen ? closePanel() : openPanel();
@@ -173,9 +163,7 @@ function renderPanel() {
     });
 }
 
-// ---------------------------------------------------------------------------
 // Data flow
-// ---------------------------------------------------------------------------
 
 async function fetchAlerts() {
     // Only meaningful for an authenticated session. Skip while anonymous
@@ -202,9 +190,6 @@ function onLiveAlert(e) {
     if (panelOpen) renderPanel();
 }
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
 
 export function initAppAlerts() {
     const boot = () => {

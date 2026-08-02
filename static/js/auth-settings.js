@@ -1,9 +1,6 @@
-/* ============================================================
-   ZMM Auth — Users, Groups, Tokens settings panel
-   ============================================================
+/* ZMM Auth — Users, Groups, Tokens settings panel
    Renders into an element with id="auth-settings-host".
-   Call window.initAuthSettings() when the Settings tab is shown.
-   ============================================================ */
+   Call window.initAuthSettings() when the Settings tab is shown. */
 
 (function () {
     'use strict';
@@ -130,9 +127,7 @@
         bindActions();
     }
 
-    // ----------------------------------------------------------
     // Users tab
-    // ----------------------------------------------------------
     function renderUsers() {
         var rows = state.users.map(function (u) {
             return '<tr>' +
@@ -173,9 +168,7 @@
             '<tbody>' + rows + '</tbody></table>';
     }
 
-    // ----------------------------------------------------------
     // Groups tab
-    // ----------------------------------------------------------
     function renderGroups() {
         var rows = state.groups.map(function (g) {
             return '<tr>' +
@@ -202,9 +195,7 @@
             '<tbody>' + rows + '</tbody></table>';
     }
 
-    // ----------------------------------------------------------
     // Tokens tab
-    // ----------------------------------------------------------
     function renderTokens() {
         var rows = state.tokens.map(function (t) {
             var status = t.revoked
@@ -248,9 +239,7 @@
               : '');
     }
 
-    // ----------------------------------------------------------
     // Actions
-    // ----------------------------------------------------------
     function bindActions() {
         var host = document.getElementById(HOST_ID);
         if (!host) return;
@@ -316,9 +305,7 @@
         await refresh();
     }
 
-    // ----------------------------------------------------------
     // User modal
-    // ----------------------------------------------------------
     // Presence users are a SEPARATE registry (/api/presence/users) keyed by
     // user_id. An auth user and a presence user are different records that
     // happen to share a name; this is the only place we link them.
@@ -577,9 +564,7 @@
         };
     }
 
-    // ----------------------------------------------------------
     // Group modal
-    // ----------------------------------------------------------
     function openGroupModal(name) {
         var existing = name
             ? state.groups.find(function (g) { return g.name === name; })
@@ -655,9 +640,7 @@
         };
     }
 
-    // ----------------------------------------------------------
     // Token issue modal
-    // ----------------------------------------------------------
     function openTokenModal() {
         var auth = window.zmmAuth;
         var isAdmin = auth && auth.hasScope('admin');
@@ -800,9 +783,7 @@
         if (el) { el.textContent = msg; el.style.display = ''; }
     }
 
-    // ----------------------------------------------------------
     // Public init
-    // ----------------------------------------------------------
     // Guards against double-binding: initAuthSettings runs on every Settings
     // tab click, and listeners registered there would otherwise accumulate,
     // firing one refresh per visit the page has ever had.

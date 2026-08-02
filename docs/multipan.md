@@ -229,3 +229,51 @@ Phase 1 uses Silicon Labs' cpcd/zigbeed daemons as managed subprocesses. Phase 2
 - **Frame classifier**: Routes received 802.15.4 frames to Zigbee or Thread stacks based on PAN ID and NWK header inspection.
 
 This removes the dependency on proprietary cpcd/zigbeed binaries and enables scheduling decisions informed by application-layer knowledge.
+## Implementation
+
+`modules/multipan.py` orchestrates the Silicon Labs CPC stack daemons as managed
+subprocesses, following the same pattern as `EmbeddedMatterServer`.
+
+**Startup order is critical:**
+
+1. `cpcd` — owns the serial port, speaks CPC to the RCP firmware
+2. `zigbeed` — connects to cpcd, runs the EmberZNet stack host-side
+3. `socat` — bridges zigbeed's PTY to a TCP socket for bellows
+4. `otbr-agent` — connects to cpcd, runs OpenThread plus border routing
+
+bellows/zigpy then connects to the socat TCP socket
+(`socket://localhost:{port}`).
+
+### It does not touch the existing Zigbee startup path
+
+When MultiPAN is active, the only visible change in `core.py` is that
+`self.port` becomes `socket://localhost:9999` instead of `/dev/ttyACM0`.
+Everything downstream — `probe_radio_type()`, `_build_ezsp_config()`,
+`ControllerApplication.new()` — works unchanged, because they already handle
+socket paths.
+
+The integration point is `ZigbeeService.start()` in `core/service.py`: Dongle
+Jedi detects CPC_MULTIPAN firmware, `_probe_with_jedi()` returns a probe result
+carrying `adapter_family`, `start()` launches `MultiPanManager` *before*
+building the bellows config, `self.port` is overridden to the zigbeed EZSP
+socket, and the rest of startup proceeds unchanged.
+
+### PTY ↔ TCP bridge
+
+`modules/pty_bridge.py` is an in-process asyncio replacement for socat in the
+MultiPAN stack, replacing:
+
+```
+socat PTY,link=/tmp/ttyZigbeeNCP,raw,echo=0,mode=660  TCP-LISTEN:9999,reuseaddr,fork
+```
+
+It creates a PTY pair, symlinks the slave to the configured path so `zigbeed` can
+open it, listens on a TCP port so bellows can connect, and relays data
+bidirectionally.
+
+Advantages over socat: no external binary dependency, per-frame logging and byte
+counters for diagnostics, a lifecycle tied cleanly to `MultiPanManager`, and room
+for future frame inspection to give TDM scheduling hints.
+
+The TCP relay adds roughly 50–100 µs per hop via asyncio — well within bellows'
+500 ms+ ASH retransmit timers.

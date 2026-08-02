@@ -35,8 +35,6 @@ XFADE_READER_MARGIN_S = 0.5
 GAP_LOG_EVERY_S = 5.0
 
 
-# ----------------------------------------------------------------------
-# ----------------------------------------------------------------------
 def _gen_float_mono(n0: int, frames: int) -> np.ndarray:
     """Chord pad with a slow swell plus a 1 kHz click every 2 s. The click is
     the sync "ruler": it makes even ~10 ms misalignment audible as flam."""
@@ -92,8 +90,6 @@ class GeneratedSource:
         return {"kind": self.kind, "title": "Sync test signal", "delay_s": 0.0}
 
 
-# ----------------------------------------------------------------------
-# ----------------------------------------------------------------------
 def fade_pair(n: int, p: float) -> tuple:
     """Complementary fade-out/fade-in envelopes over ``n`` samples."""
     t = np.linspace(0.0, 1.0, int(n), endpoint=True, dtype=np.float32)
@@ -157,8 +153,6 @@ def mix_overlap(tail: np.ndarray, head: np.ndarray, p: float,
                                   float(np.abs(head).max())), rate)
 
 
-# ----------------------------------------------------------------------
-# ----------------------------------------------------------------------
 class _Ring:
     """Absolute-sample-indexed ring over the master PCM feed.
 
@@ -240,8 +234,6 @@ class _Ring:
         return out
 
 
-# ----------------------------------------------------------------------
-# ----------------------------------------------------------------------
 class MediaSource:
     """ffmpeg-decoded audio on the shared timeline, optionally equalised."""
 

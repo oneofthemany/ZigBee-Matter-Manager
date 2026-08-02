@@ -5,9 +5,7 @@
 const log = zmmLog('modal-schedule');
 
 
-// ============================================================================
 // STORAGE HELPERS
-// ============================================================================
 
 const STORAGE_KEY_PREFIX = 'hvac_schedule_';
 
@@ -51,9 +49,7 @@ function getDefaultSchedule() {
     };
 }
 
-// ============================================================================
 // DAY / TIME HELPERS
-// ============================================================================
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_FULL  = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -102,9 +98,7 @@ function tempToColor(temp) {
     }
 }
 
-// ============================================================================
 // RENDER: Schedule HTML for thermostat card
-// ============================================================================
 
 export function renderScheduleSection(ieee) {
     const schedule = loadSchedule(ieee);
@@ -371,9 +365,7 @@ export function renderScheduleSection(ieee) {
     `;
 }
 
-// ============================================================================
 // WINDOW-LEVEL HANDLERS
-// ============================================================================
 
 /**
  * Toggle schedule enabled/disabled
@@ -596,9 +588,7 @@ window.removeTransition = function(ieee, dayIndex, transitionIndex) {
     }
 };
 
-// ============================================================================
 // RE-RENDER (updates just the schedule card body)
-// ============================================================================
 
 function rerenderSchedule(ieee) {
     const card = document.getElementById(`schedule-card-${ieee}`);
@@ -616,9 +606,7 @@ function rerenderSchedule(ieee) {
     }
 }
 
-// ============================================================================
 // EVENT BINDING  (called after DOM insertion)
-// ============================================================================
 
 export function bindScheduleEvents(ieee) {
     const card = document.getElementById(`schedule-card-${ieee}`);

@@ -93,7 +93,7 @@ async def healthz():
     return JSONResponse({"manager": "ok"})
 
 
-# ── Live logs (CP2b, read-only, on request) ──────────────────────────────────
+# Live logs (CP2b, read-only, on request)
 # SSE so the dashboard can use a plain EventSource; the stream ends when the
 # client closes the connection, so nothing runs unless a user is watching.
 
@@ -125,7 +125,7 @@ async def log_container(name: str, tail: int = 200):
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
-# ── Upgrade: rollback + image retention (CP2b) ───────────────────────────────
+# Upgrade: rollback + image retention (CP2b)
 # Reads are open like the rest of the manager; ACTIONS require the bearer
 # token from data/state/manager_token (shown in the app's Upgrade tab).
 
@@ -183,7 +183,7 @@ async def upgrade_gc(authorization: str = Header(default="")):
                         status_code=200 if ok else 409)
 
 
-# ── Ollama: container status, model management, image update ─────────────────
+# Ollama: container status, model management, image update
 # Reads are open like the rest of the manager; pull/delete/update need the token.
 
 @app.get("/ollama")
@@ -222,7 +222,7 @@ async def ollama_update(authorization: str = Header(default="")):
                         status_code=200 if ok else 409)
 
 
-# ── Beekeeper: DNS ad/tracker blocker sidecar lifecycle ──────────────────────
+# Beekeeper: DNS ad/tracker blocker sidecar lifecycle
 # Reads are open (part of /status too); enable/disable/restart need the token.
 # The manager only owns the container's existence/run state — the main app's
 # Beekeeper tab drives blocklists, stats and the :53 on/off once it's running.
@@ -269,7 +269,7 @@ async def beekeeper_firewall_open(authorization: str = Header(default="")):
     return JSONResponse(beekeeper.request_firewall("open"))
 
 
-# ── Host OS: updates as collected by scripts/os_updates.sh ───────────────────
+# Host OS: updates as collected by scripts/os_updates.sh
 # Reads are open; every action (re-check, apply, release upgrade) needs the
 # bearer token and just writes the trigger file the host-side path units
 # watch — scripts/os_apply.sh does the actual dnf/apt work as root.
@@ -307,7 +307,7 @@ async def host_os_release_upgrade(data: dict = Body(...),
                         status_code=200 if ok else 409)
 
 
-# ── Disaster recovery (CP2b) — replaces the in-app recovery_server ───────────
+# Disaster recovery (CP2b) — replaces the in-app recovery_server
 # Reads of the crash summary/backup list are open (same as /status); anything
 # that reads code content or writes into the app container needs the token.
 

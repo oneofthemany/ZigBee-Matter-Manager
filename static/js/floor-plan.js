@@ -1,27 +1,13 @@
-// ============================================================================
-// floor-plan.js — Heating Controller floor-plan editor
-// ============================================================================
-// Self-contained Bootstrap modal that lets the user draw a multi-level floor
-// plan (walls, openings, rooms, radiators, sensors, contacts) and bind real
-// devices to those geometric features. On save, persists via two channels:
+// Heating Controller floor-plan editor — a self-contained Bootstrap modal for
+// drawing a multi-level plan (walls, openings, rooms, radiators, sensors,
+// contacts) and binding real devices to it.
 //
-//   1. /api/heating/floor-plan       (the rich plan, kept verbatim)
-//   2. /api/heating/controller/config (existing endpoint — circuits get the
-//                                     projected dimensions/radiators/sensors
-//                                     written by routes/floor_plan_routes.py
-//                                     before save)
-//
-// Public API
-// ----------
 //   import { openFloorPlanEditor } from './floor-plan.js';
 //   openFloorPlanEditor({ circuits, devices, sensors, contacts, onSave });
 //
-// Coordinate system
-//   metres in, metres out. SVG viewBox is in metres. Zoom = scale of the <g>.
-//   +x right, +y down for SVG (the canonical SVG convention). When projecting
-//   to/from the model (which uses +y up), we flip y on read AND write so the
-//   user's drawing matches reality.
-// ============================================================================
+// Saves to /api/heating/floor-plan (the rich plan) and
+// /api/heating/controller/config (the projected rooms). Coordinate system and
+// the overlay models: docs/heating.md.
 
 const log = zmmLog('floor-plan');
 
@@ -30,7 +16,7 @@ const DEFAULT_LEVEL_HEIGHT = 2.4;
 const DEFAULT_SNAP_M = 0.1;          // default snap-to-grid step, metres (user-adjustable)
 const PIXELS_PER_METRE_DEFAULT = 80;
 
-// ─────────────────── module state (per-modal-open) ───────────────────
+// module state (per-modal-open)
 
 let _state = null;         // see resetState()
 let _onSaveCallback = null;
@@ -101,7 +87,7 @@ function currentLevel() {
     return _state.plan.levels.find(l => l.id === _state.currentLevelId) || _state.plan.levels[0];
 }
 
-// ──────────────────────────── public entry ────────────────────────────
+// public entry
 
 export async function openFloorPlanEditor(opts = {}) {
     _availableDevices = {
@@ -185,7 +171,7 @@ async function tryAdoptOrphanImage(lvl) {
     }
 }
 
-// ─────────────────────────── modal scaffold ───────────────────────────
+// modal scaffold
 
 function ensureModal() {
     if (document.getElementById('floorPlanModal')) return;
@@ -580,7 +566,7 @@ function bindModalEvents() {
     });
 }
 
-// ──────────────────────────── render top-level ────────────────────────────
+// render top-level
 
 function renderAll() {
     renderLevelList();
@@ -712,7 +698,7 @@ function renderCompass() {
     window.addEventListener('mouseup', () => { dragging = false; });
 }
 
-// ──────────────────────────── coordinates ────────────────────────────
+// coordinates
 
 // SVG y-axis goes DOWN. Model y-axis goes UP. Convert at the boundary.
 function modelToSvg(p)  { return { x: p.x,  y: -p.y }; }
@@ -849,7 +835,7 @@ function closeRadiusM() {
     return Math.max(0.12, 18 / (_state?.zoom || PIXELS_PER_METRE_DEFAULT));
 }
 
-// ──────────────────────────── scene render ────────────────────────────
+// scene render
 
 function renderScene() {
     const lvl = currentLevel();
@@ -867,13 +853,8 @@ function renderScene() {
         const bg = lvl.background;
         const wM = bg.image_width_px / bg.pixels_per_metre;
         const hM = bg.image_height_px / bg.pixels_per_metre;
-        // Image origin sits at (origin_x_m, origin_y_m) in model space.
-        // In SVG coords (+y down), the top-left of the image goes there.
-        // Model uses +y up, so we place top-left at (origin_x, -(origin_y + hM)) → svg y = origin_y_m
-        // Actually: SVG <image> draws downward from its (x,y). We want the
-        // image's top-left in MODEL space at (origin_x_m, origin_y_m + hM)
-        // (i.e. top edge in model = origin_y + hM; bottom = origin_y).
-        // Top-left in SVG = modelToSvg({x: origin_x, y: origin_y + hM}) = (origin_x, -(origin_y + hM))
+        // SVG <image> draws downward from its (x,y), and the model is +y up, so
+        // the image's top edge in model space is origin_y + hM.
         const tlSvg = modelToSvg({ x: bg.origin_x_m, y: bg.origin_y_m + hM });
         const bgTransform = `rotate(${-(bg.rotation_deg || 0)} ${tlSvg.x + wM/2} ${tlSvg.y + hM/2})`;
         parts.push(`
@@ -1013,15 +994,9 @@ function renderScene() {
         }
     }
 
-    // Radiators — plan view. Two render modes:
-    //   wall-mounted: drawn as a thin strip ALONG the host wall (fixed
-    //     0.1 m depth in plan view — `height_m` is the radiator's PHYSICAL
-    //     height, used for sizing/heat calcs, not its plan-view footprint).
-    //     The strip is offset perpendicular toward the bound room centroid
-    //     so it sits on the room-side face of the wall.
-    //   freestanding: drawn as a length × 0.1 m axis-aligned strip at (x, y).
-    //     Used for towel rails, columns, underfloor zones, or anywhere the
-    //     user explicitly placed away from a wall.
+    // Two modes: wall-mounted draws a thin strip along the host wall, offset
+    // toward the room centroid; freestanding draws a length x 0.1 m strip at
+    // (x, y). Plan depth is fixed — height_m is physical, not footprint.
     const RAD_PLAN_DEPTH_M = 0.10;   // fixed plan-view strip depth
     for (const r of lvl.radiators) {
         const sel = isSelected('radiator', r.id);
@@ -1426,7 +1401,7 @@ function renderOverlay() {
     ov.innerHTML = html;
 }
 
-// ──────────────────────────── interactions ────────────────────────────
+// interactions
 
 function setTool(tool) {
     _state.tool = tool;
@@ -1657,16 +1632,9 @@ function onCanvasWheel(e) {
     zoomBy(factor, e.clientX, e.clientY);
 }
 
-// ──────────────────────────── touch support ────────────────────────────
-//
-// Strategy:
-//   • Single finger, small movement (<8px) + released quickly (<400ms) → tap
-//     (simulates mousedown + mouseup so wall/room/window drawing still works)
-//   • Single finger, larger movement → pan
-//   • Two fingers → pinch-to-zoom (calls the same zoomBy used by the wheel)
-//
-// All three are independent of the drawing mode so the user can always pan
-// or zoom without changing tools.
+// Touch: one finger moved <8 px and released <400 ms is a tap (simulated
+// mousedown/mouseup so drawing still works), one finger moved further is a pan,
+// two fingers pinch-zoom. All three work in any drawing mode.
 
 let _touch = null;   // active touch gesture state
 
@@ -1761,7 +1729,7 @@ function isSelected(kind, id) {
     return _state.selection && _state.selection.kind === kind && _state.selection.id === id;
 }
 
-// ─────────────────────── geometry helpers (frontend) ───────────────────────
+// geometry helpers (frontend)
 
 function projectPointOntoSegment(p, w) {
     const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
@@ -1873,7 +1841,7 @@ function polygonToPath(poly) {
     }).join(' ') + ' Z';
 }
 
-// ──────────────────────── adaptive grid & HUD ────────────────────────
+// adaptive grid & HUD
 
 // Nice step ladders (metres) for the grid tiers and the scale bar.
 const GRID_STEPS = [0.5, 1, 2, 5, 10, 20, 50];
@@ -1997,14 +1965,9 @@ function wallDrawPoint(e, lvl) {
     return snapToExistingEndpoint(lvl, m) || m;
 }
 
-// ───────────────────── measured solar impact ─────────────────────
-//
-// The backend's /api/heating/solar-impact endpoint measures each room's
-// REAL solar gain from heating-off telemetry (see modules/solar_impact.py).
-// When a room has a trustworthy measurement, the floor plan prefers it:
-// its calibration_ratio (measured / clear-sky-modelled) scales the solar
-// sources in the field and the per-window ☀ badges, and the insights panel
-// reports measured watts instead of the estimate.
+// Where the backend has a trustworthy measurement, the plan prefers it over the
+// clear-sky estimate — its calibration_ratio scales the solar field and badges.
+// See modules/solar_impact.py and docs/heating.md.
 
 /** Fetch measured solar impact once per modal session (heavy endpoint). */
 async function loadSolarImpact() {
@@ -2075,19 +2038,9 @@ function roomSunlitNow(room, lvl) {
     return false;
 }
 
-// ─────────────────────── thermal field engine ───────────────────────
-//
-// A per-room scalar "heat coverage" field sampled on a coarse grid:
-//
-//   C(p) = Σ_radiators exp(−(d/r₀)²) − Σ_drafts amp·exp(−(d/r_D)²·k)
-//
-// where r₀ = √(watts / (heatFlux·π)) is the radius each radiator can keep
-// above the comfort threshold at the configured building heat loss. C ≈ 1
-// right next to a radiator and crosses COLD_THRESH = e⁻¹ at d ≈ r₀, so the
-// cold-zone boundary lands where the old heated-radius circle used to —
-// but now it bends around drafts and merges between multiple radiators.
-// One field drives the heat-map, the isotherm contours AND the cold-zone
-// tint, so all three overlays agree with each other by construction.
+// A per-room scalar heat-coverage field on a coarse grid. One field drives the
+// heat map, the isotherm contours and the cold-zone tint, so all three agree by
+// construction. Formula and the meaning of COLD_THRESH: docs/heating.md.
 
 const COLD_THRESH = Math.exp(-1);   // coverage value at d = r₀
 let _fieldCache = new Map();        // room.id → field entry (reset per open)
@@ -2116,12 +2069,8 @@ function openingsOnRoomBoundary(room, lvl) {
     return res;
 }
 
-// ── solar gain model (clear-sky heuristic, for insight not engineering) ──
-//
-// Average solar power admitted through a window over the daylight hours:
-//   W ≈ 500 W/m² (effective clear-sky irradiance on vertical glazing when
-//   the facade faces the sun) × SHGC(glazing) × area × (sun-minutes / daylight)
-// Sun-minutes come from today's sun curve (same data as the sun-path arc).
+// Clear-sky heuristic, for insight rather than engineering: average watts
+// admitted per window over daylight hours. See docs/heating.md.
 
 const SOLAR_SHGC = { single: 0.85, double: 0.72, triple: 0.55 };
 const SOLAR_IRRADIANCE_WM2 = 500;
@@ -2605,7 +2554,7 @@ function renderColdParts(lvl) {
     return out;
 }
 
-// ─────────────────────── circuit management ───────────────────────────
+// circuit management
 
 const CIRCUIT_BADGE_COLOURS = [
     '#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316'
@@ -2758,7 +2707,7 @@ async function deleteCircuit(circuitId) {
     renderScene();
 }
 
-// ─────────────────────────── feature creators ───────────────────────────
+// feature creators
 
 
 function finishRoom() {
@@ -2908,7 +2857,7 @@ function pointInPolygon(p, poly) {
     return inside;
 }
 
-// ─────────────────────────── properties pane ───────────────────────────
+// properties pane
 
 function renderProps() {
     const el = document.getElementById('fpProps');
@@ -3564,7 +3513,7 @@ function deleteSelected(arrKey) {
     renderScene(); renderProps();
 }
 
-// ──────────────────────────── levels ────────────────────────────
+// levels
 
 function addLevel() {
     const idx = (_state.plan.levels.reduce((m, l) => Math.max(m, l.index), -1)) + 1;
@@ -3582,7 +3531,7 @@ function addLevel() {
     renderAll();
 }
 
-// ──────────────────────────── zoom/pan ────────────────────────────
+// zoom/pan
 
 function zoomBy(factor, cx, cy) {
     const oldZ = _state.zoom;
@@ -3636,7 +3585,7 @@ function zoomFit() {
     renderScene(); renderOverlay();
 }
 
-// ──────────────────────────── sun overlay ────────────────────────────
+// sun overlay
 
 async function loadSunData() {
     try {
@@ -3645,7 +3594,7 @@ async function loadSunData() {
     } catch (e) { /* swallow */ }
 }
 
-// ──────────────────────────── save ────────────────────────────
+// save
 
 async function save() {
     const btn = document.getElementById('fpSave');
@@ -3745,7 +3694,7 @@ async function switchToManual() {
     }
 }
 
-// ──────────────────────────── background image ────────────────────────────
+// background image
 
 const PDF_JS_URL = '/static/js/vendor/pdf.min.js';
 const PDF_WORKER_URL = '/static/js/vendor/pdf.worker.min.js';
@@ -3930,7 +3879,6 @@ async function promptCalibrationDistance(p1, p2, drawnDist) {
     renderOverlay();
 }
 
-// ──────────────────────────── utils ────────────────────────────
 
 function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c =>

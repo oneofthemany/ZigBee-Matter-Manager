@@ -1,15 +1,10 @@
-"""Blocklist ingest + the domain matcher.
+"""
+Blocklist ingest and the domain matcher.
 
-Ingest: fetch public hosts-format / domain-list sources over HTTPS with the
-stdlib (no third-party HTTP client — keeps the sidecar dependency-free and the
-source fully owned), parse them into bare domains, and cache each list as a
-plain ``.domains`` file under ``data/beekeeper/lists/``. Those files are yours
-to edit; a compile step unions the enabled ones into the live match set.
-
-Match: a query name is blocked when it — or any parent domain — is in the block
-set, UNLESS an allowlist entry (exact or parent) covers it. The user denylist
-is an always-on block set layered on top of the fetched lists. Matching is a
-short walk up the label suffixes, which is plenty fast at household query rates.
+Sources are fetched with the stdlib and cached as editable .domains files; a
+compile step unions the enabled ones. A name is blocked when it or any parent is
+in the block set unless an allowlist entry covers it, with the user denylist
+layered always-on. See docs/beekeeper.md.
 """
 from __future__ import annotations
 
@@ -87,7 +82,7 @@ def _looks_like_ip(token: str) -> bool:
     return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", token)) or ":" in token
 
 
-# ── Fetch + persist ───────────────────────────────────────────────────────────
+# Fetch + persist
 
 def fetch_list(url: str, timeout: float = 20.0) -> str:
     """Download a list body over HTTPS. Raises on transport/HTTP errors."""
@@ -184,7 +179,7 @@ def read_meta(lists_dir: Path) -> List[Dict]:
         return []
 
 
-# ── Matcher ───────────────────────────────────────────────────────────────────
+# Matcher
 
 def _read_domain_file(path: Path) -> Set[str]:
     out: Set[str] = set()

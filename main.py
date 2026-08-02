@@ -1,17 +1,7 @@
 """
-ZigBee Matter Manager - Main Application
-FastAPI-based web server for ZigBee & Matter device management.
+ZigBee Matter Manager — FastAPI application entry point.
 
-Routes are split into:
-  routes/config_routes.py   - Config, spectrum, credentials
-  routes/device_routes.py   - Device CRUD, commands, banning, tabs, overrides
-  routes/network_routes.py  - Mesh, topology, packet stats, join history
-  routes/system_routes.py   - Debug, restart, HA status, resilience, MQTT explorer
-  routes/matter_routes.py   - Matter commission/remove/status
-  routes/websocket_routes.py - WebSocket connection manager
-  routes/ota_routes.py      - OTA firmware (already existed)
-  modules/zones_api.py      - Zone CRUD (already existed)
-  modules/automation_api.py - Automation CRUD (already existed)
+Route modules live under routes/; see docs/structure.md for the layout.
 """
 import uvicorn
 import warnings
@@ -33,12 +23,9 @@ from fastapi.responses import FileResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import random
 
-# ---------------------------------------------------------------------------
-# CRASH HOOK — runs before heavy imports so import-time failures are captured.
-# Writes data/last_crash.json, consumed by the recovery server if main.py dies.
-# Launcher also has a stderr parser as a fallback for failures before this
-# hook is even installed (e.g. a SyntaxError in main.py itself).
-# ---------------------------------------------------------------------------
+# Crash hook — installed before heavy imports so import-time failures are
+# captured to data/last_crash.json for the recovery server. launcher.py parses
+# stderr as a fallback for failures before this hook exists.
 import sys as _sys
 import os as _os
 import json as _json
@@ -47,10 +34,8 @@ import datetime as _dt
 
 _CRASH_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "last_crash.json")
 
-# zha-quirks (zha-device-handlers) still passes deprecated kwargs to
-# zigpy 1.1's ZCLCommandDef and uses the deprecated enum_factory helper.
-# These come through TWO channels: warnings.warn() AND a plain logger call,
-# so we have to silence both to actually clean up the boot log.
+# zha-quirks passes deprecated kwargs to zigpy 1.1 and uses enum_factory.
+# Warned through two channels — warnings.warn() and a plain logger call.
 
 # Channel 1: DeprecationWarning via warnings.warn — silenced for completeness.
 warnings.filterwarnings(
@@ -212,10 +197,6 @@ except Exception:
 port = int(os.environ.get("ZMM_PORT", 8000))
 
 
-# ============================================================================
-# LOGGING CONFIGURATION (NON-BLOCKING)
-# ============================================================================
-
 os.makedirs("logs", exist_ok=True)
 
 log_queue = queue.Queue(-1)
@@ -243,9 +224,6 @@ logging.getLogger('device').setLevel(logging.INFO)
 
 logger = logging.getLogger('main')
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 def load_config():
     """Load configuration from config.yaml."""
@@ -262,9 +240,6 @@ def get_conf(section, key, default=None):
     """Get configuration value."""
     return CONFIG.get(section, {}).get(key, default)
 
-# ============================================================================
-# SERVICES INITIALIZATION
-# ============================================================================
 
 mqtt_service = MQTTService(
     broker_host=get_conf('mqtt', 'broker_host', 'localhost'),
@@ -307,9 +282,8 @@ weather_service = WeatherService(
     mqtt_service=mqtt_service,
 )
 
-# Sun/sunrise-sunset calculations (used by automation "sun" conditions) share
-# the weather service's location instead of independently re-reading config.yaml,
-# so they track exactly the coordinates that drive external temp / cloud cover.
+# Share the weather service's location so sun conditions track exactly the
+# coordinates driving external temp / cloud cover.
 from modules.sun_times import set_location_provider
 set_location_provider(lambda: (weather_service.latitude, weather_service.longitude))
 
@@ -317,14 +291,12 @@ media_service = MediaService(
     config=CONFIG.get("media", {}),
 )
 
-# Octopus Energy — built before the heating advisor so live tariff rates can
-# be injected into it. Config is read at construction (WeatherService-style):
-# settings changes need a service restart.
+# Built before the heating advisor so live tariff rates can be injected.
+# Config is read at construction: changes need a service restart.
 octopus_service = OctopusEnergyService(config=CONFIG.get("octopus", {}))
 
-# Neural TTS for the therapy page. Default engine is in-process Kokoro-82M
-# (model downloads on demand from the therapy UI); set media.therapy.engine
-# to "wyoming" to use an external wyoming-piper server instead.
+# Default engine is in-process Kokoro-82M; set media.therapy.engine to
+# "wyoming" for an external wyoming-piper server.
 therapy_tts = create_therapy_tts(CONFIG.get("media", {}).get("therapy", {}))
 # The device-audio listener serves /api/therapy/stream to speakers; hand it
 # the TTS service (built after MediaService) so guided speech works there too.
@@ -372,9 +344,6 @@ except Exception:
     pass
 
 
-# ============================================================================
-# MATTER — Embedded server + bridge (optional)
-# ============================================================================
 matter_server = None
 matter_bridge = None
 
@@ -403,9 +372,6 @@ if matter_config.get('enabled', False):
     logger.info(f"Matter integration enabled (embedded server + bridge)")
 
 
-# ============================================================================
-# REMOTE ACCESS (managed Cloudflare Tunnel)
-# ============================================================================
 from modules.remote_access import (
     RemoteAccessManager, set_remote_access_manager,
 )
@@ -419,9 +385,6 @@ remote_access_manager.load()
 set_remote_access_manager(remote_access_manager)
 
 
-# ============================================================================
-# LAZY GETTERS for route modules
-# ============================================================================
 def get_zigbee_service():
     return zigbee_service
 
@@ -438,10 +401,6 @@ def get_manager():
     return manager
 
 
-# ============================================================================
-# LIFESPAN (startup / shutdown)
-# ============================================================================
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     clear_boot_failure_counter()
@@ -449,43 +408,28 @@ async def lifespan(app: FastAPI):
     log_listener.start()
     logger.info("Starting Zigbee Gateway (Threaded Logging Enabled)...")
 
-    # Event-loop responsiveness monitor: dumps the blocking stack on a stall
-    # and self-restarts on a hard wedge, so the launcher (seconds) — not the
-    # manager watchdog (minutes) — handles a blocked loop. Started first so
-    # even a stall during bring-up is caught.
+    # Dumps the blocking stack on a stall and self-restarts on a hard wedge, so
+    # the launcher handles a blocked loop rather than the manager watchdog.
+    # Started first so a stall during bring-up is caught.
     from modules.loop_monitor import LoopMonitor
     loop_monitor = LoopMonitor()
     loop_monitor.start()
     app.state.loop_monitor = loop_monitor
 
-    # Media goes up FIRST, ahead of everything else in bring-up.
-    #
-    # When a Cast player has EQ on, or a sync group is running, the speaker is
-    # not fetching its own source — it is pulling PCM from listeners inside
-    # this process (:8011 device audio, :8010 sync). A restart therefore stops
-    # the music, and how long it stays stopped is decided entirely by how far
-    # down the boot order those two listeners sit. Measured before this moved:
-    # 67 s, of which ~35 s was the telemetry DB open/migration below and ~20 s
-    # was Zigbee and Matter bring-up — none of which media depends on. That is
-    # far past the point a Cast device gives up retrying a dropped stream, so
-    # every restart needed the deliberate relaunch to recover.
-    #
-    # Nothing here touches Zigbee, Matter, MQTT or telemetry: the service is
-    # already constructed at import, and start() only binds the two listeners
-    # and spawns its own poll loop. Failure must not hold up the rest of boot.
+    # Media first: a restart stops any Cast stream this process is serving, and
+    # boot order alone decides for how long — measured at 67 s before this moved,
+    # far past the point a Cast device stops retrying. Depends on nothing below.
     try:
         media_service.start()
         logger.info("Media service initialised (early — audio listeners first)")
     except Exception as e:
         logger.error(f"Media service early start failed: {e}")
 
-    # Open/migrate the telemetry DB in a worker BEFORE any service touches it:
-    # the first _get_db() holds _db_lock for the whole open/migration
-    # (seconds), and any loop-thread write landing during that window stalls
-    # the event loop behind the lock.
-    # Self-heal a telemetry DB that a previous run found to be corrupt. MUST
-    # run before warm(): it swaps database files, which is only safe while
-    # nothing has the file open, and this is the one moment that holds.
+    # Open/migrate the telemetry DB in a worker before any service touches it:
+    # the first _get_db() holds _db_lock for the whole open (seconds), and a
+    # loop-thread write landing in that window stalls the event loop. Self-heal
+    # runs before warm() — it swaps database files, safe only while nothing has
+    # the file open.
     try:
         from modules import telemetry_rebuild
         await asyncio.to_thread(telemetry_rebuild.auto_rebuild_if_needed)
@@ -518,20 +462,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Alert center init failed: {e}")
 
-    # Catch-all for a fatally-damaged telemetry DB, however it gets reported.
-    # Without it, a fatal raised on a path that doesn't route through
-    # _write_exec is never latched, no rebuild sentinel is written, and the
-    # next boot cannot self-repair.
+    # Catch-all for a fatally-damaged telemetry DB. Without it a fatal raised
+    # off the _write_exec path is never latched, no rebuild sentinel is written,
+    # and the next boot cannot self-repair.
     try:
         if telemetry_db is not None:
             telemetry_db.install_fatal_watch()
     except Exception as e:
         logger.debug(f"Could not install telemetry fatal watch: {e}")
 
-    # Raised only now the alert center can actually push it. A failed warm-up
-    # is not cosmetic: it leaves the connection unopened, so the next caller
-    # pays the entire failing open under _db_lock. It used to pass with only a
-    # log line, which is how a stalled open reached the event loop unnoticed.
+    # Raised only now the alert center can push it. A failed warm-up leaves the
+    # connection unopened, so the next caller pays the failing open under _db_lock.
     if warm_error is not None:
         try:
             from modules.app_alerts import raise_alert
@@ -559,19 +500,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.debug(f"Could not start telemetry reconciler: {e}")
 
-        # Move system_metrics into its own database. On a worker thread, and
-        # HERE — before system_monitor exists to write one. Doing this lazily on
-        # first write put it on the event loop, where it stalled the app past
-        # loop_monitor's 60s exit and crash-looped every boot.
+        # On a worker thread, and here — before system_monitor exists to write
+        # one. Lazily on first write this ran on the event loop and crash-looped.
         try:
             await asyncio.to_thread(telemetry_db.migrate_system_metrics)
         except Exception as e:
             logger.warning(f"system_metrics migration failed: {e}")
 
-    # ── Test-deploy recovery ──
-    # Must run BEFORE the slow background bring-up (Zigbee/Matter/HA can take
-    # minutes): the confirm window for a pending restart-type batch starts
-    # here, when the UI is about to serve, so the user gets the full window.
+    # Test-deploy recovery. Before the slow bring-up: the confirm window for a
+    # pending restart-type batch starts here, when the UI is about to serve.
     from modules.test_recovery import get_test_recovery_manager
     trm = get_test_recovery_manager(broadcast_event)
     startup_result = trm.check_pending_on_startup()
@@ -625,12 +562,9 @@ async def lifespan(app: FastAPI):
     from modules.dongle_jedi import DongleJedi
     setup_status = DongleJedi.needs_setup()
 
-    # ── Deferred bring-up ───────────────────────────────────────────────
-    # Everything below is slow (Zigbee radio takes 40-70s on MultiPAN, the
-    # Matter server 10-30s). Run it as a background task so uvicorn starts
-    # serving the web UI immediately; the UI streams progress over the
-    # websocket and the remaining endpoints appear as each service
-    # registers during bring-up.
+    # Deferred bring-up: the Zigbee radio takes 40-70 s on MultiPAN and Matter
+    # 10-30 s. Run in the background so uvicorn serves the UI immediately;
+    # progress streams over the websocket as each service registers.
     async def _background_bringup():
         if setup_status["needs_setup"]:
             logger.warning(f"Setup needed: {setup_status['reason']}")
@@ -661,9 +595,8 @@ async def lifespan(app: FastAPI):
             else:
                 logger.info("MQTT disabled (standalone mode)")
 
-            # Start Zigbee — pick up the config returned by the credential
-            # auto-fill; the module-level CONFIG predates it and would feed
-            # the radio stale placeholders on first boot.
+            # Use the config returned by credential auto-fill; module-level
+            # CONFIG predates it and would feed the radio stale placeholders.
             updated_cfg = ensure_network_credentials("./config/config.yaml")
             if updated_cfg:
                 CONFIG['zigbee'] = updated_cfg.get('zigbee', {})
@@ -707,10 +640,9 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"Failed to start remote access tunnel: {e}")
 
-        # Wire Matter state changes into the automation engine
-        # (was indented inside the remote-access block above, which both skipped
-        # the wiring when the tunnel was disabled and crashed on matter_bridge
-        # being None when Matter was disabled)
+        # Wire Matter state changes into the automation engine. Deliberately
+        # outside the remote-access block — indented inside it, this skipped the
+        # wiring when the tunnel was off and crashed when Matter was disabled.
         if matter_bridge:
             matter_bridge._automation_evaluator = (
                 lambda ieee, data: zigbee_service.automation.evaluate(ieee, data)
@@ -786,7 +718,6 @@ async def lifespan(app: FastAPI):
         if hasattr(zigbee_service, 'group_manager'):
             logger.info("Group manager initialized")
 
-        # ── System Monitor & Telemetry ──
         system_monitor = SystemMonitor(
             interval=30,
             event_callback=broadcast_event,
@@ -814,10 +745,9 @@ async def lifespan(app: FastAPI):
         octopus_service.start()
         logger.info("Octopus Energy service initialised")
 
-        # media (multi-room audio: Cast / WiiM / radio) — already started at the
-        # top of the lifespan so the audio listeners bind before the slow parts
-        # of bring-up. Kept as a no-op safety net: start() is idempotent, and
-        # this still covers the case where the early call raised.
+        # Already started at the top of the lifespan so the audio listeners bind
+        # before the slow parts of bring-up. Idempotent no-op safety net for the
+        # case where that early call raised.
         media_service.start()
 
         # heating
@@ -858,7 +788,6 @@ async def lifespan(app: FastAPI):
             rbm.load_from_definitions(get_definition_store())
             logger.info(f"Rotary binding manager: {len(rbm._all_bindings)} binding(s)")
 
-        # ── Presence Users ──
         presence_manager = PresenceUserManager(
             mqtt_handler=mqtt_service,
             event_emitter=broadcast_event,                    # same one used by zones
@@ -888,17 +817,15 @@ async def lifespan(app: FastAPI):
         zigbee_service.automation._get_names = _names_with_presence
         logger.info("Wired presence users into automation engine")
 
-        # ── Journeys (drive tracking) ──
-        # Its own DuckDB file with its own single worker thread — DuckDB is
+        # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.
         journey_manager = JourneyManager()
         await journey_manager.start()
         set_journey_manager(journey_manager)
         app.state.journey_manager = journey_manager
 
-        # ── Place search (apiary location picker) ──
-        # Reference data, but still its own DuckDB file and worker thread for
-        # the same single-writer reason as journeys above.
+        # Place search: reference data, but its own DuckDB file and worker
+        # thread for the same single-writer reason as journeys.
         from modules.geocode import Geocoder, set_geocoder
         geocoder = Geocoder()
         await geocoder.start()
@@ -917,13 +844,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"AI Assistant initialised: {ai_assistant.provider}/{ai_assistant.model} "
                     f"configured={ai_assistant.is_configured()}")
 
-        # AI config persistence helper.
-        #
         # update_block rather than safe_load + dump: the latter round-trips the
-        # whole file through an emitter with no concept of comments, so saving
-        # one API key would delete every explanatory comment in config.yaml.
-        # This rewrites only the keys it is given and leaves the rest byte for
-        # byte, including any ai: setting this function has never heard of.
+        # whole file through an emitter with no concept of comments, so saving one
+        # API key would delete every comment in config.yaml.
         def _save_ai_config(ai_cfg):
             from modules.config_yaml import update_block
             try:
@@ -969,9 +892,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start upgrade manager loops: {e}")
 
-        # Packet flow broadcaster — pushes a 2s snapshot of rates / top talkers /
-        # anomalies / sparkline history to all connected clients. Independent of
-        # debug capture; counters in modules/packet_flow run always-on.
+        # Pushes a 2 s snapshot of rates / top talkers / anomalies to all
+        # clients. Independent of debug capture; packet_flow counters are always on.
         try:
             from modules.packet_flow import get_flow_analyzer
 
@@ -1001,11 +923,9 @@ async def lifespan(app: FastAPI):
         })
 
     def _bringup_done(task: asyncio.Task):
-        # Retrieve the exception so a failed bring-up is a logged error,
-        # not an unretrieved task exception. Marking the status "failed"
-        # flips /api/system/health to 503, which is what the ZMM Manager's
-        # watchdog keys off to restart the container — the process itself
-        # no longer dies on a boot failure now that bring-up is deferred.
+        # Retrieve the exception so a failed bring-up is a logged error, not an
+        # unretrieved task exception. "failed" flips /api/system/health to 503,
+        # which the ZMM Manager watchdog keys off to restart the container.
         if not task.cancelled() and task.exception() is not None:
             app.state.bringup_status = "failed"
             app.state.bringup_error = f"{type(task.exception()).__name__}: {task.exception()}"
@@ -1093,10 +1013,6 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-# ============================================================================
-# FASTAPI APPLICATION
-# ============================================================================
-
 app = FastAPI(
     title="Zigbee Matter Manager",
     description="Zigbee device management",
@@ -1104,7 +1020,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ── Authentication (with MFA + lockout + LAN-aware) ──
 auth_manager = AuthManager()
 auth_manager.load()
 set_auth_manager(auth_manager)
@@ -1139,9 +1054,6 @@ logger.info("Auth subsystem initialised (MFA + lockout + LAN-aware)")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ============================================================================
-# STATIC FILE ROUTES
-# ============================================================================
 
 # Session cookie recording an explicit "I want the manager" choice, so the
 # per-user `landing` preference doesn't bounce the user straight back to /frames.
@@ -1197,9 +1109,8 @@ async def service_worker():
     return FileResponse(
         'static/sw.js',
         media_type='application/javascript',
-        # no-cache: browsers AND Cloudflare's edge must revalidate sw.js every
-        # time, otherwise a bumped CACHE_NAME never reaches clients and the
-        # PWA stays stuck on old cached assets.
+        # no-cache: browsers and Cloudflare's edge must revalidate sw.js, or a
+        # bumped CACHE_NAME never reaches clients and the PWA stays on old assets.
         headers={'Service-Worker-Allowed': '/', 'Cache-Control': 'no-cache'}
     )
 
@@ -1211,9 +1122,6 @@ async def manifest():
         media_type='application/manifest+json'
     )
 
-# ============================================================================
-# REGISTER ALL ROUTE MODULES
-# ============================================================================
 
 register_config_routes(app, get_zigbee_service)
 register_device_routes(app, get_zigbee_service, get_matter_bridge)
@@ -1277,10 +1185,9 @@ register_remote_access_routes(app)
 from routes.map_routes import register_map_routes
 register_map_routes(app)
 
-# mDNS — let the companion app find this hub on the home network, and learn
-# the PUBLIC url to pair with. A geofence reports when you leave home, which is
-# exactly when a LAN address stops working, so the address worth advertising is
-# the tunnel one.
+# mDNS — let the companion app find this hub and learn the PUBLIC url. A
+# geofence reports when you leave home, exactly when a LAN address stops
+# working, so the tunnel address is the one worth advertising.
 from modules.discovery import HubAdvertiser, set_advertiser
 try:
     _web_cfg = (CONFIG.get("web") or {})
@@ -1357,9 +1264,6 @@ place_manager.load()
 set_place_manager(place_manager)
 register_place_routes(app)
 
-# ============================================================================
-# POST-SETUP ZIGBEE HOT-START SERVICES
-# ============================================================================
 
 @app.post("/api/setup/start-services")
 async def start_services_after_setup():
@@ -1374,7 +1278,7 @@ async def start_services_after_setup():
         CONFIG = load_config()
         mqtt_enabled = get_conf('mqtt', 'enabled', True)
 
-        # ── Step 1: MQTT ──
+        # Step 1: MQTT
         await manager.broadcast({
             "type": "setup_phase",
             "payload": {"phase": "mqtt", "message": "Configuring MQTT..."}
@@ -1409,7 +1313,7 @@ async def start_services_after_setup():
                 "payload": {"phase": "mqtt_done", "message": "MQTT disabled (standalone)", "success": True}
             })
 
-        # ── Step 2: Zigbee with live probe progress ──
+        # Step 2: Zigbee with live probe progress
         await manager.broadcast({
             "type": "setup_phase",
             "payload": {"phase": "zigbee_probe", "message": "Detecting Zigbee coordinator..."}
@@ -1456,17 +1360,12 @@ async def start_services_after_setup():
         })
         return {"success": False, "error": str(e)}
 
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
 
 if __name__ == "__main__":
     ssl_config = CONFIG.get('web', {}).get('ssl', {}) or {}
-    # HTTPS is ALWAYS on — there is no supported HTTP mode and no UI toggle.
-    # A self-signed cert is auto-generated on first boot (below), so no user
-    # setup is needed; web.ssl only carries optional cert/key path overrides
-    # for user-supplied certificates. A stale `enabled: false` left in an old
-    # config.yaml is deliberately ignored.
+    # HTTPS is always on: no supported HTTP mode and no UI toggle. A self-signed
+    # cert is auto-generated on first boot; web.ssl only carries optional cert/key
+    # path overrides. A stale `enabled: false` in an old config.yaml is ignored.
 
     host = get_conf('web', 'host') or '0.0.0.0'
     # Environment variable takes priority (set by build.sh for host networking),
@@ -1489,9 +1388,8 @@ if __name__ == "__main__":
         kwargs["ssl_keyfile"] = key_file
         logger.info(f"Starting with SSL on https://{host}:{port} (cert {action})")
     else:
-        # Cert generation failed and no usable pair on disk — serve HTTP
-        # rather than crash-looping on a missing certfile. This is the ONLY
-        # path to HTTP and it is an error condition, not a configuration.
+        # Cert generation failed and no usable pair on disk — serve HTTP rather
+        # than crash-loop. The only path to HTTP, and an error condition.
         logger.error(
             f"No usable TLS certificate ({action}) — falling back to "
             f"http://{host}:{port}. Install openssl or drop a cert at {cert_file}."

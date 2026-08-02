@@ -1,23 +1,10 @@
 """
-SGLang Container Manager
-========================
-Runs an SGLang model server as a **sibling container**, mirroring the
-OllamaManager pattern: ZMM has no container CLI inside its image, so when
-containerised we drive the host's podman/docker REST API over the mounted
-socket; natively we shell out to the binary on PATH.
+Runs an SGLang model server as a sibling container, mirroring OllamaManager.
 
-SGLang differs from Ollama in two ways that shape this module:
-  * **GPU-only.** It realistically needs a CUDA GPU with real VRAM headroom.
-    Install is refused unless HostCapabilityAssessor marks the backend viable
-    AND NVIDIA CDI passthrough is available to the runtime.
-  * **Model at launch.** There is no separate "pull" step — the server is
-    started with ``--model-path <hf-repo>`` and downloads weights into the
-    mounted HuggingFace cache volume on first boot. Changing model means
-    recreating the container.
-
-Reachability mirrors Ollama: the sibling publishes 30000 on the host; from a
-slirp4netns ZMM container that's ``http://10.0.2.2:30000``, overridable with
-``ZMM_SGLANG_URL``.
+Differs in being GPU-only — install is refused without a viable backend and
+NVIDIA CDI passthrough — and in having no separate pull step, since the model is
+given at launch and changing it means recreating the container.
+See docs/upgrades.md.
 """
 
 import asyncio
@@ -64,7 +51,7 @@ class SGLangManager:
         except RuntimeError:
             asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    # ── Status ───────────────────────────────────────────────────────────────
+    # Status
 
     def status(self) -> Dict[str, Any]:
         mode, detail = detect_runtime()
@@ -84,7 +71,7 @@ class SGLangManager:
     def job_status(self) -> Dict[str, Any]:
         return self._job or {"status": "idle"}
 
-    # ── Install / start ──────────────────────────────────────────────────────
+    # Install / start
 
     def install(self, model: str, hf_token: Optional[str] = None) -> Dict[str, Any]:
         if self._busy():
@@ -120,7 +107,7 @@ class SGLangManager:
             self._spawn(self._run_rest_install(detail, model, hf_token))
         return {"success": True, "started": True, "mode": mode, "model": model}
 
-    # ── CLI mode ─────────────────────────────────────────────────────────────
+    # CLI mode
 
     def _launch_cmd(self, model: str) -> List[str]:
         return ["python3", "-m", "sglang.launch_server",
@@ -175,7 +162,7 @@ class SGLangManager:
         except Exception:
             return False
 
-    # ── Socket mode (Docker-compatible REST) ─────────────────────────────────
+    # Socket mode (Docker-compatible REST)
 
     async def _run_rest_install(self, sock: str, model: str,
                                 hf_token: Optional[str]):
@@ -270,7 +257,7 @@ class SGLangManager:
         status = obj.get("status") or ""
         return status[:160] or None
 
-    # ── Job bookkeeping ──────────────────────────────────────────────────────
+    # Job bookkeeping
 
     def _job_start(self, action: str, command: str, model: Optional[str] = None):
         self._job = {"action": action, "model": model, "status": "running",
@@ -294,7 +281,7 @@ class SGLangManager:
     def _busy(self) -> bool:
         return bool(self._job and self._job.get("status") == "running")
 
-    # ── Reachability / helpers ───────────────────────────────────────────────
+    # Reachability / helpers
 
     def _reachable_base(self) -> str:
         if self._url:

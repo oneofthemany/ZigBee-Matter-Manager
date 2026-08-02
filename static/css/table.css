@@ -4,7 +4,7 @@
  * Theme-aware via the same CSS variables dark-mode.css defines.
  */
 
-/* --- Sticky header ------------------------------------------------------- */
+/* Sticky header */
 /* Works when the table sits in a scroll container (.table-responsive or any
    element with overflow). The header stays pinned while rows scroll. */
 .tbl thead th {
@@ -22,7 +22,7 @@
     border-bottom: 2px solid var(--border-color, #dee2e6);
 }
 
-/* --- Density + readability ---------------------------------------------- */
+/* Density + readability */
 .tbl tbody td {
     vertical-align: middle;
 }
@@ -30,7 +30,7 @@
     transition: background-color 0.12s ease;
 }
 
-/* --- Sortable headers ---------------------------------------------------- */
+/* Sortable headers */
 .tbl-sortable thead th:not([data-no-sort]) {
     cursor: pointer;
     user-select: none;
@@ -63,12 +63,12 @@
     color: var(--accent, #b97a17);
 }
 
-/* --- Filter input -------------------------------------------------------- */
+/* Filter input */
 .tbl-filter {
     max-width: 260px;
 }
 
-/* --- Dark mode tweaks ---------------------------------------------------- */
+/* Dark mode tweaks */
 [data-theme="dark"] .tbl thead th {
     background: var(--bg-surface-raised, #222636);
     color: var(--text-secondary, #c5c9d4);
@@ -78,7 +78,7 @@
     background: var(--bg-surface-sunken, #1a1d2b);
 }
 
-/* ---- Signal Inspector: highlight a row that just updated ---- */
+/* Signal Inspector: highlight a row that just updated */
 @keyframes sig-pulse-kf {
     0%   { background-color: rgba(74, 144, 226, 0.35); }
     100% { background-color: transparent; }

@@ -1,15 +1,9 @@
 """
-Fuel price API routes — cheapest fuel near a location, for the Drive tab.
+Fuel price API — cheapest fuel near a location, for the Drive tab.
 
-Centre resolution, in order of preference:
-    1. explicit ?postcode=      (resolved via postcodes.io)
-    2. explicit ?lat= & ?lon=
-    3. the requesting household's home (first presence user with one set)
-
-Prices themselves are public open data; the location the query centres on is
-not, which is why the fallback is the home location every household member
-already knows, and why any authenticated user may query but nothing about
-who asked is stored.
+Centre resolves from an explicit postcode, then explicit coordinates, then the
+household home. Prices are public open data but the centre is not, so nothing
+about who asked is stored. See docs/journeys.md.
 """
 
 from __future__ import annotations
@@ -99,9 +93,7 @@ def register_fuel_routes(app: FastAPI):
     async def fuel_refresh(_=Depends(require_scope("admin"))):
         return await get_fuel_service().refresh()
 
-    # ------------------------------------------------------------------
     # History — snapshots recorded at query time (modules/fuel_history.py)
-    # ------------------------------------------------------------------
     @app.get("/api/fuel/history")
     async def fuel_history(
             fuel: str = Query("E10"),

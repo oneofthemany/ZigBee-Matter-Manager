@@ -1,27 +1,10 @@
 """
-Test and Recovery System for Code Editor (batched)
-===================================================
-Safe deployment of code changes with automatic rollback.
+Test and recovery for the code editor — safe deployment with automatic rollback.
 
-Supports BOTH single-file (legacy) and multi-file batch deploys.
-All files in a batch share one backup group and are rolled back
-together. This is required when edits span dependent files
-(e.g. adding a new module + updating an import site).
-
-Flow:
-  1. User stages N files → presses "Test"
-  2. System backs up every existing file, writes every new one,
-     records a single pending batch
-  3. Frontend files: WebSocket reload → confirm dialog
-     Python files: Service restart → startup health check → confirm
-  4. Confirm → pending cleared, backups kept
-  5. Timeout OR restart fails → atomic rollback of the whole batch
-
-Pending state is persisted to disk so it survives service restarts
-and is consumed by boot_guard.py on failed boots.
-
-Pending file:  <APP_DIR>/data/.test_pending
-Backup dir:    <APP_DIR>/.editor_backups/
+Single-file and multi-file batches; every file in a batch shares one backup
+group and rolls back together, which is required when edits span dependent
+files. Pending state persists to disk so it survives restarts and is consumed by
+boot_guard.py on a failed boot. See docs/upgrades.md.
 """
 import asyncio
 import json
@@ -59,9 +42,7 @@ class TestRecoveryManager:
         self._confirm_task: Optional[asyncio.Task] = None
         self._pending: Optional[dict] = None
 
-    # =========================================================================
     # PENDING STATE (survives restarts)
-    # =========================================================================
 
     def _save_pending(self, state: dict):
         self._pending = state
@@ -112,9 +93,7 @@ class TestRecoveryManager:
             return self._pending
         return self._load_pending()
 
-    # =========================================================================
     # DEPLOY — Batch
-    # =========================================================================
 
     async def deploy_test_batch(self, files: List[Dict[str, Any]]) -> dict:
         """
@@ -155,13 +134,9 @@ class TestRecoveryManager:
                 return {"success": False, "error": f"Path outside project: {path}"}
             resolved.append({"path": path, "content": content, "full": full})
 
-        # Pre-flight: reject Python files that don't even compile. A syntax
-        # error guarantees a boot crash, so catch it HERE — before touching
-        # disk — instead of discovering it through a restart→crash→boot_guard
-        # rollback cycle (which costs the user a couple of crash loops and a
-        # trip through the recovery server). Runtime errors still fall through
-        # to the restart+rollback path; only unambiguous syntax breakage is
-        # blocked up front.
+        # Pre-flight: a syntax error guarantees a boot crash, so reject it before
+        # touching disk rather than through a restart->crash->rollback cycle.
+        # Runtime errors still fall through to restart+rollback.
         for r in resolved:
             if r["full"].suffix.lower() == ".py":
                 try:
@@ -192,10 +167,9 @@ class TestRecoveryManager:
                     ),
                 }
 
-        # Exact-parser pre-flight for JSON/YAML (a broken YAML bricks config
-        # load just as hard as a broken .py). JavaScript is intentionally NOT
-        # blocked here: the server-side JS check is a heuristic bracket
-        # balancer, and a false positive would leave no escape hatch — the
+        # JSON/YAML get exact parsers — broken YAML bricks config load just as hard.
+        # JavaScript deliberately does not: the server-side check is a heuristic
+        # bracket balancer, and a false positive would leave no escape hatch. The
         # editor compile-checks JS client-side with the real engine instead.
         try:
             from routes.editor_routes import _validate_json, _validate_yaml
@@ -330,9 +304,7 @@ class TestRecoveryManager:
             result["backup"] = result.get("files", [path])[0] if result.get("files") else None
         return result
 
-    # =========================================================================
     # RESTART
-    # =========================================================================
 
     async def trigger_restart(self) -> dict:
         pending = self.get_pending()
@@ -349,9 +321,7 @@ class TestRecoveryManager:
         asyncio.create_task(_do_restart())
         return {"success": True, "message": "Restarting..."}
 
-    # =========================================================================
     # STARTUP CHECK
-    # =========================================================================
 
     def check_pending_on_startup(self):
         pending = self._load_pending()
@@ -365,11 +335,9 @@ class TestRecoveryManager:
         paths = [f.get("path") for f in pending.get("files", [])]
 
         if pending.get("action") == "restart":
-            # The deploy clock started before the service restart, and boot
-            # can eat most (or all) of the window. The user can only confirm
-            # once the app is serving again, so restart the window now.
-            # "New code crashes the boot" is boot_guard's job, not this
-            # wall clock's.
+            # Boot can eat most of the window, and the user can only confirm once
+            # the app is serving again, so restart the window here. "New code
+            # crashes the boot" is boot_guard's job, not this wall clock's.
             timeout = pending.get("timeout", CONFIRM_TIMEOUT)
             pending["deployed_at"] = time.time()
             self._save_pending(pending)
@@ -401,9 +369,7 @@ class TestRecoveryManager:
             "action": pending.get("action"),
         }
 
-    # =========================================================================
     # CONFIRM / ROLLBACK
-    # =========================================================================
 
     async def confirm(self) -> dict:
         pending = self.get_pending()
@@ -494,9 +460,7 @@ class TestRecoveryManager:
                        + (f" ({len(errors)} error(s))" if errors else ""),
         }
 
-    # =========================================================================
     # CONFIRM TIMER
-    # =========================================================================
 
     def _start_confirm_timer(self, timeout: float = None):
         if timeout is None:

@@ -256,12 +256,9 @@
                             </tr>
                             </thead>
                             <tbody id="deviceTableBody" aria-busy="true">
-                            <!-- Skeleton rows shown until the first device fetch re-renders the tbody.
-                                 One cell per column, NOT a single colspan=10 cell: with table-layout
-                                 auto the browser sizes columns from their contents, so a merged cell
-                                 left all ten widths to be derived from the header text alone and every
-                                 column jumped the moment real rows arrived. The per-column widths
-                                 below approximate real content (IEEE and name are the wide ones). -->
+                            <!-- Skeleton rows: one cell per column, NOT a single
+                                 colspan=10 — with table-layout auto a merged cell
+                                 made every column jump when real rows arrived. -->
                             <tr class="skel-row">
                                 <td><span class="skel skel-block" style="width:1.5rem"></span></td>
                                 <td><span class="skel skel-block" style="width:11rem"></span></td>
@@ -312,14 +309,9 @@
                             </tr>
                             </tbody>
                         </table>
-                        <!-- Seed the column widths from the last render before this
-                             table is first painted, so the skeleton is already the
-                             right shape and the columns don't jump sideways when the
-                             real rows arrive. Inline and immediately after the table
-                             on purpose: it must run while the parser is still inside
-                             this document, i.e. before the first paint. Widths are a
-                             hint only — table-layout is auto, so real content still
-                             wins if a device name needs more room.
+                        <!-- Seed column widths from the last render so the skeleton
+                             is the right shape. Inline and immediately after the
+                             table on purpose: it must run before first paint.
                              Written by rememberColumnWidths() in js/devices.js. -->
                         <script>
                             (function () {
@@ -596,9 +588,7 @@
 
             <div class="tab-content">
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- CONFIG TAB                                                           -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade show active p-3" id="settingsConfig">
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
@@ -627,17 +617,13 @@
                 </div>
 
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- NOTIFICATIONS TAB                                                    -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsNotifications">
                     <!-- populated by notifications.js on first show -->
                 </div>
 
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- ACCOUNTS TAB                                                       -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsAuth">
 
                     <!-- Accounts sub-nav — one pane per card instead of a stacked scroll -->
@@ -716,9 +702,7 @@
 
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- REMOTE ACCESS TAB                                                  -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade" id="securityRemoteAccess">
                     <div id="remote-access-host">
                         <div class="text-center text-muted py-4">
@@ -727,9 +711,7 @@
                     </div>
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- NETWORK TAB (Thread / Spectrum / Security )           -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsNetwork">
 
                     <!-- Network sub-nav -->
@@ -759,9 +741,7 @@
 
                     <div class="tab-content">
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- SECURITY SUB-TAB                                                     -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade" id="settingsSecurity">
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
@@ -787,9 +767,7 @@
                     </div>
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- SPECTRUM ANALYSIS SUB-TAB                                            -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade" id="settingsSpectrum">
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
@@ -884,9 +862,7 @@
                     </div>
                 </div>
 
-                <!-- --------------------->
                 <!-- THREAD SUB-TAB  -->
-                <!-- --------------------->
 
                 <div class="tab-pane fade show active" id="settingsThread">
                     <div class="card shadow-sm">
@@ -910,9 +886,7 @@
                 </div><!-- /settingsNetwork -->
 
 
-                <!-- --------------------->
                 <!-- APIs TAB            -->
-                <!-- --------------------->
                 <div class="tab-pane fade p-3" id="settingsApis">
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
@@ -939,23 +913,17 @@
                     </div>
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- SPEAKERS TAB  (speaker-sync enablement + receiver registration)      -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsSpeakers">
                     <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading speaker settings…</div>
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- AI TAB  (host assessment · provider config · local Ollama)           -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsAI">
                     <div class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Loading AI settings…</div>
                 </div>
 
-                <!-- ------------------------------------------------------------------ -->
                 <!-- UPGRADE TAB                                                          -->
-                <!-- ------------------------------------------------------------------ -->
                 <div class="tab-pane fade p-3" id="settingsUpgrade">
                     <div id="upgradeCardMount"></div>
                 </div>

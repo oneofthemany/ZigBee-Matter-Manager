@@ -1,18 +1,10 @@
 """
-WiiM / LinkPlay player provider.
+WiiM / LinkPlay player provider, over the documented /httpapi.asp API.
 
-Talks the documented WiiM HTTP API (``/httpapi.asp?command=...``). The core
-transport/volume/status commands are from WiiM's official HTTP API PDF. The
-multiroom (grouping) commands are LinkPlay-platform commands that are NOT in
-that PDF — they're community-documented and semi-official, so they're isolated
-here and degrade gracefully if a device rejects them.
-
-Phase 1 discovery is a manual list of device IPs from config. mDNS discovery
-(LinkPlay advertises ``_linkplay._tcp`` / UPnP) is a later enhancement.
-
-Transport note: newer WiiM firmware serves the API over HTTPS (port 443) with a
-self-signed cert and may disable plain HTTP. We probe per-device once and cache
-the working scheme; HTTPS uses verify=False (the cert is the device's own).
+Multiroom grouping commands are community-documented LinkPlay extensions rather
+than official, so they are isolated here and degrade gracefully. Newer firmware
+may serve only HTTPS with a self-signed cert, so the scheme is probed once per
+device and cached. See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -67,9 +59,7 @@ class WiiMPlayerProvider(PlayerProvider):
         self._eq_presets: Dict[str, Optional[List[str]]] = {}
         self._eq_current: Dict[str, str] = {}
 
-    # ------------------------------------------------------------------
     # HTTP plumbing
-    # ------------------------------------------------------------------
     async def _command(self, ip: str, command: str) -> Optional[str]:
         """Issue one httpapi command. Returns raw text body, or None on failure."""
         schemes = [self._scheme[ip]] if ip in self._scheme else ["https", "http"]
@@ -97,9 +87,7 @@ class WiiMPlayerProvider(PlayerProvider):
         except ValueError:
             return None
 
-    # ------------------------------------------------------------------
     # Discovery / state
-    # ------------------------------------------------------------------
     async def list_players(self) -> List[PlayerState]:
         if not self.enabled or not self._ips:
             return []
@@ -193,9 +181,7 @@ class WiiMPlayerProvider(PlayerProvider):
                 out.append(_pid(sip))
         return out
 
-    # ------------------------------------------------------------------
     # Playback
-    # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
         ip = player_id.split(":", 1)[1]
         await self._command(ip, f"setPlayerCmd:play:{item.url}")
@@ -229,9 +215,7 @@ class WiiMPlayerProvider(PlayerProvider):
         ip = player_id.split(":", 1)[1]
         await self._command(ip, f"setPlayerCmd:mute:{1 if muted else 0}")
 
-    # ------------------------------------------------------------------
     # Equaliser (official WiiM HTTP API: EQOn/EQOff/EQGetList/EQLoad/EQGetStat)
-    # ------------------------------------------------------------------
     async def _eq_preset_list(self, ip: str) -> List[str]:
         """Preset names from the device, cached. [] means EQ unsupported
         (older LinkPlay firmware answers 'unknown command')."""
@@ -276,9 +260,7 @@ class WiiMPlayerProvider(PlayerProvider):
             if await self._command(ip, cmd) is None:
                 raise RuntimeError(f"{cmd} failed on {ip}")
 
-    # ------------------------------------------------------------------
     # Native multiroom (LinkPlay — semi-official, not in WiiM HTTP PDF)
-    # ------------------------------------------------------------------
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:
         master_ip = master_id.split(":", 1)[1]
         for member_id in member_ids:

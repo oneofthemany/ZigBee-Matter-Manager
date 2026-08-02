@@ -1,21 +1,10 @@
 /**
- * energy.js
- * Energy tab — Octopus Energy smart-meter data + local smart-plug breakdown.
+ * Energy tab — Octopus smart-meter data plus the local smart-plug breakdown.
  *
- * Consumes:
- *   GET /api/octopus/status
- *   GET /api/octopus/summary
- *   GET /api/octopus/consumption?fuel=&range=
- *   GET /api/octopus/rates?fuel=
- *   GET /api/octopus/insights
- *   GET /api/octopus/breakdown?range=
- *
- * Integration:
- *   - `initEnergy()` called from main.js on DOMContentLoaded
- *   - Renders into <div id="energyDashboard">
- *   - Auto-refreshes every 5 min while the #energy tab is visible
- *   - Works with Octopus disabled: shows the plug breakdown (local DuckDB
- *     data) plus a pointer to Settings → APIs → Energy
+ * initEnergy() is called from main.js, renders into #energyDashboard, and
+ * auto-refreshes every 5 min while the tab is visible. Backed by
+ * /api/octopus/*. Works with Octopus disabled: shows the plug breakdown from
+ * local DuckDB plus a pointer to Settings -> APIs -> Energy.
  */
 
 import { createChart } from './chart-utils.js';
@@ -43,9 +32,6 @@ function socketPalette() {
         : ['#1d4ed8', '#15803d', '#b45309', '#6d28d9', '#0e7490', '#be185d'];
 }
 
-// ============================================================================
-// STATE
-// ============================================================================
 let energyTabActive = false;
 let refreshTimer = null;
 let charts = {};            // name → createChart wrapper
@@ -96,9 +82,7 @@ document.addEventListener('themechange', () => {
     if (energyTabActive) renderAllCharts();
 });
 
-// ============================================================================
 // INITIALIZATION
-// ============================================================================
 export function initEnergy() {
     log.log('Initializing Energy Module…');
 
@@ -135,9 +119,7 @@ function stopAutoRefresh() {
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
 }
 
-// ============================================================================
 // DATA LOADING
-// ============================================================================
 // Never lets a single slow/failed endpoint pin the tab on the loading
 // placeholder: bounded by a timeout, resolves null on any failure, and the
 // callers all degrade per-card on null.
@@ -219,9 +201,7 @@ async function loadEnergyDashboard(opts = {}) {
     }
 }
 
-// ============================================================================
 // SCAFFOLD / KPI ROW
-// ============================================================================
 function renderScaffold(status, summary) {
     const disabledBanner = octopusEnabled ? '' : `
       <div class="alert alert-info d-flex align-items-center gap-2 mb-3">
@@ -518,9 +498,7 @@ function renderInsightsCard() {
       </div>`;
 }
 
-// ============================================================================
 // CHARTS
-// ============================================================================
 function renderAllCharts() {
     if (octopusEnabled) {
         renderLiveChart();
@@ -1011,9 +989,7 @@ function renderBreakdownDaily(el, b) {
     });
 }
 
-// ============================================================================
 // CONTROLS (inline onclick handlers)
-// ============================================================================
 window.energySetRange = function(range) {
     if (!['day', 'week', 'month'].includes(range)) return;
     if (range === currentRange && !customDates) return;

@@ -1,18 +1,9 @@
 """
-Presence Users API routes — auth-aware version.
+Presence Users API.
 
-Scope model
------------
-- `admin`                              full control over presence users
-- `presence:read`                      list/view presence state for all users
-- `presence:write`                     update any user's location
-- `presence:write:<user_id>`           update only a specific user's location
-                                       (this is what mobile-app tokens get)
-
-The fix endpoint is the hot path called by the companion app every few minutes
-(or on geofence transitions). To minimize attack surface, we issue mobile
-tokens with ONLY `presence:write:<user_id>` and nothing else. A leaked phone
-token can update one person's location and nothing more.
+Mobile tokens are issued with only presence:write:<user_id>, so a leaked phone
+token can update one person's location and nothing more. Full scope table:
+docs/presence_detection.md.
 """
 
 from __future__ import annotations
@@ -197,13 +188,9 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
 
     @app.get("/api/presence/users")
     async def list_users(request: Request, _=Depends(require_scope("presence:read"))):
-        # Annotate rather than filter: an admin needs to see that a user's
-        # presence is stalled *and why*. Silently omitting them would present
-        # a missing MFA enrolment as a broken phone.
-        #
-        # `orphaned` distinguishes the two ways mfa_ok can be false. Without an
-        # account there is nothing to enrol, so "enable MFA" is useless advice —
-        # the record is a leftover from a deleted user and should be removed.
+        # Annotate rather than filter: an admin needs to see that presence is
+        # stalled *and why*. `orphaned` separates the two ways mfa_ok can be false —
+        # with no account there is nothing to enrol, so the record is a leftover.
         from modules.auth import get_auth_manager
         amgr = get_auth_manager()
 
@@ -229,11 +216,9 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             user_id: str,
             request: Request,
     ):
-        # Per-user scope check, mirroring report_fix below: a companion phone
-        # needs its OWN home lat/lon/radius to arm a geofence, but "presence:read"
-        # means "read EVERY user's location". Handing that to a phone would let a
-        # stolen device token track the whole household. presence:read:<user_id>
-        # keeps the phone's token to exactly one person — itself.
+        # Per-user scope, mirroring report_fix: a phone needs its own home
+        # lat/lon/radius to arm a geofence, but "presence:read" means every user's
+        # location. presence:read:<user_id> keeps a stolen token to one person.
         principal: Optional[Principal] = getattr(request.state, "principal", None)
         if principal is None:
             raise HTTPException(401, "Authentication required",
@@ -265,10 +250,8 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             # than holding its own copy of the table, so retuning a device is
             # a hub-side edit — no reinstall, no re-pair.
             "mode_params": mode_params(dev.cfg.presence_mode),
-            # Journey recording, same contract as mode_params: the phone
-            # applies whatever this says on its next config refresh, so
-            # enabling journeys or retuning the drive cadence never needs
-            # a re-pair.
+            # Same contract as mode_params: the phone applies this on its next
+            # config refresh, so retuning never needs a re-pair.
             "journeys": {
                 "enabled": bool(getattr(dev.cfg, "journeys_enabled", False)),
                 "drive_interval_s": DRIVE_FIX_INTERVAL_S,
@@ -282,15 +265,11 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
     ):
         data = payload.dict()
 
-        # `account` is tri-state, and .dict() flattens two of those states into
-        # one: a client that omitted the field and a client that sent null both
-        # arrive here as None. UserConfig.from_dict treats a MISSING key as
-        # "legacy, adopt user_id" and an explicit null as "deliberate standalone
-        # tracker", so passing the flattened dict straight through made every
-        # API-created presence user standalone — unlinkable to an account, and
-        # therefore permanently blocked by the MFA gate.
-        #
-        # Drop the key when the client never set it, restoring the distinction.
+        # `account` is tri-state and .dict() flattens two states into one: omitted
+        # and explicit null both arrive as None. from_dict reads MISSING as "legacy,
+        # adopt user_id" and null as "deliberate standalone", so passing the flat
+        # dict made every API-created user standalone and MFA-blocked. Drop the key
+        # when the client never set it.
         fields_set = getattr(payload, "model_fields_set", None)
         if fields_set is None:                      # pydantic v1
             fields_set = getattr(payload, "__fields_set__", set())
@@ -324,11 +303,10 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         if "account" not in fields_set:
             data.pop("account", None)
 
-            # upsert_user REPLACES the whole config, and the Presence tab's save
-            # doesn't know about `account` — so without this, editing someone's
-            # radius there would silently rewrite their account link. Carry the
-            # stored value forward, including a deliberate None, and let
-            # from_dict's migration apply only when the record is genuinely new.
+            # upsert_user REPLACES the whole config and the Presence tab's save
+            # does not know about `account`, so without this, editing a radius there
+            # would silently rewrite the account link. Carry the stored value
+            # forward, including a deliberate None.
             existing = _mgr().get_user(payload.user_id)
             if existing is not None:
                 data["account"] = getattr(existing.cfg, "account", None)
@@ -381,11 +359,9 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
             timestamp=fix.timestamp,
         )
 
-        # Journey recording rides on the same accepted fix. Gated on the
-        # user's opt-in, and only fixes that passed presence's accuracy and
-        # staleness checks are recorded — a fix too bad to move a badge is
-        # too bad to count miles with. Best-effort: journey storage failing
-        # must never fail the presence path the phone depends on.
+        # Gated on the opt-in, and only on fixes that passed presence's accuracy
+        # and staleness checks — a fix too bad to move a badge is too bad to count
+        # miles with. Best-effort: journey storage must never fail the presence path.
         if result.get("success") and fix.trip_id:
             dev = _mgr().get_user(user_id)
             if dev and getattr(dev.cfg, "journeys_enabled", False):

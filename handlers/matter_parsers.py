@@ -1,21 +1,10 @@
 """
-Matter Device Parsers — cluster/attribute interpretation for Matter devices.
-============================================================================
+Matter device parsers — cluster and attribute interpretation, mirroring the
+Zigbee handlers/ architecture.
 
-Mirrors the Zigbee handlers/ architecture:
-  - BaseMatterParser: extracts common info (BasicInformation cluster 40)
-  - Device-type-specific parsers: Switch, Light, Sensor, etc.
-  - Quirk parsers: IKEA, Eve, Nanoleaf, etc. (override base behaviour)
-
-The parser is selected based on device type from Descriptor cluster (29)
-and optionally by vendor/model for quirks.
-
-Usage:
-    parser = get_parser_for_node(node_attributes)
-    device_info = parser.parse_basic_info(attributes)
-    state = parser.build_state(attributes)
-    commands = parser.get_commands(attributes)
-    capabilities = parser.get_capabilities(attributes)
+A base parser for BasicInformation, device-type parsers, and vendor quirk
+parsers that override them. Selected from the Descriptor cluster device type,
+and by vendor/model for quirks. See docs/matter.md.
 """
 
 import logging
@@ -24,9 +13,7 @@ from typing import Dict, Any, List, Optional, Tuple
 logger = logging.getLogger("matter.parsers")
 
 
-# =============================================================================
 # MATTER CLUSTER & ATTRIBUTE CONSTANTS
-# =============================================================================
 
 class MatterClusters:
     """Matter cluster IDs."""
@@ -134,9 +121,7 @@ MATTER_DEVICE_TYPES = {
 }
 
 
-# =============================================================================
 # BASE MATTER PARSER
-# =============================================================================
 
 class BaseMatterParser:
     """
@@ -227,7 +212,7 @@ class BaseMatterParser:
                 result.append((dt, rev))
         return result
 
-    # ── Basic Info ──────────────────────────────────────────────────
+    # Basic Info
 
     def parse_basic_info(self, attributes: dict) -> dict:
         """Extract device identity from BasicInformation cluster."""
@@ -262,7 +247,7 @@ class BaseMatterParser:
             return str(label)
         return self.find_attr(attributes, MatterClusters.BASIC_INFORMATION, BasicInfoAttrs.PRODUCT_NAME, "Matter Device")
 
-    # ── State Building ──────────────────────────────────────────────
+    # State Building
 
     def build_state(self, attributes: dict, node_id: int, available: bool) -> dict:
         """Build normalised state dict. Override in subclasses for device-specific state."""
@@ -352,7 +337,7 @@ class BaseMatterParser:
 
         return state
 
-    # ── Commands ────────────────────────────────────────────────────
+    # Commands
 
     def get_commands(self, attributes: dict) -> List[dict]:
         """Get available commands based on clusters present."""
@@ -410,7 +395,7 @@ class BaseMatterParser:
 
         return commands
 
-    # ── Capabilities ────────────────────────────────────────────────
+    # Capabilities
 
     def get_capabilities(self, attributes: dict) -> List[str]:
         """Build capability list from clusters present across all endpoints."""
@@ -450,7 +435,7 @@ class BaseMatterParser:
 
         return caps
 
-    # ── Device Type Detection ───────────────────────────────────────
+    # Device Type Detection
 
     def get_device_type(self, attributes: dict) -> str:
         """Determine high-level device type from device type list and cluster presence."""
@@ -473,9 +458,8 @@ class BaseMatterParser:
                 continue
             all_clusters.update(self.get_clusters_for_endpoint(attributes, ep))
 
-        # ── Priority 1: Input devices (remotes, buttons, dials) ─────
-        # These CONTROL other devices — even if the descriptor says "light",
-        # a remote that controls lights is still a button.
+        # Input devices first: these CONTROL other devices, so a remote whose
+        # descriptor says "light" is still a button.
         INPUT_DEVICE_TYPES = {
             15,    # Generic Switch (buttons, remotes, dials)
             2080,  # Generic Switch (alternate)
@@ -489,7 +473,7 @@ class BaseMatterParser:
         if MatterClusters.SWITCH in all_clusters:
             return "Button"
 
-        # ── Priority 2: Sensors (report data, no actuation) ─────────
+        # Priority 2: Sensors (report data, no actuation)
         SENSOR_DEVICE_TYPES = {
             770,   # Temperature Sensor
             771,   # Pressure Sensor
@@ -525,7 +509,7 @@ class BaseMatterParser:
         }:
             return "Sensor"
 
-        # ── Priority 3: HVAC ────────────────────────────────────────
+        # Priority 3: HVAC
         HVAC_DEVICE_TYPES = {
             769,   # Thermostat
             43,    # Fan
@@ -539,7 +523,7 @@ class BaseMatterParser:
         if MatterClusters.FAN_CONTROL in all_clusters:
             return "Fan"
 
-        # ── Priority 4: Covers (blinds, shades, awnings) ───────────
+        # Priority 4: Covers (blinds, shades, awnings)
         COVER_DEVICE_TYPES = {
             514,   # Window Covering
             515,   # Window Covering Controller
@@ -549,7 +533,7 @@ class BaseMatterParser:
         if MatterClusters.WINDOW_COVERING in all_clusters:
             return "Cover"
 
-        # ── Priority 5: Locks ───────────────────────────────────────
+        # Priority 5: Locks
         LOCK_DEVICE_TYPES = {
             10,    # Door Lock
             11,    # Door Lock Controller
@@ -559,7 +543,7 @@ class BaseMatterParser:
         if MatterClusters.DOOR_LOCK in all_clusters:
             return "Lock"
 
-        # ── Priority 6: Lights ──────────────────────────────────────
+        # Priority 6: Lights
         LIGHT_DEVICE_TYPES = {
             256,   # On/Off Light
             257,   # Dimmable Light
@@ -573,7 +557,7 @@ class BaseMatterParser:
             if MatterClusters.ON_OFF in all_clusters:
                 return "Light"
 
-        # ── Priority 7: Switches / Plugs / Outlets ──────────────────
+        # Priority 7: Switches / Plugs / Outlets
         SWITCH_DEVICE_TYPES = {
             266,   # On/Off Plug-In Unit
             267,   # Dimmable Plug-In Unit
@@ -586,7 +570,7 @@ class BaseMatterParser:
                 return "Light"
             return "Switch"
 
-        # ── Priority 8: Media / Speakers ────────────────────────────
+        # Priority 8: Media / Speakers
         MEDIA_DEVICE_TYPES = {
             34,    # Speaker
             35,    # Cast Video Player
@@ -598,7 +582,7 @@ class BaseMatterParser:
         if all_device_types & MEDIA_DEVICE_TYPES:
             return "Media"
 
-        # ── Priority 9: Bridge / Infrastructure ─────────────────────
+        # Priority 9: Bridge / Infrastructure
         INFRA_DEVICE_TYPES = {
             14,    # Aggregator
             17,    # Bridge
@@ -611,7 +595,7 @@ class BaseMatterParser:
 
         return "Matter"
 
-    # ── Device Event Detection ───────────────────────────────────────
+    # Device Event Detection
 
     def parse_event(self, event_name: str, endpoint_id: int,
                     cluster_id: int, event_data: dict) -> str:
@@ -630,7 +614,7 @@ class BaseMatterParser:
     EVENT_PARSERS = {}
 
 
-    # ── Switch cluster (59) ───────────────────────────────────────────
+    # Switch cluster (59)
 
     @staticmethod
     def _parse_switch_event(self, event_name, endpoint_id, event_data):
@@ -652,7 +636,7 @@ class BaseMatterParser:
             elif count > 3: action = f"multi_{count}"
         return f"button_{endpoint_id}_{action}"
 
-    # ── Door Lock cluster (257) ───────────────────────────────────────
+    # Door Lock cluster (257)
 
     @staticmethod
     def _parse_lock_event(self, event_name, endpoint_id, event_data):
@@ -662,14 +646,14 @@ class BaseMatterParser:
         }
         return f"lock_{lock_events.get(event_name.lower(), event_name.lower())}"
 
-    # ── Boolean State cluster (69) ────────────────────────────────────
+    # Boolean State cluster (69)
 
     @staticmethod
     def _parse_boolean_event(self, event_name, endpoint_id, event_data):
         val = event_data.get("stateValue", event_data.get("state_value"))
         return "contact_open" if val else "contact_closed"
 
-    # ── Smoke CO Alarm cluster (92) ───────────────────────────────────
+    # Smoke CO Alarm cluster (92)
 
     @staticmethod
     def _parse_alarm_event(self, event_name, endpoint_id, event_data):
@@ -684,9 +668,7 @@ class BaseMatterParser:
     }
 
 
-# =============================================================================
 # SWITCH PARSER (buttons, remotes, dials)
-# =============================================================================
 
 class SwitchParser(BaseMatterParser):
     """Parser for Matter Switch devices (buttons, remotes, scroll wheels)."""
@@ -752,9 +734,7 @@ class SwitchParser(BaseMatterParser):
         ]
 
 
-# =============================================================================
 # LIGHT PARSER
-# =============================================================================
 
 class LightParser(BaseMatterParser):
     """Parser for Matter Light devices."""
@@ -764,9 +744,7 @@ class LightParser(BaseMatterParser):
         self.device_type = "Light"
 
 
-# =============================================================================
 # SENSOR PARSER
-# =============================================================================
 
 class SensorParser(BaseMatterParser):
     """Parser for Matter Sensor devices (temperature, humidity, occupancy, etc.)."""
@@ -776,9 +754,7 @@ class SensorParser(BaseMatterParser):
         self.device_type = "Sensor"
 
 
-# =============================================================================
 # IKEA QUIRK PARSER
-# =============================================================================
 
 class IkeaParser(BaseMatterParser):
     """Quirk parser for IKEA Matter devices."""
@@ -808,9 +784,7 @@ class IkeaSwitchParser(IkeaParser, SwitchParser):
         return action
 
 
-# =============================================================================
 # PARSER REGISTRY & AUTO-DETECTION
-# =============================================================================
 
 # Vendor ID → quirk parser mapping
 VENDOR_QUIRKS = {

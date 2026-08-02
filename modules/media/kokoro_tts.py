@@ -1,25 +1,11 @@
 """
-KokoroTTS — in-process neural TTS for the therapy SPA (default engine).
+KokoroTTS — in-process neural TTS for the therapy SPA (the default engine).
 
-Runs the Kokoro-82M model (Apache-2.0) directly inside ZMM via kokoro-onnx +
-onnxruntime — no sidecar container, no Wyoming hop. Speed is a native model
-parameter (length control), so unlike the wyoming-piper path there is no
-client-side time-stretch approximation. Pitch is applied client-side by the
-SPA (playbackRate), never here; it only participates in the cache key.
-
-The ~340 MB model files are NOT shipped in the image. They download on demand
-into data/tts_models/ (a persistent volume) when the operator clicks
-"Download voice model" on the therapy page — surfaced via the
-/api/tts/setup/* endpoints. Everything privileged/expensive is user-triggered.
-
-Same duck-typed API as TherapyTTS (status/voices/synthesize + setup_*), so
-routes and the SPA are engine-agnostic. Select per config:
-
-Config (config.yaml):
-  media:
-    therapy:
-      enabled: true
-      engine: kokoro            # kokoro (in-process) | wyoming (external piper)
+Runs Kokoro-82M via kokoro-onnx + onnxruntime, so speed is a native model
+parameter rather than a time-stretch approximation. The ~340 MB model files are
+not in the image; they download on demand into data/tts_models/ when the
+operator asks. Same duck-typed API as TherapyTTS, so routes stay
+engine-agnostic. See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -83,7 +69,7 @@ class KokoroTTS:
         self._sem = asyncio.Semaphore(1)   # onnx synth is CPU-bound; serialise
         self._job: Optional[Dict[str, Any]] = None
 
-    # ── Model files ─────────────────────────────────────────────────────
+    # Model files
 
     @property
     def _model_path(self) -> Path:
@@ -111,7 +97,7 @@ class KokoroTTS:
                             time.monotonic() - t0)
         return self._engine
 
-    # ── Public API (mirrors TherapyTTS) ─────────────────────────────────
+    # Public API (mirrors TherapyTTS)
 
     async def status(self) -> bool:
         """True when the engine can synthesize (model files present)."""
@@ -198,7 +184,7 @@ class KokoroTTS:
             for stale in files[:_CACHE_TRIM_BATCH]:
                 stale.unlink(missing_ok=True)
 
-    # ── Setup (model download; /api/tts/setup/*) ────────────────────────
+    # Setup (model download; /api/tts/setup/*)
 
     def setup_status(self) -> Dict[str, Any]:
         return {
@@ -265,7 +251,7 @@ class KokoroTTS:
             part.unlink(missing_ok=True)
             raise
 
-    # ── Job bookkeeping ─────────────────────────────────────────────────
+    # Job bookkeeping
 
     def _job_start(self, action: str, command: str):
         self._job = {"action": action, "status": "running",

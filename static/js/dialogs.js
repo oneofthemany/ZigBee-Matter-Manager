@@ -1,20 +1,15 @@
 /**
  * Shared dialog layer — replaces native confirm()/prompt().
- * Location: static/js/dialogs.js
  *
- * One lazily-created Bootstrap modal serves every request; calls are
- * serialised so overlapping requests queue instead of clobbering each other.
+ * One lazily-created Bootstrap modal serves every request; calls are serialised
+ * so overlapping requests queue instead of clobbering each other.
  *
- * Usage (ES module):
  *   import { confirmDialog, promptDialog } from './dialogs.js';
- *   if (await confirmDialog({ title: 'Remove device', message: '…', variant: 'danger' })) { … }
- *   const name = await promptDialog({ title: 'Rename', label: 'Friendly name', value: old });
+ *   await confirmDialog({ title, message, variant });   // -> true/false
+ *   await promptDialog({ title, label, value });        // -> string or null
  *
- * Classic scripts / inline onclick use the globals:
- *   window.zbmConfirm(opts) / window.zbmPrompt(opts)
- *
- * confirmDialog resolves true/false; promptDialog resolves the entered
- * string or null on cancel — the same contract as the natives.
+ * Classic scripts use window.zbmConfirm / window.zbmPrompt. Both resolve on the
+ * same contract as the natives.
  */
 
 let modalEl = null;

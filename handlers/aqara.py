@@ -24,9 +24,7 @@ _ZCL_DATATYPE_ID = {
 logger = logging.getLogger("handlers.aqara")
 
 
-# ============================================================
 # XIAOMI STRUCTURED ATTRIBUTE PARSER
-# ============================================================
 def parse_xiaomi_struct(data: bytes) -> dict:
     """
     Parse Xiaomi/Aqara structured attribute data (typically attribute 0x00DF or 0x00F7).
@@ -131,10 +129,8 @@ XIAOMI_ATTR_MAP = {
 }
 
 
-# ============================================================
 # MULTISTATE INPUT CLUSTER (0x0012)
 # Used by: Aqara Buttons, Cube, Vibration Sensor
-# ============================================================
 @register_handler(0x0012)
 class MultistateInputHandler(ClusterHandler):
     """
@@ -204,10 +200,8 @@ class MultistateInputHandler(ClusterHandler):
         ]
 
 
-# ============================================================
 # ANALOG INPUT CLUSTER (0x000C)
 # Used by: Aqara Cube (Rotation) or Vibration Sensor
-# ============================================================
 @register_handler(0x000C)
 class AqaraAnalogInputHandler(ClusterHandler):
     CLUSTER_ID = 0x000C
@@ -220,10 +214,8 @@ class AqaraAnalogInputHandler(ClusterHandler):
             logger.debug(f"[{self.device.ieee}] Aqara Analog: {value}")
 
 
-# ============================================================
 # AQARA MANUFACTURER SPECIFIC CLUSTER (0xFCC0)
 # Used by: Aqara TRV E1, Thermostats, Motion Sensors, Switches, etc.
-# ============================================================
 @register_handler(0xFCC0)
 class AqaraManufacturerCluster(ClusterHandler):
     """
@@ -241,22 +233,22 @@ class AqaraManufacturerCluster(ClusterHandler):
     CLUSTER_ID = 0xFCC0
     MANUFACTURER_CODE = 0x115F  # LUMI/Aqara manufacturer code
 
-    # ===== Common Attributes (multiple device types) =====
+    # Common Attributes (multiple device types)
     ATTR_MODE = 0x0009                  # uint8 - Device mode
     ATTR_POWER_OUTAGE_MEM = 0x0201      # Bool - Power outage memory
 
-    # ===== Switch/Relay Attributes =====
+    # Switch/Relay Attributes
     ATTR_OPERATION_MODE = 0x0200        # uint8 - 0=Decoupled, 1=Coupled
     ATTR_SWITCH_MODE = 0x0004           # uint8 - 1=Fast, 2=Multi
     ATTR_SWITCH_TYPE = 0x000A           # uint8 - 1=Toggle, 2=Momentary
     ATTR_INDICATOR_LIGHT = 0x00F0       # uint8 - 0=Normal, 1=Reverse
 
-    # ===== Motion Sensor Attributes =====
+    # Motion Sensor Attributes
     ATTR_DETECTION_INTERVAL = 0x0102    # uint8 - Seconds between detections
     ATTR_MOTION_SENSITIVITY = 0x010C    # uint8 - 1=Low, 2=Medium, 3=High
     ATTR_TRIGGER_INDICATOR = 0x0152     # uint8 - 0=Off, 1=On
 
-    # ===== Thermostat/TRV Attributes (E1: lumi.airrtc.agl001) =====
+    # Thermostat/TRV Attributes (E1: lumi.airrtc.agl001)
     ATTR_MOTOR_CALIBRATION = 0x0270     # 624 decimal - Write 1 to start calibration
     ATTR_SYSTEM_MODE = 0x0271           # uint8 - System mode
     ATTR_PRESET = 0x0272                # uint8 - Preset mode
@@ -278,18 +270,18 @@ class AqaraManufacturerCluster(ClusterHandler):
     # Alias kept for legacy code paths that referenced the input form of 0x0280
     ATTR_EXTERNAL_TEMP_INPUT = 0x0280
 
-    # ===== Temperature/Humidity Sensor Attributes =====
+    # Temperature/Humidity Sensor Attributes
     ATTR_TEMP_DISPLAY_UNIT = 0xFF01     # uint8 - 0=Celsius, 1=Fahrenheit
     ATTR_MEASUREMENT_INTERVAL = 0x00EF  # uint16 - Measurement interval seconds
 
-    # ===== Type Enforcement Map =====
+    # Type Enforcement Map
     ATTR_TYPES = {
-        # --- Boolean Attributes ---
+        # Boolean Attributes
         0x0201: t.Bool,      # Power Outage Memory
         0x027A: t.Bool,      # Window Open Status
         0x0275: t.Bool,      # Valve Alarm
 
-        # --- Integer Attributes ---
+        # Integer Attributes
         0x0273: t.uint8_t,   # Window Detection
         0x0274: t.uint8_t,   # Valve Detection
         0x0277: t.uint8_t,   # Child Lock
@@ -319,7 +311,7 @@ class AqaraManufacturerCluster(ClusterHandler):
 
         updates = {}
 
-        # === Thermostat/TRV Attributes ===
+        # Thermostat/TRV Attributes
         if attrid == self.ATTR_WINDOW_DETECTION:
             updates["window_detection"] = bool(value)
             logger.info(f"[{self.device.ieee}] Window detection: {'enabled' if value else 'disabled'}")
@@ -328,17 +320,16 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["valve_detection"] = bool(value)
             logger.info(f"[{self.device.ieee}] Valve detection: {'enabled' if value else 'disabled'}")
 
-        # === TRV System Mode ===
+        # TRV System Mode
         elif attrid == self.ATTR_SYSTEM_MODE:  # 0x0271
-            # Aqara only supports off and heat. Map directly to the
-            # state key the frontend reads (`system_mode`), NOT the
-            # legacy `aqara_system_mode` which the UI never looked at.
+            # Aqara supports only off and heat. Maps onto `system_mode`, the key
+            # the frontend reads — not the legacy `aqara_system_mode`.
             SYSTEM_MODES = {0: "off", 1: "heat"}
             mode_name = SYSTEM_MODES.get(value, f"unknown({value})")
             updates["system_mode"] = mode_name
             logger.info(f"[{self.device.ieee}] System mode: {mode_name}")
 
-        # === TRV Preset (manual / away / auto) ===
+        # TRV Preset (manual / away / auto)
         elif attrid == self.ATTR_PRESET:  # 0x0272
             # decodePreset(): {0: manual, 1: auto, 2: away}.
             # Value 3 = device firmware-internal "in setup / commissioning"
@@ -347,20 +338,16 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["preset"] = preset_name
             logger.info(f"[{self.device.ieee}] Preset: {preset_name}")
 
-        # === Calibrated flag (boolean) ===
-        # Per Zigbee2MQTT, 0x027B on agl001/SRTS-A01 is a binary "calibrated"
-        # flag, NOT a 4-state enum. true = valve calibrated; false = still
-        # needs calibrating (mount on the radiator valve, then triple-press the
-        # button — the on-device motor adaptation shows F1→F12 on the display).
-        # We map it onto the frontend's existing status strings: calibrated ->
-        # "ready" (badge clears), not calibrated -> "not_ready" (NEEDS CAL).
+        # 0x027B is a binary "calibrated" flag, not a 4-state enum (per Z2M).
+        # Mapped onto the frontend status strings: true -> "ready",
+        # false -> "not_ready". See docs/aqara_cluster_guide.md.
         elif attrid == self.ATTR_CALIBRATED:  # 0x027B
             is_cal = bool(value)
             updates["calibrated"] = is_cal
             updates["calibration_status"] = "ready" if is_cal else "not_ready"
             logger.info(f"[{self.device.ieee}] Calibrated: {is_cal}")
 
-        # === Setup / E11 commissioning flag ===
+        # Setup / E11 commissioning flag
         elif attrid == self.ATTR_SETUP_MODE:  # 0x027C
             updates["setup_mode"] = bool(value)
             if value:
@@ -370,33 +357,32 @@ class AqaraManufacturerCluster(ClusterHandler):
                     "the button on the device to start)"
                 )
 
-        # === Schedule enable/disable ===
+        # Schedule enable/disable
         elif attrid == self.ATTR_SCHEDULE:  # 0x027D
             updates["schedule_enabled"] = bool(value)
             logger.info(f"[{self.device.ieee}] Schedule: {'on' if value else 'off'}")
 
-        # === Sensor Type ===
+        # Sensor Type
         elif attrid == self.ATTR_SENSOR_TYPE:  # 0x027E
             sensor_name = "external" if value in (1, 2) else "internal"
             updates["sensor_type"] = sensor_name
             logger.info(f"[{self.device.ieee}] Sensor type: {sensor_name}")
 
-        # === 0x0280: status byte (0x00/0x01), NOT a temperature ===
-        # external temperature is pushed via 0xFFF2 and echoed by the device through
-        # the standard thermostat local_temperature.
+        # 0x0280 is a status byte (0x00/0x01), not a temperature. External temp
+        # is pushed via 0xFFF2 and echoed back through local_temperature.
         elif attrid == self.ATTR_EXTERNAL_TEMP:  # 0x0280
             logger.debug(f"[{self.device.ieee}] Ignoring 0x0280 report: {value!r}")
 
-        # === Away Preset Temperature ===
+        # Away Preset Temperature
         elif attrid == self.ATTR_AWAY_PRESET_TEMPERATURE:  # 0x0279
             updates["away_preset_temperature"] = round(value / 100, 1) if value else 0
 
-        # === Battery Percentage ===
+        # Battery Percentage
         elif attrid == self.ATTR_BATTERY_PCT:  # 0x040A
             updates["battery"] = min(value, 100)
             logger.info(f"[{self.device.ieee}] Battery: {value}%")
 
-        # === Aqara Checkin / Reporting Interval ===
+        # Aqara Checkin / Reporting Interval
         elif attrid == self.ATTR_REPORTING_INTERVAL:  # 0x00EE
             updates["checkin_interval"] = value
             logger.info(
@@ -418,14 +404,12 @@ class AqaraManufacturerCluster(ClusterHandler):
                 logger.warning(f"[{self.device.ieee}] Valve alarm triggered!")
 
         elif attrid == self.ATTR_MOTOR_CALIBRATION:
-            # 0x0270 is a write-only command attribute. The device auto-resets
-            # it to 0 when the command is consumed — that is NOT a status.
-            # Do not write 'idle'/'calibrating' to state from here, otherwise
-            # the frontend gets stuck on 'calibrating' forever. Real status
-            # comes from ATTR_CALIBRATED (0x027B).
+            # 0x0270 is write-only; the device auto-resets it to 0 once consumed,
+            # which is not a status. Writing status from here strands the frontend
+            # on "calibrating" — real status is ATTR_CALIBRATED (0x027B).
             logger.debug(f"[{self.device.ieee}] Motor calibration command echo: {value}")
 
-        # === Switch/Relay Attributes ===
+        # Switch/Relay Attributes
         elif attrid == self.ATTR_OPERATION_MODE:
             mode = "decoupled" if value == 0 else "coupled"
             updates["operation_mode"] = mode
@@ -452,7 +436,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["power_outage_memory"] = bool(value)
             logger.info(f"[{self.device.ieee}] Power outage memory: {'on' if value else 'off'}")
 
-        # === Motion Sensor Attributes ===
+        # Motion Sensor Attributes
         elif attrid == self.ATTR_DETECTION_INTERVAL:
             updates["detection_interval"] = value
             logger.info(f"[{self.device.ieee}] Detection interval: {value}s")
@@ -467,7 +451,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["trigger_indicator"] = bool(value)
             logger.info(f"[{self.device.ieee}] Trigger indicator: {'on' if value else 'off'}")
 
-        # === Common Attributes ===
+        # Common Attributes
         elif attrid == self.ATTR_MODE:
             updates["device_mode"] = value
             logger.debug(f"[{self.device.ieee}] Device mode: {value}")
@@ -477,7 +461,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             if value:
                 logger.warning(f"[{self.device.ieee}] Battery replacement needed!")
 
-        # === Temperature/Humidity Display ===
+        # Temperature/Humidity Display
         elif attrid == self.ATTR_TEMP_DISPLAY_UNIT:
             unit = "fahrenheit" if value == 1 else "celsius"
             updates["temperature_unit"] = unit
@@ -487,7 +471,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             updates["measurement_interval"] = value
             logger.info(f"[{self.device.ieee}] Measurement interval: {value}s")
 
-        # === Xiaomi Structured Attributes (0x00DF and 0x00F7) ===
+        # Xiaomi Structured Attributes (0x00DF and 0x00F7)
         elif attrid in (0x00DC, 0x00DF, 0x00E5, 0x00F7):
             if isinstance(value, (bytes, bytearray)):
                 try:
@@ -543,11 +527,9 @@ class AqaraManufacturerCluster(ClusterHandler):
         logger.info(f"[{self.device.ieee}] Configuring Aqara manufacturer cluster 0xFCC0")
 
         if hasattr(self.device, 'hvac'):
-            # Best-effort writes — if the device is asleep these will time
-            # out and we'll retry on the next configure cycle. We swallow
-            # exceptions so a failed write doesn't abort the whole device
-            # config (the heating controller can still drive the device
-            # via standard 0x0201 setpoint writes regardless).
+            # Best-effort: a sleeping device times out and retries next configure
+            # cycle. Swallowed so one failed write cannot abort the whole device
+            # config — the controller can still drive it via 0x0201 setpoints.
             for attr_id, value, label in (
                     (self.ATTR_PRESET, 0, "preset=manual"),
                     (self.ATTR_SCHEDULE, 0, "schedule=off"),
@@ -847,9 +829,8 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_WINDOW_DETECTION: "window_detection",
                 self.ATTR_CHILD_LOCK: "child_lock",
                 self.ATTR_VALVE_DETECTION: "valve_detection",
-                # ATTR_MOTOR_CALIBRATION (0x0270) is write-only — use 0x027B.
-                # Name it "calibrated" (raw) so a base-poll path can never
-                # overwrite the decoded "calibration_status" string with an int.
+                # 0x0270 is write-only, so read 0x027B. Named "calibrated" (raw) so
+                # a base-poll path cannot overwrite the decoded string with an int.
                 self.ATTR_CALIBRATED: "calibrated",
                 self.ATTR_WINDOW_OPEN: "window_open",
                 self.ATTR_VALVE_ALARM: "valve_alarm",
@@ -896,9 +877,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             1
         )
 
-    # ------------------------------------------------------------------
     # AGL001 external-sensor protocol (attribute 0xFFF2)
-    # ------------------------------------------------------------------
 
     # pseudo-IEEE as the "virtual" external sensor
     _VIRTUAL_SENSOR_IEEE = bytes.fromhex("00158d00019d1b98")
@@ -983,12 +962,9 @@ class AqaraManufacturerCluster(ClusterHandler):
             ok = await self.write_attribute(self.ATTR_MOTOR_CALIBRATION, 1)
             if not ok:
                 return False
-            # Do NOT fake an "in_progress" status — there is no such device
-            # state on agl001 (0x027B is a boolean). The on-device adaptation
-            # takes ~10s and only completes when the head is mounted on the
-            # radiator valve. Re-read the real "calibrated" flag afterwards so
-            # the UI reflects the true result instead of stranding on a
-            # phantom status.
+            # No "in_progress" state exists on agl001 (0x027B is boolean), so do
+            # not fake one. Adaptation takes ~10 s and needs the head mounted;
+            # re-read the real flag afterwards rather than strand a phantom status.
             import asyncio
 
             async def _recheck_calibration():
@@ -1079,9 +1055,8 @@ class AqaraManufacturerCluster(ClusterHandler):
             return await self.set_external_temperature(temp_c)
 
         elif command == "sensor_type":
-            # Accept 'internal'/'external' strings or 0/1/bool. Switching is
-            # done via the 0xFFF2 blob protocol — attribute 0x027E is only
-            # the read-back state, writing it directly is rejected/ignored.
+            # Accepts 'internal'/'external', 0/1 or bool. Switching goes through
+            # the 0xFFF2 blob protocol — 0x027E is read-back only.
             if isinstance(value, str):
                 sv = value.strip().lower()
                 external = sv in ("external", "1", "true", "on", "yes")
@@ -1105,7 +1080,7 @@ class AqaraManufacturerCluster(ClusterHandler):
         """
         options = []
 
-        # === Thermostat/TRV Configuration ===
+        # Thermostat/TRV Configuration
         if hasattr(self.device, 'hvac'):
             options.extend([
                 {
@@ -1167,7 +1142,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 }
             ])
 
-        # === Motion Sensor Configuration ===
+        # Motion Sensor Configuration
         if hasattr(self.device, 'occupancy'):
             options.extend([
                 {
@@ -1208,7 +1183,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 }
             ])
 
-        # === Switch/Relay Configuration ===
+        # Switch/Relay Configuration
         if hasattr(self.device, 'on_off'):
             options.extend([
                 {
@@ -1259,7 +1234,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 }
             ])
 
-        # === Common Configuration ===
+        # Common Configuration
         options.append({
             "name": "power_outage_memory",
             "label": "Power Outage Memory",
@@ -1313,7 +1288,7 @@ class AqaraManufacturerCluster(ClusterHandler):
         # Only expose TRV features if device has HVAC capability
         if hasattr(self.device, 'hvac') or any(h.CLUSTER_ID == 0x0201 for h in self.device.handlers.values()):
 
-            # === READ-ONLY STATUS SENSORS ===
+            # READ-ONLY STATUS SENSORS
             configs.extend([
                 {
                     "component": "binary_sensor",
@@ -1339,7 +1314,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 }
             ])
 
-            # === CONFIGURATION CONTROLS (Switches) ===
+            # CONFIGURATION CONTROLS (Switches)
             configs.extend([
                 {
                     "component": "switch",

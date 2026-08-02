@@ -1,19 +1,13 @@
-/**
- * Packet Analyser - Deep Packet Inspection for Zigbee Messages
- * ============================================================
- * fully fledged implementation of ZCL (Zigbee Cluster Library) analysis.
- * Covers Global Commands, Cluster Specific Commands, and Tuya Protocols.
- *
- * Now also decodes individual attributes in Report Attributes / Read
- * Attributes Response payloads into human-readable values (centidegree
- * temperatures, percentages, enums, etc.) for the side-by-side debug view.
- */
+/* Packet Analyser - Deep Packet Inspection for Zigbee Messages
+   fully fledged implementation of ZCL (Zigbee Cluster Library) analysis.
+   Covers Global Commands, Cluster Specific Commands, and Tuya Protocols.
+   Now also decodes individual attributes in Report Attributes / Read
+   Attributes Response payloads into human-readable values (centidegree
+   temperatures, percentages, enums, etc.) for the side-by-side debug view. */
 const log = zmmLog('packet-analysis');
 
 
-// =============================================================================
 // 1. ZIGBEE CONSTANTS & REGISTRIES
-// =============================================================================
 
 const CLUSTER_NAMES = {
     // General
@@ -394,9 +388,7 @@ const BITMAP_DECODERS = {
 };
 
 
-// =============================================================================
 // 2. PARSING LOGIC
-// =============================================================================
 
 /**
  * Parse Tuya Payload (This is the old, rough client-side implementation.
@@ -488,28 +480,12 @@ function analyseTuyaDP(dp) {
     return interpretation;
 }
 
-// =============================================================================
 // 2b. ZCL ATTRIBUTE INTERPRETATION
-// =============================================================================
 
 /**
- * Convert a single ZCL attribute report entry into a human-readable
- * interpretation object suitable for the side-by-side debug view.
- *
- * Input shape (from packet.decoded.attributes):
- *   { id: "0x0000", name: "0x0000", type: "0x29", value: 2176 }
- *
- * Output shape:
- *   {
- *     id: "0x0000",
- *     attr_name: "MeasuredValue",
- *     type_hex: "0x29",
- *     type_name: "int16",
- *     raw_value: 2176,
- *     display_value: "21.76 °C",
- *     interpretation: "Ambient temperature (centidegrees → °C)",
- *     extra: ["..."]
- *   }
+ * Turn one ZCL attribute report entry from packet.decoded.attributes into a
+ * human-readable object for the side-by-side debug view: attr_name, type_name,
+ * raw_value, display_value ("21.76 °C"), interpretation and any extras.
  */
 function interpretZclAttribute(clusterId, attr) {
     const idNum = typeof attr.id === 'string' ? parseInt(attr.id, 16) : attr.id;
@@ -664,9 +640,7 @@ function formatRawValue(v) {
     try { return JSON.stringify(v); } catch { return String(v); }
 }
 
-// =============================================================================
 // 3. MAIN ANALYSIS FUNCTION
-// =============================================================================
 
 /**
  * Main Packet Analysis Function
@@ -678,15 +652,10 @@ export function analysePacket(packet) {
     const cmdId = packet.decoded?.command_id !== undefined ? packet.decoded.command_id : -1;
     const isClusterSpecific = packet.decoded?.frame_control?.cluster_specific || false;
 
-    // 1a. TX Command short-circuit
-    // -----------------------------------------------------------------------
-    // Outbound commands captured by capture_tx_command (zigbee_debug.py) are
-    // synthetic packets — they don't have a ZCL frame, so cluster_id, command_id
-    // and frame_control are all absent. The backend stamps them with cluster
-    // 0xFFFE ("TX Command") and stores the human command name in
-    // decoded.command_name. Trying to run them through the normal RX command
-    // resolution produces nonsense like "0xfffe(0xfffe)" + "Global Cmd 0x-1 ?".
-    // Detect them up-front and build a tailored analysis instead.
+    // Outbound commands captured by capture_tx_command are synthetic: no ZCL
+    // frame, so cluster_id, command_id and frame_control are absent. The backend
+    // stamps cluster 0xFFFE and puts the name in decoded.command_name. Running
+    // them through RX resolution yields nonsense, so branch up front.
     const isTxCommand = packet.direction === "TX"
         && (packet.cluster === 0xFFFE || packet.cluster_id === 0xFFFE)
         && packet.decoded
@@ -757,7 +726,7 @@ export function analysePacket(packet) {
 
     // 4. Detailed Analysis Logic
 
-    // --- A. Tuya Analysis (Prioritise Backend Data: packet.tuya_dps) ---
+    // A. Tuya Analysis (Prioritise Backend Data: packet.tuya_dps)
     if (cid === 0xEF00) {
         analysis.summary = analysis.command;
 
@@ -791,7 +760,7 @@ export function analysePacket(packet) {
         }
     }
 
-    // --- B. ZCL Attribute Reporting (0x0A) or Read Response (0x01) ---
+    // B. ZCL Attribute Reporting (0x0A) or Read Response (0x01)
     else if ((cmdId === 0x0A || cmdId === 0x01) && !isClusterSpecific) {
         analysis.summary = `${analysis.cluster_name} Report`;
 
@@ -839,7 +808,7 @@ export function analysePacket(packet) {
         }
     }
 
-    // --- C. Specific Cluster Logic ---
+    // C. Specific Cluster Logic
     else if (cid === 0x0006 && isClusterSpecific) { // On/Off
         analysis.summary = `Switch ${analysis.command}`;
     }
@@ -854,9 +823,7 @@ export function analysePacket(packet) {
     return analysis;
 }
 
-// =============================================================================
 // 4. RENDERING (HTML GENERATION)
-// =============================================================================
 
 /**
  * Render the human-readable side of the debug view.
@@ -906,7 +873,7 @@ export function renderPacketAnalysis(packet) {
         html += `<div class="mb-2"><strong>Summary:</strong> ${escapeHtml(analysis.summary)}</div>`;
     }
 
-    // --- A. Decoded ZCL attribute reports (Read Response / Report Attributes) ---
+    // A. Decoded ZCL attribute reports (Read Response / Report Attributes)
     if (analysis.attribute_reports && analysis.attribute_reports.length > 0) {
         html += `<div class="zcl-attrs bg-dark p-2 rounded mb-2">`;
         html += `<div class="small text-warning mb-2"><i class="fas fa-list-ul"></i> Decoded Attributes</div>`;
@@ -937,7 +904,7 @@ export function renderPacketAnalysis(packet) {
         html += `</div>`;
     }
 
-    // --- B. Tuya Deep Analysis (backend-decoded) ---
+    // B. Tuya Deep Analysis (backend-decoded)
     if (analysis.cluster_id === 0xEF00 && packet.tuya_dps && packet.tuya_dps.length > 0) {
         const dps = packet.tuya_dps;
         html += `<div class="tuya-details bg-dark p-2 rounded mb-2">`;
@@ -978,7 +945,7 @@ export function renderPacketAnalysis(packet) {
         });
         html += `</div>`;
     }
-    // --- C. Tuya client-side fallback ---
+    // C. Tuya client-side fallback
     else if (analysis.tuya_analysis) {
         const ta = analysis.tuya_analysis;
         html += `<div class="tuya-details bg-dark p-2 rounded mb-2">`;
@@ -1051,9 +1018,7 @@ export function renderPacketAnalysis(packet) {
     return html;
 }
 
-// =============================================================================
 // 5. UTILITIES
-// =============================================================================
 
 function hexToBytes(hex) {
     const bytes = [];

@@ -1,55 +1,9 @@
 """
-Heating Advisor — Weather-aware smart heating intelligence.
-============================================================
-Correlates outdoor weather (from WeatherService), indoor temperatures
-(from HVAC devices), and heating demand history (from telemetry_db)
-to provide:
-  - EPC-style efficiency rating for the property
-  - Thermal decay modelling per zone
-  - Pre-heat timing recommendations
-  - Energy-saving tips based on usage patterns
-  - Bill reduction guidance
-  - Per-zone analysis when zones are configured
+Weather-aware heating intelligence — read-only analysis, no control.
 
-Config (config.yaml):
-  heating:
-    enabled: true
-    property:
-      type: semi-detached       # detached, semi-detached, mid-terrace, flat
-      age: 1960                 # build year
-      insulation: partial       # none, partial, full, cavity_wall
-      glazing: double           # single, double, triple
-      floor_area_m2: 85
-      floors: 2
-    tariff:
-      type: fixed               # fixed, economy7, agile, variable
-      unit_rate_p: 24.5         # pence per kWh
-      standing_charge_p: 46.36  # daily standing charge
-      off_peak_start: "00:00"   # economy7/agile off-peak window
-      off_peak_end: "07:00"
-      off_peak_rate_p: 7.5
-    boiler:
-      type: gas                 # gas, oil, electric, heat_pump
-      efficiency_percent: 89    # SEDBUK rating
-      output_kw: 24
-    comfort:
-      min_temp: 18.0            # don't let it drop below
-      target_temp: 21.0         # default comfort target
-      night_setback: 16.0       # overnight setback
-      preheat_max_minutes: 90   # max pre-heat lead time
-    zones:
-      - id: living_room
-        name: "Living Room"
-        target_temp: 21.0
-        night_setback: 17.0
-        min_temp: 16.0
-        priority: 5
-        devices: ["00:15:8d:00:00:aa:bb:cc"]
-        schedule:
-          - days: [mon, tue, wed, thu, fri]
-            start: "07:00"
-            end: "22:00"
-            temp: 21.0
+Correlates outdoor weather, indoor temperatures and heating demand history into
+an EPC-style efficiency rating, per-zone thermal decay, pre-heat timing,
+energy-saving tips and bill guidance. Config reference: docs/heating.md.
 """
 import asyncio
 import logging
@@ -61,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.heating_advisor")
 
-# ── Thermal constants ──────────────────────────────────────────────
+# Thermal constants
 HEAT_LOSS_COEFFICIENTS = {
     ("detached", "none"):       3.0,
     ("detached", "partial"):    2.2,
@@ -94,7 +48,6 @@ EPC_BANDS = [
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
-# ── Helpers ────────────────────────────────────────────────────────
 def _get_or(d: Optional[dict], key: str, default):
     """
     dict.get-style helper that also substitutes the default when the key
@@ -204,11 +157,9 @@ class HeatingAdvisor:
                 f"zones={len(self.zones)}"
             )
 
-    # ── Zone normalisation ─────────────────────────────────────────
-    # ── Tariff resolution ──────────────────────────────────────────
-    # Every tariff read below prefers the live provider (Octopus) and falls
-    # back to the manual config snapshot, so a provider outage can only ever
-    # degrade to the pre-integration behaviour.
+    # Every tariff read below prefers the live provider (Octopus) and falls back
+    # to the manual config snapshot, so an outage degrades to pre-integration
+    # behaviour rather than failing.
 
     def _boiler_fuel(self) -> str:
         return "electricity" if self.boiler_type in ("electric", "heat_pump") else "gas"
@@ -309,7 +260,6 @@ class HeatingAdvisor:
         share = self._thermal_mass / max(1, len(self.zones))
         return {z["id"]: share for z in self.zones}
 
-    # ── Lifecycle ──────────────────────────────────────────────────
     def start(self):
         if not self.enabled:
             logger.info("Heating Advisor disabled")
@@ -334,7 +284,6 @@ class HeatingAdvisor:
                 logger.error(f"Heating analysis failed: {e}", exc_info=True)
             await asyncio.sleep(900)
 
-    # ── Public API ─────────────────────────────────────────────────
     def get_dashboard(self, force: bool = False) -> Dict[str, Any]:
         # Cache at 60s — long enough to dampen accidental spam from the UI
         # but short enough that live values feel live. `force=True` bypasses.
@@ -400,7 +349,7 @@ class HeatingAdvisor:
             "solar_gain_w": round(solar_w, 1) if solar_w else None,
         }
 
-    # ── Core Analysis ──────────────────────────────────────────────
+    # Core Analysis
     def _run_analysis(self) -> Dict[str, Any]:
         outdoor = self._get_outdoor_temp()
         forecast = self._get_forecast_temps()
@@ -575,7 +524,7 @@ class HeatingAdvisor:
             "ts": time.time(),
         }
 
-    # ── Zone Analysis ──────────────────────────────────────────────
+    # Zone Analysis
     def _analyse_zones(self, hvac_devices: List[dict], outdoor: Optional[float]) -> List[Dict]:
         """Produce per-zone analysis: current temps, effective target, demand, pre-heat."""
         by_ieee = {d.get("ieee"): d for d in hvac_devices if d.get("ieee")}
@@ -724,7 +673,7 @@ class HeatingAdvisor:
                 return z["id"]
         return None
 
-    # ── Tips Engine ────────────────────────────────────────────────
+    # Tips Engine
     def _generate_tips(self, outdoor: Optional[float], indoor: Optional[float],
                        heating_active: bool, epc: Dict,
                        forecast: List) -> List[Dict]:
@@ -852,7 +801,7 @@ class HeatingAdvisor:
 
         return tips
 
-    # ── Device Discovery ───────────────────────────────────────────
+    # Device Discovery
     def _find_hvac_devices(self) -> List[Dict]:
         """
         Find HVAC-capable devices. Tolerant of:
@@ -1038,7 +987,7 @@ class HeatingAdvisor:
         demands = [x for x in demands if x is not None]
         return round(sum(demands) / len(demands), 0) if demands else 0
 
-    # ── EPC Estimation ─────────────────────────────────────────────
+    # EPC Estimation
     def _estimate_epc(self, outdoor_temp: Optional[float]) -> Dict:
         degree_days = 2200
         if outdoor_temp is not None:
@@ -1067,7 +1016,7 @@ class HeatingAdvisor:
             "degree_days": degree_days,
         }
 
-    # ── Pre-heat Calculation ───────────────────────────────────────
+    # Pre-heat Calculation
     def _calc_preheat_minutes(self, start_temp: float, target_temp: float,
                               outdoor_temp: float, zone_id: Optional[str] = None,
                               solar_gain_w: float = 0.0) -> int:
@@ -1109,7 +1058,7 @@ class HeatingAdvisor:
         minutes = int(math.ceil(seconds / 60))
         return max(1, minutes)
 
-    # ── Cost Estimation ────────────────────────────────────────────
+    # Cost Estimation
     def _estimate_daily_cost(self, avg_demand: float, outdoor: Optional[float]) -> Dict:
         actual = self._actual_gas_cost()
         if actual:
@@ -1184,7 +1133,7 @@ class HeatingAdvisor:
         finally:
             self._gas_refreshing = False
 
-    # ── Historical Analysis ────────────────────────────────────────
+    # Historical Analysis
     def get_heating_history(self, hours: int = 24) -> Dict:
         """
         Telemetry history per HVAC device. Tries several attribute names for

@@ -1,21 +1,8 @@
 """
-Heating Advisor API routes.
+Heating Advisor API — dashboard, pre-heat recommendation, history and tips, plus
+heating config and zone CRUD.
 
-Endpoints:
-  GET  /api/heating/dashboard           — live dashboard payload
-  GET  /api/heating/preheat             — on-demand pre-heat recommendation
-  GET  /api/heating/history             — 24h+ history from telemetry_db
-  GET  /api/heating/tips                — just the tips from dashboard
-
-  GET  /api/heating/config              — full heating config (property/tariff/boiler/comfort/zones)
-  POST /api/heating/config              — save heating config (merges into config.yaml)
-
-  GET  /api/heating/zones               — list of zones
-  POST /api/heating/zones               — replace the zones list
-  POST /api/heating/zones/{zone_id}     — create/update a single zone
-  DELETE /api/heating/zones/{zone_id}   — delete a single zone
-
-  GET  /api/heating/thermostats         — HVAC-capable devices available for zone assignment
+Config writes merge into config.yaml. See docs/heating.md.
 """
 import asyncio
 import logging
@@ -29,7 +16,7 @@ logger = logging.getLogger("routes.heating")
 
 CONFIG_PATH = "./config/config.yaml"
 
-# ─── Schema defaults ───────────────────────────────────────────────
+# Schema defaults
 _PROPERTY_DEFAULTS = {
     "type": "semi-detached",
     "age": 1970,
@@ -67,7 +54,7 @@ _BOILER_TYPES = {"gas", "oil", "electric", "heat_pump"}
 _TARIFF_TYPES = {"fixed", "economy7", "agile", "variable"}
 
 
-# ─── YAML helpers ──────────────────────────────────────────────────
+# YAML helpers
 def _load_config() -> Dict[str, Any]:
     if not os.path.exists(CONFIG_PATH):
         return {}
@@ -80,7 +67,7 @@ def _save_config(cfg: Dict[str, Any]) -> None:
         yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
 
-# ─── Diagnostics helpers ───────────────────────────────────────────
+# Diagnostics helpers
 def _safe_outdoor(advisor) -> Optional[float]:
     if advisor and getattr(advisor, "weather", None):
         try:
@@ -355,7 +342,7 @@ def _with_defaults(d: Optional[dict], defaults: dict) -> dict:
     return out
 
 
-# ─── Validation / coercion ─────────────────────────────────────────
+# Validation / coercion
 def _coerce_float(v, default=None):
     try:
         return float(v)
@@ -503,7 +490,7 @@ def _clean_zones(zones: List[dict]) -> List[dict]:
     return result
 
 
-# ─── HVAC device discovery (mirrors heating_advisor._find_hvac_devices) ──
+# HVAC device discovery (mirrors heating_advisor._find_hvac_devices)
 def _find_thermostats(devices: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Find HVAC-capable devices. Tolerant of:
@@ -543,11 +530,8 @@ def _find_thermostats(devices: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "name": friendly or str(ieee),
                 "manufacturer": manufacturer,
                 "model": model,
-                # Fall back through three keys in priority order:
-                #   local_temperature   — most thermostats / receivers (cluster 0x0201)
-                #   current_temperature — older zigpy convention
-                #   temperature         — bare temperature sensors and SLT6-style
-                #                         remote thermostats that report on cluster 0x0402
+                # local_temperature (0x0201 thermostats), then the older zigpy
+                # current_temperature, then bare 0x0402 temperature sensors.
                 "temperature": (state.get("local_temperature")
                                 or state.get("current_temperature")
                                 or state.get("temperature")),
@@ -569,7 +553,7 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
     windows = dim.get("windows") or []
     doors = dim.get("doors") or []
 
-    # --- Radiator placement ---
+    # Radiator placement
     placement = (rad.get("placement") or "").lower()
     if placement == "under_window":
         tips.append({
@@ -589,10 +573,8 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
     rad_wall = (rad.get("wall") or "").lower()
     walls = dim.get("walls") or {}
     rad_wall_type = (walls.get(rad_wall) or {}).get("type") if rad_wall else None
-    # Treat these as "radiator is on an external wall":
-    #   - selected wall is typed external
-    #   - placement is 'external_wall'
-    #   - placement is 'under_window' (windows are always on external walls)
+    # External wall if the selected wall is typed external, placement is
+    # external_wall, or placement is under_window (windows are always external).
     rad_is_on_external_wall = (
             rad_wall_type == "external"
             or placement == "external_wall"
@@ -661,7 +643,7 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
             "action": "Consider upgrading to a K2 / P+ type in the same footprint",
         })
 
-    # --- Insulation ---
+    # Insulation
     if insulation == "none":
         tips.append({
             "id": "no_insulation",
@@ -676,7 +658,7 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
             "action": "Check eligibility for ECO4 grants; update property config after any works",
         })
 
-    # --- Glazing ---
+    # Glazing
     single_glazed_count = sum(
         1 for w in windows if str(w.get("glazing", "")).lower() == "single"
     )
@@ -693,7 +675,7 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
             "action": "Upgrade to double/triple glazing, or fit secondary glazing",
         })
 
-    # --- External doors ---
+    # External doors
     ext_door_area = sum(
         float(d.get("area_m2") or 0) for d in doors if d.get("type") == "external"
     )
@@ -711,7 +693,7 @@ def _generate_room_tips(room: dict, insulation: str) -> List[dict]:
             "action": "Inspect seals, add a door curtain if needed",
         })
 
-    # --- Floor type ---
+    # Floor type
     floor_type = (dim.get("floor_type") or "").lower()
     if floor_type in ("suspended", "wooden"):
         tips.append({
@@ -1061,7 +1043,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         return await _thermal_for_room(circuit_id, room_id, days)
 
 
-    # ── Diagnostics: why isn't this room learning its τ? ──────────────
+    # Diagnostics: why isn't this room learning its τ?
     @app.get("/api/heating/diagnostics/{circuit_id}/rooms/{room_id}")
     async def circuit_room_diagnostics(circuit_id: str, room_id: str,
                                        days: int = 14):
@@ -1092,7 +1074,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             heating = cfg.get("heating") or {}
             insulation = (heating.get("property") or {}).get("insulation", "partial")
 
-            # ── Resolve the room (same logic as /thermal) ─────────────
+            # Resolve the room (same logic as /thermal)
             circuits = _active_circuits(heating)
             found_room = None
             found_circuit = None
@@ -1123,7 +1105,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 if trvs and isinstance(trvs[0], dict):
                     sensor_ieee = trvs[0].get("ieee")
 
-            # ── Stage 1: Telemetry ────────────────────────────────────
+            # Stage 1: Telemetry
             temp_series = []
             telemetry_attr_used = None
             if sensor_ieee:
@@ -1155,7 +1137,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 stratification_offset_c(sensor_height_m), 2
             )
 
-            # ── Stage 2: Ticks (heating-state gate data) ──────────────
+            # Stage 2: Ticks (heating-state gate data)
             tick_rows = []
             if cid:
                 try:
@@ -1168,10 +1150,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
 
             ticks_section = _summarise_ticks(tick_rows)
 
-            # ── Stage 3: Cool-down window funnel ──────────────────────
-            # Recompute the funnel with instrumentation. We call
-            # _find_cooldown_windows twice: once WITHOUT the gate, once WITH,
-            # so we can report how many candidates the gate rejected.
+            # _find_cooldown_windows twice, without the gate and with, so the
+            # report can say how many candidates the gate rejected.
             windows_section = _summarise_windows(
                 temp_series=temp_series,
                 tick_rows=tick_rows,
@@ -1180,7 +1160,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 ceiling_height_m=float((dimensions or {}).get("ceiling_height_m") or 2.4),
             )
 
-            # ── Stage 4: Final profile (same call as /thermal would make) ──
+            # Stage 4: Final profile (same call as /thermal would make)
             from modules.thermal_profile import compute_profile
             outdoor_getter = None
             current_out = _safe_outdoor(adv)
@@ -1206,7 +1186,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 
-            # ── Verdict ───────────────────────────────────────────────
+            # Verdict
             verdict = _derive_verdict(
                 dimensions=dimensions,
                 telemetry=telemetry_section,
@@ -1496,10 +1476,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 
-            # NB: `target` is in comfort-zone (1.5 m reference) units — the
-            # frame the user types into. The `from_temp` returned by
-            # _live_temp is corrected to the same frame above, so the
-            # delta is apples-to-apples.
+            # `target` is in comfort-zone (1.5 m) units, the frame the user types
+            # in, and _live_temp corrects from_temp to the same frame above.
             target = float(target_temp or found_room.get("target_temp") or 21.0)
             design_out = float(boiler.get("design_outdoor_c", -3.0))
             flow_c = float(boiler.get("flow_temperature_c", 70.0))
@@ -1722,10 +1700,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                             radiator_effective, float(room_flow), to_temp
                         )
 
-            # Confidence derives from the thermal profile blend:
-            #   - measured_confidence >= 0.7 → high
-            #   - 0.3 .. 0.7 → medium
-            #   - else → low
+            # From the thermal profile blend: >=0.7 high, 0.3-0.7 medium, else low.
             mc = profile.measured_confidence or 0.0
             if mc >= 0.7:
                 conf = "high"

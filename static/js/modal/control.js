@@ -43,16 +43,13 @@ function getAqaraTRVCalibrationState(device) {
     return 'needs_cal';
 }
 
-// ============================================================================
 // HEATING-CONTROLLER INTEGRATION
-// ----------------------------------------------------------------------------
 // The heating controller may be actively managing some receivers and TRVs.
 // When it is, we disable direct setpoint/mode/sensor-type controls for those
 // devices so the user isn't fighting the controller. Aqara TRV-local features
 // (window detection, child lock, valve detection, calibrate) remain available
 // but are routed through /api/heating/controller/trv/* so config.yaml stays
 // in sync with what's on the device.
-// ============================================================================
 
 export async function refreshHeatingManaged() {
     try {
@@ -562,9 +559,7 @@ export function renderControlTab(device) {
     let controlsFound = false;
 
 
-
-
-    // --- Profile Actions (from unified device profile system) ---
+    // Profile Actions (from unified device profile system)
     const profileActions = Array.isArray(device.profile_actions) ? device.profile_actions : [];
     if (profileActions.length > 0) {
         controlsFound = true;
@@ -594,7 +589,7 @@ export function renderControlTab(device) {
         </div>`;
     }
 
-    // --- Profile action helpers ---
+    // Profile action helpers
 
     function _actionIcon(action) {
         const id = String(action.id || '').toLowerCase();
@@ -714,7 +709,7 @@ export function renderControlTab(device) {
     };
 
 
-    // --- Window Covering (0x0102) ---
+    // Window Covering (0x0102)
     const hasCover = hasCluster(device, 0x0102);
     if (hasCover) {
         controlsFound = true;
@@ -755,7 +750,7 @@ export function renderControlTab(device) {
         </div>`;
     }
 
-    // --- Door Lock (matter locks, nuki bridge locks) ---
+    // Door Lock (matter locks, nuki bridge locks)
     const caps = Array.isArray(device.capabilities) ? device.capabilities : [];
     if (s.locked !== undefined || s.lock_state !== undefined || caps.includes('lock')) {
         controlsFound = true;
@@ -793,7 +788,7 @@ export function renderControlTab(device) {
         </div>`;
     }
 
-    // --- Thermostat (0x0201) ---
+    // Thermostat (0x0201)
     const hasThermostat = hasCluster(device, 0x0201);
     if (hasThermostat) {
         controlsFound = true;
@@ -856,7 +851,7 @@ export function renderControlTab(device) {
                                (device.model || '').toUpperCase().includes('RECEIVER');
 
         if (isHiveReceiver) {
-            // --- HIVE RECEIVER: full heating controls (disabled when managed) ---
+            // HIVE RECEIVER: full heating controls (disabled when managed)
             html += `
             <div class="col-12">
                 <div class="card">
@@ -916,7 +911,7 @@ export function renderControlTab(device) {
             const isHiveThermostat = (device.model || '').toUpperCase().includes('SLT');
 
             if (isHiveThermostat) {
-                // --- HIVE THERMOSTAT: read-only temperature sensor ---
+                // HIVE THERMOSTAT: read-only temperature sensor
                 html += `
                 <div class="col-12">
                     <div class="card">
@@ -941,7 +936,7 @@ export function renderControlTab(device) {
                     </div>
                 </div>`;
             } else {
-                // --- STANDARD THERMOSTAT / TRV: full controls (disabled when managed) ---
+                // STANDARD THERMOSTAT / TRV: full controls (disabled when managed)
                 html += `
                 <div class="col-12">
                     <div class="card">
@@ -1005,7 +1000,7 @@ export function renderControlTab(device) {
         }
     }
 
-    // --- Aqara TRV local features (always shown for Aqara TRVs with 0x0201) ---
+    // Aqara TRV local features (always shown for Aqara TRVs with 0x0201)
     if (isAqaraTRV(device) && hasCluster(device, 0x0201)) {
         controlsFound = true;
         const managed = isHeatingManaged(device.ieee);
@@ -1112,7 +1107,7 @@ export function renderControlTab(device) {
         </div>`;
     }
 
-    // --- On/Off, Level, Color Clusters ---
+    // On/Off, Level, Color Clusters
     if (device.capabilities && Array.isArray(device.capabilities)) {
         device.capabilities.forEach(ep => {
             const epId = ep.id;
@@ -1262,7 +1257,7 @@ export function renderControlTab(device) {
         });
     }
 
-    // --- Show Button/Remote Actions ---
+    // Show Button/Remote Actions
     if (device.capabilities && Array.isArray(device.capabilities)) {
         const sensorEndpoints = device.capabilities.filter(ep => ep.component_type === "sensor");
 
@@ -1322,7 +1317,7 @@ export function renderControlTab(device) {
         });
     }
 
-    // --- Sensor Display (Contact, Motion, IAS Zone) ---
+    // Sensor Display (Contact, Motion, IAS Zone)
     const capList = device.capability_list || [];
     const isContactSensor = capList.includes('contact_sensor');
     const isMotionSensor = capList.includes('motion_sensor') || capList.includes('occupancy_sensing');
@@ -1468,14 +1463,11 @@ window.showColorMode = function(ieee, epId, mode) {
     }
 };
 
-// ============================================================================
 // AQARA TRV COMMAND HANDLERS
-// ----------------------------------------------------------------------------
 // When the device is managed by the heating controller, persistent settings
 // (window/child_lock/valve detection, calibrate) are routed through the
 // controller API so config.yaml stays in sync with the device. Otherwise they
 // go through the standard /api/device/command path.
-// ============================================================================
 
 window.aqaraSetFeature = async function(ieee, feature, enabled) {
     const managed = isHeatingManaged(ieee);

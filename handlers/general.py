@@ -24,9 +24,7 @@ def _check_success(result) -> bool:
         return result.status is Status.SUCCESS
     return False
 
-# ============================================================
 # ON/OFF CLUSTER (0x0006)
-# ============================================================
 @register_handler(0x0006)
 class OnOffHandler(ClusterHandler):
     """
@@ -65,7 +63,6 @@ class OnOffHandler(ClusterHandler):
             # Use endpoint state if avail, else global state
             current = self.device.state.get(key, self.device.state.get("on", False))
             self._update_state(not current)
-
 
 
     def _is_light_endpoint(self) -> bool:
@@ -315,7 +312,6 @@ class OnOffHandler(ClusterHandler):
         self.device.update_state(updates, endpoint_id=ep_id)
 
 
-
     def parse_value(self, attrid: int, value: Any) -> Any:
         """Convert OnOff attribute values to proper format."""
         if attrid == self.ATTR_ON_OFF:
@@ -363,12 +359,12 @@ class OnOffHandler(ClusterHandler):
                 logger.warning(f"[{self.device.ieee}] Failed to set startup behaviour EP{ep_id}: {e}")
 
 
-    # --- HA Discovery ---
+    # HA Discovery
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id
 
 
-        # ===== STEP 1: Check if this is a sensor endpoint FIRST =====
+        # STEP 1: Check if this is a sensor endpoint FIRST
         is_contact_sensor = self._is_contact_sensor()
         has_only_sensor_clusters = len(self.endpoint.in_clusters) <= 4 and 0x0500 in self.endpoint.in_clusters
 
@@ -386,7 +382,7 @@ class OnOffHandler(ClusterHandler):
                 }
             }]
 
-        # ===== STEP 2: Check OnOff direction for NON-SENSOR endpoints =====
+        # STEP 2: Check OnOff direction for NON-SENSOR endpoints
         has_onoff_input = 0x0006 in self.endpoint.in_clusters
         has_onoff_output = 0x0006 in self.endpoint.out_clusters
 
@@ -400,7 +396,7 @@ class OnOffHandler(ClusterHandler):
             logger.debug(f"[{self.device.ieee}] EP{ep} has no OnOff in INPUT - skipping")
             return []
 
-        # ===== STEP 3: Detect capabilities (INPUT clusters only) =====
+        # STEP 3: Detect capabilities (INPUT clusters only)
         has_lightlink = 0x1000 in self.endpoint.in_clusters
         has_opple = 0xFCC0 in self.endpoint.in_clusters
         has_color = 0x0300 in self.endpoint.in_clusters
@@ -413,7 +409,7 @@ class OnOffHandler(ClusterHandler):
         if has_sonoff:
             is_contact_sensor = False  # Already handled above - kept for clarity
 
-        # ===== STEP 4: Light vs Switch detection =====
+        # STEP 4: Light vs Switch detection
         if (has_electrical and has_level or has_multi_state or has_sonoff) and not (has_color or has_lightlink):
             is_light = False
             logger.info(f"[{self.device.ieee}] EP{ep} Force SWITCH: Electrical/Multistate/Sonoff present")
@@ -425,7 +421,7 @@ class OnOffHandler(ClusterHandler):
         component = "light" if is_light else "switch"
         configs = []
 
-        # === LIGHTS: JSON SCHEMA ===
+        # LIGHTS: JSON SCHEMA
         if is_light:
             config = {
                 "name": None,
@@ -470,7 +466,7 @@ class OnOffHandler(ClusterHandler):
                 "config": config
             })
 
-        # === SWITCHES: TEMPLATE SCHEMA ===
+        # SWITCHES: TEMPLATE SCHEMA
         else:
             config = {
                 "name": f"Switch {ep}",
@@ -517,7 +513,7 @@ class OnOffHandler(ClusterHandler):
 
         return configs
 
-    # --- OPTIMISTIC UPDATES ADDED HERE ---
+    # OPTIMISTIC UPDATES ADDED HERE
     async def turn_on(self):
         try:
             in_cluster = self.endpoint.in_clusters.get(0x0006)
@@ -583,9 +579,7 @@ class OnOffHandler(ClusterHandler):
             logger.error(f"[{self.device.ieee}] TOGGLE exception: {e}", exc_info=True)
 
 
-# ============================================================
 # LEVEL CONTROL CLUSTER (0x0008)
-# ============================================================
 @register_handler(0x0008)
 class LevelControlHandler(ClusterHandler):
     CLUSTER_ID = 0x0008

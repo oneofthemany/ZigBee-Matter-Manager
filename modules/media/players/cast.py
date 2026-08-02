@@ -1,14 +1,12 @@
 """
-Google Cast player provider (pychromecast).
+Google Cast player provider, over the reverse-engineered pychromecast CastV2
+client.
 
-pychromecast is a reverse-engineered CastV2 client
-
-Discovery uses a persistent ``CastBrowser`` that tracks ``CastInfo`` cheaply.
-Devices are connected *lazily* (on first control) and the connection is kept for
-live now-playing polling. Cast **groups** created in the Google Home app appear
-here as ordinary cast targets (``cast_type == 'group'``) and Google handles their
-sync — so "broadcast to a speaker group" is just casting to the group device.
-
+Discovery uses a persistent CastBrowser tracking CastInfo cheaply; devices
+connect lazily on first control and the connection is kept for now-playing
+polling. Cast groups made in the Google Home app appear as ordinary targets
+(cast_type == 'group') and Google handles their sync, so broadcasting to a group
+is just casting to the group device.
 """
 from __future__ import annotations
 
@@ -69,9 +67,6 @@ class CastPlayerProvider(PlayerProvider):
         self._casts: Dict[str, pychromecast.Chromecast] = {}  # uuid_str -> connected
         self._connect_lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     async def start(self) -> None:
         await asyncio.to_thread(self._start_browser)
 
@@ -102,11 +97,9 @@ class CastPlayerProvider(PlayerProvider):
             prev = self._infos.get(key)
             self._infos[key] = info
             # A cached Chromecast stays bound to the address it was built from.
-            # When a group re-elects its host the advertised address moves to
-            # another member, and every control call then goes to a device that
-            # no longer speaks for the group — playback lands on one speaker
-            # instead of all of them. Drop the connection so the next call
-            # rebuilds it against the address being advertised now.
+            # When a group re-elects its host that address moves, and control calls
+            # then reach a device that no longer speaks for the group — playback
+            # lands on one speaker. Drop it so the next call rebuilds.
             if prev is not None and _addr(prev) != _addr(info):
                 logger.info(
                     f"Cast {getattr(info, 'friendly_name', key)} moved "
@@ -168,9 +161,7 @@ class CastPlayerProvider(PlayerProvider):
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
     # Connection helper
-    # ------------------------------------------------------------------
     async def _get_cast(self, uuid_str: str) -> Optional[pychromecast.Chromecast]:
         if uuid_str in self._casts:
             return self._casts[uuid_str]
@@ -194,9 +185,7 @@ class CastPlayerProvider(PlayerProvider):
             logger.warning(f"Cast connect failed for {getattr(info, 'friendly_name', '?')}: {e}")
             return None
 
-    # ------------------------------------------------------------------
     # Discovery / state
-    # ------------------------------------------------------------------
     async def connect_all(self) -> int:
         """Eagerly connect to every discovered device so list_players reports
         live now-playing state — lets us 'adopt' whatever is already casting
@@ -288,9 +277,7 @@ class CastPlayerProvider(PlayerProvider):
             duration_ms=int((getattr(mc_status, "duration", 0) or 0) * 1000),
         )
 
-    # ------------------------------------------------------------------
     # Playback
-    # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
         cast = await self._get_cast(player_id.split(":", 1)[1])
         if not cast:
@@ -342,13 +329,10 @@ class CastPlayerProvider(PlayerProvider):
 
     def _play(self, cast, item: MediaItem, custom_data: Optional[dict] = None,
               app_id: Optional[str] = None):
-        # Cold-start hardening: on a fresh connection the first play_media can
-        # race the default-receiver launch and get dropped (the "buffers, then
-        # only plays on the 2nd try" symptom). We ensure the socket client is
-        # connected, then issue play_media and confirm it actually goes active —
-        # retrying once if it doesn't, so the user never has to click twice.
-        # Endless streams (radio, therapy) must load as LIVE — a Cast device
-        # asked to BUFFER a stream with no end never leaves IDLE.
+        # On a fresh connection the first play_media can race the default-receiver
+        # launch and be dropped ("plays only on the 2nd try"), so confirm it goes
+        # active and retry once. Endless streams must load as LIVE — a device asked
+        # to BUFFER a stream with no end never leaves IDLE.
         stream_type = "LIVE" if item.media_type in ("radio", "live") else "BUFFERED"
         # Rich metadata so screened devices (Nest Hub) show album art + artist,
         # not a bare title. metadataType 3 == MUSIC_TRACK.
@@ -441,9 +425,7 @@ class CastPlayerProvider(PlayerProvider):
             raise RuntimeError(f"Cast device {player_id} unreachable")
         await asyncio.to_thread(cast.set_volume_muted, muted)
 
-    # ------------------------------------------------------------------
     # Grouping
-    # ------------------------------------------------------------------
     # Cast groups are created/managed in the Google Home app and appear here as
     # ordinary 'group' cast targets. We deliberately don't expose join/ungroup —
     # the base class raises NotImplementedError, which the UI surfaces as

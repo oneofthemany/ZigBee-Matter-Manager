@@ -1,21 +1,9 @@
-/* ============================================================
-   ZigBee Matter Manager — Frames page chrome (/frames)
-   ============================================================
-   Chrome for the standalone mobile surface only. The comb itself
-   is styled by frames.css, which the dashboard tab shares.
+/* Frames page chrome (/frames) — the standalone mobile surface only; the comb
+   itself is styled by frames.css. Mobile-first: the base rules target a phone. */
 
-   Mobile-first: the base rules target a phone, and the only
-   media query widens things for a desktop browser.
-   ============================================================ */
-
-/* hive-components.css builds the DASHBOARD as a non-scrolling app shell:
-   `html, body { height: 100% }` + `body { display:flex; overflow:hidden }`,
-   so only .tab-content scrolls. Those rules are NOT scoped to the dashboard,
-   and this page loads the same stylesheet — inheriting `overflow: hidden` made
-   /frames physically unable to scroll.
-   Undo it: this page is an ordinary document. With body at height:auto and
-   overflow visible, the body grows past html's 100% and the viewport scrolls,
-   which is what we want. */
+/* hive-components.css makes the DASHBOARD a non-scrolling app shell, and those
+   rules are not scoped, so /frames inherited overflow:hidden and could not
+   scroll. Undo it — this page is an ordinary document. See docs/structure.md. */
 body.frames-page {
     height: auto;
     min-height: 100dvh;      /* dvh, not vh — vh sits under mobile browser chrome */
@@ -26,7 +14,7 @@ body.frames-page {
     color: var(--text-primary);
 }
 
-/* ---------- header ---------- */
+/* header */
 
 /* Header and toolbar stick together as one block, so the toolbar never needs to
    guess the header's height. */
@@ -119,7 +107,6 @@ body.frames-page {
     margin: -.4rem;
 }
 
-/* ---------- main ---------- */
 
 .frames-page-main {
     padding: .75rem;
@@ -169,7 +156,7 @@ body.frames-page {
     height: 1.6rem;
 }
 
-/* ---------- wider screens ---------- */
+/* wider screens */
 
 @media (min-width: 768px) {
     .frames-page-main {

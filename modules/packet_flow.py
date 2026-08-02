@@ -1,30 +1,10 @@
 """
-Packet Flow Analyzer
-====================
+Lightweight in-memory packet-rate tracking for the Zigbee + Matter network.
 
-Lightweight, in-memory packet rate tracking for the Zigbee + Matter network.
-
-Records every packet that enters `ZigbeeDebugger.capture_packet` (and every
-TX command sent through `device.send_command`) regardless of whether full
-debug capture is enabled, and exposes:
-
-  - Global packets-per-second over 1s / 10s / 60s windows
-  - Per-second history for a 60s sparkline
-  - Peak 1s rate over the last hour (single highest second)
-  - Top-N peak history over the last hour, with timestamps + dominant device
-  - Statistical summary: mean, std dev, P50, P95, P99 over the last hour
-  - Burst counter: number of seconds exceeding mean + 2σ
-  - Per-device chattiness ranking
-  - Per-cluster aggregate breakdown
-  - Per-device EWMA-baseline anomaly detection
-
-Pure stdlib. No DB writes. No locks (single-thread asyncio).
-
-Cost per `record()`: a dict lookup + 3 deque appends + a few ints. O(1).
-Pruning is amortised on read; a hard GC drops devices that go silent.
-
-Statistical methods are computed lazily on read and cached for ~1 second
-to keep the snapshot path cheap when the WS pushes every 2s.
+Records every captured packet and TX command whether or not full debug capture
+is on, exposing rates, a sparkline, hourly statistics, chattiness rankings and
+EWMA-baseline anomaly detection. Pure stdlib, no DB writes, no locks; O(1) per
+record with pruning amortised on read. See docs/debugging.md.
 """
 
 from __future__ import annotations
@@ -34,7 +14,7 @@ from collections import deque, defaultdict
 from typing import Dict, List, Optional, Any, Tuple
 
 
-# --- Tuning knobs ----------------------------------------------------------
+# Tuning knobs
 WINDOW_60S = 60.0
 WINDOW_10S = 10.0
 WINDOW_1S  = 1.0
@@ -112,9 +92,7 @@ class PacketFlowAnalyzer:
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._stats_cache_ts: float = 0.0
 
-    # ------------------------------------------------------------------
     # Recording (hot path)
-    # ------------------------------------------------------------------
     def record(
             self,
             ieee: Optional[str],
@@ -152,9 +130,7 @@ class PacketFlowAnalyzer:
         if ieee:
             self._cur_sec_devs[ieee] = self._cur_sec_devs.get(ieee, 0) + 1
 
-    # ------------------------------------------------------------------
     # Pruning + windowed counting
-    # ------------------------------------------------------------------
     def _prune_all(self, now: float) -> None:
         cutoff = now - WINDOW_60S
         _prune(self._global, cutoff)
@@ -211,9 +187,7 @@ class PacketFlowAnalyzer:
                     _EWMA_ALPHA * current_pm + (1.0 - _EWMA_ALPHA) * old
             )
 
-    # ------------------------------------------------------------------
     # Statistical analysis (hourly per-second history)
-    # ------------------------------------------------------------------
     def _compute_stats(self, now: float) -> Dict[str, Any]:
         """
         Compute mean, stddev, P50/P95/P99, peak history, burst count over
@@ -349,9 +323,7 @@ class PacketFlowAnalyzer:
         k = max(1, math.ceil(p / 100.0 * len(sorted_samples)))
         return sorted_samples[k - 1]
 
-    # ------------------------------------------------------------------
     # Public read API
-    # ------------------------------------------------------------------
     def get_global_rate(self) -> Dict[str, Any]:
         now = time.time()
         self._prune_all(now)
@@ -509,7 +481,7 @@ class PacketFlowAnalyzer:
         self._stats_cache_ts = 0.0
 
 
-# --- Singleton (mirrors the debugger pattern) -----------------------------
+# Singleton (mirrors the debugger pattern)
 _analyzer: Optional[PacketFlowAnalyzer] = None
 
 

@@ -1,31 +1,10 @@
 """
-EqStreamEngine — server-side graphic EQ for Cast targets.
+EqStreamEngine — server-side graphic EQ for Cast targets, which expose no DSP API.
 
-Cast receivers expose no DSP API, so equalisation has to happen before the
-audio reaches the device. When EQ is enabled for a Cast player the controller
-routes playback through this engine instead of handing the device the source
-URL directly: ffmpeg decodes the source (radio stream, Tidal AAC, the therapy
-WAV — anything it can read) to raw PCM, the zmm_eq Rust biquad chain filters
-it, and the result is served to the device as an endless WAV over
-``/api/media/eq/stream/…`` — the same header trick the therapy stream uses.
-
-The point of the Rust chain is LIVE control: slider changes swap biquad
-coefficients atomically on the running stream (filter state preserved), so
-dragging a band is heard on the speaker in well under a second with no
-playback restart and no gap. Only two transitions need a restart of the
-current track: turning EQ ON while an un-proxied stream is playing (the audio
-path physically changes). Turning it OFF mid-stream just flips the chain to
-bit-transparent bypass — seamless — and the next track starts direct again.
-
-Enabled/preset/gains persist per player in ``data/media_eq.json``. The proxy
-URL must be reachable BY THE DEVICE, so ``media.eq.base_url`` (or, as a
-fallback, ``media.tidal.manifest_base_url``) has to point at this app on the
-LAN — same rule as the Tidal DASH manifest route.
-
-Costs while EQ is on, by design: the stream is re-encoded (Tidal lossless
-becomes 44.1 kHz/16-bit PCM), the device reports no track duration (endless
-WAV), and the stream dies with the app. EQ off = exactly the old direct-URL
-behaviour, byte for byte.
+ffmpeg decodes the source to PCM, the zmm_eq Rust biquad chain filters it, and
+the result is served as an endless WAV. Slider changes swap coefficients
+atomically on the running stream, so a band is heard in under a second with no
+restart. Costs and the base_url requirement: docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -102,9 +81,7 @@ class EqStreamEngine:
         self._pending: Dict[str, tuple] = {}     # pid -> (token, source_url)
         self._sessions: Dict[str, _Session] = {}
 
-    # ------------------------------------------------------------------
     # Capability / settings
-    # ------------------------------------------------------------------
     def _resolve_base(self) -> str:
         """The URL prefix speakers fetch from: configured base_url if set,
         else the auto-derived plain-HTTP device listener address. An https
@@ -202,9 +179,7 @@ class EqStreamEngine:
         restart = bool(c["enabled"] and not was_enabled and not session)
         return {"restart": restart}
 
-    # ------------------------------------------------------------------
     # Stream proxying
-    # ------------------------------------------------------------------
     def wrap(self, player_id: str, url: str) -> tuple:
         """Register ``url`` as the next source for this player and return
         (proxy_url, content_type) for the device to play instead."""
@@ -331,9 +306,7 @@ class EqStreamEngine:
         self._sessions.clear()
         self._pending.clear()
 
-    # ------------------------------------------------------------------
     # Persistence (same atomic-replace pattern as the media prefs)
-    # ------------------------------------------------------------------
     def _load(self) -> Dict[str, dict]:
         try:
             with open(self._file, "r", encoding="utf-8") as f:

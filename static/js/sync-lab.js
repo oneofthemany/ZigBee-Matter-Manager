@@ -1,30 +1,10 @@
 /**
- * sync-lab.js — Sync Lab: per-session analysis of speaker-sync tests.
+ * Sync Lab — per-session analysis of speaker-sync tests.
  *
- * Renders into #syncLabHost (Media → Group → OpenZone → Results) from the
- * group's own DuckDB via /api/media/sync/{sessions,session,model,trend}:
- *   - three group headline stats, counted after the group locked
- *   - ONE per-speaker table: the session's measurements and the corrections
- *     applied to it, side by side, plus the cross-session learned model —
- *     it replaced a grid of cards and a separate data table, because the
- *     question here is always "how do these two compare?"
- *   - a collapsed ledger: when each correction happened
- *   - group spread chart (the headline): how far apart the speakers are,
- *     against the ±20 ms "audibly together" band
- *   - convergence chart: per-speaker playback error vs elapsed time, with
- *     the ±30 ms slew window, ±100 ms jump threshold, hard-resync (◆),
- *     rate-slew (▽) and manual-trim (▲) events
- *   - PLL chart: per-speaker stream rate correction (ppm) locking onto the
- *     device's true clock offset
- *
- * Colours: fixed per speaker by group-member order (colour follows the
- * entity), palette validated for CVD + both themes (dataviz procedure).
- *
- * Live mode: while this group's session is running it refreshes every 3 s,
- * and the whole rendering layer exists to make that invisible — charts merge,
- * every panel's structure is built once and only its [data-v] leaves are
- * written (_patch), and scroll positions survive. A live view that reflows
- * under the reader is worse than one that updates slowly.
+ * Renders into #syncLabHost from the group's own DuckDB via
+ * /api/media/sync/{sessions,session,model,trend}: headline stats, a per-speaker
+ * measurement/correction table, and the spread, convergence and PLL charts.
+ * Refreshes every 3 s while a session runs. See docs/speaker_sync.md.
  */
 import { createChart } from './chart-utils.js';
 
@@ -63,14 +43,9 @@ function esc(s) {
 }
 const _dark = () => document.documentElement.getAttribute('data-theme') === 'dark';
 
-/** Write innerHTML only when it actually changed — live ticks re-render
- *  every 3 s and must not wipe hover/focus state or flicker static text.
- *  Returns true when the DOM was touched (callers rebind handlers then).
- *
- *  This is the blunt instrument: it destroys and rebuilds. Reach for _patch
- *  instead for anything a reader is looking at while it updates, and keep any
- *  scrolling container OUT of the replaced html so the browser keeps its
- *  position for you. */
+/** Write innerHTML only when it changed; returns true when the DOM was touched
+ *  (callers rebind handlers then). The blunt instrument — it destroys and
+ *  rebuilds. Prefer _patch for anything on screen. See docs/speaker_sync.md. */
 function _setHtml(el, html) {
     if (!el) return false;
     if (el._zmmPrev === html) return false;
@@ -80,15 +55,11 @@ function _setHtml(el, html) {
     return true;
 }
 
-/** Refresh live numbers WITHOUT rebuilding the block around them.
+/** Refresh live numbers without rebuilding the block around them.
  *
- *  A 3 s tick that rewrites a whole panel's innerHTML costs the reader
- *  everything they were doing: selection and hover die, and any change in
- *  wrapped-line count reflows the page under the cursor — the charts below
- *  visibly jump. So structure is built once per `key` (the set of speakers,
- *  say) and every subsequent tick only writes the leaf `[data-v]` nodes
- *  whose value actually moved. Values are strings, or {text, cls} when the
- *  node also carries a state colour.
+ *  Structure is built once per `key`; each tick writes only the [data-v] leaves
+ *  whose value moved, so selection, hover and scroll survive a 3 s refresh.
+ *  Values are strings, or {text, cls} when the node carries a state colour.
  */
 function _patch(el, key, buildHtml, values) {
     if (!el) return;
@@ -133,9 +104,7 @@ function _nameFor(pid) {
     return m ? m.name : pid;
 }
 
-// ---------------------------------------------------------------------------
 // Public API (wired from media.js)
-// ---------------------------------------------------------------------------
 /** The group whose lab is on screen, or null. Lets the host pane decide
  *  whether its Results tab needs a group picker. */
 export function syncLabGroup() { return _gid; }
@@ -205,9 +174,7 @@ export function restoreSyncLab() {
     openSyncLab(gid, _group, { restore: true });
 }
 
-// ---------------------------------------------------------------------------
 // Data
-// ---------------------------------------------------------------------------
 async function _loadAll() {
     const [s, m, st, tr] = await Promise.all([
         fetch(`/api/media/sync/sessions?group_id=${encodeURIComponent(_gid)}`).then(r => r.json()),
@@ -237,13 +204,9 @@ async function _loadAll() {
  *  nothing in it yet. */
 function _setDetail(next) {
     if (!next) return;
-    // Structural check, because emptiness is not the only way a payload can be
-    // useless. A series row always carries the speaker it belongs to; one that
-    // does not cannot be plotted or attributed, and a handful of them render
-    // as blank tiles and an empty table — visually identical to no data, but
-    // passing every length test on the way in. Refusing them here keeps a
-    // malformed response from reaching the DOM and says so out loud, rather
-    // than leaving a silent blank to be explained later.
+    // Structural check: a series row without its speaker cannot be plotted or
+    // attributed, and renders as blank tiles that look identical to no data
+    // while passing every length test. Refuse it here and say so.
     const rows = next.series, who = next.players;
     const badSeries = rows?.length
         && !rows.some(r => r && typeof r.player_id === 'string');
@@ -310,9 +273,7 @@ function _stopLive() {
     if (_timer) { clearInterval(_timer); _timer = null; }
 }
 
-// ---------------------------------------------------------------------------
 // Shell (card, picker, chart divs)
-// ---------------------------------------------------------------------------
 function _renderShell() {
     const host = document.getElementById('syncLabHost');
     if (!host) return;
@@ -438,9 +399,7 @@ function _refreshPicker() {
     if (sel.value !== _selected) sel.value = _selected;
 }
 
-// ---------------------------------------------------------------------------
 // Detail (tiles, charts, table)
-// ---------------------------------------------------------------------------
 function _renderDetail(merge = false) {
     const live = document.getElementById('syncLabLive');
     if (live) {
@@ -478,9 +437,7 @@ function _renderDetail(merge = false) {
     _renderTrend(merge);
 }
 
-// ---------------------------------------------------------------------------
 // Group spread — the metric the ears actually hear
-// ---------------------------------------------------------------------------
 /** Worst pairwise error gap over time: [[elapsed_s, spread_ms], ...].
  *  Uses each speaker's most recent poll; a point is emitted only while every
  *  speaker has reported within the last 8 s (≈2 poll cycles). */
@@ -576,28 +533,11 @@ function _renderSpread(spread, merge = false) {
     }, merge);
 }
 
-// ---------------------------------------------------------------------------
-// No guidance panel, by decision — the lab reports, it does not advise.
-//
-// There was one ("What to do next"), and it was removed: the sync engine
-// corrects itself, so on a healthy group every row it could write resolved to
-// "nothing to do", and the two commonest were telemetry wearing advice's
-// clothes — a settled bias is the rate loop's job, it is already draining it,
-// and the number is a column in the table below. Cutting it to exceptions
-// only did not save it either. The charts and the per-speaker table say what
-// happened; the reader can see 4 hard resyncs in the resync column without a
-// paragraph telling them to check their WiFi.
-//
-// The related decision, should anyone be tempted: no per-speaker "apply this
-// trim" button either. The settled bias it would be computed from is measured
-// with the trim EXCLUDED (cast_sync._measure_lag_once), so a trim can never
-// move that number — the suggestion would survive being applied, invite a
-// second application, and integrate open-loop. A sensor-VISIBLE bias is the
-// rate loop's, and it is draining it; a sensor-INVISIBLE one (output-pipeline
-// latency) can only be seen by the mic, which is what Calibrate is for.
-// ---------------------------------------------------------------------------
+// No guidance panel, by decision — the lab reports, it does not advise. And no
+// per-speaker "apply this trim" button: the settled bias is measured with the
+// trim excluded, so a trim cannot move it and the suggestion would integrate
+// open-loop. See docs/speaker_sync.md.
 
-// ---------------------------------------------------------------------------
 // Adjustments — what the engine actually DID to each speaker, and when
 //
 // The corrections are the interesting record: they are the work that kept
@@ -605,7 +545,6 @@ function _renderSpread(spread, merge = false) {
 // speaker's link than any single settled number. Split by audibility,
 // because that is the distinction that matters to the listener: a buffer
 // jump is a heard discontinuity, a rate slew is not.
-// ---------------------------------------------------------------------------
 const TRIM_RUN_GAP_S = 30;      // trims closer than this are one adjustment
 let _ledgerOpen = false;        // reader's choice, kept across live ticks
 const _clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;

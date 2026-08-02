@@ -1,32 +1,20 @@
-/**
- * Device Profile Tab
- * ------------------
- * The single per-device mapping + profile surface. Three sub-views:
- *
- *   1. DISCOVER — full-spectrum live cluster introspection. Shows the
- *      device's endpoints / clusters / attributes / commands with
- *      readable/writable/reportable badges, and per-attribute live values.
- *
- *   2. SIGNALS  — the Signal Inspector component (see modal/signals.js):
- *      live raw signals, learn-by-demonstration mapping (values incl. Tuya
- *      datapoints, command→action), the mapped-signals manager and
- *      "promote to model profile". This replaced the old "Map" sub-view.
- *
- *   3. ASSEMBLE — pick a device type, capabilities, actions, reporting.
- *      Save as a profile that auto-applies to any device of this model.
- *
- * The same tab handles Zigbee and Matter devices — the backend hides the
- * difference behind ``/api/profiles/device/{ieee}``.
- *
- * Location: static/js/modal/profile.js
- */
+/* Device Profile tab — the single per-device mapping and profile surface.
+
+   DISCOVER: live cluster introspection — endpoints, clusters, attributes and
+   commands with readable/writable/reportable badges and live values.
+   SIGNALS:  the Signal Inspector component (modal/signals.js) — raw signals,
+   learn-by-demonstration mapping, the mapped-signals manager and "promote to
+   model profile". Replaced the old "Map" sub-view.
+   ASSEMBLE: pick device type, capabilities, actions and reporting, then save a
+   profile that auto-applies to every device of the model.
+
+   Zigbee and Matter both go through /api/profiles/device/{ieee}.
+   See docs/device-profiles.md. */
 
 import { state } from '../state.js';
 import { createSignalInspector } from './signals.js';
 
-// ---------------------------------------------------------------------------
 // Module-level cache for the currently-open device
-// ---------------------------------------------------------------------------
 
 let _data = null;               // last response from /api/profiles/device/{ieee}
 let _draft = null;              // profile draft being edited in Assemble view
@@ -39,9 +27,7 @@ export function cleanupProfileInspector() {
     if (_inspector) { _inspector.destroy(); _inspector = null; }
 }
 
-// ---------------------------------------------------------------------------
 // Render entry points (called from device-modal.js)
-// ---------------------------------------------------------------------------
 
 export function renderProfileTab(device) {
     return `
@@ -77,9 +63,7 @@ export async function initProfileTab(ieee) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Drafts
-// ---------------------------------------------------------------------------
 
 function _newDraft(data) {
     const ident = data.identity || {};
@@ -105,9 +89,7 @@ function _cloneDraft(p) {
     return JSON.parse(JSON.stringify(p));
 }
 
-// ---------------------------------------------------------------------------
 // Top-level render
-// ---------------------------------------------------------------------------
 
 function _render(root, ieee) {
     const { identity, profile, ieee_pin } = _data;
@@ -155,11 +137,9 @@ function _render(root, ieee) {
     if (_activeSubview === 'assemble') _renderAssemble(body, ieee);
 }
 
-// ===========================================================================
 // SUBVIEW: SIGNALS — the unified live-signal + learn + mapped surface.
 // Replaces the old "Map" subview; the Signal Inspector component does all
 // per-device mapping (values, Tuya DPs, command→action, promote to profile).
-// ===========================================================================
 
 function _renderSignals(container, ieee) {
     container.innerHTML = '<div class="signal-inspector-mount"></div>';
@@ -168,9 +148,7 @@ function _renderSignals(container, ieee) {
     _inspector = createSignalInspector(mount, { ieee, showPicker: false });
 }
 
-// ===========================================================================
 // SUBVIEW 1: DISCOVER
-// ===========================================================================
 
 function _renderDiscover(container, ieee) {
     const topo = _data.topology || { endpoints: {} };
@@ -340,9 +318,7 @@ function _renderIntrospectErrors(errors) {
 }
 
 
-// ===========================================================================
 // SUBVIEW 3: ASSEMBLE
-// ===========================================================================
 
 function _renderAssemble(container, ieee) {
     const types = _deviceTypes || [];
@@ -676,9 +652,6 @@ function _importProfile(ieee) {
     inp.click();
 }
 
-// ===========================================================================
-// HELPERS
-// ===========================================================================
 
 function _esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({

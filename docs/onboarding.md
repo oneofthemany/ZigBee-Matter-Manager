@@ -619,3 +619,121 @@ TUYA_RADAR_DPS[123] = TuyaDP(123, "new_metric", scale=1, unit="", type=TuyaClust
   1. **Observing:** using the debugger to see which clusters / commands / attributes it uses.
   2. **Mapping:** creating or extending handlers so those messages become clean, named fields on the device state.
   3. **Verifying:** ensuring the UI responds as expected, and the debugger shows healthy stats and minimal errors.
+
+## Live onboarding UI
+
+### Join progress cards
+
+`static/js/join-progress.js` shows a persistent card in the bottom-right corner
+when a device joins, walking through each stage:
+
+```
+Joined → Interviewing → Interviewed → Configuring → Polling → Ready ✓
+```
+
+Driven by WebSocket events: `device_joined` creates the card and marks
+"Joined"; `interview_status_update` moves the interview stage (interviewing /
+stalled / failed / interviewed); `join_progress` covers configuring / polling /
+ready / error.
+
+The card auto-dismisses 8 seconds after "ready", or can be closed manually.
+Devices joining simultaneously each get their own card.
+
+### Device-list badge
+
+`static/js/interview-status-badge.js` renders nothing for devices in the
+INTERVIEWED state. For interviewing, stalled or failed it adds a small badge
+next to the friendly name carrying the same advice text the Settings tab shows.
+
+Three entry points keep it current: `loadInterviewStatusPending()` fetches all
+non-interviewed devices at startup and populates the cache;
+`interview_status_update` events call `updateInterviewBadge`, which updates the
+cache and re-renders that one row; and full table re-renders call
+`applyAllBadges()` to restore badges on the fresh DOM.
+
+## Interview status
+
+`modules/interview_status.py` **never drives** the interview — zigpy owns the
+actual state machine. This module only observes, computing a higher-level status
+for the frontend from `zigpy.device.is_initialized`, `node_desc` (presence and
+contents), `endpoints` (count and per-endpoint cluster population), `last_seen`
+on the wrapper (recent traffic meaning the device is probably awake), and the
+`join_at` timestamp recorded when the device first joined.
+
+The state machine is purely derivative: call `get_status(ieee)` at any time and
+get the current truth. Cached values exist only to detect transitions for
+emitting WebSocket events, and are never the source of truth.
+
+### Where the thresholds come from
+
+They reflect what is reasonable for the Zigbee protocol rather than being
+arbitrary:
+
+- `apsAckWaitDuration` is ~1.6 s and a full interview is typically 5–15 round
+  trips, so a **mains** device that has not completed in 60 s has a real problem.
+- **Battery** devices may legitimately take much longer because they sleep
+  between transmissions. But if the user is keeping the device awake — recent
+  traffic being the proxy for that — the same 60 s budget applies, plus headroom
+  for poll intervals.
+- **24 hours** of "interviewing" is excessive regardless. At that point the
+  device should be considered failed and the user advised to re-pair.
+
+## Setup wizard API
+
+`modules/dongle_jedi_api.py` provides the endpoints the frontend wizard drives:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/setup/status` | whether the wizard should be shown |
+| `GET /api/setup/ports` | quick USB port enumeration, no serial I/O |
+| `POST /api/setup/scan` | start a full dongle scan (progress streams over websocket) |
+| `GET /api/setup/scan/status` | current scan state / last results |
+| `POST /api/setup/apply` | write detected config to config.yaml |
+| `POST /api/setup/network` | generate or import Zigbee network credentials |
+| `POST /api/setup/skip` | skip setup and configure manually |
+
+Registered from `main.py`'s lifespan via `register_setup_routes(app, manager)`.
+
+The wizard creates the **admin account last**, after the coordinator steps. The
+anonymous `/api/setup/*` window is LAN-only and conditional on no admin existing
+yet, so creating the admin first would lock the coordinator scan out on any
+resume.
+
+## Writing network credentials to the radio
+
+zigpy only applies the `network` config section — key, PAN ID, extended PAN ID,
+channel — when it **forms** a network, and `auto_form` fires solely on a blank
+radio. A coordinator that already holds a network (factory firmware, a previous
+ZHA or Zigbee2MQTT life, an earlier install) silently keeps its old credentials,
+so the key generated into `config.yaml` never reaches the radio.
+
+`modules/network_migrate.py` closes that gap two ways:
+
+- **Pending restore.** The setup wizard stages imported credentials — manual
+  entry, or a coordinator backup JSON in either zigpy/ZHA format or the Open
+  Coordinator Backup format used by Zigbee2MQTT's `coordinator_backup.json` —
+  into `data/pending_network_restore.json`. `ZigbeeService.start()` writes them
+  to the radio before the stack comes up.
+- **Credential enforcement.** Compare the live network against `config.yaml` and
+  re-form a **virgin** network (no joined devices) so the coordinator actually
+  carries the configured credentials.
+
+## Serial interrogation (Dongle Jedi)
+
+`modules/dongle_jedi_core.py` determines the serial flow control, baud rate and
+adapter type of a connected coordinator, distinguishing Zigbee adapters from
+ordinary serial devices.
+
+Supported adapters:
+
+- Silicon Labs EZSP (Ember) — EFR32/EM35x based, e.g. Elelabs, HUSBZB-1,
+  SkyConnect
+- Silicon Labs CPC Multi-PAN (RCP) — Zigbee + Thread + Matter over EFR32
+- Dresden Elektronik ConBee / RaspBee (deCONZ serial protocol)
+- Texas Instruments Z-Stack (CC253x / CC26x2)
+
+It is also runnable directly: no arguments auto-detects all serial ports,
+`--port /dev/ttyUSB0` probes one, and `--verbose` turns on detailed logging.
+
+Preferred baud and flow settings are tried NONE-first, because most modern
+adapters have no hardware flow control and RTS/CTS will hang them.

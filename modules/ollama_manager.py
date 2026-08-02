@@ -1,29 +1,10 @@
 """
-Ollama Container Manager
-========================
-Runs a local Ollama model server as a **sibling container** so ZigBee Manager's
-AI features can use a local LLM. ZMM itself ships as a root podman container with
-no podman/docker CLI inside it (slim image, sudo stripped), so we don't shell out
-to a binary that isn't there — instead we drive the **host's container runtime
-over its Docker-compatible REST API** via a mounted socket.
+Runs a local Ollama model server as a sibling container.
 
-Two modes, auto-detected:
-  * **socket** — the host's podman/docker socket is mounted into this container
-    (e.g. ``/run/podman/podman.sock``). We create/start the ``ollama`` container
-    and pull models over the REST API + the Ollama API. No CLI needed. This is
-    the path when ZMM runs containerised (the normal deployment).
-  * **cli** — a ``podman``/``docker`` binary is on PATH (ZMM running natively /
-    in dev). We shell out, preserving the original behaviour.
-
-Everything privileged is *user-triggered*: the install/pull endpoints exist but
-only run when the operator clicks through in the UI, and only when the
-HostCapabilityAssessor says the host can actually back a model.
-
-Reachability: once the sibling container is up it publishes 11434 on the host.
-From inside the slirp4netns ZMM container the host is reached via the slirp
-gateway, so the model URL defaults to ``http://10.0.2.2:11434`` and is
-overridable with ``ZMM_OLLAMA_URL`` (set it to the host's LAN IP if the gateway
-route isn't available).
+ZMM's own image carries no podman/docker CLI, so this drives the host runtime
+over its Docker-compatible REST API via a mounted socket, falling back to the
+CLI when one is on PATH. Every privileged action is user-triggered and gated on
+the HostCapabilityAssessor. See docs/upgrades.md.
 """
 
 import asyncio
@@ -116,7 +97,7 @@ class OllamaManager:
         except RuntimeError:
             asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    # ── Status ───────────────────────────────────────────────────────────────
+    # Status
 
     def status(self) -> Dict[str, Any]:
         mode, detail = detect_runtime()
@@ -137,7 +118,7 @@ class OllamaManager:
     def job_status(self) -> Dict[str, Any]:
         return self._job or {"status": "idle"}
 
-    # ── Install / start ──────────────────────────────────────────────────────
+    # Install / start
 
     def install(self) -> Dict[str, Any]:
         if self._busy():
@@ -162,7 +143,7 @@ class OllamaManager:
             self._spawn(self._run_rest_install(detail))
         return {"success": True, "started": True, "mode": mode}
 
-    # ── Pull a model ─────────────────────────────────────────────────────────
+    # Pull a model
 
     def pull(self, model: str) -> Dict[str, Any]:
         if self._busy():
@@ -177,7 +158,7 @@ class OllamaManager:
         self._spawn(self._run_model_pull(model))
         return {"success": True, "started": True, "model": model}
 
-    # ── CLI mode (native podman/docker on PATH) ──────────────────────────────
+    # CLI mode (native podman/docker on PATH)
 
     async def _run_cli_install(self, rt: str):
         if self._container_exists("cli", rt):
@@ -209,7 +190,7 @@ class OllamaManager:
             logger.error(f"Ollama {action} job failed: {e}")
             self._job_finish(False, str(e))
 
-    # ── Socket mode (Docker-compatible REST over a mounted unix socket) ──────
+    # Socket mode (Docker-compatible REST over a mounted unix socket)
 
     async def _run_rest_install(self, sock: str):
         self._job_start("install", f"REST via {sock}")
@@ -307,7 +288,7 @@ class OllamaManager:
         status = obj.get("status") or ""
         return status[:160] or None
 
-    # ── Model pull (via the Ollama API — both modes) ─────────────────────────
+    # Model pull (via the Ollama API — both modes)
 
     async def _run_model_pull(self, model: str):
         self._job_start("pull", f"ollama pull {model}", model=model)
@@ -335,7 +316,7 @@ class OllamaManager:
             logger.error(f"Ollama model pull failed: {e}")
             self._job_finish(False, str(e))
 
-    # ── Job bookkeeping ──────────────────────────────────────────────────────
+    # Job bookkeeping
 
     def _job_start(self, action: str, command: str, model: Optional[str] = None):
         self._job = {"action": action, "model": model, "status": "running",
@@ -359,7 +340,7 @@ class OllamaManager:
     def _busy(self) -> bool:
         return bool(self._job and self._job.get("status") == "running")
 
-    # ── Reachability / helpers ───────────────────────────────────────────────
+    # Reachability / helpers
 
     def _reachable_base(self) -> str:
         if self._ollama_url:

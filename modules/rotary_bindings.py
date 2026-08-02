@@ -1,25 +1,9 @@
 """
-Rotary Binding Manager — maps Matter rotary dial positions to device commands.
-===============================================================================
+Maps Matter rotary dial positions to proportional commands on target devices —
+an 18-position dial driving brightness 0-254, for instance.
 
-Translates rotary position changes (0–N) into proportional commands on
-target devices. For example:
-
-    BILRESA left dial (18 positions) → Living Room Light brightness (0–254)
-    Position 0  → brightness 0
-    Position 9  → brightness 127
-    Position 18 → brightness 254
-
-Bindings are stored in the device's matter definition JSON under
-"rotary_bindings".
-
-Usage:
-    manager = RotaryBindingManager()
-    manager.set_dispatchers(zigbee_send_command, matter_send_command)
-    manager.load_bindings(definition_store)
-
-    # Called from matter_bridge.py on rotary events:
-    await manager.on_rotary_event("matter_6", endpoint_id=3, position=12, max_positions=18)
+Bindings live in the device's Matter definition JSON under "rotary_bindings".
+Driven by matter_bridge.py on rotary events. See docs/matter.md.
 """
 
 import asyncio
@@ -372,7 +356,7 @@ class RotaryBindingManager:
             logger.error(f"Rotary dispatch error: {e}")
             self._stats["errors"] += 1
 
-    # ── Binding CRUD ──────────────────────────────────────────────────
+    # Binding CRUD
 
     def add_binding(self, source_ieee: str, rotary_key: str, ep: int,
                     max_positions: int, target: dict,
@@ -515,8 +499,6 @@ class RotaryBindingManager:
         logger.info(f"Saved {len(device_bindings)} rotary binding(s) to {fname}")
         return True
 
-
-# ── Singleton ─────────────────────────────────────────────────────────
 
 _manager: Optional[RotaryBindingManager] = None
 

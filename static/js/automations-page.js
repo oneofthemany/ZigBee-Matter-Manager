@@ -17,11 +17,9 @@ const log = zmmLog('automations-page');
 
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
-// ============================================================================
 // HUMANIZATION — turn raw rule JSON into plain-English, device-aware phrasing.
 // Device type comes from capability_list on the main device list (state.devices);
 // falls back to name/model/state-key heuristics when capabilities are absent.
-// ============================================================================
 
 // DEVICE_ICON / DEVICE_LABEL / deviceType are imported from automation-humanize.js
 const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -237,9 +235,6 @@ function _ruleUsesSun(r) {
     return has(r.conditions) || has(r.prerequisites);
 }
 
-// ============================================================================
-// INIT
-// ============================================================================
 
 export function initAutomationsPage() {
     const tab = document.querySelector('button[data-bs-target="#automations"]');
@@ -290,9 +285,7 @@ export async function loadAutomationsPage() {
     }
 }
 
-// ============================================================================
 // PAGE RENDER
-// ============================================================================
 
 function _renderPage(container, devices) {
     // Device lookup
@@ -397,9 +390,7 @@ function _renderPage(container, devices) {
     _renderRulesList(devMap);
 }
 
-// ============================================================================
 // RULES LIST
-// ============================================================================
 
 function _visibleRules() {
     let rules = allRulesCache;
@@ -528,9 +519,7 @@ function _ruleCard(rule, src) {
     </div>`;
 }
 
-// ============================================================================
 // ACTIONS
-// ============================================================================
 
 async function _apRefresh() {
     await loadAutomationsPage();
@@ -546,7 +535,7 @@ function _apFilterState(val) {
     _renderRulesList();
 }
 
-// --- Expand / collapse ---
+// Expand / collapse
 
 function _apToggleExpand(ruleId) {
     if (expandedRules.has(ruleId)) expandedRules.delete(ruleId);
@@ -571,7 +560,7 @@ function _syncExpandBtn(rules) {
     btn.title = allOpen ? 'Collapse all' : 'Expand all';
 }
 
-// --- Trace ---
+// Trace
 
 // Open the page-level trace panel filtered to the pressed rule (the backend
 // keeps a per-rule history, so the rule's full timeline survives churn in
@@ -597,7 +586,7 @@ function _apTrace(ruleId) {
     window._aRefTrace();
 }
 
-// --- Create ---
+// Create
 
 function _apCreate() {
     document.getElementById('ap-create-panel').style.display = 'block';
@@ -642,7 +631,7 @@ async function _apSourceSelected(ieee) {
     if (typeof window._aShowForm === 'function') window._aShowForm();
 }
 
-// --- Edit ---
+// Edit
 
 async function _apEdit(ruleId) {
     const rule = allRulesCache.find(r => r.id === ruleId);
@@ -708,7 +697,7 @@ function _apCloseEdit() {
     loadAutomationsPage();
 }
 
-// --- Toggle / Delete ---
+// Toggle / Delete
 
 async function _apToggle(ruleId) {
     try {
@@ -754,9 +743,7 @@ function _apGoToLocationSettings(ev) {
     }, 450);
 }
 
-// ============================================================================
 // WINDOW HANDLERS
-// ============================================================================
 
 window._apGoToLocationSettings = _apGoToLocationSettings;
 window._apRefresh = _apRefresh;

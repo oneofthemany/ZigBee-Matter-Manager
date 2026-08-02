@@ -33,9 +33,6 @@ except ImportError:
     c = None
     znp_t = None
 
-# =============================================================================
-# CONSTANTS
-# =============================================================================
 
 ZLL_CLUSTER_ID = 0x1000      # ZLL/Touchlink cluster
 INTERPAN_ENDPOINT = 12       # Same as zigbee-herdsman
@@ -55,9 +52,7 @@ class TouchlinkCommand:
     NETWORK_JOIN_END_DEVICE_REQUEST = 0x14
 
 
-# =============================================================================
 # DATA CLASSES
-# =============================================================================
 
 @dataclass
 class TouchlinkDevice:
@@ -85,9 +80,7 @@ class TouchlinkDevice:
         }
 
 
-# =============================================================================
 # TOUCHLINK MANAGER
-# =============================================================================
 
 class TouchlinkManager:
     """
@@ -149,9 +142,6 @@ class TouchlinkManager:
         """Get the detected coordinator type"""
         return self._coordinator_type
 
-    # =========================================================================
-    # PUBLIC API
-    # =========================================================================
 
     async def scan(self, channel: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -210,9 +200,7 @@ class TouchlinkManager:
         else:
             return {"success": False, "error": "Touchlink not supported"}
 
-    # =========================================================================
     # EZSP IMPLEMENTATION (Native zigpy touchlink)
-    # =========================================================================
 
     async def _ezsp_scan(self, channel: Optional[int] = None) -> Dict[str, Any]:
         """EZSP touchlink scan using native zigpy API"""
@@ -360,9 +348,7 @@ class TouchlinkManager:
             logger.error(f"EZSP touchlink factory reset failed: {e}")
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
     # ZNP IMPLEMENTATION (InterPAN mode like zigbee-herdsman)
-    # =========================================================================
 
     async def _znp_interpan_ctl(self, cmd: int, data: bytes = b'') -> None:
         """
@@ -757,9 +743,7 @@ class TouchlinkManager:
             return {"success": False, "error": str(e)}
 
 
-# =============================================================================
 # FACTORY FUNCTION
-# =============================================================================
 
 async def create_touchlink_manager(app: 'ControllerApplication') -> Optional[TouchlinkManager]:
     """

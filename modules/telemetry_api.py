@@ -1,15 +1,6 @@
 """
-Telemetry API - FastAPI routes for system and network telemetry.
-
-Endpoints:
-  GET  /api/telemetry/system/current    — Latest system metrics snapshot
-  GET  /api/telemetry/system/history    — Historical system metrics (bucketed)
-  GET  /api/telemetry/packets           — Network packet stats history
-  GET  /api/telemetry/device/{ieee}     — Device state change history
-  GET  /api/telemetry/db/stats          — Database size and row counts
-  POST /api/telemetry/db/prune          — Manual retention cleanup
-  GET  /api/telemetry/thresholds        — Alert threshold config
-  POST /api/telemetry/thresholds        — Update alert thresholds
+Telemetry API — current and historical system metrics, packet stats, per-device
+state history, database size and manual pruning, and alert threshold config.
 """
 
 import asyncio
@@ -33,9 +24,7 @@ def register_telemetry_routes(app, system_monitor_getter: Callable):
     logger.info("Telemetry API routes registered")
 
 
-# ============================================================================
 # SYSTEM METRICS
-# ============================================================================
 
 @router.get("/system/current")
 async def system_current():
@@ -71,9 +60,7 @@ async def system_history(hours: int = 1, bucket: int = 1):
         return {"success": False, "error": str(e)}
 
 
-# ============================================================================
 # PACKET STATS
-# ============================================================================
 
 @router.get("/packets")
 async def packet_history(ieee: Optional[str] = None, hours: int = 1):
@@ -90,9 +77,7 @@ async def packet_history(ieee: Optional[str] = None, hours: int = 1):
         return {"success": False, "error": str(e)}
 
 
-# ============================================================================
 # DEVICE STATE HISTORY
-# ============================================================================
 
 @router.get("/device/{ieee}")
 async def device_state_history(ieee: str, attribute: str = "state", hours: int = 24):
@@ -145,9 +130,7 @@ async def device_history_bucketed(ieee: str, attribute: str,
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# ============================================================================
 # DATABASE MANAGEMENT
-# ============================================================================
 
 @router.get("/db/stats")
 async def db_stats():
@@ -171,9 +154,7 @@ async def db_prune(days: int = 7):
         return {"success": False, "error": str(e)}
 
 
-# ============================================================================
 # THRESHOLDS
-# ============================================================================
 
 @router.get("/thresholds")
 async def get_thresholds():

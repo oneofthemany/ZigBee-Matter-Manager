@@ -1,23 +1,11 @@
-"""Disaster recovery from the manager (CP2b) — replaces recovery_server.py.
+"""
+Disaster recovery from the manager — replaces the old in-container
+recovery_server.py, which could only run while the app container was alive.
 
-The old recovery server ran INSIDE the app container (launched by launcher.py
-on a boot crash) and could only exist while that container was alive. Moving
-recovery here makes it strictly more capable:
-
-  - Crash record + pending markers + editor backups live under the app's
-    ``/app/data`` bind mount (``${DATA_DIR}/data`` on the host), which the
-    manager also mounts — readable/writable even with the app container DEAD.
-  - App code files (``/app/...``) are reached through the container runtime's
-    archive API (``GET``/``PUT /containers/{name}/archive``), which — like
-    ``podman cp`` — works on stopped containers too.
-  - "Retry the app" writes ``data/.recovery_resume``: the launcher's recovery
-    standby polls for it and re-runs main.py. If the container is dead
-    entirely, the manager restarts it instead.
-
-The launcher signals recovery mode with ``data/.recovery_active`` and records
-the crash in ``data/last_crash.json`` (same contract recovery_server.py used).
-Backups moved from ``/app/.editor_backups`` to ``/app/data/.editor_backups``
-so they survive image swaps and are host-visible.
+Crash records and backups sit in a bind mount the manager also mounts, and app
+code is reached through the runtime's archive API, so both work with the app
+container dead. "Retry" writes data/.recovery_resume for the launcher's standby.
+See docs/upgrades.md.
 """
 import io
 import json
@@ -63,7 +51,7 @@ ALLOWED_EXTS = {".py", ".js", ".css", ".html", ".yaml", ".yml",
 _BAK_RE = re.compile(r"^(.+?)\.(\d{8}_\d{6})(\..+)?\.bak$")
 
 
-# ── Path policy ──────────────────────────────────────────────────────────────
+# Path policy
 
 def _clean_rel(rel: str) -> Optional[str]:
     """Normalise a project-relative path; None if it escapes the project."""
@@ -84,7 +72,7 @@ def path_is_writable(rel: str) -> bool:
     return ok_dir and os.path.splitext(clean)[1].lower() in ALLOWED_EXTS
 
 
-# ── Recovery state (host files) ──────────────────────────────────────────────
+# Recovery state (host files)
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -191,7 +179,7 @@ def clear_pending() -> List[str]:
     return removed
 
 
-# ── App-container file access (archive API — works on stopped containers) ────
+# App-container file access (archive API — works on stopped containers)
 
 async def read_app_file(rel: str) -> Tuple[bool, str]:
     """Read /app/<rel> from the app container via GET .../archive."""
@@ -280,7 +268,7 @@ async def restore_backup(name: str, rel: str) -> Tuple[bool, str]:
     return await write_app_file(rel, content.encode("utf-8"))
 
 
-# ── Resume ───────────────────────────────────────────────────────────────────
+# Resume
 
 def request_resume() -> Tuple[bool, str]:
     """Ask the launcher's recovery standby to retry main.py."""

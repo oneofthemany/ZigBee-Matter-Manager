@@ -1,15 +1,11 @@
-/* ============================================================
-   ZigBee Matter Manager — Theme Toggle (Dark Mode)
-   ============================================================ */
+/* ZigBee Matter Manager — Theme Toggle (Dark Mode) */
 
 (function () {
     'use strict';
 
     var STORAGE_KEY = 'zbm-theme';
 
-    // ----------------------------------------------------------
     // 1. DETERMINE INITIAL THEME
-    // ----------------------------------------------------------
 
     function getPreferredTheme() {
         var stored = localStorage.getItem(STORAGE_KEY);
@@ -61,9 +57,7 @@
         document.dispatchEvent(new CustomEvent('themechange', { detail: { theme } }));
     }
 
-    // ----------------------------------------------------------
     // 2. INITIAL THEME
-    // ----------------------------------------------------------
     // Already applied by the inline snippet in the <head> of index.html /
     // frames.html — it has to run before the first stylesheet or the page
     // paints light and flips to dark. This script loads at the end of <body>
@@ -78,9 +72,7 @@
         document.documentElement.setAttribute('data-bs-theme', initialTheme);
     }
 
-    // ----------------------------------------------------------
     // 3. INJECT TOGGLE BUTTON INTO NAVBAR
-    // ----------------------------------------------------------
 
     function createToggleButton() {
         var navbar = document.querySelector('.navbar .d-flex.align-items-center.gap-3');
@@ -128,9 +120,7 @@
         }
     }
 
-    // ----------------------------------------------------------
     // 4. LISTEN FOR OS THEME CHANGES
-    // ----------------------------------------------------------
 
     if (window.matchMedia) {
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
@@ -142,9 +132,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // 5. INIT ON DOM READY
-    // ----------------------------------------------------------
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', createToggleButton);

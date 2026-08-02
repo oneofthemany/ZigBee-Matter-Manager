@@ -1,22 +1,10 @@
 /**
  * Frames page bootstrap — the standalone mobile front end (/frames).
  *
- * This page deliberately does NOT reuse the dashboard's plumbing:
- *
- *   websocket.js imports 13 modules (devices.js, logging.js, editor.js,
- *   mqtt-explorer.js, the modal set...) and actions.js imports device-modal.js,
- *   which drags in control.js (79KB) and automation.js (88KB). Importing either
- *   would pull the entire admin dashboard onto a phone and defeat the point of
- *   a separate surface.
- *
- * So this file provides the three things frames.js actually needs, and nothing
- * else:
- *
- *   1. state.deviceCache / state.devices — from one /api/devices fetch
- *   2. live updates — a minimal websocket that only listens for device_updated
- *   3. window.sendCommand — frames.js depends on that CONTRACT, not on actions.js
- *
- * Total cost: this file, frames.js, chambers-free. The dashboard is untouched.
+ * Deliberately does NOT reuse the dashboard's plumbing: importing websocket.js
+ * or actions.js would pull the entire admin dashboard onto a phone. Provides
+ * only what frames.js needs — the device cache, a minimal device_updated
+ * websocket, and window.sendCommand. See docs/structure.md.
  */
 
 import { state } from './state.js';
@@ -42,7 +30,7 @@ const log = zmmLog('frames-page');
 let socket = null;
 let reconnectDelay = 1000;
 
-// ── devices ─────────────────────────────────────────────────────────
+// devices
 
 async function loadDevices() {
     const res = await fetch('/api/devices');
@@ -53,7 +41,7 @@ async function loadDevices() {
     return devices;
 }
 
-// ── commands ────────────────────────────────────────────────────────
+// commands
 
 /**
  * Minimal sendCommand, matching actions.js's contract:
@@ -105,7 +93,7 @@ window.sendCommand = async function sendCommand(ieee, command, value = null, end
     }
 };
 
-// ── live updates ────────────────────────────────────────────────────
+// live updates
 
 function setConnected(ok) {
     const el = document.getElementById('framesConnection');
@@ -159,7 +147,6 @@ function initWS() {
     socket.onerror = () => setConnected(false);
 }
 
-// ── init ────────────────────────────────────────────────────────────
 
 async function start() {
     try {

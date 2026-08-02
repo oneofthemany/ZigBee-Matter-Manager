@@ -1,13 +1,11 @@
-"""Query log + aggregates, backed by SQLite.
+"""
+Query log and aggregates, backed by SQLite.
 
-The DNS hot path must never block on disk, so :meth:`Stats.record` only bumps
-in-memory counters and drops the row onto a bounded queue; a dedicated writer
-thread batch-inserts into SQLite (WAL mode, so the control API can read while
-the writer writes). If logging is disabled or the queue is full the counters
-still update — the dashboard's headline numbers survive even without the log.
-
-Read methods (summary/top/recent/series) open their own short-lived read
-connections and are meant to be called off the event loop via ``asyncio.to_thread``.
+The DNS hot path must never block on disk, so record() only bumps in-memory
+counters and drops the row on a bounded queue for a writer thread to batch-insert
+(WAL mode, so the control API reads while it writes). Counters still update when
+logging is off or the queue is full, so headline numbers survive without the log.
+Read methods open short-lived connections and belong on asyncio.to_thread.
 """
 from __future__ import annotations
 
@@ -59,7 +57,6 @@ class Stats:
         self._counters = {"total": 0, "blocked": 0, "cached": 0, "dropped": 0}
         self._started_at = time.time()
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()
@@ -98,7 +95,7 @@ class Stats:
             logger.warning("WAL unavailable (%s) — using default journal", e)
         return conn
 
-    # ── write path ───────────────────────────────────────────────────────────
+    # write path
     def record(self, *, client: str, qname: str, qtype: int, blocked: bool,
                reason: Optional[str] = None, cached: bool = False,
                upstream: Optional[str] = None, rcode: Optional[int] = None,
@@ -181,7 +178,7 @@ class Stats:
         except sqlite3.Error as e:
             logger.warning("stats prune failed: %s", e)
 
-    # ── read path (call via asyncio.to_thread) ───────────────────────────────
+    # read path (call via asyncio.to_thread)
     def counters(self) -> Dict[str, Any]:
         c = dict(self._counters)
         total = c["total"] or 1

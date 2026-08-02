@@ -1,13 +1,7 @@
 """
-JSON Serialisation Helpers for Zigpy Types
-==========================================
-Comprehensive serialisation utilities that handle all zigpy types that aren't
-natively JSON-serializable, based on ZHA's diagnostic serialisation patterns.
-
-This module provides:
-1. Safe serialisation of zigpy types (EUI64, LVBytes, etc.)
-2. Recursive handling of nested structures (dicts, lists)
-3. Fallback serialisation for unknown types
+JSON serialisation for zigpy types that are not natively serialisable (EUI64,
+LVBytes and friends), with recursive handling of nested dicts and lists and a
+fallback for unknown types. Follows ZHA's diagnostic serialisation patterns.
 """
 import json
 import logging

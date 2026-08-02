@@ -1,8 +1,6 @@
-/* ============================================================
-   ZigBee Matter Manager — Device Status Enhancements
-   ============================================================ */
+/* ZigBee Matter Manager — Device Status Enhancements */
 
-/* --- Status indicator dot (replaces text badges for online/offline) --- */
+/* Status indicator dot (replaces text badges for online/offline) */
 
 .zbm-status-dot {
     display: inline-block;
@@ -36,7 +34,7 @@
 }
 
 
-/* --- Battery indicator --- */
+/* Battery indicator */
 
 .zbm-battery {
     display: inline-flex;
@@ -73,7 +71,7 @@
 }
 
 
-/* --- Signal strength bars (LQI visual) --- */
+/* Signal strength bars (LQI visual) */
 
 .zbm-signal {
     display: inline-flex;
@@ -98,7 +96,7 @@
 [data-theme="dark"] .zbm-signal-bar.inactive { background: #374151; }
 
 
-/* --- Inline device type icons --- */
+/* Inline device type icons */
 
 .zbm-device-icon {
     display: inline-flex;
@@ -130,7 +128,7 @@
 [data-theme="dark"] .zbm-device-icon.coordinator { background: rgba(192, 132, 252, 0.12); color: #c084fc; }
 
 
-/* --- Status badges column enhancement --- */
+/* Status badges column enhancement */
 
 .zbm-status-cell {
     display: flex;
@@ -139,7 +137,7 @@
     flex-wrap: wrap;
 }
 
-/* --- Heating indicator mini badge --- */
+/* Heating indicator mini badge */
 
 .zbm-heating-indicator {
     display: inline-flex;
@@ -184,7 +182,7 @@
 }
 
 
-/* --- Temperature mini display --- */
+/* Temperature mini display */
 
 .zbm-temp-mini {
     display: inline-flex;
@@ -214,7 +212,7 @@
 [data-theme="dark"] .zbm-temp-mini.cold { color: #60a5fa; }
 
 
-/* --- Thermostat / TRV extras --- */
+/* Thermostat / TRV extras */
 .zbm-setpoint-mini {
     color: #8b5cf6;
     font-size: 0.7rem;
@@ -261,7 +259,7 @@
 [data-theme="dark"] .zbm-demand-mini.med  { color: #fbbf24; }
 [data-theme="dark"] .zbm-demand-mini.high { color: #f87171; }
 
-/* --- On/Off status mini badges --- */
+/* On/Off status mini badges */
 
 .zbm-onoff-badge {
     display: inline-flex;
@@ -297,7 +295,7 @@
     color: #9ca3af;
 }
 
-/* --- Cover / blinds status --- */
+/* Cover / blinds status */
 .zbm-cover-open    { color: #3b82f6; font-size: 0.7rem; font-weight: 600; }
 .zbm-cover-closed  { color: #6b7280; font-size: 0.7rem; font-weight: 600; }
 .zbm-cover-partial { color: #f59e0b; font-size: 0.7rem; font-weight: 600; }

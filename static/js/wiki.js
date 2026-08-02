@@ -1,7 +1,5 @@
-/* ============================================================================
-   Docs / Wiki tab — renders the bundled docs/*.md served by /api/wiki.
-   Lazy-loads the first time the tab is shown; server renders the markdown.
-   ============================================================================ */
+/* Docs / Wiki tab — renders the bundled docs/*.md served by /api/wiki.
+   Lazy-loads the first time the tab is shown; server renders the markdown. */
 (function () {
     'use strict';
 

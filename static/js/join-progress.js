@@ -1,21 +1,13 @@
 /**
- * join-progress.js — Live onboarding tracker for newly joined devices.
+ * Live onboarding tracker — a persistent bottom-right card per joining device,
+ * walking Joined -> Interviewing -> Interviewed -> Configuring -> Polling ->
+ * Ready.
  *
- * Shows a persistent card in the bottom-right corner when a device joins,
- * walking through each stage of the onboarding journey:
- *
- *   Joined → Interviewing → Interviewed → Configuring → Polling → Ready ✓
- *
- * Data arrives via WebSocket events:
- *   device_joined          → create card, mark "Joined"
- *   interview_status_update → update interview stage (interviewing / stalled / failed / interviewed)
- *   join_progress          → configuring / polling / ready / error
- *
- * The card auto-dismisses 8 seconds after "ready", or can be closed manually.
- * Multiple devices joining simultaneously each get their own card.
+ * Driven by the device_joined, interview_status_update and join_progress
+ * WebSocket events. Auto-dismisses 8 s after ready. See docs/onboarding.md.
  */
 
-// ─── Stage definitions ──────────────────────────────────────────────────────
+// Stage definitions
 
 const STAGES = [
     { key: 'joined',       label: 'Joined',       icon: 'fa-plug' },
@@ -29,12 +21,12 @@ const STAGES = [
 // Special non-progress states
 const PROBLEM_STATES = new Set(['stalled', 'failed', 'error']);
 
-// ─── Per-device tracker state ────────────────────────────────────────────────
+// Per-device tracker state
 
 // ieee → { stage, label, cardEl, autoDismissTimer, stalled }
 const _trackers = new Map();
 
-// ─── Container ───────────────────────────────────────────────────────────────
+// Container
 
 function _ensureContainer() {
     let c = document.getElementById('join-progress-container');
@@ -60,7 +52,7 @@ function _ensureContainer() {
     return c;
 }
 
-// ─── Card creation ────────────────────────────────────────────────────────────
+// Card creation
 
 function _createCard(ieee, friendlyName) {
     const container = _ensureContainer();
@@ -112,7 +104,7 @@ function _createCard(ieee, friendlyName) {
     return card;
 }
 
-// ─── Stage rendering ──────────────────────────────────────────────────────────
+// Stage rendering
 
 function _renderStages(currentKey, problemState) {
     const currentIdx = STAGES.findIndex(s => s.key === currentKey);
@@ -155,7 +147,7 @@ function _renderStages(currentKey, problemState) {
     }).join('');
 }
 
-// ─── Update helpers ───────────────────────────────────────────────────────────
+// Update helpers
 
 function _updateCard(ieee, stageKey, problemState, note) {
     const tracker = _trackers.get(ieee);
@@ -206,7 +198,7 @@ function _scheduleDismiss(ieee, delayMs) {
     tracker.autoDismissTimer = setTimeout(() => _dismiss(ieee), delayMs);
 }
 
-// ─── Public API — called from websocket.js ────────────────────────────────────
+// Public API — called from websocket.js
 
 /**
  * A new device has joined the network.
@@ -311,7 +303,6 @@ export function dismissKnownDevices(devices) {
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function _esc(s) {
     return String(s ?? '')

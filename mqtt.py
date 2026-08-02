@@ -43,10 +43,9 @@ class MQTTService:
         self.log = log_callback
         self.command_callback = command_callback
         self.group_command_callback = group_command_callback
-        # Home Assistant integration (config: homeassistant.enabled). When
-        # off, no discovery configs are published (all modules' discovery
-        # funnels through publish()/publish_discovery here) and the HA
-        # command/birth topics are never subscribed. Plain state publishes
+        # config: homeassistant.enabled. When off, no discovery configs are
+        # published (all modules funnel through publish()/publish_discovery here)
+        # and HA command/birth topics are never subscribed. Plain state publishes
         # on base_topic continue to work.
         self.ha_discovery = bool(ha_discovery)
 
@@ -137,11 +136,8 @@ class MQTTService:
                     logger.debug(f"Status callback error: {e}")
 
 
-            # ---------------------------------------------------------
             # Call the method to subscribe to command topics!
-            # ---------------------------------------------------------
             await self._subscribe_to_topics()
-            # ---------------------------------------------------------
 
             # Start message handler
             self._message_handler_task = asyncio.create_task(self._handle_messages())
@@ -246,7 +242,7 @@ class MQTTService:
 
                     logger.debug(f"MQTT RX: {topic} = {payload}")
 
-                    # --- CASE 1: Home Assistant Birth Message ---
+                    # CASE 1: Home Assistant Birth Message
                     if topic == "homeassistant/status":
                         logger.info(f"Home Assistant Status Change: {payload}")
                         if payload.lower() == "online" and self.ha_status_callback:
@@ -267,7 +263,7 @@ class MQTTService:
                             logger.error(f"Group command error: {e}")
                         continue
 
-                    # --- CASE 2: Device Command ---
+                    # CASE 2: Device Command
                     await self._route_command(topic, payload)
 
                 except Exception as e:
@@ -295,7 +291,7 @@ class MQTTService:
             except json.JSONDecodeError:
                 data = {"state": payload}
 
-            # --- Check for Group Command (zigbee/group/name/set) ---
+            # Check for Group Command (zigbee/group/name/set)
             if parts[0] == self.base_topic and len(parts) == 4 and parts[1] == 'group' and parts[-1] == "set":
                 group_name = parts[2]
                 logger.info(f"📥 Group Command for '{group_name}': {data}")
@@ -479,12 +475,9 @@ class MQTTService:
             # Replace all placeholders in the entire payload
             payload = replace_placeholders(payload, placeholder_map)
 
-            # ==================================================================
             # DUAL AVAILABILITY CONFIGURATION (ZHA Pattern)
-            # ==================================================================
             # 1. Bridge/Gateway LWT - tells if the gateway is online
             # 2. Device availability - tells if the device itself is reachable
-            # ==================================================================
             payload['availability'] = [
                 {
                     # Bridge availability (gateway LWT)
@@ -504,9 +497,7 @@ class MQTTService:
             payload['availability_mode'] = 'all'
 
 
-            # ==================================================================
             # COMPONENT-SPECIFIC DEFAULTS
-            # ==================================================================
 
             if component in ("switch", "light"):
                 # Ensure command_topic is set
@@ -582,9 +573,7 @@ class MQTTService:
                 if 'command_template' not in payload:
                     payload['command_template'] = f'{{"command": "{object_id}", "value": {{{{ value }}}}}}'
 
-            # ==================================================================
             # PUBLISH DISCOVERY CONFIG
-            # ==================================================================
             try:
                 await self.client.publish(topic, json.dumps(payload), retain=True, qos=1)
                 logger.debug(f"Discovery published: {topic}")
@@ -594,9 +583,7 @@ class MQTTService:
         logger.info(f"[{ieee}] Published HA discovery for {len(configs)} entities")
         await self._log("INFO", f"Sent HA Discovery for {len(configs)} entities", ieee=ieee)
 
-        # ==================================================================
         # PUBLISH INITIAL DEVICE STATE (CRITICAL FOR AVAILABILITY)
-        # ==================================================================
         if initial_state is not None:
             try:
                 # Ensure 'available' key is present (required for availability template)

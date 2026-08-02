@@ -62,7 +62,7 @@ def convert_radar_state(x):
     except:
         return str(x)
 
-# --- DP DEFINITIONS ---
+# DP DEFINITIONS
 
 # Added for Tuya Covers (Fix for _TZE200_zah67ekd)
 TUYA_COVER_DPS = {
@@ -169,9 +169,7 @@ TUYA_VALVE_DPS = {
 }
 
 
-# ============================================================
 # TUYA MANUFACTURER CLUSTER (0xEF00)
-# ============================================================
 @register_handler(TUYA_CLUSTER_ID)
 class TuyaClusterHandler(ClusterHandler):
     """
@@ -198,16 +196,12 @@ class TuyaClusterHandler(ClusterHandler):
         model = str(getattr(self.device.zigpy_dev, 'model', '')).lower()
         manufacturer = str(getattr(self.device.zigpy_dev, 'manufacturer', '')).lower()
 
-        # ---------------------------------------------------------
         # PRIORITY 1: EXPLICIT MANUFACTURER ID CHECK (FIX for TS0601 Cover)
-        # ---------------------------------------------------------
         if '_tze200_zah67ekd' in manufacturer:
             logger.info(f"[{self.device.ieee}] Identified _TZE200_zah67ekd - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
 
-        # ---------------------------------------------------------
         # PRIORITY 2: CLUSTER-BASED DETECTION
-        # ---------------------------------------------------------
         # If the device has the Window Covering Cluster (0x0102), it IS a cover.
         has_cover_cluster = False
         try:
@@ -222,9 +216,7 @@ class TuyaClusterHandler(ClusterHandler):
             logger.info(f"[{self.device.ieee}] Detected Cover Cluster 0x0102 - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
 
-        # ---------------------------------------------------------
         # PRIORITY 3: MODEL NAME MATCHING
-        # ---------------------------------------------------------
         if any(x in model for x in ['curtain', 'blind', 'shade', 'roller', 'shutter', 'awning', 'cover']):
             logger.info(f"[{self.device.ieee}] Detected Cover Model - Using Tuya Cover DP map")
             return TUYA_COVER_DPS
@@ -357,7 +349,7 @@ class TuyaClusterHandler(ClusterHandler):
                 logger.debug(f"[{self.device.ieee}] Parse error at offset {offset}: {e}")
                 break
 
-        # --- ENHANCED DEBUGGING EMISSION ---
+        # ENHANCED DEBUGGING EMISSION
         debugger = get_debugger()
         if debugger and parsed_dps:
             debugger.record_tuya_report(
@@ -365,7 +357,7 @@ class TuyaClusterHandler(ClusterHandler):
                 data.hex(),
                 parsed_dps
             )
-        # --- END ENHANCED DEBUGGING EMISSION ---
+        # END ENHANCED DEBUGGING EMISSION
 
         # Process DPs for State
         self._update_state_from_dps(data)
@@ -417,7 +409,7 @@ class TuyaClusterHandler(ClusterHandler):
 
                 dp_data = data[offset + 4:offset + 4 + dp_len]
 
-                # --- START Original _process_dp logic ---
+                # START Original _process_dp logic
 
                 # Decode value based on type
                 raw_value, value = self._process_dp_logic(dp_id, dp_type, dp_data)
@@ -471,7 +463,7 @@ class TuyaClusterHandler(ClusterHandler):
                     if dp_def.name == "position_report":
                         state_update["position"] = value
 
-                    # === FAST-PATH PUBLISH for presence/state (CRITICAL DPs) ===
+                    # FAST-PATH PUBLISH for presence/state (CRITICAL DPs)
                     if dp_id in [1, 104] and self.device.service.mqtt and hasattr(self.device.service.mqtt, 'publish_fast'):
                         # For radar presence, publish IMMEDIATELY via fast path
                         safe_name = self.device.service.get_safe_name(self.device.ieee)
@@ -493,7 +485,6 @@ class TuyaClusterHandler(ClusterHandler):
                     else:
                         # Normal update for non-critical DPs (temperature, humidity, etc.)
                         self.device.update_state(state_update, qos=qos)
-                    # === END FAST-PATH ===
 
                 else:
                     # Unknown DP - log it for debugging
@@ -663,12 +654,8 @@ class TuyaClusterHandler(ClusterHandler):
             len(dp_data) & 0xFF,          # data length low
         ]) + dp_data
 
-        # Build complete ZCL frame with manufacturer-specific header
-        # Frame Control byte: 0x15 = 0b00010101
-        #   - Bits 0-1: Frame type = 01 (Cluster-specific)
-        #   - Bit 2: Manufacturer specific = 1 (Yes)
-        #   - Bit 3: Direction = 0 (Client to Server)
-        #   - Bit 4: Disable default response = 1 (Yes)
+        # Manufacturer-specific ZCL frame. Frame control 0x15 = cluster-specific,
+        # manufacturer-specific, client->server, default response disabled.
         frame_control = 0x15
         manuf_id = 0xFFFF  # NO_MANUFACTURER_ID - critical for Tuya
         zcl_seq = self._seq & 0xFF
@@ -727,7 +714,7 @@ class TuyaClusterHandler(ClusterHandler):
         await self.send_dp(3, self.DP_TYPE_VALUE, int(min_m * 100))
         await self.send_dp(4, self.DP_TYPE_VALUE, int(max_m * 100))
 
-    # --- HA DISCOVERY ---
+    # HA DISCOVERY
     def get_discovery_configs(self) -> List[Dict]:
         """
         Generate Home Assistant discovery configs with device type filtering.
@@ -844,7 +831,7 @@ class TuyaClusterHandler(ClusterHandler):
         logger.info(f"[{self.device.ieee}] Generated {len(configs)} Tuya discovery configs (filtered for {device_type})")
         return configs
 
-    # --- UI & CONFIGURATION EXPOSURE ---
+    # UI & CONFIGURATION EXPOSURE
     def get_configuration_options(self) -> List[Dict]:
         """
         Return configuration options for the frontend based on the active DP map.
@@ -892,11 +879,9 @@ class TuyaClusterHandler(ClusterHandler):
 
         return options
 
-# ============================================================================
 # Device Detection
-# ============================================================================
 
-# --- Device Type Detection Patterns ---
+# Device Type Detection Patterns
 COVER_MODELS = ['curtain', 'blind', 'shade', 'roller', 'shutter', 'awning', 'window_covering']
 SENSOR_MODELS = ['radar', 'mmwave', '24g', 'presence', 'motion', 'occupancy', 'zy-m100', 'human']
 LIGHT_MODELS = ['light', 'bulb', 'lamp', 'strip', 'spot', 'led']
@@ -1073,12 +1058,8 @@ class TuyaDPFilter:
         return is_allowed
 
 
-
-
-# ============================================================
 # TUYA PRIVATE CLUSTER 2 (0xE001)
 # Some devices use this for additional features
-# ============================================================
 @register_handler(0xE001)
 class TuyaPrivateCluster2Handler(ClusterHandler):
     """Handles Tuya private cluster 0xE001."""
@@ -1088,10 +1069,8 @@ class TuyaPrivateCluster2Handler(ClusterHandler):
         logger.debug(f"[{self.device.ieee}] Tuya 0xE001: cmd=0x{command_id:02x}")
 
 
-# ============================================================
 # ANALOG INPUT CLUSTER (0x000C)
 # Used by some Tuya devices for sensor data
-# ============================================================
 @register_handler(0x000C)
 class AnalogInputHandler(ClusterHandler):
     """

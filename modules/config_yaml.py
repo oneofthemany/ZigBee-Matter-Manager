@@ -1,29 +1,11 @@
 """
 Comment-preserving writes into config.yaml.
 
-Why this exists
----------------
-The obvious way to persist a setting is safe_load, mutate, dump. It is also
-lossy in a way that does not announce itself: PyYAML's emitter has no concept of
-comments, so a round-trip silently deletes every one of them. config.yaml is
-roughly a third comments — the documentation for every knob in the hub — and
-losing that to persist one boolean is not a trade worth making, least of all
-when nobody notices until they next go looking for an explanation.
-
-So this edits the file as text: it finds a top-level block, rewrites the values
-of the keys it was given, and leaves every other byte — comments, ordering,
-blank lines, indentation style, keys it has never heard of — exactly as found.
-
-Scope
------
-Deliberately small. It handles top-level blocks one level deep, which is the
-shape of every setting the UI persists. It is not a YAML editor: nested maps,
-lists and anchors are out of range, and a caller needing those should be reading
-and writing its own file rather than growing this. Anything it cannot place is
-appended as a new block rather than guessed at.
-
-A write goes through a temporary file in the same directory and is renamed into
-place, so an interrupted save cannot leave the hub with half a config.
+safe_load/dump silently deletes every comment, and config.yaml is roughly a
+third comments. So this edits the file as text: it rewrites the values it was
+given inside one top-level block and leaves every other byte as found. Writes
+go through a temp file and a rename. Deliberately not a YAML editor — nested
+maps, lists and anchors are out of scope. See docs/structure.md.
 """
 
 from __future__ import annotations
@@ -38,10 +20,8 @@ logger = logging.getLogger("modules.config_yaml")
 DEFAULT_INDENT = "  "
 
 #: Strings matching this are emitted bare, as a hand-written file would have
-#: them. Everything else is quoted — URLs (the "://" would need thinking about),
-#: anything with spaces or punctuation, and anything empty. Conservative on
-#: purpose: a needlessly quoted string is ugly, an unquoted one that reparses as
-#: something else is a bug.
+#: them; everything else is quoted. Conservative on purpose — a needlessly
+#: quoted string is ugly, an unquoted one that reparses as something else is a bug.
 _PLAIN_SAFE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 
 #: Bare words YAML reads as something other than a string.

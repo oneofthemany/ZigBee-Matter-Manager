@@ -1,28 +1,11 @@
 """
-Fuel price history — persists what the fuel-price feeds said, when we asked.
+Fuel price history — snapshots what the price feeds said, when we asked.
 
-The uk-fuel-prices-api package holds retailer data only in memory, and most
-retailers publish just a daily number with no archive: once tomorrow's price
-replaces today's, today's is gone. This module snapshots every station that
-comes back from a Drive-tab query into DuckDB, so price trends ("is this
-station creeping up?", "cheapest E10 seen this month") become answerable.
-
-Storage:
-    data/fuel_prices.duckdb — a NEW database dedicated to this module, with
-    all access through one dedicated worker thread that owns the connection
-    (one DB, one thread — DuckDB is single-writer per file, and this must
-    never share journeys' or telemetry's database).
-
-Dedupe:
-    Retailer feeds update roughly daily, but users may search many times a
-    day. One row per (site_id, fuel, feed day) — re-recording the same feed
-    value is a no-op, so history growth is bounded by stations × fuels × days
-    regardless of how often anyone searches.
-
-Privacy:
-    Rows describe petrol stations, not people. Where the user searched from
-    is deliberately NOT stored — only which stations came back and their
-    prices.
+Retailers publish a daily number with no archive, so today's price is gone once
+tomorrow's replaces it. One row per (site_id, fuel, feed day) bounds growth
+regardless of search frequency. Its own DuckDB file and worker thread. Rows
+describe stations, not people — where the user searched is not stored.
+See docs/journeys.md.
 """
 
 from __future__ import annotations
@@ -100,9 +83,7 @@ class FuelHistoryManager:
             pass
         self._executor.shutdown(wait=False)
 
-    # ------------------------------------------------------------------
     # Recording
-    # ------------------------------------------------------------------
     async def record_stations(self, stations: List[Dict[str, Any]]) -> None:
         """
         Snapshot the stations a nearby-query returned (all four fuel prices
@@ -139,9 +120,7 @@ class FuelHistoryManager:
             rows,
         )
 
-    # ------------------------------------------------------------------
     # Queries
-    # ------------------------------------------------------------------
     async def daily_trend(self, fuel: str, days: int = 30,
                           site_id: Optional[str] = None) -> Dict[str, Any]:
         """Per-day min/median/max across recorded stations (or one station)."""
@@ -226,10 +205,6 @@ def _feed_day(last_updated: Any, fallback_ts: float) -> dt.date:
             pass
     return dt.datetime.fromtimestamp(fallback_ts).date()
 
-
-# ---------------------------------------------------------------------------
-# Singleton helper
-# ---------------------------------------------------------------------------
 
 _manager: Optional[FuelHistoryManager] = None
 

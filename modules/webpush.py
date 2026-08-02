@@ -1,31 +1,10 @@
 """
-Web Push — server-initiated notifications to a phone that isn't open.
+Web Push — server-initiated notifications to a phone that is not open.
 
-Everything else in this codebase notifies a browser that is already running.
-Web Push is the only mechanism that reaches a device with the screen off, and
-it is what makes a request ("get milk?") arrive when it matters rather than
-when someone next opens the page.
-
-What the relay can see
-----------------------
-Delivery goes through the browser vendor's push service (Google, Mozilla,
-Apple). That is unavoidable — the endpoint is baked into the subscription the
-browser issues. It is also not a plaintext exposure: RFC 8291 encrypts the
-payload with keys only the subscriber's browser holds, so the relay carries
-ciphertext it cannot read. It learns that a message went to a device, and its
-size. Nothing else.
-
-VAPID (RFC 8292) is the other half: the hub signs each request with a key pair
-it generates once, so the push service can attribute traffic to this server and
-a stranger cannot push to your subscribers using a stolen endpoint.
-
-Why implemented here rather than via pywebpush
-----------------------------------------------
-This is a self-contained transform — ECDH, HKDF, one AES-GCM seal — not a
-stateful protocol with sessions and ratchets. Implementing it over vetted
-primitives (`cryptography`) is standard practice, and costs one dependency
-instead of three. The round-trip is unit-tested by decrypting our own output,
-which is the property that actually matters.
+RFC 8291 encrypts the payload with keys only the subscriber's browser holds, so
+the vendor relay carries ciphertext; RFC 8292 VAPID signs each request so a
+stolen endpoint cannot be pushed to by a stranger. Implemented over
+`cryptography` rather than pywebpush — see docs/notifications.md.
 """
 
 from __future__ import annotations
@@ -75,9 +54,7 @@ def b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# --------------------------------------------------------------------------
 # VAPID identity
-# --------------------------------------------------------------------------
 
 class VapidKeys:
     """
@@ -165,9 +142,7 @@ class VapidKeys:
         return f"vapid t={jwt}, k={self.public_b64}"
 
 
-# --------------------------------------------------------------------------
 # Payload encryption (RFC 8291, aes128gcm)
-# --------------------------------------------------------------------------
 
 def encrypt_payload(plaintext: bytes, p256dh_b64: str, auth_b64: str) -> bytes:
     """
@@ -249,9 +224,7 @@ def decrypt_payload(body: bytes, ua_private: ec.EllipticCurvePrivateKey,
     return padded.rstrip(b"\x02")
 
 
-# --------------------------------------------------------------------------
 # Subscriptions
-# --------------------------------------------------------------------------
 
 @dataclass
 class Subscription:
@@ -292,7 +265,7 @@ class PushManager:
         self.subs_path = Path(subs_path)
         self.subs: Dict[str, Subscription] = {}
 
-    # -- persistence -------------------------------------------------------
+    # persistence
 
     def load(self) -> None:
         if not self.subs_path.exists():
@@ -325,7 +298,7 @@ class PushManager:
         except OSError as e:
             logger.error("[push] save failed: %s", e)
 
-    # -- registration ------------------------------------------------------
+    # registration
 
     def subscribe(self, user: str, endpoint: str, p256dh: str, auth: str,
                   label: str = "") -> Dict[str, Any]:
@@ -362,7 +335,7 @@ class PushManager:
     def for_user(self, user: str) -> List[Subscription]:
         return [s for s in self.subs.values() if s.user == user]
 
-    # -- delivery ----------------------------------------------------------
+    # delivery
 
     async def send_to_user(self, user: str, payload: Dict[str, Any],
                            ttl_s: int = DEFAULT_TTL_S) -> Dict[str, Any]:

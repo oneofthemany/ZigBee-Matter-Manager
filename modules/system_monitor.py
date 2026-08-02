@@ -1,17 +1,9 @@
 """
-System Monitor - Background Hardware Telemetry Collector
-=========================================================
-Collects CPU, memory, temperature, disk, and process metrics
-at configurable intervals and writes to DuckDB via telemetry_db.
+Background hardware telemetry collector — CPU, memory, temperature, disk and
+process metrics at a configurable interval, written to DuckDB via telemetry_db.
 
-Also provides threshold-based alerting via WebSocket toast notifications.
-
-Alert thresholds (configurable):
-  cpu_percent:   > 90% sustained 3 samples
-  mem_percent:   > 85%
-  cpu_temp:      > 80°C
-  disk_percent:  > 90%
-  swap_percent:  > 50%
+Also raises threshold alerts over the websocket (CPU >90% sustained, memory
+>85%, temp >80C, disk >90%, swap >50%; all configurable).
 """
 
 import asyncio
@@ -284,7 +276,7 @@ def collect_metrics() -> Dict[str, Any]:
     """
     metrics = {}
 
-    # ── CPU ──
+    # CPU
     try:
         # Load average
         load1, load5, load15 = os.getloadavg()
@@ -309,7 +301,7 @@ def collect_metrics() -> Dict[str, Any]:
         metrics["load_5m"] = None
         metrics["load_15m"] = None
 
-    # ── Memory ──
+    # Memory
     try:
         meminfo = {}
         with open("/proc/meminfo") as f:
@@ -335,7 +327,7 @@ def collect_metrics() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # ── Disk ──
+    # Disk
     try:
         stat = os.statvfs("/opt/zigbee_manager" if os.path.isdir("/opt/zigbee_manager") else "/")
         disk_total = stat.f_blocks * stat.f_frsize
@@ -347,14 +339,14 @@ def collect_metrics() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # ── Temperatures ──
+    # Temperatures
     metrics["cpu_temp"] = _read_cpu_temp()
     metrics["gpu_temp"] = _read_gpu_temp()
 
-    # ── System uptime ──
+    # System uptime
     metrics["uptime_secs"] = _read_system_uptime()
 
-    # ── Process stats ──
+    # Process stats
     try:
         pid = os.getpid()
         with open(f"/proc/{pid}/status") as f:
@@ -417,11 +409,9 @@ class SystemMonitor:
                 )
                 self.latest = metrics
 
-                # Write to DuckDB. Off-thread without exception: the write
-                # helpers take the telemetry lock and block for as long as the
-                # appender holds it, and anything that blocks this thread stops
-                # every stream generator with it — speaker buffers drain and
-                # the group falls out of sync by the length of the stall.
+                # Off-thread without exception: the write helpers take the telemetry
+                # lock, and blocking this thread stops every stream generator with it
+                # — speaker buffers drain and the group falls out of sync.
                 try:
                     from modules.telemetry_db import write_system_metrics
                     await asyncio.to_thread(write_system_metrics, metrics)

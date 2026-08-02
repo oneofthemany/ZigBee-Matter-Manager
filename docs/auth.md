@@ -175,3 +175,125 @@ back to `enforce=True` once you're confident.
 `auth.yaml` is included in ZMM backups by default. Restoring a backup
 restores users, groups, and tokens — but invalidates all session cookies
 since the file's inode changes. Existing bearer tokens continue to work.
+## Model
+
+| Concept | Meaning |
+| --- | --- |
+| **User** | A human identity: a username, optionally a password (for browser login), zero or more group memberships, and zero or more issued API tokens. |
+| **Group** | A named bag of scopes. Users inherit the union of scopes from every group they belong to, plus any directly assigned scopes on the user. |
+| **Token** | An opaque bearer token (32 bytes, base64url) belonging to one user. Has a label ("Sean's Pixel"), optional expiry, an optional scope subset narrower than the owning user, and an optional free-form `device_id` (e.g. an Android `Settings.Secure.ANDROID_ID`) for revocation UX. |
+| **Scope** | A dotted string like `presence:write:sean` or `device:*`. Wildcards match any segment at that position. |
+
+`network:lan_only` is a special scope: principals holding it may only act from
+the LAN. It is checked by exact membership, never wildcard- or admin-implied, so
+an admin account can be LAN-restricted too. Enforced per request by the auth
+middleware and at login by `SecureAuthManager`.
+
+## Threat model
+
+This is **not** a public auth provider. The gateway sits on a home LAN with
+optional remote exposure, and the bar is: an attacker on the network cannot
+spoof presence, and a stolen device token can be revoked individually.
+
+- Tokens are stored hashed (SHA-256). The plaintext is shown **once**, at issue.
+- Tokens carry 256 bits of entropy from `secrets.token_urlsafe(32)`.
+- Passwords are stored as PBKDF2-HMAC-SHA256, 200 000 iterations, 16-byte salt,
+  base64-encoded. No external password-hashing dependency is needed.
+- There is deliberately **no** OAuth, OIDC, JWT, refresh token or rotation.
+  Tokens are static until revoked or expired: simple enough to reason about, and
+  sufficient for the threat model.
+
+## Persistence and bootstrap
+
+`data/auth.yaml` is the single source of truth. Atomic writes via temp-file
+rename; loaded once at start, mutations save eagerly.
+
+If the file does not exist at start, an `admin` user is created with a random
+password printed to the logs **once**, changeable via the UI. This avoids
+hardcoded defaults.
+
+## Login flow
+
+**Step 1** — `POST /api/auth/login` with username + password:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{success: true, ...}` | no MFA, fully logged in |
+| 200 | `{mfa_required: true, challenge: "..."}` | MFA needed |
+| 401 | `{detail: "..."}` | rejected |
+| 423 | `{detail: "...", locked_until: ts}` | account or IP locked |
+| 403 | `{detail: "...", lan_only_violation: true}` | must be on LAN |
+
+**Step 2** — `POST /api/auth/login/mfa` with challenge + code: 200
+`{success: true, ...}` for a valid TOTP or recovery code, 401 otherwise.
+
+## MFA endpoints
+
+Self-service, while already logged in:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/mfa/enrol/start` | returns secret + `otpauth` URI |
+| `POST /api/auth/mfa/enrol/finish` | confirm with TOTP, returns recovery codes |
+| `POST /api/auth/mfa/disable` | self-disable (re-prompts for password) |
+| `POST /api/auth/mfa/recovery-codes/regenerate` | new set, invalidates the old |
+| `GET /api/auth/mfa/status` | state for the current user |
+
+Admin:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/auth/lockouts` | list locked accounts |
+| `POST /api/auth/lockouts/{username}/unlock` | force-unlock |
+| `POST /api/auth/users/{username}/disable-mfa` | clear MFA for a user |
+| `GET /api/auth/network` | show network policy |
+
+Plus user, group and token CRUD.
+
+Deleting a user cascades to the matching presence user. Left behind, the orphan
+keeps reporting a location for someone with no account, and any policy keyed on
+the account — MFA in particular — fails closed against a user record that is not
+there.
+
+## Middleware and dependencies
+
+Routes get authorised two ways (`modules/auth_middleware.py`):
+
+1. **Middleware**, on every HTTP request. It bypasses unauthenticated paths
+   (login, healthcheck, static assets, the legacy WebSocket where it does not
+   yet enforce auth). For everything else it looks for a Bearer token in the
+   `Authorization` header or a `zmm_session` cookie, and on success attaches
+   `request.state.principal = (User, scopes_set, token_or_None)`. On failure it
+   returns 401 unless the route is in the anonymous-allowed list.
+2. **`require_scope(scope)`** as a route dependency. The middleware does the
+   authn; the dependency does the authz.
+
+Both bearer tokens and session cookies are supported because the browser UI uses
+the cookie (set on `/api/auth/login`) while the Android app, curl, MQTT and
+anything else programmatic uses bearer tokens.
+
+Cookies are signed with HMAC-SHA256 using a secret derived from the auth file's
+mtime and inode. That is enough to prevent forgery without a separate
+secret-management story, and the secret rotates automatically when the file is
+replaced — so restoring auth from a backup invalidates all sessions, which is
+the desired behaviour.
+
+Per-user scopes matter for the companion phone: `presence:read` means *every*
+user's location, so handing it to a phone would let a stolen device token track
+the whole household. `presence:read:<user_id>` keeps that token to one person.
+
+## MFA and brute-force protection
+
+`modules/auth_mfa.py` implements TOTP (RFC 6238) with no external dependencies —
+stdlib `hmac`/`hashlib` only — plus ten single-use recovery codes hashed at rest,
+per-account exponential lockout (1 → 5 → 15 → 60 minutes, capped), a per-IP
+sliding-window rate limiter, a constant-ish-time login response delay to mask
+"user exists" timing, and `otpauth://` URI generation for QR enrolment.
+
+**Why no external deps.** `pyotp`, `qrcode` and friends are well engineered, but
+adding dependencies to a self-hosted gateway is friction, and RFC 6238 is thirty
+lines once you have HMAC. The QR code is rendered client-side.
+
+MFA records live alongside auth in `data/auth.yaml` under an `mfa` section, one
+record per user. Recovery code hashes are plain sha256 — the codes carry enough
+entropy to skip salting.

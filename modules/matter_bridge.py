@@ -1,12 +1,10 @@
 """
-Matter Bridge — Proxies python-matter-server into ZigBee-Manager's
-unified device list and WebSocket event stream.
+Proxies python-matter-server into the unified device list and websocket event
+stream.
 
-Requires: python-matter-server running (e.g. ws://localhost:5580/ws)
-Install:  pip install aiohttp
-
-This module is entirely optional. If matter.server_url is not set in
-config.yaml, the bridge is never instantiated and has zero impact.
+Entirely optional: without matter.server_url in config.yaml the bridge is never
+instantiated and has zero impact. Requires python-matter-server running.
+See docs/matter.md.
 """
 
 import asyncio
@@ -26,9 +24,7 @@ except ImportError:
 logger = logging.getLogger("matter_bridge")
 
 
-# =============================================================================
 # MATTER CAPABILITIES
-# =============================================================================
 
 class MatterCapabilities:
     """Thin wrapper matching DeviceCapabilities interface for automation engine."""
@@ -42,9 +38,7 @@ class MatterCapabilities:
         return self._capabilities
 
 
-# =============================================================================
 # MATTER DEVICE WRAPPER
-# =============================================================================
 
 class MatterDevice:
     """
@@ -141,9 +135,7 @@ class MatterDevice:
         return await self._bridge.send_command(self.node_id, command, value)
 
 
-# =============================================================================
 # MATTER BRIDGE
-# =============================================================================
 
 class MatterBridge:
     """
@@ -188,9 +180,6 @@ class MatterBridge:
             except Exception as e:
                 logger.debug(f"matter_status broadcast failed: {e}")
 
-    # =========================================================================
-    # LIFECYCLE
-    # =========================================================================
 
     async def start(self):
         """Connect to python-matter-server and start listening."""
@@ -210,10 +199,9 @@ class MatterBridge:
             self._shutdown = False
             logger.info(f"✅ Connected to Matter server: {self.server_url}")
 
-            # Subscribe to events AND get initial node dump
-            # start_listening returns server info, then sends node data as events.
-            # Unlike get_nodes, it also subscribes to future node_added/node_updated/
-            # attribute_updated events — essential for mid-session commissioning.
+            # Returns server info, then node data as events, and unlike get_nodes
+            # also subscribes to node_added/node_updated/attribute_updated —
+            # essential for mid-session commissioning.
             await self._send_command("start_listening")
 
             # Start listener
@@ -311,9 +299,7 @@ class MatterBridge:
 
             delay = min(delay * 2, 60)
 
-    # =========================================================================
     # WEBSOCKET COMMUNICATION
-    # =========================================================================
 
     async def _send_command(self, command: str, args: dict = None) -> str:
         """Send a command to python-matter-server and return message_id."""
@@ -672,9 +658,7 @@ class MatterBridge:
             except Exception as ae:
                 logger.debug(f"Automation eval error for {ieee}: {ae}")
 
-    # =========================================================================
     # DEVICE COMMANDS
-    # =========================================================================
 
     async def send_command(self, node_id: int, command: str, value=None) -> dict:
         """Send a command to a Matter device via matter-server."""
@@ -719,10 +703,9 @@ class MatterBridge:
                 if command == "lock":
                     names = ["LockDoor"]
                 elif command == "unlock":
-                    # UnboltDoor (Matter 1.2) withdraws the bolt without
-                    # pulling the latch — what "unlock" means on a Nuki.
-                    # Older locks without the Unbolting feature reject it,
-                    # so fall back to plain UnlockDoor.
+                    # UnboltDoor (Matter 1.2) withdraws the bolt without pulling the
+                    # latch, which is what "unlock" means on a Nuki. Locks without
+                    # the Unbolting feature reject it, hence the fallback.
                     names = ["UnboltDoor", "UnlockDoor"]
                 else:
                     # UnlockDoor fully unlocks; on latch-capable locks
@@ -789,9 +772,7 @@ class MatterBridge:
             logger.error(f"Matter command failed (node {node_id}, {command}): {e}")
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
     # COMMISSIONING / REMOVAL
-    # =========================================================================
 
     async def commission(self, code: str) -> dict:
         """Commission a Matter device using its setup code."""
@@ -881,9 +862,7 @@ class MatterBridge:
             logger.error(f"Matter remove failed: {e}")
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
     # FRIENDLY NAMES
-    # =========================================================================
 
     def rename_device(self, ieee: str, name: str):
         """Set a friendly name for a Matter device."""
@@ -899,17 +878,13 @@ class MatterBridge:
             return self.devices[ieee].friendly_name
         return ieee
 
-    # =========================================================================
     # DEVICE LIST (matches ZigbeeService.get_device_list format)
-    # =========================================================================
 
     def get_device_list(self) -> list:
         """Return all Matter devices in the same format as ZigbeeService."""
         return [dev.to_device_list_entry() for dev in self.devices.values()]
 
-    # =========================================================================
     # MQTT / HOME ASSISTANT DISCOVERY
-    # =========================================================================
 
     async def _publish_device_state(self, dev: MatterDevice):
         """Publish device state to MQTT."""
@@ -1099,9 +1074,7 @@ class MatterBridge:
                 except Exception:
                     pass
 
-    # =========================================================================
     # STATUS
-    # =========================================================================
 
     def get_status(self) -> dict:
         """Return Matter bridge status for API/UI."""
@@ -1122,9 +1095,7 @@ class MatterBridge:
             ]
         }
 
-    # =========================================================================
     # DEBUGGING
-    # =========================================================================
     async def _emit_debug_packet(self, event_type: str, node_id: int, data: dict):
         """Emit a Matter event as a debug packet for the live debug stream."""
         if not self.event_callback:

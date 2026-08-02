@@ -1,18 +1,10 @@
-"""On-demand live log streaming for the manager (CP2b, read-only).
+"""
+On-demand live log streaming for the manager, read-only.
 
-Two sources, both available even when the app container is down:
-
-  - **File logs**: ``${DATA_DIR}/logs/*.log`` — the manager mounts DATA_DIR, so
-    launcher.log, boot_guard.log, recovery.log, upgrade_watcher.log etc. are
-    readable regardless of app/container state. Streams tail + follow, and
-    survives log rotation (reopens when the file shrinks or is replaced).
-  - **Container logs**: ``/containers/{name}/logs`` over the runtime socket
-    (same mechanism as manager.containers). Only containers visible to
-    manager.containers (deployment prefix + ZMM_EXTRA_CONTAINERS) are allowed.
-
-Streams are Server-Sent Events (one ``data:`` event per log line) so the
-dashboard can use a plain EventSource. Generators end when the client
-disconnects — nothing streams unless a user asked for it.
+File logs from the mounted DATA_DIR (readable with the app container down, and
+rotation-safe) and container logs over the runtime socket, both as Server-Sent
+Events so the dashboard can use a plain EventSource. Generators end when the
+client disconnects — nothing streams unless asked for.
 """
 import asyncio
 import logging

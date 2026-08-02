@@ -1,20 +1,9 @@
 /**
- * heating-controller.js
  * Frontend for the active Heating Controller (circuits, rooms, TRV coordination).
  *
- * Two surfaces:
- *   1. Live status panel — added to the heating dashboard via renderControllerPanel()
- *   2. Settings modal — opened via openControllerSettings(); includes:
- *        - Enable/dry-run toggles
- *        - Circuit list with per-circuit room list with per-room TRV picker
- *
- * Endpoints:
- *   GET  /api/heating/controller/state
- *   POST /api/heating/controller/tick
- *   POST /api/heating/controller/dry-run
- *   GET  /api/heating/controller/config
- *   POST /api/heating/controller/config
- *   GET  /api/heating/controller/devices
+ * Two surfaces: a live status panel via renderControllerPanel(), and a settings
+ * modal via openControllerSettings(). Backed by /api/heating/controller/*.
+ * See docs/heating.md.
  */
 const log = zmmLog('heating-controller');
 
@@ -36,17 +25,13 @@ const lastRoomHealth = new Map();
 
 const STATUS_REFRESH_MS = 30_000;
 
-// ============================================================================
 // PUBLIC: initialize once
-// ============================================================================
 export function initHeatingController() {
     ensureControllerSettingsModal();
     log.log("Heating Controller frontend initialised");
 }
 
-// ============================================================================
 // PUBLIC: status panel for the dashboard
-// ============================================================================
 export async function loadControllerStatus(targetSelector = '#heatingControllerPanel') {
     const container = document.querySelector(targetSelector);
     if (!container) return;
@@ -75,17 +60,9 @@ export async function loadControllerStatus(targetSelector = '#heatingControllerP
 }
 
 
-// ============================================================================
-// HEALTH: transition detection + toasts
-// ============================================================================
-//
-// Toasts fire on state CHANGE only:
-//   • ok       → critical : red toast with reasons
-//   • critical → ok       : green "recovered" toast
-//
-// Held-state ticks (critical → critical) are silent — the warning chip in
-// the panel keeps the user informed, but we don't spam every 30s. This
-// matches how the PWA notification system works for device offline/online.
+// Toasts fire on state CHANGE only: ok -> critical (red, with reasons) and
+// critical -> ok (green "recovered"). Held states are silent — the panel chip
+// keeps the user informed without a toast every 30 s.
 function detectHealthTransitions(state) {
     if (!state || !Array.isArray(state.circuits)) return;
     const seen = new Set();
@@ -150,9 +127,7 @@ function fireToast(type, title, message, duration) {
 }
 
 
-// ============================================================================
 // RENDER: live status panel
-// ============================================================================
 function renderControllerDisabled(reason) {
     return `
         <div class="card mb-3">
@@ -454,16 +429,10 @@ function bindControllerPanel() {
 }
 
 /**
- * Callback invoked when the floor-plan editor reports a save. Two cases
- * arrive here through the same channel:
- *   - Regular floor-plan save: response shape from /api/heating/floor-plan
- *     (no `mode` field). We just invalidate caches and refresh status so
- *     the new projected room state is visible.
- *   - "Switch to manual" path: response shape from /api/heating/controller/
- *     config-mode (has `mode: 'manual'`). The server has flipped the mode
- *     and stripped floor_plan_ref from rooms; we must update the cached
- *     `controllerConfigMode` here so the Configure button routes to the
- *     manual editor on the next click (without a page reload).
+ * Called when the floor-plan editor saves. A regular plan save has no `mode`
+ * field and only needs a cache invalidate + refresh; the "switch to manual"
+ * path returns `mode: manual`, so the cached controllerConfigMode must be
+ * updated here or the Configure button routes wrongly until a reload.
  */
 function onFloorPlanEditorSaved(response) {
     // Any close-with-save from the editor invalidates our cached config.
@@ -479,14 +448,8 @@ function onFloorPlanEditorSaved(response) {
     loadControllerStatus();
 }
 
-// ============================================================================
-// CONFIG-MODE CHOOSER
-// ============================================================================
-// First time the user clicks either editor button, we ask them to pick
-// between "floor plan" (preferred, more accurate) and "manual configure".
-// The choice is persisted server-side at heating.controller.config_mode; on
-// subsequent clicks the chooser does not appear. Step 4 will add an explicit
-// "switch mode" UI for changing it later.
+// Asked once, the first time either editor button is clicked; persisted at
+// heating.controller.config_mode.
 
 /**
  * Ensure a config mode is set. Returns the mode (string) or null if the
@@ -677,15 +640,10 @@ async function chooseConfigMode(suggested = null) {
 }
 
 /**
- * Explicit mode switch from inside an editor (the "Switch mode" link in
- * each editor's footer). Confirms with the user first because:
- *   - floor_plan → manual: floor plan stays archived but rooms become
- *     freely editable; refs are stripped server-side.
- *   - manual → floor_plan: any saved plan is re-projected onto the rooms,
- *     locking their geometry/devices to the plan again.
- *
- * Closes whichever modal is currently open and reloads the status panel so
- * the user sees fresh state.
+ * Explicit mode switch from an editor footer. Confirmed first: floor_plan ->
+ * manual archives the plan and strips refs server-side, manual -> floor_plan
+ * re-projects any saved plan and re-locks room geometry. Closes the open modal
+ * and reloads the status panel.
  */
 async function switchConfigMode(targetMode) {
     if (targetMode !== 'floor_plan' && targetMode !== 'manual') return;
@@ -753,9 +711,7 @@ async function hasSavedFloorPlan() {
     } catch { return false; }
 }
 
-// ============================================================================
 // SETTINGS MODAL
-// ============================================================================
 function ensureControllerSettingsModal() {
     if (document.getElementById('controllerSettingsModal')) return;
     const html = `
@@ -841,14 +797,10 @@ export async function openControllerSettings() {
         // so either source of the saved config lights up the checkboxes.
         for (const c of workingCircuits) {
             for (const r of (c.rooms || [])) {
-                // ── Multi-radiator normalisation ─────────────────────
-                // Lift legacy `room.radiator` (single) into the plural
-                // `room.radiators` list so the UI renders one card per
-                // radiator. The legacy key is deleted from the working
-                // state so the save payload sends plural only — otherwise
-                // the backend's precedence rule would treat the legacy
-                // single as authoritative and silently overwrite the
-                // plural on every save (see _clean_room).
+                // Lift legacy `room.radiator` into the plural `room.radiators`
+                // and delete the legacy key, so the save payload sends plural
+                // only — otherwise the backend precedence rule treats the legacy
+                // single as authoritative and overwrites the plural (_clean_room).
                 if (!Array.isArray(r.radiators)) r.radiators = [];
                 if (r.radiator && typeof r.radiator === 'object'
                     && r.radiators.length === 0
@@ -856,12 +808,8 @@ export async function openControllerSettings() {
                     r.radiators.push({...r.radiator});
                 }
                 delete r.radiator;
-                // ── Multi-sensor normalisation ───────────────────────
-                // Lift legacy `room.temperature_sensor_ieee` (single
-                // string) into the plural `room.temperature_sensors`
-                // list, marking it primary. The legacy key is deleted
-                // so the save payload sends plural only — same precedence
-                // reasoning as the radiator case.
+                // Same lift and same precedence reasoning as the radiator case,
+                // marking the legacy single as primary.
                 if (!Array.isArray(r.temperature_sensors)) r.temperature_sensors = [];
                 if (typeof r.temperature_sensor_ieee === 'string'
                     && r.temperature_sensor_ieee
@@ -1242,21 +1190,12 @@ function renderHcScheduleSlots(slots, ci, ri) {
 }
 
 function renderRoomCard(room, ci, ri) {
-    // When the room is projected from a floor plan, the sub-blocks listed
-    // below have their bindings/values written by the projection on every
-    // plan save. Editing them in this UI would be silently overwritten on
-    // the next plan save. We disable those blocks and surface a banner
-    // pointing back to the editor.
-    //
-    // Projected blocks:    temperature sensor, TRVs, contact sensors,
-    //                      radiator block (inside dimensions panel),
-    //                      dimensions geometry.
-    // NOT projected:       target/setback/min temp, schedule, external-temp
-    //                      mode, per-contact behavioural toggles (debounce,
-    //                      drop, max-close, enabled), per-TRV toggles
-    //                      (window_detection, child_lock, valve_detection).
-    //                      These remain editable here because the plan
-    //                      doesn't carry that controller behaviour.
+    // A projected room has its bindings rewritten by the plan on every save, so
+    // those blocks are disabled here with a banner back to the editor.
+    // Projected: temperature sensor, TRVs, contact sensors, radiator block,
+    // dimensions geometry. Still editable: target/setback/min temp, schedule,
+    // external-temp mode, per-contact and per-TRV toggles — the plan does not
+    // carry that controller behaviour.
     const projected = !!room.floor_plan_ref;
     const projectedBlockBanner = (label) => projected ? `
         <div class="alert alert-info py-1 px-2 mb-2 d-flex justify-content-between align-items-center small">
@@ -1498,9 +1437,7 @@ function renderRoomCard(room, ci, ri) {
             </div>
         </details>`;
 }
-// ============================================================================
 // CONTACT SENSORS — optional per-room
-// ============================================================================
 function renderContactSensorsPanel(room, ci, ri, projected) {
     const assigned = room.contact_sensors || [];
     const assignedIeees = new Set(assigned.map(cs => cs.ieee));
@@ -1630,9 +1567,7 @@ function renderContactSensorsPanel(room, ci, ri, projected) {
         </details>`;
 }
 
-// ============================================================================
 // DIMENSIONS PANEL — optional per-room, collapsed by default
-// ============================================================================
 function renderDimensionsPanel(room, ci, ri) {
     const dim = room.dimensions || {};
     const walls = dim.walls || {
@@ -1863,12 +1798,9 @@ function renderDimensionsPanel(room, ci, ri) {
 }
 
 /**
- * One radiator's edit card, used inside the dimensions panel.
- * Same field set as the previous single-radiator block, indexed by `ridx`
- * so handlers can target the right entry in `room.radiators[]`.
- *
- * The wall-options helper is duplicated here (rather than passed in) so
- * this renderer is self-contained — keeps the call site short.
+ * One radiator's edit card for the dimensions panel, indexed by `ridx` so
+ * handlers can target the right entry in `room.radiators[]`. The wall-options
+ * helper is duplicated here to keep the renderer self-contained.
  */
 function renderOneRadiatorCard(rad, ci, ri, ridx, projected) {
     const radUnit = rad._unit_pref || 'W';   // UI-only; not persisted
@@ -1971,14 +1903,9 @@ function renderOneRadiatorCard(rad, ci, ri, ridx, projected) {
 }
 
 /**
- * One sensor's edit card. Compact single-row layout (device · kind · height
- * · primary toggle · remove). Designed to read densely so multi-sensor
- * rooms don't dominate the modal vertically.
- *
- * The "primary" star is a button rather than a radio:
- *   - filled, disabled-look on the current primary
- *   - outlined, clickable on the others — clicking promotes
- * This avoids the radio-name-scoping gotcha when many rooms share the modal.
+ * One sensor's edit card — compact single row, so multi-sensor rooms do not
+ * dominate the modal. The "primary" star is a button, not a radio, which avoids
+ * the radio-name-scoping gotcha when many rooms share the modal.
  */
 function renderOneSensorCard(s, ci, ri, sidx, projected, room) {
     const optionsHtml = renderSensorOptions(s.ieee || '', room, sidx);
@@ -2186,12 +2113,9 @@ function bindCircuitCards() {
             renderCircuitsList();
         });
     });
-    // ── Temperature-sensor bindings (multi-sensor aware) ────────────
-    // Every handler reads data-sidx to target the right entry in
-    // room.temperature_sensors[]. Adding a sensor where there were none
-    // defaults the external-temp mode to 'advisory'; removing the last
-    // sensor coerces it back to 'off' (matching previous single-sensor
-    // behaviour). Primary is enforced by setPrimarySensor.
+    // Handlers read data-sidx to target the right entry in
+    // room.temperature_sensors[]. Adding the first sensor defaults external-temp
+    // mode to 'advisory'; removing the last coerces it back to 'off'.
 
     document.querySelectorAll('.sens-device').forEach(el => {
         el.addEventListener('change', e => {
@@ -2294,7 +2218,7 @@ function bindCircuitCards() {
         });
     });
 
-    // ── Dimensions helpers ──
+    // Dimensions helpers
     function getDim(ci, ri) {
         const room = workingCircuits[ci].rooms[ri];
         if (!room.dimensions) {
@@ -2447,7 +2371,7 @@ function bindCircuitCards() {
         });
     });
 
-    // ── Radiator bindings (multi-radiator aware) ────────────────────
+    // Radiator bindings (multi-radiator aware)
     // Every handler reads data-ridx to target the right entry in
     // room.radiators[]. Removing a radiator with empty/zero watts is a
     // hard delete (no zombie entries). The Add / Remove buttons trigger
@@ -2707,18 +2631,10 @@ function bindCircuitCards() {
         });
     });
 
-    // "Open floor plan" buttons inside the projected-data banners. Use a
-    // dynamic import so this page doesn't have to statically depend on the
-    // floor-plan module — the file is large and only relevant when the user
-    // clicks here.
-    //
-    // Pass the full device context so the editor's dropdowns can populate:
-    //   - devices.thermostats → TRV picker on radiator panels
-    //   - sensors             → device picker on temperature-sensor panels
-    //   - contacts            → device picker on contact-sensor panels
-    //   - circuits            → circuit-name display on radiator panels
-    // The defensive empty-array fallbacks ensure a fresh page that hasn't
-    // populated everything yet still opens the editor cleanly.
+    // Dynamic import so this page does not statically depend on the large
+    // floor-plan module. The full device context is passed so the editor's
+    // pickers can populate, with empty-array fallbacks for a page that has not
+    // finished loading everything.
     document.querySelectorAll('.btn-open-floor-plan-from-banner').forEach(btn => {
         btn.addEventListener('click', async () => {
             try {
@@ -2754,7 +2670,7 @@ function renderTipsInline(room) {
     const rad = primaryRadiator(room) || {};
     const tips = [];
 
-    // ---- Data-completeness nudges (always available, even without rules firing) ----
+    // Data-completeness nudges (always available, even without rules firing)
     if (!dim.width_m || !dim.depth_m) {
         tips.push({
             sev: 'info',
@@ -2782,7 +2698,7 @@ function renderTipsInline(room) {
         });
     }
 
-    // ---- Rule-based detections ----
+    // Rule-based detections
     if ((rad.placement || '') === 'under_window') {
         tips.push({
             sev: 'warning',
@@ -2885,7 +2801,7 @@ function renderTipsInline(room) {
         });
     }
 
-    // ---- Render ----
+    // Render
     const noIssueBanner = tips.every(t => t.sev === 'info') && tips.length === 0
         ? `<div class="small text-success">
                <i class="fas fa-check-circle me-1"></i>
@@ -3371,9 +3287,6 @@ function buildDiffSummary(diff) {
     return parts.join(' • ');
 }
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 function escapeHtml(s) {
     if (s == null) return '';
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');

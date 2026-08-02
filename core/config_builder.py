@@ -1,14 +1,11 @@
 """
-Radio configuration builder mixin.
-Builds bellows (EZSP), zigpy-znp (ZNP) and zigpy-deconz config dicts
-from config.yaml settings with dynamic baud-rate / flow-control detection.
+Radio configuration builder mixin — builds bellows (EZSP), zigpy-znp (ZNP) and
+zigpy-deconz config dicts from config.yaml, with dynamic baud and flow-control
+detection.
 
-Auto-detection uses the Dongle Jedi serial interrogator — it sends actual
-protocol frames (EZSP ASH reset, ZNP SYS_PING, deCONZ read firmware)
-and correctly identifies adapter family, baud rate, and flow control.
-
-This replaces the broken ControllerApplication.probe() approach which
-has timeout/port-locking issues across different bellows versions.
+Auto-detection uses the Dongle Jedi interrogator, which sends real protocol
+frames rather than relying on ControllerApplication.probe() — that had timeout
+and port-locking issues across bellows versions.
 """
 import asyncio
 import logging
@@ -17,7 +14,7 @@ from modules.ota import build_ota_config
 
 logger = logging.getLogger("core.config")
 
-# ── Adapter family → radio_type mapping ─────────────────────────────
+# Adapter family → radio_type mapping
 # Must match the families returned by dongle_jedi_core.AdapterFamily
 FAMILY_TO_RADIO = {
     "Silicon Labs EZSP (Ember)": "EZSP",
@@ -41,9 +38,7 @@ class ConfigBuilderMixin:
         """Check if port is a TCP socket URI (MultiPAN zigbeed mode)."""
         return isinstance(self.port, str) and self.port.startswith("socket://")
 
-    # =====================================================================
     # RADIO PROBING — uses Dongle Jedi serial interrogator
-    # =====================================================================
 
     async def _probe_radio_type(self, progress_cb=None) -> dict:
 
@@ -59,15 +54,15 @@ class ConfigBuilderMixin:
         """
         configured = self._config.get('radio_type', 'auto')
 
-        # ── Explicit radio type → skip probing ──
+        # Explicit radio type → skip probing
         if configured and configured.upper() in ('EZSP', 'ZNP', 'DECONZ'):
             return self._explicit_radio_result(configured.upper())
 
-        # ── Socket paths are always EZSP (zigbeed / MultiPAN) ──
+        # Socket paths are always EZSP (zigbeed / MultiPAN)
         if self._is_socket_path():
             return {"radio_type": "EZSP", "baudrate": 0, "flow_control": "none"}
 
-        # ── Auto-detect using Dongle Jedi ──
+        # Auto-detect using Dongle Jedi
         return await self._probe_with_jedi(progress_cb=progress_cb)
 
     def _explicit_radio_result(self, radio_type: str) -> dict:
@@ -188,9 +183,7 @@ class ConfigBuilderMixin:
                 f"Set radio_type explicitly in config.yaml."
             )
 
-    # =====================================================================
     # BAUD / FLOW RESOLUTION
-    # =====================================================================
 
     def _resolve_serial_params(
             self, section_key: str, detected: dict | None,
@@ -251,9 +244,7 @@ class ConfigBuilderMixin:
 
         return final_baud, final_flow
 
-    # =====================================================================
     # CONFIG BUILDERS
-    # =====================================================================
 
     def _build_network_conf(self, network_key) -> dict:
         """

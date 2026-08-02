@@ -1,12 +1,8 @@
-/* ============================================================
-   ZMM Auth — My Account / MFA enrolment panel
-   ============================================================
+/* ZMM Auth — My Account / MFA enrolment panel
    Renders into #my-account-host. Lets the current user enable,
    manage, and disable two-factor authentication.
-
    Renders QR code via an inline lightweight encoder so we don't
-   need an external library.
-   ============================================================ */
+   need an external library. */
 
 (function () {
     'use strict';
@@ -122,9 +118,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // Enrolment flow
-    // ----------------------------------------------------------
     async function startEnrolment() {
         var r = await fetch('/api/auth/mfa/enrol/start',
             { method: 'POST', credentials: 'same-origin' });
@@ -371,9 +365,7 @@
         ok.style.display = '';
     }
 
-    // ----------------------------------------------------------
     // Tiny QR-code encoder (sufficient for an otpauth URI ~120 chars)
-    // ----------------------------------------------------------
     // We render the QR by deferring to a popular small-footprint library
     // hosted as a static asset OR via a CDN. The simplest robust approach:
     // dynamically import from cdnjs if not already loaded.
@@ -407,9 +399,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // Public init
-    // ----------------------------------------------------------
 
     /**
      * Tell the rest of the page that this account's MFA state changed.

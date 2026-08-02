@@ -1,17 +1,7 @@
-/* ============================================================
-   ZigBee Matter Manager — Frames
-   ============================================================
-   Frames are dynamically-generated dashboards. A Frame holds
-   Chambers (rooms); each Chamber holds Cells (device tiles).
-
-   Consumes the semantic tokens from hive-tokens.css — never raw
-   palette values, so light/dark remap for free.
-
-   On the honeycomb: cells are rectangles, not hexagons. --hexclip
-   is used for the icon chip only. A grid of real hexagons looks
-   the part but cramps labels, sliders and toggles, and a dashboard
-   you can't operate isn't worth the metaphor.
-   ============================================================ */
+/* Frames — dynamically-generated dashboards. A Frame holds Chambers (rooms);
+   each Chamber holds Cells (device tiles). Consumes the semantic tokens from
+   hive-tokens.css, never raw palette values. Cells are rectangles, not hexagons
+   — see docs/structure.md and docs/frames.md. */
 
 .frames-toolbar {
     display: flex;
@@ -21,7 +11,7 @@
     margin-bottom: 1rem;
 }
 
-/* ---------- frame tabs (a floor, or a user-made section) ---------- */
+/* frame tabs (a floor, or a user-made section) */
 
 .frame-tabs {
     display: flex;
@@ -69,7 +59,7 @@
     color: var(--text-muted);
 }
 
-/* ---------- groups (a chamber, or a device type) ---------- */
+/* groups (a chamber, or a device type) */
 
 .frame-group {
     margin-bottom: 1.5rem;
@@ -99,7 +89,7 @@
     padding: 0 .5rem;
 }
 
-/* ---------- the comb ---------- */
+/* the comb */
 
 .frame-comb {
     display: grid;
@@ -200,7 +190,7 @@
     flex-wrap: wrap;
 }
 
-/* ---------- readouts ---------- */
+/* readouts */
 
 .cell-readouts {
     display: flex;
@@ -243,7 +233,7 @@
     color: var(--text-muted);
 }
 
-/* ---------- controls ---------- */
+/* controls */
 
 .cell-slider {
     width: 100%;
@@ -271,7 +261,7 @@
     color: var(--text-muted);
 }
 
-/* ---------- mobile ---------- */
+/* mobile */
 /* Phase 5 extracts a dedicated mobile surface; this keeps the tab usable
    on a phone in the meantime. */
 @media (max-width: 576px) {

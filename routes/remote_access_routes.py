@@ -1,14 +1,9 @@
 """
-Remote access (managed Cloudflare Tunnel) API.
+Remote access (managed Cloudflare Tunnel) API — status at system:read;
+settings, start and stop at admin.
 
-GET  /api/remote-access/status     current state          (system:read)
-GET  /api/remote-access/settings   settings, token masked (admin)
-PUT  /api/remote-access/settings   update + apply         (admin)
-POST /api/remote-access/start      start the tunnel now   (admin)
-POST /api/remote-access/stop       stop the tunnel now    (admin)
-
-Everything that can reconfigure exposure is admin-only: this feature
-publishes the gateway to the internet.
+Everything that can reconfigure exposure is admin-only: this feature publishes
+the gateway to the internet. See docs/remote_access.md.
 """
 
 from __future__ import annotations

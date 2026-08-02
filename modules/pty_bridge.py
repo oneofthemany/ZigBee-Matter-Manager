@@ -1,24 +1,10 @@
 """
-PTY ↔ TCP Bridge
-=================
-In-process asyncio replacement for socat in the MultiPAN stack.
+PTY <-> TCP bridge — an in-process asyncio replacement for socat in the MultiPAN
+stack.
 
-Replaces:
-    socat PTY,link=/tmp/ttyZigbeeNCP,raw,echo=0,mode=660 \
-          TCP-LISTEN:9999,reuseaddr,fork
-
-Creates a PTY pair, symlinks the slave to the configured path
-(so zigbeed can open it), and listens on a TCP port (so bellows
-can connect). Data is relayed bidirectionally.
-
-Advantages over socat:
-  - No external binary dependency
-  - Per-frame logging and byte counters for diagnostics
-  - Graceful lifecycle tied to MultiPanManager
-  - Future: frame inspection for TDM scheduling hints
-
-Latency: TCP relay adds ~50-100µs per hop via asyncio —
-well within bellows' 500ms+ ASH retransmit timers.
+Creates a PTY pair for zigbeed, listens on TCP for bellows, and relays both ways.
+No external binary, with per-frame logging and a lifecycle tied to
+MultiPanManager. See docs/multipan.md.
 """
 import asyncio
 import logging
@@ -80,7 +66,7 @@ class PTYTCPBridge:
     async def start(self) -> bool:
         """Create PTY, start TCP listener, begin relay."""
         try:
-            # ── Create PTY pair ──
+            # Create PTY pair
             self._master_fd, self._slave_fd = pty.openpty()
 
             # Set master to raw mode (no echo, no line buffering)
@@ -103,7 +89,7 @@ class PTYTCPBridge:
                 f"(master fd={self._master_fd})"
             )
 
-            # ── Start TCP listener ──
+            # Start TCP listener
             self._server = await asyncio.start_server(
                 self._handle_tcp_client,
                 self.tcp_host,
@@ -112,7 +98,7 @@ class PTYTCPBridge:
             )
             logger.info(f"TCP listener on {self.tcp_host}:{self.tcp_port}")
 
-            # ── Start PTY→TCP reader ──
+            # Start PTY→TCP reader
             self._running = True
             self._pty_reader_task = asyncio.create_task(
                 self._pty_read_loop(),

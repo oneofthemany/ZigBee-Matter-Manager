@@ -1,11 +1,8 @@
-/* ============================================================
-   ZMM Remote Access — managed Cloudflare Tunnel settings panel
-   ============================================================
+/* ZMM Remote Access — managed Cloudflare Tunnel settings panel
    Renders into an element with id="remote-access-host"
    (Settings → Security → Remote Access sub-tab).
    Call window.initRemoteAccess() when the tab is shown; the
-   module also self-attaches to the sub-tab's shown.bs.tab event.
-   ============================================================ */
+   module also self-attaches to the sub-tab's shown.bs.tab event. */
 
 (function () {
     'use strict';
@@ -44,9 +41,7 @@
         render();
     }
 
-    // ----------------------------------------------------------
     // Rendering
-    // ----------------------------------------------------------
 
     function render() {
         var host = document.getElementById(HOST_ID);
@@ -103,9 +98,7 @@
         bindActions(isAdmin);
     }
 
-    // ----------------------------------------------------------
     // Install instructions — tailored to where ZMM actually runs
-    // ----------------------------------------------------------
 
     function installCommands(st) {
         var env = st.environment || {};
@@ -445,9 +438,7 @@
         '</div>';
     }
 
-    // ----------------------------------------------------------
     // Actions
-    // ----------------------------------------------------------
 
     function showErr(msg) {
         var el = document.getElementById('ra-save-error');
@@ -538,9 +529,7 @@
         };
     }
 
-    // ----------------------------------------------------------
     // Wiring
-    // ----------------------------------------------------------
 
     window.initRemoteAccess = refresh;
 

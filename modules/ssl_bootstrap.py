@@ -1,38 +1,10 @@
 """
-Self-signed cert bootstrap.
+Self-signed HTTPS certificate bootstrap — the single source of truth, used by
+main.py's entry point.
 
-Single source of truth for generating the app's self-signed HTTPS cert, used by
-main.py's entry point — auto-generates on first boot so the app serves HTTPS
-out of the box (no user configuration needed), which is what the watchdog /
-manager / container healthcheck all expect. HTTPS is always on; there is no
-HTTP mode or toggle (plain HTTP only ever appears as the cert-failure
-fallback in main.py).
-
-Design rules (kept identical to the original route logic):
-  - NEVER regenerate an existing pair — browsers that already trust the cert
-    would break, which is the leading cause of "this site is unsafe" after a
-    config tweak.
-  - Sensible SANs (localhost, hostname, 127.0.0.1) so the internal probes and
-    localhost browsing don't hit name/IP mismatches.
-  - Lock the private key to 0600 (openssl writes 0644 by default).
-
-SANs and the LAN address
-------------------------
-A SAN of only localhost/hostname/127.0.0.1 means the cert does NOT cover the
-address people actually browse to (https://192.168.1.x:8000), so every client
-gets a name-mismatch warning. Browsers let you click through it; strict clients
-do not — the Android presence companion fails hostname verification outright,
-whether or not the cert itself is trusted.
-
-So we also add:
-  - every non-loopback IPv4 this host can see, and
-  - anything in the ZMM_CERT_SANS env var (comma-separated).
-
-ZMM_CERT_SANS matters when the app runs in a bridged container: auto-detection
-then sees the container's address (10.88.x.x), not the LAN IP the user types.
-Set it to the LAN IP/hostname you actually browse to, e.g.
-
-    ZMM_CERT_SANS=192.168.1.1,zmm.local
+Auto-generates on first boot and never regenerates an existing pair. SANs cover
+localhost, the hostname and every non-loopback IPv4, plus ZMM_CERT_SANS for
+bridged containers. See docs/security.md.
 """
 import ipaddress
 import logging

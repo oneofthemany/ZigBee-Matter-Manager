@@ -11,9 +11,7 @@
 
 (function () {
 
-  /* ------------------------------------------------------------------ */
   /*  Inject overlay HTML once                                            */
-  /* ------------------------------------------------------------------ */
   function ensureOverlay() {
     if (document.getElementById('bee-overlay')) return;
 
@@ -57,9 +55,7 @@
     document.body.appendChild(div);
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Particle system                                                     */
-  /* ------------------------------------------------------------------ */
   const particles = [];
 
   function spawnCruiseParticles(x, y, count) {
@@ -154,9 +150,7 @@
     }
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Twin fire trails (post-vanish)                                      */
-  /* ------------------------------------------------------------------ */
   function drawFireTrails(ctx, startX, progress, t, W, H) {
     // Two parallel trails like DeLorean tyre marks
     const trailProgress = (progress - 0.5) / 0.45;
@@ -243,9 +237,7 @@
     }
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Exhaust flames (pre-vanish, behind bee)                             */
-  /* ------------------------------------------------------------------ */
   function drawExhaust(ctx, beeX, beeY, t, intensity) {
     const ox = beeX - 32;
     const oy = beeY + 12;
@@ -309,9 +301,7 @@
     }
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Bee drawing                                                         */
-  /* ------------------------------------------------------------------ */
   function drawBee(ctx, cx, cy, t, alpha) {
     if (alpha <= 0) return;
     const wingBeat = Math.sin(t * 0.25) * 0.3;
@@ -479,14 +469,12 @@
     ctx.restore();
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Bee skeleton — the electrocution X-ray gag                          */
   /*                                                                      */
   /*  Same geometry as drawBee (abdomen/thorax/head/wings/legs in the     */
   /*  same places) but rendered as a dark translucent silhouette with     */
   /*  glowing bones: spine + ribs where the stripes were, a skull with    */
   /*  an empty eye socket, jointed leg bones and wing veins.              */
-  /* ------------------------------------------------------------------ */
   function drawBeeSkeleton(ctx, cx, cy, t, alpha) {
     if (alpha <= 0) return;
     var wingBeat = Math.sin(t * 0.25) * 0.3;
@@ -628,9 +616,7 @@
     ctx.restore();
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Speedometer HUD                                                     */
-  /* ------------------------------------------------------------------ */
   function drawSpeedometer(ctx, speed, W, H) {
     var mph = Math.floor(speed);
     var text = mph + ' MPH';
@@ -661,9 +647,7 @@
     ctx.restore();
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Main animation                                                      */
-  /* ------------------------------------------------------------------ */
   window.showDeloreanAnimation = function () {
     ensureOverlay();
 
@@ -692,12 +676,12 @@
 
       ctx.clearRect(0, 0, W, H);
 
-      // ── Phase timing ──
+      // Phase timing
       var beeVisible = progress < 0.52;
       var accelPhase = progress > 0.35 && progress < 0.52;
       var trailPhase = progress >= 0.50;
 
-      // ── Bee position (eased — slow cruise then violent acceleration) ──
+      // Bee position (eased — slow cruise then violent acceleration)
       var beeX, beeY, speed;
 
       if (progress < 0.35) {
@@ -718,7 +702,7 @@
 
       beeY = H * 0.48 + Math.sin(elapsed * 0.003) * (beeVisible ? 8 : 0);
 
-      // ── Screen shake during acceleration ──
+      // Screen shake during acceleration
       if (accelPhase) {
         var shakeIntensity = ((progress - 0.35) / 0.17) * 4;
         ctx.save();
@@ -728,7 +712,7 @@
         );
       }
 
-      // ── Blue temporal streaks (visible during cruise + accel) ──
+      // Blue temporal streaks (visible during cruise + accel)
       if (beeVisible && progress > 0.1) {
         var streakAlpha = Math.min((progress - 0.1) / 0.2, 1) * 0.4;
         if (accelPhase) streakAlpha = 0.6;
@@ -747,13 +731,13 @@
         }
       }
 
-      // ── Exhaust flames (behind bee, intensity grows with speed) ──
+      // Exhaust flames (behind bee, intensity grows with speed)
       if (beeVisible) {
         var exhaustIntensity = speed < 40 ? 0.3 : Math.min((speed - 40) / 48, 1);
         drawExhaust(ctx, beeX, beeY, elapsed, exhaustIntensity);
       }
 
-      // ── Particles ──
+      // Particles
       if (beeVisible && !accelPhase) {
         spawnCruiseParticles(beeX, beeY, 2);
       }
@@ -761,15 +745,15 @@
         spawnAccelParticles(beeX, beeY, 6);
       }
 
-      // ── Fire trails (post-vanish) ──
+      // Fire trails (post-vanish)
       if (trailPhase) {
         drawFireTrails(ctx, vanishX, progress, elapsed, W, H);
       }
 
-      // ── Draw particles (always, they persist across phases) ──
+      // Draw particles (always, they persist across phases)
       updateAndDrawParticles(ctx);
 
-      // ── Draw bee ──
+      // Draw bee
       if (beeVisible) {
         var beeAlpha = progress < 0.48 ? 1 : Math.max(0, 1 - (progress - 0.48) / 0.04);
         drawBee(ctx, beeX, beeY, elapsed, beeAlpha);
@@ -793,12 +777,12 @@
         }
       }
 
-      // ── Speed readout ──
+      // Speed readout
       if (progress > 0.05 && progress < 0.55) {
         //drawSpeedometer(ctx, speed, W, H);
       }
 
-      // ── THE FLASH (at vanish point) ──
+      // THE FLASH (at vanish point)
       if (progress >= 0.49 && progress <= 0.56) {
         if (!hasFlashed && progress >= 0.50) {
           hasFlashed = true;
@@ -813,12 +797,12 @@
         flash.style.opacity = '0';
       }
 
-      // ── Undo screen shake ──
+      // Undo screen shake
       if (accelPhase) {
         ctx.restore();
       }
 
-      // ── Message text ──
+      // Message text
       if (progress > 0.58 && progress < 0.92) {
         var mp = (progress - 0.58) / 0.34;
         var sc = mp < 0.15 ? mp / 0.15 : mp > 0.85 ? 1 - (mp - 0.85) / 0.15 : 1;
@@ -842,14 +826,12 @@
     requestAnimationFrame(animate);
   };
 
-  /* ------------------------------------------------------------------ */
   /*  Fork lightning (time-travel overlay)                                */
   /*                                                                      */
   /*  makeForkBolt() generates the geometry once — a jagged main channel  */
   /*  with recursive thinner branches. The overlay keeps each bolt alive  */
   /*  for ~150-280ms and redraws it with a flicker envelope, which is     */
   /*  what makes it read as lightning instead of a one-frame scribble.    */
-  /* ------------------------------------------------------------------ */
   function makeForkBolt(x, y, angle, len, width, depth) {
     var paths = [];
     (function walk(x0, y0, ang, l, w, d) {
@@ -923,7 +905,6 @@
     ctx.restore();
   }
 
-  /* ------------------------------------------------------------------ */
   /*  Time-travel wait overlay (image swap / upgrade)                     */
   /*                                                                      */
   /*  Unlike showDeloreanAnimation (a 4s one-shot), this runs for as      */
@@ -933,7 +914,6 @@
   /*  peak — the natural moment to reload into the new timeline.          */
   /*                                                                      */
   /*  Returns { setStatus(text), complete(onFlash), abort() }.            */
-  /* ------------------------------------------------------------------ */
   window.showTimeTravelWait = function (opts) {
     opts = opts || {};
     // Values land in innerHTML — keep them to version-shaped characters.

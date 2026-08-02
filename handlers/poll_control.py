@@ -1,13 +1,10 @@
 """
 Poll Control cluster handler (0x0020).
 
-Sleepy end devices (battery sensors like Philips Hue SML, Aqara motion, etc.)
-send periodic Check-in commands via this cluster. The coordinator MUST respond
-with a Check-in Response or the device will eventually consider the parent lost
-and stop communicating.
-
-This is the root cause of Philips Hue motion sensors silently dropping off
-the network after days/weeks — unanswered check-ins.
+Sleepy end devices send periodic Check-in commands here, and the coordinator
+MUST respond or the device eventually considers the parent lost and stops
+communicating. Unanswered check-ins are the root cause of Philips Hue motion
+sensors silently dropping off the network after days or weeks.
 """
 import asyncio
 import logging
@@ -43,15 +40,11 @@ class PollControlHandler(ClusterHandler):
     REPORT_CONFIG = []  # No reporting needed — this is command-driven
     ALWAYS_CONFIGURE = True  # Bind must run even though there's nothing to report
 
-    # Desired check-in cadence written at join time (values in SECONDS; the
-    # attributes themselves are quarter-seconds, converted below).
-    #
-    # check-in: how often the device wakes to ask "are you still there?".
-    #   1h keeps the app<->device relationship fresh without wrecking battery.
-    # long poll: the MAC data-poll cadence to the parent while idle. This is the
-    #   actual keep-alive that stops the parent aging the child out — it must be
-    #   comfortably shorter than the parent's child timeout (Silabs default
-    #   ~256 min). Left at a conservative 30s.
+    # Desired check-in cadence written at join time. Values here are SECONDS; the
+    # attributes are quarter-seconds and are converted below.
+    #   check-in  — how often the device wakes to ask "are you still there?".
+    #   long poll — the MAC data-poll keep-alive to the parent, which must stay
+    #               comfortably under the parent's child timeout (Silabs ~256 min).
     DESIRED_CHECKIN_INTERVAL_S = 3600
     DESIRED_LONG_POLL_INTERVAL_S = 30
 
@@ -185,7 +178,7 @@ class PollControlHandler(ClusterHandler):
             logger.warning(f"[{self.device.ieee}] Poll Control bind failed: {e}")
             return False
 
-        # ── Set the long-poll (MAC keep-alive) and check-in cadence ──────────
+        # Set the long-poll (MAC keep-alive) and check-in cadence
         # Sent as Poll Control commands (server-received) while the device is
         # awake. Quiet best-effort: a sleeping/older device just keeps its
         # firmware defaults, and the bind above is what actually matters.

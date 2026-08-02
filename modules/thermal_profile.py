@@ -1,28 +1,11 @@
 """
-Thermal profile calculations for rooms.
+Per-room thermal profiles — pure functions, no I/O beyond what callers pass in.
 
-Two layers:
-
-1. **Static** — heat loss rate (W/K) computed from a room's dimensions plus
-   the dwelling-level insulation level. U-values are SAP Appendix S defaults.
-
-2. **Learned** — measured heat loss rate from telemetry. We find cool-down
-   intervals (heat off, room temperature monotonically falling toward an
-   assumed-constant outdoor temperature) and fit Newton's law of cooling:
-
-        T(t) = T_out + (T_0 - T_out) * exp(-t / tau)
-
-   where tau = (m·c) / UA, tau is the thermal time constant in seconds, and
-   UA is the heat loss coefficient (W/K). From tau we can derive UA if we
-   know the room's effective thermal mass — which we don't exactly, but we
-   can approximate it from floor area × ceiling height × air specific heat
-   plus a furnishings/fabric factor.
-
-3. **Blended** — if we have enough measured data with a decent fit, weight
-   70% measured / 30% static. Otherwise return static only with a
-   low-confidence flag.
-
-Everything here is pure functions. No I/O beyond what callers pass in.
+Static heat loss (W/K) from dimensions and insulation level using SAP Appendix S
+U-values; learned heat loss by fitting Newton's law of cooling to heat-off
+intervals in telemetry; and a blend weighting measured 70/30 over static once
+the fit is good enough, falling back to static with a low-confidence flag.
+See docs/heating.md.
 """
 from __future__ import annotations
 
@@ -33,34 +16,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.thermal_profile")
 
-# ── Physical constants ────────────────────────────────────────────────
+# Physical constants
 AIR_DENSITY_KG_M3 = 1.2          # at 20 °C
 AIR_CP_J_KG_K = 1005             # specific heat of air
-# Empirical: rooms have roughly 3x the thermal mass of their air alone once
-# furnishings, plasterboard, screed etc. are accounted for. Standard in
-# thermal-model literature (see CIBSE TM41).
+# Empirical: ~3x the thermal mass of the air alone once furnishings, plasterboard
+# and screed are counted. Standard in the literature (CIBSE TM41).
 ROOM_THERMAL_MASS_FACTOR = 3.0
 
-# ── Sensor stratification correction ─────────────────────────────────
-# Warm air stratifies upward in heated rooms. A sensor mounted high reads
-# warmer than the comfort zone; a sensor near the floor reads cooler. The
-# correction below is the standard rule of thumb from CIBSE Guide A:
-#   ~0.5 °C per metre above the reference height (a heated room's vertical
-#   temperature gradient under typical convective heating).
-#
-# Reference height = 1.5 m — standing breathing zone, the default mounting
-# height for residential thermostats and what target temperatures implicitly
-# refer to. A sensor exactly at 1.5 m receives no correction.
-#
-# The correction is additive on the *delta from reference*:
-#   correction_c = -GRADIENT * (sensor_height_m - REFERENCE_HEIGHT_M)
-# Subtract from raw reading to get comfort-zone temperature.
-#
-# We don't gate this on "is heating active" because:
-#   (a) average gradient over a heating season is dominated by heated time
-#   (b) when heating is off, the gradient self-decays and the correction is
-#       small in absolute terms (well under sensor noise)
-#   (c) gating would require coupling temperature reads to controller state
+# Stratification: warm air rises, so a high sensor reads warm and a low one cool.
+# ~0.5 C/m from the 1.5 m breathing-zone reference (CIBSE Guide A). Deliberately
+# not gated on heating being active. See docs/heating.md.
 STRATIFICATION_REFERENCE_HEIGHT_M = 1.5
 STRATIFICATION_GRADIENT_C_PER_M   = 0.5
 # Above 5 m or below 0 m we treat the value as configured wrong and skip.
@@ -115,10 +80,8 @@ def correct_sensor_reading(
         return raw_c
     return round(raw_c + offset, 1)
 
-# ── U-value tables (W / m² / K) ───────────────────────────────────────
-# Keyed by insulation level. Values from SAP Appendix S + CIBSE Guide A.
-# The "party_wall_u" is 0 for heated-neighbour party walls (the normal
-# assumption for terraces/flats); an isolated unheated void would be ~0.5.
+# U-values (W/m2/K) by insulation level, from SAP Appendix S + CIBSE Guide A.
+# party_wall_u is 0 for heated-neighbour party walls; an unheated void is ~0.5.
 U_VALUES = {
     "none": {
         "wall_ext":    2.10,
@@ -235,9 +198,7 @@ class ThermalProfile:
         }
 
 
-# ──────────────────────────────────────────────────────────────────────
 # STATIC CALCULATION
-# ──────────────────────────────────────────────────────────────────────
 
 def compute_static(
         dimensions: Dict[str, Any],
@@ -270,7 +231,7 @@ def compute_static(
 
     u_table = U_VALUES.get(insulation) or U_VALUES["partial"]
 
-    # ── Try the plan-aware path first when possible ────────────────────
+    # Try the plan-aware path first when possible
     plan_geom = None
     if isinstance(floor_plan, dict) and isinstance(floor_plan_ref, dict):
         lvl_id = floor_plan_ref.get("level_id")
@@ -291,7 +252,7 @@ def compute_static(
     if plan_geom is not None:
         return _compute_static_from_plan(plan_geom, u_table, insulation, warnings, bd)
 
-    # ── Legacy bbox path (unchanged behaviour) ─────────────────────────
+    # Legacy bbox path (unchanged behaviour)
     x_m = float(dimensions.get("width_m") or 0.0)
     y_m = float(dimensions.get("depth_m") or 0.0)
     h_m = float(dimensions.get("ceiling_height_m") or 2.4)
@@ -391,7 +352,7 @@ def _compute_static_from_plan(
     floor_area = float(plan_geom.get("floor_area_m2") or 0.0)
     h_m = float(plan_geom.get("ceiling_height_m") or 2.4)
 
-    # ── Walls ───────────────────────────────────────────────────────────
+    # Walls
     for w in plan_geom.get("walls", []):
         length = float(w.get("length_m") or 0.0)
         height = float(w.get("height_m") or h_m)
@@ -413,11 +374,8 @@ def _compute_static_from_plan(
             bd.walls_party += net_a * u_table["wall_party"]
         # internal / unknown → loss-free (matches legacy treatment)
 
-    # ── Windows ─────────────────────────────────────────────────────────
-    # Only windows whose host wall is external contribute. The plan-aware
-    # path classified this per-opening; the bbox path would have folded the
-    # wall first and then asked "is the *bin* external?", which can be
-    # wrong for L-shaped rooms where two edges fall in the same bin.
+    # Only windows whose host wall is external contribute. Classified per opening
+    # because the bbox path folds walls first, which is wrong for L-shaped rooms.
     for w in plan_geom.get("windows", []):
         if not w.get("on_external"):
             continue
@@ -426,7 +384,7 @@ def _compute_static_from_plan(
         u = u_table["window"].get(glazing, u_table["window"]["double"])
         bd.windows += area * u
 
-    # ── Doors ───────────────────────────────────────────────────────────
+    # Doors
     for dr in plan_geom.get("doors", []):
         if not dr.get("on_external"):
             continue
@@ -435,7 +393,7 @@ def _compute_static_from_plan(
         area = float(dr.get("area_m2") or 0.0)
         bd.doors += area * u_table["door_ext"]
 
-    # ── Floor / ceiling (same as legacy path) ───────────────────────────
+    # Floor / ceiling (same as legacy path)
     floor_type = str(plan_geom.get("floor_type") or "unknown").lower()
     bd.floor = floor_area * u_table["floor"].get(
         floor_type, u_table["floor"]["unknown"]
@@ -445,7 +403,7 @@ def _compute_static_from_plan(
         ceiling_type, u_table["ceiling"]["unknown"]
     )
 
-    # ── Ventilation (same formula as legacy) ────────────────────────────
+    # Ventilation (same formula as legacy)
     volume_m3 = floor_area * h_m
     ach = ACH_BY_INSULATION.get(insulation, 1.0)
     bd.ventilation = AIR_DENSITY_KG_M3 * AIR_CP_J_KG_K * volume_m3 * (ach / 3600.0)
@@ -456,20 +414,12 @@ def _compute_static_from_plan(
         return None, bd, warnings
     return round(total, 1), bd, warnings
 
-# ──────────────────────────────────────────────────────────────────────
 # LEARNED (FROM TELEMETRY)
-# ──────────────────────────────────────────────────────────────────────
 
 
-# ── Cool-down window thresholds ───────────────────────────────────────
-# Two profiles:
-#   LEARN_* — used when fitting baseline τ from the long telemetry window.
-#     Loose, so we accept more candidate windows and let the R² filter in
-#     _fit_newton_cooling cull the noisy ones. Rooms that are held near
-#     setpoint most of the time still produce enough usable drifts.
-#   ALERT_* — used by the anomaly detector (detect_fast_cooling) where we
-#     compare a single recent window to the baseline. Kept stricter to
-#     avoid false "window open" alarms from small natural drifts.
+# Two profiles: LEARN_* is loose (the R2 filter culls noisy windows when fitting
+# baseline tau), ALERT_* is strict (detect_fast_cooling compares one window to
+# the baseline, so false "window open" alarms matter). See docs/heating.md.
 LEARN_MIN_DURATION_SEC = 20 * 60
 LEARN_MIN_DROP_C       = 0.3
 LEARN_MAX_DURATION_SEC = 6 * 3600
@@ -544,9 +494,8 @@ def _find_cooldown_windows(
         temp_drop = pts[i0][1] - pts[i1][1]
         if temp_drop < min_drop_c:
             return
-        # Heating-state gate: reject windows where too many samples
-        # overlap a period when heating was active. A tolerance > 0
-        # covers transient TRV cycling at the window boundaries.
+        # Reject windows where too many samples overlap active heating. Tolerance
+        # above zero covers transient TRV cycling at the boundaries.
         if heating_state_getter is not None:
             tainted = 0
             total = i1 - i0 + 1
@@ -697,9 +646,7 @@ def compute_measured(
     return round(ua, 1), confidence, len(taus), max(r2s), tau_median
 
 
-# ──────────────────────────────────────────────────────────────────────
 # BLEND
-# ──────────────────────────────────────────────────────────────────────
 
 def compute_profile(
         room_id: str,
@@ -772,9 +719,7 @@ def compute_profile(
     return prof
 
 
-# ──────────────────────────────────────────────────────────────────────
 # PRE-HEAT TIME PREDICTION
-# ──────────────────────────────────────────────────────────────────────
 
 from dataclasses import dataclass as _dc
 
@@ -794,7 +739,7 @@ class PreheatEstimate:
     confidence: str                         # "high" | "medium" | "low" | "none"
     warnings: List[str] = field(default_factory=list)
 
-    # ── Solar gain fields (populated when solar data is available) ────
+    # Solar gain fields (populated when solar data is available)
     solar_gain_w: Optional[float] = None
     """Average solar heat gain [W] over the preheat window. None = not computed."""
 
@@ -885,30 +830,17 @@ def compute_preheat(
         return est
 
     if tau_seconds is None or tau_seconds <= 0:
-        # No measured tau — synthesise one from static model alone:
-        #   tau = (m·c) / UA, where m·c is the thermal mass the Phase 3
-        #   static block would have assumed if it could. Rough estimate.
-        # This is less accurate but keeps a value available from day one.
-        # m·c ~= 3 × (ρ·V·Cp) per room (same factor as compute_measured)
-        # Without floor area here we can't estimate V directly; fall back
-        # to a typical indoor tau of 3h as a coarse default.
+        # No measured tau — synthesise from the static model: tau = (m.c)/UA.
+        # Without floor area V cannot be estimated, so fall back to a typical
+        # indoor tau of 3 h. Coarse, but available from day one.
         tau_seconds = 3 * 3600
         est.tau_seconds = tau_seconds
         est.warnings.append("using default tau of 3h (no measured data)")
         confidence_in = "low"
 
-    # ── Solar gain adjustment ─────────────────────────────────────────
-    # Solar gain reduces the net load on the radiator, lowering the time
-    # to reach target. We model it by boosting the effective radiator output
-    # by the average solar watts over the preheat window.
-    #
-    # Physics: T_steady = T_outdoor + (Q_rad + Q_solar) / W_per_K
-    # The radiator and sun together push the room to a higher steady state,
-    # so it reaches the target faster. The τ doesn't change (it's a property
-    # of the room fabric, not the heat source).
-    #
-    # We also compute minutes_saved = minutes_without_solar − minutes_with_solar
-    # so the UI can say "pre-heat: 45 min (solar saving ~10 min)".
+    # Solar gain lowers net load, so it is modelled as extra radiator watts over
+    # the preheat window. tau is unchanged — it is a property of the fabric, not
+    # the heat source. minutes_saved is reported too. See docs/heating.md.
     effective_radiator_w = radiator_watts_effective  # may be None
     if solar_gain_w is not None and solar_gain_w > 0.0:
         est.solar_gain_w = round(solar_gain_w, 1)
@@ -974,7 +906,7 @@ def compute_preheat(
         )
         minutes = max_minutes
 
-    # ── Compute minutes_saved_by_solar ────────────────────────────────
+    # Compute minutes_saved_by_solar
     if solar_gain_w is not None and solar_gain_w > 0.0 and radiator_watts_effective:
         # Re-run without solar to get the baseline, then diff.
         steady_no_solar = outdoor_temp_c + (radiator_watts_effective / w_per_k)
@@ -992,9 +924,7 @@ def compute_preheat(
     est.confidence = confidence_in
     return est
 
-# ──────────────────────────────────────────────────────────────────────
 # ANOMALY DETECTION
-# ──────────────────────────────────────────────────────────────────────
 
 @_dc
 class Anomaly:

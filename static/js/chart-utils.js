@@ -1,21 +1,17 @@
 /**
  * Shared ECharts layer — every chart in the app goes through here.
- * Location: static/js/chart-utils.js
  *
- * Why this exists:
- *   - One place to register the light/dark themes so charts match the app's
- *     `data-theme` (set by theme-toggle.js) and re-theme live on `themechange`.
- *   - Auto-resize against the container so charts fill Bootstrap cards.
- *   - A stable wrapper so callers never hold a disposed instance after a
- *     theme swap (ECharts can't change theme in place — it must re-init).
+ * Registers the light/dark themes so charts follow the app's `data-theme` and
+ * re-theme live on `themechange`, auto-resizes against the container, and wraps
+ * the instance so callers never hold a disposed one after a theme swap (ECharts
+ * cannot change theme in place).
  *
- * Usage:
  *   import { createChart } from './chart-utils.js';
- *   const chart = createChart(document.getElementById('my-chart'));
- *   chart.setOption({ ... });           // on every data refresh
- *   chart.dispose();                    // when the view goes away
+ *   const chart = createChart(el);
+ *   chart.setOption({ ... });
+ *   chart.dispose();
  *
- * Requires the global `echarts` (vendored in index.html before the modules).
+ * Requires the global `echarts`, vendored in index.html before the modules.
  */
 
 // Transparent backgrounds so charts blend into whatever card they sit in.
@@ -87,13 +83,8 @@ function currentTheme() {
 }
 
 /**
- * Create a managed ECharts chart bound to `el`.
- *
- * Returns a wrapper with stable methods regardless of internal re-inits:
- *   setOption(opt, notMerge?)  store + apply options
- *   resize()                   force a resize
- *   instance()                 the live echarts instance (for getZr, etc.)
- *   dispose()                  tear down listeners + instance
+ * Create a managed ECharts chart bound to `el`. The wrapper keeps stable
+ * methods across internal re-inits: setOption, resize, instance, dispose.
  *
  * @param {HTMLElement} el
  * @param {object} [initOpts]  passed to echarts.init (e.g. { renderer:'svg' })

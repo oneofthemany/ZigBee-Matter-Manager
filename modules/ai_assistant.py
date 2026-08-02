@@ -1,22 +1,9 @@
 """
-AI Assistant - LLM Provider Abstraction
-========================================
-Supports multiple LLM backends via OpenAI-compatible API format.
+LLM provider abstraction over the OpenAI-compatible API shape.
 
-Providers:
-  openai   - OpenAI API (gpt-4o, gpt-4o-mini, etc.)
-  ollama   - Local Ollama instance (llama3, mistral, etc.)
-  anthropic - Anthropic API (claude-sonnet, etc.)
-  custom   - Any OpenAI-compatible endpoint
-
-Configuration in config.yaml:
-  ai:
-    provider: ollama          # openai | ollama | anthropic | custom
-    model: llama3.1           # Model name
-    api_key: ""               # Required for openai/anthropic, optional for ollama
-    base_url: ""              # Override endpoint (auto-set for known providers)
-    temperature: 0.3          # Lower = more deterministic rule generation
-    max_tokens: 2000
+Supports openai, ollama, anthropic and any custom compatible endpoint, selected
+by the `ai:` block in config.yaml (provider, model, api_key, base_url,
+temperature, max_tokens).
 """
 
 import asyncio

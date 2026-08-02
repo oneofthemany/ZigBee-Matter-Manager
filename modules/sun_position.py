@@ -1,29 +1,13 @@
 """
-modules/sun_position.py
-=======================
-Solar position (azimuth, elevation, sunrise, sunset) computed locally with
-no network dependency. Pure functions — no I/O.
+Solar position (azimuth, elevation, sunrise, sunset), computed locally with no
+network dependency. Pure functions, no I/O.
 
-Implementation follows the NOAA Solar Calculator algorithm
-(https://gml.noaa.gov/grad/solcalc/calcdetails.html), which is the
-spreadsheet most photovoltaic / building-physics tools cite. Accuracy is
-~0.01° on azimuth and ~0.01° on elevation between 1900–2100, which is
-overkill for heating-control purposes but is also small enough that the
-maths is one page and we don't need a third-party library.
+Follows the NOAA Solar Calculator algorithm, accurate to ~0.01 degrees between
+1900-2100 — overkill for heating control, but small enough that the maths is one
+page and needs no third-party library.
 
-All inputs and outputs are in:
-  - degrees (latitude, longitude, azimuth, elevation, declination)
-  - UTC for time
-  - latitude positive north, longitude positive east
-  - azimuth measured clockwise from true north (0=N, 90=E, 180=S, 270=W)
-
-Public API
-----------
-    sun_position(lat, lon, dt_utc=None)            -> {az, el, ...}
-    sunrise_sunset(lat, lon, date_utc=None)        -> {sunrise, sunset, noon}
-    sun_path_for_day(lat, lon, date_utc=None,
-                     step_minutes=15)              -> list of {ts, az, el}
-    sun_path_year_envelope(lat, lon)               -> {summer, equinox, winter}
+Degrees and UTC throughout; latitude positive north, longitude positive east,
+azimuth clockwise from true north (0=N, 90=E, 180=S, 270=W).
 """
 from __future__ import annotations
 
@@ -31,7 +15,7 @@ import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
-# ─────────────────────────── time helpers ───────────────────────────
+# time helpers
 
 DateTimeLike = Union[None, str, int, float, datetime, date]
 
@@ -97,7 +81,7 @@ def _julian_century(jd: float) -> float:
     return (jd - 2451545.0) / 36525.0
 
 
-# ─────────────────────────── core SPA maths ───────────────────────────
+# core SPA maths
 
 def _atmospheric_refraction_deg(elev_uncorrected_deg: float) -> float:
     """
@@ -247,7 +231,7 @@ def sun_position(
     }
 
 
-# ─────────────────────────── sunrise/sunset ────────────────────────────
+# sunrise/sunset
 
 # Standard horizon depression for sunrise/sunset = 0.833° (16′ semidiameter +
 # 34′ refraction). NOAA uses 90.833° as the zenith threshold.
@@ -333,7 +317,7 @@ def _minutes_to_iso(d: date, minutes: float) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
-# ─────────────────────────── day arc ─────────────────────────────
+# day arc
 
 def sun_path_for_day(
         lat: float,
@@ -381,7 +365,7 @@ def sun_path_for_day(
     }
 
 
-# ─────────────────────────── year envelope ─────────────────────────────
+# year envelope
 
 def sun_path_year_envelope(
         lat: float,
@@ -410,7 +394,7 @@ def sun_path_year_envelope(
     }
 
 
-# ─────────────────────────────── self test ───────────────────────────────
+# self test
 
 if __name__ == "__main__":
     # Reference: London on 2026-06-21 12:00 UTC. London is at lon -0.128 so

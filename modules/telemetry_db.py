@@ -1,22 +1,11 @@
 """
-Telemetry Database - DuckDB-backed time-series storage
-=======================================================
-Replaces scattered JSON/in-memory persistence with a single analytical DB.
+DuckDB-backed time-series storage — system metrics, packet stats, device states
+and spectrum scans, with per-table retention.
 
-Tables:
-  system_metrics   — CPU, memory, temperature, disk (sampled every 30s)
-  packet_stats     — per-device RX/TX/error counters (flushed every 60s)
-  device_states    — device attribute changes (on state change only)
-  spectrum_scans   — channel energy levels (per background scan)
-
-Retention: configurable per table, default 7 days.
-Location:  ./data/telemetry.duckdb
-
-DuckDB was chosen over SQLite because:
-  - Columnar storage is 5-10x more efficient for time-series aggregation
-  - Automatic compression (ZSTD) keeps disk usage low
-  - Concurrent reads don't block writes
-  - Built-in time-bucket aggregation functions
+Chosen over SQLite for columnar aggregation, ZSTD compression, non-blocking
+reads and time-bucket functions. Octopus and host metrics live in separate
+files; see docs/telemetry_database.md for why, and for the fatal-state latch,
+backend reconciliation and rebuild paths.
 """
 
 import asyncio
@@ -31,41 +20,24 @@ logger = logging.getLogger("modules.telemetry_db")
 
 DB_PATH = "./data/telemetry.duckdb"
 DEFAULT_RETENTION_DAYS = 90
-# Octopus data lives in its OWN database file: it write-collides with the
-# high-frequency telemetry writers (Rust appender) otherwise, and a corrupted
-# telemetry.duckdb must not take a year of energy history with it. Tiny
-# (≤ ~50 rows/day/fuel) and useful year-on-year, so default retention is long
-# and user-configurable (octopus.retention_days → prune_octopus()).
+# Its own file: it write-collides with the high-frequency telemetry writers,
+# and a corrupted telemetry.duckdb must not take a year of energy history with
+# it. Retention is long and user-configurable. See docs/telemetry_database.md.
 OCTOPUS_DB_PATH = "./data/octopus.duckdb"
 OCTOPUS_RETENTION_DAYS = 400
 
-# Host metrics live in their OWN database file, for the same reason Octopus
-# does — one file's corruption must not take the others with it.
-#
-# A single damaged block anywhere in a DuckDB file makes the WHOLE file
-# uncheckpointable: the WAL then grows without bound, and a WAL that cannot be
-# replayed loses every table's recent writes, not just the damaged one. Host CPU
-# and memory samples are the least valuable rows here, so they must not be able
-# to take device history down with them.
-#
-# Different write patterns, different value, different lifetimes: different
-# files.
+# Its own file too: one damaged block makes a whole DuckDB uncheckpointable,
+# and host samples are the least valuable rows here — they must not be able to
+# take device history down with them. See docs/telemetry_database.md.
 SYSTEM_DB_PATH = "./data/system_metrics.duckdb"
 
 # Lazy import — duckdb is only needed when this module is used
 _db = None
 
 
-# ── Optional Rust appender ──
-# Backend selection precedence (highest first):
-#   1. ZMM_TELEMETRY_BACKEND=python  → force Python executemany fallback
-#   2. zmm_telemetry wheel installed → use Rust appender
-#   3. Otherwise                     → Python executemany fallback
-#
-# This lets you revert from Rust to Python without rebuilding the image:
-# just set ZMM_TELEMETRY_BACKEND=python in the systemd unit / container env
-# and restart. Schema is identical between backends, so the existing
-# telemetry.duckdb file continues to work either way.
+# Backend precedence: ZMM_TELEMETRY_BACKEND=python forces the Python fallback,
+# else the zmm_telemetry wheel if installed, else Python. Schema is identical,
+# so switching needs no rebuild. See docs/telemetry_database.md.
 _FORCE_PY = os.environ.get("ZMM_TELEMETRY_BACKEND", "").strip().lower() == "python"
 try:
     if _FORCE_PY:
@@ -82,9 +54,8 @@ except ImportError as _imp_err:
 
 _appender = None  # zmm_telemetry.Appender singleton
 
-# Reentrant: _get_db() → _finish_db_init() may re-enter _get_db(); RLock keeps
-# that from self-deadlocking. Follows a per-DB singleton+RLock pattern
-#  — one shared connection per file for reads AND writes.
+# Reentrant: _get_db() -> _finish_db_init() may re-enter _get_db(). One shared
+# connection per file for reads and writes.
 _db_lock = threading.RLock()
 
 
@@ -147,11 +118,9 @@ def _connect_local_db(path: str):
     except Exception as e:
         wal = path + ".wal"
         if _is_unreplayable_wal_error(e) and os.path.exists(wal):
-            # "unreplayable", not "corrupt": the usual cause is a backend
-            # switch leaving a WAL the incoming engine won't accept, and the
-            # file itself is generally intact. It is quarantined rather than
-            # deleted — it holds the only copy of any rows that never reached
-            # the main file, and the engine that wrote it may still read it.
+            # "unreplayable", not "corrupt" — usually a backend switch left a WAL
+            # the incoming engine will not accept. Quarantined, not deleted: it may
+            # hold the only copy of rows that never reached the main file.
             bak = f"{wal}.unreplayable-{int(time.time())}"
             try:
                 size = os.path.getsize(wal)
@@ -252,10 +221,9 @@ def _write_exec(sql: str, params: List[tuple]):
         return
     cur = None
     try:
-        # Cursor creation is INSIDE the try: on an invalidated database it is
-        # .cursor() itself that raises, not the execute. Leaving it outside
-        # meant every write after the first fatal escaped the latch, so the
-        # sentinel was never written and the next boot never self-repaired.
+        # Cursor creation is INSIDE the try: on an invalidated database .cursor()
+        # is what raises, not execute. Outside, every write after the first fatal
+        # escaped the latch and the next boot never self-repaired.
         with _db_lock:
             cur = _get_db().cursor()      # brief: init + cursor creation only
         cur.executemany(sql, params)      # outside the lock — DuckDB serialises
@@ -270,21 +238,14 @@ def _write_exec(sql: str, params: List[tuple]):
                 pass
 
 
-# ── Fatal-state latch ───────────────────────────────────────────────────────
-# Some DuckDB failures are terminal for the process: once it reports "database
-# has been invalidated ... must be restarted", every subsequent statement
-# raises, so each caller logs its own failure and the log fills with thousands
-# of identical lines that bury the one that mattered. This latches the first
-# one, reports it once with an actionable message, and lets callers skip work
-# that cannot possibly succeed.
+# Fatal-state latch. Once DuckDB reports "database has been invalidated" every
+# statement raises, so without this the log fills with identical lines. Latches
+# the first, reports it once, lets callers skip impossible work.
 
 _db_fatal: Optional[str] = None
 
-# Dropped when the DB goes terminal, read on the next boot by
-# modules.telemetry_rebuild.auto_rebuild_if_needed(). A corrupt DuckDB cannot
-# be rebuilt from inside the process already stuck on it — the first fatal
-# invalidates every connection until restart — so recovery has to be handed to
-# the next startup, when nothing holds the file open.
+# Dropped when the DB goes terminal, read next boot by auto_rebuild_if_needed().
+# A corrupt DuckDB cannot be rebuilt from inside the process stuck on it.
 REBUILD_SENTINEL = "./data/.telemetry_rebuild_needed"
 
 
@@ -358,17 +319,9 @@ def warm():
     _get_db()
 
 
-# ── Write-backend reconciliation ────────────────────────────────────────────
-# The write backend can change under a database that is already on disk:
-# installing/removing the zmm_telemetry wheel, or setting
-# ZMM_TELEMETRY_BACKEND=python, switches between the Rust appender and the
-# Python executemany path. The engine that wrote the existing WAL may not be
-# the one now trying to replay it, which surfaces as the "checkpoint WAL"
-# open failure _is_unreplayable_wal_error() catches.
-#
-# Reconciliation runs on its own dedicated thread because every step can be
-# slow (open, migration, checkpoint) and none of it may ever land on the
-# event loop — that is precisely the stall that trips loop_monitor's exit-70.
+# The write backend can change under a database already on disk, so the engine
+# that wrote the WAL may not be the one replaying it. Reconciliation runs on its
+# own thread — every step is slow and none may reach the event loop.
 
 _BACKEND_MARKER = "./data/.telemetry_backend"
 
@@ -406,21 +359,13 @@ def _write_backend_marker(name: str) -> None:
         logger.debug(f"Could not persist telemetry backend marker: {e}")
 
 
-# ── DO NOT add an explicit CHECKPOINT here ─────────────────────────────────
-# It is tempting: an unreplayable WAL is usually a WAL that never got folded
-# into the main file, so "just checkpoint it" looks like the cure.
-#
-# DuckDB checkpoints on its own when it can. If the WAL is growing without
-# bound, that is a signal the database needs rebuilding — not a signal to
-# force the operation that fails on it.
+# DO NOT add an explicit CHECKPOINT here. DuckDB checkpoints on its own when it
+# can; an unbounded WAL means the database needs rebuilding, not that the
+# failing operation should be forced. See docs/telemetry_database.md.
 
 
-# ── Quarantine cleanup ───────────────────────────────────────────────────────
-# Quarantined files are kept on purpose: an unreplayable WAL or a pre-rebuild
-# database copy may hold rows the live file no longer has, so nothing deletes
-# them at the moment of damage. They are also large, and once the live database
-# has been checkpointing cleanly for a while nobody is going to mine them —
-# left alone they occupy the data volume permanently.
+# Quarantined files are kept on purpose — they may hold rows the live file no
+# longer has — but they are large, so they expire rather than persist forever.
 QUARANTINE_RETENTION_DAYS = float(
     os.environ.get("ZMM_QUARANTINE_RETENTION_DAYS", "7"))
 
@@ -491,9 +436,7 @@ def _reconcile_worker() -> None:
         previous = _read_backend_marker()
 
         # Open before reading the backend: which engine writes is only settled
-        # once the connection is up (_finish_db_init decides whether the
-        # appender is opened). The open is slow on a big DB and slower on an
-        # unreplayable WAL — safe here, since this thread is the only waiter.
+        # once the connection is up. Slow, but this thread is the only waiter.
         _get_db()
 
         backend = _current_backend()
@@ -650,7 +593,7 @@ def _init_tables(db):
     logger.debug("Telemetry tables initialised")
 
 
-# ── Octopus database (separate file) ──
+# Octopus database (separate file)
 
 _octopus_db = None
 _octopus_db_lock = threading.Lock()
@@ -758,8 +701,7 @@ def _migrate_octopus_from_telemetry(odb):
         logger.warning(f"Octopus table migration skipped: {e}")
 
 
-
-# ── System-metrics database (separate file) ──────────────────────────────────
+# System-metrics database (separate file)
 
 _system_db = None
 _system_db_lock = threading.Lock()
@@ -778,9 +720,8 @@ def _get_system_db():
             # and unreplayable-WAL healing too, rather than a bare connect().
             db = _connect_local_db(SYSTEM_DB_PATH)
             _init_system_tables(db)
-            # NO migration here. This is reached from write/query paths that run
-            # on the event loop; anything slow here stalls the whole app. The
-            # migration is a startup step — see migrate_system_metrics().
+            # NO migration here: reached from paths that run on the event loop.
+            # Migration is a startup step — see migrate_system_metrics().
             _system_db = db
             _finish_system_db_init()
             logger.info(f"System metrics database opened: {SYSTEM_DB_PATH}")
@@ -922,10 +863,9 @@ def migrate_system_metrics(log: Optional[Callable[[str], None]] = None,
                 db.execute("DELETE FROM sysdb.system_metrics")
                 return None
 
-            # Freeing these blocks is the point — it is what lets the main
-            # database checkpoint again. Must happen BEFORE any CHECKPOINT: a
-            # failed one invalidates the connection and the DROP becomes
-            # impossible until the process restarts.
+            # Freeing these blocks is what lets the main database checkpoint again,
+            # and must precede any CHECKPOINT: a failed one invalidates the
+            # connection and the DROP becomes impossible until restart.
             db.execute("DROP TABLE system_metrics")
         finally:
             try:
@@ -970,9 +910,7 @@ def prune_system(retention_days: int = DEFAULT_RETENTION_DAYS):
         logger.warning(f"System metrics prune failed: {e}")
 
 
-# ============================================================================
 # WRITE OPERATIONS
-# ============================================================================
 
 def write_system_metrics(metrics: Dict[str, Any]):
     """Insert a system metrics sample into the system-metrics database.
@@ -1032,7 +970,7 @@ def write_packet_stats(stats_batch: List[Dict[str, Any]]):
                 int(s.get("lqi", 0)),
             )
         return
-    # ── Python path (shared connection, serialised) ──
+    # Python path (shared connection, serialised)
     _write_exec("""
         INSERT INTO packet_stats (ieee, rx_packets, tx_packets, rx_bytes, tx_bytes, errors, retries, lqi)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1056,7 +994,7 @@ def write_device_state(ieee: str, attribute: str, value: Any):
     if _appender is not None:
         _appender.append_device_state(ieee, attribute, str_val, num_val)
         return
-    # ── Python path (shared connection, serialised) ──
+    # Python path (shared connection, serialised)
     _write_exec("""
         INSERT INTO device_states (ieee, attribute, value, numeric_val)
         VALUES (?, ?, ?, ?)
@@ -1085,14 +1023,9 @@ def write_device_states_batch(rows: List[tuple]) -> int:
         data.append((ieee, attribute, str_val, num_val))
 
     if _appender is not None:
-        # Appender first whenever it is open, same as write_device_state().
-        # This is now the hot path for ALL device telemetry (the collector
-        # buffers and drains through here), so skipping the appender would
-        # have quietly disabled it for the highest-volume table in the app.
-        # Timestamps are unaffected: both paths stamp at insert time — the
-        # appender explicitly, the Python path via the ts column's DEFAULT
-        # now(). (Bulk *historical* import is different and must never use
-        # the appender — see modules/telemetry_rebuild.)
+        # Appender first whenever open, as in write_device_state(). This is the
+        # hot path for all device telemetry, so skipping it would quietly disable
+        # the appender for the highest-volume table. Both paths stamp at insert.
         for ieee, attribute, str_val, num_val in data:
             _appender.append_device_state(ieee, attribute, str_val, num_val)
         return len(data)
@@ -1113,7 +1046,7 @@ def write_spectrum_scan(results: Dict[int, int]):
         for ch, e in results.items():
             _appender.append_spectrum_scan(int(ch), int(e))
         return
-    # ── Python path (shared connection, serialised) ──
+    # Python path (shared connection, serialised)
     _write_exec("""
         INSERT INTO spectrum_scans (channel, energy) VALUES (?, ?)
     """, [(int(ch), int(e)) for ch, e in results.items()])
@@ -1197,7 +1130,7 @@ def write_heating_tick(
                 "reason": r.get("temp_source"),
             })
 
-    # ── Fast path: Rust appender ──
+    # Fast path: Rust appender
     if _appender is not None:
         try:
             for row in room_rows:
@@ -1230,7 +1163,7 @@ def write_heating_tick(
             logger.error(f"write_heating_tick appender failed, falling back: {e}")
             # fall through to Python INSERT
 
-    # ── Python path (shared connection, serialised) ──
+    # Python path (shared connection, serialised)
     try:
         if room_rows:
             _write_exec("""
@@ -1273,9 +1206,7 @@ def _to_float(v):
     except (TypeError, ValueError):
         return None
 
-# ============================================================================
 # READ OPERATIONS
-# ============================================================================
 
 def query_system_metrics(hours: int = 1, bucket_minutes: int = 1) -> List[Dict]:
     """
@@ -1561,9 +1492,7 @@ def query_room_heating_state(
             "classification", "current_temp_c", "setpoint_c", "heating_active"]
     return [dict(zip(cols, r)) for r in rows]
 
-# ============================================================================
 # OCTOPUS ENERGY
-# ============================================================================
 # Timestamps in octopus_consumption / octopus_rates are UTC-naive: the API
 # returns ISO8601 with offsets (BST intervals arrive as +01:00), so callers
 # must normalise to UTC and strip tzinfo before writing. Local-day bucketing
@@ -1867,9 +1796,7 @@ def query_plug_energy_by_day(days: int = 7) -> List[Dict]:
     return [{"ieee": r[0], "day": r[1], "kwh": r[2]} for r in rows]
 
 
-# ============================================================================
 # MAINTENANCE
-# ============================================================================
 
 def prune(retention_days: int = DEFAULT_RETENTION_DAYS):
     """Remove records older than retention period.
@@ -1952,7 +1879,7 @@ def close():
         _db = None
         logger.info("Telemetry database closed")
 
-# ── Outdoor weather history helpers ────────────────────────────────
+# Outdoor weather history helpers
 
 OUTDOOR_TEMP_IEEE = "__weather__"
 OUTDOOR_TEMP_ATTR = "outdoor_temperature_c"

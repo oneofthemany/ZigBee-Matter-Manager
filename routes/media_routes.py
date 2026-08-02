@@ -173,11 +173,9 @@ def register_media_routes(app: FastAPI, get_media_service):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ── Browser-local playback ("This device") ──────────────────────────
-    # The page plays audio itself via an <audio> element, so it needs a
-    # directly-playable URL rather than a player to cast to. Tidal hands back
-    # 320k AAC for any non-Cast provider (DASH/FLAC is Cast-only), which is
-    # exactly what a browser can play natively.
+    # Browser-local playback: the page plays audio itself via <audio>, so it needs
+    # a directly-playable URL rather than a player to cast to. Tidal returns 320k
+    # AAC for non-Cast providers, which is exactly what a browser plays natively.
 
     @app.post("/api/media/local/playlist")
     async def local_playlist(body: LocalPlaylistBody):
@@ -426,9 +424,7 @@ def register_media_routes(app: FastAPI, get_media_service):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ------------------------------------------------------------------
     # Karaoke mode — cast synced lyrics to the custom receiver
-    # ------------------------------------------------------------------
     @app.get("/api/media/karaoke")
     async def karaoke_get():
         svc = _svc()
@@ -445,9 +441,7 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "Media service not enabled"}
         return svc.set_karaoke(body.enabled)
 
-    # ------------------------------------------------------------------
     # Radio favourites — pinned stations, no re-search needed
-    # ------------------------------------------------------------------
     @app.get("/api/media/radio/favourites")
     async def radio_favourites_list():
         svc = _svc()
@@ -482,9 +476,7 @@ def register_media_routes(app: FastAPI, get_media_service):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ------------------------------------------------------------------
     # Queue
-    # ------------------------------------------------------------------
     @app.get("/api/media/queue")
     async def get_queue(player_id: str):
         svc = _svc()
@@ -514,9 +506,7 @@ def register_media_routes(app: FastAPI, get_media_service):
         await svc.controller.clear_queue(body.player_id)
         return {"success": True}
 
-    # ------------------------------------------------------------------
     # Tidal
-    # ------------------------------------------------------------------
     def _tidal(svc):
         return svc.controller.get_source("tidal")
 

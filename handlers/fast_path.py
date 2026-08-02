@@ -1,18 +1,9 @@
 """
-Fast Path Processor - Time-Critical ZCL Frame Handler
-=====================================================
-Based on ZHA's handle_cluster_request pattern for immediate processing.
+Time-critical ZCL frame handler, based on ZHA's handle_cluster_request pattern.
 
-This module provides:
-- Direct ZCL frame parsing without full attribute chain
-- Immediate state updates for motion/presence events
-- Fast-path MQTT publishing (< 5ms latency)
-- Minimal event loop blocking
-
-Critical for:
-- Motion sensors (0x0406 Occupancy Sensing)
-- Radar sensors (0xEF00 Tuya)
-- Door/window sensors (0x0500 IAS Zone)
+Parses frames directly without the full attribute chain and publishes to MQTT in
+under ~5 ms, minimising event-loop blocking. Matters most for motion (0x0406),
+Tuya radar (0xEF00) and IAS Zone contacts (0x0500).
 """
 import logging
 import time
@@ -111,7 +102,7 @@ class FastPathProcessor:
         if profile != 0x0104:
             return False
 
-        # --- 1. Occupancy Sensing (0x0406) ---
+        # 1. Occupancy Sensing (0x0406)
         if cluster == 0x0406:
             # Occupancy Sensing - motion sensors
             result = self._fast_path_occupancy(sender_ieee, message)
@@ -120,7 +111,7 @@ class FastPathProcessor:
                 self._stats['occupancy_events'] += 1
             return result
 
-        # --- 2. On/Off (0x0006) - Used by IKEA/Tuya for motion ---
+        # 2. On/Off (0x0006) - Used by IKEA/Tuya for motion
         elif cluster == 0x0006:
             result = self._fast_path_onoff(sender_ieee, message)
             if result:
@@ -128,7 +119,7 @@ class FastPathProcessor:
                 self._stats['occupancy_events'] += 1
             return result
 
-        # --- 3. Tuya Manufacturer (0xEF00) ---
+        # 3. Tuya Manufacturer (0xEF00)
         elif cluster == 0xEF00:
             # Tuya - radar sensors
             result = self._fast_path_tuya(sender_ieee, message)
@@ -137,7 +128,7 @@ class FastPathProcessor:
                 self._stats['tuya_events'] += 1
             return result
 
-        # --- 4. IAS Zone (0x0500) ---
+        # 4. IAS Zone (0x0500)
         elif cluster == 0x0500:
             # IAS Zone - door/window sensors
             result = self._fast_path_ias_zone(sender_ieee, message)
@@ -301,10 +292,8 @@ class FastPathProcessor:
                 if len(message) >= 5:
                     zone_status = int.from_bytes(message[3:5], byteorder='little')
 
-                    # Bit 0: Alarm 1 (door open, motion, etc.)
-                    # Bit 1: Alarm 2
-                    # Bit 3: Tamper
-                    # Bit 5: Battery
+                    # Bits: 0 = alarm 1 (door/motion), 1 = alarm 2, 3 = tamper,
+                    # 5 = battery.
 
                     alarm1 = bool(zone_status & 0x01)
                     alarm2 = bool(zone_status & 0x02)

@@ -1,32 +1,10 @@
 """
 Source-IP resolution and LAN classification.
 
-Two distinct concerns handled here:
-
-1. **Get the real client IP**, even when ZMM is behind:
-   - Cloudflare Tunnel (sends `CF-Connecting-IP`)
-   - A reverse proxy like nginx/Caddy/Traefik (sends `X-Forwarded-For`,
-     `X-Real-IP`, possibly `Forwarded`)
-   - Tailscale (no proxy, but the immediate peer IS the real client IP)
-   - Direct LAN access (immediate peer = real client IP)
-
-   We trust headers ONLY when the immediate peer is on a configured
-   trusted-proxy list. Trusting `X-Forwarded-For` from any source lets
-   an attacker spoof their IP trivially.
-
-2. **Classify an IP as LAN-or-not**, for the `network:lan_only` scope.
-   Defaults cover RFC1918, loopback, link-local, CGNAT (which includes
-   Tailscale), and IPv6 ULA/link-local. Users can override.
-
-Configuration lives at:
-    config.yaml → security.network:
-        trusted_proxies: ["127.0.0.1/8", "172.16.0.0/12", "10.0.0.0/8"]
-            # IPs whose forwarded-for headers we trust
-        cloudflare_tunnel_enabled: true
-            # If true, also trust CF-Connecting-IP from Cloudflare's published
-            # IP ranges. We ship a recent snapshot but the user can override.
-        lan_ranges: [...]
-            # Override the default LAN ranges if needed
+Resolves the real client IP behind Cloudflare Tunnel, a reverse proxy, Tailscale
+or direct access — trusting forwarding headers ONLY from a configured
+trusted-proxy peer, since otherwise they are trivially spoofed. Also classifies
+an IP as LAN-or-not for the network:lan_only scope. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -111,9 +89,7 @@ def _ip_in_any(addr: str, networks: Sequence[ipaddress._BaseNetwork]) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
 # NetworkResolver — single instance configured at startup
-# ---------------------------------------------------------------------------
 
 class NetworkResolver:
     """
@@ -143,7 +119,7 @@ class NetworkResolver:
         )
         self._cf_warn_ts: Dict[str, float] = {}
 
-    # ---- core: source IP resolution -----------------------------------
+    # core: source IP resolution
 
     def resolve(self, request: Request) -> str:
         """
@@ -158,11 +134,9 @@ class NetworkResolver:
         if self.cloudflare_tunnel_enabled:
             cf = request.headers.get("cf-connecting-ip")
             if cf:
-                # Trust if peer is in Cloudflare's published ranges.
-                # This is the safe configuration — running cloudflared
-                # locally produces a peer of 127.0.0.1, so we also trust
-                # if peer is in the trusted_proxies list (which
-                # typically includes 127.0.0.0/8).
+                # Trust peers in Cloudflare's published ranges. Running cloudflared
+                # locally gives a peer of 127.0.0.1, so trusted_proxies (which
+                # usually includes 127.0.0.0/8) is honoured too.
                 cf_clean = cf.split(",")[0].strip()
                 if (
                         _ip_in_any(peer, self.cloudflare_ranges)
@@ -238,12 +212,12 @@ class NetworkResolver:
             return ""
         return client.host or ""
 
-    # ---- LAN classification --------------------------------------------
+    # LAN classification
 
     def is_lan(self, ip: str) -> bool:
         return _ip_in_any(ip, self.lan_ranges)
 
-    # ---- introspection -------------------------------------------------
+    # introspection
 
     def describe(self) -> dict:
         return {

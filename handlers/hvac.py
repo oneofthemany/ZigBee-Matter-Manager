@@ -36,9 +36,7 @@ class ThermostatSystemMode(IntEnum):
     DRY = 0x08
     SLEEP = 0x09
 
-# ============================================================
 # THERMOSTAT CLUSTER (0x0201)
-# ============================================================
 @register_handler(0x0201)
 class ThermostatHandler(ClusterHandler):
     """
@@ -114,9 +112,7 @@ class ThermostatHandler(ClusterHandler):
                 f"Atomic write protocol enabled."
             )
 
-    # ============================================================
     # HIVE PAIRING HELPERS
-    # ============================================================
     def _find_paired_thermostat(self):
         try:
             settings = self.device.service.device_settings.get(self.device.ieee, {})
@@ -151,36 +147,30 @@ class ThermostatHandler(ClusterHandler):
                 f"[{self.device.ieee}] Cross-referenced temperature "
                 f"{temp}°C from thermostat [{thermostat.ieee}]"
             )
-    # ============================================================
     # CONFIGURE
-    # ============================================================
     # Base report config — attributes both thermostats and receivers support
     REPORT_CONFIG = [
         ("occupied_heating_setpoint", 0, 300, 10),
         ("system_mode", 10, 300, 1),
     ]
 
-    # ============================================================
     # CONFIGURE
-    # ============================================================
     def _is_aqara_trv(self) -> bool:
         return "agl001" in str(self.device.zigpy_dev.model or "").lower()
 
     async def configure(self):
-        # Aqara AGL001 TRVs never answer 0x0201 binds/reads (state arrives
-        # via 0xFCC0 reports mapped by the quirk) — skip the standard config
-        # and init reads to avoid ~15s of guaranteed timeouts per join.
-        # Setpoint writes still go through 0x0201 as normal.
+        # Aqara AGL001 TRVs never answer 0x0201 binds/reads — state arrives via
+        # 0xFCC0 reports mapped by the quirk. Skipping saves ~15 s of guaranteed
+        # timeouts per join; setpoint writes still use 0x0201.
         if self._is_aqara_trv():
             logger.info(
                 f"[{self.device.ieee}] AGL001 TRV — skipping 0x0201 "
                 "configuration (state comes via 0xFCC0 reports)"
             )
             return
-        # Build report config based on device role.
-        # Receivers carry the active heating state; thermostats are remote
-        # controls in the Hive model and don't populate local_temperature,
-        # pi_heating_demand, running_state, or running_mode.
+        # Receivers carry the active heating state. Thermostats are remote controls
+        # in the Hive model and do not populate local_temperature, pi_heating_demand,
+        # running_state or running_mode.
         report_config = list(self.REPORT_CONFIG)
 
         if self.is_receiver:
@@ -212,7 +202,7 @@ class ThermostatHandler(ClusterHandler):
 
         await super().configure()
 
-        # ── Init attribute read (was the second configure's body) ──
+        # Init attribute read (was the second configure's body)
         init_attrs = [
             self.ATTR_ABS_MIN_HEAT_SETPOINT_LIMIT,
             self.ATTR_ABS_MAX_HEAT_SETPOINT_LIMIT,
@@ -261,10 +251,9 @@ class ThermostatHandler(ClusterHandler):
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Failed to read init attributes: {type(e).__name__}: {e}")
 
-        # Hive internal temperature (0x4000) is manufacturer-specific and not
-        # defined on the stock zigpy Thermostat cluster, so batching it above
-        # makes read_attributes() raise KeyError before anything hits the air,
-        # discarding the whole batch. Read it raw, in its own guard.
+        # Hive 0x4000 is manufacturer-specific and undefined on the stock zigpy
+        # Thermostat cluster, so batching it makes read_attributes() raise KeyError
+        # before anything hits the air, discarding the batch. Read raw and guarded.
         if self.is_receiver:
             try:
                 async with asyncio.timeout(10.0):
@@ -289,9 +278,7 @@ class ThermostatHandler(ClusterHandler):
             return {}
         return await super().poll()
 
-    # ============================================================
     # ATTRIBUTE HANDLING
-    # ============================================================
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
         if value is None:
             return
@@ -365,9 +352,7 @@ class ThermostatHandler(ClusterHandler):
             if "hvac_action" not in updates:
                 self._update_hvac_action()
 
-    # ============================================================
     # WRITES — atomic for Hive receivers
-    # ============================================================
     async def _write_atomic(self, attrs_by_name: Dict[str, Any],
                             attrs_by_id: Dict[int, Any]) -> bool:
         """
@@ -444,7 +429,7 @@ class ThermostatHandler(ClusterHandler):
             self._fetch_thermostat_temperature()
             return True
 
-        # --- Non-Hive thermostats: plain setpoint write ---
+        # Non-Hive thermostats: plain setpoint write
         logger.info(
             f"[{self.device.ieee}] Writing occupied_heating_setpoint: "
             f"{temperature}°C ({value_cd} centidegrees)"
@@ -485,7 +470,7 @@ class ThermostatHandler(ClusterHandler):
 
         mode_val = mode_map[mode]
 
-        # --- HIVE PATH: SLT is master ---
+        # HIVE PATH: SLT is master
         if self.is_receiver:
             attrs_by_name = {
                 "system_mode": mode_val,
@@ -532,7 +517,7 @@ class ThermostatHandler(ClusterHandler):
             self._fetch_thermostat_temperature()
             return True
 
-        # --- Non-Hive thermostats: plain mode write ---
+        # Non-Hive thermostats: plain mode write
         logger.info(f"[{self.device.ieee}] Writing system_mode: {mode} ({mode_val})")
         try:
             await self.cluster.write_attributes({"system_mode": mode_val})
@@ -561,9 +546,8 @@ class ThermostatHandler(ClusterHandler):
         self.device.update_state({"hvac_action": action})
 
     def process_command(self, command: str, value: Any):
-        # Return the coroutine instead of create_task: the command executor
-        # runs it in a supervised background task, so a TimeoutError from an
-        # unreachable device is logged rather than surfacing as an
+        # Return the coroutine rather than create_task: the command executor runs it
+        # supervised, so a TimeoutError is logged instead of surfacing as an
         # unretrieved task exception.
         if command in ("temperature", "set_temperature"):
             return self.set_target_temperature(float(value))
@@ -677,7 +661,7 @@ class ThermostatHandler(ClusterHandler):
             attrs[self.ATTR_INTERNAL_TEMP] = "internal_temperature"
         return attrs
 
-    # --- COMMANDS ---
+    # COMMANDS
     async def set_heating_setpoint(self, temperature: float):
         await self.set_target_temperature(temperature)
 
@@ -695,7 +679,7 @@ class ThermostatHandler(ClusterHandler):
         """Turn heating off (set to Off mode)."""
         await self.set_system_mode("off")
 
-    # --- HA DISCOVERY ---
+    # HA DISCOVERY
     def get_discovery_configs(self) -> List[Dict]:
         """Generate Home Assistant discovery configs."""
 
@@ -756,9 +740,7 @@ class ThermostatHandler(ClusterHandler):
         return configs
 
 
-# ============================================================
 # USER INTERFACE CLUSTER (0x0204)
-# ============================================================
 @register_handler(0x0204)
 class UserInterfaceHandler(ClusterHandler):
     CLUSTER_ID = 0x0204
@@ -776,9 +758,7 @@ class UserInterfaceHandler(ClusterHandler):
             self.device.update_state({"keypad_lockout": mode})
 
 
-# ============================================================
 # FAN CONTROL CLUSTER (0x0202)
-# ============================================================
 @register_handler(0x0202)
 class FanControlHandler(ClusterHandler):
     CLUSTER_ID = 0x0202

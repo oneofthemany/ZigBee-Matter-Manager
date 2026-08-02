@@ -1,14 +1,7 @@
 """
-===============================
-Implements robust error handling, watchdog recovery, and network stability
-based on patterns from Home Assistant's ZHA integration.
-
-Key Features:
-- Automatic NCP failure recovery
-- Watchdog timeout handling
-- Connection state management
-- Graceful degradation
-- Comprehensive logging
+Error handling, watchdog recovery and network stability, following patterns from
+Home Assistant's ZHA integration: automatic NCP failure recovery, watchdog
+timeout handling, connection state management and graceful degradation.
 """
 import asyncio
 import logging

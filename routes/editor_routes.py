@@ -641,14 +641,14 @@ def _validate_javascript(content: str) -> list:
     while i < n:
         c = chars[i]
 
-        # ── Single-line comment ──
+        # Single-line comment
         if c == '/' and peek() == '/':
             # Skip to end of line
             while i < n and chars[i] != '\n':
                 i += 1
             continue
 
-        # ── Multi-line comment ──
+        # Multi-line comment
         if c == '/' and peek() == '*':
             i += 2
             while i < n:
@@ -658,7 +658,7 @@ def _validate_javascript(content: str) -> list:
                 i += 1
             continue
 
-        # ── Single/double quoted strings ──
+        # Single/double quoted strings
         if c in ('"', "'"):
             quote = c
             i += 1
@@ -675,7 +675,7 @@ def _validate_javascript(content: str) -> list:
                 i += 1
             continue
 
-        # ── Template literal ──
+        # Template literal
         if c == '`':
             i += 1
             while i < n:
@@ -696,7 +696,7 @@ def _validate_javascript(content: str) -> list:
                 i += 1
             continue
 
-        # ── Regex literal ──
+        # Regex literal
         if c == '/' and _could_be_regex():
             i += 1  # skip opening /
             in_char_class = False
@@ -721,7 +721,7 @@ def _validate_javascript(content: str) -> list:
                 i += 1
             continue
 
-        # ── Bracket tracking ──
+        # Bracket tracking
         if c in ('(', '[', '{'):
             stack.append((c, line_of[i], col_of[i]))
             i += 1
@@ -780,7 +780,7 @@ def _validate_javascript(content: str) -> list:
             "severity": "error",
         })
 
-    # ── Phase 2: line-level warnings ──
+    # Phase 2: line-level warnings
     for idx, line in enumerate(lines, 1):
         stripped = line.rstrip()
 

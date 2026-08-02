@@ -1,8 +1,6 @@
-/* ==========================================================================
-   notifications.css
+/* notifications.css
    Settings → Notifications sub-tab styling.
-   Drop-in: only adds rules, doesn't override anything global.
-   ========================================================================== */
+   Drop-in: only adds rules, doesn't override anything global. */
 
 .notif-rule-card {
     border: 1px solid var(--border-color, #dee2e6);
@@ -28,7 +26,7 @@
     display: none !important;
 }
 
-/* ----- Dark mode ----- */
+/* Dark mode */
 [data-theme="dark"] .notif-rule-card {
     background-color: var(--bg-card, #1e1e2a);
     border-color: var(--border-color, #2d2d3d);

@@ -423,3 +423,271 @@ gave up anyway, or a sync session whose members must be re-launched.
 | `static/js/speaker-sync.js` | Settings → Audio tab |
 | `static/js/media.js` | Group-builder sub-tabs (WiiM / Speaker sync) |
 | `routes/config_routes.py` | `media.cast.sync` slice merge on save |
+
+## Sync Lab (frontend)
+
+`static/js/sync-lab.js` renders per-session analysis of speaker-sync tests into
+`#syncLabHost` (Media → Group → OpenZone → Results), reading the group's own
+DuckDB via `/api/media/sync/{sessions,session,model,trend}`.
+
+What it shows:
+
+- three group headline stats, counted after the group locked;
+- **one** per-speaker table carrying the session's measurements and the
+  corrections applied to it side by side, plus the cross-session learned model.
+  This replaced a grid of cards and a separate data table, because the question
+  here is always "how do these two compare?";
+- a collapsed ledger of when each correction happened;
+- the **group spread chart** (the headline): how far apart the speakers are,
+  against the ±20 ms "audibly together" band;
+- the **convergence chart**: per-speaker playback error vs elapsed time, with
+  the ±30 ms slew window, ±100 ms jump threshold, and hard-resync (◆),
+  rate-slew (▽) and manual-trim (▲) events;
+- the **PLL chart**: per-speaker stream rate correction (ppm) locking onto the
+  device's true clock offset.
+
+Colours are fixed per speaker by group-member order, so the colour follows the
+entity. The palette is validated for CVD and both themes.
+
+### Live mode and the rendering layer
+
+While the group's session is running the view refreshes every 3 s, and the whole
+rendering layer exists to make that invisible. **A live view that reflows under
+the reader is worse than one that updates slowly.**
+
+- `_setHtml` writes `innerHTML` only when it actually changed, and returns
+  whether the DOM was touched so callers can rebind handlers. It is the blunt
+  instrument — it destroys and rebuilds. Keep any scrolling container *out* of
+  the replaced HTML so the browser preserves its position.
+- `_patch` is the one to reach for on anything a reader is looking at. A 3 s
+  tick that rewrites a whole panel costs the reader everything they were doing:
+  selection and hover die, and any change in wrapped-line count reflows the page
+  under the cursor, making the charts below visibly jump. So structure is built
+  once per `key` (the set of speakers, say) and every subsequent tick writes
+  only the leaf `[data-v]` nodes whose value actually moved. Values are strings,
+  or `{text, cls}` when the node also carries a state colour.
+
+### Payload validation
+
+Emptiness is not the only way a payload can be useless. A series row always
+carries the speaker it belongs to; one that does not cannot be plotted or
+attributed, and a handful of them render as blank tiles and an empty table —
+visually identical to no data, but passing every length test on the way in. The
+structural check refuses them at the boundary and says so out loud, rather than
+leaving a silent blank to be explained later.
+
+### No guidance panel — by decision
+
+The lab reports; it does not advise.
+
+There was a "What to do next" panel, and it was removed. The sync engine
+corrects itself, so on a healthy group every row it could write resolved to
+"nothing to do", and the two commonest rows were telemetry wearing advice's
+clothes: a settled bias is the rate loop's job, it is already draining it, and
+the number is a column in the table below. Cutting it to exceptions only did not
+save it either. The charts and the per-speaker table say what happened — a
+reader can see four hard resyncs in the resync column without a paragraph
+telling them to check their WiFi.
+
+**The related decision, should anyone be tempted: no per-speaker "apply this
+trim" button either.** The settled bias it would be computed from is measured
+with the trim *excluded* (`cast_sync._measure_lag_once`), so a trim can never
+move that number. The suggestion would survive being applied, invite a second
+application, and integrate open-loop. A sensor-*visible* bias belongs to the
+rate loop, which is already draining it; a sensor-*invisible* one
+(output-pipeline latency) can only be seen by the mic, which is what Calibrate
+is for.
+
+## Server-side EQ for Cast targets
+
+Cast receivers expose no DSP API, so equalisation has to happen before the audio
+reaches the device. When EQ is enabled for a Cast player, `EqStreamEngine`
+(`modules/media/eq_stream.py`) takes over the playback path instead of handing
+the device the source URL: ffmpeg decodes the source — radio stream, Tidal AAC,
+the therapy WAV, anything it can read — to raw PCM, the `zmm_eq` Rust biquad
+chain filters it, and the result is served to the device as an endless WAV over
+`/api/media/eq/stream/…`, using the same header trick as the therapy stream.
+
+The point of the Rust chain is **live control**: slider changes swap biquad
+coefficients atomically on the running stream with filter state preserved, so
+dragging a band is heard on the speaker in well under a second, with no playback
+restart and no gap.
+
+Only one transition needs the current track restarted: turning EQ **on** while
+an un-proxied stream is playing, because the audio path physically changes.
+Turning it **off** mid-stream flips the chain to bit-transparent bypass —
+seamless — and the next track starts direct again.
+
+Enabled state, preset and gains persist per player in `data/media_eq.json`. The
+proxy URL must be reachable **by the device**, so `media.eq.base_url` (falling
+back to `media.tidal.manifest_base_url`) has to point at this app on the LAN —
+the same rule as the Tidal DASH manifest route.
+
+Costs while EQ is on, by design: the stream is re-encoded, so Tidal lossless
+becomes 44.1 kHz/16-bit PCM; the device reports no track duration, since it is an
+endless WAV; and the stream dies with the app. EQ off is exactly the old
+direct-URL behaviour, byte for byte.
+
+## Therapy TTS engines
+
+The therapy SPA has two backends, chosen by `media.therapy.engine`:
+
+- **kokoro** (default) — in-process `KokoroTTS`, see
+  `modules/media/kokoro_tts.py`.
+- **wyoming** — `modules/media/therapy_tts.py`, which talks the Wyoming protocol
+  to a `wyoming-piper` container (for instance the one an HA voice host already
+  runs), assembles the streamed PCM into a WAV, and caches results on disk keyed
+  by `(voice, speed, pitch, text)`.
+
+```yaml
+media:
+  therapy:
+    enabled: true
+    engine: wyoming       # kokoro (default, in-process) | wyoming
+    wyoming:
+      host: "127.0.0.1"
+      port: 10200
+```
+
+Piper applies speech speed via `length_scale`, which `wyoming-piper` does not
+expose per request, so a speed other than 1.0 is approximated with a
+pitch-preserving WSOLA time-stretch. numpy is required for that; without it audio
+comes back at natural speed. Pitch is applied client-side by the SPA via
+`playbackRate`, never here.
+
+### KokoroTTS (default engine)
+
+`modules/media/kokoro_tts.py` runs the Kokoro-82M model (Apache-2.0) directly
+inside ZMM via `kokoro-onnx` + `onnxruntime` — no sidecar container, no Wyoming
+hop. Speed is a native model parameter (length control), so unlike the
+wyoming-piper path there is no client-side time-stretch approximation. Pitch is
+applied client-side by the SPA via `playbackRate` and only participates in the
+cache key.
+
+The ~340 MB model files are **not** shipped in the image. They download on
+demand into `data/tts_models/` (a persistent volume) when the operator clicks
+"Download voice model" on the therapy page, surfaced via the `/api/tts/setup/*`
+endpoints — everything privileged or expensive is user-triggered.
+
+It presents the same duck-typed API as `TherapyTTS`
+(`status`/`voices`/`synthesize` + `setup_*`), so routes and the SPA are
+engine-agnostic.
+
+## Therapy soundscape streaming
+
+The therapy SPA generates its audio in the browser via the Web Audio API, which
+a Cast or WiiM player cannot fetch. `modules/media/therapy_stream.py` ports that
+synth graph to numpy and serves it as an endless WAV stream
+(`GET /api/therapy/stream`), so therapy casts through the exact same
+`/api/media/play` path as radio and Tidal.
+
+Per mode, using the same tables as the SPA: detuned sine pads with slow LFOs, a
+sub oscillator, a true-stereo binaural pair, generative scale notes, band-passed
+texture noise, a lowpass voicing filter and a feedback-echo tail. Breathwork adds
+the inhale/hold/exhale amplitude envelope; anxiety slides the binaural beat and
+tempo down over ten minutes (entrainment). Speech overlays come from the therapy
+TTS engine on the configured interval, with the bed ducked while the voice plays.
+
+Generation is paced to real time with a small lead, so players buffer seconds
+rather than minutes, and each listener gets an independent stream state.
+
+## Acoustic chirp calibration
+
+The stream-mode status sensor aligns what devices *report* playing. It cannot
+see each device's output-pipeline latency — the DAC chain and speaker DSP — or,
+of course, the speed of sound. `modules/media/sync_chirp.py` measures the audio
+in the air instead.
+
+During a running session each device plays a short logarithmic chirp in its own
+time slot, a microphone at the server records the room, and GCC-PHAT matched
+filtering recovers each chirp's arrival time to sub-millisecond precision.
+Differencing arrivals across devices cancels everything common — mic start
+latency, mic clock offset, the shared acoustic path — leaving the true
+inter-device misalignment, which `cast_sync` converts into trims.
+
+Pure DSP and capture; all session state stays in `cast_sync`. numpy only, no
+scipy. `sounddevice` is imported lazily so the module loads on hosts with no
+audio stack and fails with a clear message only when calibration is used.
+
+This is the OpenZone §6.2 sensor, and it is the only thing that can see a
+sensor-*invisible* bias — which is why there is no per-speaker manual trim
+button in the Sync Lab.
+
+## Media service lifecycle
+
+`modules/media/service.py` builds providers from config, owns the
+`MediaController`, and runs a poll loop that refreshes player state and pushes a
+`media_state` event over the WebSocket so the UI updates live.
+
+```yaml
+media:
+  enabled: true
+  cast:    { enabled: true, app_id: "CC1AD845" }
+  wiim:    { enabled: true, devices: ["192.168.1.50"] }
+  radio_browser: { enabled: true }
+  poll_interval_seconds: 10
+  # Cast EQ proxy — base_url must be this app's LAN address so speakers can
+  # fetch the processed stream (falls back to tidal.manifest_base_url).
+  eq: { base_url: "http://192.168.1.10:8000" }
+```
+
+## Media subsystem overview
+
+A self-contained multi-room audio engine: Google Cast (Nest/Home) and
+WiiM/LinkPlay players, internet radio via the Radio-Browser directory, and
+broadcast to *native* speaker groups (Cast groups created in Google Home, WiiM
+multiroom).
+
+Design: thin, stateless provider objects behind clean ABCs, orchestrated by a
+provider-agnostic controller. No MQTT or HA dependency, and no ffmpeg stream
+server for the ordinary path — radio URLs are handed directly to the devices,
+which fetch them natively.
+
+The two-sided provider split (sources vs players) is borrowed from Music
+Assistant (Apache-2.0) as a reference, but the abstractions and code are our own,
+so we can fix the bugs we do not like.
+
+### WiiM / LinkPlay
+
+`modules/media/players/wiim.py` talks the documented WiiM HTTP API
+(`/httpapi.asp?command=…`). The core transport, volume and status commands come
+from WiiM's official HTTP API PDF. The multiroom grouping commands are
+LinkPlay-platform commands that are **not** in that PDF — community-documented
+and semi-official — so they are isolated and degrade gracefully if a device
+rejects them.
+
+Discovery is currently a manual list of device IPs from config; mDNS discovery
+(LinkPlay advertises `_linkplay._tcp` / UPnP) is a later enhancement.
+
+Newer WiiM firmware serves the API over HTTPS on port 443 with a self-signed
+cert and may disable plain HTTP, so each device is probed once and the working
+scheme cached. HTTPS uses `verify=False`, since the cert is the device's own.
+
+### Tidal
+
+`modules/media/sources/tidal.py` uses the unofficial `tidalapi`. Phase 2 serves
+**AAC** (HIGH quality) via a directly playable URL so Cast and WiiM can fetch it
+without our stream server; lossless/HiRes DASH/FLAC manifests parsed and served
+server-side are Phase 3 and explicitly not here.
+
+Hard-isolated: `tidalapi` is imported lazily and every failure is swallowed, so a
+Tidal breakage never affects Cast, WiiM or radio. The library is blocking
+(`requests`), so every call is wrapped in `asyncio.to_thread`.
+
+The session persists to `data/media/tidal_session.json` — a token rather than
+user-edited config, hence not in `config.yaml`. Login is a device/OAuth flow: the
+UI is handed a `link.tidal.com` URL while a background task waits for
+authorisation.
+
+### Plain-HTTP device listener
+
+The main app is HTTPS-only with a self-signed certificate, which Cast and WiiM
+devices refuse — the same reason `cast_sync` runs its own plain-HTTP listener on
+8010. `modules/media/device_http.py` (default :8011) serves **only** the
+endpoints a speaker fetches by URL: the Cast EQ proxy stream, the Tidal DASH
+manifest, and the therapy soundscape. No user data, no control surface, and the
+EQ stream is additionally guarded by its per-playback random token.
+
+With this up, `media.eq.base_url` needs no configuration at all — the EQ engine
+falls back to `http://<lan-ip>:<this port>`. Setting `base_url` in
+Settings → Audio only overrides the auto-detected address, for multi-homed hosts.

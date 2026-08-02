@@ -1,84 +1,9 @@
 """
-solar_gain.py
-=============
-Estimates instantaneous and time-averaged solar heat gain into individual
-rooms, using the room's window geometry and real-time sun position.
+Solar heat gain per room, from window geometry and real-time sun position.
 
-This is the first layer of solar-aware preheat and cooldown logic. It
-answers two questions the heating controller needs:
-
-  1. How many watts of free heat is the sun pumping into this room right now?
-  2. How many watts will it average over the next N minutes (preheat window)?
-
-Physics model
--------------
-We use the ASHRAE simplified solar heat gain approach:
-
-    Q_window = A × SHGC × I_incident                          [W]
-
-where:
-  A            = window area [m²]
-  SHGC         = Solar Heat Gain Coefficient (glazing-type dependent)
-  I_incident   = irradiance falling perpendicularly on the glass [W/m²]
-
-I_incident is derived from either:
-  a) A measured shortwave_radiation value from Open-Meteo (preferred — it's
-     the real, cloud-attenuated value). We then apply a cosine projection to
-     account for the angle between the sun and the window face.
-  b) A clear-sky beam model (1000 × sin(elevation)) attenuated by a cloud
-     fraction term, used when shortwave_radiation isn't available.
-
-The cosine projection factor for a vertical window on a wall with outward
-normal N_deg (bearing, clockwise from true north) and sun azimuth S_deg is:
-
-    cos_inc = cos(elevation) × cos(S_deg − N_deg)
-
-This is zero when the sun is behind or parallel to the wall, and 1.0 when
-the sun is shining perpendicularly at the window at zero elevation (which
-never happens in practice, but the geometry is correct).
-
-Diffuse component
------------------
-On overcast days the beam is negligible but diffuse sky radiation is
-significant. We model diffuse gain as:
-
-    Q_diffuse = A × SHGC × I_diffuse_fraction × shortwave_radiation
-
-where I_diffuse_fraction is a cloud-cover-weighted term. On a clear day most
-radiation is direct beam; on a fully overcast day ~100% is diffuse (but
-total is lower). A simple model: diffuse_fraction = 0.15 + 0.85 × cloud_fraction.
-
-Integration with the rest of the system
-----------------------------------------
-  • `solar_gain_now(room_config, lat, lon, dt_utc, shortwave_wm2, cloud_fraction)`
-    → float [W]  — instantaneous gain for one room.
-
-  • `solar_gain_window(room_config, lat, lon, start_utc, duration_minutes,
-                        shortwave_wm2, cloud_fraction)`
-    → SolarGainWindow  — average watts + breakdown, used by preheat.
-
-  • `solar_gain_forecast(room_config, lat, lon, start_utc, hourly_shortwave,
-                          hourly_cloud_cover)`
-    → List[SolarGainSample]  — per-hour gain profile, for scheduling decisions.
-
-Config fields used from room_config
-------------------------------------
-The room config already has `dimensions.windows[]` and `dimensions.walls{}`.
-This module adds one new optional field per wall:
-
-    dimensions:
-      walls:
-        front: { type: external, facing_deg: 180 }   # south-facing outward normal
-        left:  { type: external, facing_deg: 270 }   # west-facing
-      windows:
-        - { wall: front, area_m2: 2.1, glazing: double }
-
-`facing_deg` is the compass bearing of the wall's outward normal
-(0=N, 90=E, 180=S, 270=W). If a wall has no `facing_deg`, windows on
-that wall contribute zero solar gain — the function degrades gracefully
-rather than crashing.
-
-All functions are pure (no I/O). Thread-safe.
+Instantaneous watts, an averaged preheat window, and an hourly forecast, using
+the ASHRAE simplified approach with a diffuse term. All functions are pure and
+thread-safe. Physics, API and room-config fields: docs/heating.md.
 """
 from __future__ import annotations
 
@@ -89,11 +14,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .sun_position import sun_position
 
-# ── Solar Heat Gain Coefficients by glazing type ──────────────────────
-# ASHRAE Fundamentals 2021, Table 15 (centre-of-glass SHGC).
-# These are conservative mid-range values for standard clear glass without
-# low-e coatings; actual values vary by product but these are correct for
-# SAP/building-physics estimation at this level of precision.
+# Centre-of-glass SHGC by glazing type, ASHRAE Fundamentals 2021 Table 15.
+# Conservative mid-range values for clear glass without low-e; correct for
+# SAP/building-physics estimation at this precision.
 SHGC = {
     "single":  0.70,
     "double":  0.60,
@@ -101,17 +24,15 @@ SHGC = {
 }
 SHGC_DEFAULT = 0.60  # assume double if not specified
 
-# ── Clear-sky beam irradiance reference ───────────────────────────────
+# Clear-sky beam irradiance reference
 # Peak clear-sky global horizontal irradiance at sea level. ASHRAE uses
 # 1000 W/m² as a standard reference value; the actual extraterrestrial
 # value is ~1361 W/m² but ~30% is absorbed/scattered even on clear days.
 CLEAR_SKY_BEAM_WM2 = 1000.0
 
-# ── Cloud attenuation model ───────────────────────────────────────────
-# On a fully overcast sky (cloud_fraction=1.0) the beam is roughly 20% of
-# clear-sky. The cubic term steepens the curve so that light cloud (0.2)
-# has minimal effect while heavy cover (0.8+) drops beam substantially.
-# From Kasten & Czeplak (1980) empirical fit.
+# Overcast (cloud_fraction 1.0) leaves roughly 20% of clear-sky beam. The cubic
+# term keeps light cloud (0.2) near-harmless while heavy cover (0.8+) drops beam
+# substantially. Empirical fit from Kasten & Czeplak (1980).
 def _beam_attenuation(cloud_fraction: float) -> float:
     """Cloud attenuation factor for direct beam irradiance. Range 0–1."""
     cf = max(0.0, min(1.0, cloud_fraction))
@@ -128,7 +49,7 @@ def _diffuse_fraction(cloud_fraction: float) -> float:
     return 0.15 + 0.85 * cf
 
 
-# ── Geometry ──────────────────────────────────────────────────────────
+# Geometry
 
 def _cos_incidence(sun_azimuth_deg: float, sun_elevation_deg: float,
                    wall_facing_deg: float) -> float:
@@ -150,7 +71,7 @@ def _cos_incidence(sun_azimuth_deg: float, sun_elevation_deg: float,
     return max(0.0, cos_inc)
 
 
-# ── Per-window gain ───────────────────────────────────────────────────
+# Per-window gain
 
 def _window_gain_watts(
         window: Dict[str, Any],
@@ -178,7 +99,7 @@ def _window_gain_watts(
     cf = max(0.0, min(1.0, cloud_fraction))
 
     if shortwave_wm2 is not None and shortwave_wm2 >= 0.0:
-        # ── Measured irradiance path (preferred) ──────────────────────
+        # Measured irradiance path (preferred)
         # Open-Meteo shortwave_radiation is global horizontal irradiance (GHI).
         # Split into direct beam and diffuse using cloud fraction.
         diff_frac = _diffuse_fraction(cf)
@@ -208,7 +129,7 @@ def _window_gain_watts(
         total_irradiance = beam_surface + diffuse_on_surface
 
     else:
-        # ── Clear-sky beam model fallback ─────────────────────────────
+        # Clear-sky beam model fallback
         # Used when shortwave_radiation is not available from the weather service.
         beam = CLEAR_SKY_BEAM_WM2 * _beam_attenuation(cf)
 
@@ -224,7 +145,7 @@ def _window_gain_watts(
     return area_m2 * shgc * total_irradiance
 
 
-# ── Room-level gain ───────────────────────────────────────────────────
+# Room-level gain
 
 def _room_gain_at_position(
         room_config: Dict[str, Any],
@@ -268,8 +189,6 @@ def _room_gain_at_position(
 
     return total_watts
 
-
-# ── Public API ────────────────────────────────────────────────────────
 
 def solar_gain_now(
         room_config: Dict[str, Any],
@@ -534,7 +453,7 @@ def solar_gain_forecast(
     return results
 
 
-# ── Convenience: suppression check ───────────────────────────────────
+# Convenience: suppression check
 
 def should_suppress_heat_call(
         room_config: Dict[str, Any],
@@ -596,7 +515,7 @@ def should_suppress_heat_call(
     return suppress, solar_w
 
 
-# ─────────────────────────────── self-test ───────────────────────────────
+# self-test
 
 if __name__ == "__main__":
     from datetime import date
@@ -622,26 +541,26 @@ if __name__ == "__main__":
     # 2026-06-21 12:00 UTC — sun due south, elevation ~61.5°
     noon = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
 
-    # ── Test 1: Clear sky at solar noon ───────────────────────────────
+    # Test 1: Clear sky at solar noon
     gain_noon = solar_gain_now(ROOM, LAT, LON, dt_utc=noon, cloud_fraction=0.0)
     print(f"Clear noon gain:  {gain_noon:.1f} W")
     # South window: cos_inc ≈ cos(61.5°) ≈ 0.474; beam_surface ~ 1000×0.474;
     # gain ≈ 2.1 × 0.6 × (roughly) 400–500 W/m² → ~500–630 W
     assert 300.0 < gain_noon < 900.0, f"Unexpected noon gain: {gain_noon}"
 
-    # ── Test 2: Fully overcast ────────────────────────────────────────
+    # Test 2: Fully overcast
     gain_overcast = solar_gain_now(ROOM, LAT, LON, dt_utc=noon, cloud_fraction=1.0)
     print(f"Overcast noon:    {gain_overcast:.1f} W")
     assert gain_overcast < gain_noon, "Overcast should give less gain than clear"
     assert gain_overcast > 0.0, "Diffuse component should still give some gain"
 
-    # ── Test 3: Night returns zero ────────────────────────────────────
+    # Test 3: Night returns zero
     midnight = datetime(2026, 6, 21, 1, 0, 0, tzinfo=timezone.utc)
     gain_night = solar_gain_now(ROOM, LAT, LON, dt_utc=midnight)
     print(f"Midnight gain:    {gain_night:.1f} W")
     assert gain_night == 0.0, "No solar gain at night"
 
-    # ── Test 4: With measured shortwave_radiation ─────────────────────
+    # Test 4: With measured shortwave_radiation
     # Open-Meteo might give us 650 W/m² on a partly cloudy midsummer noon
     gain_measured = solar_gain_now(
         ROOM, LAT, LON, dt_utc=noon,
@@ -650,7 +569,7 @@ if __name__ == "__main__":
     print(f"Measured 650 W/m² gain: {gain_measured:.1f} W")
     assert gain_measured > 0.0
 
-    # ── Test 5: Window covering (preheat window) ──────────────────────
+    # Test 5: Window covering (preheat window)
     sgw = solar_gain_window(
         ROOM, LAT, LON,
         start_utc=datetime(2026, 6, 21, 6, 30, 0, tzinfo=timezone.utc),
@@ -663,7 +582,7 @@ if __name__ == "__main__":
     assert sgw.average_watts >= 0.0
     assert sgw.peak_watts >= sgw.average_watts
 
-    # ── Test 6: Forecast profile ──────────────────────────────────────
+    # Test 6: Forecast profile
     forecast = solar_gain_forecast(
         ROOM, LAT, LON,
         start_utc=datetime(2026, 6, 21, 6, 0, 0, tzinfo=timezone.utc),
@@ -677,7 +596,7 @@ if __name__ == "__main__":
         print(f"  {s.dt_utc.strftime('%H:%M')}  {s.watts:6.1f} W  {bar}")
     assert len(forecast) == 12
 
-    # ── Test 7: Suppression check ─────────────────────────────────────
+    # Test 7: Suppression check
     # Room at 18°C, target 21°C, heat loss 80 W/K, strong noon sun
     suppress, sw = should_suppress_heat_call(
         ROOM, LAT, LON,
@@ -696,7 +615,7 @@ if __name__ == "__main__":
     )
     print(f"Large deficit:     suppress={suppress2}  solar={sw2:.1f} W")
 
-    # ── Test 8: No orientation data — graceful degradation ────────────
+    # Test 8: No orientation data — graceful degradation
     ROOM_NO_FACING = {
         "id": "bedroom",
         "dimensions": {

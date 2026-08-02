@@ -1,16 +1,11 @@
 """
 MediaController — provider-agnostic orchestration.
 
-Holds the registry of players across all providers, routes control calls to the
-right provider by ``player_id`` prefix, and exposes a flat snapshot for the UI.
-Sources (radio/tidal) are kept here too so routes have one entry point.
-
-Phase 2: owns a per-player queue (`QueueController`) and auto-advances finished
-tracks via `tick()` (called from the service poll loop). Still no stream server —
-sequential playback; gapless/crossfade is Phase 3.
-
-The queue/play methods here are deliberately clean and side-effect-contained so
-the post-Phase-2 automation engine can call them directly.
+Holds the player registry across providers, routes control calls by player_id
+prefix, and exposes a flat snapshot for the UI. Sources live here too, so routes
+have one entry point. Owns a per-player queue and auto-advances finished tracks
+from the service poll loop. Queue and play methods are side-effect-contained so
+the automation engine can call them directly.
 """
 from __future__ import annotations
 
@@ -58,9 +53,7 @@ class MediaController:
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
 
-    # ------------------------------------------------------------------
     # Session persistence (survive restart/upgrade — keep controlling casts)
-    # ------------------------------------------------------------------
     def sessions_snapshot(self) -> dict:
         """Serialisable state for persistence: the per-player queues, plus which
         players were actually playing at the time.
@@ -148,9 +141,7 @@ class MediaController:
                 logger.warning(f"Could not resume {pid} after restart: {e}")
         return resumed
 
-    # ------------------------------------------------------------------
     # Registration / lifecycle
-    # ------------------------------------------------------------------
     def add_player_provider(self, provider: PlayerProvider) -> None:
         self._players[provider.provider] = provider
 
@@ -184,9 +175,7 @@ class MediaController:
             return_exceptions=True,
         )
 
-    # ------------------------------------------------------------------
     # State
-    # ------------------------------------------------------------------
     def _provider_for(self, player_id: str) -> Optional[PlayerProvider]:
         prefix = player_id.split(":", 1)[0]
         return self._players.get(prefix)
@@ -258,9 +247,7 @@ class MediaController:
     def snapshot(self) -> List[PlayerState]:
         return list(self._cache.values())
 
-    # ------------------------------------------------------------------
     # Control (routed by player_id prefix)
-    # ------------------------------------------------------------------
     async def play_url(self, player_id: str, item: MediaItem) -> None:
         eq = self._eq_engine
         proxied = bool(eq and eq.wants(player_id, item.media_type))
@@ -349,9 +336,7 @@ class MediaController:
         except Exception as e:
             logger.warning(f"EQ release failed for {player_id}: {e}")
 
-    # ------------------------------------------------------------------
     # Queue (automation-ready)
-    # ------------------------------------------------------------------
     async def play_items(self, player_id: str, items: List[MediaItem],
                          start: int = 0, auto_extend: bool = False) -> None:
         """Replace the player's queue with `items` and start playing `start`.
@@ -408,9 +393,7 @@ class MediaController:
         # decoder running behind an emptied queue.
         await self._release_eq(player_id)
 
-    # ------------------------------------------------------------------
     # Auto-advance (called from the service poll loop after refresh)
-    # ------------------------------------------------------------------
     async def tick(self) -> None:
         for player_id, state in list(self._cache.items()):
             q = self._queue.get(player_id)

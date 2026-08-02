@@ -1,45 +1,9 @@
 """
-ZMM Authentication & Authorization
+Authentication and authorisation: users, groups, scopes and bearer tokens.
 
-Concepts
---------
-- **User**         A human identity. Has a username, optionally a password
-                   (for browser login), zero or more group memberships, and
-                   zero or more issued API tokens.
-- **Group**        A named bag of scopes. Users inherit the union of scopes
-                   from every group they belong to, plus any directly
-                   assigned scopes on the user.
-- **Token**        An opaque bearer token (32 bytes, base64url) belonging
-                   to one user. Has a label (e.g. "Sean's Pixel"), optional
-                   expiry, optional scope subset narrower than the owning
-                   user, and an optional `device_id` (free-form, e.g. an
-                   Android Settings.Secure.ANDROID_ID for revocation UX).
-- **Scope**        A dotted string like `presence:write:sean` or `device:*`.
-                   Wildcards match any segment at that position.
-
-Threat model
-------------
-- We are NOT a public auth provider; the gateway is on a home LAN with
-  optional remote exposure. The bar is "an attacker on the network can't
-  spoof presence, and a stolen device token can be revoked individually."
-- Tokens are stored hashed (SHA-256). The plaintext is shown ONCE at issue.
-- Passwords are stored as PBKDF2-HMAC-SHA256, 200 000 iterations, 16-byte
-  salt, base64-encoded. No external password-hashing dep needed.
-- Tokens are 256 bits of entropy from `secrets.token_urlsafe(32)`.
-- We do NOT implement OAuth, OIDC, JWT, refresh tokens, or rotation here.
-  Tokens are static until revoked or expired. This is by design: simple
-  enough to reason about, sufficient for the threat model.
-
-Persistence
------------
-- `data/auth.yaml`  — single source of truth. Atomic writes via temp-file
-                      rename. Loaded once at start, mutations save eagerly.
-
-Bootstrap
----------
-- If the file doesn't exist on start, an `admin` user is created with a
-  random password printed to logs ONCE. The user can then change it via
-  the UI. This avoids hardcoded defaults.
+Tokens are hashed at rest and shown once; passwords are PBKDF2-HMAC-SHA256.
+Deliberately no OAuth/OIDC/JWT — static tokens until revoked. Persisted to
+data/auth.yaml. Model and threat model: docs/auth.md.
 """
 
 from __future__ import annotations
@@ -60,14 +24,11 @@ logger = logging.getLogger("modules.auth")
 
 CONFIG_PATH = Path("./data/auth.yaml")
 
-# --- Scope definitions ----------------------------------------------------
+# Scope definitions
 
-# Built-in scopes shipped with ZMM. Custom scopes are allowed but these are
-# the ones the UI surfaces and the routes consult.
-# Special scope: principals holding it may only act from the LAN.
-# Checked by exact membership (never wildcard/admin-implied) — an admin
-# account can be LAN-restricted too. Enforced per-request by the auth
-# middleware and at login by SecureAuthManager.
+# Built-in scopes. Custom scopes are allowed, but these are the ones the UI
+# surfaces and the routes consult. LAN_ONLY_SCOPE is checked by exact membership,
+# never wildcard- or admin-implied, so an admin account can be LAN-restricted too.
 LAN_ONLY_SCOPE = "network:lan_only"
 
 KNOWN_SCOPES: Dict[str, str] = {
@@ -105,7 +66,7 @@ DEFAULT_GROUPS: Dict[str, List[str]] = {
 }
 
 
-# --- Hashing helpers ------------------------------------------------------
+# Hashing helpers
 
 PBKDF2_ITER = 200_000
 PBKDF2_SALT_BYTES = 16
@@ -146,7 +107,7 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-# --- Scope matching -------------------------------------------------------
+# Scope matching
 
 def scope_matches(required: str, granted: Iterable[str]) -> bool:
     """
@@ -183,7 +144,7 @@ def scope_matches(required: str, granted: Iterable[str]) -> bool:
     return False
 
 
-# --- Data model -----------------------------------------------------------
+# Data model
 
 @dataclass
 class Group:
@@ -256,7 +217,7 @@ class User:
         return d
 
 
-# --- Manager --------------------------------------------------------------
+# Manager
 
 class AuthManager:
     """
@@ -272,7 +233,6 @@ class AuthManager:
         self.tokens: Dict[str, TokenRecord] = {}     # keyed by token_hash
         self._loaded = False
 
-    # ---- lifecycle ------------------------------------------------------
     def load(self) -> None:
         if self.config_path.exists():
             try:
@@ -354,7 +314,7 @@ class AuthManager:
         except Exception as e:
             logger.error(f"Failed to save auth.yaml: {e}")
 
-    # ---- scope resolution ----------------------------------------------
+    # scope resolution
     def resolve_user_scopes(self, username: str) -> Set[str]:
         u = self.users.get(username)
         if not u or u.disabled:
@@ -366,7 +326,7 @@ class AuthManager:
                 scopes.update(grp.scopes)
         return scopes
 
-    # ---- user CRUD ------------------------------------------------------
+    # user CRUD
     async def create_user(
             self, username: str, password: Optional[str],
             groups: Optional[List[str]] = None,
@@ -437,7 +397,7 @@ class AuthManager:
                     del self.tokens[h]
             self._save_locked()
 
-    # ---- group CRUD -----------------------------------------------------
+    # group CRUD
     async def create_group(self, name: str, scopes: List[str],
                            description: str = "") -> Group:
         async with self._lock:
@@ -472,7 +432,7 @@ class AuthManager:
             del self.groups[name]
             self._save_locked()
 
-    # ---- token issuance / revocation ------------------------------------
+    # token issuance / revocation
     async def issue_token(
             self,
             username: str,
@@ -545,7 +505,7 @@ class AuthManager:
             del self.tokens[target]
             self._save_locked()
 
-    # ---- verification (hot path) ----------------------------------------
+    # verification (hot path)
     def verify_token(self, plaintext: str) -> Optional[Tuple[User, TokenRecord, Set[str]]]:
         if not plaintext:
             return None
@@ -577,7 +537,7 @@ class AuthManager:
             return u
         return None
 
-    # ---- listings -------------------------------------------------------
+    # listings
     def list_users(self) -> List[Dict[str, Any]]:
         out = []
         for u in self.users.values():
@@ -598,8 +558,6 @@ class AuthManager:
         return out
 
 
-# --- helpers ---------------------------------------------------------------
-
 import re
 
 _VALID_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{2,32}$")
@@ -609,7 +567,7 @@ def _is_valid_id(s: str) -> bool:
     return bool(s and _VALID_ID_RE.match(s))
 
 
-# --- module singleton ------------------------------------------------------
+# module singleton
 
 _manager: Optional[AuthManager] = None
 

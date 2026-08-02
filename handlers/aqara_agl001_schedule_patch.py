@@ -1,17 +1,11 @@
 """
 Runtime fix for overly-strict time validation in zhaquirks' Aqara E1 (agl001)
-thermostat schedule parser.
+schedule parser.
 
-The quirk's ScheduleEvent._validate_time raises ValueError when the device
-reports a schedule slot with an unset / sentinel time field, which aborts the
-entire attribute report (losing setpoint, temperature, running_state, etc).
-
-This module replaces _validate_time with a no-op, so out-of-range times are
-accepted silently. We never write schedules from this codebase — reads are
-the only path — so tolerating garbage time bytes is safe.
-
-Import once at startup:
-    from handlers import aqara_agl001_schedule_patch  # noqa: F401
+ScheduleEvent._validate_time raises on a sentinel time field, aborting the whole
+attribute report and losing setpoint, temperature and running_state with it.
+This replaces it with a no-op. Safe because schedules are only ever read here,
+never written. Import once at startup.
 """
 import logging
 

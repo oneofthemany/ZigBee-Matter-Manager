@@ -34,13 +34,9 @@ class DeviceLifecycleMixin:
             return
 
         if ieee in self.devices:
-            # Zigbee devices commonly retransmit their join request if the
-            # first reply is lost, so zigpy re-firing device_joined for an
-            # already-known device is expected network chatter, not an
-            # application error. logger.error() would trip the root
-            # AlertLogHandler (modules/app_alerts.py) and surface a scary
-            # "Error in core.lifecycle" toast for completely normal join
-            # retries, so this stays at warning.
+            # zigpy re-fires device_joined when a device retransmits its join
+            # request — normal network chatter. Kept at warning: error() would trip
+            # AlertLogHandler and toast a scary message for a routine retry.
             logger.warning(f"[{ieee}] Duplicate join event - ignoring")
             return
 
@@ -113,12 +109,9 @@ class DeviceLifecycleMixin:
                 dev._identify_handlers()
                 if hasattr(dev, 'capabilities'):
                     dev.capabilities._detect_capabilities()
-                # Claim the init BEFORE the pipeline runs, not after: the
-                # announce/configure/poll below do seconds of radio I/O, and
-                # zigpy's device_initialized() overwhelmingly fires during
-                # exactly that window. Stamping this afterwards would leave
-                # the race we're closing wide open for the pipeline's whole
-                # duration, which is precisely when it matters.
+                # Claim the init BEFORE the pipeline runs: it does seconds of radio
+                # I/O and zigpy's device_initialized() overwhelmingly fires inside
+                # that window, which is exactly the race being closed.
                 if not hasattr(self, '_full_init_ts'):
                     self._full_init_ts = {}
                 self._full_init_ts[ieee] = time.time()
@@ -168,15 +161,10 @@ class DeviceLifecycleMixin:
         if not hasattr(self, '_full_init_ts'):
             self._full_init_ts = {}
 
-        # _delayed_handler_init() races this callback: it short-circuits into
-        # building handlers + running the full init pipeline as soon as it
-        # merely sees endpoints appear, without waiting for zigpy to actually
-        # confirm the interview is done. When that fallback wins the race,
-        # this callback still fires moments later for the same join — without
-        # this guard it would rebuild handlers again, spawn a second
-        # _async_device_initialized task, and re-broadcast device_initialized/
-        # join_progress, which is what made the device list "flash" and the
-        # join-progress card jump backward every time a device joined.
+        # _delayed_handler_init() races this callback — it proceeds as soon as it
+        # sees endpoints, without waiting for zigpy to confirm the interview. When
+        # it wins, this guard stops a second handler rebuild and re-broadcast,
+        # which made the device list flash and join progress jump backward.
         just_inited = (time.time() - self._full_init_ts.get(ieee, 0)) < 10
 
         if ieee in self.devices:
@@ -194,7 +182,7 @@ class DeviceLifecycleMixin:
             if ieee in self.state_cache:
                 self.devices[ieee].restore_state(self.state_cache[ieee])
 
-        # --- Auto-pair Hive thermostat ↔ receiver ---
+        # Auto-pair Hive thermostat ↔ receiver
         if getattr(self, '_permit_join_via', None):
             new_model = str(device.model or "").upper()
             via_ieee = self._permit_join_via
@@ -251,11 +239,9 @@ class DeviceLifecycleMixin:
             await zdev.configure()
             logger.info(f"[{ieee}] Device configured successfully")
 
-            # Apply matching device profile (unified Zigbee+Matter system).
-            # Runs after handler configure so per-handler reporting wins on conflicts,
-            # before MQTT announce so the friendly capability set is in discovery,
-            # and before poll() so friendly keys are present in the first state snapshot.
-            # Idempotent — no-op when no profile matches.
+            # After handler configure so per-handler reporting wins conflicts, before
+            # MQTT announce so the capability set reaches discovery, and before poll()
+            # so friendly keys are in the first snapshot. Idempotent.
             try:
                 from modules.device_profile_apply import apply_profile
                 await apply_profile(zdev)

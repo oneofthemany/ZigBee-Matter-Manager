@@ -46,7 +46,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         asyncio.create_task(perform_restart())
         return {"success": True, "message": "Restarting application..."}
 
-    # ---- Python dependencies (recovery / feature testing) ----
+    # Python dependencies (recovery / feature testing)
     # Installs land in the RUNNING container's site-packages and are
     # discarded by the next upgrade (images install from requirements.lock).
 
@@ -155,7 +155,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
             logger.error(f"dependency install failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    # ---- HA Status ----
+    # HA Status
 
     @app.get("/api/ha/status")
     async def get_ha_status():
@@ -187,7 +187,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
             logger.error(f"Failed to get HA status: {e}")
             return {"status": "unknown", "error": str(e)}
 
-    # ---- Debug ----
+    # Debug
 
     @app.get("/api/debug/status")
     async def get_debug_status():
@@ -299,7 +299,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ---- Resilience ----
+    # Resilience
 
     @app.get("/api/resilience/stats")
     async def get_resilience_stats():
@@ -327,7 +327,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
         from modules.error_handler import get_error_stats as _get_error_stats
         return _get_error_stats()
 
-    # ---- Performance ----
+    # Performance
 
     @app.get("/api/performance/latency")
     async def get_performance_metrics():
@@ -400,7 +400,7 @@ def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, g
             return JSONResponse(payload, status_code=503)
         return payload
 
-    # ---- MQTT Explorer ----
+    # MQTT Explorer
 
     @app.post("/api/mqtt_explorer/start")
     async def start_mqtt_explorer():

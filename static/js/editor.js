@@ -35,9 +35,7 @@ const CRITICAL_FILES = new Set([
     'main.py', 'core.py', 'device.py', 'mqtt.py', '__init__.py', 'index.html'
 ]);
 
-// ============================================================================
 // INITIALISATION
-// ============================================================================
 
 export async function initEditor() {
     const container = document.getElementById('editorContainer');
@@ -298,9 +296,7 @@ function buildEditorHTML() {
     `;
 }
 
-// ============================================================================
 // MONACO LOADER
-// ============================================================================
 
 async function loadMonaco() {
     if (monacoReady) return;
@@ -409,9 +405,7 @@ function createEditor(container, content, language) {
     return editorInstance;
 }
 
-// ============================================================================
 // FILE TREE
-// ============================================================================
 
 async function loadFileTree() {
     try {
@@ -537,9 +531,7 @@ function renderTreeItem(item) {
     </div>`;
 }
 
-// ============================================================================
 // FILE OPERATIONS — OPEN
-// ============================================================================
 
 window.editorOpenFile = async function(path) {
     // Already open — don't reload from disk (would clobber the buffer)
@@ -612,11 +604,9 @@ window.editorOpenFile = async function(path) {
     }
 };
 
-// ============================================================================
 // FILE IMPORT
 // Reads local files as raw bytes (decoded as UTF-8 in the browser), so the
 // clipboard - and any encoding-mangling hop in between - is never involved.
-// ============================================================================
 
 window.editorImportFiles = async function (fileList) {
     const files = Array.from(fileList || []);
@@ -712,9 +702,7 @@ async function importOneFile(name, text, allowCreate) {
     }
 }
 
-// ============================================================================
 // FILE OPERATIONS — CREATE
-// ============================================================================
 
 window.editorCreateFile = function() {
     // Populate directory dropdown from file tree
@@ -791,9 +779,7 @@ window.editorCreateConfirm = async function() {
     }
 };
 
-// ============================================================================
 // FILE OPERATIONS — DELETE
-// ============================================================================
 
 // Track which file the delete modal is targeting
 let pendingDeletePath = null;
@@ -876,9 +862,7 @@ window.editorDeleteConfirm = async function() {
     }
 };
 
-// ============================================================================
 // VALIDATION
-// ============================================================================
 
 async function validateCurrentFile() {
     if (!currentFile || !editorInstance) return null;
@@ -954,9 +938,7 @@ function updateValidationStatus(result) {
 
 window.editorValidate = validateCurrentFile;
 
-// ============================================================================
 // SAVE
-// ============================================================================
 
 async function saveCurrentFile() {
     if (!currentFile || !editorInstance) return;
@@ -1033,7 +1015,7 @@ async function saveCurrentFile() {
 window.editorSave = saveCurrentFile;
 
 
-// ---- TEST DEPLOY ----
+// TEST DEPLOY
 
 // Compile-check JavaScript with the engine that will actually run it. The
 // server can't truly parse JS (no JS engine in the container — its validator
@@ -1144,7 +1126,7 @@ window.editorTestDeploy = async function() {
 };
 
 
-// ---- CONFIRM / ROLLBACK ----
+// CONFIRM / ROLLBACK
 
 window.editorTestConfirm = async function() {
     try {
@@ -1199,7 +1181,7 @@ window.editorTestRollback = async function() {
 };
 
 
-// ---- BANNER UI ----
+// BANNER UI
 
 function showTestRecoveryBanner(status, timeout) {
     // The standalone test-banner.js may already own the banner — take over
@@ -1294,9 +1276,7 @@ export function hideTestRecoveryBanner() {
     }
 }
 
-// ============================================================================
 // SEARCH
-// ============================================================================
 
 window.editorSearchFiles = async function(query) {
     if (!query || query.length < 2) return;
@@ -1353,9 +1333,7 @@ window.editorOpenFileAtLine = async function(path, line) {
     }
 };
 
-// ============================================================================
 // BACKUPS
-// ============================================================================
 
 window.editorShowBackups = async function() {
     const path = currentFile || null;
@@ -1421,9 +1399,7 @@ window.editorRestoreBackup = async function(backupName, targetPath) {
     }
 };
 
-// ============================================================================
 // FOLDER TOGGLE
-// ============================================================================
 
 window.editorToggleSection = function(headerEl) {
     const section = headerEl.parentElement;
@@ -1486,9 +1462,7 @@ window.editorToggleFolder = async function(el) {
     }
 };
 
-// ============================================================================
 // UI HELPERS
-// ============================================================================
 
 function updateTabBar() {
     const bar = document.getElementById('editorTabBar');
@@ -1536,9 +1510,7 @@ function escapeAttr(str) {
     return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
-// ============================================================================
 // BATCH TEST DEPLOY
-// ============================================================================
 
 function _updateBatchUI() {
     const countEl = document.getElementById('editorBatchCount');

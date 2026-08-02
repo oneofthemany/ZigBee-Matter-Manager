@@ -1,17 +1,10 @@
 """
-LLM Host Capability Assessor
-============================
-llmfit-style check: inspects the host's CPU / RAM / GPU and decides whether a
-local LLM is viable here at all, which model sizes/quantisations actually fit,
-and which serving backend makes sense. Read-only — it never installs or runs
-anything; it only measures and recommends.
+LLM host capability assessor — inspects CPU, RAM and GPU and decides whether a
+local LLM is viable here, which model sizes fit, and which backend makes sense.
 
-It exists so the rest of the local-AI stack (Ollama install, SGLang) is only
-ever offered when the hardware can back it up. On a small SBC the honest answer
-is usually "stick with the deterministic local parser", and this module says so.
-
-No hard dependencies: psutil is used when present, with /proc fallbacks; GPU is
-probed via nvidia-smi (NVIDIA) with an lspci fallback for mere presence.
+Read-only: it measures and recommends, never installs or runs anything. It
+exists so the local-AI stack is only offered when the hardware can back it up —
+on a small SBC the honest answer is usually "stick with the local parser".
 """
 
 import logging
@@ -89,7 +82,7 @@ class HostCapabilityAssessor:
             "verdict": verdict,
         }
 
-    # ── CPU ──────────────────────────────────────────────────────────────────
+    # CPU
 
     def _cpu(self) -> Dict[str, Any]:
         logical = os.cpu_count() or 1
@@ -114,7 +107,7 @@ class HostCapabilityAssessor:
         return {"model": model, "arch": platform.machine(),
                 "cores_physical": physical, "cores_logical": logical}
 
-    # ── RAM ──────────────────────────────────────────────────────────────────
+    # RAM
 
     def _ram(self) -> Dict[str, Any]:
         if _HAS_PSUTIL:
@@ -139,7 +132,7 @@ class HostCapabilityAssessor:
         return {"total_gb": round(total, 1) if total else 0.0,
                 "available_gb": round(avail, 1) if avail else 0.0}
 
-    # ── GPU ──────────────────────────────────────────────────────────────────
+    # GPU
 
     def _gpu(self) -> Dict[str, Any]:
         smi = shutil.which("nvidia-smi")
@@ -195,7 +188,7 @@ class HostCapabilityAssessor:
         except Exception:
             return None
 
-    # ── Backends ─────────────────────────────────────────────────────────────
+    # Backends
 
     def _backends(self, gpu: Dict) -> Dict[str, Any]:
         ollama_bin = shutil.which("ollama")
@@ -249,7 +242,7 @@ class HostCapabilityAssessor:
         except Exception:
             return False
 
-    # ── Fit math ─────────────────────────────────────────────────────────────
+    # Fit math
 
     @staticmethod
     def _estimate_gb(params_b: float, quant: str) -> float:

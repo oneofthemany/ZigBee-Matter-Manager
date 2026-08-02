@@ -1,7 +1,4 @@
-/* ============================================================
-   ZigBee Matter Manager — Mobile Touch Helpers
-   ============================================================
-*/
+/* ZigBee Matter Manager — Mobile Touch Helpers */
 
 (function () {
     'use strict';
@@ -9,9 +6,7 @@
     // Only activate on touch-capable devices
     if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) return;
 
-    /* ----------------------------------------------------------
-       1. PULL-TO-REFRESH PREVENTION ON CONTROLS
-       ---------------------------------------------------------- */
+    /* 1. PULL-TO-REFRESH PREVENTION ON CONTROLS */
 
     document.addEventListener('touchstart', function (e) {
         var el = e.target;
@@ -34,10 +29,7 @@
     }, { passive: true });
 
 
-
-    /* ----------------------------------------------------------
-       2. MODAL OVERSCROLL FIX
-       ---------------------------------------------------------- */
+    /* 2. MODAL OVERSCROLL FIX */
 
     function fixModalOverscroll(el) {
         if (el._overscrollFixed) return;
@@ -75,9 +67,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
 
-    /* ----------------------------------------------------------
-       3. VIEWPORT HEIGHT CSS VARIABLE
-       ---------------------------------------------------------- */
+    /* 3. VIEWPORT HEIGHT CSS VARIABLE */
 
     function setVH() {
         document.documentElement.style.setProperty(
@@ -91,9 +81,7 @@
     });
 
 
-    /* ----------------------------------------------------------
-       4. TAB SCROLL FADE INDICATORS
-       ---------------------------------------------------------- */
+    /* 4. TAB SCROLL FADE INDICATORS */
 
     function updateTabScrollHint(tabBar) {
         var canLeft = tabBar.scrollLeft > 5;
@@ -145,9 +133,7 @@
     tabObserver.observe(document.body, { childList: true, subtree: true });
 
 
-    /* ----------------------------------------------------------
-       5. PREVENT DOUBLE-TAP ZOOM ON CONTROLS
-       ---------------------------------------------------------- */
+    /* 5. PREVENT DOUBLE-TAP ZOOM ON CONTROLS */
 
     var lastTap = 0;
     document.addEventListener('touchend', function (e) {
@@ -163,14 +149,11 @@
 })();
 
 
-/* ============================================================
-   KEEP THE ACTIVE TAB VISIBLE IN A SCROLLING RAIL
-
+/* KEEP THE ACTIVE TAB VISIBLE IN A SCROLLING RAIL
    Deliberately outside the touch gate above: the rails scroll on
    any narrow window, not just touch devices, and restoring a tab
    past the fold (deep link, reload, or a rail that has scrolled)
-   otherwise leaves no tab looking selected at all.
-   ============================================================ */
+   otherwise leaves no tab looking selected at all. */
 (function () {
     'use strict';
 

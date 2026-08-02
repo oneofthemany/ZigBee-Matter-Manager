@@ -306,3 +306,33 @@ A more advanced example using inline branching — when motion is detected, chec
 - **Wait For** is ideal for confirming a command took effect before proceeding.
 - **Parallel** lets you command multiple devices simultaneously rather than sequentially.
 - **JSON export** is your backup safety net — download rules before making major changes.
+## Local natural-language parser
+
+`modules/nl_automations.py` is a deterministic, dependency-free compiler that
+turns a constrained-English sentence into the same rule dict the
+`AutomationEngine` consumes — **without an LLM**. Designed for resource-limited
+SBCs: a parse is pure-Python string work, taking microseconds and never making a
+network call.
+
+It is the **first** path tried by `POST /api/ai/automation`. Only if it cannot
+fully resolve the sentence does the caller fall back to the LLM, where one is
+configured. Either way the produced rule is identical in shape.
+
+**Grounding**: every device, attribute, value and command is resolved against the
+live registry via the engine's existing metadata methods
+(`get_all_devices_summary`, `get_device_state`, `get_actuator_devices`), so
+values are never guessed. "50%" becomes the right 0–254 brightness, "motion"
+maps to whichever boolean attribute that specific device actually exposes, and
+so on.
+
+Supported shapes, case-insensitive and order-flexible:
+
+- "turn on the hall light when the hallway sensor detects motion"
+- "when the front door opens turn on the ensuite lights"
+- "turn off the media socket after 30 minutes"
+- "set the bedroom lights to 50% when motion is detected only if it is dark"
+- "turn on the hallway lights between 08:00 and 23:30"
+- "when kitchen temperature goes above 25 turn on the fan otherwise turn it off"
+
+"for N minutes" without a trigger compiles to the classic auto-revert timer,
+keyed on the device reaching the acted state.

@@ -1,12 +1,10 @@
 """
 Per-player queue engine.
 
-Phase 2 is sequential (no stream server): the controller plays an item, and when
-a provider reports the track *ended*, the controller asks the queue for the next
-item and plays it. Gapless/crossfade is Phase 3 (needs the ffmpeg flow server).
-
-`PlayerQueue` is pure state + navigation logic (no I/O). `QueueController` holds
-one queue per player and exposes a UI/automation-friendly summary.
+Sequential for now: the controller plays an item and, when a provider reports
+the track ended, asks the queue for the next. Gapless and crossfade need the
+ffmpeg flow server. PlayerQueue is pure state and navigation; QueueController
+holds one per player and exposes a UI/automation-friendly summary.
 """
 from __future__ import annotations
 
@@ -39,9 +37,7 @@ class PlayerQueue:
         self._history: List[int] = []        # for `previous()`
         self._cycle_played: set[int] = set()  # shuffle: indices played this cycle
 
-    # ------------------------------------------------------------------
     # Mutation
-    # ------------------------------------------------------------------
     def load(self, items: List[MediaItem], start: int = 0) -> Optional[QueueItem]:
         self.items = [QueueItem(id=_new_id(), item=i) for i in items]
         self.index = start if (0 <= start < len(self.items)) else (0 if self.items else -1)
@@ -78,9 +74,7 @@ class PlayerQueue:
         # Reset the shuffle cycle so the current item isn't immediately repeated.
         self._cycle_played = {self.index} if self.index >= 0 else set()
 
-    # ------------------------------------------------------------------
     # Navigation
-    # ------------------------------------------------------------------
     def current(self) -> Optional[QueueItem]:
         if 0 <= self.index < len(self.items):
             return self.items[self.index]
@@ -133,9 +127,7 @@ class PlayerQueue:
             return 0 if self.repeat == "all" else None
         return nxt
 
-    # ------------------------------------------------------------------
     # Serialisation
-    # ------------------------------------------------------------------
     def to_dict(self) -> dict:
         cur = self.current()
         return {
@@ -211,7 +203,7 @@ class QueueController:
         if q:
             q.clear()
 
-    # ── Persistence (survive app restart / upgrade) ──────────────────────────
+    # Persistence (survive app restart / upgrade)
     def snapshot(self) -> dict:
         """Serialisable state of every non-empty queue, keyed by player_id."""
         return {pid: q.to_dict() for pid, q in self._queues.items() if q.items}

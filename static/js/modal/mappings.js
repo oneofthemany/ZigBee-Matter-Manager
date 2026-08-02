@@ -6,14 +6,9 @@
  * to friendly names with optional scale, unit, and device_class.
  */
 
-// ============================================================================
-// STATE
-// ============================================================================
 let _mappingsData = null;
 
-// ============================================================================
 // RENDER
-// ============================================================================
 
 export function renderMappingsTab(device) {
     return `
@@ -53,7 +48,7 @@ function renderMappingsContent(container, ieee) {
 
     let html = '';
 
-    // ── Model Definition Status ──
+    // Model Definition Status
     if (model_definition) {
         html += `
             <div class="alert alert-success py-2 mb-3">
@@ -63,7 +58,7 @@ function renderMappingsContent(container, ieee) {
         `;
     }
 
-    // ── Existing Mappings ──
+    // Existing Mappings
     if (mappedKeys.length > 0) {
         html += `
             <div class="card mb-3">
@@ -100,7 +95,7 @@ function renderMappingsContent(container, ieee) {
         html += `</tbody></table></div></div>`;
     }
 
-    // ── Unmapped Keys ──
+    // Unmapped Keys
     if (trulyUnmapped.length > 0) {
         html += `
             <div class="card mb-3">
@@ -134,7 +129,7 @@ function renderMappingsContent(container, ieee) {
         html += `</tbody></table></div></div>`;
     }
 
-    // ── No keys at all ──
+    // No keys at all
     if (mappedKeys.length === 0 && trulyUnmapped.length === 0) {
         html += `
             <div class="alert alert-info">
@@ -145,7 +140,7 @@ function renderMappingsContent(container, ieee) {
         `;
     }
 
-    // ── Model Definition Editor ──
+    // Model Definition Editor
     html += `
         <div class="card">
             <div class="card-header bg-light">
@@ -171,9 +166,7 @@ function renderMappingsContent(container, ieee) {
     _fillCurrentValues(ieee, trulyUnmapped);
 }
 
-// ============================================================================
 // CURRENT VALUE DISPLAY
-// ============================================================================
 
 function _fillCurrentValues(ieee, keys) {
     // Try to get current device state from the cache
@@ -188,9 +181,7 @@ function _fillCurrentValues(ieee, keys) {
     } catch (e) { /* silent */ }
 }
 
-// ============================================================================
 // MAPPING DIALOG
-// ============================================================================
 
 window._openMapDialog = function(ieee, rawKey) {
     // Parse cluster/attr from key for context
@@ -266,9 +257,7 @@ window._openMapDialog = function(ieee, rawKey) {
     new bootstrap.Modal(document.getElementById('mapAttrModal')).show();
 };
 
-// ============================================================================
 // SAVE / REMOVE MAPPING
-// ============================================================================
 
 window._saveMapping = async function(ieee, rawKey) {
     const name = document.getElementById('mapName')?.value?.trim();
@@ -331,9 +320,7 @@ window._removeMappingClick = async function(ieee, rawKey) {
     }
 };
 
-// ============================================================================
 // PROMOTE TO MODEL DEFINITION
-// ============================================================================
 
 window._promoteToModelDef = async function(ieee) {
     if (!_mappingsData) return;
@@ -386,9 +373,7 @@ window._promoteToModelDef = async function(ieee) {
     }
 };
 
-// ============================================================================
 // HELPER: Check if device has generic/unmapped content
-// ============================================================================
 
 export function hasGenericContent(device) {
     if (!device.state) return false;

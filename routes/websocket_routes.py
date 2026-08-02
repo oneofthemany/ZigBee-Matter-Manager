@@ -93,11 +93,9 @@ def register_websocket_routes(app: FastAPI):
                         authenticated = True
                         auth_username = verified[0].username
 
-        # First-run gate (mirrors auth_middleware's /api/setup/* window):
-        # while no enabled admin exists, the setup wizard runs anonymously
-        # and needs this WS for live coordinator-scan progress
-        # (setup_scan_progress events). LAN clients only; self-closes the
-        # moment an admin user is created.
+        # First-run gate, mirroring auth_middleware's /api/setup/* window: while no
+        # enabled admin exists the wizard runs anonymously and needs this WS for
+        # scan progress. LAN only; self-closes once an admin is created.
         if not authenticated and auth_mgr:
             no_admin_yet = not any(
                 (not u.disabled)

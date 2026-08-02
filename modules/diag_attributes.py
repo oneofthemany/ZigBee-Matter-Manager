@@ -1,36 +1,11 @@
 """
-Full-spectrum Zigbee cluster introspection
-==========================================
+Full-spectrum Zigbee cluster introspection.
+
 Exhaustive discovery of a cluster's attributes and commands, including
-manufacturer-specific ones. Fixes the following gaps in the previous
-implementation:
-
-  1. Sweeps the full 0x0000-0xFFFE attribute ID space in paginated chunks,
-     not just the first 256 IDs. Manufacturer attrs at 0xF000+ are found.
-
-  2. Re-runs discovery per known manufacturer code for this device so
-     devices that gate attributes on a manufacturer-coded ZCL header
-     (Aqara 0xFCC0, Philips, Sonoff, Tuya, IKEA, Legrand etc.) expose
-     their full attribute set.
-
-  3. Handles the Discover Attributes "complete" flag by re-issuing the
-     request starting from (last_id + 1) until the device signals done.
-
-  4. Prefers Discover Attributes Extended (0x0E) when available to get
-     real access-control flags; falls back to the basic discover + heuristic
-     write-test only when Extended isn't supported.
-
-  5. Treats zero-value writes conservatively (never writes 0 to unknown
-     attrs) to minimise side effects on bitmap/enum fields.
-
-  6. Reads the Reporting Configuration for each readable attribute so the
-     cache knows whether/how the device auto-reports.
-
-  7. Discovers received and generated cluster commands too, so the user
-     has a complete picture of what the cluster supports.
-
-Output is a dict suitable for direct return from an API handler and for
-insertion into the zigbee_cache.device_attributes table.
+manufacturer-specific ones: the whole 0x0000-0xFFFE space in paginated chunks,
+re-run per manufacturer code, preferring Discover Attributes Extended. Returns a
+dict ready for an API handler and for zigbee_cache.device_attributes.
+See docs/debugging.md.
 """
 import asyncio
 import logging
@@ -39,16 +14,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger("modules.diag_attributes")
 
 
-# ----------------------------------------------------------------------------
-# MANUFACTURER CODE REGISTRY
-# ----------------------------------------------------------------------------
-# Known manufacturer codes worth trying for discovery. Keyed by cluster ID
-# when the manufacturer code is cluster-specific (e.g. 0xFCC0 is always
-# Aqara), plus a generic "try these for any cluster" list for devices whose
-# manufacturer code is set at the device level.
-#
-# ZCL manufacturer codes are 16-bit. These are the big ones we encounter in
-# practice; extend as needed.
+# Manufacturer codes worth trying for discovery. Keyed by cluster ID where the
+# code is cluster-specific (0xFCC0 is always Aqara), plus a generic list for
+# devices whose code is set at device level. 16-bit; extend as needed.
 
 MANUFACTURER_CODES = {
     "LUMI":       0x115F,   # Aqara / Xiaomi (0xFCC0, various)
@@ -74,9 +42,7 @@ CLUSTER_MANUFACTURER_CODES = {
 }
 
 
-# ----------------------------------------------------------------------------
 # PAGINATED ATTRIBUTE ID DISCOVERY
-# ----------------------------------------------------------------------------
 
 async def _discover_ids_paginated(
         cluster,
@@ -214,9 +180,7 @@ def _extract_id(record: Any) -> Optional[int]:
     return None
 
 
-# ----------------------------------------------------------------------------
 # EXTENDED DISCOVERY (access-control flags)
-# ----------------------------------------------------------------------------
 
 async def _discover_extended(
         cluster,
@@ -287,9 +251,7 @@ async def _discover_extended(
     return acl_map
 
 
-# ----------------------------------------------------------------------------
 # READ + WRITE PROBE (fallback for non-Extended devices)
-# ----------------------------------------------------------------------------
 
 async def _probe_read(cluster, attr_id: int, manufacturer=None) -> Tuple[bool, Any]:
     try:
@@ -353,9 +315,7 @@ async def _probe_write(
         return False
 
 
-# ----------------------------------------------------------------------------
 # REPORTING CONFIG
-# ----------------------------------------------------------------------------
 
 async def _read_reporting_config(
         cluster,
@@ -403,9 +363,7 @@ async def _read_reporting_config(
     return config
 
 
-# ----------------------------------------------------------------------------
 # COMMAND DISCOVERY
-# ----------------------------------------------------------------------------
 
 async def _discover_commands(cluster, manufacturer=None) -> Dict[str, List[Dict]]:
     """
@@ -463,9 +421,7 @@ async def _discover_commands(cluster, manufacturer=None) -> Dict[str, List[Dict]
     return out
 
 
-# ----------------------------------------------------------------------------
 # PUBLIC ENTRY POINT
-# ----------------------------------------------------------------------------
 
 async def introspect_cluster(
         service,
@@ -523,9 +479,7 @@ async def introspect_cluster(
     if not cluster:
         return {"success": False, "error": f"Cluster 0x{cluster_id:04X} not found"}
 
-    # ------------------------------------------------------------------
     # Decide which manufacturer codes to try
-    # ------------------------------------------------------------------
     mfg_codes_to_try: List[Optional[int]] = [None]
 
     # 1. Cluster-specific gate (0xFCC0 → LUMI, etc.)
@@ -544,9 +498,7 @@ async def introspect_cluster(
     if cluster_mfg and cluster_mfg not in mfg_codes_to_try:
         mfg_codes_to_try.append(cluster_mfg)
 
-    # ------------------------------------------------------------------
     # Collect ACLs and attribute IDs across all codes
-    # ------------------------------------------------------------------
     # Map attr_id -> {source_mfg_code, acl_from_extended_or_None}
     all_attrs: Dict[int, Dict[str, Any]] = {}
 
@@ -580,9 +532,7 @@ async def introspect_cluster(
                 "reportable": None,
             }
 
-    # ------------------------------------------------------------------
     # For each attribute: read value, optionally probe write, enrich
-    # ------------------------------------------------------------------
     attributes_out: List[Dict[str, Any]] = []
     readable_attr_ids: List[int] = []
 
@@ -644,9 +594,7 @@ async def introspect_cluster(
             "value":             _jsonify(value),
         })
 
-    # ------------------------------------------------------------------
     # Reporting configuration (batch, per mfg code)
-    # ------------------------------------------------------------------
     if include_reporting_config and readable_attr_ids:
         # Group by mfg_code
         by_mfg: Dict[Optional[int], List[int]] = {}
@@ -676,9 +624,7 @@ async def introspect_cluster(
                     elif status == 0x8C:
                         a["reportable"] = False
 
-    # ------------------------------------------------------------------
     # Commands
-    # ------------------------------------------------------------------
     commands = {}
     if include_commands:
         # Try None first, then device mfg code
@@ -721,9 +667,7 @@ def _jsonify(val: Any) -> Any:
         return repr(val)
 
 
-# ----------------------------------------------------------------------------
 # BACKWARDS-COMPATIBLE SHIM
-# ----------------------------------------------------------------------------
 
 async def discover_attributes(service, ieee: str, endpoint_id: int, cluster_id: int):
     """

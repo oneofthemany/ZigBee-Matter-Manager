@@ -1,30 +1,10 @@
 """
-Matter Device Definitions — JSON-driven device mapping framework.
-================================================================
+JSON-driven Matter device mapping — the Matter counterpart to Zigbee quirks.
 
-Provides a definition system for Matter devices, similar to Zigbee quirks:
-  - JSON definition files map vendor_id/product_id → endpoint roles & state mappings
-  - DefinitionParser uses definitions to build meaningful state from raw attributes
-  - Definitions can be created/edited via API and saved to config/matter_definitions/
-  - Auto-detects matching definition by vendor_id + part_number (model)
-
-Definition file structure:
-{
-  "vendor_id": 4476,
-  "product_id": "E2490",
-  "model": "BILRESA scroll wheel",
-  "manufacturer": "IKEA of Sweden",
-  "device_type": "Button",
-  "endpoints": {
-    "1": {"role": "button", "label": "Left Button", "group": "left", ...},
-    ...
-  },
-  "state_mapping": {
-    "left_button": {"ep": 1, "cluster": 59, "attr": 1, "transform": "position"},
-    ...
-  },
-  "capabilities": ["button", "rotary", "battery"]
-}
+Definition files map vendor_id/product_id to endpoint roles and state mappings,
+auto-matched by vendor_id + part_number, and DefinitionParser builds meaningful
+state from raw attributes. Editable via API, saved to config/matter_definitions/.
+Schema: docs/matter.md.
 """
 
 import json
@@ -45,9 +25,7 @@ DEFINITIONS_DIR = os.environ.get(
 DEFINITION_SCHEMA_VERSION = 1
 
 
-# =============================================================================
 # TAG SEMANTICS (Matter Descriptor cluster, TagList attribute)
-# =============================================================================
 
 # Semantic Tag namespace 0x0007 (Common/Position)
 SEMANTIC_TAGS = {
@@ -78,9 +56,7 @@ SWITCH_FEATURES = {
 }
 
 
-# =============================================================================
 # DEFINITION LOADER
-# =============================================================================
 
 class DefinitionStore:
     """Loads and manages Matter device definitions from JSON files."""
@@ -224,9 +200,7 @@ class DefinitionStore:
         return False
 
 
-# =============================================================================
 # ENDPOINT SCANNER — auto-generates definition drafts from raw attributes
-# =============================================================================
 
 def scan_endpoints(attributes: dict) -> dict:
     """
@@ -380,7 +354,7 @@ def generate_definition_draft(attributes: dict) -> dict:
 
     scan = scan_endpoints(attributes)
 
-    # ── Phase 1: Build endpoint map from SCAN (not existing definition) ──
+    # Phase 1: Build endpoint map from SCAN (not existing definition)
     endpoint_map = {}
     state_mapping = {}
     capabilities = set(["matter"])
@@ -437,7 +411,7 @@ def generate_definition_draft(attributes: dict) -> dict:
                 }
                 capabilities.add("button")
 
-    # ── Phase 2: Detect paired rotary EPs (CW/CCW) ──
+    # Phase 2: Detect paired rotary EPs (CW/CCW)
     # Group rotary endpoints by group name
     rotary_bindings = {}
     groups_with_rotary = {}
@@ -483,7 +457,7 @@ def generate_definition_draft(attributes: dict) -> dict:
                 "target": None,
             }
 
-    # ── Phase 3: Event actions for button-only EPs ──
+    # Phase 3: Event actions for button-only EPs
     # Only create for actual buttons, not rotary_cw/ccw
     for ep_id_str, ep_info in endpoint_map.items():
         role = ep_info.get("role", "")
@@ -507,7 +481,7 @@ def generate_definition_draft(attributes: dict) -> dict:
         }
         capabilities.add("battery")
 
-    # ── Phase 4: Build draft ──
+    # Phase 4: Build draft
     draft = {
         "schema_version": DEFINITION_SCHEMA_VERSION,
         "vendor_id": vendor_id,
@@ -521,7 +495,7 @@ def generate_definition_draft(attributes: dict) -> dict:
         "capabilities": sorted(list(capabilities)),
     }
 
-    # ── Phase 5: Merge existing — only preserve targets and user data ──
+    # Phase 5: Merge existing — only preserve targets and user data
     if existing:
         # Preserve existing state_mapping entries the scan didn't produce
         # (e.g. event_actions the user manually added)
@@ -550,9 +524,7 @@ def generate_definition_draft(attributes: dict) -> dict:
 
     return draft
 
-# =============================================================================
 # DEFINITION-BASED PARSER
-# =============================================================================
 
 class DefinitionParser:
     """
@@ -873,9 +845,7 @@ class DefinitionParser:
 
         return f"{prefix}_{role}_{action}"
 
-# =============================================================================
 # SINGLETON STORE
-# =============================================================================
 
 _store: Optional[DefinitionStore] = None
 

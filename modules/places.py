@@ -1,25 +1,11 @@
 """
 Named places — shared geofences beyond home.
 
-"Home" is a property of each presence user: people can live in different
-places, and a lodger's home is not yours. A *place* is the opposite — "the
-shops", "the school", "work" mean the same coordinates for everyone in the
-household, so they live in one shared registry rather than being duplicated
-per person.
-
-Resolution is server-side. The phone registers a geofence per place, but only
-so the OS wakes it up on a crossing; the fix it then posts is resolved against
-this registry here. That split matters:
-
-  - the phone stays dumb, so changing a radius or adding a place needs no app
-    update and no re-pair;
-  - one implementation decides where someone is, rather than the phone and the
-    hub disagreeing about a boundary;
-  - places added while a phone is offline still resolve correctly for the
-    fixes it sends afterwards.
-
-Storage: data/places.yaml. Coordinates of *places* are configuration and are
-persisted; coordinates of *people* are not, and that asymmetry is deliberate.
+Home belongs to each presence user, but a place means the same coordinates for
+everyone, so places live in one registry. Resolution is server-side: the phone's
+geofence only wakes the OS, and the fix it posts is resolved here, so adding a
+place or changing a radius needs no app update. Place coordinates are
+configuration and persist; people's do not. See docs/presence_detection.md.
 """
 
 from __future__ import annotations
@@ -109,7 +95,7 @@ class PlaceManager:
         self.config_path = Path(config_path)
         self.places: Dict[str, Place] = {}
 
-    # -- persistence -------------------------------------------------------
+    # persistence
 
     def load(self) -> None:
         if not self.config_path.exists():
@@ -145,7 +131,7 @@ class PlaceManager:
         except OSError as e:
             logger.error("[places] save failed: %s", e)
 
-    # -- CRUD --------------------------------------------------------------
+    # CRUD
 
     def list(self) -> List[Dict[str, Any]]:
         return [p.to_dict() for p in self.places.values()]
@@ -182,7 +168,7 @@ class PlaceManager:
         self.save()
         return {"success": True}
 
-    # -- resolution --------------------------------------------------------
+    # resolution
 
     def resolve(self, lat: float, lon: float) -> Optional[Place]:
         """

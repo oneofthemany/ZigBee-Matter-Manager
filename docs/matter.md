@@ -325,3 +325,76 @@ Full MultiPAN support (sharing a single radio for both Zigbee and Thread) requir
 4. OTBR container for Thread border routing
 
 This is planned for future development. Currently, Matter-over-WiFi works without any additional hardware.
+## Device definitions
+
+`modules/matter_definitions.py` provides a JSON-driven mapping framework for
+Matter devices, similar in spirit to Zigbee quirks. Definition files map
+`vendor_id` / `product_id` to endpoint roles and state mappings;
+`DefinitionParser` uses them to build meaningful state from raw attributes.
+Definitions can be created and edited via the API and are saved to
+`config/matter_definitions/`. A match is auto-detected by `vendor_id` plus
+`part_number` (model).
+
+```json
+{
+  "vendor_id": 4476,
+  "product_id": "E2490",
+  "model": "BILRESA scroll wheel",
+  "manufacturer": "IKEA of Sweden",
+  "device_type": "Button",
+  "endpoints": {
+    "1": {"role": "button", "label": "Left Button", "group": "left"}
+  },
+  "state_mapping": {
+    "left_button": {"ep": 1, "cluster": 59, "attr": 1, "transform": "position"}
+  },
+  "capabilities": ["button", "rotary", "battery"]
+}
+```
+
+Input devices take priority when classifying: these *control* other devices, so
+a remote whose descriptor says "light" is still a button.
+
+## Rotary bindings
+
+`modules/rotary_bindings.py` maps Matter rotary dial positions to proportional
+commands on target devices. For example, a BILRESA left dial with 18 positions
+driving a living-room light's brightness:
+
+| Position | Brightness |
+| --- | --- |
+| 0 | 0 |
+| 9 | 127 |
+| 18 | 254 |
+
+Bindings are stored in the device's Matter definition JSON under
+`rotary_bindings`.
+
+```python
+manager = RotaryBindingManager()
+manager.set_dispatchers(zigbee_send_command, matter_send_command)
+manager.load_bindings(definition_store)
+
+# from matter_bridge.py on rotary events:
+await manager.on_rotary_event("matter_6", endpoint_id=3, position=12, max_positions=18)
+```
+
+## Device parsers
+
+`handlers/matter_parsers.py` mirrors the Zigbee `handlers/` architecture:
+
+- `BaseMatterParser` extracts common information from the BasicInformation
+  cluster (40).
+- Device-type-specific parsers handle Switch, Light, Sensor and so on.
+- Quirk parsers (IKEA, Eve, Nanoleaf) override base behaviour.
+
+The parser is selected from the device type in the Descriptor cluster (29), and
+optionally by vendor/model for quirks.
+
+```python
+parser       = get_parser_for_node(node_attributes)
+device_info  = parser.parse_basic_info(attributes)
+state        = parser.build_state(attributes)
+commands     = parser.get_commands(attributes)
+capabilities = parser.get_capabilities(attributes)
+```

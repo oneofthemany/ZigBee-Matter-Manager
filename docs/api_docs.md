@@ -99,3 +99,23 @@ Routes without an entry still appear in the sidebar and still get a working
 try-it form — the metadata table only enriches the description pane.
 
 ---
+
+## Route listing
+
+`routes/api_docs_routes.py` exposes the FastAPI route table in three forms:
+
+| Endpoint | Form |
+| --- | --- |
+| `GET /routes` | plain HTML list grouped by tag/prefix, debug-friendly |
+| `GET /api/routes` | JSON, same grouping, consumed by the `/api-docs` UI |
+| `GET /api-docs` | the interactive API explorer (`static/api-docs.html`) |
+
+FastAPI has no equivalent of Flask's blueprint endpoint prefix, so a group label
+is derived per route:
+
+1. If the route has tags — from `APIRouter(tags=[...])` or
+   `@app.get(..., tags=[...])` — the first tag is the group name.
+2. Otherwise it is inferred from the URL path: `/api/<group>/...` → `<group>`,
+   `/<group>` → `<group>`, and `/` or any other shape → `general`.
+3. Routes whose group resolves to one of `HIDDEN_GROUPS` are excluded entirely —
+   internal websocket transport, static mounts and the like.

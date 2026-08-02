@@ -88,7 +88,7 @@ class WindowCoveringHandler(ClusterHandler):
             self.ATTR_CURRENT_POSITION_TILT_PCT: "tilt_position",
         }
 
-    # --- COMMANDS ---
+    # COMMANDS
 
     async def open(self):
         """Open the cover."""
@@ -124,7 +124,7 @@ class WindowCoveringHandler(ClusterHandler):
         await self.cluster.go_to_tilt_percentage(int(tilt))
         logger.info(f"[{self.device.ieee}] Set tilt to {tilt}%")
 
-    # --- HA DISCOVERY ---
+    # HA DISCOVERY
     def get_discovery_configs(self):
         """Generate Home Assistant discovery configs."""
         base_topic = self.device.service.mqtt.base_topic

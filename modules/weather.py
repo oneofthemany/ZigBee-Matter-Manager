@@ -1,15 +1,10 @@
 """
-Weather service using Open-Meteo (free, no API key required).
-Polls current conditions + hourly forecast and caches locally.
-Optionally publishes to MQTT for Home Assistant sensor discovery.
+Weather via Open-Meteo (free, no API key). Polls current conditions and the
+hourly forecast, caches locally, and optionally publishes to MQTT for Home
+Assistant discovery.
 
-Config (config.yaml):
-  weather:
-    enabled: true
-    latitude: 51.5074
-    longitude: -0.1278
-    poll_interval_minutes: 30
-    mqtt_publish: true          # publish to {base_topic}/weather
+Config: weather.{enabled, latitude, longitude, poll_interval_minutes,
+mqtt_publish} in config.yaml.
 """
 import asyncio
 import logging
@@ -53,9 +48,6 @@ class WeatherService:
         self._last_fetch: float = 0.0
         self._task: Optional[asyncio.Task] = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def get_current(self) -> Optional[Dict[str, Any]]:
         return self._current
@@ -118,9 +110,6 @@ class WeatherService:
                                for v in raw_cc],
         }
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self):
         if not self.enabled:
@@ -141,9 +130,7 @@ class WeatherService:
             self._task.cancel()
             self._task = None
 
-    # ------------------------------------------------------------------
     # Internal
-    # ------------------------------------------------------------------
 
     async def _poll_loop(self):
         while True:
@@ -227,14 +214,11 @@ class WeatherService:
             if self.mqtt_publish and self.mqtt:
                 await self._publish_mqtt()
 
-            # Persist to telemetry so thermal-profile fits can use real
-            # historical outdoor temps instead of a constant proxy.
-            # write_device_state() is synchronous and takes the telemetry
-            # DuckDB lock. On the first call after an abrupt restart that lock
-            # is held while DuckDB replays the WAL, which can run for a minute
-            # or more if the WAL is large or was damaged mid-checkpoint.
-            # Calling it inline stalls the entire event loop and trips
-            # loop_monitor's 60s self-restart (exit 70), so it goes to a thread.
+            # Persisted so thermal-profile fits use real historical outdoor temps.
+            # write_device_state() is synchronous and takes the telemetry lock,
+            # which on the first call after an abrupt restart is held while DuckDB
+            # replays the WAL — minutes, if it is large. Inline that stalls the loop
+            # and trips loop_monitor's exit 70, so it goes to a thread.
             try:
                 from modules.telemetry_db import write_device_state
 

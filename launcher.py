@@ -1,32 +1,11 @@
 #!/usr/bin/env python3
 """
-ZMM Launcher (stdlib-only)
-==========================
-Supervises main.py. If main.py fails to stay up long enough to be
-considered healthy, capture its crash traceback and enter RECOVERY
-STANDBY: a tiny stdlib page on :8000 that points at the ZMM Manager
-(:8001), which now owns the actual recovery UI (crash details, backup
-restore, file upload — see manager/recovery.py). Standby waits for the
-manager to write data/.recovery_resume, then retries main.py.
+Supervises main.py (stdlib only).
 
-Exit codes consumed from children:
-  main.py         0 = clean shutdown (exit supervisor)
-                  ≠0 = died
-
-Sequence:
-  ┌─────────────────────────────────────────────────┐
-  │ Boot guard          (stdlib, rolls back batch)  │
-  │ main.py             (FastAPI app)               │
-  │   ├── clean exit   → stop                       │
-  │   ├── crash <HEALTHY_SECONDS → recovery standby │
-  │   └── crash >HEALTHY_SECONDS → restart main.py  │
-  │        └── but N of those inside                │
-  │            RUNTIME_CRASH_WINDOW  → crash loop:  │
-  │            request auto-rollback (if the        │
-  │            upgrade is recent) + standby         │
-  │ recovery standby    (in-process, :8000)         │
-  │   └── manager writes .recovery_resume → retry   │
-  └─────────────────────────────────────────────────┘
+A clean exit stops the supervisor. A crash before HEALTHY_SECONDS, or repeated
+crashes inside RUNTIME_CRASH_WINDOW, captures the traceback and enters recovery
+standby: a tiny page on :8000 pointing at the ZMM Manager (:8001), which owns
+the real recovery UI. Standby waits for data/.recovery_resume, then retries.
 """
 
 import datetime
@@ -54,16 +33,11 @@ MANAGER_PORT = int(os.environ.get("ZMM_MANAGER_PORT", "8001"))
 
 # If main.py dies in under this many seconds it's a "boot crash"
 HEALTHY_SECONDS = 25
-# A crash after HEALTHY_SECONDS means the app booted fine, so it is treated as a
-# one-off and simply restarted. That is right once and wrong repeatedly: an app
-# that boots, serves for a while, then reliably dies will restart forever
-# without anything escalating.
-#
-# The manager watchdog cannot cover this gap. It polls health and needs
-# consecutive failures, but an app on a crash cycle is genuinely healthy for
-# most of each cycle, so its streak keeps resetting. Restart frequency is the
-# only signal that distinguishes a crash loop from bad luck, and the launcher is
-# the only component that sees it.
+# A crash after HEALTHY_SECONDS is treated as a one-off and restarted — right
+# once, wrong repeatedly. The manager watchdog cannot cover this: it needs
+# consecutive health failures, and an app on a crash cycle is healthy for most
+# of each cycle. Restart frequency is the only signal, and only the launcher
+# sees it.
 RUNTIME_CRASH_WINDOW = 900     # seconds to remember a runtime crash for
 MAX_RUNTIME_CRASHES = 3        # this many inside the window == a crash loop
 
@@ -87,9 +61,7 @@ MAX_QUICK_RETRIES = 3
 RESTART_BACKOFF = 2
 
 
-# ----------------------------------------------------------------------------
 # LOGGING
-# ----------------------------------------------------------------------------
 
 def _log(msg: str):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -103,9 +75,7 @@ def _log(msg: str):
         pass
 
 
-# ----------------------------------------------------------------------------
 # CHILD PROCESS HANDLING
-# ----------------------------------------------------------------------------
 
 _current_child: "subprocess.Popen | None" = None
 
@@ -213,9 +183,7 @@ def _run_child(script: str, capture_stderr: bool) -> "tuple[int, str, float]":
     return proc.returncode, stderr_text, elapsed
 
 
-# ----------------------------------------------------------------------------
 # CRASH CAPTURE
-# ----------------------------------------------------------------------------
 
 def _parse_crash_from_stderr(stderr_text: str, exit_code: int) -> dict:
     """
@@ -273,7 +241,6 @@ def _parse_crash_from_stderr(stderr_text: str, exit_code: int) -> dict:
         "exit_code": exit_code,
         "source": "launcher",
     }
-
 
 
 def _crash_loop_record(crash_times, exit_code, stderr_text, elapsed) -> dict:
@@ -404,9 +371,7 @@ def _main_wrote_crash_recently(elapsed_since_start: float) -> bool:
         return False
 
 
-# ----------------------------------------------------------------------------
 # RECOVERY STANDBY (stdlib-only — recovery UI itself lives in the ZMM Manager)
-# ----------------------------------------------------------------------------
 
 _STANDBY_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -532,9 +497,7 @@ def _recovery_standby() -> str:
     return result
 
 
-# ----------------------------------------------------------------------------
 # MAIN LOOP
-# ----------------------------------------------------------------------------
 
 def main():
     _log(f"Launcher starting (APP_DIR={APP_DIR})")
@@ -566,14 +529,10 @@ def main():
             _log("Clean shutdown — launcher exiting")
             return 0
 
-        # Negative exit codes mean main.py was killed by a signal.
-        # SIGTERM (-15) and SIGINT (-2) are POLITE shutdown requests:
-        #   - `podman stop` sends SIGTERM (this is what an upgrade swap does)
-        #   - Ctrl+C sends SIGINT
-        # Either way, main.py didn't crash — someone asked it to leave.
-        # Don't trigger recovery; just exit cleanly so the container stops.
-        # SIGKILL (-9) is intentionally NOT caught here — that IS recovery-worthy
-        # because it usually means OOM or a forced kill we should investigate.
+        # Negative exit codes mean a signal. SIGTERM (-15, `podman stop`, which is
+        # what an upgrade swap does) and SIGINT (-2, Ctrl+C) are polite shutdown
+        # requests, so exit cleanly rather than recover. SIGKILL (-9) is
+        # deliberately not caught — it usually means OOM and is worth recovering.
         if code in (-15, -2):
             sig_name = "SIGTERM" if code == -15 else "SIGINT"
             _log(f"main.py terminated by {sig_name} after {elapsed:.1f}s "
@@ -592,10 +551,9 @@ def main():
                 _log(f"Crash loop detected: {len(runtime_crashes)} runtime "
                      f"crashes within {RUNTIME_CRASH_WINDOW}s — restarting is "
                      f"not fixing it. Entering recovery standby.")
-                # Always record our own summary here. main.py's excepthook does
-                # not fire for these: loop_monitor exits via os._exit(70), so
-                # last_crash.json would otherwise hold something stale and
-                # unrelated, and the recovery UI would explain the wrong thing.
+                # main.py's excepthook does not fire here: loop_monitor exits via
+                # os._exit(70), so last_crash.json would hold something stale and
+                # the recovery UI would explain the wrong thing.
                 _write_crash(_crash_loop_record(
                     runtime_crashes, code, stderr_text, elapsed))
 

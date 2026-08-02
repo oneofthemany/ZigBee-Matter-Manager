@@ -1,25 +1,9 @@
 """
-Dongle Jedi API — FastAPI routes for the coordinator setup wizard.
-===================================================================
-Provides endpoints for the frontend setup wizard to:
-  1. Check if setup is needed
-  2. List serial ports (fast, no probing)
-  3. Run a full dongle scan (streams progress via WebSocket)
-  4. Apply detected settings to config.yaml
+Dongle Jedi API — FastAPI routes for the coordinator setup wizard: status, port
+listing, the scan (progress over websocket), and applying detected settings.
 
-Endpoints:
-  GET  /api/setup/status     — Check if setup wizard should be shown
-  GET  /api/setup/ports      — Quick USB port enumeration (no serial I/O)
-  POST /api/setup/scan       — Start full dongle scan
-  GET  /api/setup/scan/status — Get current scan state / last results
-  POST /api/setup/apply      — Write detected config to config.yaml
-  POST /api/setup/network    — Generate or import Zigbee network credentials
-  POST /api/setup/skip       — Skip setup (user will configure manually)
-
-Registration:
-  Called from main.py lifespan:
-    from modules.dongle_jedi_api import register_setup_routes, get_setup_status
-    register_setup_routes(app, manager)
+Registered from main.py's lifespan via register_setup_routes(app, manager).
+See docs/onboarding.md.
 """
 
 import asyncio
@@ -45,9 +29,7 @@ class CreateAdminRequest(BaseModel):
     password: str
 
 
-# ---------------------------------------------------------------------------
 # Pydantic models
-# ---------------------------------------------------------------------------
 
 class ApplyRequest(BaseModel):
     """Request to apply detected adapter config."""
@@ -68,9 +50,7 @@ class ScanRequest(BaseModel):
     port: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
 # Progress streaming via WebSocket
-# ---------------------------------------------------------------------------
 
 async def _broadcast_scan_progress(progress: ScanProgress):
     """Send scan progress to all connected WebSocket clients."""
@@ -81,9 +61,7 @@ async def _broadcast_scan_progress(progress: ScanProgress):
         })
 
 
-# ---------------------------------------------------------------------------
 # Routes
-# ---------------------------------------------------------------------------
 
 
 @router.post("/create-admin")
@@ -287,9 +265,7 @@ async def skip_setup():
     return {"success": True, "message": "Setup skipped"}
 
 
-# ---------------------------------------------------------------------------
 # Registration
-# ---------------------------------------------------------------------------
 
 class IntegrationRequest(BaseModel):
     """Request to set integration mode and MQTT config."""

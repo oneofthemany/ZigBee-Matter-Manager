@@ -1,32 +1,9 @@
 """
-ac_routes.py
-============
-API for local-LAN air-conditioner control (Gree / Midea units — EcoAir,
-Comfee, and other clones). Thin HTTP layer over modules/ac_controller.py;
-unit definitions persist in config.yaml under `ac.units`.
+API for local-LAN air-conditioner control (Gree / Midea). A thin HTTP layer over
+modules/ac_controller.py; unit definitions live in config.yaml under `ac.units`.
 
-Endpoints
----------
-GET    /api/ac/units                 — configured units with live status
-POST   /api/ac/discover              — LAN scan for both protocols
-POST   /api/ac/units                 — add or update a unit
-DELETE /api/ac/units/{unit_id}       — remove a unit
-GET    /api/ac/units/{unit_id}/status
-POST   /api/ac/units/{unit_id}/control   {power, mode, target_c, fan, ...}
-POST   /api/ac/units/{unit_id}/bind  — midea: fetch token/key (preset cloud
-                                        account by default); gree: force a
-                                        fresh key bind
-GET    /api/ac/units/{unit_id}/timers
-POST   /api/ac/units/{unit_id}/timer     {in_minutes, changes} — app-side
-                                        timer: applies `changes` after the
-                                        delay (neither vendor protocol
-                                        exposes its onboard timer usefully)
-DELETE /api/ac/timers/{timer_id}
-
-Timers persist in data/ac_timers.json and are rescheduled on startup (the
-lifespan in main.py calls app.state.ac_timers_start once the loop runs).
-Timers missed by more than 15 min while the app was down are dropped —
-firing an hours-stale "turn on" after a long outage is worse than skipping.
+Timers are app-side — neither vendor protocol exposes its onboard timer usefully
+— and persist in data/ac_timers.json. Endpoint table: docs/air-conditioning.md.
 """
 
 from __future__ import annotations
@@ -101,11 +78,9 @@ def register_ac_routes(app: FastAPI):
             ctl.reload(ac_cfg)
         return ctl
 
-    # ── device-list integration ────────────────────────────────────
-    # /api/devices (device_routes) appends these so AC units show up in
-    # the main device list alongside zigbee/matter. Pseudo-ieee = unit id,
-    # protocol "wifi"; the frontend routes Manage to the AC modal via
-    # ac_unit_id.
+    # /api/devices appends these so AC units appear alongside zigbee/matter.
+    # Pseudo-ieee = unit id, protocol "wifi"; the frontend routes Manage to the
+    # AC modal via ac_unit_id.
 
     LIST_STATUS_MAX_AGE = 15.0
 
@@ -185,7 +160,7 @@ def register_ac_routes(app: FastAPI):
 
     app.state.ac_rename_unit = _rename_unit
 
-    # ── app-side timers ────────────────────────────────────────────
+    # app-side timers
 
     def _load_timers() -> list:
         try:
@@ -289,7 +264,7 @@ def register_ac_routes(app: FastAPI):
         _save_timers([t for t in timers if t.get("id") != timer_id])
         return {"success": True}
 
-    # ── listing / discovery ─────────────────────────────────────────
+    # listing / discovery
 
     @app.get("/api/ac/units")
     async def list_units():
@@ -346,7 +321,7 @@ def register_ac_routes(app: FastAPI):
             logger.error(f"AC discovery failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    # ── unit CRUD ──────────────────────────────────────────────────
+    # unit CRUD
 
     @app.post("/api/ac/units")
     async def upsert_unit(req: Request):
@@ -421,7 +396,7 @@ def register_ac_routes(app: FastAPI):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ── status / control ───────────────────────────────────────────
+    # status / control
 
     @app.get("/api/ac/units/{unit_id}/status")
     async def unit_status(unit_id: str, max_age: float = 0.0):

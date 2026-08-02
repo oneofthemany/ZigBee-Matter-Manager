@@ -1,29 +1,17 @@
-/**
- * places-settings.js
- * --------------------------------------------------------------------------
- * Settings → Presence → Apiary.
- *
- * The apiary is where the hive's foragers go: shared named locations beyond
- * home ("the shops", "school"). Each gives presence users a `place` attribute
- * that automations can test.
- *
- * Naming note: "apiary" is the user-facing term, matching Hive/Frame/Chamber/
- * Cell elsewhere. The API and the automation attribute stay `place` — a rule
- * reading `place == the_shops` is clearer than `apiary == the_shops`, and
- * renaming a shipped attribute would silently break existing rules.
- *
- * Location is confirmed on a map rather than typed. Coordinates are the one
- * field users cannot sanity-check by reading them back — a transposed digit
- * puts the shops in another county and the only symptom is an automation that
- * never fires. Tiles come through the hub's caching proxy, so choosing a place
- * does not announce it to a third-party tile server.
- *
- * Searching a postcode or town moves the map; it never sets the point. A postal
- * centroid names a district, not a doorstep, so dropping the pin there would
- * look precise while being wrong by a street or more. The search is for getting
- * across the country quickly, and the click is still what commits.
- * --------------------------------------------------------------------------
- */
+/* Settings -> Presence -> Apiary: shared named locations beyond home ("the
+   shops", "school"), each giving presence users a `place` attribute automations
+   can test.
+
+   "Apiary" is the user-facing term only; the API and the automation attribute
+   stay `place`, because renaming a shipped attribute would silently break
+   existing rules.
+
+   Location is confirmed on a map, never typed: coordinates are the one field a
+   user cannot sanity-check by reading back, and a transposed digit puts the
+   shops in another county with no symptom but an automation that never fires.
+   Searching a postcode moves the map and never sets the point — a postal
+   centroid names a district, not a doorstep. Tiles come through the hub proxy,
+   so choosing a place does not announce it to a third party. */
 (function () {
     'use strict';
 
@@ -58,7 +46,7 @@
         render();
     }
 
-    // ---- list -------------------------------------------------------------
+    // list
 
     function render() {
         var host = document.getElementById(HOST_ID);
@@ -129,7 +117,7 @@
         });
     }
 
-    // ---- location data ----------------------------------------------------
+    // location data
     //
     // Postal datasets are downloaded per country so the search box has
     // something local to answer from. Managed here, beside the picker that
@@ -350,7 +338,7 @@
         await load();
     }
 
-    // ---- editor -----------------------------------------------------------
+    // editor
 
     function openEditor(id) {
         var p = id
@@ -492,9 +480,7 @@
             err.textContent = m; err.style.display = '';
         }
 
-        // ------------------------------------------------------------------
         // Place search
-        // ------------------------------------------------------------------
         // Coordinates pasted straight in. Handled here rather than sent to the
         // server: it needs no lookup, and a coordinate someone typed is the one
         // search term worth never transmitting.

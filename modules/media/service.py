@@ -1,20 +1,7 @@
 """
-MediaService — lifecycle wrapper
-
-Builds providers from config, owns the MediaController, and runs a poll loop
-that refreshes player state and pushes a ``media_state`` event over the
-WebSocket so the UI updates live.
-
-Config (config.yaml):
-  media:
-    enabled: true
-    cast:    { enabled: true, app_id: "CC1AD845" }
-    wiim:    { enabled: true, devices: ["192.168.1.50"] }
-    radio_browser: { enabled: true }
-    poll_interval_seconds: 10
-    # Cast EQ proxy — base_url must be this app's LAN address so speakers can
-    # fetch the processed stream (falls back to tidal.manifest_base_url).
-    eq: { base_url: "http://192.168.1.10:8000" }
+MediaService — lifecycle wrapper. Builds providers from config, owns the
+MediaController, and polls player state, pushing `media_state` over the
+websocket. Config: docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -67,7 +54,7 @@ class MediaService:
         self._tts_base = tts_cfg.get("base_url", "https://translate.google.com/translate_tts")
         self._tts_lang = tts_cfg.get("lang", "en")
 
-        # ---- Sources ----
+        # Sources
         rb_cfg = config.get("radio_browser", {}) or {}
         self.radio = RadioBrowserSource(enabled=rb_cfg.get("enabled", True))
         self.controller.add_source(self.radio)
@@ -92,12 +79,10 @@ class MediaService:
         # Infinite radio: top up from the seed track's "track radio".
         self.controller.register_extender(self.tidal.track_radio)
 
-        # ---- Cast EQ (server-side DSP proxy) ----
         # Always constructed; wants() gates on the zmm_eq wheel + ffmpeg + a
-        # device-reachable base URL. Devices reject the main app's self-signed
-        # HTTPS, so streams they fetch are served by the plain-HTTP device
-        # listener below, and the base URL is auto-derived from it —
-        # media.eq.base_url is only an override for multi-homed hosts.
+        # device-reachable base URL. Devices reject the self-signed HTTPS, so their
+        # streams come from the plain-HTTP device listener below and the base URL is
+        # derived from it — media.eq.base_url only overrides for multi-homed hosts.
         eq_cfg = config.get("eq", {}) or {}
         from modules.media.device_http import DeviceAudioListener, lan_ip
         self.device_http = DeviceAudioListener(
@@ -111,7 +96,7 @@ class MediaService:
         )
         self.controller.set_eq_engine(self.eq_stream)
 
-        # ---- Player providers ----
+        # Player providers
         wiim_cfg = config.get("wiim", {}) or {}
         if wiim_cfg.get("enabled", True):
             self.controller.add_player_provider(
@@ -162,9 +147,7 @@ class MediaService:
             except Exception as e:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 
-    # ------------------------------------------------------------------
     # Public helpers used by routes
-    # ------------------------------------------------------------------
     async def play_radio_station(self, player_id: str, station_uuid: str) -> MediaItem:
         station = await self.radio.get_station(station_uuid)
         if not station:
@@ -176,9 +159,7 @@ class MediaService:
         await self.controller.play_items(player_id, [item])
         return item
 
-    # ------------------------------------------------------------------
     # Karaoke mode (cast synced lyrics to the custom receiver)
-    # ------------------------------------------------------------------
     def get_karaoke(self) -> bool:
         return self._karaoke
 
@@ -315,9 +296,6 @@ class MediaService:
         await self.controller.play_items(player_id, items, auto_extend=radio)
         return {"success": True, "count": len(items), "radio": radio}
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     def start(self):
         if not self.enabled:
             logger.info("Media service disabled")
@@ -413,9 +391,7 @@ class MediaService:
                 logger.debug(f"Media poll failed: {e}")
             await asyncio.sleep(self.poll_interval)
 
-    # ------------------------------------------------------------------
     # Session persistence (data/media_sessions.json)
-    # ------------------------------------------------------------------
     def _load_sessions(self) -> dict:
         import json
         try:
@@ -440,11 +416,9 @@ class MediaService:
                     snap["sync"] = s
             blob = json.dumps(snap, sort_keys=True)
             now = time.time()
-            # `saved_at` dates the state, and the resume age limit is measured
-            # from it — so during steady playback it has to keep ticking even
-            # though nothing else changed, or an hour-long stream would look an
-            # hour stale. Refreshed at most once a minute, and only while
-            # something is actually playing; idle costs no writes at all.
+            # `saved_at` dates the state and the resume age limit measures from it,
+            # so it must keep ticking during steady playback or an hour-long stream
+            # looks an hour stale. At most once a minute, and only while playing.
             active = bool(snap.get("playback") or snap.get("sync"))
             stale = (now - self._sessions_written_at) > 60
             if blob == self._sessions_blob and not (active and stale):

@@ -81,9 +81,7 @@ async def _parse_dataset() -> dict:
     return network
 
 
-# =========================================================================
 # THREAD DATASET PERSISTENCE
-# =========================================================================
 
 async def save_thread_dataset() -> bool:
     """
@@ -208,7 +206,7 @@ def register_otbr_routes(app: FastAPI, get_zigbee_service):
             return svc.multipan
         return None
 
-    # ── Status ──────────────────────────────────────────────────────
+    # Status
 
     @app.get("/api/otbr/status")
     async def otbr_status():
@@ -248,7 +246,7 @@ def register_otbr_routes(app: FastAPI, get_zigbee_service):
 
         return result
 
-    # ── Network Formation ───────────────────────────────────────────
+    # Network Formation
 
     @app.post("/api/otbr/form-network")
     async def form_network(req: FormNetworkRequest = FormNetworkRequest()):
@@ -321,7 +319,7 @@ def register_otbr_routes(app: FastAPI, get_zigbee_service):
         await _ot_ctl("ifconfig", "down")
         return {"success": True, "state": "disabled"}
 
-    # ── Dataset ─────────────────────────────────────────────────────
+    # Dataset
 
     @app.get("/api/otbr/dataset")
     async def get_dataset():
@@ -337,7 +335,7 @@ def register_otbr_routes(app: FastAPI, get_zigbee_service):
             "network": network,
         }
 
-    # ── Topology ────────────────────────────────────────────────────
+    # Topology
 
     @app.get("/api/otbr/topology")
     async def get_thread_topology():
@@ -465,7 +463,7 @@ def register_otbr_routes(app: FastAPI, get_zigbee_service):
             "links": links,
         }
 
-    # ── Diagnostics ─────────────────────────────────────────────────
+    # Diagnostics
 
     @app.get("/api/otbr/counters")
     async def get_counters():

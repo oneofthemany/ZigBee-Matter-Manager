@@ -1,11 +1,7 @@
-/* ============================================================
-   ZigBee Matter Manager — Mobile Responsive Overrides
-   ============================================================ */
+/* ZigBee Matter Manager — Mobile Responsive Overrides */
 
 
-/* ----------------------------------------------------------
-   0. GLOBAL — prevent horizontal overflow
-   ---------------------------------------------------------- */
+/* 0. GLOBAL — prevent horizontal overflow */
 html, body {
     /* clip forbids horizontal scrolling entirely (hidden still allows
        focus/anchor scrolling, which could strand content off-screen);
@@ -14,9 +10,7 @@ html, body {
     overflow-x: clip;
 }
 
-/* ----------------------------------------------------------
-   1. NAVBAR — Status badges + pairing dropdown overflow
-   ---------------------------------------------------------- */
+/* 1. NAVBAR — Status badges + pairing dropdown overflow */
 
 @media (max-width: 991.98px) {
     /* Let the navbar content wrap */
@@ -97,11 +91,9 @@ html, body {
         padding: 0.25rem 0.5rem;
     }
 
-    /* Pairing dropdown — right-aligned to the caret it would extend
-       past the left screen edge (the Pair button sits near the left).
-       With data-bs-display="static" on the toggle (no Popper inline
-       positioning), pin it to the full viewport width instead.
-       top: auto keeps it at its static position, just under the row. */
+    /* Right-aligned, or it would extend past the left screen edge. With
+       data-bs-display="static" there is no Popper positioning, so pin it to the
+       viewport width; top: auto keeps it just under the row. */
     .navbar .btn-group .dropdown-menu {
         position: fixed;
         top: auto;
@@ -113,9 +105,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   2. MAIN TABS (#mainTabs) — 8 tabs won't fit on mobile
-   ---------------------------------------------------------- */
+/* 2. MAIN TABS (#mainTabs) — 8 tabs won't fit on mobile */
 
 @media (max-width: 991.98px) {
     #mainTabs {
@@ -239,9 +229,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   3. DEVICES TAB
-   ---------------------------------------------------------- */
+/* 3. DEVICES TAB */
 
 @media (max-width: 767.98px) {
     /* Card header row — stack filter and button */
@@ -370,9 +358,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   4. SETTINGS TAB — Sub-nav + Config Form
-   ---------------------------------------------------------- */
+/* 4. SETTINGS TAB — Sub-nav + Config Form */
 
 @media (max-width: 767.98px) {
     /* Settings sub-nav tabs — scroll horizontally */
@@ -444,9 +430,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   5. SECURITY TAB — input-group buttons overflow
-   ---------------------------------------------------------- */
+/* 5. SECURITY TAB — input-group buttons overflow */
 
 @media (max-width: 767.98px) {
     #securityFormBody .input-group {
@@ -475,9 +459,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   6. SPECTRUM ANALYSIS — chart + controls
-   ---------------------------------------------------------- */
+/* 6. SPECTRUM ANALYSIS — chart + controls */
 
 @media (max-width: 767.98px) {
     /* Scan/Auto buttons — stack */
@@ -509,9 +491,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   7. DEVICE MODAL (#capModal) — full width + tab scroll
-   ---------------------------------------------------------- */
+/* 7. DEVICE MODAL (#capModal) — full width + tab scroll */
 
 @media (max-width: 767.98px) {
     #capModal .modal-dialog {
@@ -557,9 +537,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   8a. OVERVIEW TAB — Maintenance btn-group overflow
-   ---------------------------------------------------------- */
+/* 8a. OVERVIEW TAB — Maintenance btn-group overflow */
 
 @media (max-width: 767.98px) {
     /* The maintenance bar: d-flex justify-content-between */
@@ -616,9 +594,7 @@ html, body {
 }
 
 
-/* ----------------------------------------------------------
-   8b. THERMOSTAT / HEATING CONTROLS — touch friendly
-   ---------------------------------------------------------- */
+/* 8b. THERMOSTAT / HEATING CONTROLS — touch friendly */
 
 /* Prevent pull-to-refresh on ALL range inputs and modals */
 input[type="range"] {
@@ -640,7 +616,7 @@ body.controlling {
 
 @media (max-width: 767.98px) {
 
-    /* --- btn-group wrapping in Control tab --- */
+    /* btn-group wrapping in Control tab */
 
     /* Cover: Open/Stop/Close btn-group */
     /* Light: On/Off/Toggle btn-group */
@@ -668,13 +644,13 @@ body.controlling {
         flex: 1 1 auto;
     }
 
-    /* --- Thermostat Current/Target temp — side by side on mobile too --- */
+    /* Thermostat Current/Target temp — side by side on mobile too */
     #tab-control .col-md-6 {
         flex: 0 0 50%;
         max-width: 50%;
     }
 
-    /* --- Thermostat setpoint input-group (−/number/+/Set) --- */
+    /* Thermostat setpoint input-group (−/number/+/Set) */
     #tab-control .input-group {
         flex-wrap: nowrap; /* Keep −/input/+/Set on one line */
     }
@@ -694,7 +670,7 @@ body.controlling {
         min-width: 70px;
     }
 
-    /* --- Range sliders — larger thumb for touch --- */
+    /* Range sliders — larger thumb for touch */
     #tab-control input[type="range"],
     .form-range {
         width: 100% !important;
@@ -721,13 +697,13 @@ body.controlling {
         box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* --- Light endpoint cards (col-12 col-md-6) — full width --- */
+    /* Light endpoint cards (col-12 col-md-6) — full width */
     #tab-control > .row > .col-md-6 {
         flex: 0 0 100%;
         max-width: 100%;
     }
 
-    /* --- Color picker row (picker + saturation slider) --- */
+    /* Color picker row (picker + saturation slider) */
     #tab-control .d-flex.gap-2.align-items-center {
         flex-direction: column;
         align-items: stretch !important;
@@ -738,7 +714,7 @@ body.controlling {
         height: 48px;
     }
 
-    /* --- Power monitoring stats — wrap on small screens --- */
+    /* Power monitoring stats — wrap on small screens */
     #tab-control .d-flex.justify-content-between {
         flex-wrap: wrap;
         gap: 0.25rem;
@@ -746,9 +722,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   8c. SCHEDULE SECTION — Weekly thermostat calendar
-   ---------------------------------------------------------- */
+/* 8c. SCHEDULE SECTION — Weekly thermostat calendar */
 
 @media (max-width: 767.98px) {
     /* Schedule actions bar — stack buttons */
@@ -799,9 +773,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   9. DEBUG LOG TAB — controls bar overflow
-   ---------------------------------------------------------- */
+/* 9. DEBUG LOG TAB — controls bar overflow */
 
 @media (max-width: 991.98px) {
     #debug .card-header .row {
@@ -846,9 +818,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   10. MQTT EXPLORER — responsive layout
-   ---------------------------------------------------------- */
+/* 10. MQTT EXPLORER — responsive layout */
 
 @media (max-width: 991.98px) {
     /* Stack main column and publish sidebar */
@@ -913,9 +883,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   11. GROUPS TAB
-   ---------------------------------------------------------- */
+/* 11. GROUPS TAB */
 
 @media (max-width: 767.98px) {
     /* Group control modal — full width */
@@ -926,9 +894,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   12. ZONES TAB
-   ---------------------------------------------------------- */
+/* 12. ZONES TAB */
 
 @media (max-width: 767.98px) {
     /* Stack the header */
@@ -965,9 +931,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   13. AUTOMATIONS TAB
-   ---------------------------------------------------------- */
+/* 13. AUTOMATIONS TAB */
 
 @media (max-width: 767.98px) {
     #automations .container-fluid {
@@ -976,9 +940,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   14. ALL MODALS — ensure full width on small screens
-   ---------------------------------------------------------- */
+/* 14. ALL MODALS — ensure full width on small screens */
 
 @media (max-width: 767.98px) {
     .modal-dialog.modal-lg,
@@ -1004,9 +966,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   15. GENERAL FORM INPUTS — prevent iOS zoom
-   ---------------------------------------------------------- */
+/* 15. GENERAL FORM INPUTS — prevent iOS zoom */
 
 @media (max-width: 767.98px) {
     /* iOS zooms the page when focusing inputs with font-size < 16px */
@@ -1023,9 +983,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   16. DEBUG PACKETS MODAL — filters row
-   ---------------------------------------------------------- */
+/* 16. DEBUG PACKETS MODAL — filters row */
 
 @media (max-width: 767.98px) {
     #debugPackets .row.mb-3 > [class*="col-md-"] {
@@ -1064,9 +1022,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   17. TOPOLOGY TAB — touch-friendly SVG
-   ---------------------------------------------------------- */
+/* 17. TOPOLOGY TAB — touch-friendly SVG */
 
 @media (max-width: 767.98px) {
     .mesh-topology-container {
@@ -1079,9 +1035,7 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   18. ADVANCED YAML EDITOR — reduce height on mobile
-   ---------------------------------------------------------- */
+/* 18. ADVANCED YAML EDITOR — reduce height on mobile */
 
 @media (max-width: 767.98px) {
     #configEditor {
@@ -1090,9 +1044,7 @@ body.controlling {
     }
 }
 
-/* ----------------------------------------------------------
-   19. TOUCH TARGETS — 44px minimum on phones (WCAG 2.5.8 AAA-ish)
-   ---------------------------------------------------------- */
+/* 19. TOUCH TARGETS — 44px minimum on phones (WCAG 2.5.8 AAA-ish) */
 
 @media (max-width: 575.98px) {
     /* Tab rail links */
@@ -1127,14 +1079,8 @@ body.controlling {
     }
 }
 
-/* ----------------------------------------------------------
-   MEDIA TAB — one pane at a time below lg
-   ----------------------------------------------------------
-   The Players and Browse cards stack on a phone, so reaching the
-   search box meant scrolling past every player card. A segmented
-   switch shows one pane at a time instead. Scoped to <lg so the
-   desktop 7/5 split is never affected — .zmm-pane-hidden simply
-   does nothing at lg and up, whatever JS puts on the element.     */
+/* MEDIA TAB — one pane at a time below lg, so the search box is not behind
+   every player card. Scoped to <lg, so the desktop 7/5 split is untouched. */
 
 /* Volume nudge buttons only exist on touch layouts — a desktop pointer is
    precise enough for the slider alone. */
@@ -1200,13 +1146,9 @@ body.controlling {
     }
 }
 
-/* ----------------------------------------------------------
-   MEDIA TAB — graphic equaliser panel (all viewports)
-   ----------------------------------------------------------
-   10 vertical sliders on the ISO octave bands for "This device";
-   the same .zmm-eq wrapper also holds the WiiM preset row. Vertical
-   ranges use writing-mode (the modern standard); orient="vertical"
-   is on the element for older Firefox.                            */
+/* MEDIA TAB — graphic equaliser panel (all viewports). 10 vertical ISO-octave
+   sliders; the same .zmm-eq wrapper holds the WiiM preset row. Vertical ranges
+   use writing-mode, with orient="vertical" on the element for older Firefox. */
 
 .zmm-eq-bands {
     display: flex;
@@ -1262,13 +1204,9 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   DOCS TAB — one pane at a time on phones
-   ----------------------------------------------------------
-   Stacked, the 75vh doc list buried the article below the fold,
-   so a tapped doc looked like nothing happened. Tapping a doc now
-   swaps to the article (wiki.js adds .wiki-doc-open); the
-   "All documents" back button (d-md-none) swaps back.            */
+/* DOCS TAB — one pane at a time on phones: stacked, the 75vh list buried the
+   article and a tapped doc looked like nothing happened. wiki.js adds
+   .wiki-doc-open; the d-md-none back button swaps back. */
 
 @media (max-width: 767.98px) {
     #wiki.wiki-doc-open #wikiListPane {
@@ -1281,11 +1219,9 @@ body.controlling {
 }
 
 
-/* ----------------------------------------------------------
-   DRIVE TAB — journeys + fuel on phones
-   ----------------------------------------------------------
+/* DRIVE TAB — journeys + fuel on phones
    The Time/Max trip columns are hidden by Bootstrap utilities in
-   drive.js; this section covers what utilities can't express.     */
+   drive.js; this section covers what utilities can't express. */
 
 @media (max-width: 767.98px) {
     /* Trip rows are tap targets — give fingers a full-height row. */

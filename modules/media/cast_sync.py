@@ -52,10 +52,9 @@ STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
 STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
 STREAM_RECONNECT_GRACE_S = 15.0
-# Floor between forced re-LOADs of the same receiver. A LOAD costs the device
-# its buffer and several seconds of re-acquisition, so it is the last rung of
-# the ladder and must not be reachable in a tight loop — if the first one did
-# not take, neither will three more in the same ten seconds.
+# Floor between forced re-LOADs of one receiver. A LOAD costs the device its
+# buffer and seconds of re-acquisition, so it must not be reachable in a tight
+# loop: if the first did not take, neither will three more in ten seconds.
 STREAM_RELOAD_MIN_INTERVAL_S = 30.0
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
@@ -303,8 +302,6 @@ class CastSyncPoc:
         self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def start(self):
         """Bring up the plain-HTTP receiver/WS listener (idempotent)."""
         if self._http_task is not None:
@@ -328,8 +325,6 @@ class CastSyncPoc:
         if _sdb is not None:
             _sdb.close_all()
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def set_eq_engine(self, engine) -> None:
         self._eq_engine = engine
 
@@ -352,8 +347,6 @@ class CastSyncPoc:
                 "artwork_url": item.get("artwork_url", ""),
                 "index": i if q else 0, "count": len(q)}
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def _model_key(self, player_id: str) -> str:
         try:
             get = getattr(getattr(self, "cast", None), "model_key", None)
@@ -404,8 +397,6 @@ class CastSyncPoc:
 
         self._trim_learn_tasks[key] = asyncio.create_task(_settle())
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def session_snapshot(self) -> dict:
         """What it would take to stand this session back up, or {} when idle."""
         if not self.running or not self._streams:
@@ -826,8 +817,6 @@ class CastSyncPoc:
             await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     async def calibrate(self) -> dict:
         """Chirp sequence → GCC-PHAT arrivals → trims. Runs during normal
         playback: each device plays a 100 ms 2–8 kHz chirp in its own time
@@ -926,8 +915,6 @@ class CastSyncPoc:
                 "spread_ms": round((max(deltas.values()) - min(deltas.values()))
                                    * 1000, 1)}
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def list_groups(self) -> dict:
         groups = []
         for gid, g in self._groups.items():
@@ -967,8 +954,6 @@ class CastSyncPoc:
         self._write_json(self._groups_file, self._groups)
         return {"success": True}
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def _player_name(self, player_id: str) -> str:
         uuid_str = player_id.split(":", 1)[1]
         info = self.cast._infos.get(uuid_str)
@@ -1007,8 +992,6 @@ class CastSyncPoc:
             logger.warning(f"Sync receiver on {player_id} never connected "
                            f"(app_id registered? device serial enabled for dev?)")
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def _local_ip_for(self, host: str) -> str:
         """Our LAN IP as seen from ``host`` (the cast device) — the stream
         URL must be reachable from the device, not from localhost."""
@@ -1179,10 +1162,9 @@ class CastSyncPoc:
                     if abs(residual) > jump_min \
                             and (concordant
                                  or (not st.acquired and len(st.err_hist) >= 2)):
-                        # Clamp to the timeline that exists (open-zone.md §A.2).
-                        # Defensive: this runs inside the monitor's catch-all,
-                        # so a source without the accessor would not degrade
-                        # the clamp — it would kill every correction.
+                        # Clamp to the timeline that exists (open-zone.md A.2).
+                        # Defensive: inside the monitor catch-all, a source without
+                        # the accessor would kill every correction, not just this.
                         step = med3 * RATE
                         _latest = getattr(self._source, "latest_sample", None)
                         ceil = ((_latest() - _rs.READ_MARGIN
@@ -1212,18 +1194,15 @@ class CastSyncPoc:
                                                       error=med3))
                         logger.info(f"Sync stream resync {st.name}: "
                                     f"{med3 * 1000:+.0f} ms")
-                        # The reader is at the live edge and cannot gain on
-                        # it, so what the clamp could not move is a gap only a
-                        # fresh LOAD can close. Not awaited: the LOAD is a
-                        # round-trip to the device and the poll pass owns the
-                        # other four speakers.
+                        # The reader is at the live edge, so what the clamp could
+                        # not move is a gap only a fresh LOAD closes. Not awaited:
+                        # the poll pass owns the other four speakers.
                         if shortfall > STREAM_JUMP_MIN_S and (
                                 time.monotonic() - st.last_reload
                                 > STREAM_RELOAD_MIN_INTERVAL_S):
-                            # Stamped here, not in the coroutine: the interval
-                            # has to close from the moment the reload is
-                            # decided, or a second poll can schedule another
-                            # before the first has run.
+                            # Stamped here, not in the coroutine: the interval must
+                            # close when the reload is decided, or a second poll
+                            # schedules another before the first runs.
                             st.last_reload = time.monotonic()
                             asyncio.create_task(self._reload_stream(st))
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
@@ -1627,8 +1606,6 @@ class CastSyncPoc:
             logger.info(f"Sync stream closed: {st.name}"
                         f"{'' if st.gen == mine else f' (superseded fetch #{mine})'}")
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     async def _produce(self):
         """Generate chunks on the shared timeline and fan out to receivers.
         Chunk i must start playing at epoch + LEAD + i*CHUNK_SECONDS (server
@@ -1656,8 +1633,6 @@ class CastSyncPoc:
         except Exception as e:
             logger.error(f"Cast sync producer died: {e}")
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     def _build_http_app(self):
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -1727,8 +1702,6 @@ class CastSyncPoc:
 
         return app
 
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
     @staticmethod
     def _read_json(path: str) -> dict:
         try:

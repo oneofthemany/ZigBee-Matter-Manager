@@ -1,78 +1,11 @@
 """
-Heating Controller — Active control of receivers and TRVs.
-==========================================================
-Sits alongside HeatingAdvisor (which is read-only/analytical).
-The Controller actually sends commands to make heating happen.
+Active control of heating receivers and TRVs — the counterpart to the read-only
+HeatingAdvisor.
 
-Model:
-    Circuit (a receiver/zone valve calling for boiler heat)
-      └── Room (a heated space with target temp)
-            ├── Room sensor (optional — external thermostat/temp sensor)
-            └── TRV(s) (regulate flow into that room's radiators)
-
-Per-tick decision flow:
-    1. Snapshot device states
-    2. For each room:
-         a. Pick the room temperature source:
-              - temperature_sensor_ieee if present & online  → authoritative
-              - otherwise, mean of TRV local_temperature
-         b. Classify: COLD / ONTARGET / HOT (with hysteresis)
-    3. Decide each circuit: CALLING (any room cold) / IDLE (all rooms ok)
-    4. Decide each TRV's setpoint:
-         - room COLD     → setpoint = target         (open via own thermostat)
-         - room HOT      → setpoint = current - 1.0  (force close, prevent stealing)
-         - room ONTARGET → setpoint = target         (idle)
-    5. Apply receiver state changes (only if differ from last command)
-    6. Apply TRV setpoint changes (only if differ from last command + larger than 0.5°C)
-    7. (Background) Push external temp to Aqara TRVs if external_temp_mode=='push'
-
-External sensor modes (per-room, config.external_temp_mode):
-    - "off"      : TRV local temps decide everything (legacy behaviour)
-    - "advisory" : controller uses external sensor for its own classification,
-                   but TRVs continue using their own internal sensor. This is
-                   the safe default when an external sensor is configured —
-                   it immediately fixes "TRV reads hot pipe, not air".
-    - "push"     : advisory + controller writes the external temperature into
-                   each Aqara TRV's manufacturer cluster (0xFCC0, attr 0x0280)
-                   and flips sensor_type to external. Requires Aqara TRV.
-
-Per-TRV config (applied on start and via API):
-    - window_detection : bool  → Aqara 0xFCC0 attr 0x0273
-    - child_lock       : bool  → Aqara 0xFCC0 attr 0x0277
-    - valve_detection  : bool  → Aqara 0xFCC0 attr 0x0274
-  (motor_calibration is one-shot via API, not persisted as "always on")
-
-Config (config.yaml under heating):
-  heating:
-    controller:
-      enabled: true
-      dry_run: false
-    circuits:
-      - id: downstairs
-        name: "Downstairs"
-        receiver_ieee: "00:15:8d:00:00:aa:bb:cc"
-        receiver_command: thermostat      # 'thermostat' or 'switch'
-        receiver_endpoint: 1
-        rooms:
-          - id: living
-            name: "Living"
-            target_temp: 20.5
-            night_setback: 17.0
-            min_temp: 16.0
-            temperature_sensor_ieee: "00:1e:5e:09:02:a3:e4:c1"
-            external_temp_mode: advisory          # off | advisory | push
-            external_temp_push_interval_sec: 300
-            # Legacy: trv_ieees: ["54:ef:44:..."]     (still supported)
-            trvs:
-              - ieee: "54:ef:44:10:00:67:3e:a6"
-                window_detection: true
-                child_lock: false
-                valve_detection: true
-            schedule:
-              - days: [mon,tue,wed,thu,fri]
-                start: "07:00"
-                end:   "22:00"
-                temp:  20.5
+Circuits hold rooms, rooms hold TRVs and an optional external sensor. Each tick
+classifies every room COLD/ONTARGET/HOT with hysteresis, decides whether each
+circuit calls for boiler heat, and writes TRV setpoints. Decision flow, external
+sensor modes, per-TRV config and the config.yaml schema: docs/heating.md.
 """
 import asyncio
 import logging

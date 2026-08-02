@@ -180,7 +180,7 @@ function renderAcModal(u) {
         ${caps.source ? `<div class="text-muted" style="font-size:0.7rem">
             capabilities: ${esc(caps.source)}${caps.min_c != null ? ` · setpoint ${minC}–${maxC}°C` : ''}</div>` : ''}`;
 
-    // ── wire events ──
+    // wire events
     body.querySelector('#acmPower')?.addEventListener('click',
         () => acModalControl({ power: !u.power }));
     body.querySelectorAll('[data-ac-mode]').forEach(b => b.addEventListener('click',
@@ -205,7 +205,7 @@ function renderAcModal(u) {
     renderTimerSection(u);
 }
 
-// ── App-side timers (/api/ac/units/{id}/timer*) ──
+// App-side timers (/api/ac/units/{id}/timer*)
 // Kept separate so a timer API failure never breaks the controls above.
 
 function describeTimerChanges(c) {

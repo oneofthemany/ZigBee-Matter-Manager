@@ -215,7 +215,7 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
         Overwrites config, data files, groups, and zigbee.db.
         A restart is required after restore to apply the new database.
         """
-        # --- Acquire the zip bytes from whichever source was provided ---
+        # Acquire the zip bytes from whichever source was provided
         if file is not None:
             if not file.filename.endswith(".zip"):
                 return {"success": False, "error": "File must be a .zip archive"}
@@ -236,7 +236,7 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
         else:
             return {"success": False, "error": "Provide either a file upload or a 'url' field"}
 
-        # --- Shared restore logic ---
+        # Shared restore logic
         try:
             buffer = io.BytesIO(contents)
 
@@ -292,11 +292,9 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                         errors.append({"file": entry, "error": str(e)})
                         logger.error(f"Failed to restore {entry}: {e}")
 
-            # Clean up stale DuckDB WAL files after restore.
-            # WAL references page offsets from the pre-restore main file; keeping
-            # it causes DuckDB to replay stale journal entries against the new
-            # file on next open, which at best drops the restored data and at
-            # worst corrupts it.
+            # Stale WAL files reference page offsets from the pre-restore main
+            # file, so DuckDB would replay them against the new one — dropping the
+            # restored data at best, corrupting it at worst.
             duckdb_restored = [e for e in restored if e.endswith(".duckdb")]
             for entry in duckdb_restored:
                 wal_path = os.path.join(APP_DIR, entry + ".wal")
@@ -318,18 +316,16 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                         cfg = _yaml.safe_load(f) or {}
                     cfg_dirty = False
 
-                    # ── MQTT enabled inference ──
+                    # MQTT enabled inference
                     mqtt = cfg.setdefault("mqtt", {})
                     if "enabled" not in mqtt:
                         mqtt["enabled"] = bool(mqtt.get("broker_host", ""))
                         cfg_dirty = True
                         logger.info("Patched mqtt.enabled into restored config.yaml")
 
-                    # ── SSL safety check ──
-                    # If SSL is enabled in the restored config but the referenced
-                    # cert/key files do not exist on disk, the server would fail
-                    # to start. Force-disable SSL so the service comes back up;
-                    # surface the change to the operator via the response.
+                    # SSL enabled in the restored config but the cert/key missing on
+                    # disk would stop the server starting. Force-disable so it comes
+                    # back up, and report the change in the response.
                     server = cfg.get("server", {}) or {}
                     ssl_cfg = server.get("ssl", {}) or {}
                     if ssl_cfg.get("enabled"):

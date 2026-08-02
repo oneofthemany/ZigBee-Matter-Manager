@@ -1,25 +1,9 @@
 """
-API documentation / route-listing routes.
-=========================================
-Exposes the FastAPI route table in three forms:
+API documentation — exposes the FastAPI route table as HTML (/routes), JSON
+(/api/routes) and the interactive explorer (/api-docs).
 
-  GET /routes      — Plain HTML list grouped by tag/prefix (debug-friendly)
-  GET /api/routes  — JSON, same grouping (consumed by /api-docs UI)
-  GET /api-docs    — Serves the interactive API explorer (static/api-docs.html)
-
-Grouping rules (FastAPI does not have Flask's blueprint endpoint prefix,
-so we derive a group label per route):
-
-  1. If the route has tags (set via APIRouter(tags=[...]) or @app.get(..., tags=[...]))
-     → use the first tag as the group name.
-  2. Otherwise, infer from the URL path:
-       /api/<group>/...        → "<group>"
-       /<group>                → "<group>"
-       /                       → "general"
-       any other shape         → "general"
-
-  3. Routes whose group resolves to one of HIDDEN_GROUPS are excluded entirely
-     (e.g. internal websocket transport, static mounts).
+FastAPI has no blueprint prefix, so a group label is derived from the route's
+first tag, falling back to the URL path. See docs/api_docs.md.
 """
 import logging
 import urllib.parse
@@ -41,10 +25,6 @@ HIDDEN_GROUPS = {"static"}
 # Path prefixes that should never appear in the docs
 HIDDEN_PATH_PREFIXES = ("/static/", "/ws")
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _group_for_route(route: APIRoute) -> str:
     """
@@ -105,9 +85,7 @@ def _iter_documented_routes(app: FastAPI):
             yield group, method, path
 
 
-# ---------------------------------------------------------------------------
 # Registration
-# ---------------------------------------------------------------------------
 
 def register_api_docs_routes(app: FastAPI):
     """Register the /routes, /api/routes and /api-docs endpoints."""

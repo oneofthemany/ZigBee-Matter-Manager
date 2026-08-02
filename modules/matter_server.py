@@ -1,15 +1,10 @@
 """
-Matter Server Manager — runs python-matter-server as a managed subprocess.
+Runs python-matter-server as a managed subprocess.
 
-The CHIP SDK requires owning the main thread and cannot coexist in-process
-with another asyncio event loop (uvicorn). This module spawns it as a child
-process and monitors it, giving you single-service management without Docker.
-
-Install:
-    pip install python-matter-server[server] --break-system-packages
-
-The subprocess exposes ws://localhost:{port}/ws which the MatterBridge
-connects to.
+The CHIP SDK requires the main thread and cannot share a process with uvicorn's
+event loop, so it is spawned as a child and monitored — single-service
+management without Docker. The subprocess exposes ws://localhost:{port}/ws for
+MatterBridge. Needs python-matter-server[server] installed.
 """
 
 import asyncio

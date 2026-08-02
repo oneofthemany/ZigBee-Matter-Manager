@@ -1,14 +1,11 @@
 """
-Shared Sunrise/Sunset Resolver
-==============================
-Resolves today's (or any date's) sunrise/sunset to LOCAL clock time, cached per
-date. Location comes from the live WeatherService (the same coordinates that
-drive external-temperature / cloud-cover) when one is registered, falling back
-to config.yaml weather.{latitude,longitude}; the maths is done locally via
-modules.sun_position (no network).
+Shared sunrise/sunset resolver — today's (or any date's) times in LOCAL clock
+time, cached per date.
 
-Used by both the automation engine (dynamic "sun" conditions that re-resolve
-every evaluation, so rules track the seasons) and the NL parser.
+Location comes from the live WeatherService when registered, so sun conditions
+track the same coordinates as external temperature, falling back to config.yaml.
+The maths is local via modules.sun_position, with no network. Used by both the
+automation engine and the NL parser.
 """
 
 import datetime

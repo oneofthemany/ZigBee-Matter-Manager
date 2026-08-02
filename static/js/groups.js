@@ -642,7 +642,7 @@ function renderGroupControls(group) {
     let html = '';
     const caps = group.capabilities || [];
 
-    // --- LIGHTS: On/Off ---
+    // LIGHTS: On/Off
     if (caps.includes('on_off')) {
         html += `
             <div class="card mb-3">
@@ -657,7 +657,7 @@ function renderGroupControls(group) {
         `;
     }
 
-    // --- LIGHTS: Brightness ---
+    // LIGHTS: Brightness
     if (caps.includes('brightness')) {
         html += `
             <div class="card mb-3">
@@ -670,7 +670,7 @@ function renderGroupControls(group) {
         `;
     }
 
-    // --- LIGHTS: Color Mode (combined Temp + Color) ---
+    // LIGHTS: Color Mode (combined Temp + Color)
     if (caps.includes('color_temp') || caps.includes('color_xy')) {
         const hasBothModes = caps.includes('color_temp') && caps.includes('color_xy');
 
@@ -731,7 +731,7 @@ function renderGroupControls(group) {
         `;
     }
 
-    // --- COVERS: Position & Buttons ---
+    // COVERS: Position & Buttons
     if (caps.includes('position')) {
         html += `
             <div class="card mb-3">

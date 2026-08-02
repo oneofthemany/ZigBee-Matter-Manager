@@ -19,9 +19,7 @@ from collections import deque
 from dataclasses import dataclass, asdict
 import traceback
 
-# ============================================================================
 # LOGGING CONFIGURATION
-# ============================================================================
 
 os.makedirs("./logs", exist_ok=True)
 
@@ -176,7 +174,7 @@ class ZigbeeDebugger:
 
         logger.info("ZigbeeDebugger initialized")
 
-    # --- METHOD FOR STREAMING ---
+    # METHOD FOR STREAMING
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new packets."""
         self._callbacks.append(callback)
@@ -205,10 +203,8 @@ class ZigbeeDebugger:
             direction: str = "RX"
     ) -> Optional[ZigbeePacket]:
         """Capture and analyse a raw Zigbee message."""
-        # Always-on flow accounting — runs even when full debug capture is
-        # disabled. Counting is microseconds per packet; decoding is not.
-        # Keeps the 1000-deep packet ring untouched while still surfacing
-        # rate / anomaly data to the UI.
+        # Always-on flow accounting, even with full debug capture off: counting is
+        # microseconds per packet, decoding is not. Leaves the 1000-deep ring alone.
         try:
             from modules.packet_flow import get_flow_analyzer
             get_flow_analyzer().record(
@@ -283,7 +279,7 @@ class ZigbeeDebugger:
         # Log important events
         self._log_packet(packet)
 
-        # ---  NOTIFY CALLBACKS (STREAMING) ---
+        # NOTIFY CALLBACKS (STREAMING)
         packet_dict = packet.to_dict()
         for cb in self._callbacks:
             try:
@@ -474,10 +470,9 @@ class ZigbeeDebugger:
                 xiaomi_parsed: Optional[Dict[str, Any]] = None
                 if (cluster, attr_id) in self._XIAOMI_STRUCT_ATTRS and data_type in (0x41, 0x42):
                     try:
-                        # `value` is hex if non-ASCII (the common case here);
-                        # if some firmware emits a printable subset we'd get a
-                        # str back and bytes.fromhex would fail — fall back to
-                        # re-reading the raw slice from `data`.
+                        # `value` is hex if non-ASCII (the common case). A printable
+                        # subset comes back as str and bytes.fromhex would fail, so
+                        # fall back to re-reading the raw slice from `data`.
                         try:
                             blob = bytes.fromhex(value)
                         except Exception:
@@ -608,7 +603,7 @@ class ZigbeeDebugger:
             motion = "MOTION" if packet.decoded.get("alarm1_motion") else "clear"
             msg += f" | {motion} (status=0x{packet.decoded['zone_status']:04X})"
 
-        # --- Include Tuya DP summary in log ---
+        # Include Tuya DP summary in log
         if packet.tuya_dps:
             dp_summary = ", ".join([
                 f"DP{dp['dp_id']}:{dp['dp_def_name']}={dp['parsed_value']}{dp['dp_def_unit']}"
@@ -617,7 +612,7 @@ class ZigbeeDebugger:
             msg += f" | Tuya DPs: {dp_summary}"
             is_important = True # Tuya reports are always noteworthy
 
-        # *** Add RAW DATA to log as requested ***
+        # Add RAW DATA to log as requested
         msg += f" | Raw: {packet.raw_data}"
 
         if is_important:
@@ -625,7 +620,7 @@ class ZigbeeDebugger:
         else:
             logger.debug(msg)
 
-    # --- Record structured Tuya DP report ---
+    # Record structured Tuya DP report
     def record_tuya_report(self, ieee: str, raw_payload_hex: str, dps: List[Dict]):
         """
         Record a structured Tuya Data Point report.

@@ -23,10 +23,9 @@ SNAPSHOT_INTERVAL = 3600     # seconds between keep-alive state snapshots
 LINK_SAMPLE_INTERVAL = 300   # seconds between LQI/RSSI samples
 STATE_DRAIN_INTERVAL = 2     # seconds between drains of the state-change buffer
 
-# Upper bound on buffered state rows awaiting write. Only approached if the
-# DB is wedged (e.g. DuckDB replaying a damaged WAL); at that point dropping
-# the oldest telemetry is strictly better than growing until the OOM killer
-# takes the process.
+# Upper bound on buffered state rows awaiting write. Only approached with a
+# wedged DB, where dropping the oldest telemetry beats growing until the OOM
+# killer takes the process.
 STATE_BUFFER_MAX = 50_000
 
 # A healthy drain keeps the buffer near zero, so a sustained backlog past this
@@ -34,11 +33,9 @@ STATE_BUFFER_MAX = 50_000
 # rather than silently at the point rows start being discarded.
 STATE_BUFFER_WARN = STATE_BUFFER_MAX // 10
 
-# Keep-alive rows must only be written for devices that have actually
-# communicated recently. Cached state survives long after a device goes
-# silent, and consumers like the heating controller's freshness check treat
-# a DuckDB row as proof of a live report — writing stale cached values
-# would mask a dead sensor.
+# Only for devices that have communicated recently. Cached state outlives a
+# silent device, and consumers treat a DuckDB row as proof of a live report, so
+# writing stale cached values would mask a dead sensor.
 KEEPALIVE_MAX_SILENCE = 2 * SNAPSHOT_INTERVAL  # seconds since last_seen
 
 
@@ -122,11 +119,9 @@ class TelemetryCollector:
                 break
             try:
                 from modules.telemetry_db import flush_appender
-                # Off the loop thread: the DuckDB drain can take seconds on a
-                # grown DB, and blocking the loop here starved the bellows ASH
-                # serial ACKs → NCP ERROR_EXCEEDED_MAXIMUM_ACK_TIMEOUT_COUNT →
-                # watchdog stalls. The Rust flush now releases the GIL, so the
-                # loop keeps running while this worker drains.
+                # Off the loop thread: the drain takes seconds on a grown DB, and
+                # blocking here starved the bellows ASH ACKs into NCP watchdog
+                # stalls. The Rust flush releases the GIL, so the loop keeps running.
                 await asyncio.to_thread(flush_appender)
             except Exception as e:
                 logger.debug(f"Appender flush loop error: {e}")
@@ -462,12 +457,11 @@ class TelemetryCollector:
         # Store current as the baseline for next delta
         self._last_packet_snapshot = current
 
-    # Per-device dedup state. Keyed by (ieee, attribute), value is
-    # (last_numeric_or_str_value, last_ts_epoch). Trimmed lazily.
-    # 2s window: the duplicate writes from the double record path
-    # (update_state + handle_device_update) arrive 0.25–1s apart in
-    # practice, and a same-value re-report within 2s carries no
-    # information — real value changes always write regardless.
+    # Per-device dedup state, keyed by (ieee, attribute) -> (last_value, last_ts).
+    # Trimmed lazily. The 2 s window covers the double record path
+    # (update_state + handle_device_update), which arrives 0.25-1 s apart; a
+    # same-value re-report inside it carries no information. Real changes always
+    # write regardless.
     _DEDUP_WINDOW_SECONDS = 2.0  # collapse writes for same (ieee,attr,value)
     # arriving within this many seconds
 

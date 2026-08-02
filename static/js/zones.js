@@ -11,16 +11,10 @@ import { confirmDialog } from './dialogs.js';
 
 const log = zmmLog('zones');
 
-// ============================================================================
-// STATE
-// ============================================================================
 let zonesData = new Map();
 let deviceListCache = [];
 const selectedDevices = new Set();
 
-// ============================================================================
-// INIT
-// ============================================================================
 export function initZones() {
     log.log("Initializing Zones Module (v2)...");
 
@@ -61,9 +55,7 @@ export function initZones() {
     log.log("✅ Zone listeners registered");
 }
 
-// ============================================================================
 // API
-// ============================================================================
 async function fetchZones() {
     try {
         const r = await fetch('/api/zones');
@@ -92,9 +84,7 @@ async function fetchDevicesForModal() {
     }
 }
 
-// ============================================================================
 // GRID
-// ============================================================================
 function renderZonesGrid() {
     const container = document.getElementById('zones-container');
     if (!container) return;
@@ -158,9 +148,7 @@ function createZoneCard(zone) {
     return col;
 }
 
-// ============================================================================
 // DETAILS MODAL
-// ============================================================================
 export async function viewZoneDetails(zoneName) {
     const zone = zonesData.get(zoneName);
     if (!zone) return;
@@ -177,7 +165,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
     const devices = zone.devices || {};
     const entries = Object.entries(devices);
 
-    // --- Status + controls header ---
+    // Status + controls header
     const canCalibrate = zone.state === 'uncalibrated' || zone.state === 'vacant' || zone.state === 'occupied';
     const isCalibrating = zone.state === 'calibrating';
 
@@ -209,7 +197,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
             </div>
         </div>`;
 
-    // --- Calibration progress block ---
+    // Calibration progress block
     let progressHtml = '';
     if (isCalibrating && zone.calibration_start) {
         const total = zone.config?.calibration_time || 120;
@@ -228,7 +216,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
             </div>`;
     }
 
-    // --- Device table (per-device RSSI stats) ---
+    // Device table (per-device RSSI stats)
     const deviceThreshold = zone.config?.deviation_threshold || 2.5;
     let devicesHtml = '';
     if (entries.length === 0) {
@@ -301,7 +289,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
             </div>`;
     }
 
-    // --- Devices tab (membership) ---
+    // Devices tab (membership)
     const deviceList = zone.device_ieees || [];
     const membershipRows = deviceList.map(ieee => {
         const d = deviceListCache.find(x => x.ieee.toLowerCase() === ieee.toLowerCase())
@@ -385,9 +373,7 @@ function renderZoneModalContent(zone, container, fullRender = true) {
     }
 }
 
-// ============================================================================
 // CALIBRATION PROGRESS (WS)
-// ============================================================================
 function handleCalibrationProgress(data) {
     const modal = document.getElementById('zoneDetailsModal');
     if (!modal?.classList.contains('show')) return;
@@ -406,9 +392,7 @@ function handleCalibrationProgress(data) {
     }
 }
 
-// ============================================================================
 // ACTIONS
-// ============================================================================
 export async function startZoneCalibration(zoneName) {
     if (!await confirmDialog({
         title: 'Start calibration',
@@ -532,9 +516,7 @@ window.setZoneAggressiveness = setZoneAggressiveness;
 window.addDeviceToZoneFromModal = addDeviceToZoneFromModal;
 window.removeDeviceFromZone = removeDeviceFromZone;
 
-// ============================================================================
 // CREATE ZONE MODAL
-// ============================================================================
 function openCreateZoneModal() {
     document.getElementById('zone-name-input').value = '';
     selectedDevices.clear();

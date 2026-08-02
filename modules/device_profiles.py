@@ -1,105 +1,10 @@
 # modules/device_profiles.py
 """
 Device Profiles — unified Zigbee + Matter device modelling framework.
-=====================================================================
 
-This replaces (and is backwards-compatible with) the older split system of
-``modules/device_overrides.py`` (Zigbee attribute renaming) and
-``modules/matter_definitions.py`` (Matter endpoint mapping).
-
-A *profile* is a JSON document describing a device model in protocol-agnostic
-terms. The same schema covers Zigbee and Matter; only the ``protocol`` field
-and the contents of ``endpoints[*].clusters`` change.
-
-Schema (canonical, v1)
-----------------------
-::
-
-    {
-      "schema_version": 1,
-      "id": "lumi.sensor_magnet.aq2",          # stable identifier
-      "protocol": "zigbee",                     # "zigbee" | "matter"
-      "match": {                                # how a device gets matched
-        "model":        "lumi.sensor_magnet.aq2",
-        "manufacturer": "LUMI",
-        "vendor_id":    null,                   # matter only
-        "product_id":   null                    # matter only
-      },
-      "device_type": "contact_sensor",          # see DEVICE_TYPES below
-      "capabilities": ["contact", "battery"],
-      "endpoints": {
-        "1": {
-          "role": "primary",                    # primary | controller | sensor | ...
-          "label": "Sensor",
-          "group": "",                          # used for button grouping
-          "clusters": {
-            "0x0500": {
-              "attributes": {
-                "0x0000": {
-                  "name":         "contact",
-                  "scale":        1,
-                  "unit":         "",
-                  "device_class": "door",
-                  "invert":       true,
-                  "value_map":    {"0": "closed", "1": "open"}
-                }
-              },
-              "commands": {}
-            }
-          }
-        }
-      },
-      "actions": [
-        {
-          "id":       "toggle",
-          "label":    "Toggle",
-          "ep":       1,
-          "cluster":  "0x0006",
-          "command":  "0x02",
-          "args":     [],
-          "writes":   []                        # alternative to command:
-                                                # [{ep, cluster, attr, value, type}]
-        }
-      ],
-      "reporting": [
-        {
-          "ep": 1, "cluster": "0x0402", "attr": "0x0000",
-          "min": 60, "max": 300, "delta": 10
-        }
-      ],
-      "ieee_overrides": {                       # legacy per-device mappings
-        "00:11:22:...": {
-          "cluster_mappings": {
-            "cluster_0500_attr_0000": {"name": "contact"}
-          }
-        }
-      },
-      "meta": {
-        "author":     "user@local",
-        "source":     "user",                   # user | bundled | imported
-        "created_at": 1700000000,
-        "updated_at": 1700000000
-      }
-    }
-
-A second file, ``ieee_overrides.json``, holds per-IEEE pinning to a profile
-(``{ieee: profile_id}``) plus device-specific attribute mappings that haven't
-been promoted to a profile yet.
-
-Storage
--------
-Profiles live as one JSON file per profile under ``data/device_profiles/``,
-keyed by the ``id`` field. Bundled profiles (shipped with the app) live under
-``data/community_profiles/`` and are read-only. User profiles override
-bundled ones with the same id.
-
-Lookup precedence (highest first)
----------------------------------
-1. IEEE-pinned profile id (explicit user assignment)
-2. User profile matching (protocol, model, manufacturer)
-3. User profile matching (protocol, vendor_id, product_id) — Matter
-4. Bundled profile matching (same priorities)
-5. None (device runs on built-in handlers / generic fallback)
+A profile is a protocol-agnostic JSON description of a device model; the same
+schema covers both. Supersedes device_overrides.py and matter_definitions.py.
+Schema, storage layout and lookup precedence: docs/device-profiles.md.
 """
 from __future__ import annotations
 
@@ -113,9 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger("modules.device_profiles")
 
-# ---------------------------------------------------------------------------
 # Paths
-# ---------------------------------------------------------------------------
 
 DATA_DIR             = os.environ.get("ZMM_DATA_DIR", "./data")
 USER_PROFILES_DIR    = os.path.join(DATA_DIR, "device_profiles")
@@ -129,9 +32,7 @@ LEGACY_MATTER_DEFS_DIR      = os.path.join(DATA_DIR, "..", "config", "matter_def
 SCHEMA_VERSION = 1
 
 
-# ---------------------------------------------------------------------------
 # Canonical device types
-# ---------------------------------------------------------------------------
 
 DEVICE_TYPES: Dict[str, Dict[str, Any]] = {
     "contact_sensor":     {"label": "Contact sensor",     "capabilities": ["contact", "battery"]},
@@ -185,10 +86,6 @@ CAPABILITY_TO_HA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _HEX_RE = re.compile(r"^0x([0-9A-Fa-f]+)$")
 
 
@@ -219,9 +116,7 @@ def _now() -> int:
     return int(time.time())
 
 
-# ---------------------------------------------------------------------------
 # Profile validation / normalisation
-# ---------------------------------------------------------------------------
 
 def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -364,10 +259,9 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         })
     out["reporting"] = reporting_out
 
-    # state_mappings — friendly names for arbitrary device state keys (Tuya
-    # datapoints, derived keys), keyed by the literal state key. Mirrors the
-    # per-device "state:<key>" learn mappings so they can be promoted to the
-    # model level and shared across every device of this model.
+    # Friendly names for arbitrary state keys (Tuya datapoints, derived keys),
+    # keyed by the literal key. Mirrors the per-device "state:<key>" learn
+    # mappings so they can be promoted to model level and shared.
     sm_out: Dict[str, Any] = {}
     for k, v in (p.get("state_mappings") or {}).items():
         if isinstance(v, str):
@@ -413,9 +307,7 @@ def _normalise_attr_mapping(a: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Profile store
-# ---------------------------------------------------------------------------
 
 class ProfileStore:
     """
@@ -447,9 +339,7 @@ class ProfileStore:
         self._load_all()
         self._maybe_migrate_legacy()
 
-    # -----------------------------------------------------------------
     # Disk I/O
-    # -----------------------------------------------------------------
 
     def _load_all(self):
         with self._lock:
@@ -520,9 +410,7 @@ class ProfileStore:
         except Exception as e:
             logger.error(f"Failed to save profile {pid}: {e}")
 
-    # -----------------------------------------------------------------
     # Legacy migration
-    # -----------------------------------------------------------------
 
     def _maybe_migrate_legacy(self):
         """
@@ -612,9 +500,7 @@ class ProfileStore:
         except Exception as e:
             logger.debug(f"Matter legacy migration skipped: {e}")
 
-    # -----------------------------------------------------------------
     # Lookup
-    # -----------------------------------------------------------------
 
     def list_profiles(self, source: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
@@ -683,9 +569,7 @@ class ProfileStore:
                             return dict(p)
         return None
 
-    # -----------------------------------------------------------------
     # CRUD — profiles
-    # -----------------------------------------------------------------
 
     def upsert_profile(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         norm = normalise_profile(raw)
@@ -723,9 +607,7 @@ class ProfileStore:
                 self._save_ieee_overrides()
         return True
 
-    # -----------------------------------------------------------------
     # IEEE pins + per-device mappings
-    # -----------------------------------------------------------------
 
     def pin_ieee(self, ieee: str, profile_id: str) -> bool:
         with self._lock:
@@ -798,9 +680,7 @@ class ProfileStore:
                 "mappings": dict(self._ieee_mappings),
             }
 
-    # -----------------------------------------------------------------
     # Attribute lookup (used by handlers / discovery / state formatter)
-    # -----------------------------------------------------------------
 
     def get_attribute_mapping(
             self, *, ieee: str, model: str, manufacturer: str,
@@ -840,9 +720,7 @@ class ProfileStore:
         return None
 
 
-# ---------------------------------------------------------------------------
 # Singleton accessor
-# ---------------------------------------------------------------------------
 
 _store: Optional[ProfileStore] = None
 
@@ -854,12 +732,8 @@ def get_profile_store() -> ProfileStore:
     return _store
 
 
-# ---------------------------------------------------------------------------
-# Backwards-compatible facade for old call sites
-# ---------------------------------------------------------------------------
-# The old DeviceOverrideManager API is preserved so existing imports of
-# ``from modules.device_overrides import get_override_manager`` keep working
-# while the codebase transitions to the new module.
+# Preserves the old DeviceOverrideManager API so existing imports of
+# ``from modules.device_overrides import get_override_manager`` keep working.
 
 class _LegacyOverrideManagerShim:
     """Adapter that exposes the old API on top of ProfileStore."""

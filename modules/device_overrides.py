@@ -128,9 +128,7 @@ class DeviceOverrideManager:
         except Exception as e:
             logger.error(f"Failed to save {OVERRIDES_FILE}: {e}")
 
-    # ================================================================
     # LOOKUP
-    # ================================================================
 
     def _make_key(self, model: str, manufacturer: str) -> str:
         """Build lookup key from model and manufacturer."""
@@ -203,9 +201,7 @@ class DeviceOverrideManager:
 
         return None
 
-    # ================================================================
     # CRUD — MODEL DEFINITIONS
-    # ================================================================
 
     def add_definition(self, model: str, manufacturer: str, definition: Dict) -> bool:
         """Add or update a model-level definition."""
@@ -229,9 +225,7 @@ class DeviceOverrideManager:
         """Return all model definitions."""
         return self._definitions.copy()
 
-    # ================================================================
     # CRUD — IEEE OVERRIDES
-    # ================================================================
 
     def set_ieee_mapping(self, ieee: str, raw_key: str, friendly_name: str,
                          scale: float = 1, unit: str = "", device_class: str = "") -> bool:

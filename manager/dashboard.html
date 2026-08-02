@@ -24,7 +24,7 @@ body{margin:0;background:var(--night);color:var(--wax);
   min-height:100vh}
 :focus-visible{outline:2px solid var(--honey);outline-offset:2px}
 
-/* ── header ─────────────────────────────────────────────────────────────── */
+/* header */
 header{position:sticky;top:0;z-index:10;display:flex;align-items:center;
   gap:.8rem;padding:.7rem 1.2rem;background:rgba(11,22,32,.92);
   backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
@@ -50,7 +50,7 @@ header{position:sticky;top:0;z-index:10;display:flex;align-items:center;
 main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 #appver{font-family:var(--mono);color:var(--muted);font-size:.74rem}
 
-/* ── the honeycomb: one hex cell per thing that must be alive ───────────── */
+/* the honeycomb: one hex cell per thing that must be alive */
 /* True tessellation: neighbours overlap by the slanted-face width (25% of
    the hex width) and every even cell drops half the hex height, so the
    diagonal faces sit parallel with a thin uniform seam between them. */
@@ -89,7 +89,7 @@ main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 @media (prefers-reduced-motion:reduce){
   .born,.cell.bad,.rec-flag{animation:none!important}}
 
-/* ── cards ──────────────────────────────────────────────────────────────── */
+/* cards */
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
 @media (max-width:840px){.grid{grid-template-columns:1fr}}
 .card{background:var(--comb);border:1px solid var(--line);border-radius:12px;
@@ -112,7 +112,7 @@ code{background:var(--night);border:1px solid var(--line);padding:.06rem .4rem;
   font-family:var(--mono);font-size:.7rem;font-weight:700}
 .b-ok{background:rgba(52,211,153,.12);color:var(--ok);border:1px solid rgba(52,211,153,.35)}
 
-/* ── controls ───────────────────────────────────────────────────────────── */
+/* controls */
 button{font:inherit;cursor:pointer;border-radius:8px;font-weight:600}
 .btn{background:transparent;color:var(--wax);border:1px solid var(--line);
   padding:.36rem .8rem;font-size:.78rem;transition:border-color .15s}
@@ -131,14 +131,14 @@ textarea{width:100%;min-height:130px;resize:vertical;white-space:pre}
 label{display:block;font-family:var(--mono);font-size:.64rem;color:var(--muted);
   margin:.45rem 0 .2rem;letter-spacing:.1em;text-transform:uppercase}
 
-/* ── log terminal ───────────────────────────────────────────────────────── */
+/* log terminal */
 .chips{display:flex;flex-wrap:wrap;gap:.35rem}
 .term{display:none;background:#071019;border:1px solid var(--line);
   border-radius:10px;padding:.6rem .75rem;margin-top:.6rem;max-height:46vh;
   overflow:auto;font-family:var(--mono);font-size:.72rem;line-height:1.45;
   white-space:pre-wrap;word-break:break-all;color:#bfd2dc}
 
-/* ── recovery console ───────────────────────────────────────────────────── */
+/* recovery console */
 #recovery{border-color:rgba(244,83,110,.5)}
 #recovery h2{color:var(--bad)}
 .rec-flag{display:inline-block;background:var(--bad);color:#fff;
@@ -162,7 +162,7 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
 .formgrid{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-top:.6rem}
 @media (max-width:840px){.formgrid{grid-template-columns:1fr}}
 
-/* ── toast ──────────────────────────────────────────────────────────────── */
+/* toast */
 .toast{position:fixed;bottom:1.2rem;left:50%;transform:translateX(-50%);
   background:var(--comb2);border:1px solid var(--line);border-radius:10px;
   padding:.55rem 1rem;font-size:.82rem;z-index:50;opacity:0;
@@ -171,7 +171,7 @@ table.bk td{padding:.32rem .45rem;border-bottom:1px solid var(--line);
 .toast.ok{border-color:var(--ok)} .toast.err{border-color:var(--bad)}
 @media (prefers-reduced-motion:reduce){.toast{transition:none}}
 
-/* ── native dialogs (token entry / confirm) ─────────────────────────────── */
+/* native dialogs (token entry / confirm) */
 dialog{background:var(--comb);color:var(--wax);border:1px solid var(--line);
   border-radius:12px;padding:1rem 1.1rem;max-width:26rem;width:calc(100vw - 2rem)}
 dialog::backdrop{background:rgba(7,16,25,.72)}
@@ -207,7 +207,7 @@ dialog .remember input{accent-color:var(--honey)}
 
 <main>
 
-<!-- ── Recovery console (only in recovery mode) ─────────────────────────── -->
+<!-- Recovery console (only in recovery mode) -->
 <section id="recovery" class="card" hidden>
   <h2><span class="rec-flag">recovery mode</span>
       <span class="hint"> the app failed to boot — repair it from here</span></h2>
@@ -246,7 +246,7 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<!-- ── The honeycomb: hive health at a glance ───────────────────────────── -->
+<!-- The honeycomb: hive health at a glance -->
 <div class="comb" id="comb">
   <div class="cell mut born" id="cApp"><div class="in">
     <b>application</b><span class="v" id="cAppV">&hellip;</span><span class="s" id="cAppS"></span></div></div>
@@ -259,10 +259,10 @@ dialog .remember input{accent-color:var(--honey)}
 </div>
 
 <div class="grid">
-  <!-- ── Containers ── -->
+  <!-- Containers -->
   <section class="card"><h2>Containers</h2><div id="cont" class="muted">&hellip;</div></section>
 
-  <!-- ── Version control ── -->
+  <!-- Version control -->
   <section class="card"><h2>Version Control</h2>
     <div id="upimgs" class="muted">&hellip;</div>
     <div class="rowline" style="border:0;margin-top:.5rem">
@@ -275,7 +275,7 @@ dialog .remember input{accent-color:var(--honey)}
   </section>
 </div>
 
-<!-- ── Host OS updates — collected & applied by the host-side helpers ─────── -->
+<!-- Host OS updates — collected & applied by the host-side helpers -->
 <section class="card">
   <h2>Host OS <span class="hint">— update check runs on the host every 6h</span></h2>
   <div class="rowline" style="border:0">
@@ -293,7 +293,7 @@ dialog .remember input{accent-color:var(--honey)}
   <div id="hoFoot" class="muted" style="margin-top:.4rem"></div>
 </section>
 
-<!-- ── AI models (Ollama) — hidden unless the ollama container/volume exists ── -->
+<!-- AI models (Ollama) — hidden unless the ollama container/volume exists -->
 <section id="ollamaCard" class="card" hidden>
   <h2>AI models <span class="hint">— ollama sibling container</span></h2>
   <div class="rowline" style="border:0">
@@ -318,7 +318,7 @@ dialog .remember input{accent-color:var(--honey)}
   <pre id="olJob" class="term"></pre>
 </section>
 
-<!-- ── Beekeeper — DNS ad/tracker blocker sidecar ── -->
+<!-- Beekeeper — DNS ad/tracker blocker sidecar -->
 <section id="bkCard" class="card">
   <h2>Beekeeper <span class="hint">&mdash; DNS ad/tracker blocker</span></h2>
   <div class="rowline" style="border:0">
@@ -341,7 +341,7 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<!-- ── Live logs ── -->
+<!-- Live logs -->
 <section class="card"><h2>Live logs <span class="hint">— streams only while open</span></h2>
   <div id="logbtns" class="chips muted">&hellip;</div>
   <pre id="logview" class="term"></pre>
@@ -350,7 +350,7 @@ dialog .remember input{accent-color:var(--honey)}
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-<!-- ── native dialogs: keep zero external deps (disaster-recovery UI) ────── -->
+<!-- native dialogs: keep zero external deps (disaster-recovery UI) -->
 <dialog id="dlgToken">
   <form method="dialog">
     <h3>Manager action token</h3>
@@ -386,7 +386,7 @@ function toast(msg,cls){const t=$('toast');t.textContent=msg;
  t.className='toast show '+(cls||'');clearTimeout(toastTimer);
  toastTimer=setTimeout(()=>t.className='toast',4200);}
 
-/* ── native <dialog> confirm — replaces window.confirm ─────────────────── */
+/* native <dialog> confirm — replaces window.confirm */
 function confirmM(msg,opts){opts=opts||{};
  return new Promise(resolve=>{
   const dlg=$('dlgConfirm'),ok=$('cfOk');
@@ -399,7 +399,7 @@ function confirmM(msg,opts){opts=opts||{};
   dlg.addEventListener('close',done);
   dlg.showModal();ok.focus();});}
 
-/* ── auth token (actions only) — native <dialog>, remember opt-in ──────── */
+/* auth token (actions only) — native <dialog>, remember opt-in */
 /* unchecked → sessionStorage (this tab only); checked → localStorage      */
 function storedTok(){return sessionStorage.getItem('zmm_mgr_token')
  ||localStorage.getItem('zmm_mgr_token');}
@@ -443,7 +443,7 @@ async function authGet(url){
   toast('Token rejected — you will be asked again','err');return null;}
  return r.json().catch(()=>null);}
 
-/* ── honeycomb cells ───────────────────────────────────────────────────── */
+/* honeycomb cells */
 function setCell(id,cls,val,sub){const c=$(id);if(!c)return;
  c.className='cell '+cls+(c.className.includes('born')?' born':'');
  $(id+'V').textContent=val;$(id+'S').textContent=sub||'';
@@ -467,7 +467,7 @@ function syncContainerCells(list){
    '<span class="v">'+esc(s||'?')+'</span><span class="s">'+esc(x.status||'')+'</span></div>';
   $('comb').appendChild(d);});}
 
-/* ── status poll — backs off 2s→5s→10s→30s while offline ───────────────── */
+/* status poll — backs off 2s→5s→10s→30s while offline */
 function dot(cls){return '<span class="sdot '+cls+'"></span>';}
 let recoveryShown=false;
 const BACKOFF=[2000,5000,10000,30000];
@@ -531,7 +531,7 @@ async function refresh(){
  }finally{setTimeout(refresh,BACKOFF[refIdx]);}}
 refresh();
 
-/* ── Beekeeper (DNS ad/tracker blocker) enablement ─────────────────────── */
+/* Beekeeper (DNS ad/tracker blocker) enablement */
 function updateBeekeeper(bk){
  const info=$('bkInfo'),en=$('bkEnableBtn'),dis=$('bkDisableBtn'),re=$('bkRestartBtn');
  if(!info)return;
@@ -574,7 +574,7 @@ async function disableBeekeeper(btn){
    {title:'Disable Beekeeper',confirmText:'Disable',danger:true}))return;
  const d=await act('/beekeeper/disable',null,false,btn);if(d&&d.success)refresh();}
 
-/* ── upgrade / rollback ────────────────────────────────────────────────── */
+/* upgrade / rollback */
 async function rollback(v,btn){
  if(await confirmM('Roll back the app to v'+v+'?\nThe current container will be replaced.',
    {title:'Roll back',confirmText:'Roll back',danger:true}))
@@ -612,7 +612,7 @@ async function loadUpgrade(){
  }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
 loadUpgrade();
 
-/* ── Host OS updates — 60s poll, 5s after "Check now" until data changes ── */
+/* Host OS updates — 60s poll, 5s after "Check now" until data changes */
 function ago(sec){if(sec==null)return '';
  if(sec<90)return sec+'s ago';
  if(sec<5400)return Math.round(sec/60)+'m ago';
@@ -715,7 +715,7 @@ async function loadHost(){
  finally{setTimeout(loadHost,delay);}}
 loadHost();
 
-/* ── AI models (Ollama) — 5s poll, 2s while a pull/update job runs ─────── */
+/* AI models (Ollama) — 5s poll, 2s while a pull/update job runs */
 function fmtB(n){n=Number(n)||0;if(!n)return '0 B';
  const u=['B','KB','MB','GB','TB'];let i=0;
  while(n>=1024&&i<u.length-1){n/=1024;i++;}
@@ -791,7 +791,7 @@ async function loadOllama(){
  }finally{setTimeout(loadOllama,delay);}}
 loadOllama();
 
-/* ── live logs ─────────────────────────────────────────────────────────── */
+/* live logs */
 let es=null,esBtn=null;const MAX_LOG_LINES=2000;
 function stopStream(){if(es){es.close();es=null;}
  if(esBtn){esBtn.classList.remove('active');esBtn=null;}
@@ -829,7 +829,7 @@ async function loadLogSources(){
  }catch(e){$('logbtns').innerHTML='<span class="muted">unavailable</span>';}}
 loadLogSources();setInterval(()=>{if(!es)loadLogSources();},30000);
 
-/* ── recovery console ──────────────────────────────────────────────────── */
+/* recovery console */
 async function loadRecovery(){
  try{
   const f=$('bkFilter').value.trim();
@@ -910,7 +910,7 @@ async function resumeApp(btn){
    {title:'Resume app',confirmText:'Resume'}))return;
  act('/recovery/resume',null,false,btn);}
 
-/* ── recovery editor line/char counter ─────────────────────────────────── */
+/* recovery editor line/char counter */
 (function(){
  const ta=$('recContent'),out=$('recCount');
  if(!ta||!out)return;

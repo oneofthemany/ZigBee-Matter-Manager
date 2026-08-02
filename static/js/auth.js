@@ -1,16 +1,12 @@
-/* ============================================================
-   ZMM Auth — login UX with MFA + lockout-aware error handling
-   ============================================================
+/* ZMM Auth — login UX with MFA + lockout-aware error handling
    Replaces the previous static/js/auth.js. Backwards compatible
    with the same window.zmmAuth public API; adds MFA flow.
-
    First-run note:
    When no admin user exists yet (setup wizard creates the first
    admin), we don't auto-pop the login modal — the wizard handles
    onboarding instead. After submitAccount() in the wizard, callers
    should invoke window.zmmAuth.refresh() to pick up the freshly
-   issued session cookie and propagate the principal to listeners.
-   ============================================================ */
+   issued session cookie and propagate the principal to listeners. */
 
 (function () {
     'use strict';
@@ -23,9 +19,7 @@
     };
     var listeners = [];
 
-    // ----------------------------------------------------------
     // API
-    // ----------------------------------------------------------
     async function whoami() {
         try {
             var r = await fetch('/api/auth/whoami', { credentials: 'same-origin' });
@@ -190,9 +184,7 @@
         if (state.ready) fn(state.principal);
     }
 
-    // ----------------------------------------------------------
     // Login modal — handles both password step + MFA step
-    // ----------------------------------------------------------
     function showLoginModal() {
         var prev = document.getElementById('zmmLoginModal');
         if (prev) prev.remove();
@@ -309,9 +301,7 @@
         };
     }
 
-    // ----------------------------------------------------------
     // Fetch interceptor
-    // ----------------------------------------------------------
     var origFetch = window.fetch;
     window.fetch = function (input, init) {
         return origFetch(input, init).then(function (resp) {
@@ -336,9 +326,7 @@
         });
     };
 
-    // ----------------------------------------------------------
     // Public API
-    // ----------------------------------------------------------
     window.zmmAuth = {
         whoami: function () { return state.principal; },
         login: login,

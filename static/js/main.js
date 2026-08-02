@@ -163,9 +163,7 @@ import {
 
 const log = zmmLog('main');
 
-// ============================================================================
 // EXPOSE FUNCTIONS GLOBALLY
-// ============================================================================
 
 // Device management
 window.openDeviceModal = openDeviceModal;
@@ -325,9 +323,7 @@ window.deleteTab = deleteTab;
 window.manageTabDevices = manageTabDevices;
 window.toggleDeviceInTab = toggleDeviceInTab;
 
-// ============================================================================
 // APPLICATION INITIALISATION
-// ============================================================================
 
 /**
  * Tab accessibility enhancer — gives every Bootstrap tablist proper
@@ -476,7 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // ── Debug tab: sub-tabs (Logs / Signal Inspector / Packets) ──
+        // Debug tab: sub-tabs (Logs / Signal Inspector / Packets)
         // Parent-tab relay: Bootstrap only fires shown.bs.tab on the button
         // that was activated, so the already-active sub-tab never gets its
         // event when the parent Debug tab is re-shown. Re-dispatch on it.

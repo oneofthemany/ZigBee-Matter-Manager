@@ -319,3 +319,122 @@ gate: "braked hard four minutes in" says how someone drove, which
 `_resolve_places` runs outside the DB thread because it consults the presence
 and place managers; coordinates leave the database only long enough to be
 turned into names, and only the names are written back.
+
+## Drive tab (frontend)
+
+`static/js/drive.js` renders three pieces on one page: journeys recorded by the
+companion app's drive mode, the cheapest fuel stations near home or a typed
+postcode, and a price-history chart drawn from the snapshots `fuel_history.py`
+records at every search (daily median line over a min–max band).
+
+It is an ES module — unlike `presence-settings.js` — because the chart goes
+through the shared `chart-utils`/ECharts layer. It still exposes
+`window.initDriveTab` for `main.js`'s tab listener.
+
+### Acceleration RAG thresholds
+
+Red is the phone's own event threshold (`MotionSampler.EVENT_ENTER_MPS2`, 3.5
+m/s²): above it the sampler logged a discrete event, so the map agrees with the
+event list by construction rather than by coincidence. Amber is the approach to
+it — firm but not logged — which is the band worth showing a driver, because it
+is where a habit is visible before it becomes an event.
+
+**Change these together with the phone's constant, or the two stories stop
+matching.**
+
+### Interaction details
+
+- The **driver picker** is present on every trip, not only low-confidence ones.
+  Correcting a confident wrong guess is exactly the case where the score is most
+  misleading, and hiding the control behind the hub's own certainty would make
+  that the hardest one to fix.
+- The **coaching note** gives one sentence on what to work on, from whichever
+  event kind dominates. The counts alone say what happened; this says what to do
+  about it, which is the point of showing them. It is withheld below three
+  events — two hard stops on one trip is traffic, not a habit, and advice given
+  on that evidence teaches drivers to distrust the rest of it.
+- **Trip detail** is fetched once per trip per page load; the markup and Leaflet
+  instance stay in place so collapsing and re-expanding a row costs nothing.
+  Every trip map must be torn down before the host's `innerHTML` is replaced —
+  Leaflet attaches listeners to `window` and `document`, not only to its
+  container, so dropping the markup alone leaves those live.
+
+## Fuel price history
+
+`modules/fuel_history.py` persists what the fuel-price feeds said, and when we
+asked.
+
+The `uk-fuel-prices-api` package holds retailer data only in memory, and most
+retailers publish just a daily number with no archive: once tomorrow's price
+replaces today's, today's is gone. This module snapshots every station returned
+by a Drive-tab query into DuckDB, so price trends — "is this station creeping
+up?", "cheapest E10 seen this month" — become answerable.
+
+**Storage.** `data/fuel_prices.duckdb`, a database dedicated to this module,
+with all access through one dedicated worker thread that owns the connection.
+DuckDB is single-writer per file, so this must never share journeys' or
+telemetry's database.
+
+**Dedupe.** Retailer feeds update roughly daily, but users may search many times
+a day. One row per `(site_id, fuel, feed day)` — re-recording the same feed value
+is a no-op, so history growth is bounded by stations × fuels × days regardless of
+how often anyone searches.
+
+**Privacy.** Rows describe petrol stations, not people. Where the user searched
+from is deliberately **not** stored — only which stations came back, and their
+prices.
+
+## API and scopes
+
+`routes/journey_routes.py` mirrors the presence scope model:
+
+| Scope | Grants |
+| --- | --- |
+| `presence:read` | trip summaries, driving events, and aggregate stats — no coordinates |
+| `admin` | additionally the raw track points, and deletion |
+
+Track coordinates cross the same privacy boundary as the live presence map, so
+they are gated the same way: `presence:read` tells you someone drove 12 miles at
+an average of 31 mph; pinning the route to streets is an administrator's
+capability.
+
+**Driving events sit on the `presence:read` side of that line deliberately.**
+They carry a time, a kind and a magnitude but no position, so they say how the
+car was driven and not where — the same class of fact as the average speed and
+harsh-event counts already in the summary, at finer resolution.
+
+The driver roster and the leaderboard read at `presence:read` for the same
+reason. *Editing* them is `admin`: attributing a drive to someone decides whose
+record it lands on, which is a claim about a person rather than a view of one.
+
+## Fuel prices
+
+`modules/fuel_prices.py` finds the cheapest fuel near a location from the
+[UK retailer open-data feeds](https://www.gov.uk/guidance/access-fuel-price-data)
+via the `uk-fuel-prices-api` package.
+
+That package fetches ~15 retailer JSON feeds (Asda, Tesco, BP, Shell, …) and
+holds them in memory with an hour's cache; most retailers only refresh daily, so
+that cadence loses nothing. This module wraps it with a refresh guard (one
+refresh at a time, with callers sharing the result), postcode → coordinates via
+postcodes.io (free, no key, and no logging of who asked), and "best nearby"
+queries: stations within a radius selling the wanted fuel, sorted cheapest
+first, each with a Google Maps link built from its postcode so a phone can
+navigate to the winner in one tap.
+
+Prices are re-fetched on demand, but each query's results are also snapshotted
+into [fuel price history](#fuel-price-history) — the feeds publish only today's
+number with no archive, so anything not recorded at query time is gone tomorrow.
+
+### Fuel API
+
+Centre resolution, in order of preference:
+
+1. an explicit `?postcode=`, resolved via postcodes.io
+2. an explicit `?lat=` and `?lon=`
+3. the requesting household's home — the first presence user with one set
+
+Prices themselves are public open data; the location the query centres on is
+not. That is why the fallback is the home location every household member
+already knows, and why any authenticated user may query while nothing about who
+asked is stored.

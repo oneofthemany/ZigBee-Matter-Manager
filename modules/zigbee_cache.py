@@ -1,16 +1,11 @@
 """
-Zigbee Device Cache - DuckDB-backed persistent storage (HARDENED)
-==================================================================
-Same design as the earlier version, with:
-  - Isolated DB file (zigbee_cache.duckdb) — no schema collision with
-    telemetry.duckdb
-  - DuckDB-version-tolerant index creation (try/except around each CREATE INDEX)
-  - All DB operations log full tracebacks on failure so a 500 in the
-    route points straight to the line that failed
-  - Safe numeric conversion (handles bool/int/float/Decimal/zigpy types)
-  - No stringifying of None; missing attributes return NULL
+DuckDB-backed persistent device cache, in its own file so there is no schema
+collision with telemetry.duckdb.
 
-Integration: unchanged — drop-in replacement for the previous module.
+Index creation is DuckDB-version-tolerant, every failure logs a full traceback
+so a route 500 points at the failing line, numeric conversion handles
+bool/int/float/Decimal/zigpy types, and None is never stringified — missing
+attributes return NULL.
 """
 import logging
 import os
@@ -76,9 +71,7 @@ def _safe_execute(sql: str, params=None, *, context: str = ""):
         return None
 
 
-# ============================================================================
 # SCHEMA
-# ============================================================================
 
 def _init_schema():
     global _INITIALISED
@@ -155,9 +148,7 @@ def _init_schema():
     logger.info("Zigbee cache schema initialised")
 
 
-# ============================================================================
 # WRITE: TOPOLOGY
-# ============================================================================
 
 def record_topology(zigpy_dev) -> Dict[str, int]:
     _init_schema()
@@ -220,9 +211,7 @@ def record_topology(zigpy_dev) -> Dict[str, int]:
     return counts
 
 
-# ============================================================================
 # WRITE: ATTRIBUTE METADATA
-# ============================================================================
 
 def record_attribute_metadata(ieee, endpoint_id, cluster_id, attributes,
                               manufacturer_code=None) -> int:
@@ -267,9 +256,7 @@ def record_attribute_metadata(ieee, endpoint_id, cluster_id, attributes,
     return written
 
 
-# ============================================================================
 # WRITE: ATTRIBUTE VALUE (time-series)
-# ============================================================================
 
 def record_value(ieee, endpoint_id, cluster_id, attribute_id, value) -> None:
     _init_schema()
@@ -309,9 +296,7 @@ def record_value(ieee, endpoint_id, cluster_id, attribute_id, value) -> None:
     )
 
 
-# ============================================================================
 # READ: TOPOLOGY
-# ============================================================================
 
 def get_topology(ieee) -> Dict[str, Any]:
     _init_schema()
@@ -357,9 +342,7 @@ def get_topology(ieee) -> Dict[str, Any]:
     return {"ieee": ieee, "endpoints": endpoints, "cached": True}
 
 
-# ============================================================================
 # READ: ATTRIBUTE METADATA (+ latest value)
-# ============================================================================
 
 def get_cached_attributes(ieee, endpoint_id, cluster_id) -> Dict[str, Any]:
     _init_schema()
@@ -421,9 +404,7 @@ def get_cached_attributes(ieee, endpoint_id, cluster_id) -> Dict[str, Any]:
     }
 
 
-# ============================================================================
 # READ: STALE DISCOVERY LOOKUP (for reinterview cron)
-# ============================================================================
 
 def get_devices_with_stale_discovery(max_age_days: int = 14) -> List[str]:
     """
@@ -451,9 +432,7 @@ def get_devices_with_stale_discovery(max_age_days: int = 14) -> List[str]:
     rows = cursor.fetchall() if cursor else []
     return [r[0] for r in rows]
 
-# ============================================================================
 # READ: ATTRIBUTE HISTORY
-# ============================================================================
 
 def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
                           since_seconds=86400, limit=5000) -> List[Dict]:
@@ -481,9 +460,7 @@ def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
     ]
 
 
-# ============================================================================
 # MAINTENANCE + DEBUG
-# ============================================================================
 
 def purge_device(ieee) -> None:
     _init_schema()

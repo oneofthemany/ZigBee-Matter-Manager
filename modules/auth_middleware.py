@@ -1,30 +1,10 @@
 """
 FastAPI middleware and dependency helpers for auth.
 
-Two ways routes get authorised:
-
-1. **Middleware** runs on every HTTP request and:
-   - Bypasses unauthenticated paths (login, healthcheck, static assets,
-     the legacy WebSocket if it doesn't yet enforce auth).
-   - For everything else, looks for a Bearer token (Authorization header)
-     or a session cookie (`zmm_session`).
-   - On success, attaches `request.state.principal = (User, scopes_set,
-     token_or_None)`. On failure, returns 401 unless the route is in the
-     "anonymous-allowed" list.
-
-2. **`require_scope(scope)` dependency** — call from route signatures to
-   enforce a specific scope. The middleware does the auth, the dependency
-   does the authz.
-
-We support BOTH bearer tokens AND session cookies because:
-- The browser UI uses the cookie (set on /api/auth/login).
-- The Android app, curl, MQTT, anything programmatic uses bearer tokens.
-
-Cookies are signed with HMAC-SHA256 using a secret derived from the auth
-file mtime+inode. This is good enough to prevent forgery without needing
-a separate secret-management story; the secret rotates automatically when
-the file is replaced (e.g. restored from backup → all sessions invalidated,
-which is the desired behaviour).
+The middleware authenticates every request (Bearer token or zmm_session cookie)
+and attaches request.state.principal; require_scope(scope) then authorises at
+the route. Cookies are HMAC-signed with a secret derived from the auth file, so
+replacing that file invalidates every session. See docs/auth.md.
 """
 
 from __future__ import annotations
@@ -49,7 +29,7 @@ from modules.auth_network import get_network_resolver
 logger = logging.getLogger("modules.auth_middleware")
 
 
-# --- secret derivation -----------------------------------------------------
+# secret derivation
 
 def _derive_session_secret(path: str) -> bytes:
     """Return a stable HMAC secret for signing session cookies.
@@ -114,7 +94,7 @@ def _verify_session(token: str, secret: bytes,
         return None
 
 
-# --- principal type --------------------------------------------------------
+# principal type
 
 class Principal:
     """The authenticated identity for one request."""
@@ -132,7 +112,7 @@ class Principal:
         return f"<Principal {self.user.username} via {self.auth_method}>"
 
 
-# --- middleware ------------------------------------------------------------
+# middleware
 
 # Paths that are accessible without authentication from anywhere.
 ANONYMOUS_PATHS: Tuple[str, ...] = (
@@ -338,7 +318,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return None
 
 
-# --- dependency factory ----------------------------------------------------
+# dependency factory
 
 def require_scope(scope: str):
     """
@@ -406,7 +386,7 @@ def require_authenticated(request: Request) -> Principal:
     return p
 
 
-# --- session cookie helpers ------------------------------------------------
+# session cookie helpers
 
 def issue_session_cookie(username: str, secret: bytes) -> str:
     return _sign_session(username, int(time.time()), secret)

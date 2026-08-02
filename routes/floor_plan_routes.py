@@ -1,25 +1,10 @@
 """
-Floor-plan API routes.
+Floor-plan API — read, save (projecting into circuits), preview and clear the
+plan, plus per-level background images.
 
-Endpoints:
-    GET  /api/heating/floor-plan                    — read the saved plan
-    POST /api/heating/floor-plan                    — save plan; project into
-                                                      circuits; return warnings
-    GET  /api/heating/floor-plan/preview            — dry-run projection
-    DELETE /api/heating/floor-plan                  — clear the plan
-
-    POST /api/heating/floor-plan/image/{level_id}   — upload background image
-    GET  /api/heating/floor-plan/image/{level_id}   — fetch the image
-    DELETE /api/heating/floor-plan/image/{level_id} — clear the image
-
-Storage:
-    Plan metadata: ``heating.floor_plan`` in ``config/config.yaml``.
-    Background images: ``data/floor_plans/{level_id}.{ext}`` — keeps YAML
-    small; images are first-class files on disk.
-
-Image limits:
-    20 MB per upload. Allowed types: image/png, image/jpeg.
-    PDFs MUST be rendered to PNG client-side (via pdf.js) before upload.
+Plan metadata lives in config.yaml; images are files under data/floor_plans/ to
+keep the YAML small. 20 MB, PNG/JPEG only — PDFs must be rendered client-side.
+See docs/heating.md.
 """
 from __future__ import annotations
 
@@ -92,7 +77,7 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
                 pass
         return c
 
-    # ─────────────────────── plan read/write ───────────────────────
+    # plan read/write
 
     @app.get("/api/heating/floor-plan")
     async def get_floor_plan():
@@ -214,7 +199,7 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
                     pass
         return {"success": True}
 
-    # ─────────────────────── background images ───────────────────────
+    # background images
 
     @app.post("/api/heating/floor-plan/image/{level_id}")
     async def upload_floor_plan_image(level_id: str, file: UploadFile = File(...)):

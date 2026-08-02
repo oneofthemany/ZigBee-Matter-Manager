@@ -1,23 +1,9 @@
-/**
- * Packet Flow Panel
- * =================
- *
- * Renders the live packet-flow widget inside the existing
- * `#debugPacketsModal`:
- *   - global rate readout (1s / 10s / 60s)
- *   - peak 1s rate over the last hour (burst awareness)
- *   - RX / TX split + tracked-device count
- *   - 60-second sparkline (inline SVG, no deps)
- *   - hourly statistical summary: mean, stddev, CV, P50/P95/P99
- *   - top-5 peak history with timestamps + dominant device attribution
- *   - top-talkers table
- *   - per-cluster table
- *   - anomaly badges
- *
- * Data arrives via `packet_flow` WebSocket messages (every 2s) routed by
- * websocket.js. A single REST snapshot is fetched on first init so the panel
- * isn't empty before the first WS push lands.
- */
+/* Live packet-flow widget inside #debugPacketsModal: rate readouts, hourly
+   statistics, sparkline, top-talker and per-cluster tables, anomaly badges.
+
+   Fed by `packet_flow` WebSocket messages every 2 s, routed by websocket.js,
+   with one REST snapshot on first init so the panel is not empty before the
+   first push lands. See docs/debugging.md. */
 
 import { state } from './state.js';
 import { createChart } from './chart-utils.js';
@@ -77,7 +63,7 @@ export function clearPacketFlow() {
     });
 }
 
-// --- internal renderers ----------------------------------------------------
+// internal renderers
 
 function renderFlowPanel(p) {
     renderGlobalRate(p.global || {});

@@ -208,9 +208,7 @@ class DatabaseMixin:
             "count_failed": len(failed)
         }
 
-    # =========================================================================
     # AUTOMATIC MAINTENANCE
-    # =========================================================================
 
     def _orphan_removal_is_safe(self, result: dict, max_fraction: float):
         """Decide whether an orphan set is safe to delete unattended.

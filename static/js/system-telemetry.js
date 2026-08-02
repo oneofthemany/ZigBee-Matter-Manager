@@ -24,9 +24,6 @@ const SERIES = [
     { key: 'cpu_temp',    label: 'CPU Temp', color: '#dc3545', id: 'temp' },
 ];
 
-// ============================================================================
-// INIT
-// ============================================================================
 
 export function initSystemTab() {
     const tab = document.querySelector('button[data-bs-target="#system"]');
@@ -64,9 +61,7 @@ function _stopTab() {
     if (_dbTimer)    { clearInterval(_dbTimer);    _dbTimer = null; }
 }
 
-// ============================================================================
 // SKELETON (rendered once)
-// ============================================================================
 
 function _renderSkeleton() {
     return `
@@ -142,9 +137,7 @@ function _gaugeCard(id, label, icon, warn, crit) {
     </div>`;
 }
 
-// ============================================================================
 // GAUGE UPDATES (surgical — textContent + attribute only)
-// ============================================================================
 
 async function _refreshGauges() {
     try {
@@ -250,9 +243,7 @@ function _updateAlerts(alerts) {
     if (el.innerHTML !== newHtml) el.innerHTML = newHtml;
 }
 
-// ============================================================================
 // HISTORY CHART — ECharts time-series, full option rebuilt on each refresh
-// ============================================================================
 
 async function _refreshChart() {
     const hours = parseInt(document.getElementById('sys-history-hours')?.value || '1');
@@ -325,9 +316,7 @@ function _renderChart() {
     });
 }
 
-// ============================================================================
 // DB STATS (low-frequency, innerHTML is fine here)
-// ============================================================================
 
 async function _refreshDbStats() {
     try {
@@ -355,9 +344,7 @@ async function _refreshDbStats() {
     } catch (e) { /* silent */ }
 }
 
-// ============================================================================
 // ACTIONS
-// ============================================================================
 
 async function _sysPrune() {
     if (!await window.zbmConfirm({
@@ -377,9 +364,7 @@ async function _sysPrune() {
     }
 }
 
-// ============================================================================
 // WINDOW HANDLERS
-// ============================================================================
 
 window._sysRefreshChart = _refreshChart;
 window._sysPrune = _sysPrune;

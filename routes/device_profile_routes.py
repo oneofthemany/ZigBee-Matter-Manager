@@ -138,9 +138,7 @@ def _friendly_label_for_raw(raw_key: str, topology: Dict[str, Any] | None = None
 
 def register_profile_routes(app):
 
-    # =====================================================================
     # STATIC PATHS FIRST  (must come before /api/profiles/{profile_id})
-    # =====================================================================
 
     @app.get("/api/profiles")
     async def list_profiles(source: Optional[str] = None):
@@ -246,9 +244,7 @@ def register_profile_routes(app):
         from modules.device_profiles_apply import run_action
         return await run_action(dev, action_id, args=args)
 
-    # =====================================================================
     # TWO-SEGMENT STATIC PREFIXES  (also before /{profile_id})
-    # =====================================================================
 
     @app.get("/api/profiles/export/{profile_id}")
     async def export_profile(profile_id: str):
@@ -471,9 +467,7 @@ def register_profile_routes(app):
             "errors": errors,
         }
 
-    # =====================================================================
     # CATCH-ALL  /{profile_id}  — declared LAST so static paths win
-    # =====================================================================
 
     @app.get("/api/profiles/{profile_id}")
     async def get_profile(profile_id: str):
@@ -488,10 +482,6 @@ def register_profile_routes(app):
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"success": True, "deleted": profile_id}
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _device_topology_summary(dev) -> Dict[str, Any]:
     """

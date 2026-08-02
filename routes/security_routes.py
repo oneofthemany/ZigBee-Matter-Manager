@@ -1,31 +1,10 @@
 """
-security_routes.py
-==================
-API for physical-security providers (smart locks). Providers are described
-by a registry so the frontend can build its Security tab dynamically —
-adding Yale (or anything else) later means a new entry in PROVIDERS plus
-its own endpoints, no frontend structural changes.
+API for physical-security providers (smart locks).
 
-First provider: Nuki, over two channels:
-  * bridge — Nuki Bridge HTTP API on the LAN (modules/nuki_controller.py)
-  * matter — bridge-less locks (Smart Lock 3.0 Pro / 4th gen) commissioned
-    through the app's embedded Matter server; they surface here filtered
-    from the Matter device list (type "Lock").
-
-Endpoints
----------
-GET  /api/security/providers                    — registry + per-channel state
-GET  /api/security/nuki/status                  — bridge /info + matter summary
-GET  /api/security/nuki/locks                   — unified lock list (both channels)
-POST /api/security/nuki/locks/{lock_id}/action  — {action: lock|unlock|unlatch|
-                                                   lock_n_go|lock_n_go_unlatch}
-POST /api/security/nuki/bridge/discover         — find bridges via Nuki cloud
-POST /api/security/nuki/bridge/auth             — fetch token (button pressed
-                                                   on the bridge within 30 s)
-
-Config is read from config.yaml per request (like ac_routes) so Settings
-edits apply without a restart. Lock ids are channel-namespaced:
-"bridge:<nukiId>" / "matter:<node_id>".
+Providers come from a registry so the frontend builds its Security tab
+dynamically. First provider is Nuki, over a LAN bridge channel and a bridge-less
+Matter channel; lock ids are channel-namespaced. Config is read per request so
+Settings edits need no restart. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -199,7 +178,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
 
         state["probe"] = asyncio.create_task(_probe())
 
-    # ── device-list + automation integration ───────────────────────────
+    # device-list + automation integration
     # Locks (never the bridge itself) surface in /api/devices like AC units
     # do, and the poller below keeps their state fresh so automations can
     # trigger on lock/unlock even with no UI open.
@@ -320,7 +299,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
                "lock_n_go_unlatch": "unlatch"}.get(action, action)
         return await mb.send_command(node_id, cmd)
 
-    # ── Provider registry ───────────────────────────────────────────────
+    # Provider registry
 
     @app.get("/api/security/providers")
     async def security_providers():
@@ -366,7 +345,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             },
         ]}
 
-    # ── Nuki: status / locks / actions ──────────────────────────────────
+    # Nuki: status / locks / actions
 
     @app.get("/api/security/nuki/status")
     async def nuki_status():
@@ -450,7 +429,7 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             logger.warning(f"Nuki action '{action}' on {lock_id} failed: {e}")
             return {"success": False, "error": str(e) or type(e).__name__}
 
-    # ── Nuki: bridge onboarding helpers ─────────────────────────────────
+    # Nuki: bridge onboarding helpers
 
     @app.post("/api/security/nuki/bridge/discover")
     async def nuki_bridge_discover():
@@ -480,14 +459,11 @@ def register_security_routes(app: FastAPI, get_matter_bridge=None,
             logger.warning(f"Nuki bridge /auth failed: {e}")
             return {"success": False, "error": str(e) or type(e).__name__}
 
-    # ── Yale: status / locks / actions (Matter channel) ─────────────────
-    # Cloud control via yalexs is intentionally not wired: both August and
-    # Yale backends now reject the community API key (August requires an
-    # official partner key; Yale Home OAuths only through Home Assistant),
-    # so a standalone app cannot authenticate. Yale Assure Lock 2 / Linus
-    # L2 commission over Matter instead — local and credential-free. If a
-    # partner key is ever obtained, add a yale_controller module and a
-    # "cloud" channel here mirroring the Nuki bridge pattern.
+    # Yale: status / locks / actions over the Matter channel. Cloud control via
+    # yalexs is deliberately not wired — August requires an official partner key
+    # and Yale Home OAuths only through Home Assistant, so a standalone app cannot
+    # authenticate. Assure Lock 2 / Linus L2 commission over Matter instead: local
+    # and credential-free. With a partner key, add a "cloud" channel here.
 
     def _yale_enabled() -> bool:
         cfg = _load_yale_cfg()

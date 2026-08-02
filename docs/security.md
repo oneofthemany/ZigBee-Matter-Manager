@@ -203,3 +203,145 @@ Watch for these log lines (`WARNING` level):
 The last one in particular — recovery code usage — is worth noticing.
 If you see it and you didn't expect it, change your password and
 regenerate recovery codes immediately.
+## Self-signed certificate bootstrap
+
+`modules/ssl_bootstrap.py` is the single source of truth for generating the
+app's self-signed HTTPS certificate, used by `main.py`'s entry point. It
+auto-generates on first boot so the app serves HTTPS out of the box, which is
+what the watchdog, manager and container healthcheck all expect.
+
+HTTPS is always on. There is no HTTP mode and no toggle — plain HTTP only ever
+appears as the cert-failure fallback in `main.py`, and that is an error
+condition rather than a configuration.
+
+### Design rules
+
+- **Never regenerate an existing pair.** Browsers that already trust the cert
+  would break, which is the leading cause of "this site is unsafe" after a
+  config tweak.
+- **Sensible SANs** (localhost, hostname, 127.0.0.1) so internal probes and
+  localhost browsing do not hit name/IP mismatches.
+- **Lock the private key to 0600** — openssl writes 0644 by default.
+
+### SANs and the LAN address
+
+A SAN of only localhost/hostname/127.0.0.1 means the cert does *not* cover the
+address people actually browse to (`https://192.168.1.x:8000`), so every client
+gets a name-mismatch warning. Browsers let you click through it; strict clients
+do not — the Android presence companion fails hostname verification outright,
+whether or not the cert itself is trusted.
+
+So the bootstrap also adds every non-loopback IPv4 this host can see, plus
+anything in the `ZMM_CERT_SANS` environment variable (comma-separated).
+
+`ZMM_CERT_SANS` matters when the app runs in a bridged container: auto-detection
+then sees the container's address (10.88.x.x), not the LAN IP the user types.
+Set it to the LAN IP or hostname you actually browse to:
+
+```
+ZMM_CERT_SANS=192.168.1.1,zmm.local
+```
+
+## Map-tile proxy
+
+Presence maps need tiles, and fetching them straight from a public tile server
+means every viewer's browser announces the coordinates it is looking at — on
+every pan and zoom — to a third party. For a map centred on where your family
+live, that is the one request pattern worth avoiding.
+
+Proxying through the hub (`modules/map_tiles.py`) changes what leaks:
+
+- the tile server sees the **hub's** address, once per tile ever, rather than
+  each viewer's address on every interaction;
+- a cached tile involves no external request at all, so a household that looks
+  at the same few square kilometres goes quiet almost immediately;
+- the browser talks only to ZMM, so this keeps working over a tunnel or VPN
+  where the client may have no direct internet access.
+
+It does **not** make the first fetch private — the hub still asks upstream for
+tiles it has never seen. Seeding the cache offline is the only way to avoid that
+entirely, and is left to the operator.
+
+The proxy is authenticated deliberately. An open tile proxy is something other
+people will find and use, and the traffic would be attributed to this hub's
+address by the upstream server — which is exactly how a self-hosted tool gets
+blocked. [Place search](place-search.md) rides along with it for the same reason.
+
+**Upstream etiquette.** OpenStreetMap's tile policy requires an identifying
+User-Agent and forbids bulk or systematic downloading. This proxy is
+demand-driven — it fetches only tiles someone actually looked at — and caps
+concurrency so a fast pan cannot turn into a burst. **Do not point a prefetcher
+at it.**
+
+## Source-IP resolution and LAN classification
+
+`modules/auth_network.py` handles two distinct concerns.
+
+**1. Get the real client IP**, even when ZMM sits behind a Cloudflare Tunnel
+(`CF-Connecting-IP`), a reverse proxy such as nginx/Caddy/Traefik
+(`X-Forwarded-For`, `X-Real-IP`, possibly `Forwarded`), Tailscale (no proxy, but
+the immediate peer *is* the real client), or direct LAN access.
+
+Headers are trusted **only** when the immediate peer is on a configured
+trusted-proxy list. Trusting `X-Forwarded-For` from any source lets an attacker
+spoof their IP trivially.
+
+**2. Classify an IP as LAN-or-not**, for the `network:lan_only` scope. Defaults
+cover RFC1918, loopback, link-local, CGNAT (which includes Tailscale), and IPv6
+ULA and link-local. Users can override.
+
+```yaml
+security:
+  network:
+    trusted_proxies: ["127.0.0.1/8", "172.16.0.0/12", "10.0.0.0/8"]
+    cloudflare_tunnel_enabled: true   # also trust CF-Connecting-IP from
+                                      # Cloudflare's published ranges; a recent
+                                      # snapshot ships, overridable
+    lan_ranges: [...]                 # override the default LAN ranges
+```
+
+## Physical security providers
+
+`routes/security_routes.py` describes providers by a registry, so the frontend
+builds its Security tab dynamically — adding a provider later means a new entry
+in `PROVIDERS` plus its own endpoints, with no frontend structural change.
+
+First provider is Nuki, over two channels: **bridge**, the Nuki Bridge HTTP API
+on the LAN (`modules/nuki_controller.py`), and **matter**, bridge-less locks
+(Smart Lock 3.0 Pro / 4th gen) commissioned through the embedded Matter server
+and filtered from the Matter device list by type `Lock`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/security/providers` | registry + per-channel state |
+| `GET /api/security/nuki/status` | bridge `/info` + matter summary |
+| `GET /api/security/nuki/locks` | unified lock list across both channels |
+| `POST /api/security/nuki/locks/{lock_id}/action` | `lock`, `unlock`, `unlatch`, `lock_n_go`, `lock_n_go_unlatch` |
+| `POST /api/security/nuki/bridge/discover` | find bridges via the Nuki cloud |
+| `POST /api/security/nuki/bridge/auth` | fetch token (bridge button pressed within 30 s) |
+
+Config is read per request, like `ac_routes`, so Settings edits apply without a
+restart. Lock ids are channel-namespaced: `bridge:<nukiId>` / `matter:<node_id>`.
+
+Yale is deliberately Matter-only — see the note in `security_routes.py`.
+
+### Nuki Bridge client
+
+`modules/nuki_controller.py` is an async client for the Nuki Bridge HTTP API
+(v1.13), covering the "with bridge" half of the integration. Bridge-less locks
+are commissioned through the embedded Matter server instead and handled in
+`routes/security_routes.py`.
+
+- All endpoints are plain HTTP GET on the bridge, default port 8080.
+- Auth is a token, sent either as `token=` (plain) or as the hashed triple
+  `ts` / `rnr` / `hash`, where `hash = sha256("<ts>,<rnr>,<token>")`. **Hashed is
+  the default here** — the plain form leaks the token to anything that can see
+  LAN traffic. The bridge must have "hashed token only" left on (the factory
+  default) for hashed to work; plain is kept as an opt-out for old firmware.
+- `/auth` returns a fresh token, but only while the bridge's button has been
+  pressed within the last 30 s, and only if auth-enable is on.
+- Bridge discovery is a Nuki cloud call to `api.nuki.io` — the bridge phones
+  home its LAN ip/port, and no credentials are needed.
+
+Config lives in `config.yaml` under `security.nuki.bridge`:
+`{enabled, host, port, token, hashed_token}`.

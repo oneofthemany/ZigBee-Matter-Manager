@@ -1,12 +1,10 @@
 """
-AI Automations - Natural Language to Rule Translation
-=====================================================
-Builds a device-aware system prompt from the live device registry,
-sends user intent to the LLM, and parses the response into a valid
-AutomationEngine rule dict ready for add_rule() or form pre-fill.
+Natural language to automation rule, via the LLM.
 
-Hook: ai_api.py -> POST /api/ai/automation
-Dependencies: ai_assistant.py, automation.py (schema only)
+Builds a device-aware system prompt from the live registry, sends the user's
+intent, and parses the response into a rule dict ready for add_rule() or form
+pre-fill. Reached from POST /api/ai/automation, after nl_automations.py has
+failed to resolve the sentence deterministically. See docs/automations.md.
 """
 
 import json

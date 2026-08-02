@@ -1,23 +1,11 @@
 """
-modules/network_migrate.py
-
 Write Zigbee network credentials to the coordinator radio.
 
-Why this exists: zigpy only applies the `network` config section (key /
-PAN ID / extended PAN ID / channel) when it FORMS a network, and auto_form
-fires solely on a blank radio. A coordinator that already holds a network —
-factory firmware, a previous ZHA/Zigbee2MQTT life, an earlier install —
-silently keeps its old credentials, so the key generated into config.yaml
-never reaches the radio. This module closes that gap:
-
-  * Pending restore — the setup wizard stages imported credentials (manual
-    entry or a coordinator backup JSON: zigpy/ZHA format or the Open
-    Coordinator Backup format used by Zigbee2MQTT's coordinator_backup.json)
-    into data/pending_network_restore.json. ZigbeeService.start() writes them
-    to the radio before the stack comes up.
-  * Credential enforcement — compare the live network against config.yaml
-    and re-form a VIRGIN network (no joined devices) so the coordinator
-    actually carries the configured credentials.
+zigpy applies the `network` config only when it FORMS a network, so a
+coordinator that already holds one silently keeps its old credentials and the
+key in config.yaml never reaches the radio. Handles staged imports from the
+setup wizard and re-forms a virgin network to enforce config.
+See docs/onboarding.md.
 """
 
 import json
@@ -39,9 +27,7 @@ UNKNOWN_COUNTER_JUMP = 1_000_000
 BACKUP_COUNTER_JUMP = 25_000
 
 
-# ---------------------------------------------------------------------------
 # Pending-restore staging (written by the setup API, consumed at radio start)
-# ---------------------------------------------------------------------------
 
 def stage_pending_restore(payload: dict) -> None:
     os.makedirs(os.path.dirname(PENDING_RESTORE_PATH) or ".", exist_ok=True)
@@ -78,9 +64,7 @@ def clear_pending_restore(applied: bool) -> None:
         os.replace(PENDING_RESTORE_PATH, dest)
 
 
-# ---------------------------------------------------------------------------
 # Backup construction
-# ---------------------------------------------------------------------------
 
 def build_backup_from_manual(creds: dict):
     """Build a zigpy NetworkBackup from manually entered credentials."""
@@ -186,9 +170,7 @@ def credentials_from_backup(backup) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
 # Radio writes
-# ---------------------------------------------------------------------------
 
 def _bare_conf(conf: dict) -> dict:
     """Radio config without a database — connect/write/disconnect only."""
@@ -273,9 +255,7 @@ async def apply_pending_restore(app_cls, conf: dict) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
 # Verification
-# ---------------------------------------------------------------------------
 
 def network_mismatches(network_info, network_conf: dict) -> list:
     """
@@ -301,9 +281,7 @@ def network_mismatches(network_info, network_conf: dict) -> list:
     return diffs
 
 
-# ---------------------------------------------------------------------------
 # Setup wizard entry point
-# ---------------------------------------------------------------------------
 
 def apply_network_setup(mode: str, *, credentials: dict | None = None,
                         backup_json: dict | None = None,

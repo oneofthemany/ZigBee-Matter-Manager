@@ -1,6 +1,4 @@
-/* ============================================================
-   ZigBee Matter Manager — Toast Notification Styles
-   ============================================================ */
+/* ZigBee Matter Manager — Toast Notification Styles */
 
 /* Toast Container — fixed bottom-right */
 #zbm-toast-container {
@@ -95,7 +93,7 @@
     opacity: 0.8;
 }
 
-/* --- Variants --- */
+/* Variants */
 
 /* Success */
 .zbm-toast-success {
@@ -137,7 +135,7 @@
 .zbm-toast-info .zbm-toast-icon { color: #3b82f6; }
 .zbm-toast-info .zbm-toast-close { color: #1e40af; }
 
-/* --- Dark mode variants --- */
+/* Dark mode variants */
 
 [data-theme="dark"] .zbm-toast-success {
     background: rgba(5, 46, 22, 0.92);
@@ -172,7 +170,7 @@
 [data-theme="dark"] .zbm-toast-info .zbm-toast-close { color: #bfdbfe; }
 
 
-/* --- Animations --- */
+/* Animations */
 
 @keyframes zbm-toast-in {
     0% {
@@ -197,7 +195,7 @@
 }
 
 
-/* --- Mobile: full width at bottom --- */
+/* Mobile: full width at bottom */
 
 @media (max-width: 575.98px) {
     #zbm-toast-container {

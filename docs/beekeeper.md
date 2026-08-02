@@ -241,3 +241,53 @@ Default blocklist data comes from the community-maintained
 [StevenBlack/hosts](https://github.com/StevenBlack/hosts) and
 [OISD](https://oisd.nl/) projects. Beekeeper only ingests and serves that data —
 please support those projects if you rely on them.
+
+## Wire codec
+
+Beekeeper is a *forwarding* sinkhole, which lets `beekeeper/wire.py` be a tiny,
+fully-owned wire codec instead of a general DNS library:
+
+- To decide whether to block, only the question section of an incoming query
+  needs decoding — the transaction id, the first QNAME and its QTYPE.
+- For a **blocked** name the whole response is synthesised here: a sinkhole
+  A/AAAA record, or NXDOMAIN/NODATA. A fixed, simple shape.
+- For an **allowed** name nothing is ever re-encoded. The raw query bytes are
+  relayed to the upstream resolver and the upstream's raw response bytes are
+  relayed straight back. Only the 2-byte id may be rewritten (`patch_id`) when a
+  cached answer is reused for a new query.
+
+So the module never has to serialise arbitrary upstream RRsets — the part of a
+DNS library that is genuinely fiddly: name compression on write, every RR type,
+EDNS option round-tripping. It stays a couple of hundred lines with no
+third-party dependency, matching Beekeeper's "own the source" goal.
+
+Wire format reference: RFC 1035 §4 (header, question, RRs, name compression).
+
+## Upstream forwarding and cache
+
+Unblocked queries are relayed verbatim to the configured upstream resolvers —
+Cloudflare 1.1.1.1 and Quad9 9.9.9.9 by default — with failover: each is tried
+in turn until one answers within the timeout. The upstream's response bytes are
+returned unchanged; an answer is never re-encoded.
+
+A tiny LRU cache holds recent UDP answers keyed by `(qname, qtype, qclass)`. It
+uses a single fixed TTL cap rather than parsing per-record TTLs from the wire —
+a deliberate simplification for a home resolver. At worst a name is served from
+cache for up to `cache.ttl` seconds (default 300) past its real TTL. Cached
+answers are reused across clients by rewriting the 2-byte transaction id.
+
+Only UDP answers are cached, and only the UDP path reads the cache, so a large
+TCP-only answer is never squeezed back out over UDP.
+
+## Blocklist ingest and matching
+
+**Ingest.** Public hosts-format and domain-list sources are fetched over HTTPS
+with the standard library — no third-party HTTP client, keeping the sidecar
+dependency-free and the source fully owned — parsed into bare domains, and
+cached as plain `.domains` files under `data/beekeeper/lists/`. **Those files are
+yours to edit**; a compile step unions the enabled ones into the live match set.
+
+**Match.** A query name is blocked when it, or any parent domain, is in the block
+set, **unless** an allowlist entry (exact or parent) covers it. The user denylist
+is an always-on block set layered on top of the fetched lists. Matching is a
+short walk up the label suffixes, which is plenty fast at household query rates.

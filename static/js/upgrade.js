@@ -1,13 +1,7 @@
 /**
- * upgrade.js
- * Settings tab — Upgrade Manager card
- *
- * Self-contained module. Add to main.js:
- *   import { initUpgrade } from './upgrade.js';
- *   initUpgrade();
- *
- * Requires a <div id="upgradeCardMount"></div> in the Settings tab
- * (see index.html snippet).
+ * Settings tab — Upgrade Manager card. Self-contained: call initUpgrade() from
+ * main.js and provide <div id="upgradeCardMount"> in the Settings tab.
+ * See docs/upgrades.md.
  */
 
 import { confirmDialog } from './dialogs.js';
@@ -31,9 +25,6 @@ const POLL_ACTIVE_MS = 5000;
 const POLL_IDLE_MS = 30000;
 const ACTIVE_STATES = ['checking', 'building', 'swapping', 'rolling_back', 'ready_to_swap'];
 
-// ============================================================================
-// INIT
-// ============================================================================
 
 export function initUpgrade() {
     // Render when the Settings tab is shown
@@ -72,9 +63,7 @@ function stopPolling() {
     if (_logPollTimer) { clearInterval(_logPollTimer); _logPollTimer = null; }
 }
 
-// ============================================================================
 // RENDER THE STATIC CARD SHELL
-// ============================================================================
 
 function renderUpgradeCard() {
     const mount = document.getElementById('upgradeCardMount');
@@ -236,9 +225,7 @@ function renderUpgradeCard() {
     mount.dataset.rendered = 'true';
 }
 
-// ============================================================================
 // RUST COMPONENTS (native wheels baked in at image build time)
-// ============================================================================
 
 async function loadRustComponents() {
     const body = document.getElementById('rustCardBody');
@@ -327,9 +314,7 @@ async function loadRustComponents() {
     wire('upgRustEq', 'eq', 'Cast EQ DSP');
 }
 
-// ============================================================================
 // PYTHON DEPENDENCIES (recovery / feature testing)
-// ============================================================================
 
 function _depsEsc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -438,9 +423,7 @@ async function installDependencies(payload) {
     }
 }
 
-// ============================================================================
 // REFRESH STATUS + RENDER
-// ============================================================================
 
 async function refreshUpgradeStatus() {
     // Don't fetch while the page is in a background browser tab;
@@ -677,9 +660,7 @@ function renderStateBadge(state) {
     return `<span class="badge ${m.cls}"><i class="fas ${m.icon} me-1"></i> ${m.label}</span>`;
 }
 
-// ============================================================================
 // SETTINGS SECTION
-// ============================================================================
 
 function renderSettings(data) {
     const body = document.getElementById('upgradeSettingsBody');
@@ -771,9 +752,7 @@ async function loadManagerToken() {
     }
 }
 
-// ============================================================================
 // ACTIONS
-// ============================================================================
 
 async function checkForUpdates(force = true) {
     const btn = document.getElementById('upgradeCheckBtn');
@@ -1023,9 +1002,7 @@ async function saveUpgradeSettings() {
     setTimeout(() => { alert.style.display = 'none'; }, 5000);
 }
 
-// ============================================================================
 // LOG VIEWER
-// ============================================================================
 
 async function showLog() {
     const modalEl = document.getElementById('upgradeLogModal');
@@ -1084,9 +1061,7 @@ async function refreshBuildLog() {
     } catch (e) { /* ignore */ }
 }
 
-// ============================================================================
 // EXPORT / GLOBALS
-// ============================================================================
 
 if (typeof window !== 'undefined') {
     window.startUpgradeBuild = startBuild;
@@ -1097,9 +1072,6 @@ if (typeof window !== 'undefined') {
     window.dismissFailedUpgrade = dismissFailedUpgrade;
 }
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
 
 function escapeHtml(s) {
     if (s === null || s === undefined) return '';

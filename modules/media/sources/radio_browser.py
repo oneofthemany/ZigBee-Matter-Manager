@@ -1,14 +1,11 @@
 """
-Radio-Browser source — the free community internet-radio directory.
+Radio-Browser source — the free community internet-radio directory
+(https://api.radio-browser.info).
 
-API: https://api.radio-browser.info  (https://www.radio-browser.info)
-
-Etiquette the directory asks for and we honour:
-  * Resolve a concrete server from the round-robin host ``all.api.radio-browser.info``
-    (DNS returns multiple mirrors) and reuse it; don't hammer one mirror.
-  * Send a descriptive, unique User-Agent.
-  * Use ``url_resolved`` (the directory follows playlists/redirects for us) so
-    the player gets a directly-playable stream.
+Etiquette the directory asks for and this honours: resolve a concrete mirror
+from the round-robin host and reuse it rather than hammering one, send a
+descriptive unique User-Agent, and use `url_resolved` so the player gets a
+directly-playable stream.
 """
 from __future__ import annotations
 

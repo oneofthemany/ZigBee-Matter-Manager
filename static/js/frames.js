@@ -1,21 +1,10 @@
 /**
  * Frames — dynamically-generated dashboards.
  *
- * Hive = the install. Frame = a dashboard. Chamber = a room. Cell = a device tile.
- *
- * Structure (which cell kind, which quick actions, which readouts) comes from
- * /api/frames/auto. Live VALUES come from state.deviceCache, which the existing
- * websocket already keeps current — so a state change re-renders one cell and
- * never refetches the layout.
- *
- * Quick actions on a device cell go through window.sendCommand (actions.js),
- * which already does the optimistic update. A group cell's quick actions go
- * through frameGroupCommand instead (POST /api/groups/{id}/control) — a
- * group has no single device to send an optimistic update for, so its tile
- * relies on member devices' own websocket updates instead (see
- * framesHandleDeviceUpdate).
- *
- * Zigbee-only for now — the backend excludes everything else.
+ * Structure comes from /api/frames/auto; live values come from
+ * state.deviceCache, which the websocket keeps current, so a state change
+ * re-renders one cell without refetching the layout. Zigbee-only for now.
+ * Terminology and the group-command conventions: docs/frames.md.
  */
 
 import { state } from './state.js';
@@ -69,7 +58,7 @@ const READOUT_ICONS = {
     energy: 'fa-gauge-high',
 };
 
-// ── state helpers (match the conventions in modal/control.js) ────────
+// state helpers (match the conventions in modal/control.js)
 
 function devOf(cell) {
     return state.deviceCache?.[cell.ieee] || null;
@@ -126,7 +115,7 @@ function groupPositionPct(cell) {
     return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 50;
 }
 
-// ── readout formatting ──────────────────────────────────────────────
+// readout formatting
 
 const NUM_UNITS = {
     temperature: '°C',
@@ -197,7 +186,7 @@ function readoutHtml(cell, r) {
     return `<span class="readout"><i class="fas ${icon}"></i>${esc(num)}${unit}</span>`;
 }
 
-// ── controls ────────────────────────────────────────────────────────
+// controls
 
 function controlsHtml(cell) {
     const f = cell.features || [];
@@ -315,7 +304,7 @@ function groupControlsHtml(cell) {
     return (html ? `<div class="cell-controls">${html}</div>` : '') + sliders;
 }
 
-// ── cells ───────────────────────────────────────────────────────────
+// cells
 
 function cellIcon(cell) {
     if (cell.is_group) return 'fa-layer-group';
@@ -391,7 +380,7 @@ function cellHtml(cell) {
             </div>`;
 }
 
-// ── frame ───────────────────────────────────────────────────────────
+// frame
 
 export async function loadFrame() {
     if (loading) return;
@@ -525,7 +514,7 @@ export function setSplit(next) {
     return loadFrame();
 }
 
-// ── frame selector ──────────────────────────────────────────────────
+// frame selector
 
 function selectValue() {
     return current.type === 'saved' ? `saved:${current.id}` : `auto:${current.split}`;
@@ -575,7 +564,7 @@ export function selectFrame(value) {
     return loadFrame();
 }
 
-// ── builder ─────────────────────────────────────────────────────────
+// builder
 
 /**
  * Open the frame builder.
@@ -950,7 +939,7 @@ export async function deleteCurrentFrame() {
     }
 }
 
-// ── quick actions ───────────────────────────────────────────────────
+// quick actions
 
 /**
  * Route a cell action through the shared command path.
@@ -980,21 +969,10 @@ export async function frameSetpoint(ieee, delta) {
 }
 
 /**
- * Route a group cell's quick action through POST /api/groups/{id}/control —
- * a different command surface from a device's (window.sendCommand), with its
- * own unit conventions:
- *
- * - brightness: the slider is 0-100 like a device's, but control_group calls
- *   the ZCL level-control cluster directly with no conversion, so it wants a
- *   raw 0-254 level (see handlers/general.py:set_brightness_pct, which is
- *   what does that conversion on the single-device path).
- * - position: the UI convention is 100 = open (handlers/blinds.py inverts
- *   this for a single device just before the cluster call); control_group
- *   has no such inversion, so it's done here instead.
- *
- * Member devices report their new state over the websocket like any other
- * command, so no optimistic update is needed — framesHandleDeviceUpdate picks
- * it up per member device from there.
+ * Route a group cell's quick action through POST /api/groups/{id}/control — a
+ * different command surface from a device's, with its own unit conventions
+ * (raw 0-254 brightness, un-inverted position). Members report their new state
+ * over the websocket, so no optimistic update. See docs/frames.md.
  */
 export async function frameGroupCommand(groupId, action, value = null) {
     let body;
@@ -1021,7 +999,6 @@ export async function frameGroupCommand(groupId, action, value = null) {
     }
 }
 
-// ── init ────────────────────────────────────────────────────────────
 
 export function initFrames() {
     // The dashboard renders Frames inside a tab and only loads it when shown.

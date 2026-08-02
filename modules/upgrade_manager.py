@@ -1,26 +1,10 @@
 """
-Upgrade Manager — blue-green container upgrades for ZMM.
+Blue-green container upgrades.
 
-Architecture:
-  - App polls the GitHub releases API for new versions (see the CalVer
-    scheme documented above parse_version, below)
-  - App writes trigger files to a shared volume directory
-  - Host-side watcher (systemd-path unit OR polling fallback) picks up triggers
-  - Host-side upgrade.sh executes: build new image → swap containers → rollback on failure
-  - State is persisted in ~/.zigbee-matter-manager/state/version.json
-
-The running app NEVER directly calls podman/docker. All container operations
-happen on the host via the trigger mechanism. This keeps the container
-unprivileged and works across any Linux + podman/docker combo.
-
-Files on disk (in the upgrade shared volume — /app/data/upgrade inside container):
-  trigger          — created by app; action + payload; watcher deletes after reading
-  status.json      — watcher writes progress; app polls
-  build.log        — full build output; app streams to UI
-  lock             — prevents concurrent upgrade operations
-
-State (~/.zigbee-matter-manager/state/version.json):
-  Installed version, previous version, auto-update prefs, last check time
+The app polls GitHub releases and writes trigger files to a shared volume; a
+host-side watcher runs upgrade.sh to build, swap and roll back. The running app
+NEVER calls podman/docker directly, which keeps the container unprivileged.
+Version scheme, trigger files and state: docs/upgrades.md.
 """
 import asyncio
 import json
@@ -36,9 +20,7 @@ import aiohttp
 
 logger = logging.getLogger("modules.upgrade_manager")
 
-# ---------------------------------------------------------------------------
 # PATHS
-# ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # /app/data/upgrade — shared with host via bind mount
@@ -60,9 +42,7 @@ DEFAULT_REPO = "oneofthemany/ZigBee-Matter-Manager"
 GITHUB_API_BASE = "https://api.github.com"
 
 
-# ---------------------------------------------------------------------------
 # VALID STATES
-# ---------------------------------------------------------------------------
 VALID_STATES = {
     "idle",          # Nothing happening
     "checking",      # Polling GitHub for new versions
@@ -76,28 +56,10 @@ VALID_STATES = {
 VALID_ACTIONS = {"install_watcher", "build", "swap", "rollback", "cancel", "gc"}
 
 
-# ---------------------------------------------------------------------------
-# VERSION PARSING / COMPARISON
-#
-# CalVer scheme (replaces plain semver as of the 2026-07-20 cutover):
-#   MM.YYYY           e.g. 07.2026            — "major": monthly milestone
-#   DD.MM.YYYY         e.g. 20.07.2026         — "minor": daily release
-#   DD.NN.MM.YYYY       e.g. 20.01.07.2026     — "patch": same-day revision
-#     (NN is a 1-based counter of revisions published after that day's daily)
-#
-# The tag's own shape *is* its significance — there's no diff-based bump
-# math like old semver had, because a date has no inherent magnitude. Fewer
-# components = a bigger, less frequent release. UI channel names: major =
-# "Monthly", minor = "Daily", patch = "Bleeding edge". "Testing"
-# (channel "prerelease") is a fully separate axis: it means the GitHub
-# release is flagged Pre-release, and applies to a tag of any of the three
-# shapes above.
-#
-# Old semver tags (e.g. "3.4.7") are still recognised for comparison so
-# existing installs cross over cleanly — they always sort older than every
-# CalVer tag, and are treated as maximally significant ("major"-equivalent)
-# so an update is offered on whatever channel the user is on.
-# ---------------------------------------------------------------------------
+# CalVer since the 2026-07-20 cutover: MM.YYYY (major/Monthly),
+# DD.MM.YYYY (minor/Daily), DD.NN.MM.YYYY (patch/Bleeding edge). The tag shape
+# is its significance — no bump maths. Legacy semver still parses and sorts
+# older than every CalVer tag. See docs/upgrades.md.
 _LEGACY_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 
@@ -194,10 +156,8 @@ def compare_versions(a: str, b: str) -> int:
     return 0
 
 
-# Rank of a release's own tag shape — used to gate channels. A release
-# doesn't need to be *compared* against current to know its significance
-# anymore; the tag shape declares it outright. Legacy semver counts as
-# "major" so it always clears every channel's threshold once superseded.
+# Rank of a release's own tag shape, used to gate channels. Legacy semver counts
+# as "major" so it always clears every threshold once superseded.
 _KIND_RANK = {"legacy": 3, "patch": 1, "minor": 2, "major": 3}
 _CHANNEL_MIN_RANK = {"patch": 1, "minor": 2, "major": 3}
 
@@ -219,9 +179,7 @@ def meets_channel_threshold(current: str, latest: str, channel: str) -> bool:
     return _KIND_RANK.get(p["kind"], 0) >= _CHANNEL_MIN_RANK.get(channel, 1)
 
 
-# ---------------------------------------------------------------------------
 # ARCHITECTURE DETECTION
-# ---------------------------------------------------------------------------
 def detect_architecture() -> str:
     """Return a normalised architecture string matching image tag conventions."""
     m = platform.machine().lower()
@@ -234,9 +192,7 @@ def detect_architecture() -> str:
     return m  # unknown — pass through
 
 
-# ---------------------------------------------------------------------------
 # STATE PERSISTENCE
-# ---------------------------------------------------------------------------
 DEFAULT_STATE = {
     "current_version": "unknown",
     "current_image_tag": "",
@@ -338,17 +294,9 @@ def update_state(**changes) -> Dict[str, Any]:
     return state
 
 
-# ---------------------------------------------------------------------------
-# RUST COMPONENTS (native wheels baked into the image at build time)
-# ---------------------------------------------------------------------------
-# build.sh / upgrade.sh read this marker when generating the Containerfile:
-# "true" installs the Rust toolchain and builds the zmm_telemetry (fast
-# DuckDB appender) and zmm_eq (Cast EQ DSP) wheels into the image. The file
-# lives in STATE_DIR (the shared data volume), so a toggle from the UI is
-# picked up by the NEXT host-side image build — it cannot change the image
-# that is already running.
-# The two Rust crates are independent (zmm_telemetry = DuckDB appender,
-# zmm_eq = Cast EQ DSP) and get their own build markers. See build.sh Part 2.
+# Read by build.sh / upgrade.sh when generating the Containerfile. Lives in
+# STATE_DIR, so a UI toggle applies to the NEXT host-side build, never the
+# running image. zmm_telemetry and zmm_eq are independent. See docs/upgrades.md.
 APPENDER_MARKER_FILE = os.path.join(STATE_DIR, "appender.enabled")
 EQ_MARKER_FILE = os.path.join(STATE_DIR, "eq.enabled")
 
@@ -417,9 +365,7 @@ def set_rust_components(appender: Optional[bool] = None,
     return get_rust_components()
 
 
-# ---------------------------------------------------------------------------
 # TRIGGER / STATUS (the IPC between container and host watcher)
-# ---------------------------------------------------------------------------
 def read_status() -> Dict[str, Any]:
     """Read host-reported status. Returns a default dict if missing."""
     _ensure_dirs()
@@ -633,9 +579,7 @@ def watcher_installed() -> bool:
     return os.path.exists(marker)
 
 
-# ---------------------------------------------------------------------------
 # GITHUB POLLING
-# ---------------------------------------------------------------------------
 async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
     """
     Fetch GitHub releases and return the highest-versioned one that
@@ -770,9 +714,7 @@ def _build_update_result(state: Dict[str, Any], error: Optional[str] = None) -> 
     }
 
 
-# ---------------------------------------------------------------------------
 # HIGH-LEVEL OPERATIONS (called by routes)
-# ---------------------------------------------------------------------------
 def request_build(target_version: str) -> Tuple[bool, str]:
     """
     Request a background image build for target_version.
@@ -819,10 +761,8 @@ def request_swap() -> Tuple[bool, str]:
     status = read_status()
     cur_state = status.get("state")
 
-    # If the host status shows "failed" but we have a freshly-built image
-    # ready (which happens when a previous swap failed and rolled back —
-    # the image is still there, only the container start failed), allow
-    # retrying. The user is explicitly asking to swap again.
+    # A "failed" host status with a freshly-built image ready means a previous
+    # swap rolled back on container start. The user is asking to retry.
     if cur_state == "failed" and status.get("target_version"):
         # Check the failed-but-image-exists case implicitly by clearing
         # status and letting upgrade.sh verify image existence
@@ -965,9 +905,7 @@ def request_install_watcher() -> Tuple[bool, str]:
     )
 
 
-# ---------------------------------------------------------------------------
 # SETTINGS
-# ---------------------------------------------------------------------------
 VALID_CHANNELS = {"major", "minor", "patch", "prerelease"}
 
 
@@ -1008,9 +946,7 @@ def update_settings(
     return state
 
 
-# ---------------------------------------------------------------------------
 # BACKGROUND TASKS (called from main.py lifespan)
-# ---------------------------------------------------------------------------
 async def periodic_check_loop(
         interval_hours: float = 6,
         broadcast_fn=None,

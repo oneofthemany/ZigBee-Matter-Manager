@@ -1,38 +1,9 @@
 """
-signal_inspector.py — universal, device-agnostic signal capture.
-================================================================
+Universal, device-agnostic signal capture.
 
-The onboarding pain across ALL IoT devices (Zigbee or Matter, standard ZCL
-or vendor-proprietary) is the same: you cannot map what you cannot see. This
-module gives you one live view of *every raw signal a device emits*, no matter
-which handler produced it.
-
-The trick is that everything a device says already converges on a small number
-of choke points:
-
-  * ``ClusterHandler.attribute_updated`` — every ZCL / manufacturer attribute
-    report, with its raw address (endpoint, cluster, attribute). Inherited by
-    every handler, so this is universal for Zigbee.
-  * ``ClusterHandler.cluster_command``  — every cluster command received
-    (button presses, Tuya DP reports, scene recalls, …).
-  * ``device.update_state``             — the catch-all: Tuya datapoints
-    (``dp_16``), Matter attributes, and any friendly/derived key a handler
-    computes all pass through here.
-
-Each of those calls :func:`record`. We never depend on knowing the device
-*type* — a signal is just ``(source, address, value)``. That is what makes the
-inspector work for a device nobody has ever written a handler for, and what
-lets the future data-driven layer gradually replace the hard-coded handlers:
-you can see the raw address a handler is deriving from and map it yourself.
-
-Recording is always on (it is cheap — a dict update per report). Live
-streaming to the frontend only happens for devices the user is actively
-inspecting (``start(ieee)`` / ``stop(ieee)``), so idle devices cost nothing on
-the wire.
-
-This module is intentionally free of any device-class knowledge. It never
-raises into the handler path — every public entry point swallows its own
-errors.
+Records every raw signal a device emits — (source, address, value) — by tapping
+the three choke points everything converges on, with no device-class knowledge
+and no raising into the handler path. See docs/debugging.md.
 """
 from __future__ import annotations
 
@@ -233,13 +204,13 @@ class SignalInspector:
         self._baselines: Dict[str, Dict[str, tuple]] = {}
         self._baseline_ts: Dict[str, float] = {}
 
-    # ---- wiring -------------------------------------------------------
+    # wiring
 
     def set_emitter(self, emitter: Callable[[str, dict], None]) -> None:
         """Install a sync emit function (e.g. ``service._emit_sync``)."""
         self._emitter = emitter
 
-    # ---- capture (called from the handler / state choke points) -------
+    # capture (called from the handler / state choke points)
 
     def record(
             self,
@@ -296,7 +267,7 @@ class SignalInspector:
             return f"dp:{item}"
         return f"{source}:{endpoint}/{cluster}/{item}"
 
-    # ---- inspection control -------------------------------------------
+    # inspection control
 
     def start(self, ieee: Any) -> None:
         with self._lock:
@@ -331,7 +302,7 @@ class SignalInspector:
             self._baselines.pop(ieee, None)
             self._baseline_ts.pop(ieee, None)
 
-    # ---- learn-by-demonstration --------------------------------------
+    # learn-by-demonstration
 
     def mark_baseline(self, ieee: Any) -> int:
         """Stamp the current (value, count) of every signal as the baseline.
@@ -394,7 +365,7 @@ class SignalInspector:
         out.sort(key=lambda e: (rank.get(e["change"], 3), -e.get("delta_count", 0)))
         return out
 
-    # ---- read ---------------------------------------------------------
+    # read
 
     def snapshot(self, ieee: Any) -> List[Dict[str, Any]]:
         """Return all signals for a device, newest activity first."""
@@ -420,7 +391,7 @@ class SignalInspector:
         out.sort(key=lambda s: s["last_seen"], reverse=True)
         return out[:limit]
 
-    # ---- internals ----------------------------------------------------
+    # internals
 
     def _emit(self, ieee: str, signal: Dict[str, Any]) -> None:
         if self._emitter is None:
@@ -430,10 +401,6 @@ class SignalInspector:
         except Exception as e:
             logger.debug(f"signal emit failed: {e}")
 
-
-# ---------------------------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------------------------
 
 _inspector: Optional[SignalInspector] = None
 

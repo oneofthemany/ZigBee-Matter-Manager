@@ -588,7 +588,7 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
                 logger.debug(f"Insights fuel stats failed ({fuel}): {e}")
                 fuels[fuel] = None
 
-        # ── Rate position: where "now" sits in today's price curve ──
+        # Rate position: where "now" sits in today's price curve
         rate_context = None
         try:
             rates = svc.rates_today("electricity") if svc else []
@@ -663,7 +663,7 @@ def register_octopus_routes(app: FastAPI, get_octopus_service, get_zigbee_servic
         except Exception as e:
             logger.debug(f"Insights timing failed: {e}")
 
-        # ── Base load from the Home Mini demand buffer (needs ~2h of samples) ──
+        # Base load from the Home Mini demand buffer (needs ~2h of samples)
         base_load = None
         try:
             tele = svc.get_live_telemetry() if svc else {}

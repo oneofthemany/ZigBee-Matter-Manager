@@ -1,18 +1,7 @@
-/* ============================================================
-   ZMM — Drive tab: journeys + cheapest fuel nearby + price history
-   ============================================================
-   Three pieces, one page:
-     - Journeys: trips recorded by the companion app's drive mode
-       (car Bluetooth), with distance and speed statistics.
-     - Fuel: cheapest stations near home or a typed postcode, by
-       fuel type, with a Google Maps link per station.
-     - Price history chart: the snapshots fuel_history.py records at
-       every search, drawn as a daily median line over a min–max band.
-
-   An ES module (unlike presence-settings.js) because the chart goes
-   through the shared chart-utils/ECharts layer; still exposes
-   window.initDriveTab for main.js's tab listener.
-   ============================================================ */
+/* Drive tab — journeys, cheapest fuel nearby, and fuel price history.
+   An ES module (unlike presence-settings.js) because the chart uses the shared
+   chart-utils/ECharts layer; still exposes window.initDriveTab for main.js.
+   See docs/journeys.md. */
 
 import { createChart } from './chart-utils.js';
 
@@ -39,9 +28,6 @@ import { createChart } from './chart-utils.js';
                       B7: 'Diesel (B7)', SDV: 'Super diesel (SDV)' };
     var fuelPrefsKey = 'zbm-drive-fuel-prefs';
 
-    // ----------------------------------------------------------
-    // Helpers
-    // ----------------------------------------------------------
     function escape(s) {
         return String(s == null ? '' : s)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -130,9 +116,7 @@ import { createChart } from './chart-utils.js';
         try { localStorage.setItem(fuelPrefsKey, JSON.stringify(p)); } catch (e) {}
     }
 
-    // ----------------------------------------------------------
     // Data
-    // ----------------------------------------------------------
     async function fetchJourneys() {
         // Scoping the trips and the tiles to the same driver is the whole
         // point of the filter: an unfiltered stat row above a filtered table
@@ -198,9 +182,7 @@ import { createChart } from './chart-utils.js';
         } catch (e) { /* keep defaults */ }
     }
 
-    // ----------------------------------------------------------
     // Render — page skeleton
-    // ----------------------------------------------------------
     // Which sub-tab is open; survives re-renders (refresh, delete, search)
     // so redrawing the data doesn't bounce the user back to Journeys.
     var activePane = 'journeys';
@@ -276,11 +258,9 @@ import { createChart } from './chart-utils.js';
         if (activePane === 'apiary') initApiary();
     }
 
-    // ----------------------------------------------------------
     // Apiary pane — hosts places-settings.js (moved from Settings →
     // Presence). That module owns everything inside
     // #places-settings-host; this pane just provides the card.
-    // ----------------------------------------------------------
     function apiaryCard() {
         return '<div class="card shadow-sm">' +
           '<div class="card-header bg-light py-2">' +
@@ -298,9 +278,7 @@ import { createChart } from './chart-utils.js';
         else log.warn('places-settings.js not loaded; apiary pane is empty');
     }
 
-    // ----------------------------------------------------------
     // Journeys card
-    // ----------------------------------------------------------
     function statTile(label, value, sub) {
         return '<div class="col-6 col-md-3">' +
             '<div class="border rounded p-2 text-center h-100">' +
@@ -432,12 +410,9 @@ import { createChart } from './chart-utils.js';
     }
 
     /**
-     * The "who drove?" control for one trip.
-     *
-     * Always present, not only on low-confidence trips: correcting a confident
-     * wrong guess is exactly the case where the score is most misleading, and
-     * hiding the control behind the hub's own certainty would make that the
-     * hardest one to fix.
+     * The "who drove?" control. Always present, not only on low-confidence
+     * trips: correcting a confident wrong guess is where the score is most
+     * misleading, so it must not be the hardest one to fix.
      */
     function driverPicker(t) {
         if (!drivers.length) {
@@ -538,15 +513,10 @@ import { createChart } from './chart-utils.js';
         '</div>';
     }
 
-    // Red / amber / green thresholds for acceleration, m/s².
-    //
-    // Red is the phone's own event threshold (MotionSampler.EVENT_ENTER_MPS2):
-    // above it the sampler logged a discrete event, so the map agrees with the
-    // event list by construction rather than by coincidence. Amber is the
-    // approach to it — firm but not logged — which is the band worth showing a
-    // driver, because it is where a habit is visible before it becomes an
-    // event. Change these together with the phone's constant or the two
-    // stories stop matching.
+    // Red is the phone's own event threshold (MotionSampler.EVENT_ENTER_MPS2),
+    // so the map agrees with the event list by construction. Amber is the
+    // approach to it. Change these with the phone's constant or the two stories
+    // stop matching.
     var RAG_RED = 3.5;
     var RAG_AMBER = 2.5;
 
@@ -596,11 +566,8 @@ import { createChart } from './chart-utils.js';
     }
 
     /**
-     * Fetch and render one trip's events, coaching note and map.
-     *
-     * Runs once per trip per page load; the rendered markup and the Leaflet
-     * instance are left in place so collapsing and re-expanding a row costs
-     * nothing.
+     * Fetch and render one trip's events, coaching note and map. Runs once per
+     * trip per page load; the markup and Leaflet instance are left in place.
      */
     async function loadTripDetail(tripId) {
         var host = document.getElementById('trip-events-' + tripId);
@@ -657,12 +624,8 @@ import { createChart } from './chart-utils.js';
 
     /**
      * One sentence on what to work on, from whichever event kind dominates.
-     *
-     * The counts alone tell a driver what happened; this is the part that says
-     * what to do about it, which is the whole point of showing them at all.
-     * Withheld below three events — two hard stops on one trip is traffic, not
-     * a habit, and advice given on that evidence teaches drivers to distrust
-     * the rest of it.
+     * Withheld below three events — two hard stops is traffic, not a habit, and
+     * advice on that evidence teaches drivers to distrust the rest.
      */
     function coachingNote(evs) {
         if (evs.length < 3) return '';
@@ -916,14 +879,12 @@ import { createChart } from './chart-utils.js';
         });
     }
 
-    // ----------------------------------------------------------
     // Drivers card — leaderboard over the roster
     //
     // The scores this ranks are only as good as the attribution behind them,
     // so the unranked tail and the unattributed total are shown as part of the
     // table rather than tucked away: a leaderboard that silently omits a third
     // of the driving reads as more authoritative than it has any right to.
-    // ----------------------------------------------------------
     var presenceUsers = [];
 
     async function fetchPresenceUsers() {
@@ -1174,9 +1135,7 @@ import { createChart } from './chart-utils.js';
         });
     }
 
-    // ----------------------------------------------------------
     // Fuel card
-    // ----------------------------------------------------------
     function fuelCard() {
         var prefs = getFuelPrefs();
         var opts = Object.keys(fuelTypes).map(function (k) {
@@ -1272,9 +1231,7 @@ import { createChart } from './chart-utils.js';
         }
     }
 
-    // ----------------------------------------------------------
     // Price-history chart
-    // ----------------------------------------------------------
     // The snapshots fuel_history.py records at every search, drawn as a
     // daily MEDIAN line over a shaded MIN–MAX band. One measure, one axis
     // (£/L over time); single series so the card title is the legend.
@@ -1488,9 +1445,7 @@ import { createChart } from './chart-utils.js';
           '<div id="fuel-trend"></div>';
     }
 
-    // ----------------------------------------------------------
     // Public init
-    // ----------------------------------------------------------
     var initialised = false;
 
     window.initDriveTab = async function () {

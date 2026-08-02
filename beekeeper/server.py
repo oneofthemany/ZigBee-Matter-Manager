@@ -1,11 +1,11 @@
-"""The DNS sinkhole server: UDP + TCP on :53, tying matcher/resolver/stats.
+"""
+The DNS sinkhole server — UDP and TCP on :53, tying matcher, resolver and stats
+together.
 
-Per query: parse the question, decide block vs. forward (respecting the
-enable/pause runtime state and the allow/deny/block sets), answer, and log.
-Blocked names get a synthesised sinkhole/NXDOMAIN answer; everything else is
-forwarded upstream. Runtime controls (enable, disable, pause, refresh, reload)
-are driven by the control API and persisted to ``state.json`` so they survive a
-restart.
+Per query: parse the question, decide block vs forward (respecting the
+enable/pause state and the allow/deny/block sets), answer, and log. Runtime
+controls come from the control API and persist to state.json so they survive a
+restart. See docs/beekeeper.md.
 """
 from __future__ import annotations
 
@@ -106,7 +106,6 @@ class BeekeeperServer:
         self.bound_address: Optional[str] = None
         self.running = False
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
     async def start(self) -> None:
         if self.running:
             return
@@ -148,7 +147,7 @@ class BeekeeperServer:
         if not keep_stats:
             self.stats.stop()
 
-    # ── query handling ───────────────────────────────────────────────────────
+    # query handling
     async def handle_udp(self, data: bytes, addr, transport) -> None:
         try:
             response = await self._process(data, tcp=False, client=addr[0])
@@ -223,7 +222,7 @@ class BeekeeperServer:
                           elapsed_ms=(time.perf_counter() - t0) * 1000)
         return result.response
 
-    # ── blocklist sources (user-editable, persisted to sources.json) ──────────
+    # blocklist sources (user-editable, persisted to sources.json)
     def sources(self) -> list:
         """The effective blocklist sources. sources.json wins once it exists;
         otherwise the config.yaml defaults (which we seed into it on first use)."""
@@ -290,7 +289,7 @@ class BeekeeperServer:
         await self.reload_matcher()
         return {"ok": True, "sources": sources}
 
-    # ── matcher / refresh ────────────────────────────────────────────────────
+    # matcher / refresh
     def _enabled_slugs(self) -> Set[str]:
         return {s["slug"] for s in self.sources() if s.get("enabled", True)}
 
@@ -328,7 +327,7 @@ class BeekeeperServer:
             except Exception:
                 logger.exception("scheduled refresh failed")
 
-    # ── runtime controls (called by control API) ─────────────────────────────
+    # runtime controls (called by control API)
     def set_enabled(self, enabled: bool) -> None:
         self.state.enabled = enabled
         if enabled:

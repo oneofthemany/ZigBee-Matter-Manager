@@ -49,7 +49,7 @@ function _sunDesc(c) {
 // Boundary choices for the Sun condition From/To pickers.
 const _SUN_OPTS = [['sunrise','Sunrise'],['sunset','Sunset'],['00:00','Start of day'],['23:59','End of day']];
 
-// ── Zone (enter/leave a place) ──
+// Zone (enter/leave a place)
 // Only a presence user has a `place`, so the Zone condition type is offered
 // for people and nothing else.
 const _isPerson = ieee => String(ieee||'').startsWith('user::');
@@ -80,7 +80,7 @@ function _placeBoxes(id) {
         .join('');
 }
 
-// ── Group optgroup builder ──
+// Group optgroup builder
 function _devOpts(list, selectedIeee, extraAttrs='') {
     const devs = list.filter(d => !d._is_group);
     const grps = list.filter(d => d._is_group);
@@ -97,7 +97,7 @@ function _devOpts(list, selectedIeee, extraAttrs='') {
 
 function _uid() { return stepIdC++; }
 
-// ── Device-aware helpers (Track B) ──────────────────────────────────────────
+// Device-aware helpers (Track B)
 
 // Device summary (name/model/state_keys) for heuristics; feeds deviceType().
 function _summary(ieee) { return (cachedAllDevices || []).find(d => d.ieee === ieee); }
@@ -140,9 +140,7 @@ function _valueInput(cls, id, type, attribute, valType, cur, vo, idAttr = 'data-
     return _vI(cls, id, vo || [], cur, idAttr);
 }
 
-// ============================================================================
 // RENDER
-// ============================================================================
 
 export function renderAutomationTab(device) {
     currentSourceIeee = device.ieee;
@@ -206,9 +204,7 @@ export async function initAutomationTab(ieee) {
     } catch(e) { cachedPlaces = []; }
 }
 
-// ============================================================================
 // RULES LIST
-// ============================================================================
 
 function _renderRules(rules) {
     const el = document.getElementById('a-rules'); if (!el) return;
@@ -297,9 +293,7 @@ function _seqSummary(steps, label, color) {
     return `<div class="small mt-1"><strong class="text-${color}">${label}</strong> ${parts}</div>`;
 }
 
-// ============================================================================
 // FORM
-// ============================================================================
 
 function _showForm(rule, forceNew = false) {
     const isE = !!rule; editingRuleId = (isE && !forceNew) ? rule.id : null;
@@ -382,9 +376,7 @@ function _addBtns(path) {
     </div>`;
 }
 
-// ============================================================================
 // VALUE INPUT
-// ============================================================================
 
 // Add 'idAttr' parameter to handle both data-sid and data-icid
 function _vI(cls, id, opts, cur, idAttr = 'data-id') {
@@ -399,9 +391,7 @@ function _vI(cls, id, opts, cur, idAttr = 'data-id') {
     return `<input type="text" class="form-control form-control-sm ${cls}" ${idAttr}="${id}" placeholder="Value" value="${cur!==undefined?cur:''}">`;
 }
 
-// ============================================================================
 // CONDITIONS + PREREQUISITES (same pattern as before)
-// ============================================================================
 
 // Joiner badge shown on the 2nd+ condition row — OR gets its own colour so a
 // glance at the rows tells you which way the rule combines.
@@ -603,9 +593,7 @@ function _setP(id, p) {
     }
 }
 
-// ============================================================================
 // STEP TREE RENDERER (recursive)
-// ============================================================================
 
 function _renderStepTree(path) {
     const el = document.getElementById(`${path}-b`); if(!el) return;
@@ -714,7 +702,7 @@ function _renderInlineCond(ic, idx, parentSid, total) {
     </div>`;
 }
 
-// ── Media step rendering ──
+// Media step rendering
 function _mediaStepBody(step, sid) {
     const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}${p.is_group?' (group)':''}</option>`).join('');
     const playerSel = `<select class="form-select form-select-sm s-mplayer" data-sid="${sid}"><option value="">Player…</option>${players}</select>`;
@@ -888,9 +876,7 @@ function _initStepSelects(steps, path) {
     });
 }
 
-// ============================================================================
 // SELECT HELPERS
-// ============================================================================
 
 function _popCmds(sid,cmds,selCmd,selEp) {
     const sel=document.querySelector(`.s-cmd[data-sid="${sid}"]`);if(!sel)return;
@@ -950,9 +936,7 @@ async function _loadICAttrs(icId,ieee,selAttr,selVal) {
     }catch(e){}
 }
 
-// ============================================================================
 // STEP TREE MANIPULATION
-// ============================================================================
 
 function _findStepList(path) {
     if(path==='then') return thenTree;
@@ -1004,9 +988,7 @@ function _removeFromTree(steps, id) {
     return false;
 }
 
-// ============================================================================
 // WINDOW HANDLERS
-// ============================================================================
 
 // Conditions
 window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;const ops=JSON.parse(o.dataset.operators||'["eq","neq"]'),vo=JSON.parse(o.dataset.vo||'[]'),cur=o.dataset.current,typ=o.dataset.type,attr=o.value;
@@ -1156,9 +1138,7 @@ window._aTraceR=async id=>{await window._aTrace();const f=document.getElementByI
 window._aToggle=async id=>{try{await fetch(`/api/automations/${id}/toggle`,{method:'PATCH'});await _ref();}catch(e){}};
 window._aDel=async id=>{if(!await window.zbmConfirm({title:'Delete automation',message:'Delete this automation?',confirmText:'Delete',variant:'danger'}))return;try{await fetch(`/api/automations/${id}`,{method:'DELETE'});await _ref();}catch(e){}};
 
-// ============================================================================
 // SAVE (recursive gather)
-// ============================================================================
 
 window._aSave=async()=>{
     const conditions=[]; let valid=true;
@@ -1388,9 +1368,6 @@ function _cleanTree(steps) {
     });
 }
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 
 function _co(v){if(typeof v!=='string')return v;const t=v.trim(),l=t.toLowerCase();if(l==='true')return true;if(l==='false')return false;if(!isNaN(t)&&t!=='')return parseFloat(t);return t;}
 function _ct(v,typ){if(!typ)return _co(v);if(typ==='boolean')return _co(v);if(typ==='float'){const n=parseFloat(v);return isNaN(n)?v:n;}if(typ==='integer'){const n=parseInt(v,10);return isNaN(n)?_co(v):n;}return String(v).trim();}
@@ -1455,11 +1432,7 @@ async function _loadTr() {
 }
 
 
-
-
-// ============================================================================
 // DOWNLOAD AUTOMATION FLOW
-// ============================================================================
 window._aDownloadJson = async (id) => {
     try {
         const res = await fetch(`/api/automations/rule/${id}`);

@@ -1,14 +1,11 @@
 """
-OTA Firmware Update Manager
-============================
-Wraps zigpy's built-in OTA subsystem to provide:
-- Automatic provider configuration (IKEA, LEDVANCE, Sonoff, Inovelli, etc.)
-- Per-device firmware availability checking
-- Manual update triggering with progress tracking via WebSocket
-- Local OTA file upload support
+OTA firmware update manager — the management layer and API surface over zigpy's
+built-in OTA subsystem, which does the image matching, block transfer and
+cluster commands.
 
-zigpy handles the heavy lifting (image matching, block transfer, cluster commands).
-This module provides the management layer and API surface.
+Adds automatic provider configuration (IKEA, LEDVANCE, Sonoff, Inovelli),
+per-device availability checks, manual triggering with websocket progress, and
+local OTA file upload.
 """
 import os
 import asyncio
@@ -47,9 +44,7 @@ class OTAManager:
     def app(self):
         return self.service.app
 
-    # =========================================================================
     # PROVIDER STATUS
-    # =========================================================================
 
     def get_ota_config(self) -> dict:
         """Return current OTA provider configuration."""
@@ -76,9 +71,7 @@ class OTAManager:
                     })
         return sorted(files, key=lambda x: x['name'])
 
-    # =========================================================================
     # CHECK FOR UPDATES
-    # =========================================================================
 
     async def check_device_update(self, ieee: str) -> dict:
         """
@@ -138,9 +131,7 @@ class OTAManager:
             "updates": results,
         }
 
-    # =========================================================================
     # TRIGGER UPDATE
-    # =========================================================================
 
     async def start_update(self, ieee: str, force: bool = False) -> dict:
         """
@@ -292,9 +283,7 @@ class OTAManager:
 
             await asyncio.sleep(self._check_interval)
 
-    # =========================================================================
     # LOCAL FILE MANAGEMENT
-    # =========================================================================
 
     async def upload_firmware(self, filename: str, content: bytes) -> dict:
         """Save an uploaded firmware file to the local OTA directory."""
@@ -320,9 +309,7 @@ class OTAManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
     # NOTIFY DEVICE (image_notify via zigpy broadcast)
-    # =========================================================================
 
     async def notify_device(self, ieee: str) -> dict:
         """
@@ -358,9 +345,6 @@ class OTAManager:
             logger.warning(f"[{ieee}] OTA notify failed: {e}")
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
-    # HELPERS
-    # =========================================================================
 
     def _build_query_cmd(self, zigpy_dev):
         """Build a QueryNextImageCommand for this device."""

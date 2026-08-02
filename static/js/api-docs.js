@@ -1,5 +1,4 @@
 // api-docs.js — ZigBee & Matter Manager API Explorer
-// =====================================================================
 // Data sources:
 //   /api/routes     — flat list of routes, grouped by tag/prefix (sidebar)
 //   /openapi.json   — full OpenAPI spec from FastAPI (detail pane content)
@@ -10,13 +9,10 @@
 // FastAPI will surface it via OpenAPI automatically.
 zmmLog('api-docs').log('ZMM API Docs JS loaded');
 
-// ============================================================================
 // OPTIONAL HAND-CURATED OVERRIDES
-// ----------------------------------------------------------------------------
 // Only needed for routes you can't or don't want to docstring (e.g. generic
 // helpers like /routes itself). Leave empty if you want a fully OpenAPI-driven
 // page.
-// ============================================================================
 const routeMetadata = {
     '/routes': {
         description: 'Plain HTML route listing — handy for quick eyeballing.',
@@ -34,9 +30,7 @@ let openApiLoaded = false;
 
 let currentRoute = null;
 
-// ============================================================================
 // LOAD ROUTES + OPENAPI SPEC
-// ============================================================================
 
 async function loadRoutes() {
     try {
@@ -83,9 +77,7 @@ function indexOpenApi(spec) {
     }
 }
 
-// ============================================================================
 // RENDER SIDEBAR
-// ============================================================================
 
 function renderRoutes(groups) {
     const container = document.getElementById('routesList');
@@ -135,9 +127,7 @@ function renderRoutes(groups) {
     zmmLog('api-docs').log(`Rendered ${totalRoutes} total routes in ${Object.keys(groups).length} groups`);
 }
 
-// ============================================================================
 // OPENAPI HELPERS
-// ============================================================================
 
 function resolveRef(ref, components) {
     if (!ref || !ref.startsWith('#/components/')) return null;
@@ -220,9 +210,7 @@ function describeResponses(operation, components) {
     return rows;
 }
 
-// ============================================================================
 // SHOW ENDPOINT
-// ============================================================================
 
 function showEndpoint(method, path, clickedItem) {
     currentRoute = { method, path };
@@ -386,9 +374,7 @@ function renderResponsesSection(rows) {
     `;
 }
 
-// ============================================================================
 // TRY-IT FORM
-// ============================================================================
 
 function renderTryItForm(method, params, bodySkeleton) {
     const pathParams = params.filter(p => p.in === 'path');
@@ -455,9 +441,7 @@ function renderTryItForm(method, params, bodySkeleton) {
     return html;
 }
 
-// ============================================================================
 // SEND REQUEST
-// ============================================================================
 
 async function testEndpoint(event) {
     event.preventDefault();
@@ -547,9 +531,7 @@ function clearResponse() {
     if (c) c.style.display = 'none';
 }
 
-// ============================================================================
 // SEARCH
-// ============================================================================
 
 let searchTimeout;
 function setupSearch() {
@@ -573,9 +555,7 @@ function setupSearch() {
     });
 }
 
-// ============================================================================
 // BULK EXPAND / COLLAPSE
-// ============================================================================
 
 function setupBulkToggles() {
     const expandBtn = document.getElementById('expandAllBtn');
@@ -595,9 +575,6 @@ function setupBulkToggles() {
     }
 }
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
 
 function escapeHtml(s) {
     if (s === null || s === undefined) return '';
@@ -609,9 +586,7 @@ function escapeHtml(s) {
         .replace(/'/g, '&#039;');
 }
 
-// ============================================================================
 // BOOT
-// ============================================================================
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {

@@ -1,12 +1,7 @@
 """
-Radiator / BTU sizing for heated rooms.
-
-Given a thermal profile (W/K) and design parameters, compute:
-  - required heat output at design conditions (W and BTU/hr)
-  - flow-temperature-adjusted output for existing radiators
-  - over/undersized flags
-
-All functions are pure; no I/O.
+Radiator / BTU sizing for heated rooms — required output at design conditions,
+flow-temperature-adjusted output for existing radiators, and over/undersized
+flags, from a thermal profile (W/K). Pure functions, no I/O. See docs/heating.md.
 """
 from __future__ import annotations
 
@@ -14,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-# ── Constants ─────────────────────────────────────────────────────────
 W_PER_BTU_HR = 0.2931        # 1 BTU/hr = 0.2931 W, so W ÷ 0.2931 = BTU/hr
 DEFAULT_DESIGN_OUTDOOR_C = -3.0   # UK standard (MCS)
 DEFAULT_OVERSIZE_FACTOR = 1.15    # 15% oversize headroom

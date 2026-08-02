@@ -1,27 +1,13 @@
 """
-Automation Engine - State Machine with Recursive Action Sequences
-=================================================================
-Evaluates device state changes and fires action sequences on transitions.
+Automation engine — evaluates device state changes and fires recursive action
+sequences on transitions.
 
-Step types (recursive):
-  command      - Send ZigBee command to a device
-  delay        - Wait N seconds
-  wait_for     - Pause until device state matches (with timeout)
-  condition    - Inline gate: stop sequence if false
-  if_then_else - Branch: check inline conditions, run then_steps or else_steps
-  parallel     - Run multiple step branches simultaneously
+Step types: command, delay, wait_for, condition, if_then_else, parallel.
+Conditions support AND/OR/NOT across triggers and prerequisites, duration
+("for N seconds") checks, and edge-triggered zone crossings.
 
-Condition features:
-  - AND / OR logic across a rule's trigger conditions (rule["condition_logic"])
-  - AND / OR logic for prerequisites
-  - NOT (negate) flag on any prerequisite
-  - Inline conditions in if_then_else support AND/OR/NOT
-  - Duration checks ("for" N seconds on inline conditions)
-  - Zone conditions: a person entering or leaving a named place (edge-triggered)
-
-Persistence: ./data/automations.json
-Hook:        core.py -> _debounced_device_update
-Execution:   device.send_command() (direct zigpy)
+Persistence: ./data/automations.json. Hook: core.py _debounced_device_update.
+See docs/automations.md.
 """
 
 import asyncio
@@ -45,23 +31,18 @@ DATA_FILE = "./data/automations.json"
 DEFAULT_COOLDOWN = 5
 WAIT_FOR_POLL_INTERVAL = 2
 
-# Virtual source for time/alarm rules — automations triggered purely by the clock
-# (e.g. "play radio at 07:00") that aren't tied to any physical device. Such rules
-# fire from the time-boundary scheduler, never from a device update.
+# Virtual source for clock-driven rules ("play radio at 07:00"), which fire from
+# the time-boundary scheduler rather than any device update.
 TIME_SOURCE = "__time__"
 # Condition types that are time/astronomy based (no device attribute to watch).
 TEMPORAL_TYPES = ("time_window", "sun", "time")
 
-# ── ZONE (enter / leave a named place) ──
 # A presence user's location lives in one attribute: "home", "away", "unknown",
-# or a place id from modules/places.py. A zone condition is edge-triggered — it
-# asks which side of a boundary the person just crossed, which needs the value
-# they moved *from*, and the device's own state no longer holds that by the time
-# the engine is called. See AutomationEngine._last_values.
+# or a place id. Zone conditions are edge-triggered, so they need the value moved
+# *from* — see AutomationEngine._last_values and docs/automations.md.
 ZONE_ATTR = "place"
-# "away"/"unknown" are the absence of a location rather than one you can stand
-# in, so they are never entered or left — leaving "the shops" for "away" is a
-# leave event for the shops, not an enter event for away.
+# The absence of a location rather than one you can stand in, so never entered or
+# left: leaving "the shops" for "away" is a leave for the shops, not an enter.
 ZONE_NOWHERE = frozenset({"away", "unknown", "", None})
 ZONE_EVENTS = ("enter", "leave")
 # Matches any real location: "at a place, whichever one".
@@ -104,14 +85,12 @@ class AutomationEngine:
         self._event_emitter = event_emitter
         self._get_group_manager = group_manager_getter
         self._get_matter_devices = matter_device_getter or (lambda: {})
-        # Extra device registries merged into the engine's view — providers
-        # that come up after the engine (e.g. Nuki locks) register a getter
-        # via add_device_getter. Each returns {ieee: device-like} where the
-        # object has .state, .friendly_name and async send_command().
+        # Providers that come up after the engine (e.g. Nuki locks) register a
+        # getter returning {ieee: device-like} with .state, .friendly_name and
+        # async send_command().
         self._extra_device_getters: List[Callable[[], Dict]] = []
-        # Optional media service (Cast/WiiM/radio/Tidal). Injected post-construction
-        # via set_media_service_getter since the media service is built after the
-        # engine. Lets automation steps play radio/Tidal and control players.
+        # Injected post-construction via set_media_service_getter, since the media
+        # service is built after the engine.
         self._get_media_service: Optional[Callable] = None
 
         self.rules: List[Dict[str, Any]] = []
@@ -119,19 +98,17 @@ class AutomationEngine:
         self._cooldowns: Dict[str, float] = {}
         self._sustain_tracker: Dict[str, float] = {}
         self._rule_states: Dict[str, Optional[str]] = {}
-        # Per source device, its state as of the previous evaluation. Zone
-        # conditions compare it against the incoming change to tell an arrival
-        # from a departure; by the time evaluate() runs, device.state already
-        # holds the new value, so the old one has to be remembered here.
+        # Per source device, its state as of the previous evaluation: by the time
+        # evaluate() runs device.state already holds the new value, so zone
+        # conditions need the old one remembered here.
         self._last_values: Dict[str, Dict[str, Any]] = {}
         self._running_sequences: Dict[str, asyncio.Task] = {}
         self._time_scheduler_task: Optional[asyncio.Task] = None
 
         self._trace_log: List[Dict[str, Any]] = []
         self._max_trace_entries = 200
-        # Per-rule history alongside the shared log: chatty rules/system
-        # events churn the 200-entry shared buffer in minutes, which used to
-        # leave a rule-filtered trace with only its newest entry or two.
+        # Chatty rules churn the 200-entry shared buffer in minutes, which left a
+        # rule-filtered trace holding only its newest entry or two.
         self._trace_by_rule: Dict[str, deque] = {}
         self._max_trace_per_rule = 100
 
@@ -179,9 +156,7 @@ class AutomationEngine:
         return names
 
 
-    # =========================================================================
     # TIME SCHEDULER
-    # =========================================================================
 
     async def start(self):
         """Start background time-boundary scheduler and set initial rule states."""
@@ -209,9 +184,9 @@ class AutomationEngine:
 
         # Evaluate on startup so initial state is set correctly
         await asyncio.sleep(2)  # Brief delay to let devices load
-        # Same delay buys the zone baseline: without it the first place change
-        # after a restart would have no "from" value, and a hub restarted
-        # mid-afternoon would miss that day's "leaves work".
+        # Also buys the zone baseline: without it the first place change after a
+        # restart has no "from" value, so a mid-afternoon restart misses that
+        # day's "leaves work".
         self._seed_last_values()
         await self._evaluate_timed_rules()
 
@@ -413,9 +388,7 @@ class AutomationEngine:
             task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
             self._running_sequences[rule_id] = task
 
-    # =========================================================================
     # PERSISTENCE
-    # =========================================================================
 
     def _load_rules(self):
         if not os.path.exists(DATA_FILE):
@@ -510,9 +483,7 @@ class AutomationEngine:
         except Exception as e:
             logger.debug(f"Could not raise alert for disabled rule: {e}")
 
-    # =========================================================================
     # TRACING
-    # =========================================================================
 
     def _trace(self, rule_id, phase, result, message, level="INFO", **extra):
         entry = {
@@ -545,9 +516,7 @@ class AutomationEngine:
             return list(self._trace_by_rule.get(rule_id, ()))
         return list(self._trace_log)
 
-    # =========================================================================
     # VALIDATION (recursive)
-    # =========================================================================
 
     def _validate_conditions(self, conds: List[Dict]) -> Optional[str]:
         import re
@@ -726,9 +695,7 @@ class AutomationEngine:
                     if err: return err
         return None
 
-    # =========================================================================
     # RULE CRUD
-    # =========================================================================
 
     def add_rule(self, data: Dict[str, Any]) -> Dict[str, Any]:
         conditions = data.get("conditions")
@@ -904,9 +871,7 @@ class AutomationEngine:
                 return r
         return None
 
-    # =========================================================================
     # STATE MACHINE EVALUATION
-    # =========================================================================
 
     async def evaluate(self, source_ieee: str, changed_data: Dict[str, Any]):
         rule_ids = self._source_index.get(source_ieee)
@@ -952,7 +917,7 @@ class AutomationEngine:
             if watched and not watched.intersection(changed_data.keys()):
                 continue
 
-            # --- CONDITIONS ---
+            # CONDITIONS
             logic = self._condition_logic(rule)
             has_zone = self._has_zone(conditions)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
@@ -964,14 +929,14 @@ class AutomationEngine:
                             conditions=cond_results, condition_logic=logic)
                 continue
 
-            # --- PREREQUISITES ---
+            # PREREQUISITES
             prereq_results = []
             prereqs_met = True
             if all_matched:
                 prereqs = rule.get("prerequisites", [])
                 prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
 
-            # --- DETERMINE STATE ---
+            # DETERMINE STATE
             conditions_met = all_matched and prereqs_met
             new_state = "matched" if conditions_met else "unmatched"
             prev_state = self._rule_states.get(rule_id)
@@ -987,7 +952,7 @@ class AutomationEngine:
                             conditions=cond_results, prerequisites=prereq_results,
                             condition_logic=logic)
 
-            # --- TRANSITION ---
+            # TRANSITION
             self._rule_states[rule_id] = new_state
 
             # A zone rule triggers on a crossing, not on a state. "No crossing
@@ -1038,7 +1003,7 @@ class AutomationEngine:
             task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
             self._running_sequences[rule_id] = task
 
-            # ── EVENT ATTRIBUTE RESET ──
+            # EVENT ATTRIBUTE RESET
             # Momentary triggers (a button press, a boundary crossing) have to
             # re-arm: they are never "still true", so without this the second
             # press — or the second arrival — would look like no transition.
@@ -1050,9 +1015,7 @@ class AutomationEngine:
         # this is the "before" that the next evaluation compares against.
         self._last_values[source_ieee] = {**full_state, **changed_data}
 
-    # =========================================================================
     # CONDITION / PREREQUISITE EVALUATION
-    # =========================================================================
 
     def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
                                now, logic="and", prev_values=None):
@@ -1266,12 +1229,12 @@ class AutomationEngine:
         results = []
         all_met = True
 
-        # ---- Partition ----
+        # Partition
         _TEMPORAL = ("time_window", "sun")
         tw_prereqs  = [(j, p) for j, p in enumerate(prereqs) if p.get("type") in _TEMPORAL]
         dev_prereqs = [(j, p) for j, p in enumerate(prereqs) if p.get("type", "device") not in _TEMPORAL]
 
-        # ---- temporal: OR logic ----
+        # temporal: OR logic
         if tw_prereqs:
             tw_any_passed = False
             for j, p in tw_prereqs:
@@ -1361,10 +1324,8 @@ class AutomationEngine:
 
         return all_met, results
 
-    # =========================================================================
     # SUN (dynamic sunrise/sunset) — re-resolved every evaluation, so rules
     # track the seasons rather than freezing to one day's clock times.
-    # =========================================================================
 
     def _eval_sun(self, cond, now_dt):
         """Return (matched: bool, info: dict). Window between two boundaries that
@@ -1499,9 +1460,7 @@ class AutomationEngine:
             return any_pass, results
         return all_pass, results
 
-    # =========================================================================
     # SEQUENCE EXECUTOR (recursive)
-    # =========================================================================
 
     def _cancel_sequence(self, rule_id: str):
         task = self._running_sequences.pop(rule_id, None)
@@ -1575,7 +1534,7 @@ class AutomationEngine:
         devices = self._get_all_devices()
         names = self._get_all_names()
 
-        # ── GROUP TARGET ROUTING ──
+        # GROUP TARGET ROUTING
         if target_ieee.startswith("group:"):
             await self._step_group_command(rule_id, step, tag)
             return
@@ -1889,9 +1848,7 @@ class AutomationEngine:
         self._trace(rule_id, "step", "PARALLEL_DONE",
                     f"{tag} All parallel branches complete")
 
-    # =========================================================================
     # CONDITION HELPERS
-    # =========================================================================
 
     def _evaluate_condition(self, actual_value, operator, threshold_value) -> bool:
         op_func = OPERATORS.get(operator)
@@ -1948,9 +1905,7 @@ class AutomationEngine:
                 return stripped
         return value
 
-    # =========================================================================
     # GROUP STATE HELPERS
-    # =========================================================================
 
     def _get_group_state(self, group_id: int) -> dict:
         """Aggregate state from group members.
@@ -2064,7 +2019,7 @@ class AutomationEngine:
         return sorted(attrs, key=lambda x:x["attribute"])
 
     def get_device_state(self, ieee: str) -> Dict[str, Any]:
-        # ── GROUP TARGET ──
+        # GROUP TARGET
         if ieee.startswith("group:"):
             try:
                 gid = int(ieee.split(":", 1)[1])
@@ -2090,7 +2045,7 @@ class AutomationEngine:
                     "friendly_name": f"\U0001F517 {group['name']}",
                     "state": gstate, "attributes": attrs}
 
-        # ── NORMAL DEVICE ──
+        # NORMAL DEVICE
         devices = self._get_all_devices()
         names = self._get_all_names()
         if ieee not in devices: return {}

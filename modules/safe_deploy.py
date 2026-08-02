@@ -1,24 +1,10 @@
 """
-Safe Deploy - Backup, Validate, Restart, Health-Check, Rollback
-================================================================
-Replaces the naive os.execl restart with a systemd-aware pipeline:
+Safe deploy — backup, validate, restart, health-check, rollback.
 
-  1. Snapshot current working code to ./backups/<timestamp>/
-  2. Validate all .py files (syntax check via py_compile)
-  3. Restart via systemctl (so systemd tracks the process)
-  4. Health-check loop (poll /api/devices for 200 OK)
-  5. Auto-rollback if health check fails within timeout
-
-API:
-  POST /api/system/deploy         — Full deploy pipeline (backup + restart + health)
-  POST /api/system/rollback       — Manual rollback to last backup
-  GET  /api/system/deploy/status  — Current deploy state
-  GET  /api/system/backups        — List available backups
-
-Note: Restart via systemctl requires the service user to have passwordless
-sudo for the specific systemctl commands. Add to /etc/sudoers.d/:
-  sean ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart zigbee_manager
-  sean ALL=(ALL) NOPASSWD: /usr/bin/systemctl status zigbee_manager
+Replaces a naive os.execl restart with a systemd-aware pipeline. The health
+check cannot run in the process being restarted, so a deploy marker hands the
+job to the new one, which restores and restarts again on failure. Needs
+passwordless sudo for the specific systemctl commands. See docs/upgrades.md.
 """
 
 import asyncio
@@ -40,9 +26,7 @@ logger = logging.getLogger("modules.safe_deploy")
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-# ============================================================================
 # CONFIGURATION
-# ============================================================================
 
 APP_DIR = os.environ.get('ZMM_APP_DIR', '/app')
 BACKUP_DIR = os.environ.get('ZMM_BACKUP_DIR', '/app/data/backups')
@@ -88,9 +72,7 @@ _deploy_state = {
 }
 
 
-# ============================================================================
 # REGISTRATION
-# ============================================================================
 
 def register_deploy_routes(app, service_name: str = SERVICE_NAME):
     """Register safe deploy routes on the FastAPI app."""
@@ -101,9 +83,7 @@ def register_deploy_routes(app, service_name: str = SERVICE_NAME):
     logger.info("Safe deploy routes registered")
 
 
-# ============================================================================
 # BACKUP
-# ============================================================================
 
 def _create_backup() -> str:
     """
@@ -222,9 +202,7 @@ def _list_backups() -> List[Dict]:
     return backups
 
 
-# ============================================================================
 # VALIDATION
-# ============================================================================
 
 def _validate_python() -> List[str]:
     """
@@ -288,9 +266,7 @@ def _validate_js() -> List[str]:
     return errors
 
 
-# ============================================================================
 # RESTART & HEALTH CHECK
-# ============================================================================
 
 def _restart_service() -> Dict[str, Any]:
     """Restart via systemctl. Requires sudoers entry."""
@@ -341,9 +317,7 @@ async def _health_check(timeout: int = HEALTH_CHECK_TIMEOUT) -> bool:
     return False
 
 
-# ============================================================================
 # DEPLOY PIPELINE
-# ============================================================================
 
 async def _run_deploy(skip_validation: bool = False):
     """
@@ -390,16 +364,10 @@ async def _run_deploy(skip_validation: bool = False):
         _deploy_state.update(status="restarting", message="Restarting service...")
         logger.info("Deploy: restarting service...")
 
-        # NOTE: This endpoint is being served by the CURRENT process.
-        # After systemctl restart, THIS process will be killed by systemd
-        # and a new one started. The health check runs in the NEW process
-        # only if we use a detached approach.
-        #
-        # Instead, we use a two-phase approach:
-        # - Write a deploy marker file with the backup_id
-        # - Restart via systemctl
-        # - The NEW process checks for the marker on startup and runs health validation
-        # - If health fails, the new process restores the backup and restarts again
+        # This endpoint runs in the CURRENT process, which systemctl restart will
+        # kill, so the health check cannot run here. Two-phase instead: write a
+        # deploy marker with the backup_id, restart, and let the NEW process find
+        # the marker, validate health, and restore + restart again if it fails.
 
         _write_deploy_marker(backup_id)
         restart_result = _restart_service()
@@ -426,9 +394,7 @@ async def _run_deploy(skip_validation: bool = False):
         )
 
 
-# ============================================================================
 # DEPLOY MARKER (survives restart)
-# ============================================================================
 
 DEPLOY_MARKER = os.path.join(APP_DIR, "data", ".deploy_pending")
 
@@ -507,9 +473,7 @@ async def check_deploy_on_startup():
             _restart_service()
 
 
-# ============================================================================
 # API ROUTES
-# ============================================================================
 
 @router.post("/deploy")
 async def deploy(skip_validation: bool = False):

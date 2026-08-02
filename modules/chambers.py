@@ -1,43 +1,9 @@
 """
-modules/chambers.py
-===================
 Chamber registry — the Frames-side notion of "a room in the home".
 
 Pure module: no I/O, no FastAPI, no global state. Wired in by
-``routes/chamber_routes.py``.
-
-Terminology
------------
-A *chamber* is a room. The name follows the beehive metaphor used by Frames
-(Hive = the install, Frame = a dashboard, Chamber = a room, Cell = a device
-tile).
-
-``chamber`` is **Frames-side vocabulary only**. The heating subsystem and the
-floor-plan editor both say ``room`` internally and deliberately keep doing so —
-renaming them would mean migrating the config schema underneath
-``heating_controller.py`` / ``thermal_profile.py`` / the floor-plan projection
-for no functional gain. Translation happens here, at the boundary, and nowhere
-else.
-
-The registry is a UNION, not a migration
-----------------------------------------
-Rooms are already described in two places, and this module adopts both rather
-than replacing either::
-
-    chambers:                             -> source="config"      (this module)
-    heating.circuits[].rooms[]            -> source="heating"     (adopted)
-    heating.floor_plan.levels[].rooms[]   -> source="floor_plan"  (adopted)
-
-A chamber's ``id`` is the SAME string heating uses as its ``room.id`` (e.g.
-``living``). That is what keeps "Living Room" a single chamber instead of two.
-When a configured chamber shadows an adopted room id, the configured entry
-wins and is flagged ``adopted: True`` — meaning heating also defines this room,
-so its id must not be renamed or the two drift apart.
-
-Nothing here ever writes to the heating config.
-
-Note: ``zones`` / ``config/zones.yaml`` are RSSI presence-detection zones, NOT
-rooms. They are unrelated to chambers.
+routes/chamber_routes.py. A union over configured chambers and rooms adopted
+from heating and the floor plan; never writes to heating. See docs/frames.md.
 """
 from __future__ import annotations
 
@@ -66,7 +32,7 @@ DEFAULT_ICON = "fa-cube"
 MAX_NAME_LEN = 64
 
 
-# ───────────────────────────── id helpers ─────────────────────────────
+# id helpers
 
 def slugify(s: Any) -> str:
     """
@@ -109,7 +75,7 @@ def coerce_id(raw: Any, name: Any = None) -> Optional[str]:
     return None
 
 
-# ─────────────────────────── cleaning ───────────────────────────
+# cleaning
 
 def clean_chamber(raw: Any, existing_ids: Optional[set] = None) -> Optional[dict]:
     """
@@ -163,7 +129,7 @@ def clean_chambers(raw: Any) -> List[dict]:
     return out
 
 
-# ───────────────────── adoption from existing config ─────────────────────
+# adoption from existing config
 
 def _circuits(cfg: Dict[str, Any]) -> List[dict]:
     """
@@ -269,7 +235,7 @@ def levels(cfg: Dict[str, Any]) -> List[dict]:
     return out
 
 
-# ───────────────────────────── registry ─────────────────────────────
+# registry
 
 def build_registry(cfg: Dict[str, Any]) -> List[dict]:
     """

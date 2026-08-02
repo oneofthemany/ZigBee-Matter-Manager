@@ -1,24 +1,14 @@
 /**
- * eq.js — 10-band graphic equaliser for "This device" playback.
+ * 10-band graphic equaliser for "This device" playback.
  *
- * Web Audio chain, built once and kept for the page's lifetime:
- *   <audio> → MediaElementSource → preamp → 10 × BiquadFilter → analyser → out
+ * Web Audio chain, built once for the page lifetime:
+ *   <audio> -> MediaElementSource -> preamp -> 10 x BiquadFilter -> analyser
  *
- * Bands are the ISO octave centres every hardware graphic EQ uses
- * (31 Hz … 16 kHz): low shelf at the bottom, high shelf at the top, peaking
- * in between. Presets are the iTunes/industry-canonical curves mapped onto
- * those bands. "Bypass" zeroes every filter rather than rewiring the graph —
- * a 0 dB biquad is bit-transparent, and never re-routing avoids glitches.
- *
- * Clipping guard: boosting bands adds headroom risk, so the preamp always
- * sits at −(largest boost) dB. Cuts never cost loudness.
- *
- * CORS reality (see local-player.js): a MediaElementSource on a cross-origin
- * stream without CORS headers outputs pure silence, so the local player only
- * routes elements created with crossorigin="anonymous" through this graph.
- * Streams that refuse CORS are re-requested through the server's same-origin
- * passthrough (/api/media/local/proxy) so the EQ still works; a plain,
- * un-EQ'd element is the last resort when the proxy fails too.
+ * ISO octave centres (31 Hz - 16 kHz), low shelf at the bottom, high shelf at
+ * the top, peaking between. "Bypass" zeroes every filter rather than rewiring:
+ * a 0 dB biquad is bit-transparent and never re-routing avoids glitches. The
+ * preamp always sits at -(largest boost) dB, so boosting cannot clip and cuts
+ * never cost loudness. CORS constraints on the source element: local-player.js.
  */
 const log = zmmLog('eq');
 
@@ -143,7 +133,7 @@ function _applyAll() {
     _preamp.gain.setTargetAtTime(Math.pow(10, -maxBoost / 20), t, RAMP_S);
 }
 
-// ── Settings API (media.js renders from this) ──────────────────────────
+// Settings API (media.js renders from this)
 
 export function eqState() {
     return {
@@ -179,7 +169,7 @@ export function eqApplyPreset(name) {
     _applyAll();
 }
 
-// ── Spectrum source ─────────────────────────────────────────────────────
+// Spectrum source
 // Drawing lives in eq-scope.js; this only turns the AnalyserNode into the
 // same shape the server sends for a zone, so one renderer serves both. The
 // band edges, count and dB floor are deliberately identical to

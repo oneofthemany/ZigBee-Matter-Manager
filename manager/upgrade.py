@@ -1,22 +1,10 @@
-"""Upgrade visibility + recovery actions for the manager (CP2b).
+"""
+Upgrade visibility and recovery actions for the manager.
 
-The manager owns ROLLBACK and IMAGE RETENTION so they work even when the app
-is down (the whole point of the sidecar). It reuses the existing host-watcher
-contract — it writes the same ``data/upgrade/trigger`` file the app's
-upgrade_manager writes (the manager mounts DATA_DIR), and the host watcher
-does the actual work:
-
-  - rollback: ``do_rollback`` already accepts any local image tag via the
-    ``previous_image_tag`` payload field, so "roll back to a specific
-    version" is just a trigger naming one of the retained images.
-  - retention/GC: ``do_gc`` reads ``retention_count`` from
-    ``data/state/version.json``; the manager edits that field and can write a
-    ``gc`` trigger to apply it immediately.
-
-Actions require a bearer token (``data/state/manager_token``, generated on
-first start, 0600). The app's Upgrade tab shows the token to authenticated
-users; it is also readable on the host. Reads stay unauthenticated like the
-rest of the manager.
+The manager owns rollback and image retention so they work with the app down. It
+reuses the host-watcher contract, writing the same data/upgrade/trigger file the
+app writes. Actions need the manager bearer token; reads stay unauthenticated.
+See docs/upgrades.md.
 """
 import hmac
 import json
@@ -53,7 +41,7 @@ LOCK_STALE_SECS = 3600  # mirrors upgrade_manager.clear_stale_lock's age cutoff
 _TAG_RE = re.compile(rf"(?:^|/){re.escape(IMAGE_NAME)}:(?P<ver>\d[\w.]*)-(?P<arch>[a-z0-9_]+)$")
 
 
-# ── Token auth ────────────────────────────────────────────────────────────────
+# Token auth
 
 def get_token() -> str:
     """Read the action token, generating it on first use (0600)."""
@@ -82,7 +70,7 @@ def check_token(authorization: str) -> bool:
     return bool(presented) and hmac.compare_digest(presented, get_token())
 
 
-# ── State / status reads ─────────────────────────────────────────────────────
+# State / status reads
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -176,7 +164,7 @@ def write_trigger(action: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
         return False, str(e)
 
 
-# ── Actions ──────────────────────────────────────────────────────────────────
+# Actions
 
 async def rollback_to(version: str) -> Tuple[bool, str]:
     """Roll back (swap) to a specific retained image version."""

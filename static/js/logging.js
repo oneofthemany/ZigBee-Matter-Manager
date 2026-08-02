@@ -873,9 +873,7 @@ export function clearDebugFilters() {
     refreshDebugPackets();
 }
 
-// ============================================================================
 // BROWSER CONSOLE LOGGING (zmmLog namespace toggles)
-// ============================================================================
 
 /**
  * Modal for choosing which zmmLog namespaces may write to the browser

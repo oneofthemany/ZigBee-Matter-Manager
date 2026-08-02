@@ -17,13 +17,9 @@ from modules.spectrum_monitor import get_history, get_channel_averages, get_chan
 logger = logging.getLogger("routes.config")
 
 
-# ---------------------------------------------------------------------------
-# Integration defaults — every supported external API always appears in the
-# structured config (and therefore in the Settings → APIs tab) with its full
-# shape, even when config.yaml predates the integration or omits the section.
-# Enablement is then always editable in the frontend, and saving writes the
-# complete block back to config.yaml so backups capture it.
-# ---------------------------------------------------------------------------
+# Every supported external API always appears in the structured config (and the
+# Settings -> APIs tab) with its full shape, even when config.yaml predates it.
+# Saving writes the complete block back, so backups capture it.
 
 WEATHER_DEFAULTS = {
     "enabled": False,
@@ -351,7 +347,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         if "enabled" in m_in:
                             m_cfg["enabled"] = bool(m_in["enabled"])
 
-            # ---- Octopus Energy ----
+            # Octopus Energy
             if "octopus" in incoming:
                 o = incoming["octopus"] or {}
                 octopus_cfg = cfg.setdefault("octopus", {})
@@ -398,7 +394,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     h = z["network_key_hex"].replace(" ", "").replace(":", "")
                     zigbee_cfg["network_key"] = [int(h[i:i+2], 16) for i in range(0, len(h), 2)]
 
-            # ---- OTA ----
+            # OTA
             if "ota" in incoming:
                 o = incoming["ota"] or {}
                 ota_cfg = cfg.setdefault("ota", {})
@@ -466,7 +462,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
             logger.error(f"Failed to update config: {e}")
             return {"success": False, "error": str(e)}
 
-    # ---- Spectrum & Channel ----
+    # Spectrum & Channel
 
     @app.get("/api/zigbee/spectrum")
     async def get_spectrum():
@@ -595,7 +591,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ---- Credential Regeneration ----
+    # Credential Regeneration
 
     @app.post("/api/zigbee/credentials/regenerate")
     async def regenerate_credentials(data: dict):

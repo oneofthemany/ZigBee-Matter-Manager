@@ -24,7 +24,7 @@
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* ── identity badge ── */
+/* identity badge */
 #ap-rules-list .ap-idico {
     flex-shrink: 0; display: grid; place-items: center; border-radius: 9px;
     background: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -32,7 +32,7 @@
 }
 #ap-rules-list .ap-idico.sm { width: 28px; height: 28px; font-size: 13px; }
 
-/* ── flow card ── */
+/* flow card */
 #ap-rules-list .ap-flowcard {
     background: var(--bg-surface); border: 1px solid var(--border-color);
     border-radius: 12px; overflow: hidden; margin-bottom: 14px;
@@ -59,7 +59,7 @@
 #ap-rules-list .ap-rmeta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
 @media (max-width: 640px) { #ap-rules-list .ap-rmeta { margin-top: 0; } }
 
-/* ── chips ── */
+/* chips */
 #ap-rules-list .ap-chip {
     display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
     padding: 3px 8px; border-radius: 999px; white-space: nowrap;
@@ -73,7 +73,7 @@
 #ap-rules-list .ap-chip.mut  { color: var(--text-muted); }
 #ap-rules-list .ap-chip .num { font-variant-numeric: tabular-nums; }
 
-/* ── flow body ── */
+/* flow body */
 #ap-rules-list .ap-flow { padding: 13px 16px; display: flex; flex-direction: column; }
 #ap-rules-list .ap-step {
     display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 6px 0; position: relative;
@@ -157,7 +157,7 @@
     #ap-rules-list .ap-crow .ap-csum { flex-basis: 100%; order: 5; }
 }
 
-/* ── footer actions ── */
+/* footer actions */
 #ap-rules-list .ap-foot {
     grid-column: 1 / -1; display: flex; align-items: center; gap: 7px;
     padding: 8px 16px; border-top: 1px solid var(--border-light); background: var(--bg-card-header);

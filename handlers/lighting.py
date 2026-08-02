@@ -13,10 +13,8 @@ from .base import ClusterHandler, register_handler
 logger = logging.getLogger("handlers.lighting")
 
 
-# ============================================================
 # BALLAST CLUSTER (0x0301)
 # Used by some lighting fixtures for ballast control
-# ============================================================
 @register_handler(0x0301)
 class BallastClusterHandler(ClusterHandler):
     """
@@ -45,10 +43,8 @@ class BallastClusterHandler(ClusterHandler):
             self.device.update_state({"ballast_max_level": value})
 
 
-# ============================================================
 # COLOR CONTROL CLUSTER (0x0300)
 # Main handler for RGB/RGBW/Color Temperature bulbs
-# ============================================================
 @register_handler(0x0300)
 class ColorClusterHandler(ClusterHandler):
     """
@@ -255,9 +251,7 @@ class ColorClusterHandler(ClusterHandler):
         if updates:
             self.device.update_state(updates)
 
-    # ========================================================================
     # PROPERTIES - Following ZHA API
-    # ========================================================================
 
     @property
     def color_capabilities(self) -> Optional[int]:
@@ -311,9 +305,7 @@ class ColorClusterHandler(ClusterHandler):
         """Return the warmest color_temp that this bulb supports."""
         return self._max_mireds
 
-    # ========================================================================
     # COMMAND METHODS
-    # ========================================================================
 
     async def set_color_temp_kelvin(self, kelvin: int, transition_time: int = 10):
         """
@@ -395,9 +387,7 @@ class ColorClusterHandler(ClusterHandler):
         )
         logger.info(f"[{self.device.ieee}] Color loop: action={action}, direction={direction}")
 
-    # ========================================================================
     # CONFIGURATION & DISCOVERY
-    # ========================================================================
 
     def get_pollable_attributes(self) -> Dict[int, str]:
         """Return attributes that can be polled."""

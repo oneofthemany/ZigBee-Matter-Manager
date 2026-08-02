@@ -11,7 +11,7 @@
 
 import { state } from './state.js';
 
-// ── Device type → icon (FontAwesome) + human label ──
+// Device type → icon (FontAwesome) + human label
 export const DEVICE_ICON = {
     contact:'fa-door-open', button:'fa-circle-dot', socket:'fa-plug', fan:'fa-fan',
     light:'fa-lightbulb', cover:'fa-window-maximize', motion:'fa-person-running',
@@ -78,7 +78,7 @@ export function deviceType(ieee, summary) {
     return 'unknown';
 }
 
-// ── Attribute → friendly label ──
+// Attribute → friendly label
 // Keyed by the base attribute (endpoint suffix _1/_2 stripped). Endpoint 2+ is
 // annotated as "(outlet N)"; outlet 1 is the default and left unlabelled.
 const ATTR_LABEL = {

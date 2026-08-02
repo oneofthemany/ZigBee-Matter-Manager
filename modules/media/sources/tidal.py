@@ -1,17 +1,10 @@
 """
-Tidal source — unofficial `tidalapi`.
+Tidal source, over the unofficial tidalapi.
 
-Phase 2 serves **AAC** (HIGH quality) via a *directly playable* URL so Cast/WiiM
-can fetch it without our stream server. Lossless/HiRes (DASH/FLAC manifests,
-parsed/served server-side) is Phase 3 — explicitly not here.
-
-Hard-isolated: `tidalapi` is imported lazily and every failure is swallowed so a
-Tidal breakage never affects Cast/WiiM/radio. The lib is blocking (`requests`),
-so every call is wrapped in `asyncio.to_thread`.
-
-Session persists to `data/media/tidal_session.json` (a token, not user-edited
-config — so not in config.yaml). Login is a device/OAuth flow: we hand the UI a
-`link.tidal.com` URL and a background task waits for the user to authorise.
+Serves AAC via a directly playable URL so devices need no stream server;
+lossless DASH/FLAC is a later phase. Hard-isolated — imported lazily, every
+failure swallowed, and every blocking call wrapped in asyncio.to_thread — so a
+Tidal breakage never affects Cast, WiiM or radio. See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -71,9 +64,6 @@ class TidalSource(SourceProvider):
         # (tidalapi has no per-call quality override; the swap is global).
         self._stream_lock = threading.Lock()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     async def start(self) -> None:
         if not self.enabled:
             return
@@ -108,9 +98,7 @@ class TidalSource(SourceProvider):
     async def stop(self) -> None:
         pass
 
-    # ------------------------------------------------------------------
     # Session persistence
-    # ------------------------------------------------------------------
     def _load_session_file(self) -> Optional[dict]:
         try:
             if os.path.exists(SESSION_PATH):
@@ -137,9 +125,7 @@ class TidalSource(SourceProvider):
         except Exception as e:
             logger.warning(f"Tidal session persist failed: {e}")
 
-    # ------------------------------------------------------------------
     # Login (web flow)
-    # ------------------------------------------------------------------
     async def login_start(self) -> Optional[str]:
         if not self._available or not self._session:
             return None
@@ -192,9 +178,7 @@ class TidalSource(SourceProvider):
         self._session = tidalapi.Session()
         self._session.audio_quality = _quality_enum(tidalapi, self._quality)
 
-    # ------------------------------------------------------------------
     # URL resolution (registered with the controller for media_type="tidal")
-    # ------------------------------------------------------------------
     async def resolve_url(self, source_id: str, provider: Optional[str] = None):
         """Return a fresh, directly-playable stream for ``source_id``.
 
@@ -301,9 +285,7 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal DASH decode failed for {track_id}: {e}")
             return None
 
-    # ------------------------------------------------------------------
     # Search / browse
-    # ------------------------------------------------------------------
     async def search(self, query: str, limit: int = 25) -> List[MediaItem]:
         if not self._session:
             return []
@@ -372,9 +354,7 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal playlist load failed: {e}")
             return []
 
-    # ------------------------------------------------------------------
     # User library (favourites + own playlists)
-    # ------------------------------------------------------------------
     async def library(self, kind: str) -> List[dict]:
         """kind: 'playlists' | 'albums' | 'artists' → summary dicts with artwork."""
         if not self._session:
@@ -419,9 +399,7 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal library({kind}) failed: {e}")
         return []
 
-    # ------------------------------------------------------------------
     # Artist play / radio (infinite)
-    # ------------------------------------------------------------------
     async def artist_tracks(self, artist_id: str) -> List[MediaItem]:
         if not self._session:
             return []
@@ -509,9 +487,7 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal track load failed: {e}")
             return None
 
-    # ------------------------------------------------------------------
     # Lyrics
-    # ------------------------------------------------------------------
     async def track_lyrics(self, track_id: str) -> Optional[dict]:
         if not self._session:
             return None
@@ -532,9 +508,7 @@ class TidalSource(SourceProvider):
             return None
         return {"text": text, "synced": synced, "is_synced": bool(synced)}
 
-    # ------------------------------------------------------------------
     # Favourites (write)
-    # ------------------------------------------------------------------
     async def set_favorite(self, kind: str, item_id: str, on: bool) -> bool:
         if not self._session:
             return False
@@ -563,9 +537,7 @@ class TidalSource(SourceProvider):
             logger.warning(f"Tidal favourite {kind} {'add' if on else 'remove'} failed: {e}")
             return False
 
-    # ------------------------------------------------------------------
     # Mixes (personalised — "My Daily Discovery", "Mix 1-8", "New Arrivals")
-    # ------------------------------------------------------------------
     def _mixes(self) -> List[dict]:
         rows = []
         for getter in (getattr(self._session, "mixes", None),
@@ -600,9 +572,7 @@ class TidalSource(SourceProvider):
         return [self._track_to_item(it) for it in (items or [])
                 if type(it).__name__ == "Track"]
 
-    # ------------------------------------------------------------------
     # Mapping helpers
-    # ------------------------------------------------------------------
     def _track_to_item(self, t) -> MediaItem:
         artist = getattr(getattr(t, "artist", None), "name", "") or ""
         artwork = ""

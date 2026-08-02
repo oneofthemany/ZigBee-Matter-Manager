@@ -1,27 +1,12 @@
 """
 Event-loop responsiveness monitor.
 
-A blocked asyncio loop is the worst failure mode this app has: HTTP stops
-dead (including /api/system/health), so the process looks alive while serving
-nothing, and the manager watchdog needs several failed checks (~minutes) to
-act. This monitor closes that gap from inside the process:
-
-  - a heartbeat coroutine bumps a timestamp every second on the loop;
-  - a daemon *thread* (immune to the stall) watches the heartbeat age:
-      * stall ≥ warn_after  → logs the loop thread's current stack, so the
-        log names exactly what is blocking (the Octopus backfill incident of
-        2026-07-17 took an hour to diagnose without this);
-      * stall ≥ exit_after  → writes data/last_crash.json and hard-exits
-        non-zero. The launcher treats a non-zero exit after a healthy boot
-        as a runtime crash and restarts main.py within seconds — far faster
-        than the manager watchdog's grace + streak cycle.
-
-Stats are surfaced in /api/system/health under "loop" so past stalls are
-visible even after recovery.
-
-Env overrides:
-  ZMM_LOOP_STALL_WARN_SEC  (default 5, 0 disables the warning/stack dump)
-  ZMM_LOOP_STALL_EXIT_SEC  (default 60, 0 disables the self-restart)
+A blocked loop serves nothing while looking alive, and the manager watchdog takes
+minutes to notice. A heartbeat coroutine bumps a timestamp each second and a
+daemon thread watches its age: a warn-level stall dumps the loop thread's stack,
+a longer one writes last_crash.json and hard-exits so the launcher restarts
+within seconds. Env-tunable; stats appear in /api/system/health.
+See docs/debugging.md.
 """
 import asyncio
 import json
@@ -68,7 +53,6 @@ class LoopMonitor:
         self._last_stall: Optional[Dict[str, Any]] = None
         self._in_stall_since: Optional[float] = None
 
-    # ------------------------------------------------------------------
 
     def start(self):
         """Call from inside the running event loop."""
@@ -102,7 +86,6 @@ class LoopMonitor:
             "heartbeat_age_ms": round(age * 1000),
         }
 
-    # ------------------------------------------------------------------
 
     async def _beat_loop(self):
         while True:

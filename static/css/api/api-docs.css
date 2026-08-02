@@ -66,7 +66,7 @@ header p {
     overflow: hidden;
 }
 
-/* --- Sidebar --- */
+/* Sidebar */
 .sidebar {
     width: 350px;
     background: rgba(0, 0, 0, 0.2);
@@ -101,7 +101,7 @@ header p {
     flex: 1;
 }
 
-/* --- Route Groups & Items --- */
+/* Route Groups & Items */
 .route-group { display: block; }
 
 .group-header {
@@ -163,7 +163,7 @@ header p {
     white-space: nowrap;
 }
 
-/* --- Main Content Area --- */
+/* Main Content Area */
 .content {
     flex: 1;
     padding: 30px;
@@ -204,7 +204,7 @@ header p {
     padding-left: 10px;
 }
 
-/* --- "Try It" Form --- */
+/* "Try It" Form */
 .try-it {
     background: rgba(0, 0, 0, 0.2);
     border: var(--bg-card-border);
@@ -276,7 +276,7 @@ header p {
     color: white;
 }
 
-/* --- Response Viewer --- */
+/* Response Viewer */
 .response-container {
     margin-top: 25px;
     display: none;
@@ -321,7 +321,7 @@ header p {
 .status-success { background: #059669; color: white; }
 .status-error   { background: #dc2626; color: white; }
 
-/* --- Parameter Tables --- */
+/* Parameter Tables */
 .param-table {
     width: 100%;
     border-collapse: collapse;
@@ -355,7 +355,7 @@ header p {
 .param-required { color: #f87171; font-weight: 700; font-size: 11px; }
 .param-optional { color: #94a3b8; font-size: 11px; }
 
-/* --- Method Badges --- */
+/* Method Badges */
 .method-badge {
     padding: 3px 6px;
     border-radius: 4px;
@@ -374,13 +374,13 @@ header p {
 .method-PATCH  { background: #d97706; }
 .method-DELETE { background: #dc2626; }
 
-/* --- Scrollbars --- */
+/* Scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); }
 ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent-primary); }
 
-/* --- Loading Spinner --- */
+/* Loading Spinner */
 .loading {
     display: inline-block;
     width: 16px;

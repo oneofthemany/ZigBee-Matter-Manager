@@ -1,24 +1,10 @@
 """
-ZMM MFA & brute-force protection.
+MFA and brute-force protection.
 
-Implements:
-- TOTP (RFC 6238) with no external deps — uses stdlib hmac/hashlib only.
-- Recovery codes — 10 single-use codes, hashed at rest.
-- Per-account exponential lockout (1 → 5 → 15 → 60 minutes, capped).
-- Per-IP sliding-window rate limiter.
-- Constant-ish-time login response delay to mask "user exists" timing.
-- otpauth:// URI generation for QR-code enrolment.
-
-Why no external deps:
-  pyotp, qrcode, etc. are well-engineered, but adding deps to a self-hosted
-  gateway is friction. RFC 6238 is 30 lines once you've got HMAC. The QR
-  code is rendered client-side by an existing JS lib (the UI uses one; if
-  not, we ship a minimal SVG generator separately).
-
-Storage:
-  MFA records live alongside auth in data/auth.yaml under a `mfa` section,
-  one record per user. Recovery code hashes are sha256 (codes have enough
-  entropy to skip salting).
+TOTP (RFC 6238) on stdlib hmac/hashlib alone, single-use recovery codes hashed
+at rest, per-account exponential lockout, a per-IP sliding-window limiter, and a
+constant-ish login delay to mask "user exists" timing. Records live in
+data/auth.yaml under `mfa`. See docs/auth.md.
 """
 
 from __future__ import annotations
@@ -39,7 +25,6 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.auth_mfa")
 
-# --- Constants -------------------------------------------------------------
 
 TOTP_DIGITS = 6
 TOTP_PERIOD = 30          # seconds
@@ -65,7 +50,7 @@ LOGIN_MIN_DURATION_S = 0.25    # constant-time floor
 MFA_CHALLENGE_TTL_S = 300      # 5 minutes — generous for typing in code
 
 
-# --- Base32 helpers --------------------------------------------------------
+# Base32 helpers
 
 def _b32_encode(data: bytes) -> str:
     """Standard RFC 4648 base32, uppercase, no padding (authenticator apps
@@ -80,7 +65,7 @@ def _b32_decode(s: str) -> bytes:
     return base64.b32decode(s + ("=" * pad))
 
 
-# --- TOTP (RFC 6238) -------------------------------------------------------
+# TOTP (RFC 6238)
 
 def generate_totp_secret() -> str:
     """Return a base32-encoded 160-bit TOTP secret."""
@@ -149,7 +134,7 @@ def totp_provisioning_uri(
     return f"otpauth://totp/{urllib.parse.quote(label)}?{query}"
 
 
-# --- Recovery codes --------------------------------------------------------
+# Recovery codes
 
 def generate_recovery_codes(count: int = RECOVERY_CODE_COUNT) -> List[str]:
     """
@@ -172,7 +157,7 @@ def hash_recovery_code(code: str) -> str:
     return hashlib.sha256(b"zmm-recovery:" + norm.encode("ascii")).hexdigest()
 
 
-# --- Data model ------------------------------------------------------------
+# Data model
 
 @dataclass
 class MFARecord:
@@ -205,7 +190,7 @@ class MFARecord:
         )
 
 
-# --- Brute-force tracker ---------------------------------------------------
+# Brute-force tracker
 
 @dataclass
 class _Attempt:
@@ -340,7 +325,7 @@ class BruteForceTracker:
         return out
 
 
-# --- MFA challenge tokens (in-memory, short-lived) ------------------------
+# MFA challenge tokens (in-memory, short-lived)
 
 class MFAChallengeStore:
     """
@@ -387,7 +372,7 @@ class MFAChallengeStore:
         return rec[0]
 
 
-# --- Constant-time response helper ----------------------------------------
+# Constant-time response helper
 
 async def constant_time_login(
         started_at: float,

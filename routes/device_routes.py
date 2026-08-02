@@ -60,7 +60,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Get current pairing status."""
         return get_zigbee_service().get_pairing_status()
 
-    # ---- Touchlink ----
+    # Touchlink
 
     @app.post("/api/touchlink/scan")
     async def touchlink_scan(request: Optional[TouchlinkRequest] = None):
@@ -82,7 +82,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         ieee = request.ieee if request else None
         return await get_zigbee_service().touchlink_factory_reset(channel=channel, target_ieee=ieee)
 
-    # ---- Device Lifecycle ----
+    # Device Lifecycle
 
     @app.post("/api/device/remove")
     async def remove_device(request: DeviceRequest):
@@ -204,7 +204,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Poll device for current attribute values."""
         return await get_zigbee_service().poll_device(request.ieee, seq=request.seq)
 
-    # ---- Commands & Attributes ----
+    # Commands & Attributes
 
     @app.post("/api/device/command")
     async def send_command(request: CommandRequest):
@@ -300,7 +300,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Update device settings (QoS, polling, reporting, Tuya)."""
         return await get_zigbee_service().configure_device(request.ieee, config=request.dict(exclude_none=True))
 
-    # ---- Banning ----
+    # Banning
 
     @app.post("/api/ban")
     async def ban_device(request: BanRequest):
@@ -323,7 +323,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Check if a specific device is banned."""
         return {"ieee": ieee, "banned": get_zigbee_service().is_device_banned(ieee)}
 
-    # ---- Tabs ----
+    # Tabs
 
     @app.get("/api/tabs")
     async def get_tabs():
@@ -345,7 +345,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     async def remove_device_from_tab(tab_name: str, ieee: str):
         return get_zigbee_service().remove_device_from_tab(tab_name, ieee)
 
-    # ---- Orphaned Devices ----
+    # Orphaned Devices
 
     @app.get("/api/devices/orphaned")
     async def get_orphaned_devices():
@@ -357,7 +357,7 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
         """Remove all orphaned devices from database."""
         return await get_zigbee_service().cleanup_orphaned_devices()
 
-    # ---- Device Overrides ----
+    # Device Overrides
 
     @app.get("/api/device_overrides")
     async def get_device_overrides():

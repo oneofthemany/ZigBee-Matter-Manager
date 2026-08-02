@@ -1,19 +1,10 @@
 /**
  * Chambers — the Frames-side room registry.
  *
- * A "chamber" is a room. The name follows the beehive metaphor used by Frames
- * (Hive = the install, Frame = a dashboard, Chamber = a room, Cell = a tile).
- *
- * Heating and the floor-plan editor say "room" internally and deliberately keep
- * doing so; the backend adopts their rooms into this registry by id. Entries
- * with `editable: false` exist only because another subsystem defines them.
- *
- * A device's current chamber ships with the device itself as
- * `device.settings.chamber` (from get_device_list), so nothing here needs a
- * per-device fetch.
- *
- * Zigbee-only for now: the assign API validates against the zigbee service, so
- * Matter/AC/media devices are not assignable yet.
+ * The backend adopts heating and floor-plan rooms into this registry by id;
+ * entries with `editable: false` exist only because another subsystem defines
+ * them. A device's chamber ships with the device as device.settings.chamber, so
+ * no per-device fetch is needed. Zigbee-only for now. See docs/frames.md.
  */
 
 import { state } from './state.js';
@@ -84,7 +75,7 @@ function devicesInChamber(id) {
         .filter(d => d.settings?.chamber === id);
 }
 
-// ── device picker (device modal header) ─────────────────────────────
+// device picker (device modal header)
 
 /**
  * Chamber <select> for the device modal header.
@@ -185,7 +176,7 @@ export async function assignDeviceChamber(ieee, chamberId) {
     }
 }
 
-// ── chamber manager (modal) ─────────────────────────────────────────
+// chamber manager (modal)
 
 export async function openChamberManager() {
     await loadChambers();
@@ -363,7 +354,7 @@ export async function deleteChamber(id) {
     }
 }
 
-// ── bulk assign ─────────────────────────────────────────────────────
+// bulk assign
 
 export function assignChamberDevices(chamberId) {
     const chamber = chambers.find(c => c.id === chamberId);
@@ -505,7 +496,6 @@ async function bulkAssign(ieees, chamberId) {
     return data;
 }
 
-// ── init ────────────────────────────────────────────────────────────
 
 export function initChambers() {
     ensureChambers();

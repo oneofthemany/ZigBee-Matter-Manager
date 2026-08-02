@@ -1,35 +1,18 @@
 """
-Local Natural-Language Automation Parser
-========================================
-Deterministic, dependency-free compiler that turns a constrained-English
-sentence into the same rule dict the AutomationEngine consumes — WITHOUT an
-LLM. Designed for resource-limited SBCs: a parse is pure-Python string work
-(microseconds) and never makes a network call.
+Local natural-language automation parser — a deterministic, dependency-free
+compiler from constrained English to the rule dict AutomationEngine consumes.
 
-It is the *first* path tried by POST /api/ai/automation. Only if it cannot
-fully resolve the sentence does the caller fall back to the LLM (when one is
-configured). Either way the produced rule is identical in shape.
-
-Grounding: every device, attribute, value and command is resolved against the
-LIVE registry via the engine's existing metadata methods
-(get_all_devices_summary / get_device_state / get_actuator_devices), so values
-are never guessed — "50%" becomes the right 0–254 brightness, "motion" maps to
-whichever boolean attribute that specific device actually exposes, etc.
-
-Supported shapes (case-insensitive, order-flexible):
-  - "turn on the hall light when the hallway sensor detects motion"
-  - "when the front door opens turn on the ensuite lights"
-  - "turn off the media socket after 30 minutes"
-  - "set the bedroom lights to 50% when motion is detected only if it is dark"
-  - "turn on the hallway lights between 08:00 and 23:30"
-  - "when kitchen temperature goes above 25 turn on the fan otherwise turn it off"
+No LLM and no network call: a parse is microseconds of pure-Python string work,
+and every device, attribute and value is grounded against the live registry
+rather than guessed. Tried first by POST /api/ai/automation, with the LLM as
+fallback. Supported sentence shapes: docs/automations.md.
 """
 
 import difflib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── Lexicons ────────────────────────────────────────────────────────────────
+# Lexicons
 
 # Action verb → canonical command. Longer phrases first (matched greedily).
 _ACTION_VERBS = [
@@ -140,7 +123,6 @@ class NLAutomationParser:
         self._act_ieees: set = set()
         self._players: Optional[List[Dict[str, Any]]] = None  # media players, lazily loaded
 
-    # ── Public API ──────────────────────────────────────────────────────────
 
     def parse(self, text: str) -> Dict[str, Any]:
         """Return {success, rule, explanation, source} or
@@ -226,10 +208,8 @@ class NLAutomationParser:
                 "I couldn't find an action to perform (e.g. \"turn on the lamp\").",
                 matched)
 
-        # 5b. "for N minutes" — do X, wait, undo X. Without a trigger it is
-        #     the classic auto-revert timer: whenever the device reaches the
-        #     acted state, wait, then revert ("turn on the porch light for
-        #     5 minutes" → when it's ON, wait 5 min, turn it off).
+        # 5b. "for N minutes" — do X, wait, undo X. Without a trigger this is the
+        #     classic auto-revert timer, keyed on the device reaching the acted state.
         if delay_secs and delay_kind == "for":
             reverts = self._revert_steps(action_steps)
             anchor = self._first_command_target(action_steps)
@@ -312,7 +292,7 @@ class NLAutomationParser:
             "devices": [d["name"] for d in self._devices],
         }
 
-    # ── Device registry ─────────────────────────────────────────────────────
+    # Device registry
 
     def _load_devices(self):
         try:
@@ -444,7 +424,7 @@ class NLAutomationParser:
         scored.sort(key=lambda x: -x[0])
         return [n for s, n in scored[:limit] if s >= 0.55]
 
-    # ── Trigger parsing ─────────────────────────────────────────────────────
+    # Trigger parsing
 
     def _parse_trigger(self, text: str
                        ) -> Tuple[Optional[str], Optional[Dict], Optional[str]]:
@@ -624,7 +604,7 @@ class NLAutomationParser:
         return {"type": "attribute", "attribute": meta["attribute"],
                 "operator": "eq", "value": self._coerce(meta, truthy)}
 
-    # ── Prerequisite parsing ────────────────────────────────────────────────
+    # Prerequisite parsing
 
     def _parse_prerequisite(self, text: str
                             ) -> Tuple[Optional[Dict], Optional[str]]:
@@ -650,7 +630,7 @@ class NLAutomationParser:
                 f"{dev['name']} {pred['attribute']} {pred['operator']} "
                 f"{pred['value']}")
 
-    # ── Action parsing ──────────────────────────────────────────────────────
+    # Action parsing
 
     def _parse_action(self, text: str, source_ieee: Optional[str]
                       ) -> Tuple[List[Dict], Optional[str]]:
@@ -792,7 +772,7 @@ class NLAutomationParser:
                 return c.get("endpoint_id")
         return None
 
-    # ── Media actions (announce / control / volume on a player) ──────────────
+    # Media actions (announce / control / volume on a player)
     def _load_players(self) -> List[Dict[str, Any]]:
         if self._players is not None:
             return self._players
@@ -868,7 +848,7 @@ class NLAutomationParser:
             rest = rest[:idx]
         return rest.strip(" .,:\"'")
 
-    # ── Time / delay extraction ─────────────────────────────────────────────
+    # Time / delay extraction
 
     _QTY = r"(\d+|" + "|".join(_WORD_NUMBERS) + r"|half\s+an?)"
     _UNIT = r"(second|sec|minute|min|hour|hr)s?"
@@ -997,7 +977,7 @@ class NLAutomationParser:
                 return f"{h:02d}:{mi:02d}"
         return None
 
-    # ── Sentence segmentation ───────────────────────────────────────────────
+    # Sentence segmentation
 
     @staticmethod
     def _split_keyword(t: str, kw_pattern: str) -> Tuple[str, Optional[str]]:
@@ -1027,7 +1007,7 @@ class NLAutomationParser:
         return re.sub(r"^\s*(when|if|whenever|then|,|and)\b\s*", "",
                       t.strip(), flags=re.I).strip()
 
-    # ── Coercion / helpers ──────────────────────────────────────────────────
+    # Coercion / helpers
 
     @staticmethod
     def _coerce(meta: Dict, logical):

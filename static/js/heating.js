@@ -1,23 +1,10 @@
 /**
- * heating.js
  * Frontend for the Heating Advisor dashboard, config and zone management.
  *
- * Consumes:
- *   GET  /api/heating/dashboard
- *   GET  /api/heating/history
- *   GET  /api/heating/preheat
- *   GET  /api/heating/config         POST to save
- *   GET  /api/heating/zones          POST to replace
- *   POST /api/heating/zones/{id}     DELETE to remove
- *   GET  /api/heating/thermostats
- *
- * Integration:
- *   - `initHeating()` called from main.js on DOMContentLoaded
- *   - Renders into <div id="heatingDashboard">
- *   - Auto-refreshes every 60s while the #heating tab is visible
- *   - Settings modal is injected into <body> once on init
- *   - Active controller panel is loaded by heating-controller.js when the
- *     dashboard renders and a #heatingControllerPanel div is present
+ * initHeating() is called from main.js, renders into #heatingDashboard, and
+ * auto-refreshes every 60 s while the tab is visible. Backed by
+ * /api/heating/*. The active controller panel is loaded separately by
+ * heating-controller.js. See docs/heating.md.
  */
 
 import {
@@ -57,9 +44,6 @@ function getChartPalette() {
            '#0369a1']; // deep sky
 }
 
-// ============================================================================
-// STATE
-// ============================================================================
 let heatingRefreshTimer = null;
 let heatingTabActive = false;
 let lastDashboard = null;
@@ -98,9 +82,7 @@ document.addEventListener('themechange', () => {
         loadHeatingHistory();  // refetch + redraw with the new palette
     }
 });
-// ============================================================================
 // INITIALIZATION
-// ============================================================================
 export function initHeating() {
     log.log("Initializing Heating Module…");
 
@@ -142,9 +124,7 @@ function stopHeatingAutoRefresh() {
     heatingRefreshTimer = null;
 }
 
-// ============================================================================
 // DASHBOARD FETCH + RENDER
-// ============================================================================
 
 /**
  * Replace `container`'s markup while carrying the *live* nodes named in `ids`
@@ -336,9 +316,7 @@ async function fetchPreheatRecommendation(targetTemp) {
     }
 }
 
-// ============================================================================
 // RENDER: dashboard
-// ============================================================================
 function topBar(subtitle) {
     return `
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -905,7 +883,7 @@ async function loadHeatingRuntime(hours = 24) {
     }
 }
 
-// ─── Zones dashboard (per-zone summary cards) ──────────────────────
+// Zones dashboard (per-zone summary cards)
 function renderZonesDashboard(zones) {
     if (!zones.length) return '';  // hidden entirely if no zones configured
 
@@ -1044,7 +1022,7 @@ function renderHistoryChart(historyData) {
         return;
     }
 
-    // === Y range (nice 1°C rounding, min 4° visible) + X range ===
+    // Y range (nice 1°C rounding, min 4° visible) + X range
     let tMin = Infinity, tMax = -Infinity, xMin = Infinity, xMax = -Infinity;
     for (const s of series) for (const p of s.points) {
         const [ts, val] = parsePoint(p);
@@ -1177,9 +1155,7 @@ function renderTips(tips) {
     return `<div class="list-group list-group-flush">${items}</div>`;
 }
 
-// ============================================================================
 // DASHBOARD BINDINGS
-// ============================================================================
 function bindTopBarControls() {
     document.getElementById('btn-heating-refresh')?.addEventListener('click', () => {
         lastDashboard = null;
@@ -1230,9 +1206,7 @@ function bindDashboardControls(data) {
     });
 }
 
-// ============================================================================
 // SETTINGS MODAL
-// ============================================================================
 function ensureSettingsModal() {
     if (document.getElementById('heatingSettingsModal')) return;
     const html = `
@@ -1533,7 +1507,7 @@ function renderZoneSchedule(zone, zoneIdx) {
         <button class="btn btn-sm btn-outline-primary btn-add-slot" data-zone-idx="${zoneIdx}"><i class="fas fa-plus"></i> Add time slot</button>`;
 }
 
-// ─── Zone presets ──────────────────────────────────────────────────
+// Zone presets
 const ZONE_PRESETS = {
     single: [{ name: 'Whole Home' }],
     two: [{ name: 'Upstairs' }, { name: 'Downstairs' }],
@@ -1585,7 +1559,7 @@ function showQuickSetupPicker() {
     });
 }
 
-// ─── Zone list rendering + bindings ────────────────────────────────
+// Zone list rendering + bindings
 function renderZonesList() {
     const container = document.getElementById('zonesList');
     if (!container) return;
@@ -1706,7 +1680,7 @@ function bindSettingsTabs() {
     document.getElementById('btnZonePresets')?.addEventListener('click', showQuickSetupPicker);
 }
 
-// ─── Gather + save ─────────────────────────────────────────────────
+// Gather + save
 function gatherFormValues() {
     const val = (id, coerce = (v) => v) => {
         const el = document.getElementById(id);
@@ -1793,9 +1767,7 @@ async function saveSettings() {
     }
 }
 
-// ============================================================================
 // ROOM THERMAL / SIZING / PREHEAT DETAIL MODAL
-// ============================================================================
 function ensureRoomThermalModal() {
     if (document.getElementById('roomThermalModal')) return;
     const html = `
@@ -1920,9 +1892,6 @@ function _renderPreheatCard(p, meta) {
     </div>`;
 }
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 function selectEl(id, value, options) {
     const opts = (options || []).map(o =>
         `<option value="${escapeAttr(o)}" ${o === value ? 'selected' : ''}>${escapeHtml(o)}</option>`

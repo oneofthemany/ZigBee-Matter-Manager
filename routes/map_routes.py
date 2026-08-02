@@ -1,13 +1,10 @@
 """
-Map tile routes — a caching proxy in front of the upstream tile server.
+Map tile routes — a caching proxy in front of the upstream tile server, with
+place search riding along.
 
-Authenticated deliberately. An open tile proxy is something other people will
-find and use, and the traffic would be attributed to this hub's address by the
-upstream server — which is exactly how a self-hosted tool gets blocked.
-
-Place search rides along here for the same reason and with the same care: it is
-the other half of picking a point on a map, and an open geocoding proxy is the
-same liability as an open tile proxy.
+Authenticated deliberately: an open tile or geocoding proxy is something others
+will find and use, and the traffic is attributed to this hub's address upstream
+— which is how a self-hosted tool gets blocked. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -62,9 +59,7 @@ def register_map_routes(app: FastAPI) -> None:
         logger.info("[tiles] cache cleared, %d tiles removed", removed)
         return {"success": True, "removed": removed}
 
-    # ------------------------------------------------------------------
     # Place search
-    # ------------------------------------------------------------------
     def _geo():
         g = get_geocoder()
         if not g:

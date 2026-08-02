@@ -406,3 +406,24 @@ Beyond the ladder itself (§7.1):
 - **ppm** — parts per million of rate error; 50 ppm ≈ 3 ms of drift per minute.
 - **GCC-PHAT** — generalised cross-correlation with phase transform; time-delay estimation robust to reverberation.
 - **Multizone** — Google's private leader/follower group-playback protocol, coordination namespace `urn:x-cast:com.google.cast.multizone`.
+
+## RSSI presence zones
+
+`modules/zones.py` does per-device RSSI-to-coordinator presence detection. This
+design supersedes the earlier pair-link RSSI model.
+
+- Each zone holds a set of device IEEEs.
+- For every frame the coordinator receives from a zone device, one `(rssi, lqi)`
+  sample is recorded against that device.
+- **Calibration is explicit**: the user triggers it once, with the room empty. A
+  baseline (trimmed mean + σ) is computed per device from that window.
+- Evaluation compares smoothed current RSSI against baseline in σ units.
+- **Aggressiveness** — the per-device σ threshold multiplier — is only exposed
+  for mains-fed (Router role) devices. End devices contribute weak "evidence"
+  weight at the default threshold, because their sample cadence is dictated by
+  their own wake cycle.
+- A zone is OCCUPIED when the weighted sum of triggered devices crosses
+  `min_devices_triggered`, and clears after `clear_delay` of stability.
+
+> `zones` / `config/zones.yaml` are RSSI presence-detection zones, **not** rooms.
+> See [chambers](frames.md#chambers).

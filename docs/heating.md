@@ -452,3 +452,431 @@ Both modules share the same underlying thermal profile and telemetry, so the num
 **"Anomaly watcher never fires"** — it needs a baseline τ. The thermal profile has to produce a measured W/K first, which needs ~10 h of temperature history with at least one clean cool-down window. Give it a day of data after you configure dimensions.
 
 **"The EPC number looks wrong"** — remember it's a SAP-style estimate using UK average 2200 heating degree-days, not the full BREDEM methodology. It's a relative indicator for seeing whether changes help, not a formal certification.
+## Implementation notes
+
+Extracted from the code so the modules themselves stay terse.
+
+### Hive SLT → SLR temperature binding
+
+`core/service.py` binds these itself. Hive's SLT thermostat holds the room
+temperature sensor; the SLR receiver needs that data to display the room
+temperature and, on some firmware, to refine its heating decisions.
+
+Paired to a third-party coordinator rather than the official Hive hub, the SLT
+does **not** auto-bind to the SLR and does **not** auto-configure reporting on
+its `0x0402` cluster. Two operations, both aimed at the SLT — a sleepy
+end-device, so timeouts are generous and the calls are retried:
+
+1. **ZDO `Bind_req`**: SLT (EP9, `0x0402`, server) → SLR (EP5, client). Tells
+   the SLT where to send Report Attributes for cluster `0x0402`. Without it the
+   SLT only reports to the coordinator (the default).
+2. **Configure Reporting** on the SLT's `0x0402.measured_value`: min 30 s,
+   max 300 s, change 25 centi-degrees (0.25 °C). Without it the SLT may report
+   on an arbitrary firmware schedule, or not at all.
+
+`bind_devices()` cannot be used here: it binds output→input, which is correct
+for actuator binds (switch→light), but for sensor-style clusters the source is
+the cluster *server* — the side that owns the data — which sits in the SLT's
+*input* clusters.
+
+### Receiver write protocol (Hive SLR)
+
+The controller mirrors the `"SLR"` / `"RECEIVER"` model check that the HVAC
+handler uses internally, so both agree on which write protocol is in play.
+
+- **Turning off**: `set_hvac_mode` atomically writes `system_mode=off` + hold +
+  frost setpoint. `set_target_temperature` must *not* also be called — it would
+  wrongly include `system_mode=heat` in the same write.
+- **Turning on**: the write atomically carries `system_mode=heat`, so it must
+  fire even when the setpoint value is unchanged (e.g. still 30 °C from the
+  previous call cycle).
+- When calling for heat the controller pushes a high setpoint so the receiver's
+  internal comparator fires the boiler, and a low one when standing down so the
+  receiver does not fight it. Overridable per circuit via
+  `receiver_call_setpoint` / `receiver_idle_setpoint`.
+
+### External-temp push backoff
+
+A TRV whose downlink is dead may still send its own reports, so failures are
+only visible on the write path. After `EXT_PUSH_FAIL_STREAK_THRESHOLD` (3)
+consecutive failures the effective push interval doubles per further failure,
+capped at `EXT_PUSH_BACKOFF_MAX_SEC` — one dead TRV should not log an error
+every cycle. `write_fail_streak` is maintained by the device command executor
+and any successful write resets it.
+
+### Per-attribute freshness
+
+`last_seen` cannot distinguish a healthy device reporting battery from one that
+has stopped reporting temperature — the "frozen attribute" failure. The health
+check therefore queries DuckDB for the age of the last *temperature* report.
+
+Results are cached per tick (`IEEE -> (checked_at, age)`) so four rooms sharing
+a sensor cost one query rather than four. The lookback window reaches well
+beyond the threshold so a sensor reporting every 20 minutes is not flagged just
+because nothing landed in the last 15.
+
+Freshness is skipped entirely when `temp_source == "external"`: the TRV's own
+`local_temperature` is driving no decision, so its staleness is not a health
+signal for that room. A TRV reporting *no* temperature at all is still a
+genuine failure and is distinguished from "stale". No DuckDB history at all is
+treated as a fresh install, not a fault.
+
+### Stale-sensor fallback
+
+The cached state value outlives the sensor that produced it, so a dead sensor
+would otherwise steer a room on a reading weeks old. If DuckDB shows no
+temperature report inside the room's freshness threshold the external reading
+is discarded, and normal source selection falls back to the TRV mean — or
+`"none"`, which classifies the room as unknown. The same rule blocks forwarding
+a stale reading to a TRV in external mode, which would otherwise pin the TRV's
+view of the room at that value.
+
+### Miscellaneous
+
+- **Force-close**: when shutting a TRV, write `(current - FORCE_CLOSE_OFFSET)`
+  so the TRV's own thermostat holds the valve closed. Applied whether or not
+  the circuit is currently calling, so the valve is already shut the next time
+  it fires. Floored at the per-TRV `min_setpoint`.
+- **Stall recovery**: a receiver commanded to heat but unconfirmed after
+  `RECEIVER_STALL_RECOVERY_SEC` gets an explicit off, so it re-evaluates on the
+  next tick (bounce off→heat). Recovers from dropped ZigBee packets.
+- **Stratification** is applied only to the external sensor path. TRVs sit near
+  the floor by their nature, but their readings already carry convective bias
+  from the radiator, so a separate height correction would mislead.
+- **Telemetry writes** must never block: the tick runs on the event loop and
+  the write waits on the telemetry lock, so blocking there stalls every other
+  loop task, stream generators included.
+- **Config hot-reload** swaps `self.circuits` atomically under the config lock,
+  so no tick is ever mid-flight. Stale `_last_command` entries for IEEEs no
+  longer in config are dropped, or the idempotent gate could suppress a
+  legitimate command if the same IEEE were re-added later.
+
+### Thermal profile internals
+
+`ROOM_THERMAL_MASS_FACTOR = 3.0` — rooms have roughly 3× the thermal mass of
+their air alone once furnishings, plasterboard and screed are accounted for.
+Standard in the thermal-model literature (CIBSE TM41).
+
+`U_VALUES` are keyed by insulation level, from SAP Appendix S + CIBSE Guide A.
+`party_wall_u` is 0 for heated-neighbour party walls (the normal assumption for
+terraces and flats); an isolated unheated void would be ~0.5.
+
+#### Sensor stratification correction
+
+Warm air stratifies upward in heated rooms: a sensor mounted high reads warmer
+than the comfort zone, one near the floor cooler. The correction is the
+standard CIBSE Guide A rule of thumb — ~0.5 °C per metre above the reference
+height, the vertical gradient of a heated room under typical convective
+heating.
+
+Reference height is 1.5 m: the standing breathing zone, the default mounting
+height for residential thermostats, and what target temperatures implicitly
+refer to. A sensor exactly at 1.5 m receives no correction.
+
+The correction is additive on the delta from reference:
+
+```
+correction_c = -GRADIENT * (sensor_height_m - REFERENCE_HEIGHT_M)
+```
+
+Subtract from the raw reading to get the comfort-zone temperature.
+
+It is deliberately *not* gated on "is heating active", because (a) the average
+gradient over a heating season is dominated by heated time, (b) with heating
+off the gradient self-decays and the correction is small in absolute terms —
+well under sensor noise, and (c) gating would require coupling temperature
+reads to controller state.
+
+#### Cool-down window thresholds
+
+Two profiles:
+
+- `LEARN_*` — fitting baseline τ from the long telemetry window. Deliberately
+  loose, so more candidate windows are accepted and the R² filter in
+  `_fit_newton_cooling` culls the noisy ones. Rooms held near setpoint most of
+  the time still produce enough usable drifts.
+- `ALERT_*` — the anomaly detector (`detect_fast_cooling`), comparing a single
+  recent window against the baseline. Stricter, to avoid false "window open"
+  alarms from small natural drifts.
+
+A heating-state gate rejects windows where too many samples overlap a period
+when heating was active. The tolerance is above zero to cover transient TRV
+cycling at the window boundaries.
+
+#### Windows in the plan-aware path
+
+Only windows whose host wall is external contribute. The plan-aware path
+classifies this per opening; the bbox path would have folded the wall first and
+then asked whether the *bin* was external, which is wrong for L-shaped rooms
+where two edges fall in the same bin.
+
+#### Solar gain in pre-heat
+
+Solar gain reduces the net load on the radiator, lowering time-to-target. It is
+modelled by boosting effective radiator output by the average solar watts over
+the pre-heat window:
+
+```
+T_steady = T_outdoor + (Q_rad + Q_solar) / W_per_K
+```
+
+Radiator and sun together push the room to a higher steady state, so it reaches
+target sooner. τ does not change — it is a property of the room fabric, not the
+heat source.
+
+`minutes_saved = minutes_without_solar − minutes_with_solar` is also computed,
+so the UI can say "pre-heat: 45 min (solar saving ~10 min)".
+
+When there is no measured τ, one is synthesised from the static model alone:
+`tau = (m·c) / UA`, with `m·c ≈ 3 × (ρ·V·Cp)` per room — the same factor
+`compute_measured` uses. Without floor area, V cannot be estimated directly, so
+it falls back to a typical indoor τ of 3 h. Less accurate, but it keeps a value
+available from day one.
+
+## Solar Gain
+
+`modules/solar_gain.py` estimates instantaneous and time-averaged solar heat
+gain into individual rooms from window geometry and real-time sun position. It
+is the first layer of solar-aware preheat and cooldown logic, answering two
+questions the controller needs:
+
+1. How many watts of free heat is the sun putting into this room right now?
+2. How many watts will it average over the next N minutes (the preheat window)?
+
+All functions are pure — no I/O — and thread-safe.
+
+### Physics model
+
+The ASHRAE simplified solar heat gain approach:
+
+```
+Q_window = A × SHGC × I_incident        [W]
+```
+
+- `A` — window area [m²]
+- `SHGC` — Solar Heat Gain Coefficient (glazing-type dependent)
+- `I_incident` — irradiance falling perpendicularly on the glass [W/m²]
+
+`I_incident` comes from either:
+
+- a measured `shortwave_radiation` value from Open-Meteo — preferred, because
+  it is the real, cloud-attenuated value — with a cosine projection applied for
+  the angle between sun and window face; or
+- a clear-sky beam model (`1000 × sin(elevation)`) attenuated by a cloud
+  fraction term, when `shortwave_radiation` is unavailable.
+
+For a vertical window on a wall with outward normal `N_deg` (bearing, clockwise
+from true north) and sun azimuth `S_deg`:
+
+```
+cos_inc = cos(elevation) × cos(S_deg − N_deg)
+```
+
+This is zero when the sun is behind or parallel to the wall, and 1.0 when the
+sun shines perpendicularly at zero elevation — which never happens in practice,
+but the geometry is correct.
+
+### Diffuse component
+
+On overcast days the beam is negligible but diffuse sky radiation is
+significant:
+
+```
+Q_diffuse = A × SHGC × diffuse_fraction × shortwave_radiation
+diffuse_fraction = 0.15 + 0.85 × cloud_fraction
+```
+
+On a clear day most radiation is direct beam; on a fully overcast day
+essentially all of it is diffuse, though the total is lower.
+
+### API
+
+| Function | Returns |
+| --- | --- |
+| `solar_gain_now(room_config, lat, lon, dt_utc, shortwave_wm2, cloud_fraction)` | `float` [W] — instantaneous gain for one room |
+| `solar_gain_window(room_config, lat, lon, start_utc, duration_minutes, shortwave_wm2, cloud_fraction)` | `SolarGainWindow` — average watts + breakdown, used by preheat |
+| `solar_gain_forecast(room_config, lat, lon, start_utc, hourly_shortwave, hourly_cloud_cover)` | `List[SolarGainSample]` — per-hour profile, for scheduling |
+
+### Room config
+
+Uses the existing `dimensions.windows[]` and `dimensions.walls{}`, plus one
+optional field per wall:
+
+```yaml
+dimensions:
+  walls:
+    front: { type: external, facing_deg: 180 }   # south-facing outward normal
+    left:  { type: external, facing_deg: 270 }   # west-facing
+  windows:
+    - { wall: front, area_m2: 2.1, glazing: double }
+```
+
+`facing_deg` is the compass bearing of the wall's outward normal (0 = N,
+90 = E, 180 = S, 270 = W). A wall with no `facing_deg` contributes zero solar
+gain — the function degrades gracefully rather than crashing.
+
+### Measured solar impact
+
+`modules/solar_impact.py` is the empirical counterpart to `solar_gain.py`: that
+module predicts what the sun *should* contribute from window geometry, this one
+reads what it *actually* contributed from the temperature record.
+
+**Method**
+
+1. Pull the room's temperature history and the controller's per-tick heating
+   state, and find heating-off cool-down windows using the same machinery
+   `thermal_profile.py` uses for τ learning.
+2. Classify every window with the clear-sky solar model:
+   - **baseline** — the model says the room's windows receive ~no direct sun
+     during the interval (night, or the facade is in shade throughout);
+   - **sunlit** — the model expects meaningful gain (≥ `SUNLIT_MIN_MODELLED_W`);
+   - **ambiguous** — in between; excluded from both sides.
+3. Fit Newton cooling on the baseline windows only → the room's no-solar time
+   constant τ_night. This is the room's own control group.
+4. For each sunlit window, predict the end temperature from τ_night and the
+   outdoor record, and read the residual:
+
+   ```
+   residual_c = observed_end − predicted_end        (> 0 ⇒ un-modelled heat)
+   C [J/K]    = UA [W/K] × τ_night [s]              (UA from the thermal profile)
+   measured_w = C × residual_c / duration_s
+   ```
+
+5. Compare with the clear-sky model's average for the same window. The median
+   measured/modelled ratio is the room's solar calibration factor: below 1 means
+   shading, cloud or film is already attenuating the sun; above 1 means the room
+   heats up more than its glazing suggests (check loft and fabric).
+
+Everything degrades gracefully and reports *why* it stopped: no sensor, no
+telemetry, no cool-down windows, no location, no window geometry, or not enough
+baseline windows yet.
+
+**Attribution caveat.** Daytime residuals also include internal gains (people,
+cooking, electronics). Using each room's own night-time baseline and the
+facade-lit classification keeps the signal dominated by solar, but treat
+single-window numbers as noisy — the medians are the story.
+
+**Scale caveat.** Measured watts are proportional to the room's estimated
+thermal capacitance `C = UA × τ`, and UA comes from the thermal profile's mass
+model, which carries real uncertainty. Comparisons *between* rooms and trends
+over time (before/after fitting window film, say) are trustworthy; absolute
+wattage is indicative only.
+
+## Floor plan
+
+`modules/floor_plan.py` holds the floor-plan data model, geometry helpers, and
+the projection back to the legacy per-room `dimensions` blocks. Pure module —
+no I/O, no FastAPI, no global state — wired in by
+`routes/floor_plan_routes.py`.
+
+The floor plan is an **editor surface**. The source of truth for circuits and
+rooms remains `heating.circuits` in `config.yaml`. On save, this module projects
+the plan back into each existing room's `dimensions` / `radiator` / `trvs` /
+`contact_sensors` / `temperature_sensor_ieee`, so `thermal_profile.py` and
+`heating_controller.py` keep working unchanged.
+
+Where the plan is richer than the legacy schema (multiple radiators per room,
+multiple temperature sensors, contacts bound to specific openings), the
+projection emits the legacy singular fields **and** the new plural ones:
+
+| Legacy | New |
+| --- | --- |
+| `room["radiator"]` — largest-watts radiator in the room | `room["radiators"]` — full list with TRV bindings |
+| `room["temperature_sensor_ieee"]` — primary sensor | `room["temperature_sensors"]` — full list with heights |
+| — | `room["contact_sensors"][i].opening_id` — opening linkage |
+
+### Coordinate convention
+
+`+x` = right, `+y` = up (standard maths). `north_offset_deg` is the clockwise
+angle from plan-up to true north, so 0 means plan-up is north and 90 means true
+north points to the right of the plan.
+
+### Compass and wall-bin convention
+
+A wall's outward-normal bearing relative to true north decides both its
+8-point compass label (N/NE/…/NW), which drives opening orientation, and its
+legacy 4-bin label, which is the `dimensions.walls` bin:
+
+| Bin | Facing | Bearing range |
+| --- | --- | --- |
+| `back` | N | −45 .. +45 |
+| `right` | E | 45 .. 135 |
+| `front` | S | 135 .. 225 |
+| `left` | W | 225 .. 315 |
+
+The 4-bin labels are arbitrary. `thermal_profile.py` only cares about the
+external/party/internal type stored against each bin.
+
+Radiators have two modes: wall-mounted (`wall_id` + `offset_m`, clamped to wall
+length) and freestanding (`x` + `y`). The effective mode is resolved after walls
+are cleaned, and fields not belonging to the chosen mode are stripped so the
+YAML stays tidy.
+
+### Floor-plan editor overlays
+
+`static/js/floor-plan.js` draws three overlays from one shared scalar field, so
+the heat map, the isotherm contours and the cold-zone tint agree by
+construction.
+
+**Thermal field.** A per-room "heat coverage" field sampled on a coarse grid:
+
+```
+C(p) = Σ_radiators exp(−(d/r₀)²) − Σ_drafts amp · exp(−(d/r_D)² · k)
+```
+
+where `r₀ = √(watts / (heatFlux · π))` is the radius each radiator can keep
+above the comfort threshold at the configured building heat loss. `C ≈ 1` right
+next to a radiator and crosses `COLD_THRESH = e⁻¹` at `d ≈ r₀`, so the
+cold-zone boundary lands where the old heated-radius circle used to — but now
+it bends around draughts and merges between multiple radiators.
+
+**Solar gain** (clear-sky heuristic, for insight rather than engineering).
+Average power admitted through a window over daylight hours:
+
+```
+W ≈ 500 W/m² × SHGC(glazing) × area × (sun-minutes / daylight)
+```
+
+500 W/m² is the effective clear-sky irradiance on vertical glazing when the
+facade faces the sun. Sun-minutes come from today's sun curve — the same data
+as the sun-path arc.
+
+**Measured override.** Where `/api/heating/solar-impact` has a trustworthy
+measurement for a room (see [measured solar impact](#measured-solar-impact)),
+the plan prefers it: the `calibration_ratio` (measured ÷ clear-sky-modelled)
+scales the solar sources in the field and the per-window badges, and the
+insights panel reports measured watts instead of the estimate.
+
+**Radiator plan-view rendering** has two modes. Wall-mounted radiators draw as
+a thin strip along the host wall at a fixed 0.1 m plan depth — `height_m` is
+the radiator's *physical* height, used for sizing and heat calculations, not
+its footprint — offset perpendicular toward the bound room centroid so it sits
+on the room-side face. Freestanding radiators draw as a `length × 0.1 m`
+axis-aligned strip at `(x, y)`, for towel rails, columns, underfloor zones, or
+anywhere placed away from a wall.
+
+**Coordinate system.** Metres in, metres out; the SVG viewBox is in metres and
+zoom is the scale of the `<g>`. SVG uses +x right, +y down; the model uses +y
+up, so y is flipped on both read and write. An image background's top-left in
+model space sits at `(origin_x_m, origin_y_m + height_m)`.
+
+### Floor-plan API
+
+`routes/floor_plan_routes.py`:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/heating/floor-plan` | read the saved plan |
+| `POST /api/heating/floor-plan` | save plan, project into circuits, return warnings |
+| `GET /api/heating/floor-plan/preview` | dry-run projection |
+| `DELETE /api/heating/floor-plan` | clear the plan |
+| `POST /api/heating/floor-plan/image/{level_id}` | upload a background image |
+| `GET /api/heating/floor-plan/image/{level_id}` | fetch the image |
+| `DELETE /api/heating/floor-plan/image/{level_id}` | clear the image |
+
+Plan metadata lives at `heating.floor_plan` in `config/config.yaml`; background
+images are first-class files on disk at `data/floor_plans/{level_id}.{ext}`,
+which keeps the YAML small.
+
+Image limits: 20 MB per upload, `image/png` and `image/jpeg` only. **PDFs must be
+rendered to PNG client-side** (via pdf.js) before upload.

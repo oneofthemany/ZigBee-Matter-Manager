@@ -1,32 +1,10 @@
 """
 Caching map-tile proxy.
 
-Why this exists
----------------
-Presence maps need tiles, and fetching them straight from a public tile server
-means every viewer's browser announces the coordinates it is looking at — on
-every pan and zoom — to a third party. For a map centred on where your family
-live, that is the one request pattern worth avoiding.
-
-Proxying through the hub changes what leaks:
-
-  - the tile server sees the HUB's address, once per tile ever, not each
-    viewer's address on every interaction;
-  - a cached tile involves no external request at all, so a household that
-    looks at the same few square kilometres goes quiet almost immediately;
-  - the browser talks only to ZMM, so this keeps working over a tunnel or VPN
-    where the client may have no direct internet access.
-
-It does not make the first fetch private. The hub still asks upstream for tiles
-it has never seen. Seeding the cache offline is the only way to avoid that
-entirely, and is left to the operator.
-
-Upstream etiquette
-------------------
-OpenStreetMap's tile policy requires an identifying User-Agent and forbids bulk
-or systematic downloading. This proxy is demand-driven — it fetches only tiles
-someone actually looked at — and caps concurrency so a fast pan cannot turn
-into a burst. Do not point a prefetcher at it.
+Proxying means the tile server sees the hub's address once per tile rather than
+every viewer's address on every pan, and a cached tile leaves the house
+entirely. Demand-driven and concurrency-capped to respect OSM's tile policy —
+do not point a prefetcher at it. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -80,7 +58,7 @@ class TileCache:
         self.hits = 0
         self.misses = 0
 
-    # -- validation --------------------------------------------------------
+    # validation
 
     @staticmethod
     def valid(z: int, x: int, y: int) -> bool:
@@ -101,7 +79,7 @@ class TileCache:
     def path_for(self, z: int, x: int, y: int) -> Path:
         return self.cache_dir / str(z) / str(x) / f"{y}.png"
 
-    # -- read path ---------------------------------------------------------
+    # read path
 
     def _fresh_bytes(self, p: Path) -> Optional[bytes]:
         try:
@@ -190,7 +168,7 @@ class TileCache:
             logger.warning("[tiles] upstream error for %s: %s", url, e)
             return None
 
-    # -- maintenance -------------------------------------------------------
+    # maintenance
 
     def stats(self) -> dict:
         files = 0

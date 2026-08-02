@@ -1,28 +1,11 @@
 # modules/device_profile_apply.py
 """
-Apply a device profile to a live device.
-========================================
+Apply a device profile to a live device — capabilities, actions, reporting and
+state transforms.
 
-Three things happen when a profile is applied:
-
-1. **Capabilities** — the device's capability set is augmented with whatever
-   the profile declares, so the Control tab, automation triggers, MQTT
-   discovery, etc., all see the device as the right type.
-
-2. **Actions** — actions defined in the profile are registered on the
-   device under ``device.profile_actions``. The Control tab reads this
-   list and presents buttons; the action runner below executes them.
-
-3. **Reporting** — the profile's reporting rows are pushed to the device
-   immediately on apply, and re-pushed on every interview-complete. The
-   apply runner is idempotent; battery devices that miss the first
-   attempt eventually pick it up.
-
-4. **State transforms** — for every raw ``cluster_XXXX_attr_XXXX`` key in
-   the device state that has a mapping in the profile or the IEEE
-   overrides, a friendly key is added to the state dict.
-
-This module is intentionally read-only on the profile — never mutates it.
+Read-only on the profile; never mutates it. The apply runner is idempotent, so a
+battery device that misses the first reporting push picks it up on a later
+interview-complete. See docs/device-profiles.md.
 """
 from __future__ import annotations
 
@@ -36,10 +19,6 @@ from modules.device_profiles import (
 
 logger = logging.getLogger("modules.device_profile_apply")
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _get_device_identity(device) -> Dict[str, Any]:
     """Pull model / manufacturer / vendor_id / product_id from a live device.
@@ -89,9 +68,7 @@ def resolve_profile_for_device(device) -> Optional[Dict[str, Any]]:
     return get_profile_store().get_profile_for_device(**ident)
 
 
-# ---------------------------------------------------------------------------
 # Capabilities
-# ---------------------------------------------------------------------------
 
 def _apply_capabilities(device, profile: Dict[str, Any]) -> List[str]:
     """
@@ -121,9 +98,7 @@ def _apply_capabilities(device, profile: Dict[str, Any]) -> List[str]:
     return added
 
 
-# ---------------------------------------------------------------------------
 # State transforms
-# ---------------------------------------------------------------------------
 
 def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -179,7 +154,7 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
         if mapping["name"] not in out:
             out[mapping["name"]] = value
 
-    # --- state-key mappings (learn-by-demonstration) -------------------
+    # state-key mappings (learn-by-demonstration)
     # These rename/transform an arbitrary state key by its literal name, so
     # they cover Tuya datapoints (dp_16), Matter attributes and any derived
     # key — not just ZCL cluster attributes. raw_key form: "state:<key>".
@@ -197,7 +172,7 @@ def transform_state_with_profile(device, state: Dict[str, Any]) -> Dict[str, Any
         except Exception as e:
             logger.debug(f"[{ieee}] state transform failed for {raw_key}: {e}")
 
-    # --- profile-level state mappings (shared across the model) ---------
+    # profile-level state mappings (shared across the model)
     # IEEE mappings above already ran, so per-device overrides win via the
     # "name not in out" guard.
     if profile:
@@ -245,9 +220,7 @@ def _apply_attr_transform(value: Any, mapping: Dict[str, Any]) -> Any:
     return value
 
 
-# ---------------------------------------------------------------------------
 # Reporting configuration
-# ---------------------------------------------------------------------------
 
 async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -304,9 +277,7 @@ async def apply_reporting(device, profile: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": ok == len(rows), "configured": ok, "results": results}
 
 
-# ---------------------------------------------------------------------------
 # Action runner
-# ---------------------------------------------------------------------------
 
 async def run_action(device, action_id: str, args: Optional[List[Any]] = None) -> Dict[str, Any]:
     """
@@ -385,9 +356,7 @@ async def run_action(device, action_id: str, args: Optional[List[Any]] = None) -
         return {"success": False, "error": str(e)}
 
 
-# ---------------------------------------------------------------------------
 # Top-level apply
-# ---------------------------------------------------------------------------
 
 async def apply_profile(
         device,
@@ -471,9 +440,7 @@ async def apply_profile(
     return summary
 
 
-# ---------------------------------------------------------------------------
 # MQTT discovery generation for a profile
-# ---------------------------------------------------------------------------
 
 def build_discovery_configs(device) -> List[Dict[str, Any]]:
     """

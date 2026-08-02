@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
 """
-Zigbee Serial Interrogator
-===========================
-Determines serial flow control, baud rate, and adapter type of connected
-Zigbee coordinator devices. Differentiates between normal serial devices
-and Zigbee adapters.
+Zigbee serial interrogator — determines flow control, baud rate and adapter type
+of a connected coordinator, and tells Zigbee adapters from ordinary serial
+devices.
 
-Supported adapters:
-  - Silicon Labs EZSP (Ember) — EFR32/EM35x based (e.g. Elelabs, HUSBZB-1, SkyConnect)
-  - Silicon Labs CPC Multi-PAN (RCP) — Zigbee + Thread + Matter over EFR32
-  - Dresden Elektronik ConBee / RaspBee (deCONZ serial protocol)
-  - Texas Instruments Z-Stack (CC253x / CC26x2 based)
-
-Usage:
-  python zigbee_interrogator.py                    # Auto-detect all serial ports
-  python zigbee_interrogator.py --port /dev/ttyUSB0  # Probe a specific port
-  python zigbee_interrogator.py --verbose            # Detailed logging
+Covers Silicon Labs EZSP and CPC Multi-PAN, deCONZ ConBee/RaspBee, and TI
+Z-Stack. Runnable directly for a one-off probe. See docs/onboarding.md.
 """
 
 import argparse
@@ -51,9 +41,7 @@ except ImportError:
     _BellowsApp = None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Constants & Enums
-# ─────────────────────────────────────────────────────────────────────────────
 
 COMMON_BAUD_RATES = [115200, 460800, 230400, 57600, 38400, 19200, 9600]
 PROBE_TIMEOUT = 0.8          # seconds per probe attempt
@@ -83,9 +71,7 @@ class AdapterFamily(Enum):
     NOT_ZIGBEE = "Non-Zigbee serial device"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Result data classes
-# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class AdapterInfo:
@@ -123,9 +109,7 @@ class AdapterInfo:
         return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Low-level serial helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def open_serial(port: str, baud: int, flow: FlowControl, timeout: float = READ_TIMEOUT) -> serial.Serial:
     """Open a serial port with specified parameters.
@@ -149,9 +133,8 @@ def open_serial(port: str, baud: int, flow: FlowControl, timeout: float = READ_T
     ser.write_timeout = timeout
     ser.xonxoff = (flow == FlowControl.XONXOFF)
 
-    # Deassert DTR and RTS *before* open to avoid accidental bootloader entry.
-    # On EFR32 (MG21/MG24): DTR assertion = reset, RTS assertion = boot select.
-    # Both must stay deasserted to keep the chip in normal application mode.
+    # Deassert DTR and RTS before open: on EFR32 (MG21/MG24) DTR asserts reset
+    # and RTS asserts boot select, so both must stay low for normal mode.
     ser.dtr = False
     ser.rts = False
 
@@ -226,9 +209,7 @@ def safe_write_read(ser: serial.Serial, payload: bytes, read_len: int = 256,
     return result[0]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # EZSP (Ember) detection & interrogation
-# ─────────────────────────────────────────────────────────────────────────────
 
 class EZSPProbe:
     """
@@ -379,7 +360,7 @@ class EZSPProbe:
         else:
             print(" no response")
 
-        # --- EZSP Version command ---
+        # EZSP Version command
         version_found = False
         seq_num = 0
 
@@ -515,9 +496,7 @@ class EZSPProbe:
                 break
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # CPC / Multi-PAN (RCP) detection & interrogation
-# ─────────────────────────────────────────────────────────────────────────────
 
 class CPCMultiPANProbe:
     """
@@ -711,7 +690,7 @@ class CPCMultiPANProbe:
         info.adapter_family = AdapterFamily.CPC_MULTIPAN
         print("  ┌─ CPC Multi-PAN (RCP) Interrogation ──────────────────")
 
-        # --- Protocol version ---
+        # Protocol version
         print("  │ Query CPC protocol version...", end="", flush=True)
         frame = cls._build_prop_get(cls.PROP_PROTOCOL_VERSION)
         resp = safe_write_read(ser, frame, read_len=128, delay=0.3)
@@ -736,7 +715,7 @@ class CPCMultiPANProbe:
         else:
             print(" timeout")
 
-        # --- CPC secondary version ---
+        # CPC secondary version
         print("  │ Query CPC firmware version...", end="", flush=True)
         frame = cls._build_prop_get(cls.PROP_SECONDARY_CPC_VERSION)
         resp = safe_write_read(ser, frame, read_len=128, delay=0.3)
@@ -760,10 +739,9 @@ class CPCMultiPANProbe:
         else:
             print(" timeout")
 
-        # --- Capabilities ---
-        # PROP_CAPABILITIES is a CPC transport-layer register (encryption,
-        # flow-control, GPIO-reset etc.) — NOT a protocol-capability register.
-        # Display raw hex only to avoid misleading Zigbee/Thread/Matter labels.
+        # PROP_CAPABILITIES is a CPC transport-layer register (encryption, flow
+        # control, GPIO reset), not protocol capabilities. Raw hex only, so we do
+        # not imply Zigbee/Thread/Matter support.
         print("  │ Query capabilities...", end="", flush=True)
         frame = cls._build_prop_get(cls.PROP_CAPABILITIES)
         resp = safe_write_read(ser, frame, read_len=128, delay=0.3)
@@ -816,9 +794,7 @@ class CPCMultiPANProbe:
                 break
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # ConBee / RaspBee detection & interrogation
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ConBeeProbe:
     """
@@ -941,7 +917,7 @@ class ConBeeProbe:
         info.adapter_family = AdapterFamily.CONBEE
         print("  ┌─ ConBee/RaspBee Interrogation ───────────────────────")
 
-        # --- Firmware version ---
+        # Firmware version
         print("  │ Query firmware version...", end="", flush=True)
         frame = cls._build_frame(cls.CMD_VERSION)
         resp = safe_write_read(ser, frame, read_len=128, delay=0.3)
@@ -976,7 +952,7 @@ class ConBeeProbe:
         else:
             print(" timeout")
 
-        # --- MAC Address ---
+        # MAC Address
         print("  │ Query MAC address...", end="", flush=True)
         mac_payload = struct.pack("<BHB", cls.PARAM_MAC_ADDRESS, 0x0000, 0x08)
         frame = cls._build_frame(cls.CMD_READ_PARAM, mac_payload)
@@ -1015,9 +991,7 @@ class ConBeeProbe:
                 break
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Z-Stack (Texas Instruments) detection & interrogation
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ZStackProbe:
     """
@@ -1113,7 +1087,7 @@ class ZStackProbe:
         info.adapter_family = AdapterFamily.ZSTACK
         print("  ┌─ Z-Stack Interrogation ──────────────────────────────")
 
-        # --- SYS_VERSION ---
+        # SYS_VERSION
         print("  │ Query SYS_VERSION...", end="", flush=True)
         frame = cls._build_frame(cls.SYS, cls.SYS_VERSION)
         resp = safe_write_read(ser, frame, read_len=128, delay=0.3)
@@ -1158,7 +1132,7 @@ class ZStackProbe:
         else:
             print(" timeout")
 
-        # --- SYS_GET_EXT_ADDR (EUI-64) ---
+        # SYS_GET_EXT_ADDR (EUI-64)
         print("  │ Query EUI-64 MAC...", end="", flush=True)
         frame = cls._build_frame(cls.SYS, cls.SYS_GET_EXT_ADDR)
         resp = safe_write_read(ser, frame, read_len=64, delay=0.3)
@@ -1173,7 +1147,7 @@ class ZStackProbe:
         else:
             print(" timeout")
 
-        # --- PING for capabilities ---
+        # PING for capabilities
         print("  │ Query MT capabilities...", end="", flush=True)
         frame = cls._build_frame(cls.SYS, cls.SYS_PING)
         resp = safe_write_read(ser, frame, read_len=64, delay=0.25)
@@ -1234,16 +1208,13 @@ class ZStackProbe:
                 break
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Main Interrogator orchestrator
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ZigbeeInterrogator:
     """Top-level class that orchestrates detection across protocols and baud rates."""
 
-    # Preferred baud/flow per adapter type (try these first)
-    # IMPORTANT: NONE flow control first — most modern adapters (MG24, CC2652,
-    # ConBee) do NOT use hardware flow control and RTS/CTS will hang.
+    # Preferred baud/flow per adapter. NONE first: most modern adapters (MG24,
+    # CC2652, ConBee) have no hardware flow control and RTS/CTS will hang.
     PREFERRED = {
         "ezsp": [(460800, FlowControl.NONE), (460800, FlowControl.XONXOFF),
                  (115200, FlowControl.NONE), (115200, FlowControl.XONXOFF),
@@ -1256,7 +1227,7 @@ class ZigbeeInterrogator:
                    (460800, FlowControl.NONE), (57600, FlowControl.NONE)],
     }
 
-    # ── Known USB VID:PID pairs for Zigbee adapters ──────────────────────
+    # Known USB VID:PID pairs for Zigbee adapters
     # Maps (VID, PID) → (likely_family, description)
     KNOWN_USB_ZIGBEE = {
         # Silicon Labs CP210x — EZSP adapters
@@ -1301,7 +1272,7 @@ class ZigbeeInterrogator:
         self.verbose = verbose
         self.results: list[AdapterInfo] = []
 
-    # ── USB-first discovery ────────────────────────────────────────────
+    # USB-first discovery
 
     def _is_known_non_zigbee(self, vid: int, pid: int) -> bool:
         """Check if VID:PID is a known non-Zigbee device."""
@@ -1411,7 +1382,7 @@ class ZigbeeInterrogator:
 
         print(f"\n  ┌─ USB Device Discovery {'─' * (col_w - 24)}┐")
 
-        # ── Step 1: lsusb scan ──
+        # Step 1: lsusb scan
         usb_devices = self._run_lsusb()
         if usb_devices:
             print(f"  │ {'lsusb: ' + str(len(usb_devices)) + ' USB device(s) on bus':<{col_w}}│")
@@ -1457,7 +1428,7 @@ class ZigbeeInterrogator:
         else:
             print(f"  │ {'lsusb not available — pyserial fallback':<{col_w}}│")
 
-        # ── Step 2: pyserial supplement (catches anything lsusb missed) ──
+        # Step 2: pyserial supplement (catches anything lsusb missed)
         for p in serial.tools.list_ports.comports():
             if p.device in seen_ports:
                 continue
@@ -1465,12 +1436,9 @@ class ZigbeeInterrogator:
             pid = p.pid or 0
 
             if vid == 0 and pid == 0:
-                # No USB descriptor from pyserial. This is normal for the RPi
-                # GPIO UART, but ALSO for a USB coordinator inside a container:
-                # `--device /dev/ttyACM0` exposes the node but not the sysfs USB
-                # metadata, so pyserial reports vid/pid as None. Keep ttyAMA
-                # (GPIO → RaspBee) AND ttyACM*/ttyUSB* (a real USB serial device
-                # worth probing) rather than discarding them.
+                # No USB descriptor from pyserial — normal for the RPi GPIO UART,
+                # and for a USB coordinator in a container (--device exposes the
+                # node, not the sysfs metadata). Keep ttyAMA and ttyACM*/ttyUSB*.
                 if "ttyAMA" in p.device:
                     candidates.append({
                         "port": p.device, "vid": 0, "pid": 0,
@@ -1542,7 +1510,7 @@ class ZigbeeInterrogator:
                         pass
         return None
 
-    # ── Bellows-based EZSP probe (for CDC ACM devices) ─────────────────
+    # Bellows-based EZSP probe (for CDC ACM devices)
 
     def _bellows_ezsp_probe(self, port: str,
                             usb_info=None) -> Optional[AdapterInfo]:
@@ -1674,7 +1642,7 @@ class ZigbeeInterrogator:
         print("  └─────────────────────────────────────────────────────")
         return None
 
-    # ── Flow control verification ──────────────────────────────────────
+    # Flow control verification
 
     def _test_flow_mode(self, port: str, baud: int, flow: FlowControl,
                         probe_cls, rounds: int = 3) -> dict:
@@ -1802,7 +1770,7 @@ class ZigbeeInterrogator:
         """
         print("  ┌─ Flow Control Verification ──────────────────────────")
 
-        # ── Step 1: Physical CTS pin check ──
+        # Step 1: Physical CTS pin check
         print("  │ Checking CTS pin state...", end="", flush=True)
         cts_state = self._check_cts_pin(port, baud)
         if cts_state is None:
@@ -1815,7 +1783,7 @@ class ZigbeeInterrogator:
             print(" NOT asserted (low) — HW flow control unlikely")
             cts_info = "not_asserted"
 
-        # ── Step 2: Test each flow mode empirically ──
+        # Step 2: Test each flow mode empirically
         modes_to_test = [FlowControl.NONE, FlowControl.RTSCTS, FlowControl.XONXOFF]
         test_results = {}
 
@@ -1830,7 +1798,7 @@ class ZigbeeInterrogator:
             print(f" {status} {stats['successes']}/{stats['rounds']} success,"
                   f" avg {avg_ms:.0f}ms, {stats['total_bytes']} bytes")
 
-        # ── Step 3: XON/XOFF behavioural test ──
+        # Step 3: XON/XOFF behavioural test
         print("  │ Testing XON/XOFF behaviour...", end="", flush=True)
         xonxoff_active = self._check_xonxoff(port, baud, probe_cls)
         if xonxoff_active:
@@ -1838,7 +1806,7 @@ class ZigbeeInterrogator:
         else:
             print(" adapter ignores XON/XOFF")
 
-        # ── Step 4: Score and decide ──
+        # Step 4: Score and decide
         print("  │")
 
         # Scoring: higher is better
@@ -1922,16 +1890,14 @@ class ZigbeeInterrogator:
                 _usb_info = p
                 break
 
-        # ── USB product string pre-detection for CPC/RCP devices ──
+        # USB product string pre-detection for CPC/RCP devices
         if _usb_info and _usb_info.product:
             product_lower = _usb_info.product.lower()
             mfg_lower = (_usb_info.manufacturer or "").lower()
 
-            # ── Nabu Casa ZBT-2 / ZBT-1 — EZSP NCP on CDC ACM ──
-            # CDC ACM devices (ttyACM*) assert DTR on kernel open() which
-            # resets EFR32 into the Gecko Bootloader. Raw pyserial probing
-            # can't prevent this. Use bellows ControllerApplication.probe()
-            # which handles the ASH handshake correctly via serial_asyncio.
+            # CDC ACM (ttyACM*) asserts DTR on kernel open(), resetting EFR32 into
+            # the Gecko Bootloader; raw pyserial cannot prevent it. bellows'
+            # ControllerApplication.probe() handles the ASH handshake correctly.
             is_nabu_zbt = (
                     "zbt" in product_lower
                     or ("nabu" in mfg_lower and "ttyACM" in port)
@@ -1992,10 +1958,8 @@ class ZigbeeInterrogator:
                     self.results.append(info)
                     return info
 
-        # ── CDC ACM: try bellows probe before raw serial sweep ──
-        # On ttyACM devices, the kernel cdc_acm driver asserts DTR during
-        # open() which resets EFR32 chips into the bootloader. Raw pyserial
-        # probing fails. bellows handles this correctly via serial_asyncio.
+        # CDC ACM: bellows probe before the raw serial sweep, for the DTR-reset
+        # reason above.
         is_cdc_acm = "ttyACM" in port
         if is_cdc_acm and _BELLOWS_AVAILABLE:
             print("  CDC ACM port — trying bellows EZSP probe first...")
@@ -2004,7 +1968,7 @@ class ZigbeeInterrogator:
                 return result
             print("  → bellows probe negative — continuing with raw serial sweep")
 
-        # ── Determine probe order based on USB hints ──
+        # Determine probe order based on USB hints
         likely = candidate.get("likely_family") if candidate else None
 
         all_protos = [
@@ -2063,10 +2027,10 @@ class ZigbeeInterrogator:
                 print(" DETECTED!")
                 ser.close()  # Close the detection connection
 
-                # ── Verify flow control empirically ──
+                # Verify flow control empirically
                 verified_flow = self.verify_flow_control(port, baud, probe_cls, flow)
 
-                # ── Re-open with verified settings and interrogate ──
+                # Re-open with verified settings and interrogate
                 info = AdapterInfo(port=port, baud_rate=baud, flow_control=verified_flow)
                 ser2 = None
                 try:
@@ -2169,9 +2133,7 @@ class ZigbeeInterrogator:
         return json.dumps(data, indent=2)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # CLI entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(

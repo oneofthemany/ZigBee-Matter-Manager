@@ -2,36 +2,10 @@
 """
 Build and verify a signed release APK of ZMM Presence.
 
-Wraps what BUILDING.md describes by hand: locate a usable JDK, create a signing
-key if there isn't one, build, then prove the result is actually signed and that
-the security config survived into the release variant.
-
-The verification half is the point. A release build that quietly produces an
-unsigned APK, or one that inherited the debug network config, still "succeeds"
-as far as Gradle is concerned — you find out when the phone refuses to install
-it, or worse, you don't find out at all.
-
-Passwords are read with getpass and passed to keytool over stdin, so they stay
-out of your shell history and out of the process list (`ps` shows every
-argument of every running command, including other users' commands).
-
-Usage:
-    python3 build_release.py                 # build, signing if configured
-    python3 build_release.py --setup         # create keystore + properties first
-    python3 build_release.py --verify-only   # re-check an existing APK
-    python3 build_release.py --debug         # debug APK instead
-    python3 build_release.py --install       # ...then install: one device
-                                              # installs straight away, several
-                                              # prompt for which
-    python3 build_release.py --install SERIAL  # ...then install to that
-                                                # device by name, no prompt
-    python3 build_release.py --install --reinstall
-                                             # ...replacing a copy signed with
-                                             # a different key (e.g. the debug
-                                             # build). Discards the pairing.
-
-Exit status is 0 only if every check passed (and, with --install, the install
-itself succeeded), so this is safe to use in a script.
+Locates a JDK, creates a signing key if needed, builds, then proves the result
+is signed and that the security config survived into the release variant — an
+unsigned APK still "succeeds" as far as Gradle is concerned. Exit status is 0
+only if every check passed. Usage and flags: android/BUILDING.md.
 """
 
 from __future__ import annotations

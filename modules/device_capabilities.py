@@ -28,7 +28,7 @@ class DeviceCapabilities:
     supported features, ensuring 'generic' quirks don't override specific hardware clusters.
     """
 
-    # === STATE FIELD CATEGORIES ===
+    # STATE FIELD CATEGORIES
     MOTION_FIELDS = {
         'motion', 'occupancy', 'presence',
         'motion_on_time', 'motion_timeout', 'sensitivity',
@@ -109,7 +109,7 @@ class DeviceCapabilities:
         'multistate_value', 'on_with_timed_off', 'device_temperature'
     }
 
-    # === CLUSTER IDs - COMPLETE LIST ===
+    # CLUSTER IDs - COMPLETE LIST
     BASIC = 0x0000
     POWER_CONFIGURATION = 0x0001
     DEVICE_TEMPERATURE = 0x0002
@@ -187,9 +187,7 @@ class DeviceCapabilities:
     PHILIPS_MANUFACTURER = 0xFC00
 
 
-    # ========================================================================
     # COMPREHENSIVE CLUSTER CONFIGURATION MATRIX
-    # ========================================================================
 
     # Clusters that NEVER support configuration (system/infrastructure)
     NEVER_CONFIGURABLE = {
@@ -292,7 +290,7 @@ class DeviceCapabilities:
         manufacturer = str(self.zigpy_dev.manufacturer or "").lower()
         model = str(self.zigpy_dev.model or "").lower()
 
-        # --- PHASE 1: Comprehensive Endpoint Analysis ---
+        # PHASE 1: Comprehensive Endpoint Analysis
         for ep_id, ep in self.zigpy_dev.endpoints.items():
             if ep_id == 0:
                 continue
@@ -345,7 +343,7 @@ class DeviceCapabilities:
                 f"configurable={len(ep_info['configurable_clusters'])}"
             )
 
-        # --- PHASE 2: Standard Capability Detection ---
+        # PHASE 2: Standard Capability Detection
 
         # Closures
         if self.WINDOW_COVERING in self._cluster_ids:
@@ -412,7 +410,7 @@ class DeviceCapabilities:
             self._capabilities.add('metering')
             self._capabilities.add('power_monitoring')
 
-        # --- PHASE 3: Context-Aware Quirks ---
+        # PHASE 3: Context-Aware Quirks
 
         # XIAOMI / LUMI Specific
         if "lumi.sensor_magnet" in model:
@@ -428,11 +426,8 @@ class DeviceCapabilities:
             if "sml" in model and self.ON_OFF in self._cluster_ids:
                 self._capabilities.add('motion_sensor')
                 # The SML's EP1 carries OnOff/Level/Color as OUTPUT (controller)
-                # clusters — it's a scene controller, not a light. Those leak into
-                # the flat cluster set and get mis-detected as light/switch caps
-                # (see PHASE 2), which renders a bogus "Switch (EP1)" control card
-                # and lets on/state/brightness pollute the sensor's state. Discard
-                # every actuator cap so the device presents purely as a sensor.
+                # clusters — a scene controller, not a light. Left in, they render a
+                # bogus "Switch (EP1)" card and pollute the sensor's state.
                 for cap in ('switch', 'light', 'on_off', 'level_control', 'color_control'):
                     self._capabilities.discard(cap)
                 # Apply EP1 controller quirk
@@ -460,7 +455,7 @@ class DeviceCapabilities:
                     self._capabilities.add('radar_sensor')
                     self._capabilities.add('occupancy_sensing')
 
-        # --- PHASE 4: Multi-Endpoint Detection ---
+        # PHASE 4: Multi-Endpoint Detection
         total_endpoints = len([e for e in self.zigpy_dev.endpoints if e > 0])
         if total_endpoints > 1:
             self._capabilities.add('multi_endpoint')
@@ -535,9 +530,7 @@ class DeviceCapabilities:
             "clusters": [f"0x{cid:04X}" for cid in sorted(self._cluster_ids)]
         }
 
-    # =========================================================================
     # COMPATIBILITY PROPERTIES (Prevents AttributeErrors)
-    # =========================================================================
     @property
     def is_light(self):
         return self.has_capability('light')
@@ -587,7 +580,6 @@ class DeviceCapabilities:
     def is_cover(self):
         return self.has_capability('cover') or self.has_capability('window_covering')
 
-    # =========================================================================
 
     def allows_field(self, field_name: str) -> bool:
         """

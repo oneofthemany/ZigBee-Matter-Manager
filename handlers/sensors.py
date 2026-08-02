@@ -38,9 +38,7 @@ TEMP_MIN_REPORT_INTERVAL = 30    # Report every 30 seconds (minimum)
 TEMP_MAX_REPORT_INTERVAL = 3600  # Report every 1 hour (maximum)
 TEMP_REPORTABLE_CHANGE = 25      # Report if the value changes by 0.25 degrees (25 raw units)
 
-# ============================================================
 # HELPER MIXIN FOR DYNAMIC CONFIGURATION
-# ============================================================
 class SensorReportingMixin:
     """Mixin to handle generic reporting configuration from UI."""
     async def apply_configuration(self, updates: Dict[str, Any]):
@@ -158,11 +156,8 @@ async def configure_temperature_reporting(device, endpoint_id: int):
     except Exception as e:
         logger.error(f"[{ieee}] Failed to configure Temperature on EP{endpoint_id}: {e}")
 
-# ============================================================
-# OCCUPANCY SENSING CLUSTER (0x0406)
-# Used by: Philips Hue Motion Sensors, Aqara Motion Sensors
-# This is the STANDARD way occupancy sensors report occupancy.
-# ============================================================
+# Occupancy sensing (0x0406) — the standard occupancy report, used by Hue and
+# Aqara motion sensors.
 @register_handler(0x0406)
 class OccupancySensingHandler(ClusterHandler):
     """
@@ -184,16 +179,13 @@ class OccupancySensingHandler(ClusterHandler):
     ATTR_SENSITIVITY = 0x0030
     ATTR_SENSITIVITY_MAX = 0x0031
 
-    # Signify (Philips) manufacturer code. Hue's manufacturer-specific
-    # attributes — motion sensitivity (0x0406/0x0030) and LED indication
-    # (genBasic 0x0033) — are ONLY readable/writable when this code is attached
-    # to the ZCL frame. Without it the device silently ignores the write, which
-    # is why sensitivity changes never stuck before.
+    # Hue's manufacturer-specific attributes — motion sensitivity (0x0406/0x0030)
+    # and LED indication (genBasic 0x0033) — are only readable/writable with this
+    # code attached to the ZCL frame; without it the device ignores the write.
     PHILIPS_MFR = 0x100B
 
-    # LED indication lives on the Basic cluster (0x0000), not occupancy — but
-    # it's a motion-sensor setting from the user's point of view, so it's exposed
-    # and applied here alongside sensitivity. "Blink green LED on motion".
+    # On Basic (0x0000), not occupancy, but it is a motion-sensor setting to the
+    # user, so it is exposed here alongside sensitivity.
     ATTR_LED_INDICATION = 0x0033  # genBasic, boolean, manufacturer-specific
 
     def _philips_mfr(self) -> Optional[int]:
@@ -224,12 +216,6 @@ class OccupancySensingHandler(ClusterHandler):
                 value = value.value
 
             if attrid == self.ATTR_OCCUPANCY:
-                # ===== ADD DIAGNOSTIC =====
-                #import traceback
-                #caller = ''.join(traceback.format_stack()[-4:-1])  # Get calling function
-                #logger.warning(f"[{self.device.ieee}] Occupancy attribute_updated called, "
-                #               f"value={value}, is_occupied={bool(value & 0x01)}, "
-                #               f"caller_snippet={caller[-200:]}")  # Last 200 chars of stack
 
                 # Occupancy is a bitmap, bit 0 = occupied
                 is_occupied = bool(value & 0x01) if isinstance(value, int) else bool(value)
@@ -240,7 +226,7 @@ class OccupancySensingHandler(ClusterHandler):
                     "presence": is_occupied,
                 })
 
-                # === FAST-PATH PUBLISH ===
+                # FAST-PATH PUBLISH
                 if self.device.service.mqtt and hasattr(self.device.service.mqtt, 'publish_fast'):
                     safe_name = self.device.service.get_safe_name(self.device.ieee)
                     payload = json.dumps({
@@ -362,7 +348,7 @@ class OccupancySensingHandler(ClusterHandler):
 
         return True
 
-    # --- DYNAMIC CONFIGURATION EXPOSURE ---
+    # DYNAMIC CONFIGURATION EXPOSURE
     def get_configuration_options(self) -> List[Dict]:
         """Expose supported configurations to the frontend."""
         options = [
@@ -455,7 +441,7 @@ class OccupancySensingHandler(ClusterHandler):
             return False
 
 
-    # --- HA Discovery ---
+    # HA Discovery
     def get_discovery_configs(self) -> List[Dict]:
         return [{
             "component": "binary_sensor",
@@ -468,10 +454,8 @@ class OccupancySensingHandler(ClusterHandler):
         }]
 
 
-# ============================================================
 # DEVICE TEMPERATURE CONFIGURATION CLUSTER (0x0002)
 # Used by some Xiaomi/Aqara devices for internal temp
-# ============================================================
 @register_handler(0x0002)
 class DeviceTemperatureHandler(ClusterHandler):
     """
@@ -533,9 +517,7 @@ class DeviceTemperatureHandler(ClusterHandler):
             }
         }]
 
-# ============================================================
 # TEMPERATURE MEASUREMENT CLUSTER (0x0402)
-# ============================================================
 @register_handler(0x0402)
 class TemperatureMeasurementHandler(ClusterHandler, SensorReportingMixin):
     """
@@ -635,9 +617,7 @@ class TemperatureMeasurementHandler(ClusterHandler, SensorReportingMixin):
                 "value_template": "{{ value_json.temperature }}"
             }
         }]
-# ============================================================
 # ILLUMINANCE MEASUREMENT CLUSTER (0x0400)
-# ============================================================
 @register_handler(0x0400)
 class IlluminanceMeasurementHandler(ClusterHandler, SensorReportingMixin):
     """
@@ -687,9 +667,7 @@ class IlluminanceMeasurementHandler(ClusterHandler, SensorReportingMixin):
             }
         }]
 
-# ============================================================
 # RELATIVE HUMIDITY CLUSTER (0x0405)
-# ============================================================
 @register_handler(0x0405)
 class RelativeHumidityHandler(ClusterHandler, SensorReportingMixin):
     """
@@ -729,9 +707,7 @@ class RelativeHumidityHandler(ClusterHandler, SensorReportingMixin):
             }
         }]
 
-# ============================================================
 # PRESSURE MEASUREMENT CLUSTER (0x0403)
-# ============================================================
 @register_handler(0x0403)
 class PressureMeasurementHandler(ClusterHandler):
     """
@@ -773,9 +749,7 @@ class PressureMeasurementHandler(ClusterHandler):
         }]
 
 
-# ============================================================
 # CO2 MEASUREMENT CLUSTER (0x040D)
-# ============================================================
 @register_handler(0x040D)
 class CO2MeasurementHandler(ClusterHandler):
     """Handles Carbon Dioxide Concentration Measurement cluster (0x040D)."""
@@ -812,9 +786,7 @@ class CO2MeasurementHandler(ClusterHandler):
             }
         }]
 
-# ============================================================
 # PM2.5 MEASUREMENT CLUSTER (0x042A)
-# ============================================================
 @register_handler(0x042A)
 class PM25MeasurementHandler(ClusterHandler):
     """Handles PM2.5 Concentration Measurement cluster (0x042A)."""
@@ -851,9 +823,7 @@ class PM25MeasurementHandler(ClusterHandler):
             }
         }]
 
-# ============================================================
 # FORMALDEHYDE MEASUREMENT CLUSTER (0x042B)
-# ============================================================
 @register_handler(0x042B)
 class FormaldehydeMeasurementHandler(ClusterHandler):
     """Handles Formaldehyde Concentration Measurement cluster (0x042B)."""
@@ -886,9 +856,7 @@ class FormaldehydeMeasurementHandler(ClusterHandler):
             }
         }]
 
-# ============================================================
 # VOC MEASUREMENT CLUSTER (0x042E)
-# ============================================================
 @register_handler(0x042E)
 class VOCMeasurementHandler(ClusterHandler):
     """Handles VOC (Volatile Organic Compound) Measurement cluster."""
@@ -920,10 +888,8 @@ class VOCMeasurementHandler(ClusterHandler):
                 "value_template": "{{ value_json.voc }}"
             }
         }]
-# ============================================================
 # POWER CONFIGURATION CLUSTER (0x0001)
 # Battery status for battery-powered devices
-# ============================================================
 @register_handler(0x0001)
 class PowerConfigurationHandler(ClusterHandler):
     """
@@ -938,9 +904,8 @@ class PowerConfigurationHandler(ClusterHandler):
     ATTR_BATTERY_VOLTAGE = 0x0020
     ATTR_BATTERY_PERCENTAGE = 0x0021
 
-    # CR2450 coin-cell discharge curve (volts → %), interpolated linearly
-    # between points. Coin cells hold ~3.0V then fall away steeply below 2.9V,
-    # so a flat linear 2.5–3.0 map badly over-reads. Descending by voltage.
+    # CR2450 discharge curve (volts -> %), linearly interpolated. Coin cells hold
+    # ~3.0 V then fall away steeply below 2.9 V, so a flat 2.5-3.0 map over-reads.
     _COIN_CELL_CURVE = [
         (3.00, 100), (2.95, 90), (2.90, 70), (2.85, 55), (2.80, 45),
         (2.75, 35), (2.70, 25), (2.65, 18), (2.60, 12), (2.50, 5), (2.40, 0),

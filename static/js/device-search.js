@@ -1,6 +1,4 @@
-/* ============================================================
-   ZigBee Matter Manager — Device Search / Filter
-   ============================================================ */
+/* ZigBee Matter Manager — Device Search / Filter */
 
 (function () {
     'use strict';
@@ -9,9 +7,7 @@
     var clearBtn = null;
     var resultCount = null;
 
-    // ----------------------------------------------------------
     // 1. INJECT SEARCH BOX INTO DEVICE CARD HEADER
-    // ----------------------------------------------------------
 
     function init() {
         var cardHeader = document.querySelector('#devices .card-header .row');
@@ -63,9 +59,7 @@
         clearBtn = document.getElementById('zbm-search-clear');
         resultCount = document.getElementById('zbm-search-count');
 
-        // ----------------------------------------------------------
         // 2. BIND EVENTS
-        // ----------------------------------------------------------
 
         searchInput.addEventListener('input', debounce(filterDevices, 150));
 
@@ -98,9 +92,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // 3. FILTER LOGIC
-    // ----------------------------------------------------------
 
     function filterDevices() {
         var query = searchInput.value.trim().toLowerCase();
@@ -180,9 +172,7 @@
         }
     }
 
-    // ----------------------------------------------------------
     // 4. HIGHLIGHT MATCHES
-    // ----------------------------------------------------------
 
     function highlightMatches(row, terms) {
         // Only highlight in the name, IEEE, vendor, model cells (2nd-5th columns)
@@ -246,9 +236,7 @@
         nodes.reverse().forEach(callback);
     }
 
-    // ----------------------------------------------------------
     // 5. RE-APPLY FILTER AFTER TABLE RE-RENDERS
-    // ----------------------------------------------------------
 
     function watchTableChanges() {
         var tbody = document.getElementById('deviceTableBody');
@@ -267,9 +255,7 @@
         observer.observe(tbody, { childList: true });
     }
 
-    // ----------------------------------------------------------
     // 6. UTILITY
-    // ----------------------------------------------------------
 
     function debounce(fn, delay) {
         var timer;
@@ -279,9 +265,7 @@
         };
     }
 
-    // ----------------------------------------------------------
     // 7. START
-    // ----------------------------------------------------------
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function () {

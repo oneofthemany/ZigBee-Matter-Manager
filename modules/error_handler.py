@@ -1,14 +1,6 @@
 """
-Robust Error Handler
-====================
-Comprehensive error handling for Zigbee commands with automatic retries
-and graceful degradation.
-
-Based on ZHA patterns:
-- Exponential backoff
-- Context-aware retries
-- Delivery failure handling
-- Proper logging
+Error handling for Zigbee commands — exponential backoff, context-aware retries,
+delivery-failure handling and graceful degradation, following ZHA patterns.
 """
 import asyncio
 import logging

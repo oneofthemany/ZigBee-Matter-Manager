@@ -1,21 +1,10 @@
 """
-Auth manager extension — adds MFA persistence + secure-login orchestration.
+Auth manager extension — MFA persistence and secure-login orchestration.
 
-This wraps the original AuthManager (modules.auth.AuthManager) without
-modifying it, by holding a reference and adding methods that compose:
-  - password verification
-  - brute-force tracking
-  - MFA record lookup and challenge issuance
-  - LAN-only scope enforcement
-  - constant-time response delays
-
-The AuthManager.load() / _save_locked() persistence is extended to round-trip
-the `mfa` section in auth.yaml. We do this by attaching a SecureAuthManager
-that intercepts save and adds the MFA section.
-
-Why a wrapper instead of editing auth.py:
-  Smaller diff, easier to review, easier to back out if an upgrade goes
-  sideways. The original file from the previous round is untouched.
+Wraps AuthManager without modifying it, composing password verification,
+brute-force tracking, MFA challenge issuance, LAN-only enforcement and
+constant-time delays, and round-tripping the `mfa` section of auth.yaml. A
+wrapper rather than an edit: smaller diff, easier to back out.
 """
 
 from __future__ import annotations
@@ -70,7 +59,7 @@ class SecureAuthManager:
         self._wrap_save()
         self._load_mfa()
 
-    # ---- persistence ---------------------------------------------------
+    # persistence
 
     def _wrap_save(self) -> None:
         """Patch the wrapped AuthManager._save_locked to round-trip MFA."""
@@ -119,7 +108,7 @@ class SecureAuthManager:
         except Exception as e:
             logger.error(f"Failed to load MFA records: {e}")
 
-    # ---- password + MFA orchestration ----------------------------------
+    # password + MFA orchestration
 
     async def begin_login(
             self,
@@ -270,7 +259,7 @@ class SecureAuthManager:
         await constant_time_login(started_at)
         return LoginOutcome(success=False, reason="Invalid MFA code")
 
-    # ---- enrolment -----------------------------------------------------
+    # enrolment
 
     async def begin_enrolment(self, username: str) -> Tuple[str, str]:
         """
@@ -341,7 +330,7 @@ class SecureAuthManager:
         self.auth._save_locked()
         return plaintext
 
-    # ---- introspection -------------------------------------------------
+    # introspection
 
     def mfa_status(self, username: str) -> Dict[str, Any]:
         rec = self.mfa.get(username)
@@ -368,8 +357,6 @@ class SecureAuthManager:
         return self.bruteforce.admin_unlock(username)
 
 
-# --- Singleton ------------------------------------------------------------
-
 _secure: Optional[SecureAuthManager] = None
 
 
@@ -382,7 +369,7 @@ def set_secure_auth_manager(s: SecureAuthManager) -> None:
     _secure = s
 
 
-# --- Presence / MFA policy ------------------------------------------------
+# Presence / MFA policy
 
 def user_has_mfa(username: str) -> bool:
     """

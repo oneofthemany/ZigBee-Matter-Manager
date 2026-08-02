@@ -1,13 +1,10 @@
 """
-Radio favourites — tiny JSON-backed store.
+Radio favourites — a tiny JSON-backed store so users can pin Radio-Browser
+stations instead of searching every time.
 
-Lets the user pin Radio-Browser stations so they don't have to search the
-directory every time. Each favourite is a full RadioStation snapshot (uuid,
-name, resolved url, favicon, …) so a favourite plays instantly without a
-network round-trip — and keeps working even if the directory is unreachable.
-
-Persisted to ``data/radio_favourites.json`` (same convention as the rest of
-``data/*.json``). Ordering is insertion order; dedup is by stable ``uuid``.
+Each favourite is a full RadioStation snapshot, so it plays instantly with no
+network round-trip and keeps working when the directory is unreachable.
+Persisted to data/radio_favourites.json; insertion-ordered, deduped by uuid.
 """
 from __future__ import annotations
 
@@ -34,7 +31,6 @@ class RadioFavourites:
         self._lock = threading.Lock()
         self._items: List[Dict[str, Any]] = self._load()
 
-    # ── Public API ───────────────────────────────────────────────────────────
     def list(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [dict(s) for s in self._items]
@@ -69,7 +65,7 @@ class RadioFavourites:
                 self._save()
         return {"success": True, "favourited": False}
 
-    # ── Persistence ──────────────────────────────────────────────────────────
+    # Persistence
     def _load(self) -> List[Dict[str, Any]]:
         try:
             with open(self._path, "r", encoding="utf-8") as f:

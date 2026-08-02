@@ -1,32 +1,10 @@
 """
-MultiPAN RCP Manager
-=====================
-Orchestrates Silicon Labs CPC stack daemons (cpcd, zigbeed, socat, otbr-agent)
-as managed subprocesses for concurrent Zigbee + Thread on a single RCP radio.
+MultiPAN RCP manager — runs the Silicon Labs CPC daemons (cpcd, zigbeed, socat,
+otbr-agent) as managed subprocesses for concurrent Zigbee + Thread on one radio.
 
-Follows the same managed-subprocess pattern as EmbeddedMatterServer.
-
-Startup order is critical:
-  1. cpcd       — owns serial port, speaks CPC to RCP firmware
-  2. zigbeed    — connects to cpcd, runs EmberZNet stack host-side
-  3. socat      — bridges zigbeed's PTY to a TCP socket for bellows
-  4. otbr-agent — connects to cpcd, runs OpenThread stack + border routing
-
-bellows/zigpy then connects to the socat TCP socket (socket://localhost:{port}).
-
-IMPORTANT: This module does NOT touch the existing Zigbee startup path.
-When MultiPAN is active, the only visible change to core.py is that
-self.port becomes "socket://localhost:9999" instead of "/dev/ttyACM0".
-Everything downstream — probe_radio_type(), _build_ezsp_config(),
-ControllerApplication.new() — works unchanged because they already
-handle socket paths.
-
-Integration point: core/service.py ZigbeeService.start()
-  - Dongle Jedi detects CPC_MULTIPAN firmware
-  - _probe_with_jedi() returns probe result with adapter_family
-  - start() launches MultiPanManager BEFORE building bellows config
-  - self.port is overridden to the zigbeed EZSP socket
-  - Rest of startup proceeds unchanged
+Deliberately does not touch the existing Zigbee startup path: the only visible
+change is that self.port becomes a socket:// URL, which everything downstream
+already handles. Startup order and the integration point: docs/multipan.md.
 """
 import asyncio
 import logging
@@ -44,9 +22,7 @@ from routes.otbr_routes import restore_thread_dataset
 logger = logging.getLogger("multipan")
 
 
-# =========================================================================
 # MANAGED DAEMON — generic subprocess wrapper
-# =========================================================================
 
 # multipan.py
 import re
@@ -313,9 +289,7 @@ class ManagedDaemon:
         }
 
 
-# =========================================================================
 # MULTIPAN MANAGER — orchestrates cpcd + zigbeed + socat + otbr-agent
-# =========================================================================
 
 class MultiPanManager:
     """
@@ -363,9 +337,7 @@ class MultiPanManager:
     def is_running(self) -> bool:
         return self._running
 
-    # =========================================================================
     # PREREQUISITE CHECKS
-    # =========================================================================
 
     @staticmethod
     def is_cpcd_available() -> bool:
@@ -399,9 +371,7 @@ class MultiPanManager:
             "all_available": cpcd and zigbeed and socat and otbr,
         }
 
-    # =========================================================================
     # CONFIG FILE GENERATION
-    # =========================================================================
 
     async def _wait_for_file(self, path: str, timeout: float = 20.0) -> bool:
         """Wait until a file/socket path exists."""
@@ -475,9 +445,7 @@ reset_sequence: true
         )
         return config_path
 
-    # =========================================================================
     # COMMAND BUILDERS
-    # =========================================================================
 
     def _build_cpcd_command(self, serial_port: str) -> list:
         """Build cpcd command with config file."""
@@ -545,9 +513,7 @@ reset_sequence: true
             radio_url,
         ]
 
-    # =========================================================================
     # SERIAL RESET
-    # =========================================================================
 
     @staticmethod
     def _reset_serial_state(port: str, baudrate: int = 115200) -> bool:
@@ -587,10 +553,6 @@ reset_sequence: true
             logger.warning(f"Bootloader exit failed: {e}")
             return False
 
-
-    # =========================================================================
-    # LIFECYCLE
-    # =========================================================================
 
     async def start(
             self,
@@ -660,7 +622,7 @@ reset_sequence: true
         self._reset_serial_state(port, baudrate=baud)
         await asyncio.sleep(2)
 
-        # ── 1. cpcd — must be first, owns serial port ──────────────────
+        # 1. cpcd — must be first, owns serial port
         # No serial reset needed — USB pre-detection in Dongle Jedi
         # avoids CPC wire probing, so the state machine is already clean.
         cpcd = ManagedDaemon(
@@ -710,7 +672,7 @@ reset_sequence: true
             await self._stop_all()
             return False
 
-        # ── 4. otbr-agent — Thread support (optional, non-blocking) ────
+        # 4. otbr-agent — Thread support (optional, non-blocking)
         otbr_enabled = self._otbr_config.get("enabled", True)
         if otbr_enabled and self.is_otbr_available():
             otbr = ManagedDaemon(

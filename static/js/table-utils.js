@@ -1,29 +1,13 @@
 /**
- * Shared table layer — every table goes through here.
- * Location: static/js/table-utils.js
+ * Shared table layer — every table goes through here (the analogue of
+ * chart-utils.js).
  *
- * Goals (the table analogue of chart-utils.js):
- *   - One comparator implementation (natural string / number / date / boolean)
- *     reused by both DOM click-sort and the data-level sorts (devices, logs).
- *   - Delegated click-to-sort that works on ANY `<table class="tbl tbl-sortable">`
- *     and survives re-renders (listener lives on document, not the table).
- *   - Delegated text filter for `<input class="tbl-filter" data-tbl-target="#id">`.
- *   - Consistent sticky headers / density / sort carets via table.css.
- *
- * Markup contract:
- *   <table class="table tbl tbl-sortable">           ← opt into click-sort
- *     <thead><tr>
- *       <th data-sort-type="number">LQI</th>          ← number|date|boolean|string
- *       <th data-no-sort>Actions</th>                  ← excluded from sorting
- *   <td data-sort-value="42">…badge…</td>              ← override the sorted value
- *
- * Live tables that re-render their own rows (devices, packet log) keep their
- * data-level sort but import compareValues() so the logic stays unified.
+ * One comparator reused by click-sort and the data-level sorts, delegated
+ * click-to-sort that survives re-renders, a delegated text filter, and
+ * consistent sticky headers via table.css. Markup contract: docs/structure.md.
  */
 
-// ---------------------------------------------------------------------------
 // Comparators — single source of truth.
-// ---------------------------------------------------------------------------
 
 /**
  * Compare two raw values under a column type. Blanks always sort last.
@@ -69,9 +53,7 @@ export function makeComparator(getter, type, dir = 'asc') {
     return (x, y) => sign * compareValues(getter(x), getter(y), type);
 }
 
-// ---------------------------------------------------------------------------
 // DOM click-to-sort
-// ---------------------------------------------------------------------------
 
 function headerCells(table) {
     const headRow = table.tHead && table.tHead.rows[table.tHead.rows.length - 1];
@@ -134,9 +116,7 @@ function onHeaderClick(e) {
     sortTableByIndex(table, idx, dir);
 }
 
-// ---------------------------------------------------------------------------
 // Delegated text filter
-// ---------------------------------------------------------------------------
 
 function filterTable(table, query) {
     const tbody = table && table.tBodies[table.tBodies.length - 1];
@@ -158,9 +138,7 @@ function onFilterInput(e) {
     if (table) filterTable(table, input.value);
 }
 
-// ---------------------------------------------------------------------------
 // Init (attach the two delegated listeners once)
-// ---------------------------------------------------------------------------
 
 let _initialised = false;
 

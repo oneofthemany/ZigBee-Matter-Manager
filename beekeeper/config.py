@@ -103,7 +103,7 @@ class Config:
     # Resolved at runtime, not from yaml.
     data_dir: Path = field(default_factory=_data_dir)
 
-    # ── Derived paths ────────────────────────────────────────────────────────
+    # Derived paths
     @property
     def lists_dir(self) -> Path:
         return self.data_dir / "lists"
@@ -133,7 +133,7 @@ class Config:
         # without rewriting the commented config.yaml.
         return self.data_dir / "sources.json"
 
-    # ── Loading ──────────────────────────────────────────────────────────────
+    # Loading
     @classmethod
     def load(cls) -> "Config":
         raw: Dict[str, Any] = {}

@@ -1,15 +1,6 @@
 """
-Rotary Binding API — routes for managing rotary → device bindings.
-=================================================================
-
-Endpoints:
-  GET  /api/rotary-bindings                      — List all bindings
-  GET  /api/rotary-bindings/{source_ieee}        — List bindings for a device
-  POST /api/rotary-bindings                      — Add/update a binding
-  DELETE /api/rotary-bindings/{source_ieee}/{key} — Remove a binding
-  GET  /api/rotary-bindings/stats                — Binding stats
-  GET  /api/rotary-bindings/commands             — Available target commands + defaults
-  POST /api/rotary-bindings/reload               — Reload from definitions
+Rotary binding API — list, add/update, remove, stats, available target commands,
+and reload from definitions. See docs/matter.md.
 """
 
 import logging

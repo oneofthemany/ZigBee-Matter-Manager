@@ -1,19 +1,6 @@
 """
-Upgrade API routes.
-
-Endpoints:
-  GET  /api/upgrade/status              — combined state + host status
-  POST /api/upgrade/check               — force a GitHub check
-  POST /api/upgrade/build               — request background image build
-  POST /api/upgrade/swap                — request container swap to new image
-  POST /api/upgrade/rollback            — rollback to previous image
-  POST /api/upgrade/cancel              — cancel in-progress build
-  POST /api/upgrade/gc                  — garbage collect old images
-  GET  /api/upgrade/log                 — build log as JSON lines (0 = all)
-  GET  /api/upgrade/log/raw             — complete build log as text/plain
-  GET  /api/upgrade/settings            — get upgrade settings
-  POST /api/upgrade/settings            — update upgrade settings
-  POST /api/upgrade/install-watcher     — request watcher install
+Upgrade API — status, check, build, swap, rollback, cancel, GC, build log,
+settings and watcher install. See docs/upgrades.md.
 """
 import logging
 from typing import Any, Dict

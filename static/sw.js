@@ -1,6 +1,4 @@
-/* ============================================================
-   ZigBee Matter Manager — Service Worker (PWA)
-   ============================================================ */
+/* ZigBee Matter Manager — Service Worker (PWA) */
 
 // Bump this on every frontend change — the `activate` handler purges any
 // cache whose name != CACHE_NAME, so a new version wipes stale cached assets.

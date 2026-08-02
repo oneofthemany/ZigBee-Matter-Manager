@@ -12,7 +12,7 @@ export function renderMatterEventsTab(device) {
         : '—';
     const lastEp = s.last_action_endpoint || '—';
 
-    // ── Action display (universal for all device types) ────────
+    // Action display (universal for all device types)
     let actionHtml = `
         <div class="d-flex align-items-center gap-3 mb-3 p-2 bg-light rounded">
             <div>
@@ -30,7 +30,7 @@ export function renderMatterEventsTab(device) {
         </div>
     `;
 
-    // ── Device-specific visuals ────────────────────────────────
+    // Device-specific visuals
     let deviceSpecificHtml = '';
 
     // Buttons / Switches / Remotes / Dials
@@ -149,7 +149,7 @@ export function renderMatterEventsTab(device) {
             </div>`;
     }
 
-    // ── Event log (universal) ──────────────────────────────────
+    // Event log (universal)
     return `
         <div class="mb-3">
             <h6 class="text-uppercase text-muted fw-bold small">

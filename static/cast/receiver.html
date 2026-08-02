@@ -78,7 +78,7 @@
 
     const $ = id => document.getElementById(id);
 
-    // ---- LRC parsing -------------------------------------------------------
+    // LRC parsing
     // Lines look like:  [00:12.34]Some words   (one or more tags per line)
     function parseLRC(lrc) {
       const out = [];
@@ -98,7 +98,7 @@
       return out;
     }
 
-    // ---- UI -----------------------------------------------------------------
+    // UI
     function showMeta(data) {
       const art = data.artwork || '';
       if (art) { $('art').src = art; $('bg').style.backgroundImage = `url("${art}")`; }
@@ -149,7 +149,7 @@
     }
     requestAnimationFrame(tick);
 
-    // ---- Wire LOAD: pull customData, set up the view -----------------------
+    // Wire LOAD: pull customData, set up the view
     function applyCustomData(cd) {
       cues = []; haveSynced = false;
       if (!cd) return;

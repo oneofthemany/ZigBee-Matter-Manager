@@ -308,3 +308,195 @@ For issues or questions:
 ## License
 
 See main project LICENSE file.
+## Signal Inspector
+
+`modules/signal_inspector.py` is universal, device-agnostic signal capture.
+
+The onboarding pain across all IoT devices — Zigbee or Matter, standard ZCL or
+vendor-proprietary — is the same: you cannot map what you cannot see. This
+module gives one live view of *every raw signal a device emits*, whichever
+handler produced it.
+
+The trick is that everything a device says already converges on a small number
+of choke points:
+
+| Choke point | Covers |
+| --- | --- |
+| `ClusterHandler.attribute_updated` | every ZCL / manufacturer attribute report, with its raw address (endpoint, cluster, attribute). Inherited by every handler, so universal for Zigbee. |
+| `ClusterHandler.cluster_command` | every cluster command received — button presses, Tuya DP reports, scene recalls. |
+| `device.update_state` | the catch-all: Tuya datapoints (`dp_16`), Matter attributes, and any friendly or derived key a handler computes. |
+
+Each of those calls `record()`. Nothing here depends on knowing the device
+*type* — a signal is just `(source, address, value)`. That is what makes the
+inspector work for a device nobody has written a handler for, and what lets a
+future data-driven layer gradually replace the hard-coded handlers: you can see
+the raw address a handler derives from and map it yourself.
+
+Recording is always on — it is a dict update per report. Live streaming to the
+frontend happens only for devices the user is actively inspecting
+(`start(ieee)` / `stop(ieee)`), so idle devices cost nothing on the wire.
+
+The module is intentionally free of device-class knowledge, and never raises
+into the handler path: every public entry point swallows its own errors.
+
+### Signal Inspector (frontend)
+
+`static/js/modal/signals.js` is the live table. It is the surface the future
+learn-by-demonstration flow plugs into: press a button or turn a knob and watch
+which signal reacts — that is the address you map.
+
+Mounted in two places from one implementation: the per-device modal (pinned to
+the open device) and the Debug tab's "Signal Inspector" sub-tab (with a device
+picker).
+
+```js
+const inspector = createSignalInspector(containerEl, { ieee, showPicker });
+inspector.setDevice('00:12:...');   // switch device (picker mode)
+inspector.destroy();                // stop streaming + detach
+```
+
+Data comes from `/api/signals/{ieee}` — where `ieee` may be the literal `all` —
+plus live `signal_inspector_update` WebSocket events.
+
+### Browser-console logger
+
+`static/js/log.js` gives every JS module a named logger instead of raw
+`console.*` calls:
+
+```js
+const log = zmmLog('groups');
+log.log('rendering', groups);     // gated
+log.warn('slow response');        // gated
+log.error('save failed', err);    // ALWAYS printed
+```
+
+Output is silent by default. Enable namespaces from the Debug tab's "Console"
+button, or from DevTools:
+
+```js
+zmmLog.enable('groups')     // one namespace
+zmmLog.enable('*')          // everything
+zmmLog.disable('groups')
+zmmLog.namespaces()         // list known namespaces
+```
+
+The selection persists in `localStorage` under `zmm.debug`, as either `*` or a
+comma-separated namespace list. It is a classic (non-module) script and must be
+loaded before every other app script; ES modules use the `window.zmmLog` global.
+
+### Packet Flow panel
+
+`static/js/packet-flow.js` renders the live widget inside `#debugPacketsModal`:
+global rate readout (1 s / 10 s / 60 s), peak 1 s rate over the last hour, the
+RX/TX split and tracked-device count, a 60-second inline-SVG sparkline, an
+hourly statistical summary (mean, stddev, CV, P50/P95/P99), top-5 peak history
+with timestamps and dominant-device attribution, top-talkers and per-cluster
+tables, and anomaly badges.
+
+Data arrives via `packet_flow` WebSocket messages every 2 s, routed by
+`websocket.js`. One REST snapshot is fetched on first init so the panel is not
+empty before the first push lands.
+
+## Full-spectrum cluster introspection
+
+`modules/diag_attributes.py` exhaustively discovers a cluster's attributes and
+commands, including manufacturer-specific ones. It closes seven gaps in the
+naive approach:
+
+1. Sweeps the full `0x0000`–`0xFFFE` attribute ID space in paginated chunks
+   rather than just the first 256 IDs, so manufacturer attributes at `0xF000+`
+   are found.
+2. Re-runs discovery per known manufacturer code for the device, so devices
+   that gate attributes on a manufacturer-coded ZCL header (Aqara `0xFCC0`,
+   Philips, Sonoff, Tuya, IKEA, Legrand) expose their full set.
+3. Handles the Discover Attributes "complete" flag by re-issuing from
+   `last_id + 1` until the device signals done.
+4. Prefers Discover Attributes Extended (`0x0E`) where available, for real
+   access-control flags; falls back to basic discover plus a heuristic
+   write-test only when Extended is unsupported.
+5. Treats zero-value writes conservatively — never writes 0 to an unknown
+   attribute — to minimise side effects on bitmap and enum fields.
+6. Reads the Reporting Configuration for each readable attribute, so the cache
+   knows whether and how the device auto-reports.
+7. Discovers received *and* generated cluster commands, for a complete picture
+   of what the cluster supports.
+
+Output is a dict suitable for direct return from an API handler and for
+insertion into the `zigbee_cache.device_attributes` table.
+
+Manufacturer codes are 16-bit and registered in `MANUFACTURER_CODES`, keyed by
+cluster ID where the code is cluster-specific, plus a generic list for devices
+whose code is set at device level.
+
+## Packet Flow Analyzer
+
+`modules/packet_flow.py` is lightweight in-memory packet-rate tracking for the
+Zigbee and Matter network. It records every packet entering
+`ZigbeeDebugger.capture_packet`, and every TX command sent through
+`device.send_command`, **regardless of whether full debug capture is enabled** —
+counting is microseconds per packet where decoding is not, so the 1000-deep
+packet ring stays untouched while rate and anomaly data still reach the UI.
+
+It exposes global packets-per-second over 1 s / 10 s / 60 s windows, per-second
+history for a 60 s sparkline, the peak 1 s rate over the last hour, a top-N peak
+history with timestamps and dominant device, a statistical summary (mean, std
+dev, P50, P95, P99 over the last hour), a burst counter of seconds exceeding
+mean + 2σ, per-device chattiness ranking, a per-cluster aggregate breakdown, and
+per-device EWMA-baseline anomaly detection.
+
+Pure stdlib. No DB writes, and no locks — it is single-thread asyncio.
+
+Cost per `record()` is a dict lookup, three deque appends and a few ints: O(1).
+Pruning is amortised on read, and a hard GC drops devices that go silent.
+Statistical methods are computed lazily on read and cached for about a second,
+to keep the snapshot path cheap when the websocket pushes every 2 s.
+
+## Event-loop responsiveness monitor
+
+A blocked asyncio loop is the worst failure mode this app has: HTTP stops dead —
+including `/api/system/health` — so the process looks alive while serving
+nothing, and the manager watchdog needs several failed checks (minutes) to act.
+`modules/loop_monitor.py` closes that gap from inside the process:
+
+- a heartbeat coroutine bumps a timestamp every second on the loop;
+- a daemon **thread**, immune to the stall, watches the heartbeat age.
+
+| Stall reaches | Action |
+| --- | --- |
+| `warn_after` | logs the loop thread's current stack, so the log names exactly what is blocking |
+| `exit_after` | writes `data/last_crash.json` and hard-exits non-zero |
+
+The launcher treats a non-zero exit after a healthy boot as a runtime crash and
+restarts `main.py` within seconds — far faster than the manager watchdog's grace
+plus streak cycle.
+
+The stack dump matters: the Octopus backfill incident of 2026-07-17 took an hour
+to diagnose without it. This is why several call sites in this codebase go out of
+their way to keep slow DuckDB work off the loop thread.
+
+Stats are surfaced in `/api/system/health` under `loop`, so past stalls stay
+visible after recovery.
+
+Env overrides: `ZMM_LOOP_STALL_WARN_SEC` (default 5, 0 disables the warning and
+stack dump) and `ZMM_LOOP_STALL_EXIT_SEC` (default 60, 0 disables the
+self-restart).
+
+## Application Alert Center
+
+`modules/app_alerts.py` is the central place for surfacing application problems
+to the user, instead of leaving them buried in the logs. Two entry points:
+
+1. **`raise_alert(...)`**, called directly by modules that detect a concrete,
+   actionable problem — the automation engine disabling a rule whose target
+   group no longer exists, say.
+2. **`AlertLogHandler`**, a logging handler attached to the root logger at ERROR
+   level. Any module that logs an error automatically produces an alert,
+   deduplicated so repeated errors bump a counter instead of flooding the UI.
+
+This is why several places in the codebase deliberately log at `warning` rather
+than `error` for expected conditions — a duplicate join event, for instance,
+would otherwise toast a scary message for routine network chatter.
+
+Alerts persist to `./data/app_alerts.json` on the bind-mounted volume so they
+survive restarts, and are pushed live to the frontend over the existing
+WebSocket hub as `app_alert` events.

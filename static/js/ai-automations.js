@@ -11,9 +11,7 @@ import { initAutomationTab } from './modal/automation.js';
 let _aiConfigured = false;
 let _aiHost = null;            // last host assessment (for Ollama gating)
 
-// ============================================================================
 // INIT — called once from automations-page.js
-// ============================================================================
 
 export async function initAIAutomations() {
     try {
@@ -27,9 +25,7 @@ export async function initAIAutomations() {
 
 export function isAIConfigured() { return _aiConfigured; }
 
-// ============================================================================
 // RENDER — returns the AI panel HTML for injection into automations page
-// ============================================================================
 
 export function renderAIPanel() {
     return `
@@ -91,9 +87,7 @@ export function renderAIPanel() {
     </div>`;
 }
 
-// ============================================================================
 // SETTINGS → AI  (host assessment · provider config · local Ollama)
-// ============================================================================
 // The infrastructure controls live here (not in the Automations builder) so
 // there's one home for "what model/provider does the AI use, and can this host
 // run one locally". Reuses the same element ids + window handlers.
@@ -200,9 +194,7 @@ function _aiOpenSettingsTab() {
     setTimeout(() => show('[data-bs-target="#settingsAI"]'), 200);
 }
 
-// ============================================================================
 // GENERATE
-// ============================================================================
 
 async function _aiGenerate() {
     const input = document.getElementById('ai-prompt');
@@ -253,9 +245,7 @@ async function _aiGenerate() {
     }
 }
 
-// ============================================================================
 // DISPLAY GENERATED RULE
-// ============================================================================
 
 function _showGeneratedRule(rule, explanation, source) {
     const result = document.getElementById('ai-result');
@@ -317,9 +307,7 @@ function _showGeneratedRule(rule, explanation, source) {
     window._aiGeneratedRule = rule;
 }
 
-// ============================================================================
 // SAVE / EDIT ACTIONS
-// ============================================================================
 
 async function _aiSaveRule() {
     const rule = window._aiGeneratedRule;
@@ -381,9 +369,7 @@ async function _aiEditRule() {
     createPanel.scrollIntoView({ behavior: 'smooth' });
 }
 
-// ============================================================================
 // SETTINGS
-// ============================================================================
 
 // Provider defaults — mirrors PROVIDER_DEFAULTS in ai_assistant.py
 const PROVIDER_DEFAULTS = {
@@ -647,9 +633,7 @@ async function _aiShowTestContext(ev, encPrompt) {
     }
 }
 
-// ============================================================================
 // DOMAIN-AWARE CHAT
-// ============================================================================
 
 function _aiToggleChat() {
     const el = document.getElementById('ai-chat');
@@ -743,9 +727,7 @@ async function _aiChatClear() {
     } catch (e) { /* ignore */ }
 }
 
-// ============================================================================
 // HOST CAPABILITY CHECK
-// ============================================================================
 
 async function _aiCheckHost() {
     const box = document.getElementById('ai-host');
@@ -799,7 +781,7 @@ async function _aiCheckHost() {
     }
 }
 
-// ── Ollama enablement (privileged actions behind explicit confirm) ───────────
+// Ollama enablement (privileged actions behind explicit confirm)
 
 async function _aiOllamaRender() {
     const box = document.getElementById('ai-ollama');
@@ -930,7 +912,7 @@ async function _aiOllamaUse(model) {
     } catch (e) { window.toast.error(e.message); }
 }
 
-// ── SGLang enablement (GPU-class; only rendered when the assessor says so) ───
+// SGLang enablement (GPU-class; only rendered when the assessor says so)
 
 async function _aiSglangRender() {
     const box = document.getElementById('ai-sglang');
@@ -1035,9 +1017,7 @@ async function _aiSglangUse(model) {
     } catch (e) { window.toast.error(e.message); }
 }
 
-// ============================================================================
 // HELP / EXAMPLES
-// ============================================================================
 
 function _aiUseExample(el) {
     const input = document.getElementById('ai-prompt');
@@ -1072,9 +1052,6 @@ async function _aiShowHelp(ev) {
     }
 }
 
-// ============================================================================
-// UTILS
-// ============================================================================
 
 function _esc(s) {
     if (!s) return '';
@@ -1083,9 +1060,7 @@ function _esc(s) {
     return d.innerHTML;
 }
 
-// ============================================================================
 // WINDOW HANDLERS
-// ============================================================================
 
 window._aiGenerate = _aiGenerate;
 window._aiSaveRule = _aiSaveRule;

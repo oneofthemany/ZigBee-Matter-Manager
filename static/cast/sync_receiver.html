@@ -41,7 +41,7 @@
     let rate = 44100, channels = 2;
     let trimMs = 0;
 
-    // ---- Clock sync (server time.monotonic() <-> performance.now()/1000) ----
+    // Clock sync (server time.monotonic() <-> performance.now()/1000)
     // offset = serverTime - localTime. Estimated from ping/pong pairs; the
     // lowest-RTT samples in a sliding window are the trustworthy ones.
     let samples = [];            // {rtt, offset}
@@ -63,10 +63,10 @@
       if (appliedOffset === null) appliedOffset = estOffset;
     }
 
-    // ---- Playback stats -----------------------------------------------------
+    // Playback stats
     let scheduled = 0, late = 0, resyncs = 0, startedAt = 0;
 
-    // ---- Chunk scheduling ---------------------------------------------------
+    // Chunk scheduling
     function outLatency() {
       return (ctx && (ctx.outputLatency || ctx.baseLatency)) || 0;
     }
@@ -103,7 +103,7 @@
       $('pulse').style.opacity = (scheduled % 4 === 0) ? '1' : '.25';
     }
 
-    // ---- Status line + stats reporting -------------------------------------
+    // Status line + stats reporting
     function heartbeat() {
       if (estOffset !== null) {
         $('detail').textContent =
@@ -124,7 +124,7 @@
     }
     setInterval(heartbeat, 5000);
 
-    // ---- WebSocket ----------------------------------------------------------
+    // WebSocket
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
       ws.binaryType = 'arraybuffer';
@@ -156,7 +156,7 @@
       };
     }
 
-    // ---- Cast wiring --------------------------------------------------------
+    // Cast wiring
     const context = cast.framework.CastReceiverContext.getInstance();
     context.addCustomMessageListener(NAMESPACE, ev => {
       const d = ev.data || {};

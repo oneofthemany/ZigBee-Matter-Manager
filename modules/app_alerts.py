@@ -1,23 +1,11 @@
 """
-Application Alert Center
---------------------------------------------------------------------------
-Central place for surfacing application problems to the user, instead of
-leaving them buried in the logs.
+Application Alert Center — surfaces problems to the user instead of leaving them
+buried in the logs.
 
-Two entry points:
-
-1. `raise_alert(...)` — called directly by modules that detect a concrete,
-   actionable problem (e.g. the automation engine disabling a rule whose
-   target group no longer exists).
-
-2. `AlertLogHandler` — a logging handler attached to the root logger at
-   ERROR level. Any module that logs an error automatically produces an
-   alert, deduplicated so repeated errors bump a counter instead of
-   flooding the UI.
-
-Alerts persist to ./data/app_alerts.json (bind-mounted volume) so they
-survive restarts, and are pushed live to the frontend over the existing
-WebSocket hub as `app_alert` events.
+raise_alert() for concrete, actionable problems, plus an AlertLogHandler on the
+root logger that turns any ERROR into a deduplicated alert. Persisted to
+data/app_alerts.json and pushed live as `app_alert` websocket events.
+See docs/debugging.md.
 """
 
 import asyncio
@@ -66,7 +54,7 @@ class AlertCenter:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._load()
 
-    # ---- wiring ---------------------------------------------------------
+    # wiring
 
     def set_emitter(self, emit: Callable, loop: Optional[asyncio.AbstractEventLoop] = None):
         """Attach the WebSocket broadcast coroutine. Call from the event loop."""
@@ -76,7 +64,7 @@ class AlertCenter:
         except RuntimeError:
             self._loop = loop
 
-    # ---- persistence ----------------------------------------------------
+    # persistence
 
     def _load(self):
         try:
@@ -96,7 +84,7 @@ class AlertCenter:
         except Exception as e:
             logger.debug(f"Could not save alerts file: {e}")
 
-    # ---- core API -------------------------------------------------------
+    # core API
 
     def raise_alert(self, severity: str, source: str, title: str, message: str,
                     dedupe_key: Optional[str] = None,
@@ -163,7 +151,7 @@ class AlertCenter:
         except Exception as e:
             logger.debug(f"Alert push failed: {e}")
 
-    # ---- queries / management -------------------------------------------
+    # queries / management
 
     def list_alerts(self, include_dismissed: bool = False) -> List[Dict]:
         with self._lock:
@@ -218,7 +206,7 @@ class AlertLogHandler(logging.Handler):
             pass
 
 
-# ---- module singleton ----------------------------------------------------
+# module singleton
 
 _center: Optional[AlertCenter] = None
 _log_handler_installed = False

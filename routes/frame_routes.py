@@ -1,29 +1,9 @@
 """
-Frames API routes — auto-generated dashboards from chamber + device type.
+Frames API — auto-generated dashboards from chamber + device type.
 
-Endpoints:
-    GET    /api/frames/auto       — grouped cells, laid out on the fly
-    GET    /api/frames/cells      — flat cell list (no grouping), for the picker
-    GET    /api/frames/kinds      — cell kinds + labels
-    GET    /api/frames            — saved frames
-    POST   /api/frames            — create/update a saved frame
-    DELETE /api/frames/{frame_id} — delete a saved frame
-    GET    /api/frames/{frame_id} — render a saved frame
-
-Query params (auto):
-    split=chamber|type          — group by room, or by device type
-    chambers=a,b                — restrict to these chambers
-    kinds=light,switch          — restrict to these cell kinds
-
-A Zigbee group assigned a chamber (see routes/group_routes.py) becomes its own
-controllable cell in that chamber's section on a chamber-split frame — no query
-param needed, it's driven by the group's own ``chamber`` field.
-
-Storage:
-    Saved frames: ``data/frames.json``. A frame is only filters over the live
-    hive — it never stores device state, so it can't go stale.
-
-Zigbee-only: AC units, media players and heating are not cells yet.
+A frame is only filters over the live hive, never stored device state, so it
+cannot go stale; saved frames live in data/frames.json. Zigbee-only for now.
+Endpoints and query params: docs/frames.md.
 """
 from __future__ import annotations
 
@@ -164,7 +144,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             "kinds": [{"kind": k, "label": CELL_LABELS.get(k, k)} for k in CELL_ORDER],
         }
 
-    # ───────────────────────── saved frames ─────────────────────────
+    # saved frames
 
     @app.get("/api/frames")
     async def list_frames():

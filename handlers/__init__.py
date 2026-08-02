@@ -34,7 +34,7 @@ from .sonoff_quirk import *
 from .generic import *
 
 
-# ── Matter Device Parsers ──────────────────────────────────────────────
+# Matter Device Parsers
 from .matter_parsers import (
     BaseMatterParser,
     SwitchParser as MatterSwitchParser,

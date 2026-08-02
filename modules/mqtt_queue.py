@@ -1,13 +1,9 @@
 """
-MQTT Publish Queue - Non-Blocking Fast Path
-============================================
-Based on ZHA's MQTT management patterns for time-critical sensors.
+Non-blocking MQTT publish queue for time-critical sensors, following ZHA's
+patterns.
 
-This module provides:
-- Non-blocking publish queue with automatic batching
-- Intelligent message dropping for queue overflow
-- Background worker for actual MQTT I/O
-- Minimal latency for motion/radar events
+Automatic batching, intelligent dropping on overflow, and a background worker
+doing the actual I/O, so motion and radar events see minimal latency.
 """
 import asyncio
 import logging

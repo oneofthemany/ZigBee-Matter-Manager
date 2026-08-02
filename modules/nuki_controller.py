@@ -1,27 +1,10 @@
 """
-nuki_controller.py
-==================
-Async client for the Nuki Bridge HTTP API (v1.13).
+Async client for the Nuki Bridge HTTP API (v1.13) — the "with bridge" half of
+the integration; bridge-less locks go through Matter instead.
 
-Covers the "with bridge" half of the Nuki integration; bridge-less locks
-(Smart Lock 3.0 Pro / 4th gen) are commissioned through the app's existing
-Matter server instead and handled in routes/security_routes.py.
-
-Bridge API notes
-----------------
-* All endpoints are plain HTTP GET on the bridge (default port 8080).
-* Auth is a token, sent either as `token=` (plain) or as the hashed triple
-  `ts`/`rnr`/`hash` where hash = sha256("<ts>,<rnr>,<token>"). Hashed is the
-  default here — the plain form leaks the token to anything that can see
-  LAN traffic. The bridge must have "hashed token only" left on (factory
-  default) for hashed to work; plain is kept as an opt-out for old firmware.
-* /auth returns a fresh token but only while the bridge's button has been
-  pressed within the last 30 s, and only if auth-enable is on.
-* Bridge discovery is a Nuki cloud call (api.nuki.io) — the bridge phones
-  home its LAN ip/port; no credentials needed.
-
-Config lives in config.yaml under security.nuki.bridge:
-    {enabled, host, port, token, hashed_token}
+Auth defaults to the hashed token triple, since the plain form leaks the token
+to anything watching LAN traffic. Config: security.nuki.bridge in config.yaml.
+See docs/security.md.
 """
 
 from __future__ import annotations
@@ -127,7 +110,7 @@ class NukiBridgeClient:
             reason = str(e) or type(e).__name__
             raise NukiError(f"Bridge unreachable at {self.host}:{self.port} ({reason})")
 
-    # ── API surface ─────────────────────────────────────────────────────
+    # API surface
 
     async def info(self) -> Dict[str, Any]:
         return await self._get("info")

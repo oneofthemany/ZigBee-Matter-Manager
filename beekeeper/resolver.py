@@ -1,17 +1,10 @@
-"""Upstream forwarding + a small positive cache.
+"""
+Upstream forwarding plus a small positive cache.
 
-Unblocked queries are relayed verbatim to the configured upstream resolvers
-(Cloudflare 1.1.1.1 and Quad9 9.9.9.9 by default) with failover: try each in
-turn until one answers within the timeout. The upstream's response bytes are
-returned unchanged — we never re-encode an answer (see beekeeper.wire).
-
-A tiny LRU cache holds recent UDP answers keyed by (qname, qtype, qclass). It
-uses a single fixed TTL cap rather than parsing per-record TTLs from the wire —
-a deliberate simplification for a home resolver: at worst a name is served from
-cache for up to ``cache.ttl`` seconds (default 300) past its real TTL. Cached
-answers are reused across clients by rewriting the 2-byte transaction id.
-Only UDP answers are cached and only the UDP path reads the cache, so a large
-TCP-only answer is never squeezed back out over UDP.
+Unblocked queries are relayed verbatim with failover across the configured
+resolvers, and responses are returned unchanged. The LRU cache uses one fixed
+TTL cap rather than parsing per-record TTLs, and only ever holds UDP answers.
+See docs/beekeeper.md.
 """
 from __future__ import annotations
 
@@ -72,7 +65,7 @@ class UpstreamResolver:
         self._hits = 0
         self._misses = 0
 
-    # ── cache ────────────────────────────────────────────────────────────────
+    # cache
     @staticmethod
     def _key(q: wire.Question) -> Tuple[str, int, int]:
         return (q.qname, q.qtype, q.qclass)
@@ -118,7 +111,7 @@ class UpstreamResolver:
         self._cache.clear()
         return n
 
-    # ── forwarding ───────────────────────────────────────────────────────────
+    # forwarding
     async def _query_udp_one(self, upstream: str, query: bytes) -> bytes:
         loop = asyncio.get_running_loop()
         fut: "asyncio.Future[bytes]" = loop.create_future()

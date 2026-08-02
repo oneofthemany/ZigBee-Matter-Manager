@@ -1,19 +1,10 @@
 """
-Zigbee Matter Service Core - ZHA-inspired architecture.
-ZigbeeService is composed from focused mixin classes.
+Zigbee Matter service core — ZigbeeService, composed from focused mixins
+(config building, MQTT, topology, banning, database, tabs).
 
-Mixins:
-  ConfigBuilderMixin  - Radio config builders (EZSP/ZNP)
-  MQTTHandlerMixin    - Announcements, republish, bridge status
-  TopologyMixin       - Mesh data, LQI scanning, connection table
-  BanningMixin        - Ban/unban/kick
-  DatabaseMixin       - Orphan detection, DB cleanup
-  TabsMixin           - Device tab CRUD
-
-This file retains: __init__, start(), stop(), zigpy listener interface,
-handle_device_update, handle_mqtt_command, announce_device, send_command,
-rename_device, configure_device, interview_device, poll_device, bind_devices,
-permit_join, touchlink, get_device_list, and utility methods.
+This file keeps lifecycle (start/stop), the zigpy listener interface, and the
+device operations: update handling, announce, send_command, rename, configure,
+interview, poll, bind, permit_join, touchlink and get_device_list.
 """
 import asyncio
 import logging
@@ -24,10 +15,9 @@ import os
 import re
 import traceback
 
-# Exception types that indicate a code bug rather than a hardware/transient
-# failure. Retrying these wastes time and pushes the process past the
-# launcher's HEALTHY_SECONDS threshold, preventing recovery standby (repair via ZMM Manager) from
-# triggering.
+# Exception types that indicate a code bug rather than a transient hardware
+# failure. Retrying these pushes the process past the launcher's
+# HEALTHY_SECONDS threshold, which blocks recovery standby.
 _CODE_BUG_EXCEPTIONS = (
     AttributeError, TypeError, NameError, ImportError,
     SyntaxError, IndentationError,
@@ -208,9 +198,7 @@ class ZigbeeService(
         from modules.interview_status import InterviewStatusTracker
         self.interview_status = InterviewStatusTracker(self)
 
-    # =========================================================================
     # UTILITY METHODS
-    # =========================================================================
 
     async def _default_event_callback(self, event_type: str, data: dict):
         pass
@@ -270,9 +258,7 @@ class ZigbeeService(
             if duration > 1.5:
                 logger.warning(f"Event loop blocked for {duration:.2f}s (should be ~1.0s)")
 
-    # =========================================================================
     # EVENT EMISSION
-    # =========================================================================
 
     def _emit_sync(self, evt, data):
         if self.callback:
@@ -282,9 +268,7 @@ class ZigbeeService(
         if self.callback:
             await self.callback(evt, data)
 
-    # =========================================================================
     # START / STOP
-    # =========================================================================
 
     async def start(self, network_key=None, probe_progress_cb=None):
         """Start the Zigbee network with enhanced resilience."""
@@ -300,10 +284,8 @@ class ZigbeeService(
         # Probe radio type + serial parameters (protocol-level handshake)
         probe_result = await self._probe_radio_type(progress_cb=probe_progress_cb)
 
-        # ================================================================
         # MULTIPAN INTERCEPT — if Jedi detected RCP firmware, start the
         # CPC daemon stack and redirect bellows to the zigbeed socket.
-        # ================================================================
         adapter_family = probe_result.get("adapter_family", "")
         if adapter_family == "Silicon Labs CPC Multi-PAN (RCP)":
             logger.info(
@@ -381,9 +363,8 @@ class ZigbeeService(
         elif radio_type == "DECONZ":
             conf = self._build_deconz_config(network_key, detected=probe_result)
 
-        # Imported credentials staged by the setup wizard? Write them to the
-        # radio before the stack starts — zigpy never applies config
-        # credentials to an already-formed radio on its own.
+        # Credentials staged by the setup wizard must reach the radio before the
+        # stack starts — zigpy never applies them to an already-formed radio.
         try:
             from modules.network_migrate import apply_pending_restore
             await apply_pending_restore(ControllerApplication, conf)
@@ -418,10 +399,9 @@ class ZigbeeService(
                     config=conf, auto_form=True, start_radio=True
                 )
 
-                # zigpy only applies network.key/pan_id when it FORMS a
-                # network; a pre-formed radio keeps its old credentials
-                # silently. Re-form a virgin network so the coordinator
-                # actually carries the credentials in config.yaml.
+                # zigpy only applies network.key/pan_id when it FORMS a network;
+                # a pre-formed radio keeps its old credentials silently. Re-form a
+                # virgin network so config.yaml credentials actually take.
                 self.app = await self._enforce_network_credentials(
                     ControllerApplication, conf
                 )
@@ -529,9 +509,8 @@ class ZigbeeService(
                 # Initialise zones
                 self._zones_init_task = asyncio.create_task(self._init_zones_internal())
 
-                # Start automation time-boundary scheduler so time_window rules
-                # fire at the correct clock time rather than waiting for an
-                # incidental device update.
+                # So time_window rules fire at the right clock time rather than
+                # waiting for an incidental device update.
                 try:
                     await self.automation.start()
                 except Exception as e:
@@ -540,9 +519,8 @@ class ZigbeeService(
                 return
 
             except _CODE_BUG_EXCEPTIONS as e:
-                # Code bug — retrying won't help and wastes enough time to push
-                # past the launcher's HEALTHY_SECONDS threshold, blocking recovery.
-                # Exit immediately so the launcher enters recovery standby (ZMM Manager).
+                # Code bug — retrying wastes enough time to push past the
+                # launcher's HEALTHY_SECONDS threshold. Exit so it enters recovery.
                 logger.error(
                     f"Non-retryable code error during startup "
                     f"({type(e).__name__}: {e}) — exiting for recovery"
@@ -697,47 +675,14 @@ class ZigbeeService(
             await self.multipan.stop()
             self.multipan = None
 
-    # =========================================================================
     # ZIGPY LISTENER INTERFACE
-    # =========================================================================
 
 
-
-
-
-
-    # =========================================================================
-    # HIVE SLT → SLR TEMPERATURE BINDING
-    # =========================================================================
-    #
-    # Hive's SLT thermostat has the room temperature sensor; the SLR receiver
-    # needs that data to display the room temperature and (in some firmware
-    # versions) to refine its heating decisions.
-    #
-    # When you pair both devices to a third-party coordinator (rather than
-    # the official Hive hub), the SLT does NOT auto-bind to the SLR and does
-    # NOT auto-configure reporting on its 0x0402 cluster. We have to do it
-    # ourselves.
-    #
-    # Two operations, both targeted at the SLT (which is a sleepy end-device,
-    # so timeouts are generous and we retry):
-    #
-    #   1. ZDO Bind_req: SLT(EP9, 0x0402, server) → SLR(EP5, client)
-    #      Tells the SLT where to send Report Attributes commands for
-    #      cluster 0x0402.
-    #
-    #   2. Configure Reporting on SLT's 0x0402.measured_value:
-    #      min=30s, max=300s, change=25 centi-degrees (0.25°C)
-    #
-    # Without (1) the SLT only reports to the coordinator (default).
-    # Without (2) the SLT may report on an arbitrary firmware schedule, or
-    # not at all.
-    #
-    # NOTE: Cannot use bind_devices() here because it uses output→input
-    # direction (correct for actuator binds like a switch→light), but for
-    # sensor-style clusters the source is the cluster *server* (the side
-    # that owns the data), which is in the SLT's *input* clusters.
-    # =========================================================================
+    # Hive SLT (sensor) -> SLR (receiver) temperature binding. Paired to a
+    # third-party coordinator the SLT neither auto-binds nor auto-configures
+    # reporting, so both are done here. bind_devices() is unusable: it binds
+    # output->input, but the source here is the cluster server, in SLT inputs.
+    # See docs/heating.md.
 
     # Hive endpoint conventions (verified from device descriptors)
     _HIVE_SLT_THERMOSTAT_EP = 9     # SLT6 puts thermostat & temp on EP9
@@ -776,7 +721,7 @@ class ZigbeeService(
         slt_zdev = slt.zigpy_dev
         slr_zdev = slr.zigpy_dev
 
-        # ── Pre-flight: verify expected endpoints/clusters ──────────────
+        # Pre-flight: verify expected endpoints/clusters
         ep = self._HIVE_SLT_THERMOSTAT_EP
         cluster_id = self._HIVE_TEMP_MEASUREMENT_CLUSTER
 
@@ -802,7 +747,7 @@ class ZigbeeService(
             result["messages"].append(msg)
             return result
 
-        # ── Step 1: ZDO Bind_req on the SLT ─────────────────────────────
+        # Step 1: ZDO Bind_req on the SLT
         dst = zdo_types.MultiAddress()
         dst.addrmode = 3                       # 64-bit IEEE + endpoint
         dst.ieee = slr_zdev.ieee
@@ -847,7 +792,7 @@ class ZigbeeService(
             result["messages"].append(msg)
             return result
 
-        # ── Step 2: Configure Reporting on SLT's 0x0402 ────────────────
+        # Step 2: Configure Reporting on SLT's 0x0402
         cluster = slt_ep.in_clusters[cluster_id]
         for attempt in range(1, self._HIVE_BIND_MAX_ATTEMPTS + 1):
             try:
@@ -911,7 +856,6 @@ class ZigbeeService(
         return await self._setup_hive_thermostat_binding(slt_ieee, slr_ieee)
 
 
-
     # Stub listener methods required by zigpy
     def device_relays_updated(self, device: zigpy.device.Device, relays):
         pass
@@ -921,9 +865,7 @@ class ZigbeeService(
     def group_added(self, *args, **kwargs): pass
     def group_removed(self, *args, **kwargs): pass
 
-    # =========================================================================
     # RAW MESSAGE HANDLER (zigpy listener)
-    # =========================================================================
 
     def handle_message(
             self,
@@ -1155,9 +1097,7 @@ class ZigbeeService(
         except Exception:
             return None, -1
 
-    # =========================================================================
     # DEVICE OPERATIONS
-    # =========================================================================
 
     async def announce_device(self, ieee: str):
         """Publish HA Discovery configs for a device."""
@@ -1858,9 +1798,7 @@ class ZigbeeService(
             logger.error(f"Binding failed: {e}")
             return {"success": False, "error": str(e)}
 
-    # =========================================================================
     # PAIRING
-    # =========================================================================
 
     async def permit_join(self, duration=240, ieee=None):
         logger.info(f"Permit join requested: duration={duration}, target={ieee or 'all'}")
@@ -1914,9 +1852,7 @@ class ZigbeeService(
             return {"enabled": True, "remaining": remaining}
         return {"enabled": False, "remaining": 0}
 
-    # =========================================================================
     # TOUCHLINK
-    # =========================================================================
 
     async def touchlink_scan(self, channel: int = None):
         if not self._touchlink:
@@ -1933,9 +1869,7 @@ class ZigbeeService(
             self._touchlink = await create_touchlink_manager(self.app)
         return await self._touchlink.factory_reset(channel=channel, target_ieee=target_ieee)
 
-    # =========================================================================
     # DEVICE LIST
-    # =========================================================================
 
     def get_device_list(self):
         """Get list of all devices with their current state - JSON-safe."""
@@ -1996,9 +1930,7 @@ class ZigbeeService(
     def get_join_history(self):
         return self.join_history
 
-    # =========================================================================
     # POLLING CONFIG API
-    # =========================================================================
 
     def set_polling_interval(self, ieee: str, interval: int):
         self.polling_config[ieee] = interval

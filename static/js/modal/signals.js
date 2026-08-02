@@ -1,24 +1,14 @@
 /**
  * Signal Inspector — universal, device-agnostic live signal view.
- * Location: static/js/modal/signals.js
  *
- * Every raw signal a device emits — ZCL attribute reports, cluster commands,
- * Tuya datapoints, Matter attributes and derived state keys — in one live
- * table, whatever the vendor or cluster. This is the surface the future
- * learn-by-demonstration flow plugs into: press a button / turn a knob and
- * watch which signal reacts — that's the address you map.
+ * Every raw signal a device emits (ZCL reports, cluster commands, Tuya
+ * datapoints, Matter attributes, derived keys) in one table, whatever the
+ * vendor. Mounted both in the per-device modal and the Debug tab.
  *
- * Mounted in two places from one implementation:
- *   • the per-device modal (pinned to the open device), and
- *   • the Debug tab's "Signal Inspector" sub-tab (with a device picker).
- *
- * Usage:
  *   const inspector = createSignalInspector(containerEl, { ieee, showPicker });
- *   inspector.setDevice('00:12:...');   // switch device (picker mode)
- *   inspector.destroy();                // stop streaming + detach
  *
- * Data source: /api/signals/{ieee}  (ieee may be the literal 'all')
- * plus live `signal_inspector_update` WebSocket events.
+ * Reads /api/signals/{ieee} plus signal_inspector_update events.
+ * See docs/debugging.md.
  */
 
 import { state } from '../state.js';
@@ -36,9 +26,7 @@ const SOURCE_LABELS = {
 
 const ALL = 'all';
 
-// ---------------------------------------------------------------------------
 // Public factory
-// ---------------------------------------------------------------------------
 
 export function createSignalInspector(container, opts = {}) {
     if (!container) return { destroy() {}, setDevice() {} };
@@ -74,9 +62,7 @@ export function handleSignalUpdate(payload) {
     for (const inst of _instances) _applyUpdate(inst, payload);
 }
 
-// ---------------------------------------------------------------------------
 // Template
-// ---------------------------------------------------------------------------
 
 function _template(inst) {
     const picker = inst.showPicker ? `
@@ -155,9 +141,7 @@ function _deviceOptions() {
         `<option value="${_esc(d.ieee)}">${_esc(d.name)}</option>`).join('');
 }
 
-// ---------------------------------------------------------------------------
 // Wiring
-// ---------------------------------------------------------------------------
 
 function _wire(inst) {
     const $ = (sel) => inst.container.querySelector(sel);
@@ -188,9 +172,7 @@ function _wire(inst) {
     $('.sig-mapped-btn')?.addEventListener('click', () => _mappedToggle(inst));
 }
 
-// ---------------------------------------------------------------------------
 // Device selection + streaming
-// ---------------------------------------------------------------------------
 
 async function _select(inst, ieee) {
     // Tear down any current stream + learn session first.
@@ -263,9 +245,7 @@ async function _clear(inst) {
     _repaint(inst);
 }
 
-// ---------------------------------------------------------------------------
 // Live updates + rendering
-// ---------------------------------------------------------------------------
 
 function _applyUpdate(inst, payload) {
     if (!inst.streaming) return;
@@ -332,9 +312,7 @@ function _repaint(inst) {
     inst.lastPulse = null;
 }
 
-// ---------------------------------------------------------------------------
 // Learn-by-demonstration
-// ---------------------------------------------------------------------------
 
 // Value-bearing sources that resolve to a device state key we can map.
 const MAPPABLE_SOURCES = new Set(['state', 'dp', 'zcl_attr', 'matter_attr']);
@@ -648,9 +626,7 @@ function _toast(type, msg) {
     try { if (window.toast && window.toast[type]) window.toast[type](msg); } catch (_) { /* ignore */ }
 }
 
-// ---------------------------------------------------------------------------
 // Mapped-signals management
-// ---------------------------------------------------------------------------
 
 function _mappedPanel(inst) { return inst.container.querySelector('.sig-mapped'); }
 
@@ -858,9 +834,7 @@ async function _mappedRemove(inst, i) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Small helpers
-// ---------------------------------------------------------------------------
 
 function _setLive(inst, on) {
     const badge = inst.container.querySelector('.sig-live');

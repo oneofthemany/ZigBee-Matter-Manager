@@ -1,14 +1,9 @@
 """
-AI API - FastAPI routes for AI-assisted automation generation.
+AI API — generate an automation rule from natural language, check and update
+provider config, and preview the device context sent to the LLM.
 
-Uses module-level getters (same pattern as routes/ota_routes.py)
-to avoid closure scoping issues with FastAPI lifespan.
-
-Endpoints:
-  POST /api/ai/automation       — Generate automation rule from natural language
-  GET  /api/ai/status           — Check AI provider configuration status
-  POST /api/ai/config           — Update AI provider settings
-  GET  /api/ai/context          — Preview the device context sent to the LLM (debug)
+Uses module-level getters to avoid closure scoping issues with the FastAPI
+lifespan.
 """
 
 import asyncio
@@ -20,9 +15,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
 # MODULE-LEVEL GETTERS (set by register_ai_routes)
-# ============================================================================
 
 _get_ai_assistant = None
 _get_ai_automations = None
@@ -33,9 +26,7 @@ _ollama_mgr = None
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 
-# ============================================================================
 # PYDANTIC MODELS
-# ============================================================================
 
 class AIGenerateRequest(BaseModel):
     prompt: str = Field(..., description="Natural language automation description",
@@ -70,9 +61,7 @@ class AIConfigRequest(BaseModel):
     max_tokens: Optional[int] = None
 
 
-# ============================================================================
 # REGISTRATION
-# ============================================================================
 
 def register_ai_routes(app: FastAPI, ai_assistant_getter: Callable,
                        ai_automations_getter: Callable,
@@ -97,9 +86,7 @@ def register_ai_routes(app: FastAPI, ai_assistant_getter: Callable,
     logger.info("AI API routes registered")
 
 
-# ============================================================================
 # ROUTES
-# ============================================================================
 
 @router.post("/automation")
 async def generate_automation(request: AIGenerateRequest):
@@ -309,7 +296,7 @@ async def host_capability():
     return await asyncio.to_thread(HostCapabilityAssessor().assess)
 
 
-# ── Ollama enablement (privileged; UI-gated behind explicit confirm) ─────────
+# Ollama enablement (privileged; UI-gated behind explicit confirm)
 
 def _ollama():
     global _ollama_mgr
@@ -353,7 +340,7 @@ async def ollama_pull(request: OllamaPullRequest):
     return result
 
 
-# ── SGLang enablement (privileged; UI-gated behind host viability) ───────────
+# SGLang enablement (privileged; UI-gated behind host viability)
 
 _sglang_mgr = None
 

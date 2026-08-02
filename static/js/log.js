@@ -1,28 +1,12 @@
-/* ============================================================
-   ZigBee Matter Manager — namespaced browser-console logger
+/* Namespaced browser-console logger — every JS module logs through a named
+   logger rather than raw console.* calls:
 
-   Every JS module logs through a named logger instead of raw
-   console.* calls:
+     const log = zmmLog('groups');
+     log.log(...)    // gated      log.error(...)  // always printed
 
-       const log = zmmLog('groups');
-       log.log('rendering', groups);     // gated
-       log.warn('slow response');        // gated
-       log.error('save failed', err);    // ALWAYS printed
-
-   Output is silent by default. Enable namespaces from the
-   Debug tab ("Console" button) or directly from DevTools:
-
-       zmmLog.enable('groups')     // one namespace
-       zmmLog.enable('*')          // everything
-       zmmLog.disable('groups')
-       zmmLog.namespaces()         // list known namespaces
-
-   The selection persists in localStorage under 'zmm.debug' as
-   either '*' or a comma-separated namespace list.
-
-   Classic (non-module) script — must be loaded before every
-   other app script. ES modules use the window.zmmLog global.
-   ============================================================ */
+   Silent by default; enable from the Debug tab or zmmLog.enable('*'). The
+   selection persists in localStorage under 'zmm.debug'. Classic script — must
+   load before every other app script. See docs/debugging.md. */
 
 (function () {
     'use strict';

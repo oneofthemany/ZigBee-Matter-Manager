@@ -1,11 +1,8 @@
-/* ============================================================================
-   Setup Wizard - Multi-Step First-Run UI
-   ============================================================================
+/* Setup Wizard - Multi-Step First-Run UI
    Drop-in replacement: static/css/setup-wizard.css
-   Load in index.html AFTER styles.css and dark-mode.css
-   ============================================================================ */
+   Load in index.html AFTER styles.css and dark-mode.css */
 
-/* -- Overlay ---------------------------------------------------------------- */
+/* Overlay */
 
 #setupWizardOverlay {
     position: fixed;
@@ -27,7 +24,7 @@
     pointer-events: all;
 }
 
-/* -- Card ------------------------------------------------------------------- */
+/* Card */
 
 .setup-wizard-card {
     background: var(--bg-surface, #fff);
@@ -54,7 +51,7 @@
     margin-bottom: 1.5rem;
 }
 
-/* -- Step Indicator --------------------------------------------------------- */
+/* Step Indicator */
 
 .setup-steps {
     display: flex;
@@ -129,7 +126,7 @@
 .setup-step.active .step-label { color: var(--accent, #0d6efd); }
 .setup-step.completed .step-label { color: #198754; }
 
-/* -- Progress bar ----------------------------------------------------------- */
+/* Progress bar */
 
 .scan-progress-bar {
     height: 6px;
@@ -145,7 +142,7 @@
     transition: width 0.5s ease;
 }
 
-/* -- Scan log --------------------------------------------------------------- */
+/* Scan log */
 
 .scan-log {
     background: var(--bg-surface-sunken, #f8f9fa);
@@ -154,7 +151,7 @@
     line-height: 1.6;
 }
 
-/* -- Spinner ---------------------------------------------------------------- */
+/* Spinner */
 
 .scan-spinner {
     display: inline-block;
@@ -171,7 +168,7 @@
     to { transform: rotate(360deg); }
 }
 
-/* -- Adapter results -------------------------------------------------------- */
+/* Adapter results */
 
 .adapter-results {
     display: flex;
@@ -206,7 +203,7 @@
 
 .adapter-result .adapter-badge { font-size: 0.7rem; padding: 0.2em 0.55em; }
 
-/* -- Integration mode options ----------------------------------------------- */
+/* Integration mode options */
 
 .integration-options {
     display: flex;
@@ -232,7 +229,7 @@
 .integration-icon { font-size: 1.5rem; margin-right: 0.75rem; margin-top: 0.1rem; }
 .integration-check { font-size: 1.2rem; margin-left: 0.5rem; margin-top: 0.1rem; }
 
-/* -- Summary sections ------------------------------------------------------- */
+/* Summary sections */
 
 .summary-section {
     border: 1px solid var(--border-color, #dee2e6);
@@ -256,7 +253,7 @@
     border-bottom: 1px solid rgba(0, 0, 0, 0.05);
 }
 
-/* -- Port list -------------------------------------------------------------- */
+/* Port list */
 
 .port-list-item {
     display: flex;
@@ -276,12 +273,12 @@
 
 .port-list-item .port-desc { color: var(--text-secondary, #6c757d); font-size: 0.8rem; }
 
-/* -- No adapters ------------------------------------------------------------ */
+/* No adapters */
 
 .no-adapters { text-align: center; padding: 2rem 1rem; }
 .no-adapters i { font-size: 2.5rem; color: #ffc107; margin-bottom: 0.75rem; }
 
-/* -- Action buttons --------------------------------------------------------- */
+/* Action buttons */
 
 .setup-actions {
     display: flex;
@@ -292,9 +289,7 @@
 }
 
 
-/* =========================================================================
-   DARK MODE — uses [data-theme="dark"] to match dark-mode.css
-   ========================================================================= */
+/* DARK MODE — uses [data-theme="dark"] to match dark-mode.css */
 
 [data-theme="dark"] #setupWizardOverlay {
     background: rgba(0, 0, 0, 0.75);
@@ -493,9 +488,7 @@
 }
 
 
-/* =========================================================================
-   MOBILE
-   ========================================================================= */
+/* MOBILE */
 
 @media (max-width: 576px) {
     .setup-wizard-card {

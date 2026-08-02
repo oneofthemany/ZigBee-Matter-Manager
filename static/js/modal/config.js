@@ -3,9 +3,6 @@
  * Location: static/js/modal/config.js
  */
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 
 export function hasCluster(device, clusterId) {
     if (!device.capabilities) return false;
@@ -15,7 +12,7 @@ export function hasCluster(device, clusterId) {
     );
 }
 
-// --- SPECIFIC DEVICE MATCHERS ---
+// SPECIFIC DEVICE MATCHERS
 
 export function isZyM100(d) {
     const man = (d.manufacturer || '').toLowerCase();
@@ -76,12 +73,10 @@ export function isIkeaTradfri(d) {
     return man.includes('ikea');
 }
 
-// ============================================================================
 // CONFIG DEFINITIONS
-// ============================================================================
 
 export const CONFIG_DEFINITIONS = [
-    // --- Tuya Radar Sensors ---
+    // Tuya Radar Sensors
     {
         key: 'radar_sensitivity',
         label: 'Radar Sensitivity',
@@ -125,7 +120,7 @@ export const CONFIG_DEFINITIONS = [
         condition: (d) => isTuyaRadar(d) && !isZyM100(d)
     },
 
-    // --- Thermostats (Generic) ---
+    // Thermostats (Generic)
     {
         key: 'local_temperature_calibration',
         label: 'Temp Calibration (°C)',
@@ -134,7 +129,7 @@ export const CONFIG_DEFINITIONS = [
         condition: (d) => hasCluster(d, 0x0201)
     },
 
-    // --- Aqara TRV Specifics (Strictly filtered) ---
+    // Aqara TRV Specifics (Strictly filtered)
     {
         key: 'window_detection',
         label: 'Window Detection',
@@ -164,7 +159,7 @@ export const CONFIG_DEFINITIONS = [
         condition: (d) => isAqaraTRV(d)
     },
 
-    // --- Aqara Switches ---
+    // Aqara Switches
     {
         key: 'power_outage_memory',
         label: 'Power Outage Memory',
@@ -173,7 +168,7 @@ export const CONFIG_DEFINITIONS = [
         condition: (d) => isAqaraSwitch(d)
     },
 
-    // --- Generic Motion ---
+    // Generic Motion
     {
         key: 'occupancy_timeout',
         label: 'Occupancy Timeout (s)',
@@ -182,7 +177,7 @@ export const CONFIG_DEFINITIONS = [
         condition: (d) => hasCluster(d, 0x0406)
     },
 
-    // --- Philips Hue Motion (SML00x) ---
+    // Philips Hue Motion (SML00x)
     {
         key: 'sensitivity',
         label: 'Motion Sensitivity',

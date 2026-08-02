@@ -1,40 +1,10 @@
 """
-Octopus Energy integration service.
+Octopus Energy integration — smart-meter consumption and tariff rates, with
+optional near-real-time demand from a Home Mini.
 
-Polls the Octopus Energy REST API (https://api.octopus.energy/v1/) for
-smart-meter consumption (electricity + gas, half-hourly) and tariff rates
-(including half-hourly Agile pricing), persisting both to the telemetry
-DuckDB so the Energy tab can chart them and the heating advisor can price
-real usage.
-
-Auth: HTTP Basic — the account API key as username, blank password.
-Consumption endpoints need auth; product/tariff rate endpoints are public.
-
-Config (config.yaml):
-  octopus:
-    enabled: true
-    api_key: sk_live_...
-    account_number: A-XXXXXXXX
-    gas_calorific_value: 39.5   # MJ/m³, from your gas bill
-    gas_unit: auto              # auto|kwh|m3 (SMETS1 reports kWh, SMETS2 m³)
-    consumption_poll_minutes: 30
-    rates_poll_minutes: 60
-    backfill_days: 90
-    home_mini: true             # near-real-time demand via the GraphQL API
-    telemetry_poll_minutes: 5   # Home Mini sampling cadence (5–10 min typical)
-    retention_days: 400         # local history kept in data/octopus.duckdb
-
-With home_mini the telemetry poll also persists each half-hour's
-consumptionDelta as provisional (source='mini') consumption rows, so the
-Energy chart shows today in near real time instead of trailing the REST
-data lag. The REST poll stays the settlement-grade authority — it
-overwrites provisional rows on the same interval key — but relaxes to a
-3-hourly reconcile cadence for electricity while Mini samples flow (gas
-always keeps consumption_poll_minutes; the Mini feed is electricity-only).
-
-Smart-meter consumption lags by several hours to a day — "today" is usually
-partial. Rates never break heating: heating_tariff() returns None on any
-doubt and the advisor falls back to the manual tariff config.
+Auth is HTTP Basic (API key as username). Consumption lags several hours, so
+"today" is usually partial; rates never break heating, since heating_tariff()
+returns None on any doubt. Config and the Mini reconcile rules: docs/energy.md.
 """
 import asyncio
 import logging
@@ -69,10 +39,9 @@ MINI_DEVICE_QUERY = """query {
   }
 }"""
 
-# The last returned point covers the in-progress half hour: its `demand` is
-# the meter's current instantaneous demand (W) and `consumption` the running
-# cumulative total (Wh). Polling this frequently yields a fine-grained demand
-# series even though the grouping is half-hourly.
+# The last point covers the in-progress half hour: `demand` is instantaneous (W)
+# and `consumption` the running cumulative total (Wh), so frequent polling gives
+# a fine-grained demand series despite half-hourly grouping.
 TELEMETRY_QUERY = """query {
   smartMeterTelemetry(
     deviceId: "%s"
@@ -88,10 +57,8 @@ LIVE_BUFFER_MAX = 576               # 48h of 5-min samples
 # is pure reconciliation (its data lags hours anyway) — poll it gently.
 MINI_RECONCILE_SEC = 3 * 3600
 
-# Europe/London for UK-local day boundaries and the 16:00 Agile publish time.
-# Must never crash the app at import: on hosts without tz data (no OS tzdata
-# and no `tzdata` pip package) fall back to UTC — UK-local labelling shifts by
-# an hour in summer but everything keeps working.
+# Europe/London for UK day boundaries and the 16:00 Agile publish time. Falls
+# back to UTC on hosts with no tz data rather than crashing at import.
 try:
     from zoneinfo import ZoneInfo
     LONDON = ZoneInfo("Europe/London")
@@ -176,10 +143,9 @@ class OctopusEnergyService:
         self._task: Optional[asyncio.Task] = None
         self._client = None
         self._last_agile_retry = 0.0
-        # Home Mini live telemetry. The demand buffer is the in-memory live
-        # view; the half-hourly consumptionDelta is also persisted to DuckDB
-        # as provisional source='mini' rows that the REST poll later
-        # overwrites with settlement-grade data.
+        # Live view; the half-hourly consumptionDelta is also persisted as
+        # provisional source='mini' rows that the REST poll later overwrites
+        # with settlement-grade data.
         self._kraken_token: Optional[str] = None
         self._kraken_expires = 0.0
         self._mini_device_id: Optional[str] = None
@@ -187,9 +153,6 @@ class OctopusEnergyService:
         self._mini_last_sample = 0.0
         self._live_buffer: List[Dict[str, Any]] = []
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self):
         if not self.enabled:
@@ -217,9 +180,7 @@ class OctopusEnergyService:
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
     # Public accessors (sync, never raise) — heating seam + routes
-    # ------------------------------------------------------------------
 
     def heating_tariff(self, fuel: str = "gas") -> Optional[Dict[str, Any]]:
         """
@@ -332,9 +293,7 @@ class OctopusEnergyService:
             "latest_data": dict(self._status["latest_data"]),
         }
 
-    # ------------------------------------------------------------------
     # One-shot operations (routes)
-    # ------------------------------------------------------------------
 
     async def test_connection(self, api_key: Optional[str] = None,
                               account_number: Optional[str] = None) -> Dict[str, Any]:
@@ -383,9 +342,7 @@ class OctopusEnergyService:
             logger.error(f"Octopus backfill failed: {e}")
             self._status["errors"]["backfill"] = str(e)
 
-    # ------------------------------------------------------------------
     # Internal — polling
-    # ------------------------------------------------------------------
 
     def _get_client(self):
         if self._client is None:
@@ -397,10 +354,8 @@ class OctopusEnergyService:
         return self._client
 
     async def _poll_loop(self):
-        # Let boot finish before the first pull — the initial backfill is the
-        # heaviest cycle and must not compete with bring-up (a wedged event
-        # loop here fails /api/system/health and gets the container restarted
-        # by the manager watchdog).
+        # Let boot finish first — the initial backfill is the heaviest cycle, and a
+        # wedged loop here fails /api/system/health and gets the container restarted.
         try:
             await asyncio.sleep(15)
         except asyncio.CancelledError:
@@ -534,9 +489,7 @@ class OctopusEnergyService:
         return any(r["from"] <= probe and (r["to"] is None or r["to"] > probe)
                    for r in cache.get("unit_rates", []))
 
-    # ------------------------------------------------------------------
     # Internal — API calls
-    # ------------------------------------------------------------------
 
     async def _get_json(self, url: str, params: Optional[dict] = None) -> dict:
         resp = await self._get_client().get(url, params=params)
@@ -741,9 +694,7 @@ class OctopusEnergyService:
         for i in range(0, len(rows), chunk):
             await asyncio.to_thread(write_fn, *head, rows[i:i + chunk])
 
-    # ------------------------------------------------------------------
     # Internal — Home Mini live telemetry (GraphQL / Kraken API)
-    # ------------------------------------------------------------------
 
     async def _graphql(self, query: str, authed: bool = True) -> dict:
         headers = {}
@@ -794,11 +745,9 @@ class OctopusEnergyService:
         if not device_id:
             return
         now = datetime.now(timezone.utc)
-        # Every returned half-hour's consumptionDelta becomes a provisional
-        # consumption row, so the lookback doubles as gap-healing: 3h on a
-        # steady-state poll (re-covers missed cycles), 48h on the first poll
-        # after a restart so downtime holes in "today" fill immediately
-        # instead of waiting out the REST data lag.
+        # Each half-hour's consumptionDelta becomes a provisional row, so the
+        # lookback doubles as gap-healing: 3 h steady-state, 48 h on the first poll
+        # after a restart so downtime holes in "today" fill without the REST lag.
         lookback_h = 3 if self._mini_last_sample else 48
         start = (now - timedelta(hours=lookback_h)).strftime("%Y-%m-%dT%H:%M:%S%z")
         end = now.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -832,12 +781,10 @@ class OctopusEnergyService:
             "consumption_kwh": sample["consumption_kwh"],
         }])
 
-        # Provisional consumption: each point's consumptionDelta (Wh) is one
-        # half-hour of the same series the REST API settles hours later —
-        # persisting it fills the chart's "today" gap in near real time. The
-        # readAt of a grouped point is the interval start, matching the REST
-        # interval_start PK, so the later REST poll overwrites these rows
-        # with the billing-grade values.
+        # Each point's consumptionDelta (Wh) is one half-hour of the same series
+        # the REST API settles hours later, so persisting it fills the chart's
+        # "today" gap in near real time. readAt matches the REST interval_start PK,
+        # so the later REST poll overwrites these with billing-grade values.
         rows = []
         for p in points:
             if p.get("consumptionDelta") is None or not p.get("readAt"):
@@ -870,9 +817,7 @@ class OctopusEnergyService:
             return value
         return value * GAS_VOLUME_CORRECTION * self.calorific_value / 3.6
 
-    # ------------------------------------------------------------------
     # Internal — agile helpers
-    # ------------------------------------------------------------------
 
     def _cheapest_window(self, fuel: str, slots: int = 6) -> Optional[Dict[str, Any]]:
         """

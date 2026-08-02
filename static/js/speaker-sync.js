@@ -1,13 +1,11 @@
 /**
- * speaker-sync.js — Settings → Audio tab.
+ * Settings -> Audio: OpenZone enablement, one-time Cast-console registration
+ * for speaker sync (synchronised multi-speaker playback without a Google Home
+ * group), and the Cast EQ proxy's LAN base URL.
  *
- * OpenZone enablement + one-time Cast-console registration for the
- * speaker-sync feature (synchronised multi-speaker playback WITHOUT a
- * Google-Home group; server: modules/media/cast_sync.py), plus the Cast EQ
- * proxy's LAN base URL (server: modules/media/eq_stream.py). Saves only its
- * own config slices (media.cast.sync + media.eq) via /api/config/structured,
- * so it can't clobber fields owned by the other settings tabs. Sync groups
- * themselves are built in Media → Group (speaker-sync sub-tab).
+ * Saves only its own config slices (media.cast.sync + media.eq) so it cannot
+ * clobber fields owned by other settings tabs. Sync groups themselves are built
+ * in Media -> Group. See docs/speaker_sync.md.
  */
 const log = zmmLog('speaker-sync');
 

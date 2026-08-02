@@ -1,33 +1,14 @@
-/* ============================================================================
-   Setup Wizard — Multi-Step First-Run Configuration
-   ============================================================================
+/* Setup Wizard — multi-step first-run configuration, driving /api/setup/*.
 
-   Steps (coordinator FIRST, account LAST — the anonymous /api/setup/* window is
+   Coordinator detection, network security (fresh credentials or import from
+   ZHA / Zigbee2MQTT), integration mode, MQTT, summary+apply, then the admin
+   account. Account is LAST on purpose: the anonymous /api/setup/* window is
    LAN + no-admin-yet, so creating the admin first would lock the coordinator
-   scan out on any resume):
-     1. Coordinator Detection  — auto-detect Zigbee USB adapter
-     2. Network Security       — generate fresh credentials or import from a
-                                 previous Zigbee manager (ZHA / Zigbee2MQTT)
-     3. Integration Mode       — Standalone vs Home Assistant
-     4. MQTT Configuration     — broker details (HA mode only)
-     5. Summary & Apply        — review and write config (sets setup_completed)
-     6. Admin Account          — create the first admin (deferred to the end)
-
-   Listens for WebSocket events: "setup_scan_progress"
-   API endpoints:
-     GET  /api/setup/status
-     GET  /api/setup/ports
-     POST /api/setup/scan
-     POST /api/setup/apply
-     POST /api/setup/network
-     POST /api/setup/apply-integration
-     POST /api/setup/skip
-   ============================================================================ */
+   scan out on any resume. Listens for "setup_scan_progress". */
 
 (function () {
     'use strict';
 
-    // ── State ────────────────────────────────────────────────────────────
     let wizardVisible = false;
     let scanning = false;
     let selectedResult = null;
@@ -72,10 +53,10 @@
         },
     };
 
-    // ── DOM references (created lazily) ──────────────────────────────────
+    // DOM references (created lazily)
     let overlay = null;
 
-    // ── Adapter family → icon / color mapping ────────────────────────────
+    // Adapter family → icon / color mapping
     const ADAPTER_ICONS = {
         'Silicon Labs EZSP (Ember)':             { icon: 'fas fa-microchip',       color: 'primary' },
         'Silicon Labs CPC Multi-PAN (RCP)':      { icon: 'fas fa-project-diagram', color: 'info' },
@@ -84,9 +65,7 @@
         'Unknown Zigbee-like device':            { icon: 'fas fa-question-circle', color: 'secondary' },
     };
 
-    // =====================================================================
     // OVERLAY / DOM
-    // =====================================================================
 
     function createOverlay() {
         if (document.getElementById('setupWizardOverlay')) {
@@ -128,9 +107,7 @@
         window._setupWizardActive = false;
     }
 
-    // =====================================================================
     // STEP INDICATOR
-    // =====================================================================
 
     function renderStepIndicator() {
         // Recovery mode: only the Account step is going to run.
@@ -184,9 +161,7 @@
     }
 
 
-    // =====================================================================
     // STEP 1: ACCOUNT CREATION
-    // =====================================================================
 
     function renderStep1Account() {
         const el = getContent();
@@ -276,9 +251,7 @@
         }
     }
 
-    // =====================================================================
     // STEP 2: COORDINATOR DETECTION
-    // =====================================================================
 
     function renderStep2Welcome(reason, currentPort) {
         currentStep = 2;
@@ -435,9 +408,7 @@
         `;
     }
 
-    // =====================================================================
     // STEP 3: NETWORK SECURITY (encryption key / PAN — generate or import)
-    // =====================================================================
 
     function renderStepNetwork() {
         currentStep = 3;
@@ -629,9 +600,7 @@
         goToStep(4);
     }
 
-    // =====================================================================
     // STEP 4: INTEGRATION MODE
-    // =====================================================================
 
     function renderStep3() {
         currentStep = 4;
@@ -715,9 +684,7 @@
         }
     }
 
-    // =====================================================================
     // STEP 5: MQTT CONFIGURATION (HA mode only)
-    // =====================================================================
 
     function renderStep4() {
         currentStep = 5;
@@ -851,9 +818,7 @@
         }
     }
 
-    // =====================================================================
     // STEP 6: SUMMARY & APPLY
-    // =====================================================================
 
     function renderStep5() {
         currentStep = 6;
@@ -981,9 +946,7 @@
         `;
     }
 
-    // =====================================================================
     // APPLY ALL SETTINGS
-    // =====================================================================
 
     async function applyAll() {
         const el = getContent();
@@ -1155,9 +1118,7 @@
         `;
     }
 
-    // =====================================================================
     // NAVIGATION
-    // =====================================================================
 
     function goToStep(step) {
         currentStep = step;
@@ -1188,9 +1149,7 @@
         }
     }
 
-    // =====================================================================
     // ACTIONS (shared)
-    // =====================================================================
 
     async function startScan() {
         if (scanning) return;
@@ -1500,9 +1459,7 @@
         }
     }
 
-    // =====================================================================
     // WEBSOCKET PROGRESS HANDLER
-    // =====================================================================
 
     function onScanProgress(payload) {
         if (!payload) return;
@@ -1532,9 +1489,6 @@
         }
     }
 
-    // =====================================================================
-    // INIT
-    // =====================================================================
 
     async function init() {
         try {
@@ -1595,7 +1549,7 @@
         }
     }
 
-    // ── Public API ───────────────────────────────────────────────────────
+    // Public API
 
     window._setupWizard = {
         init,
@@ -1620,7 +1574,7 @@
         onScanProgress,
     };
 
-    // ── WebSocket hook ───────────────────────────────────────────────────
+    // WebSocket hook
 
     const _origWsHandler = window._onWsMessage;
 
@@ -1634,7 +1588,7 @@
         }
     };
 
-    // ── Auto-init ────────────────────────────────────────────────────────
+    // Auto-init
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);

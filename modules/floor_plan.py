@@ -1,44 +1,11 @@
 """
-modules/floor_plan.py
-=====================
 Floor-plan data model, geometry helpers, and projection back to the legacy
 per-room ``dimensions`` blocks.
 
-Pure module: no I/O, no FastAPI, no global state. Wired in later by
-``routes/floor_plan_routes.py``.
-
-The floor plan is an *editor surface*. The source of truth for circuits/rooms
-remains ``heating.circuits`` in ``config.yaml``. On save, this module projects
-the plan back into each existing room's ``dimensions`` / ``radiator`` /
-``trvs`` / ``contact_sensors`` / ``temperature_sensor_ieee`` so that
-``thermal_profile.py`` and ``heating_controller.py`` keep working unchanged.
-
-Where the floor plan is richer than the legacy schema (multiple radiators per
-room, multiple temperature sensors, contacts bound to specific openings), the
-projection emits the *legacy single* fields AND the new plural fields:
-
-    room["radiator"]               # legacy: largest-watts radiator in the room
-    room["radiators"]              # NEW   : full list with TRV bindings
-    room["temperature_sensor_ieee"]# legacy: primary sensor
-    room["temperature_sensors"]    # NEW   : full list with heights
-    room["contact_sensors"][i].opening_id   # NEW   : opening linkage
-
-Coordinate convention
-    +x = right, +y = up (standard maths).  ``north_offset_deg`` is the
-    clockwise angle from plan-up to true-north (so 0 means plan-up = north,
-    90 means true-north points right of the plan).
-
-Compass / wall-bin convention
-    A wall's outward-normal bearing relative to true-north decides:
-      - its 8-point compass label (N/NE/.../NW)  -> opening orientation
-      - its legacy 4-bin label                   -> dimensions.walls bin:
-            back   = N-facing  (-45 .. +45)
-            right  = E-facing  ( 45 .. 135)
-            front  = S-facing  (135 .. 225)
-            left   = W-facing  (225 .. 315)
-
-The 4-bin labels are arbitrary; thermal_profile.py only cares about the
-external/party/internal type stored against each bin.
+Pure module: no I/O, no FastAPI, no global state. Wired in by
+routes/floor_plan_routes.py. The plan is an editor surface — heating.circuits
+in config.yaml stays the source of truth. Coordinate and wall-bin conventions:
+docs/heating.md.
 """
 from __future__ import annotations
 
@@ -49,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("modules.floor_plan")
 
-# ─────────────────────────── enums / constants ───────────────────────────
+# enums / constants
 
 SCHEMA_VERSION = 1
 
@@ -88,7 +55,7 @@ _WALL_TYPE_PRECEDENCE = {"external": 3, "party": 2, "internal": 1, "unknown": 0}
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 
 
-# ─────────────────────────── coercion helpers ────────────────────────────
+# coercion helpers
 
 def _as_float(v: Any, default: Optional[float] = None) -> Optional[float]:
     if v is None or v == "":
@@ -142,7 +109,7 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-# ─────────────────────────── geometry helpers ────────────────────────────
+# geometry helpers
 
 def polygon_area_m2(points: List[Tuple[float, float]]) -> float:
     """Signed shoelace area; absolute value returned. Empty/invalid → 0."""
@@ -260,7 +227,7 @@ def bearing_to_legacy_wall_bin(bearing_deg: float) -> str:
     return "left"
 
 
-# ─────────────────────────── topology helpers ────────────────────────────
+# topology helpers
 
 def _wall_xy_endpoints(wall: dict) -> Tuple[float, float, float, float]:
     return (
@@ -300,10 +267,8 @@ def _segment_overlaps_polygon_edge(
         if abs(cross) > tol * max(sL, eL):
             continue
 
-        # Collinearity: check that one endpoint of the segment lies on the
-        # infinite line of the edge (perpendicular distance < tol)
-        # Distance from (sx1,sy1) to edge line:
-        #   |(sx1-ex1)*edy - (sy1-ey1)*edx| / eL
+        # Collinear if one segment endpoint lies on the edge's infinite line:
+        # |(sx1-ex1)*edy - (sy1-ey1)*edx| / eL  <  tol
         perp = abs((sx1 - ex1) * edy - (sy1 - ey1) * edx) / eL
         if perp > tol:
             continue
@@ -362,7 +327,7 @@ def infer_wall_type(level: dict, wall: dict, explicit: Optional[str]) -> str:
     return "unknown"
 
 
-# ────────────────────────────── cleaners ─────────────────────────────────
+# cleaners
 
 def _clean_wall(raw: Any) -> Optional[dict]:
     if not isinstance(raw, dict):
@@ -712,10 +677,9 @@ def _clean_level(raw: Any, existing_level_ids: set) -> Optional[dict]:
             ), 2),
     }
 
-    # Optional background image metadata. The actual image bytes live at
-    # /api/heating/floor-plan/image/{level_id}; this block stores the
-    # calibration result (pixels-per-metre + origin) and the image dimensions
-    # so the editor can render the SVG <image> at the correct world scale.
+    # Image bytes live at /api/heating/floor-plan/image/{level_id}; this block
+    # holds the calibration (pixels-per-metre + origin) and dimensions so the
+    # editor can render the SVG <image> at the correct world scale.
     bg = raw.get("background")
     if isinstance(bg, dict) and _as_bool(bg.get("present"), False):
         ppm = _as_float(bg.get("pixels_per_metre"))
@@ -796,11 +760,9 @@ def _clean_level(raw: Any, existing_level_ids: set) -> Optional[dict]:
     out["openings"] = openings_clean
     valid_opening_ids = opening_ids
 
-    # Radiators. Two modes coexist:
-    #   wall-mounted: needs wall_id + offset_m; offset_m clamped to wall length
-    #   freestanding: needs x + y
-    # Determine effective mode here (after walls are cleaned), and strip
-    # fields that don't belong to the chosen mode so the YAML stays tidy.
+    # Two modes: wall-mounted (wall_id + offset_m, clamped to wall length) and
+    # freestanding (x + y). Resolved here, after walls are cleaned, stripping
+    # fields that do not belong to the chosen mode so the YAML stays tidy.
     walls_by_id = {w["id"]: w for w in walls_clean}
     rad_ids: set = set()
     rads_clean = []
@@ -930,7 +892,7 @@ def clean_floor_plan(raw: Any) -> Optional[dict]:
     return result
 
 
-# ───────────────────────────── projection ────────────────────────────────
+# projection
 
 def _wall_outward_bearing(level: dict, wall: dict, room_centroid: Tuple[float, float],
                           north_offset_deg: float) -> float:
@@ -1242,11 +1204,9 @@ def _legacy_radiator_for_room(level_radiators: List[dict], room_id: str,
               "length_m", "height_m"):
         if k in primary:
             legacy[k] = primary[k]
-    # Wall: only meaningful for the legacy front/back/left/right scheme; we'd
-    # need to look up the wall's bearing-derived bin. The plan→dimensions
-    # projection already places windows/doors correctly, and the radiator's
-    # `wall` field is used only by tip generation, so leave it off here. The
-    # rich `radiators` plural field carries the wall_id for new code.
+    # Wall is only meaningful for the legacy front/back/left/right scheme and is
+    # used only by tip generation, and the plan->dimensions projection already
+    # places windows/doors correctly, so leave it off here.
     return legacy
 
 
@@ -1343,7 +1303,7 @@ def project_floor_plan_to_circuits(
     for level in levels:
         dims_by_level[level["id"]] = project_level_to_room_dimensions(level, north)
 
-    # ── Helper: project one plan room onto a controller room dict ──────
+    # Helper: project one plan room onto a controller room dict
     def _project_room(fp_room: dict, level: dict,
                       base_room: Optional[dict] = None) -> dict:
         """Build a controller room dict from a floor-plan room + level."""
@@ -1376,7 +1336,7 @@ def project_floor_plan_to_circuits(
         r2["floor_plan_ref"] = {"level_id": level_id, "room_id": fp_room["id"]}
         return r2
 
-    # ── Plan-native mode ───────────────────────────────────────────────
+    # Plan-native mode
     plan_circuits = floor_plan.get("circuits") or []
     if plan_circuits:
         # Build a lookup of existing controller rooms keyed by plan room id
@@ -1464,7 +1424,7 @@ def project_floor_plan_to_circuits(
 
         return out_circuits, warnings
 
-    # ── Legacy reconcile mode (original behaviour) ─────────────────────
+    # Legacy reconcile mode (original behaviour)
     out_circuits = []
     for c in circuits:
         if not isinstance(c, dict):
@@ -1494,7 +1454,7 @@ def project_floor_plan_to_circuits(
     return out_circuits, warnings
 
 
-# ─────────────────────────────── self test ───────────────────────────────
+# self test
 
 if __name__ == "__main__":
     # Smoke test: a 5×4 m room with one south wall, one window on south,

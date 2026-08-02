@@ -1,16 +1,12 @@
 """
-Domain-Aware Chat
-=================
-A conversational assistant grounded in THIS gateway's live state — the user's
-Zigbee/Matter devices (with attributes/values) and their automation rules — so
-it can explain device state, diagnose why an automation did or didn't fire,
-suggest rules in the app's own vocabulary, and answer questions about the
-system. It is deliberately NOT a generic chatbot: the system prompt is rebuilt
-from the registry on every turn.
+Domain-aware chat — a conversational assistant grounded in THIS gateway's live
+devices and automation rules.
 
-Backed by AIAssistant.chat (OpenAI/Anthropic/Ollama-compatible). History is
-persisted to ./data/ai_chat_history.json and survives restarts. A bounded
-window of recent turns is sent to the model to keep token cost predictable.
+Deliberately not a generic chatbot: the system prompt is rebuilt from the
+registry every turn, so it can explain device state, diagnose why a rule did or
+did not fire, and suggest rules in the app's own vocabulary. History persists to
+data/ai_chat_history.json, with a bounded window sent to keep token cost
+predictable.
 """
 
 import json
@@ -52,7 +48,6 @@ class AIChat:
         self._history: List[Dict[str, Any]] = []
         self._load()
 
-    # ── Public API ──────────────────────────────────────────────────────────
 
     async def send(self, message: str) -> Dict[str, Any]:
         message = (message or "").strip()
@@ -91,7 +86,7 @@ class AIChat:
         self._save()
         return {"success": True}
 
-    # ── System prompt (rebuilt each turn from live state) ────────────────────
+    # System prompt (rebuilt each turn from live state)
 
     def _system_prompt(self) -> str:
         parts = [SYSTEM_PREAMBLE, "\n## Devices\n"]
@@ -172,7 +167,7 @@ class AIChat:
                 out.append("parallel")
         return ", ".join(out)
 
-    # ── Persistence ──────────────────────────────────────────────────────────
+    # Persistence
 
     def _append(self, role: str, content: str):
         self._history.append({"role": role, "content": content, "ts": time.time()})

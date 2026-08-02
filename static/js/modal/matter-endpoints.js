@@ -9,23 +9,15 @@
  *   4. Saves definitions to config/matter_definitions/
  */
 
- // ============================================================================
- // IMPORTS
- // ============================================================================
 
  import { renderRotaryBindingsSection, initRotaryBindings } from './rotary-bindings.js';
 
-// ============================================================================
-// STATE
-// ============================================================================
 
 let _currentNodeId = null;
 let _currentDraft = null;
 let _existingDef = null;
 
-// ============================================================================
 // TAB RENDERER
-// ============================================================================
 
 export function renderMatterEndpointsTab(device) {
     const nodeId = device.state?.node_id;
@@ -59,9 +51,7 @@ export function initMatterEndpointsTab(nodeId) {
     _checkExistingDefinition(nodeId);
 }
 
-// ============================================================================
 // SCAN ENDPOINTS
-// ============================================================================
 
 window._matterScanEndpoints = async function (nodeId) {
     const body = document.getElementById('matterEndpointsBody');
@@ -206,9 +196,7 @@ function _renderRootCard(ep) {
     `;
 }
 
-// ============================================================================
 // GENERATE DEFINITION
-// ============================================================================
 
 window._matterGenerateDef = async function (nodeId) {
     const editor = document.getElementById('matterDefEditor');
@@ -386,9 +374,7 @@ function _renderStateMappingRow(key, m) {
     `;
 }
 
-// ============================================================================
 // STATE MAPPING CRUD
-// ============================================================================
 
 window._matterAddStateRow = function () {
     const tbody = document.getElementById('defStateRows');
@@ -398,9 +384,7 @@ window._matterAddStateRow = function () {
     tbody.appendChild(temp.firstElementChild);
 };
 
-// ============================================================================
 // JSON TOGGLE
-// ============================================================================
 
 window._matterToggleJson = function () {
     const jsonView = document.getElementById('defJsonView');
@@ -427,9 +411,7 @@ window._matterApplyJson = function () {
     }
 };
 
-// ============================================================================
 // COLLECT FORM DATA
-// ============================================================================
 
 function _collectDefFromForm() {
     const defn = {
@@ -482,9 +464,7 @@ function _collectDefFromForm() {
     return defn;
 }
 
-// ============================================================================
 // SAVE DEFINITION
-// ============================================================================
 
 window._matterSaveDef = async function () {
     const defn = _collectDefFromForm();
@@ -516,9 +496,7 @@ window._matterSaveDef = async function () {
     }
 };
 
-// ============================================================================
 // CHECK EXISTING DEFINITION
-// ============================================================================
 
 async function _checkExistingDefinition(nodeId) {
     try {

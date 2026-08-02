@@ -6,19 +6,11 @@
  * Lets users bind each dial to a target device + command with min/max range.
  */
 
-// ============================================================================
-// IMPORTS
-// ============================================================================
 import { state } from '../state.js';
 
-// ============================================================================
-// STATE
-// ============================================================================
 let _commandDefaults = null;
 
-// ============================================================================
 // RENDER
-// ============================================================================
 
 export function renderRotaryBindingsSection(sourceIeee, endpoints) {
     // Filter to rotary endpoints only
@@ -219,9 +211,7 @@ function _renderBindingCard(group, rotaryKey, existing, sourceIeee, targetDevice
     `;
 }
 
-// ============================================================================
 // INTERACTIONS
-// ============================================================================
 
 window._rbCmdChanged = function (rotaryKey) {
     const cmdSelect = document.getElementById(`rb-cmd-${rotaryKey}`);

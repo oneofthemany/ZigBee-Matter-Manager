@@ -80,9 +80,6 @@ function _tickPositions() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
 export function initMedia() {
     local.initLocalPlayer({
         onChange: _localChanged,
@@ -170,7 +167,7 @@ export function initMedia() {
     if (!_posTimer) _posTimer = setInterval(_tickPositions, 1000);
 }
 
-// ── Karaoke mode (cast synced lyrics to the custom receiver) ────────────────
+// Karaoke mode (cast synced lyrics to the custom receiver)
 async function loadKaraoke() {
     const wrap = document.getElementById('mediaKaraokeWrap');
     const box = document.getElementById('mediaKaraoke');
@@ -189,9 +186,7 @@ async function setKaraoke(on) {
     toast(`Karaoke ${r.karaoke ? 'on' : 'off'}`, 'success');
 }
 
-// ---------------------------------------------------------------------------
 // API helpers
-// ---------------------------------------------------------------------------
 async function apiGet(url) {
     const res = await fetch(url);
     return res.json();
@@ -216,9 +211,7 @@ function esc(s) {
     ));
 }
 
-// ---------------------------------------------------------------------------
 // Players
-// ---------------------------------------------------------------------------
 async function loadPlayers() {
     const el = document.getElementById('mediaPlayers');
     if (!el) return;
@@ -451,7 +444,6 @@ function queueControls(p, q) {
       ${upNext ? `<div class="small mt-1">${upNext}</div>` : ''}`;
 }
 
-// ---------------------------------------------------------------------------
 // Equaliser panel — three flavours behind one button:
 //   local → the Web Audio 10-band EQ (eq.js): sliders + presets, client-side
 //   wiim  → the speaker's own DSP presets via /api/media/eq (device EQ list)
@@ -459,7 +451,6 @@ function queueControls(p, q) {
 //           proxy (Rust biquads on the audio feeding the speaker). Slider
 //           moves retune the running stream live; only the on/off switch
 //           reloads the track (the audio path itself changes).
-// ---------------------------------------------------------------------------
 function eqToggle(pid) {
     if (_eqOpen.has(pid)) _eqOpen.delete(pid);
     else {
@@ -707,10 +698,8 @@ function selectPlayer(id) {
     if (_pane === 'players' && window.matchMedia('(max-width: 991.98px)').matches) setPane('browse');
 }
 
-// ---------------------------------------------------------------------------
 // Mobile panes — below lg only one of Players/Browse is shown at a time.
 // The CSS class is a no-op at lg and up, so desktop always shows both.
-// ---------------------------------------------------------------------------
 function setPane(p) {
     _pane = p;
     document.getElementById('mediaPanePlayers')?.classList.toggle('zmm-pane-hidden', p !== 'players');
@@ -818,9 +807,7 @@ function volStep(playerId, delta) {
     setVolume(playerId, next);
 }
 
-// ---------------------------------------------------------------------------
 // Queue mode (repeat / shuffle / clear)
-// ---------------------------------------------------------------------------
 async function queueMode(playerId, mode) {
     const r = await apiPost('/api/media/queue/mode', { player_id: playerId, ...mode });
     if (!r.success) toast(r.error || 'Queue update failed', 'error');
@@ -841,9 +828,7 @@ function requireSelected() {
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // Search — Radio / Tidal / Therapy source switch
-// ---------------------------------------------------------------------------
 function setSource(src) {
     _searchSource = src;
     const mark = (id, on) => {
@@ -949,7 +934,7 @@ async function radioSearch() {
     }).join('');
 }
 
-// ── Radio favourites ────────────────────────────────────────────────────────
+// Radio favourites
 function isFav(uuid) {
     return _radioFavs.some(f => f.uuid === uuid);
 }
@@ -1028,9 +1013,7 @@ async function playStation(uuid, name) {
     else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
 }
 
-// ---------------------------------------------------------------------------
 // Tidal
-// ---------------------------------------------------------------------------
 async function refreshTidalNotice() {
     const notice = document.getElementById('mediaTidalNotice');
     if (!notice) return;
@@ -1193,11 +1176,9 @@ function showOverlay(title, innerHtml) {
       </div>`;
 }
 
-// ---------------------------------------------------------------------------
 // Full-screen synced lyrics ("now playing" karaoke screen) — free, in-app.
 // Reuses the LRC engine from the Cast receiver, driven by the player's reported
 // position (interpolated between polls) + the Tidal lyrics API. No Cast needed.
-// ---------------------------------------------------------------------------
 let _lyr = null;
 // Manual sync offset (ms) — devices report a playback position that lags the
 // audio actually coming out of the speaker (output buffer + reporting delay),
@@ -1431,9 +1412,7 @@ async function tidalPlay(kind, id, mode, name) {
     setTimeout(loadRecent, 2000);
 }
 
-// ---------------------------------------------------------------------------
 // Recently played (quick replay)
-// ---------------------------------------------------------------------------
 async function loadRecent() {
     const el = document.getElementById('mediaRecent');
     if (!el) return;
@@ -1474,9 +1453,7 @@ async function replayRecent(i) {
 function spinner() { return '<div class="text-muted small py-2"><i class="fas fa-spinner fa-spin"></i> Loading…</div>'; }
 function warn(m) { return `<div class="alert alert-warning mb-0">${esc(m)}</div>`; }
 
-// ---------------------------------------------------------------------------
 // Group builder — two sub-tabs: WiiM native multiroom | speaker-sync groups
-// ---------------------------------------------------------------------------
 function toggleGroupBuilder() {
     _groupBuilderOpen = !_groupBuilderOpen;
     if (_groupBuilderOpen) renderGroupBuilder();
@@ -1563,9 +1540,7 @@ function renderWiimBuilder() {
       </div>`;
 }
 
-// ---------------------------------------------------------------------------
 // Speaker-sync groups (Cast multi-speaker sync without Google Home)
-// ---------------------------------------------------------------------------
 function _stopSyncPoll() {
     if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
 }
@@ -1889,7 +1864,7 @@ function syncSetDuration(gid, val) {
     localStorage.setItem('zmm.syncdur.' + gid, String(Number(val) || 0));
 }
 
-// ── Sync source picker ──────────────────────────────────────────────────────
+// Sync source picker
 // Stored per group as a stable key — "" (test signal), "fav:<uuid>",
 // "url:<url>" or "custom" — never a list index, because favourites and
 // recently-played both reorder underneath us. Split on the FIRST colon so a
@@ -2284,7 +2259,7 @@ function _syncCustomRow(gid, disabled) {
       </div>`;
 }
 
-// ── Crossfade (per zone, applied at session start) ──────────────────────
+// Crossfade (per zone, applied at session start)
 // Held client-side like duration, source and loop, and sent in the start body:
 // the engine reads it once when it builds the source, so a change takes effect
 // on the next session rather than the current one.
@@ -2341,7 +2316,7 @@ function _syncXfadeRow(gid, disabled) {
       </div>`;
 }
 
-// ── Zone spectrum (server-analysed, arrives over the websocket) ─────────
+// Zone spectrum (server-analysed, arrives over the websocket)
 // Held as one latest-frame slot rather than a queue: frames arrive faster than
 // the display repaints on a slow tab, and a backlog of spectra is worthless —
 // only the newest is the present.

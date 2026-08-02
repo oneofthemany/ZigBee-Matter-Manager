@@ -1,26 +1,12 @@
 """
 Messages — person-to-person conversations inside ZMM.
 
-Plain threads between two users, with history, unread counts, and delivery
-that actually lands — every message goes out over the websocket for anyone
-with the app open AND as a web push for everyone else, and the push wakes
-the phone (see static/sw.js / modules/webpush.py; subscription requires the
-app to have been opened once on a trusted-certificate origin).
-
-Automations send through the same store (the rule builder's "Message" step),
-so "user 1 arrived at the shops" and "get some milk" travel the same road
-and appear in the same thread.
-
-Privacy:
-    A conversation belongs to its two participants. The API never lets a
-    third user read it — including admins. What an admin could do with DB
-    access is not something the API should normalise.
-
-Storage:
-    data/messages.duckdb — a NEW database dedicated to this module, all
-    access through one dedicated worker thread that owns the connection
-    (one DB, one thread — the project convention; DuckDB is single-writer
-    per file).
+Threads between two users with history and unread counts, delivered over the
+websocket and as a web push so it lands on a closed phone. Automations send
+through the same store, so a rule's message shares the thread. A conversation
+belongs to its two participants and the API never lets a third user read it,
+admins included. Its own DuckDB file and worker thread.
+See docs/notifications.md.
 """
 
 from __future__ import annotations
@@ -117,9 +103,7 @@ class MessageStore:
             pass
         self._executor.shutdown(wait=False)
 
-    # ------------------------------------------------------------------
     # Sending
-    # ------------------------------------------------------------------
     async def send(self, from_user: str, to_user: str, body: str,
                    source: str = "user") -> Dict[str, Any]:
         from_user = (from_user or "").strip()
@@ -160,9 +144,7 @@ class MessageStore:
             [m[c] for c in _MSG_COLS],
         )
 
-    # ------------------------------------------------------------------
     # Reading
-    # ------------------------------------------------------------------
     async def threads_for(self, user: str) -> List[Dict[str, Any]]:
         """Conversations this user is part of: peer, last message, unread."""
         return await self._run(self._threads_for, user)
@@ -219,9 +201,7 @@ class MessageStore:
             ).fetchone()[0]
         )
 
-    # ------------------------------------------------------------------
     # Read state
-    # ------------------------------------------------------------------
     async def mark_read(self, user: str, peer: str) -> int:
         """Mark everything peer→user as read. Returns rows changed."""
         n = await self._run(self._mark_read, user, peer)
@@ -252,10 +232,6 @@ class MessageStore:
             )
         return int(before)
 
-
-# ---------------------------------------------------------------------------
-# Singleton helper
-# ---------------------------------------------------------------------------
 
 _store: Optional[MessageStore] = None
 

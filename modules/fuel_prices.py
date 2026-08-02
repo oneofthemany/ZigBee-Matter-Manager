@@ -1,23 +1,11 @@
 """
-Fuel Prices — cheapest fuel near a location, from the UK retailer open-data
-feeds (https://www.gov.uk/guidance/access-fuel-price-data) via the
-uk-fuel-prices-api package.
+Cheapest fuel near a location, from the UK retailer open-data feeds via
+uk-fuel-prices-api.
 
-The package fetches ~15 retailer JSON feeds (Asda, Tesco, BP, Shell, …) and
-holds them in memory with an hour's cache; most retailers only refresh daily,
-so that cadence loses nothing. This module wraps it with:
-
-    - a refresh guard (one refresh at a time; callers share the result)
-    - postcode → coordinates via postcodes.io (free, no key, no logging of
-      who asked)
-    - "best nearby" queries: stations within a radius that sell the wanted
-      fuel, sorted cheapest-first, each with a Google Maps link built from
-      its postcode so a phone can navigate to the winner in one tap.
-
-Prices are re-fetched on demand, but each query's results are also
-snapshotted into fuel price history (modules/fuel_history.py, its own
-DuckDB) — the retailer feeds publish only "today's number" with no archive,
-so anything not recorded at query time is gone by tomorrow.
+Adds a refresh guard, postcode lookup via postcodes.io, and cheapest-first
+"best nearby" queries with a Maps link per station. Every query is snapshotted
+into fuel history, because the feeds publish only today's number.
+See docs/journeys.md.
 """
 
 from __future__ import annotations
@@ -71,9 +59,7 @@ class FuelPriceService:
         self._last_refresh: float = 0.0
         self._last_error: Optional[str] = None
 
-    # ------------------------------------------------------------------
     # Data refresh
-    # ------------------------------------------------------------------
     async def _ensure_fresh(self, force: bool = False) -> bool:
         """Fetch/refresh price data. Returns True if data is available."""
         async with self._refresh_lock:
@@ -106,9 +92,7 @@ class FuelPriceService:
         except Exception:                                 # noqa: BLE001
             return True
 
-    # ------------------------------------------------------------------
     # Queries
-    # ------------------------------------------------------------------
     async def best_nearby(
             self,
             lat: float,
@@ -216,10 +200,6 @@ class FuelPriceService:
         ok = await self._ensure_fresh(force=True)
         return {"success": ok, **self.status()}
 
-
-# ---------------------------------------------------------------------------
-# Singleton helper
-# ---------------------------------------------------------------------------
 
 _service: Optional[FuelPriceService] = None
 

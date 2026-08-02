@@ -162,3 +162,32 @@ model):
   header trust is misconfigured. With the managed tunnel this is
   automatic; for a manual setup ensure `cloudflare_tunnel_enabled: true`
   and that `trusted_proxies` covers the host cloudflared runs on.
+
+## Implementation
+
+`modules/remote_access.py` runs `cloudflared` as a supervised subprocess, the
+same pattern as `MatterServerManager`, so remote access needs no port
+forwarding — the tunnel dials **out**, so NAT and CGNAT do not matter.
+
+### Two modes
+
+- **token** (recommended for permanent use). The user creates a tunnel in the
+  Cloudflare Zero Trust dashboard, points its public hostname at
+  `http://localhost:<web.port>`, and pastes the connector token here. The token
+  is passed via the `TUNNEL_TOKEN` environment variable, never on the command
+  line — argv is world-readable in `/proc`.
+- **quick** (testing only). `cloudflared tunnel --url …` gives an ephemeral
+  `*.trycloudflare.com` URL with no account needed. The URL changes on every
+  start and carries no access controls beyond ZMM's own login, so the UI labels
+  it clearly as a trial mode.
+
+Settings persist in `data/remote_access.yaml`, mode 0600 since it holds the
+tunnel token, managed through Settings → Security → Remote Access.
+
+When the tunnel starts, `cloudflare_tunnel_enabled` is flipped on the live
+`NetworkResolver`, so `CF-Connecting-IP` from the local cloudflared is trusted
+and remote clients are classified correctly — that is, **not** as LAN.
+
+The transport is forced to TCP-based `http2` rather than cloudflared's default
+QUIC: some networks drop or mangle the QUIC datagrams on UDP 7844, which makes
+edge connections register and then immediately die.

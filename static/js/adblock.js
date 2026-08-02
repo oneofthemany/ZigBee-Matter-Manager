@@ -41,7 +41,7 @@
     }
   }
 
-  // ── rendering ──────────────────────────────────────────────────────────────
+  // rendering
   function setOffline(msg) {
     var el = $('bkOffline');
     if (el) {
@@ -189,7 +189,7 @@
     });
   }
 
-  // ── data refresh ─────────────────────────────────────────────────────────────
+  // data refresh
   async function refreshAll() {
     var st = await api('/status');
     if (st.available === false) {
@@ -221,7 +221,7 @@
     renderRules(await api('/rules'));
   }
 
-  // ── controls ─────────────────────────────────────────────────────────────────
+  // controls
   function toast(msg, ok) {
     if (typeof showToast === 'function') showToast(msg, ok ? 'success' : 'danger');
     else log(msg);
@@ -375,7 +375,7 @@
     }
   }
 
-  // ── lifecycle ────────────────────────────────────────────────────────────────
+  // lifecycle
   function startPolling() {
     refreshAll();
     refreshListsAndRules();

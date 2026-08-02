@@ -1,13 +1,10 @@
-/* ============================================================
-   ZigBee Matter Manager — PWA Geolocation / Presence Tracking
-   ============================================================
+/* ZigBee Matter Manager — PWA Geolocation / Presence Tracking
    Drop-in module that:
-     - Reads the user's PWA-presence prefs from localStorage
-     - Starts navigator.geolocation.watchPosition() while the page
-       is visible (browser geolocation only fires in the foreground)
-     - Debounces fixes and reports them to /api/presence/users/{user_id}/fix
-     - Surfaces transitions via the existing toast system
-   ============================================================ */
+   - Reads the user's PWA-presence prefs from localStorage
+   - Starts navigator.geolocation.watchPosition() while the page
+   is visible (browser geolocation only fires in the foreground)
+   - Debounces fixes and reports them to /api/presence/users/{user_id}/fix
+   - Surfaces transitions via the existing toast system */
 
 (function () {
     'use strict';
@@ -27,9 +24,7 @@
     var lastReport = { ts: 0, lat: null, lon: null, presence: null };
     var visibilityHooked = false;
 
-    // ----------------------------------------------------------
     // Prefs
-    // ----------------------------------------------------------
     function getPrefs() {
         try {
             var raw = localStorage.getItem(PREFS_KEY);
@@ -42,9 +37,7 @@
         try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {}
     }
 
-    // ----------------------------------------------------------
     // Distance helper (haversine, metres)
-    // ----------------------------------------------------------
     function haversineM(lat1, lon1, lat2, lon2) {
         if (lat1 == null || lon1 == null) return Infinity;
         var R = 6371000;
@@ -57,9 +50,7 @@
         return 2 * R * Math.asin(Math.sqrt(a));
     }
 
-    // ----------------------------------------------------------
     // Reporting
-    // ----------------------------------------------------------
     async function reportFix(coords) {
         var prefs = getPrefs();
         if (!prefs.enabled || !prefs.userId) return;
@@ -117,9 +108,7 @@
         }
     }
 
-    // ----------------------------------------------------------
     // watchPosition lifecycle
-    // ----------------------------------------------------------
     function start() {
         if (!('geolocation' in navigator)) {
             zmmLog('presence').warn('Geolocation not supported');
@@ -164,9 +153,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // One-shot fix (e.g. for "Use my current location" button)
-    // ----------------------------------------------------------
     function getCurrentPosition() {
         return new Promise(function (resolve, reject) {
             if (!('geolocation' in navigator)) {
@@ -187,9 +174,7 @@
         });
     }
 
-    // ----------------------------------------------------------
     // Permission helper
-    // ----------------------------------------------------------
     async function requestPermission() {
         if (!('permissions' in navigator)) {
             // Fallback: just trigger a one-shot fix to prompt
@@ -210,9 +195,7 @@
         } catch (e) { return 'unknown'; }
     }
 
-    // ----------------------------------------------------------
     // Public API
-    // ----------------------------------------------------------
     window.zmmPresence = {
         getPrefs: getPrefs,
         savePrefs: function (p) {
@@ -234,9 +217,7 @@
         }
     };
 
-    // ----------------------------------------------------------
     // Bootstrap
-    // ----------------------------------------------------------
     document.addEventListener('DOMContentLoaded', function () {
         hookVisibility();
         var prefs = getPrefs();

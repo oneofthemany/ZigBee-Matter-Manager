@@ -1,13 +1,9 @@
-/* ============================================================
-   ZigBee Matter Manager — Device Status Enhancements
-   ============================================================ */
+/* ZigBee Matter Manager — Device Status Enhancements */
 
 (function () {
     'use strict';
 
-    // ----------------------------------------------------------
     // 1. SIGNAL STRENGTH BARS (replaces LQI badge)
-    // ----------------------------------------------------------
 
     function renderSignalBars(lqi) {
         var val = parseInt(lqi);
@@ -30,9 +26,7 @@
                '<span class="small text-muted ms-1" style="font-size:0.7rem">' + val + '</span>';
     }
 
-    // ----------------------------------------------------------
     // 2. BATTERY INDICATOR
-    // ----------------------------------------------------------
 
     function renderBattery(percentage) {
         if (percentage === undefined || percentage === null) return '';
@@ -50,9 +44,7 @@
                '<i class="fas ' + icon + '"></i> ' + val + '%</span>';
     }
 
-    // ----------------------------------------------------------
     // 3. HEATING INDICATOR
-    // ----------------------------------------------------------
 
     function renderHeatingStatus(device) {
         var s = device.state || {};
@@ -66,9 +58,7 @@
         return '';
     }
 
-    // ----------------------------------------------------------
     // 4. TEMPERATURE MINI DISPLAY
-    // ----------------------------------------------------------
 
     function renderTempMini(device) {
         var s = device.state || {};
@@ -86,9 +76,7 @@
                '<i class="fas fa-thermometer-half"></i> ' + temp.toFixed(2) + '°</span>';
     }
 
-    // ----------------------------------------------------------
     // 4b. THERMOSTAT / TRV EXTRAS (setpoint, mode, demand)
-    // ----------------------------------------------------------
 
     function renderSetpoint(device) {
         var s = device.state || {};
@@ -127,19 +115,10 @@
                '<i class="fas fa-faucet"></i> ' + n + '%</span>';
     }
 
-    // ----------------------------------------------------------
-    // 4c. SETUP-MODE BADGE (Aqara TRV E11 / not yet calibrated)
-    // ----------------------------------------------------------
-    //
-    // Pulses amber to draw the user's attention to a TRV that needs
-    // physical interaction (calibration). Default-to-needs-calibration:
-    // a freshly-joined TRV that hasn't yet pushed any 0xFCC0 reports
-    // shows NEEDS CAL until the device confirms calibration_status='ready'.
-    // The badge clears automatically the moment the device confirms ready.
-    //
-    // Only fires for Aqara TRVs (lumi.airrtc.agl001 / SRTS-A01) — gated
-    // by the manufacturer/model check below so it doesn't appear on
-    // generic thermostats that have no calibration concept.
+    // Pulses amber for a TRV needing physical calibration. Default-to-needs-cal:
+    // a freshly-joined TRV that has pushed no 0xFCC0 reports shows NEEDS CAL
+    // until it confirms calibration_status='ready'. Gated on the Aqara TRV
+    // model check below so generic thermostats never show it.
 
     function isAqaraTRV(device) {
         if (!device) return false;
@@ -202,9 +181,7 @@
                '<i class="fas ' + iconClass + '"></i> ' + label + '</span>';
     }
 
-    // ----------------------------------------------------------
     // 5. CHECK IF DEVICE IS A THERMOSTAT
-    // ----------------------------------------------------------
 
     function isThermostat(device) {
         if (!device.capabilities || !Array.isArray(device.capabilities)) return false;
@@ -215,10 +192,7 @@
     }
 
 
-
-    // ----------------------------------------------------------
     // 5b. ON/OFF STATUS BADGES (multi-EP aware)
-    // ----------------------------------------------------------
 
     function getOnOffEndpoints(device) {
         if (!device.capabilities || !Array.isArray(device.capabilities)) return [];
@@ -285,9 +259,7 @@
     }
 
 
-    // ----------------------------------------------------------
     // 5c. COVER / BLINDS STATUS
-    // ----------------------------------------------------------
 
     function renderCoverStatus(device) {
         var capList = device.capability_list || [];
@@ -319,9 +291,7 @@
                '<i class="fas ' + icon + '"></i> ' + label + '</span>' + posSuffix + tilt;
     }
 
-    // ----------------------------------------------------------
     // 6. ENHANCE TABLE ROWS
-    // ----------------------------------------------------------
 
     function enhanceDeviceTable() {
         // Access the global state which devices.js populates
@@ -345,13 +315,13 @@
 
             tr.dataset.enhanced = 'true';
 
-            // --- Enhance LQI column (6th column) ---
+            // Enhance LQI column (6th column)
             var lqiCell = tr.querySelector('td.device-lqi');
             if (lqiCell && device.lqi !== undefined) {
                 lqiCell.innerHTML = renderSignalBars(device.lqi);
             }
 
-            // --- Enhance Status column (8th column) ---
+            // Enhance Status column (8th column)
             var statusCell = tr.querySelector('td.device-status-badges');
             if (statusCell) {
                 var s = device.state || {};
@@ -440,9 +410,7 @@
 
     window._enhanceDeviceTable = enhanceDeviceTable;
 
-    // ----------------------------------------------------------
     // 7. OBSERVE TABLE CHANGES
-    // ----------------------------------------------------------
 
     function init() {
         var tbody = document.getElementById('deviceTableBody');
@@ -472,9 +440,7 @@
         observer.observe(tbody, { childList: true, subtree: false });
     }
 
-    // ----------------------------------------------------------
     // 8. START
-    // ----------------------------------------------------------
 
     // No start-up delay: the device fetch can resolve before a timer would
     // fire, and attaching the observer late is what let an un-enhanced table

@@ -1,33 +1,13 @@
 """
 Telemetry database salvage / rebuild.
-=====================================
 
-A DuckDB file with a corrupt block cannot be repaired in place: there is no
-repair tool, no "skip the bad block" option, and forcing a CHECKPOINT over the
-damage escalates it into a FATAL that invalidates the whole database. The only
-way back is to copy what is still readable into a new file.
-
-This module is the engine for that. Two entry points use it:
-
-  * ``auto_rebuild_if_needed()`` — called during startup, before anything opens
-    the database. Self-heals a corrupt file without anyone having to notice.
-  * ``scripts/rebuild_telemetry_db.py`` — the manual CLI, for running it
-    deliberately or inspecting what would be recovered.
-
-Design rules, and why each one matters:
-
-  * The damaged file is opened READ_ONLY and never written. A failed rebuild
-    leaves it exactly as it was.
-  * Tables are copied whole where possible; only on failure does it bisect by
-    rowid, so one damaged row group costs that row group and not the table.
-  * The copy runs inside DuckDB (ATTACH + INSERT...SELECT), so rows never cross
-    into Python. Fastest available, and it preserves the original timestamps.
-    The Rust appender is NOT usable here: it stamps ts = now() on every row it
-    takes, which would silently rewrite the whole history to today.
-  * Nothing is ever swapped in until the rebuild has been verified by reopening
-    it and reading every table back.
+A DuckDB file with a corrupt block cannot be repaired in place, so the only way
+back is to copy what is still readable into a new file. The damaged file is
+opened READ_ONLY and never written, the copy runs inside DuckDB to preserve
+timestamps, and nothing is swapped in until the result is verified.
+Used by auto_rebuild_if_needed() at startup and by the manual CLI.
+See docs/telemetry_database.md.
 """
-
 
 
 from __future__ import annotations
@@ -47,15 +27,11 @@ MIN_CHUNK = 2048
 FALLBACK_UPPER_BOUND = 1 << 40
 
 
-# How long the *automatic* startup rebuild may take. It runs inside the app's
-# lifespan, before uvicorn serves, so every second here is a second the app is
-# not answering /api/system/health. The budget has to clear three deadlines:
-#   - container HEALTHCHECK  → unhealthy at ~120s after start
-#   - manager watchdog       → STARTUP_GRACE 180s, then restarts at ~240s
-#   - upgrade.sh do_swap     → HEALTH_TIMEOUT 300s, then ROLLS BACK the upgrade
-# A rebuild that overruns is abandoned (original untouched, sentinel kept) so a
-# damaged database can never turn an upgrade into a rollback loop. The manual
-# CLI has no budget — run it there if a rebuild genuinely needs longer.
+# Budget for the automatic startup rebuild, which runs before uvicorn serves, so
+# every second is one the app cannot answer /api/system/health. It must clear the
+# container HEALTHCHECK (~120 s), the manager watchdog (~240 s) and upgrade.sh
+# do_swap (300 s, which ROLLS BACK). An overrun is abandoned with the original
+# untouched and the sentinel kept. The manual CLI has no budget.
 REBUILD_BUDGET_SECONDS = float(os.environ.get("ZMM_TELEMETRY_REBUILD_BUDGET", "90"))
 
 
@@ -81,7 +57,7 @@ class Report:
         return not self.lost_ranges and self.error is None
 
 
-# ── Salvage core ────────────────────────────────────────────────────────────
+# Salvage core
 
 def salvage_table(
     table: str,
@@ -155,7 +131,7 @@ def _brief(e: Exception, limit: int = 110) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-# ── DuckDB plumbing ─────────────────────────────────────────────────────────
+# DuckDB plumbing
 
 def _src_tables(con) -> List[str]:
     rows = con.execute(
@@ -328,9 +304,7 @@ def install(src: str, out: str, log: Callable[[str], None] = print) -> None:
     log(f"  rebuilt database installed: {src}")
 
 
-
-
-# ── Automatic startup recovery ──────────────────────────────────────────────
+# Automatic startup recovery
 
 def auto_rebuild_if_needed(log: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
     """Rebuild a fatally-damaged telemetry DB, if one was flagged.
@@ -495,7 +469,7 @@ def _alert_rebuild_timeout(detail: str) -> None:
         pass
 
 
-# ── In-place repair ─────────────────────────────────────────────────────────
+# In-place repair
 
 def repair_in_place(db_path: str, log: Callable[[str], None] = print) -> Dict[str, Any]:
     """Excise damage from a database in place, without rebuilding the file.

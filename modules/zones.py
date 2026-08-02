@@ -1,19 +1,10 @@
 """
-Zones - Per-device RSSI-to-coordinator presence detection.
+Per-device RSSI-to-coordinator presence detection.
 
-Re-engineered design (supersedes pair-link RSSI model):
-  * Each zone holds a set of device IEEEs.
-  * For every frame received at the coordinator from a zone device, a single
-    (rssi, lqi) sample is recorded against that device.
-  * Calibration is explicit: the user triggers it ONCE the room is empty.
-    Baseline (trimmed mean + σ) is computed per-device from that window.
-  * Evaluation compares smoothed current RSSI to baseline in σ units.
-  * Aggressiveness (per-device σ threshold multiplier) is only exposed for
-    mains-fed (Router role) devices. End devices contribute weak "evidence"
-    weight at the default threshold because their sample cadence is dictated
-    by their own wake cycle.
-  * A zone is OCCUPIED when the weighted sum of triggered devices crosses
-    `min_devices_triggered`. Clears after `clear_delay` of stability.
+Calibration is explicit — the user triggers it once with the room empty — and
+evaluation compares smoothed RSSI against that baseline in sigma units. A zone
+is occupied when the weighted sum of triggered devices crosses a threshold.
+Aggressiveness is only exposed for mains-fed routers. See docs/open-zone.md.
 """
 
 import asyncio
@@ -459,9 +450,7 @@ class Zone:
         }
 
 
-# =============================================================================
-#   ZoneManager
-# =============================================================================
+# ZoneManager
 class ZoneManager:
     """Manages multiple presence-detection zones."""
 

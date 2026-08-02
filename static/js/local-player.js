@@ -1,26 +1,19 @@
 /**
- * local-player.js — "This device" playback.
+ * "This device" playback — plays radio and Tidal in the browser instead of
+ * casting, so the media tab works on a phone with no speaker around.
  *
- * Plays radio and Tidal in the browser instead of casting, so the media tab
- * works on a phone with no speaker around. It presents itself as an ordinary
- * player (same shape as a Cast/WiiM PlayerState), so the Players list, the
- * select-then-play flow and the therapy pane all treat it like any other
- * target — see snapshot().
+ * Presents itself as an ordinary player (same shape as a Cast/WiiM
+ * PlayerState) so the Players list and select-then-play flow treat it like any
+ * other target — see snapshot(). Tidal URLs are short-lived, so each track is
+ * resolved just-in-time via /api/media/local/track_url, which returns 320k AAC
+ * (DASH/FLAC is Cast-only) — natively playable, no MSE needed.
  *
- * Radio items carry a direct stream URL. Tidal items don't: their URLs are
- * short-lived, so we resolve each track just-in-time via
- * /api/media/local/track_url, which returns 320k AAC (DASH/FLAC is Cast-only)
- * — natively playable in an <audio> element, no MSE or dash.js needed.
- *
- * Equaliser routing: elements are created with crossorigin="anonymous" so the
- * Web Audio EQ (eq.js) can process them — a MediaElementSource on a
- * cross-origin stream WITHOUT CORS headers is pure silence, and WITH the
- * attribute a non-CORS stream refuses to load at all. So: try the CORS
- * element on the direct URL first; if the stream rejects it, re-request it
- * through the server's same-origin passthrough (/api/media/local/proxy —
- * CORS never applies, EQ keeps working) and remember the host so later
- * tracks go straight to the proxy. Only if the proxy fails too does a plain
- * element play the source directly, un-EQ'd.
+ * EQ routing needs crossorigin="anonymous": a MediaElementSource on a
+ * cross-origin stream without CORS headers is pure silence, and with the
+ * attribute a non-CORS stream refuses to load at all. So try the CORS element
+ * first, fall back to the same-origin passthrough (/api/media/local/proxy,
+ * where CORS never applies and EQ keeps working) and remember the host, and
+ * only if that fails too play the source directly, un-EQ'd.
  */
 const log = zmmLog('local-player');
 import { eqAttach, eqResume } from './eq.js';
@@ -118,7 +111,7 @@ function _newElement(cors) {
     return audio();
 }
 
-// ── Queue ───────────────────────────────────────────────────────────────
+// Queue
 
 /** Play a resolved list of MediaItem dicts from the start. */
 export async function playItems(items) {
@@ -214,7 +207,6 @@ export function setVolume(level) {
 
 export function isActive() { return _queue.length > 0; }
 
-// ── State ───────────────────────────────────────────────────────────────
 
 /** A PlayerState-shaped snapshot so renderPlayers() can draw us unmodified. */
 export function snapshot() {

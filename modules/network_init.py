@@ -26,9 +26,7 @@ PLACEHOLDER_PATTERNS = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Generators
-# ---------------------------------------------------------------------------
 
 def generate_pan_id() -> str:
     """Cryptographically random 16-bit PAN ID as 4-char uppercase hex."""
@@ -45,9 +43,7 @@ def generate_network_key() -> list:
     return list(secrets.token_bytes(16))
 
 
-# ---------------------------------------------------------------------------
 # Credential normalisation (config.yaml / user input → canonical forms)
-# ---------------------------------------------------------------------------
 
 def _hex_bytes(value, length: int):
     """
@@ -140,9 +136,7 @@ def select_best_channel(energy_results: dict) -> int:
     return best
 
 
-# ---------------------------------------------------------------------------
 # Placeholder detection
-# ---------------------------------------------------------------------------
 
 def _is_placeholder(value) -> bool:
     """Return True if value looks like an unfilled placeholder."""
@@ -160,9 +154,7 @@ def _is_placeholder(value) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
 # Main entry point
-# ---------------------------------------------------------------------------
 
 def ensure_network_credentials(config_path: str = "./config/config.yaml") -> dict:
     """
@@ -182,26 +174,26 @@ def ensure_network_credentials(config_path: str = "./config/config.yaml") -> dic
     zigbee = config.setdefault("zigbee", {})
     changed = False
 
-    # --- Channel ---
+    # Channel
     if _is_placeholder(zigbee.get("channel")) or zigbee.get("channel") == 0:
         old = zigbee.get("channel")
         zigbee["channel"] = PREFERRED_CHANNELS[0]  # Will be replaced after scan
         logger.info(f"Auto-set channel: {old} -> {zigbee['channel']}")
         changed = True
 
-    # --- PAN ID ---
+    # PAN ID
     if _is_placeholder(zigbee.get("pan_id")):
         zigbee["pan_id"] = generate_pan_id()
         logger.info(f"Auto-generated PAN ID: {zigbee['pan_id']}")
         changed = True
 
-    # --- Extended PAN ID ---
+    # Extended PAN ID
     if _is_placeholder(zigbee.get("extended_pan_id")):
         zigbee["extended_pan_id"] = generate_extended_pan_id()
         logger.info(f"Auto-generated extended PAN ID")
         changed = True
 
-    # --- Network Key ---
+    # Network Key
     if _is_placeholder(zigbee.get("network_key")):
         zigbee["network_key"] = generate_network_key()
         logger.info(f"Auto-generated network key")

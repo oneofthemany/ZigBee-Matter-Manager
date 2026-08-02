@@ -1,23 +1,10 @@
-"""Zero-dependency DNS message codec for the sinkhole.
+"""
+Zero-dependency DNS message codec for the sinkhole.
 
-Beekeeper is a *forwarding* sinkhole, which lets us get away with a tiny,
-fully-owned wire codec instead of a general DNS library:
-
-  * To decide whether to block, we only need to DECODE the question section of
-    an incoming query — the transaction id, the first QNAME and its QTYPE.
-  * For a BLOCKED name we synthesise the whole response ourselves (a sinkhole
-    A/AAAA record, or NXDOMAIN/NODATA), which is a fixed, simple shape.
-  * For an ALLOWED name we never re-encode anything: the raw query bytes are
-    relayed to the upstream resolver and the upstream's raw response bytes are
-    relayed straight back to the client. Only the 2-byte id may be rewritten
-    (see :func:`patch_id`) when a cached answer is reused for a new query.
-
-So this module never has to serialise arbitrary upstream RRsets — the part of a
-DNS library that is genuinely fiddly (name compression on write, every RR type,
-EDNS option round-tripping). It stays a couple of hundred lines and has no
-third-party dependency, matching Beekeeper's "own the source" goal.
-
-Wire format reference: RFC 1035 §4 (header, question, RRs, name compression).
+Forwarding means only the question section is ever decoded, blocked names get a
+synthesised fixed-shape response, and allowed names are relayed as raw bytes
+with at most the 2-byte id rewritten. So arbitrary upstream RRsets never need
+serialising. RFC 1035 section 4. See docs/beekeeper.md.
 """
 from __future__ import annotations
 
@@ -25,7 +12,7 @@ import struct
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-# ── Record types we name explicitly (numeric everywhere else is fine) ─────────
+# Record types we name explicitly (numeric everywhere else is fine)
 TYPE_A = 1
 TYPE_NS = 2
 TYPE_CNAME = 5
@@ -67,7 +54,7 @@ class Question:
         return (self.flags >> 11) & 0xF
 
 
-# ── Decoding ──────────────────────────────────────────────────────────────────
+# Decoding
 
 def _read_name(buf: bytes, offset: int) -> Tuple[str, int]:
     """Decode a (possibly compressed) domain name.
@@ -139,7 +126,7 @@ def parse_question(data: bytes) -> Question:
     )
 
 
-# ── Encoding block responses ──────────────────────────────────────────────────
+# Encoding block responses
 
 def _response_header(txid: int, query_flags: int, rcode: int, ancount: int) -> bytes:
     """Header for a synthetic answer: QR=1, RA=1, opcode/RD copied from query."""
@@ -209,7 +196,7 @@ def build_error_response(query: bytes, rcode: int) -> bytes:
         return _HEADER.pack(txid, 0x8000 | 0x0080 | (rcode & 0xF), 0, 0, 0, 0)
 
 
-# ── ID patching for cache reuse ───────────────────────────────────────────────
+# ID patching for cache reuse
 
 def patch_id(message: bytes, txid: int) -> bytes:
     """Return ``message`` with its transaction id replaced.
@@ -229,7 +216,7 @@ def message_txid(message: bytes) -> Optional[int]:
     return struct.unpack_from("!H", message, 0)[0]
 
 
-# ── Query builder + answer parser (for the in-app "dig" tester) ───────────────
+# Query builder + answer parser (for the in-app "dig" tester)
 
 def build_query(qname: str, qtype: int = TYPE_A, txid: int = 0, rd: bool = True) -> bytes:
     """Encode a minimal DNS query (one question, no EDNS)."""
@@ -281,7 +268,7 @@ RCODE_NAMES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN",
                4: "NOTIMP", 5: "REFUSED"}
 
 
-# ── Small address packers (avoid pulling in socket/ipaddress on the hot path) ──
+# Small address packers (avoid pulling in socket/ipaddress on the hot path)
 
 def _pack_ipv4(addr: str) -> bytes:
     parts = addr.split(".")

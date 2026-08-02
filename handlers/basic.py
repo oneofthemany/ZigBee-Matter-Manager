@@ -10,9 +10,7 @@ from .aqara import parse_xiaomi_struct, XIAOMI_ATTR_MAP
 
 logger = logging.getLogger("handlers.basic")
 
-# ============================================================
 # BASIC CLUSTER (0x0000)
-# ============================================================
 @register_handler(0x0000)
 class BasicHandler(ClusterHandler):
     CLUSTER_ID = 0x0000
@@ -29,7 +27,7 @@ class BasicHandler(ClusterHandler):
     }
 
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
-        # === Xiaomi special report on Basic cluster ===
+        # Xiaomi special report on Basic cluster
         if attrid in (0xFF01, 0xFF02):
             if isinstance(value, (bytes, bytearray)):
                 try:
@@ -97,9 +95,7 @@ class BasicHandler(ClusterHandler):
             logger.warning(f"[{self.device.ieee}] Failed to poll basic cluster: {type(e).__name__}: {e}")
         return results
 
-# ============================================================
 # IDENTITY CLUSTER (0x0003)
-# ============================================================
 @register_handler(0x0003)
 class IdentifyHandler(ClusterHandler):
     CLUSTER_ID = 0x0003

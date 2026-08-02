@@ -1,18 +1,10 @@
-"""Beekeeper sidecar lifecycle, driven from the manager.
+"""
+Beekeeper sidecar lifecycle, driven from the manager, which already owns
+container lifecycle. The day-to-day dashboard lives in the app's Beekeeper tab.
 
-The manager is ZMM's always-on supervisor and already owns container lifecycle
-(it has the runtime socket mounted), so *enabling* Beekeeper — creating and
-starting its container — lives here. The day-to-day dashboard (stats, blocklists,
-allow/deny, pause) lives in the main app's Beekeeper tab and only works once the
-sidecar the manager starts is running.
-
-The Beekeeper container reuses the app's own image and its exact `/app/config`,
-`/app/data` and `/app/logs` mounts (read from the app container's inspect), so
-the sidecar sees the same config.yaml and persists into the same data dir as the
-app. It runs on host networking so the sinkhole can serve the LAN on :53.
-
-Everything here is best-effort and never raises — a failed socket call returns a
-structured error the dashboard can show.
+The sidecar reuses the app's image and its exact config/data/logs mounts, so it
+sees the same config.yaml, and runs on host networking to serve the LAN on :53.
+Best-effort throughout: a failed socket call returns a structured error.
 """
 import json
 import logging

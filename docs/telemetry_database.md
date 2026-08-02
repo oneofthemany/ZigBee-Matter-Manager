@@ -278,3 +278,203 @@ on the next restart.
 Device telemetry is buffered in memory and written by a background worker, never
 on the event loop — a slow or wedged database delays history by a couple of
 seconds instead of stalling the whole application.
+
+## Implementation notes
+
+Extracted from `modules/telemetry_db.py` so the module itself stays terse.
+
+### Why three database files
+
+Octopus data, host system metrics and device telemetry each live in their own
+DuckDB file.
+
+Octopus write-collides with the high-frequency telemetry writers (the Rust
+appender) if they share a file, and a corrupted `telemetry.duckdb` must not
+take a year of energy history with it. The data is tiny (≤ ~50 rows/day/fuel)
+and useful year-on-year, so default retention is long and user-configurable via
+`octopus.retention_days` → `prune_octopus()`.
+
+Host metrics are separated for a sharper reason. A single damaged block
+anywhere in a DuckDB file makes the **whole file uncheckpointable**: the WAL
+then grows without bound, and a WAL that cannot be replayed loses every table's
+recent writes, not just the damaged one. Host CPU and memory samples are the
+least valuable rows in the system, so they must not be able to take device
+history down with them.
+
+Different write patterns, different value, different lifetimes: different files.
+
+### Backend selection
+
+Precedence, highest first:
+
+1. `ZMM_TELEMETRY_BACKEND=python` → force the Python `executemany` fallback
+2. `zmm_telemetry` wheel installed → use the Rust appender
+3. Otherwise → Python `executemany` fallback
+
+This allows reverting from Rust to Python without rebuilding the image: set
+`ZMM_TELEMETRY_BACKEND=python` in the systemd unit or container env and
+restart. The schema is identical between backends, so the existing
+`telemetry.duckdb` continues to work either way.
+
+### Write-backend reconciliation
+
+The write backend can change under a database already on disk — installing or
+removing the wheel, or setting the env var, switches paths. The engine that
+wrote the existing WAL may not be the one now trying to replay it, which
+surfaces as the "checkpoint WAL" open failure `_is_unreplayable_wal_error()`
+catches.
+
+Reconciliation runs on its own dedicated thread because every step can be slow
+(open, migration, checkpoint) and none of it may ever land on the event loop —
+that is precisely the stall that trips `loop_monitor`'s exit-70.
+
+The connection is opened *before* the backend is read: which engine writes is
+only settled once the connection is up, since `_finish_db_init` decides whether
+the appender is opened.
+
+### Do not add an explicit CHECKPOINT to the unreplayable-WAL path
+
+It is tempting — an unreplayable WAL is usually one that never got folded into
+the main file, so "just checkpoint it" looks like the cure. DuckDB checkpoints
+on its own when it can. If the WAL is growing without bound, that is a signal
+the database needs rebuilding, not a signal to force the operation that is
+failing on it.
+
+### Quarantine, not deletion
+
+An unreplayable WAL is labelled "unreplayable", not "corrupt": the usual cause
+is a backend switch leaving a WAL the incoming engine will not accept, and the
+file itself is generally intact. It is renamed aside rather than deleted — it
+holds the only copy of any rows that never reached the main file, and the
+engine that wrote it may still be able to read it.
+
+Quarantined files are kept on purpose for the same reason, including pre-rebuild
+database copies. They are also large, and once the live database has been
+checkpointing cleanly for a while nobody is going to mine them, so
+`QUARANTINE_RETENTION_DAYS` eventually reclaims the space.
+
+### Fatal-state latch
+
+Some DuckDB failures are terminal for the process: once it reports "database
+has been invalidated ... must be restarted", every subsequent statement raises.
+Without a latch each caller logs its own failure and the log fills with
+thousands of identical lines that bury the one that mattered. The latch records
+the first, reports it once with an actionable message, and lets callers skip
+work that cannot possibly succeed.
+
+Cursor creation sits **inside** the `try`: on an invalidated database it is
+`.cursor()` itself that raises, not the `execute`. With it outside, every write
+after the first fatal escaped the latch, so the sentinel was never written and
+the next boot never self-repaired.
+
+`REBUILD_SENTINEL` is dropped when the DB goes terminal and read on the next
+boot by `modules.telemetry_rebuild.auto_rebuild_if_needed()`. A corrupt DuckDB
+cannot be rebuilt from inside the process already stuck on it — the first fatal
+invalidates every connection until restart — so recovery is handed to the next
+startup, when nothing holds the file open.
+
+### Locking
+
+`_db_lock` is an `RLock` because `_get_db()` → `_finish_db_init()` may re-enter
+`_get_db()`. One shared connection per file serves both reads and writes
+(per-DB singleton + RLock).
+
+### Other constraints
+
+- **No migration on the write/query path.** Those run on the event loop and
+  anything slow there stalls the whole app. Migration is a startup step — see
+  `migrate_system_metrics()`.
+- **`DROP TABLE system_metrics` must precede any CHECKPOINT.** Freeing those
+  blocks is what lets the main database checkpoint again, and a failed
+  checkpoint invalidates the connection, making the DROP impossible until the
+  process restarts.
+- **The appender is tried first whenever open**, matching `write_device_state()`.
+  This is the hot path for all device telemetry (the collector buffers and
+  drains through here), so skipping it would quietly disable the appender for
+  the highest-volume table in the app. Timestamps are unaffected: the appender
+  stamps explicitly, the Python path via the `ts` column DEFAULT.
+
+## Salvage and rebuild
+
+A DuckDB file with a corrupt block **cannot be repaired in place**: there is no
+repair tool, no "skip the bad block" option, and forcing a CHECKPOINT over the
+damage escalates it into a FATAL that invalidates the whole database. The only
+way back is to copy what is still readable into a new file.
+
+`modules/telemetry_rebuild.py` is the engine for that, with two entry points:
+
+- `auto_rebuild_if_needed()` — called during startup, before anything opens the
+  database, so a corrupt file self-heals without anyone having to notice.
+- `scripts/rebuild_telemetry_db.py` — the manual CLI, for running it
+  deliberately or inspecting what would be recovered.
+
+### Design rules, and why each matters
+
+- **The damaged file is opened READ_ONLY and never written.** A failed rebuild
+  leaves it exactly as it was.
+- **Tables are copied whole where possible**, bisecting by rowid only on
+  failure, so one damaged row group costs that row group rather than the table.
+- **The copy runs inside DuckDB** (`ATTACH` + `INSERT…SELECT`), so rows never
+  cross into Python. It is the fastest option available and it preserves the
+  original timestamps. The Rust appender is **not** usable here: it stamps
+  `ts = now()` on every row it takes, which would silently rewrite the whole
+  history to today.
+- **Nothing is swapped in until the rebuild has been verified** by reopening it
+  and reading every table back.
+
+### Startup budget
+
+The automatic rebuild runs inside the app's lifespan, before uvicorn serves, so
+every second is a second the app is not answering `/api/system/health`. The
+budget has to clear three deadlines:
+
+| Deadline | Fires at |
+| --- | --- |
+| container HEALTHCHECK | unhealthy at ~120 s after start |
+| manager watchdog | `STARTUP_GRACE` 180 s, then restarts at ~240 s |
+| `upgrade.sh do_swap` | `HEALTH_TIMEOUT` 300 s, then **rolls back** the upgrade |
+
+A rebuild that overruns is abandoned with the original untouched and the
+sentinel kept, so a damaged database can never turn an upgrade into a rollback
+loop. The manual CLI has no budget — run it there if a rebuild genuinely needs
+longer.
+
+### Manual CLI
+
+`scripts/rebuild_telemetry_db.py` is the manual front-end to the same engine.
+Use it to inspect what would be recovered, or to rebuild deliberately.
+
+```bash
+# Inspect what is recoverable; writes ./data/telemetry.rebuilt.duckdb
+python3 scripts/rebuild_telemetry_db.py
+
+# Rebuild and swap it in (original kept as telemetry.duckdb.damaged-<ts>)
+python3 scripts/rebuild_telemetry_db.py --install
+```
+
+The original is opened READ-ONLY and never written to, so a dry run cannot make
+anything worse. Nothing is swapped into place unless you pass `--install`.
+
+**Stop the application before using `--install`.** Swapping the file under a
+running process leaves it holding a deleted inode and writing into nowhere. In
+normal operation you should not need this at all — the app repairs itself on
+restart.
+
+## Tables and retention
+
+| Table | Contents | Cadence |
+| --- | --- | --- |
+| `system_metrics` | CPU, memory, temperature, disk | sampled every 30 s |
+| `packet_stats` | per-device RX/TX/error counters | flushed every 60 s |
+| `device_states` | device attribute changes | on state change only |
+| `spectrum_scans` | channel energy levels | per background scan |
+
+Retention is configurable per table, defaulting to 7 days. Location:
+`./data/telemetry.duckdb`.
+
+### Why DuckDB over SQLite
+
+- Columnar storage is 5–10× more efficient for time-series aggregation.
+- Automatic ZSTD compression keeps disk usage low.
+- Concurrent reads do not block writes.
+- Built-in time-bucket aggregation functions.

@@ -1,18 +1,7 @@
 """
-Heating Controller API routes.
-
-Endpoints:
-  GET  /api/heating/controller/state              — last-tick decisions snapshot
-  POST /api/heating/controller/tick               — force a tick now
-  POST /api/heating/controller/dry-run            — toggle dry-run mode at runtime
-  GET  /api/heating/controller/config             — full circuits config
-  POST /api/heating/controller/config             — replace circuits config
-  GET  /api/heating/controller/devices            — receiver + TRV candidates
-  GET  /api/heating/controller/sensors            — room-sensor candidates
-  POST /api/heating/controller/trv/settings       — write per-TRV config (window_detection, child_lock, valve_detection)
-  POST /api/heating/controller/trv/calibrate      — one-shot start motor calibration
-  POST /api/heating/controller/trv/apply-config   — re-apply persistent settings to one TRV
-  GET  /api/heating/controller/contact-sensors    — door/window contact candidates
+Heating Controller API — tick state and forcing, dry-run toggle, circuits config,
+device and sensor candidate lists, and per-TRV settings, calibration and
+config re-apply. See docs/heating.md.
 """
 import logging
 import os
@@ -31,7 +20,6 @@ CONFIG_PATH = "./config/config.yaml"
 VALID_EXT_MODES = ("off", "advisory", "push")
 
 VALID_CONFIG_MODES = ("floor_plan", "manual")
-
 
 
 VALID_FLOOR_TYPES = (
@@ -283,7 +271,7 @@ def _clean_dimensions(d: dict) -> Optional[dict]:
     return out
 
 
-# ─── YAML helpers ──────────────────────────────────────────────────
+# YAML helpers
 def _load_config() -> Dict[str, Any]:
     if not os.path.exists(CONFIG_PATH):
         return {}
@@ -393,7 +381,7 @@ def _clean_room(r: dict, existing_ids: Optional[set] = None) -> Optional[dict]:
             "temp": _as_float(slot.get("temp"), 20.0),
         })
 
-    # ── Temperature sensors (canonical: plural; derive legacy single) ──
+    # Temperature sensors (canonical: plural; derive legacy single)
     sensors_clean: List[dict] = []
     if isinstance(r.get("temperature_sensors"), list):
         for s in r["temperature_sensors"]:
@@ -436,7 +424,7 @@ def _clean_room(r: dict, existing_ids: Optional[set] = None) -> Optional[dict]:
 
     dimensions = _clean_dimensions(r.get("dimensions"))
 
-    # ── Radiators (canonical: plural list; derive legacy single) ────────
+    # Radiators (canonical: plural list; derive legacy single)
     radiators_clean: List[dict] = []
     if "radiator" in r:
         single = _clean_radiator_dict(r.get("radiator"))
@@ -835,7 +823,7 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
             heating = cfg.setdefault("heating", {})
             incoming = data.get("config", data) if isinstance(data, dict) else {}
 
-            # ── Diagnostic: what did the client send? ───────────────
+            # Diagnostic: what did the client send?
             try:
                 incoming_circuits = incoming.get("circuits") or []
                 logger.debug(

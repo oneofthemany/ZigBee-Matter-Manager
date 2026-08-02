@@ -1,17 +1,12 @@
-/* ============================================================
-   ZigBee Matter Manager — Hive Component Layer
-   ============================================================
+/* ZigBee Matter Manager — Hive Component Layer
    Re-skins Bootstrap components through their own CSS variables
    (--bs-btn-*, --bs-card-*, …) — no !important wars.
-   Loads after hive-tokens.css.
-   ============================================================ */
+   Loads after hive-tokens.css. */
 
 
-/* ----------------------------------------------------------
-   PAGE LAYOUT — flex/100vh body: header + tab rail are fixed
+/* PAGE LAYOUT — flex/100vh body: header + tab rail are fixed
    chrome and only .tab-content scrolls (see TAB RAIL section);
-   page gutters live on the container
-   ---------------------------------------------------------- */
+   page gutters live on the container */
 body {
     min-height: 100vh;
     background-color: var(--bg-body);
@@ -29,9 +24,7 @@ body > .container-fluid {
 }
 
 
-/* ----------------------------------------------------------
-   TYPOGRAPHY UTILITIES
-   ---------------------------------------------------------- */
+/* TYPOGRAPHY UTILITIES */
 /* Mono uppercase micro-label — the hive's signature label style */
 .micro {
     font-family: var(--mono);
@@ -43,11 +36,9 @@ body > .container-fluid {
 }
 
 
-/* ----------------------------------------------------------
-   BUTTON HIERARCHY
+/* BUTTON HIERARCHY
    Quiet outline is the default voice; honey is the one loud
-   primary per view; red is destructive only.
-   ---------------------------------------------------------- */
+   primary per view; red is destructive only. */
 
 /* Bare .btn (no variant) — quiet */
 .btn {
@@ -209,9 +200,7 @@ body > .container-fluid {
 }
 
 
-/* ----------------------------------------------------------
-   CARDS — hive surfaces
-   ---------------------------------------------------------- */
+/* CARDS — hive surfaces */
 .card {
     --bs-card-bg: var(--bg-surface);
     --bs-card-border-color: var(--border-color);
@@ -223,9 +212,7 @@ body > .container-fluid {
 }
 
 
-/* ----------------------------------------------------------
-   HIVE HEADER — sticky, blurred, bee-ringed logo
-   ---------------------------------------------------------- */
+/* HIVE HEADER — sticky, blurred, bee-ringed logo */
 .hive-header {
     position: sticky;
     top: 0;
@@ -305,9 +292,7 @@ body > .container-fluid {
 }
 
 
-/* ----------------------------------------------------------
-   TAB RAIL — quiet mono-uppercase tabs, honey underline
-   ---------------------------------------------------------- */
+/* TAB RAIL — quiet mono-uppercase tabs, honey underline */
 .nav-tabs {
     border-bottom: 1px solid var(--border-color);
     gap: 0.15rem;
@@ -410,9 +395,7 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   CARD HEADERS — hex-prefixed mono micro-labels (manager motif)
-   ---------------------------------------------------------- */
+/* CARD HEADERS — hex-prefixed mono micro-labels (manager motif) */
 .card-header .fw-bold {
     font-family: var(--mono);
     font-weight: 400 !important;   /* .fw-bold sets 700 !important */
@@ -428,9 +411,7 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   MODALS, DROPDOWNS & FORMS
-   ---------------------------------------------------------- */
+/* MODALS, DROPDOWNS & FORMS */
 .modal {
     --bs-modal-border-radius: 12px;
     --bs-modal-bg: var(--bg-surface);
@@ -470,9 +451,7 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   DEBUG-LOG TERMINAL BASE (was in styles.css as #logs)
-   ---------------------------------------------------------- */
+/* DEBUG-LOG TERMINAL BASE (was in styles.css as #logs) */
 #logs {
     background: var(--bg-code);
     color: #bfd2dc;
@@ -485,11 +464,9 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   SKELETON SHIMMER (initial-load placeholders)
+/* SKELETON SHIMMER (initial-load placeholders)
    Usage: <span class="skel" style="width:8ch"></span>
-   Reduced-motion users get a static block (no sweep).
-   ---------------------------------------------------------- */
+   Reduced-motion users get a static block (no sweep). */
 .skel {
     display: inline-block;
     position: relative;
@@ -526,9 +503,7 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   MEDIA POSITION BAR
-   ---------------------------------------------------------- */
+/* MEDIA POSITION BAR */
 /* Driven by a 1s interval in media.js. Bootstrap's stock .progress-bar eases
    over 0.6s, so playback read as a lurch-then-wait every second; a linear
    1s ramp matches the tick and the bar just travels. */
@@ -541,16 +516,9 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   HIVE LOADER — bees circling a comb cell
-   ---------------------------------------------------------- */
-/* For waits that are structural rather than incidental. Starting a sync
-   session has to fill the delay line before any speaker may read from it, and
-   that costs as long as the audio it buffers — the group's spread of startup
-   latencies, so seconds, not milliseconds. A button that merely goes disabled
-   for that span reads as a dropped click, which is why the wait gets a face.
-   Built from the same hexagon the frames grid uses so it belongs to the hive
-   rather than arriving as a generic spinner. */
+/* HIVE LOADER — bees circling a comb cell. For structural waits (filling a sync
+   delay line takes seconds), where a merely-disabled button reads as a dropped
+   click. See docs/structure.md. */
 .hive-loader {
     --hive-size: 2.5rem;
     position: relative;
@@ -583,12 +551,9 @@ body {
     animation-delay: var(--delay, 0s);
 }
 
-/* Children 2-4 — child 1 is the comb cell, so nth-child counts from there.
-   Differing periods keep the three from locking into a rosette; the variety is
-   carried by those rather than by the radii, which are boxed in at both ends.
-   A bee is 15% wide, so a radius over 0.425 puts it outside the loader and
-   onto whatever sits next to it (the button label), while under about 0.30 it
-   clips the comb cell on the way past. */
+/* Children 2-4 — child 1 is the comb cell. Differing periods stop the three
+   locking into a rosette. Radii are boxed in at both ends: above ~0.425 a bee
+   lands outside the loader, below ~0.30 it clips the comb cell. */
 .hive-loader__orbit:nth-child(2) { --dur: 1.6s; --delay: 0s;    --r: 0.40; }
 .hive-loader__orbit:nth-child(3) { --dur: 2.3s; --delay: -0.6s; --r: 0.33; }
 .hive-loader__orbit:nth-child(4) { --dur: 2.9s; --delay: -1.3s; --r: 0.37; }
@@ -642,14 +607,9 @@ body {
 }
 
 
-/* ----------------------------------------------------------
-   EQ SCOPE — the studio display behind the equaliser
-   ---------------------------------------------------------- */
-/* Instrument, not decoration: it is read against a grid, so it commits to a
-   dark field in both themes rather than following the surface. A spectrum on
-   a light background loses the quiet detail near the floor — which is most of
-   the picture — and the grid lines have to fight the plot instead of sitting
-   under it. Drawing is in eq-scope.js; everything here is the housing. */
+/* EQ SCOPE — an instrument, not decoration, so it commits to a dark field in
+   both themes rather than following the surface. Drawing is in eq-scope.js;
+   this is only the housing. See docs/structure.md. */
 .zmm-eq-spec {
     width: 100%;
     display: block;

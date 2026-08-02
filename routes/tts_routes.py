@@ -69,7 +69,7 @@ def register_tts_routes(app: FastAPI, get_tts):
         svc = _svc()
         return {"connected": bool(svc) and await svc.status()}
 
-    # ── Engine setup (kokoro: model download; wyoming: external server) ─────
+    # Engine setup (kokoro: model download; wyoming: external server)
 
     @app.get("/api/tts/setup/status")
     async def tts_setup_status():
@@ -90,7 +90,7 @@ def register_tts_routes(app: FastAPI, get_tts):
         svc = get_tts()
         return svc.setup_job() if svc else {"status": "idle"}
 
-    # ── Endless soundscape stream for casting to media players ──────────
+    # Endless soundscape stream for casting to media players
     # Played on Cast/WiiM through POST /api/media/play, exactly like a
     # radio station URL — the server synthesizes the therapy bed + speech.
 

@@ -1,17 +1,10 @@
 """
 Plain-HTTP listener for device-fetched audio.
 
-The main app is HTTPS-only with a self-signed certificate, which Cast/WiiM
-devices refuse — the same reason cast_sync runs its own plain-HTTP listener
-on 8010. This listener (default :8011) serves ONLY the endpoints a speaker
-fetches by URL: the Cast EQ proxy stream, the Tidal DASH manifest and the
-therapy soundscape. No user data, no control surface; the EQ stream is
-additionally guarded by its per-playback random token.
-
-With this up, media.eq.base_url needs no configuration at all: the EQ engine
-falls back to ``http://<lan-ip>:<this port>`` (see MediaService), so Cast EQ
-works out of the box. Setting base_url in Settings → Audio only overrides
-the auto-detected address (e.g. multi-homed hosts).
+Cast and WiiM refuse the app's self-signed HTTPS, so this serves only the URLs a
+speaker fetches: the EQ proxy stream, the Tidal DASH manifest and the therapy
+soundscape. No user data and no control surface. With it up, media.eq.base_url
+needs no configuration. See docs/speaker_sync.md.
 """
 from __future__ import annotations
 

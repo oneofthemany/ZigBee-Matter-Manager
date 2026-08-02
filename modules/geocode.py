@@ -1,48 +1,10 @@
 """
 Place search — postcode, ZIP or town name to coordinates.
 
-Why this exists
----------------
-Apiary locations are picked by clicking a map. That is right for confirming a
-point but slow for reaching one: somewhere two counties away is a lot of
-dragging from wherever the map happens to open. Typing a postcode gets the map
-there in one step, and the click still does the confirming — so this only has to
-be accurate enough to centre a view, not to place a pin.
-
-Local first
------------
-Lookups run against a postal-code dataset held on the hub, downloaded once per
-country the household cares about. That makes search instant, keeps working with
-no internet, and means a typed search string never leaves the house — which
-matters more here than for tiles, because "42 Acacia Avenue" is a sharper fact
-than a tile coordinate.
-
-The dataset comes from GeoNames (CC BY 4.0, attribution required and rendered in
-the UI). One file per country carries both postal codes and the town each sits
-in, so a single download answers "SW1A 1AA" and "Slough" alike. Precision varies
-by country — several countries publish only district-level centroids — which is
-sufficient here and would not be if this placed the pin itself.
-
-Online fallback
----------------
-Street addresses and named businesses are not in a postal dataset, so an
-optional Nominatim fallback covers them. It is off unless enabled, and skipped
-entirely whenever the local store answers.
-
-    Nominatim's usage policy caps absolutely at one request per second and
-    requires an identifying User-Agent. Both are enforced here rather than
-    trusted to callers: every outbound call is serialised through one lock, so
-    concurrent users queue instead of bursting. Do not remove that to make a
-    type-ahead feel snappier — a type-ahead is the pattern the policy forbids,
-    which is why the UI searches on submit rather than on keystroke.
-
-Storage
--------
-data/geocode.duckdb, reached through one dedicated worker thread that owns the
-connection (one DB, one thread — the project convention). It is reference data:
-written only when a country is installed or removed, read on every search.
-
-Coordinates typed directly are parsed in the browser and reach neither store.
+Local-first against a per-country postal dataset on the hub, so search is
+instant, works offline, and the typed string never leaves the house. Optional
+Nominatim fallback for street addresses, rate-limited to its policy. Its own
+DuckDB file and worker thread. See docs/place-search.md.
 """
 
 from __future__ import annotations
@@ -69,17 +31,9 @@ DB_PATH = Path("./data/geocode.duckdb")
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 
-#: Where postal data comes from. Sources are additive rather than exclusive: a
-#: UK household wants Open Postcode Geo for exact postcodes AND GeoNames for
-#: town names, because neither carries what the other does.
-#:
-#: `precision` is what a matched code resolves to, and it is the honest reason
-#: to install more than one. GeoNames publishes district centroids for several
-#: countries — the UK included, where "SL1 4XY" is simply not in the data — so
-#: on its own a full postcode lands on a district. Open Postcode Geo carries
-#: every live UK unit postcode but no place names at all.
-#:
-#: `attribution` is a licence condition for both, not a courtesy.
+#: Additive rather than exclusive: GeoNames has town names but only district
+#: centroids for many countries, Open Postcode Geo has every UK unit postcode
+#: but no names. `attribution` is a licence condition. See docs/place-search.md.
 SOURCES: Dict[str, Dict[str, Any]] = {
     "geonames": {
         "label": "GeoNames",
@@ -174,29 +128,11 @@ CREATE TABLE IF NOT EXISTS datasets (
 );
 """
 
-# Ordered so a full code never has to compete with a town sharing its prefix:
-#   0  the code, exactly
-#   1  the query's first word, exactly — its outward/district part
-#   2  a code the query starts with — the district containing what was typed
-#   3  codes starting with the query — what was typed is a partial code
-#   4  the town, exactly
-#   5  towns starting with the query
-#
-# Tiers 1 and 2 are what make full postcodes work at all. Several countries, the
-# UK among them, publish only district-level codes ("SL1", never "SL1 1AA"), so
-# matching solely on equality or query-prefix returns nothing for the string a
-# user is most likely to type. Falling back to the district lands them in the
-# right place — all this has to do, since the click is what sets the point.
-#
-# Tier 1 exists because normalising away the space loses information that
-# disambiguates: "EH1 1AA" becomes EH11AA, which begins with both EH1 and EH11,
-# and only the space says which was meant. Where the user typed one, the first
-# word is the answer and outranks any prefix reasoning.
-#
-# Codes and towns are separate arms because they need different shapes of
-# answer, and both are collapsed to one row per key with an averaged centroid.
-# A town has hundreds of codes and a district has hundreds of units, so listing
-# rows individually would bury every other match under one place's postcodes.
+# Ordered so a full code never competes with a town sharing its prefix: exact
+# code, first word exact, containing district, code prefix, exact town, town
+# prefix. Tiers 1-2 are what make full postcodes work where only district-level
+# codes are published. Codes and towns are separate arms, each collapsed to one
+# row per key with an averaged centroid. See docs/place-search.md.
 _SEARCH_SQL = """
 WITH codes AS (
     SELECT MIN(CASE WHEN code_norm = ?           THEN 0
@@ -316,9 +252,6 @@ class Geocoder:
             logger.error(f"Could not persist geocode.online_fallback: {e}")
             return False
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     async def start(self) -> None:
         await self._run(self._open)
         logger.info(f"Geocoder started ({self.db_path})")
@@ -346,9 +279,7 @@ class Geocoder:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
-    # ------------------------------------------------------------------
     # Search
-    # ------------------------------------------------------------------
     async def search(self, query: str, limit: int = 5,
                      country: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -469,9 +400,7 @@ class Geocoder:
             })
         return out
 
-    # ------------------------------------------------------------------
     # Datasets
-    # ------------------------------------------------------------------
     async def datasets(self) -> List[Dict[str, Any]]:
         return await self._run(self._datasets)
 
@@ -631,14 +560,9 @@ class Geocoder:
         self._record(cc, src, len(rows))
         return len(rows)
 
-    # Open Postcode Geo: headerless CSV, one row per postcode ever issued.
-    # Column order is fixed by the publisher — postcode, status, usertype,
-    # easting, northing, quality, country, latitude, longitude, then a series
-    # of derived spellings and area/district/sector splits.
-    #
-    # Loaded through read_csv rather than row-by-row: this is 2.6M rows, and
-    # an executemany of that is minutes where the engine's own reader is
-    # seconds. It is also the reason the CSV beats the .sql dump alongside it.
+    # Headerless CSV, one row per postcode ever issued; column order is fixed by
+    # the publisher. Read via read_csv, not row-by-row: 2.6M rows is minutes
+    # through executemany and seconds through the engine's own reader.
     _OPG_SQL = """
     INSERT INTO postal_codes
         (country, source, code, code_norm, place, place_norm,

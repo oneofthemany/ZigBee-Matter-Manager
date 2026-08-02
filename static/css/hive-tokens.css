@@ -1,22 +1,10 @@
-/* ============================================================
-   ZigBee Matter Manager — Hive Design Tokens
-   ============================================================
-   DESIGN-TOKENS: canonical source of truth for the hive palette.
-   The manager dashboard (manager/dashboard.html) duplicates the
-   raw palette block below BY CONVENTION — it must stay a single
-   self-contained file (disaster-recovery UI). If you change a raw
-   palette value here, update the :root block in dashboard.html.
-
-   Load order matters: this file loads AFTER dark-mode.css and
-   re-points its semantic tokens (--bg-*, --text-*, --border-*)
-   at the hive palette. Components keep consuming the semantic
-   names; only the values change.
-   ============================================================ */
+/* Hive design tokens — canonical source for the palette. Loads AFTER
+   dark-mode.css and re-points the semantic tokens at the hive palette, so
+   components keep consuming semantic names. manager/dashboard.html duplicates
+   the raw palette by convention; keep them in sync. See docs/structure.md. */
 
 
-/* ----------------------------------------------------------
-   RAW PALETTE — theme-agnostic (keep in sync with manager)
-   ---------------------------------------------------------- */
+/* RAW PALETTE — theme-agnostic (keep in sync with manager) */
 :root {
     --night: #0b1620;
     --comb: #101e2b;
@@ -36,9 +24,7 @@
 }
 
 
-/* ----------------------------------------------------------
-   HIVE LIGHT — semantic token remap (warm paper + navy ink)
-   ---------------------------------------------------------- */
+/* HIVE LIGHT — semantic token remap (warm paper + navy ink) */
 :root {
     --bg-body: #f2efe7;
     --bg-surface: #ffffff;
@@ -89,9 +75,7 @@
 }
 
 
-/* ----------------------------------------------------------
-   HIVE DARK — semantic token remap (the manager's night hive)
-   ---------------------------------------------------------- */
+/* HIVE DARK — semantic token remap (the manager's night hive) */
 [data-theme="dark"] {
     --bg-body: var(--night);
     --bg-surface: var(--comb);
@@ -141,12 +125,8 @@
 }
 
 
-/* ----------------------------------------------------------
-   BOOTSTRAP 5.3 BRIDGE — feed the hive tokens into Bootstrap's
-   own variable system so its components theme themselves
-   without !important overrides. theme-toggle.js keeps
-   data-bs-theme in sync with data-theme.
-   ---------------------------------------------------------- */
+/* BOOTSTRAP 5.3 BRIDGE — feed the tokens into Bootstrap's own variables so its
+   components theme without !important. theme-toggle.js syncs data-bs-theme. */
 :root,
 [data-theme="dark"] {
     --bs-body-bg: var(--bg-body);

@@ -1,29 +1,11 @@
 """
-Managed remote access via Cloudflare Tunnel.
+Managed remote access via Cloudflare Tunnel, run as a supervised cloudflared
+subprocess so no port-forwarding is needed — the tunnel dials out.
 
-Runs `cloudflared` as a supervised subprocess (same pattern as
-MatterServerManager) so users get remote access to the web UI without
-port-forwarding — the tunnel dials OUT, so NAT/CGNAT doesn't matter.
-
-Two modes:
-
-- **token** (recommended for permanent use): the user creates a tunnel in
-  the Cloudflare Zero Trust dashboard, points its public hostname at
-  ``http://localhost:<web.port>``, and pastes the connector token here.
-  The token is passed via the ``TUNNEL_TOKEN`` environment variable, never
-  on the command line (argv is world-readable in /proc).
-
-- **quick** (testing only): ``cloudflared tunnel --url ...`` gives an
-  ephemeral ``*.trycloudflare.com`` URL with no account needed. The URL
-  changes on every start and carries no access controls beyond ZMM's own
-  login, so the UI labels it clearly as a trial mode.
-
-Settings persist in ``data/remote_access.yaml`` (0600 — it holds the
-tunnel token), managed through the Settings → Security → Remote Access UI.
-
-When the tunnel starts we flip ``cloudflare_tunnel_enabled`` on the live
-NetworkResolver so `CF-Connecting-IP` from the local cloudflared is
-trusted and remote clients are classified correctly (i.e. NOT as LAN).
+Token mode for permanent use (token passed via env, never argv) and quick mode
+for testing. Starting the tunnel flips cloudflare_tunnel_enabled on the live
+NetworkResolver so remote clients are not classified as LAN.
+See docs/remote_access.md.
 """
 
 from __future__ import annotations
@@ -83,11 +65,9 @@ _QUICK_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 _CONN_UP_RE = re.compile(r"Registered tunnel connection|Connection .* registered")
 _CONN_DOWN_RE = re.compile(r"Unregistered tunnel connection|connection .* lost")
 
-# Force the TCP-based http2 transport instead of cloudflared's default QUIC.
-# Some networks (router/ISP) drop or mangle the QUIC datagrams on UDP 7844,
-# which makes edge connections register and then immediately die ("datagram
-# manager encountered a failure", "failed to accept QUIC stream: Application
-# error 0x0 (remote)"). http2 keeps the tunnel on the more forgiving TCP path.
+# Force TCP-based http2 instead of cloudflared's default QUIC: some networks drop
+# or mangle QUIC datagrams on UDP 7844, so edge connections register then die
+# ("datagram manager encountered a failure"). http2 stays on the forgiving path.
 _TUNNEL_PROTOCOL = "http2"
 
 
@@ -139,7 +119,7 @@ class RemoteAccessManager:
         self._health_check_s = 15         # how often the watchdog polls
         self._lock = asyncio.Lock()
 
-    # ---- settings persistence -------------------------------------------
+    # settings persistence
 
     def load(self) -> None:
         if not self.settings_path.exists():
@@ -176,7 +156,7 @@ class RemoteAccessManager:
         except Exception as e:
             logger.error(f"Failed to save {self.settings_path}: {e}")
 
-    # ---- binary discovery ------------------------------------------------
+    # binary discovery
 
     def cloudflared_path(self) -> Optional[str]:
         if self.settings.cloudflared_path:
@@ -208,7 +188,6 @@ class RemoteAccessManager:
             logger.warning(f"cloudflared --version failed: {e}")
             return None
 
-    # ---- lifecycle ---------------------------------------------------------
 
     def _origin_url(self) -> str:
         scheme = "https" if self.origin_https else "http"
@@ -471,7 +450,7 @@ class RemoteAccessManager:
                 await self._start_locked()
             return self.settings
 
-    # ---- status ------------------------------------------------------------
+    # status
 
     def get_status(self) -> dict:
         pid = None
@@ -498,7 +477,7 @@ class RemoteAccessManager:
         }
 
 
-# --- module singleton --------------------------------------------------------
+# module singleton
 
 _manager: Optional[RemoteAccessManager] = None
 

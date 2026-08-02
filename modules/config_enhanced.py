@@ -1,13 +1,7 @@
 """
-Enhanced EZSP Configuration
-============================
-Optimal configuration settings based on ZHA best practices and community experience.
-
-This module provides:
-- Production-ready EZSP configuration
-- Dynamic adjustment based on network size
-- Proper handling of firmware-specific limitations
-- Validation and error handling
+Production EZSP configuration, following ZHA best practice and community
+experience: dynamic adjustment to network size, handling for firmware-specific
+limitations, and validation.
 """
 import logging
 from typing import Dict, Any, Optional

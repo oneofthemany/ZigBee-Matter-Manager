@@ -1,12 +1,9 @@
 """
-Sun position API routes.
+Sun position API — azimuth/elevation, sunrise/sunset, day arcs and yearly
+envelopes, computed locally with no network.
 
-Computes sun azimuth/elevation, sunrise/sunset, day-long arcs and yearly
-envelopes locally (no network). When ``lat``/``lon`` are not supplied, falls
-back to the values configured on the ``WeatherService``.
-
-All endpoints return ``{"success": bool, "data": ..., "error": ...}`` to match
-the rest of the heating/weather API shape.
+Falls back to the WeatherService coordinates when lat/lon are not supplied. All
+endpoints return {"success", "data", "error"} to match the heating/weather shape.
 """
 from __future__ import annotations
 

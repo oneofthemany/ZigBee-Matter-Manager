@@ -1,28 +1,10 @@
 """
-Chamber API routes — the Frames-side room registry and device assignment.
+Chamber API — the Frames-side room registry and device assignment.
 
-Endpoints:
-    GET    /api/chambers                 — registry (config + adopted rooms)
-    POST   /api/chambers                 — create/update a chamber
-    DELETE /api/chambers/{chamber_id}    — remove a Frames-owned chamber
-    GET    /api/chambers/assignments     — {ieee: chamber_id}
-    POST   /api/chambers/assign          — assign one device
-    POST   /api/chambers/assign/bulk     — assign many devices at once
-
-Storage:
-    Chamber definitions: ``chambers:`` in ``config/config.yaml``.
-    Device assignment:   ``device_settings[ieee]["chamber"]``
-                         (``data/device_settings.json``).
-
-Why device_settings rather than a new file — it merges rather than clobbers on
-write (core/service.py: ``existing.update(...)`` in ``configure_device``), it is
-deleted with the device on removal, it is already in the backup set
-(routes/backup_routes.py), and it already ships to the frontend as ``settings``
-on every device from ``get_device_list()``. So assignment needs no read API and
-no new backup wiring.
-
-Phase 1 is Zigbee-only: assignment validates against ``zigbee_service.devices``.
-Matter/AC/media devices are not assignable yet by design.
+Definitions live under `chambers:` in config.yaml; assignment rides on
+device_settings[ieee]["chamber"], which already merges on write, is deleted with
+the device, is in the backup set, and already ships to the frontend.
+Zigbee-only for now. See docs/frames.md.
 """
 from __future__ import annotations
 
@@ -86,7 +68,7 @@ def register_chamber_routes(app: FastAPI, get_zigbee_service):
         else:
             svc.device_settings.pop(ieee, None)
 
-    # ─────────────────────────── registry ───────────────────────────
+    # registry
 
     @app.get("/api/chambers")
     async def get_chambers():
@@ -185,7 +167,7 @@ def register_chamber_routes(app: FastAPI, get_zigbee_service):
             logger.error(f"Failed to delete chamber {chamber_id}: {e}")
             return {"success": False, "error": str(e)}
 
-    # ────────────────────────── assignment ──────────────────────────
+    # assignment
 
     @app.get("/api/chambers/assignments")
     async def get_assignments():

@@ -1,13 +1,9 @@
-/* ============================================================
-   ZigBee Matter Manager — Toast Notification System
-   ============================================================ */
+/* ZigBee Matter Manager — Toast Notification System */
 
 (function () {
     'use strict';
 
-    // ----------------------------------------------------------
     // 1. CREATE TOAST CONTAINER
-    // ----------------------------------------------------------
 
     var container;
 
@@ -21,9 +17,7 @@
         return container;
     }
 
-    // ----------------------------------------------------------
     // 2. ICON MAP
-    // ----------------------------------------------------------
 
     var ICONS = {
         success: '<i class="fas fa-check-circle"></i>',
@@ -39,9 +33,7 @@
         info:    'Info'
     };
 
-    // ----------------------------------------------------------
     // 3. CREATE TOAST ELEMENT
-    // ----------------------------------------------------------
 
     function createToast(type, message, options) {
         options = options || {};
@@ -114,9 +106,7 @@
         }, 300);
     }
 
-    // ----------------------------------------------------------
     // 4. PUBLIC API
-    // ----------------------------------------------------------
 
     window.toast = {
         success: function (msg, opts) { return createToast('success', msg, opts); },
@@ -125,9 +115,7 @@
         info:    function (msg, opts) { return createToast('info', msg, opts); }
     };
 
-    // ----------------------------------------------------------
     // 5. OVERRIDE window.alert()
-    // ----------------------------------------------------------
     //
     // Safety net only: every first-party call site now uses explicit
     // toast.* — anything landing here is unmigrated code, so surface it

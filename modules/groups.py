@@ -1,12 +1,10 @@
 """
-Zigbee Groups Management Module
-Based on ZHA and Zigbee2MQTT patterns for native Zigbee groups
+Native Zigbee group management, following ZHA and Zigbee2MQTT patterns.
 
-Enhanced with Input/Output cluster awareness:
-- input_clusters (Server) = Device RECEIVES commands = Actuators (controllable)
-- output_clusters (Client) = Device SENDS commands = Sensors/Remotes (not controllable)
-
-For groups, only devices with clusters as INPUT clusters are truly controllable.
+Cluster direction decides membership: input (server) clusters mean the device
+RECEIVES commands and is controllable, output (client) clusters mean it SENDS
+them and is a sensor or remote. Only devices holding the cluster as an input are
+truly controllable in a group.
 """
 
 import logging
@@ -21,10 +19,9 @@ import os
 logger = logging.getLogger(__name__)
 os.makedirs("data", exist_ok=True)
 
-# Groups storage file — lives under ./data (the bind-mounted persistent
-# volume). The old ./groups location was inside the image layer, so every
-# image upgrade silently wiped the registry while the Zigbee groups kept
-# existing in the coordinator database.
+# Under ./data (the bind-mounted volume). The old ./groups path was inside the
+# image layer, so every upgrade silently wiped the registry while the Zigbee
+# groups kept existing in the coordinator database.
 GROUPS_FILE = Path("./data/groups.json")
 LEGACY_GROUPS_FILE = Path("./groups/groups.json")
 
@@ -213,9 +210,7 @@ class GroupManager:
         # The core logic is already in control_group
         return await self.control_group(group_id, data)
 
-    # =========================================================================
     # Cluster Analysis with Input/Output Awareness
-    # =========================================================================
 
     def _analyse_device_clusters(self, device) -> Dict[int, ClusterPresence]:
         """
@@ -407,9 +402,7 @@ class GroupManager:
 
         return common
 
-    # =========================================================================
     # Smart Device Selection with Relevance Scoring
-    # =========================================================================
 
     def get_device_group_info(self, device) -> Dict[str, Any]:
         """
@@ -545,9 +538,7 @@ class GroupManager:
             "not_recommended": not_recommended
         }
 
-    # =========================================================================
     # Group Creation and Management (unchanged logic, uses enhanced detection)
-    # =========================================================================
 
     async def create_group(self, name: str, device_iees: List[str]) -> Dict:
         """Create a new Zigbee group"""

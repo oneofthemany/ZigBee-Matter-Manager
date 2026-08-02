@@ -1,12 +1,5 @@
-/**
- * upgrade.css
- * Styles for the Settings tab Upgrade card.
- *
- * Loaded from index.html:
- *   <link rel="stylesheet" href="/static/css/upgrade.css">
- *
- * Dark-mode aware (relies on your existing dark-mode.css variables).
- */
+/* Styles for the Settings tab Upgrade card. Dark-mode aware via the
+   dark-mode.css variables. */
 
 #upgradeCard .progress {
     background-color: rgba(0, 0, 0, 0.08);

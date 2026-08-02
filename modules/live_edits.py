@@ -2,32 +2,9 @@
 Live-edit detection — surfaces in-container code changes that an image-based
 upgrade would silently discard.
 
-The web editor and the test-batch ("time machine") write changes straight into
-/app. Those changes are NOT in git and are NOT carried into a freshly-built
-image, so a swap to a new image throws them away. This module enumerates the
-divergence so the upgrade flow can warn the user (and offer to wait) before the
-point of no return.
-
-Detection is best-effort and never raises — the upgrade UI must keep working
-even if detection fails. Three strategies, in priority order:
-
-  1. release manifest — build.sh bakes /app/.release_manifest into the image:
-     a `sha256sum` line per shipped file. Comparing it against the tree on disk
-     gives exact paths for modified/added/deleted files with no git dependency.
-     Authoritative, and self-clearing: a fresh image's manifest matches its own
-     files by construction, so a completed upgrade always drops the count to 0.
-
-  2. git — only present when running from a dev checkout; `.git` is excluded
-     from the image by build.sh's .dockerignore (a depth-1 .git is ~7.5 MB, most
-     of it the screenshot blobs that exclusion exists to strip). Kept so
-     detection still works when developing outside a container.
-
-  3. .editor_backups fallback — last resort, for pre-manifest images. Backups
-     record that a file was edited at SOME point; they live in the data/ bind
-     mount and are never pruned, so they OUTLIVE the upgrade that discarded the
-     edit. Counting them naively reports the same phantom edits forever, so we
-     resolve each backup name back to a real path and keep only those whose file
-     still diverges from the image (mtime newer than the image build).
+Editor and test-batch writes land in /app, are not in git, and are not carried
+into a new image. Best-effort and never raises: the release manifest first, then
+git, then an .editor_backups fallback. See docs/upgrades.md.
 """
 import datetime
 import hashlib

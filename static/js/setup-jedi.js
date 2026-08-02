@@ -1,17 +1,10 @@
 /**
- * setup-jedi-bee.js
- * ZigBee Matter Manager - Jedi Bee startup animation
+ * Jedi Bee startup animation — canvas-rendered bee (same quality bar as
+ * deploy-animation.js) with hood and robe, a glowing flickering lightsaber,
+ * periodic Force-wave effect, sparkle particles, hover float and rotating
+ * status text.
  *
- * Canvas-rendered bee (matching deploy-animation.js quality) with:
- *   - Jedi hood/robe
- *   - Green lightsaber with glow + flicker
- *   - Periodic Force wave mind-trick effect
- *   - Floating force/saber sparkle particles
- *   - Gentle hover float
- *   - Jedi-themed status text rotation
- *
- * Drop-in: static/js/setup-jedi-bee.js
- * Load in index.html BEFORE setup-wizard.js
+ * Load in index.html BEFORE setup-wizard.js.
  */
 
 (function () {
@@ -88,9 +81,7 @@
         ctx.shadowBlur = 0;
     }
 
-    /* ================================================================ */
     /*  Bee - full canvas render matching deploy-animation.js             */
-    /* ================================================================ */
 
     function drawJediBee(ctx, cx, cy, t, saberGlow) {
         var wingBeat = Math.sin(t * 0.25) * 0.3;
@@ -344,9 +335,7 @@
         ctx.restore();
     }
 
-    /* ================================================================ */
     /*  Force waves                                                       */
-    /* ================================================================ */
 
     function drawForceWaves(ctx, cx, cy, progress) {
         if (progress <= 0 || progress >= 1) return;
@@ -375,9 +364,7 @@
         }
     }
 
-    /* ================================================================ */
     /*  Main loop                                                         */
-    /* ================================================================ */
 
     window.startJediBeeAnimation = function () {
         var canvas = document.getElementById('jediBeeCanvas');

@@ -12,7 +12,6 @@ import { dismissKnownDevices } from './join-progress.js';
 import { confirmDialog } from './dialogs.js';
 
 
-
 const log = zmmLog('devices');
 
 /**

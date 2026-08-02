@@ -1,15 +1,10 @@
 """
-Messages API — person-to-person conversations.
+Messages API — strictly participant-only.
 
-Access model: strictly participant-only. Every endpoint resolves "me" from
-the authenticated principal and only ever returns threads and messages that
-principal is part of. There is deliberately no admin read-everything view —
-a household chat where the admin can browse everyone's messages through the
-API is not a chat anyone would use for anything real.
-
-Sending as someone else is equally off the table: from_user is always the
-authenticated username. Automations that speak on the system's behalf go
-through the store directly with source="automation".
+Every endpoint resolves "me" from the authenticated principal and returns only
+threads that principal is part of; there is deliberately no admin
+read-everything view. from_user is always the authenticated username.
+See docs/notifications.md.
 """
 
 from __future__ import annotations

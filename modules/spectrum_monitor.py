@@ -1,14 +1,9 @@
 """
-modules/spectrum_monitor.py
+Background spectrum scanner — periodic energy scans stored in DuckDB via
+telemetry_db, for historical analysis and interference correlation.
 
-Background spectrum scanner — runs periodic energy scans and stores
-results in DuckDB (via telemetry_db) for historical analysis and
-interference correlation.
-
-Migration from SQLite: This module previously stored data in zigbee.db.
-On first run after migration, existing SQLite data is copied to DuckDB
-automatically, then the SQLite table is left untouched (zigpy still
-uses zigbee.db for its own tables).
+On first run after the SQLite migration, existing zigbee.db data is copied over
+and the SQLite table left untouched, since zigpy still uses it for its own tables.
 """
 
 import asyncio
@@ -28,9 +23,7 @@ SQLITE_DB_PATH = "zigbee.db"
 MIGRATION_MARKER = "./data/.spectrum_migrated"
 
 
-# ============================================================================
 # DUCKDB-BACKED FUNCTIONS (replace old SQLite versions)
-# ============================================================================
 
 def save_scan(results: dict, db_path: str = None):
     """
@@ -152,9 +145,7 @@ def prune_old_records(keep_days: int = 7, db_path: str = None):
     pass
 
 
-# ============================================================================
 # ONE-TIME MIGRATION FROM SQLITE
-# ============================================================================
 
 def _migrate_from_sqlite():
     """
@@ -220,9 +211,7 @@ def _write_migration_marker(count: int):
         f.write(f"migrated={count} ts={int(time.time())}\n")
 
 
-# ============================================================================
 # BACKGROUND TASK
-# ============================================================================
 
 class SpectrumMonitor:
     """

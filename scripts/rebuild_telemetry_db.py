@@ -1,29 +1,11 @@
 #!/usr/bin/env python3
 """
 Rebuild a damaged telemetry DuckDB into a fresh, clean file.
-============================================================
 
-Manual front-end for modules/telemetry_rebuild.py, which is the same engine the
-app runs automatically at startup when it finds a database a previous run
-flagged as corrupt. Use this to inspect what would be recovered, or to rebuild
-a database deliberately.
-
-The original is opened READ-ONLY and never written to, so a dry run cannot make
-anything worse. Tables are copied whole where possible; only on failure does it
-bisect by rowid, so one damaged row group costs that row group rather than the
-table. Nothing is swapped into place unless you pass --install.
-
-Usage
------
-    # Inspect what is recoverable; writes ./data/telemetry.rebuilt.duckdb
-    python3 scripts/rebuild_telemetry_db.py
-
-    # Rebuild and swap it in (original kept as telemetry.duckdb.damaged-<ts>)
-    python3 scripts/rebuild_telemetry_db.py --install
-
-Stop the application before using --install: swapping the file under a running
-process leaves it holding a deleted inode and writing into nowhere. In normal
-operation you should not need this at all — the app repairs itself on restart.
+Manual front-end for modules/telemetry_rebuild.py, the same engine the app runs
+automatically at startup. The original is opened READ-ONLY, so a dry run cannot
+make anything worse, and nothing is swapped in without --install. Stop the app
+before using --install. See docs/telemetry_database.md.
 """
 
 from __future__ import annotations

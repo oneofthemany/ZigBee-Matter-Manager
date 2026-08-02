@@ -3,9 +3,6 @@
  * Status, network formation with channel/name, topology, dataset display.
  */
 
-// ============================================================================
-// INIT
-// ============================================================================
 
 export function initOtbr() {
     const tab = document.querySelector('[data-bs-target="#settingsThread"]');
@@ -14,9 +11,7 @@ export function initOtbr() {
     }
 }
 
-// ============================================================================
 // STATUS
-// ============================================================================
 
 export async function loadOtbrStatus() {
     const container = document.getElementById('threadStatusBody');
@@ -47,7 +42,7 @@ function renderOtbrStatus(container, data) {
     const stateColor = stateColors[data.thread_state] || 'secondary';
     const isActive = ['leader', 'router', 'child'].includes(data.thread_state);
 
-    // ── Network info ────────────────────────────────────────────
+    // Network info
     let networkHtml = '';
     if (data.network) {
         const fields = [
@@ -77,7 +72,7 @@ function renderOtbrStatus(container, data) {
             </div>`;
     }
 
-    // ── IPv6 addresses ──────────────────────────────────────────
+    // IPv6 addresses
     let ipHtml = '';
     if (data.ipaddrs && data.ipaddrs.length > 0) {
         ipHtml = `
@@ -89,7 +84,7 @@ function renderOtbrStatus(container, data) {
             </div>`;
     }
 
-    // ── Form network controls ───────────────────────────────────
+    // Form network controls
     let formNetworkHtml = '';
     if (data.available && !isActive) {
         formNetworkHtml = `
@@ -129,7 +124,7 @@ function renderOtbrStatus(container, data) {
             </div>`;
     }
 
-    // ── Main render ─────────────────────────────────────────────
+    // Main render
     container.innerHTML = `
         <!-- Status Row -->
         <div class="row g-3 mb-3">
@@ -203,9 +198,7 @@ function renderOtbrStatus(container, data) {
     `;
 }
 
-// ============================================================================
 // ACTIONS
-// ============================================================================
 
 window._otbrFormNetwork = async function () {
     const channelEl = document.getElementById('threadChannelSelect');
@@ -372,9 +365,6 @@ window._otbrRefresh = function () {
     loadOtbrStatus();
 };
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 
 function showThreadAlert(type, message) {
     const el = document.getElementById('threadAlert');

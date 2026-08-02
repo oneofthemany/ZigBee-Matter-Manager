@@ -1,21 +1,10 @@
 """
-TherapyStream — server-side soundscape synth for casting to media players.
+TherapyStream — server-side soundscape synth, so therapy can cast to a player.
 
-The therapy SPA generates its audio in the browser (Web Audio API), which a
-Cast/WiiM player can't fetch. This module ports that synth graph to numpy and
-serves it as an endless WAV stream (GET /api/therapy/stream), so therapy casts
-through the exact same /api/media/play path as radio and Tidal.
-
-Per mode (same tables as the SPA): detuned sine pads with slow LFOs, a sub
-oscillator, a true-stereo binaural pair, generative scale notes, band-passed
-texture noise, a lowpass voicing filter and a feedback-echo tail. Breathwork
-adds the inhale/hold/exhale amplitude envelope; anxiety slides the binaural
-beat and tempo down over ten minutes (entrainment). Speech overlays come from
-the therapy TTS engine (Kokoro) on the configured interval, with the bed
-ducked while the voice plays.
-
-Generation is paced to real time (small lead), so players buffer seconds, not
-minutes, and each listener gets an independent stream state.
+The SPA's Web Audio graph ported to numpy and served as an endless WAV, going
+through the same /api/media/play path as radio and Tidal. Generation is paced to
+real time so players buffer seconds, not minutes, and each listener has
+independent state. See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
@@ -36,7 +25,7 @@ RATE = 44100
 BLOCK = RATE // 4          # 0.25 s of frames per synthesis block
 LEAD_SECONDS = 3.0         # how far ahead of real time we allow generation
 
-# ── Mode tables (synthesis fields of the SPA's MODES) ───────────────────────
+# Mode tables (synthesis fields of the SPA's MODES)
 MODES = {
     "focus":      dict(label="Focus", base=220.0, scale=[0, 2, 4, 7, 9, 12, 14, 16], tempo=0.5, filter=2200, decay=1.5, pads=[220.0, 277.18, 329.63, 440.0], detune=5, bin_base=200.0, bin_beat=14.0),
     "relaxation": dict(label="Relaxation", base=174.0, scale=[0, 2, 4, 5, 7, 9, 11, 12], tempo=0.3, filter=1200, decay=3.0, pads=[174.0, 220.0, 261.0, 349.0], detune=8, bin_base=174.0, bin_beat=10.0),
@@ -132,7 +121,7 @@ class TherapyStream:
         self._next_speech = RATE * 3                   # first message after 3 s
         self._msg_idx = 0
 
-    # ── Public: endless WAV byte stream ─────────────────────────────────
+    # Public: endless WAV byte stream
 
     async def wav_stream(self) -> AsyncIterator[bytes]:
         yield self._wav_header()
@@ -168,7 +157,7 @@ class TherapyStream:
         h.write((0xFFFFFFFF).to_bytes(4, "little"))
         return h.getvalue()
 
-    # ── Synthesis ───────────────────────────────────────────────────────
+    # Synthesis
 
     async def _render_block(self) -> np.ndarray:
         c = self.cfg
@@ -298,7 +287,7 @@ class TherapyStream:
         env[m] = 1.0 - 0.5 * ((ct[m] - inhale - hold) / max(exhale, 1e-6))
         return env
 
-    # ── Speech ──────────────────────────────────────────────────────────
+    # Speech
 
     def _schedule_speech(self):
         if not self.speech:

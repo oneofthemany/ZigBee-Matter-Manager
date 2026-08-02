@@ -1,32 +1,10 @@
-"""Background watchdog — auto-recover the app (and ollama) when unhealthy.
+"""
+Background watchdog — auto-recovers the app (and ollama) when unhealthy.
 
-Runs as an asyncio task inside the manager (started from app.py's lifespan).
-Conservative by design so it never makes things worse:
-
-  - **Startup grace**: ignore health within STARTUP_GRACE of the container's
-    StartedAt (and after every restart), so a slow boot isn't mistaken for a
-    failure and we can't restart-loop.
-  - **Escalate slowly**: only after FAIL_THRESHOLD consecutive unhealthy checks do
-    we restart the container.
-  - **Stand down during upgrades**: never act while a build/swap/rollback is in
-    progress — that's the watcher's job, and we mustn't fight it. Likewise for
-    the ollama container while manager.ollama runs an image update.
-  - **Stand down during editor test deploys**: a restart-type test deploy
-    restarts the app IN-PROCESS (os.execl), so the container's StartedAt never
-    changes and the normal startup grace can't protect the boot. While
-    ``data/.test_pending`` is fresh, the test-recovery machinery (confirm
-    timer, boot_guard) owns the outcome — restarting the container mid-test
-    destroys the confirm window and can push boot_guard into rolling back a
-    perfectly healthy batch.
-  - **Cap restarts**: after MAX_RESTARTS we stop and report 'exhausted' (manual
-    intervention needed) rather than thrash.
-
-Two independent targets: the app container (health = ZMM_APP_HEALTH_URL) and
-the optional ollama sibling (health = its /api/version; silently skipped when
-the container doesn't exist). Each keeps its own streak/restart counters — an
-ollama incident never eats into the app's restart budget.
-
-All thresholds are env-tunable. State is exposed via get_state() for the UI.
+An asyncio task inside the manager, conservative by design: startup grace, slow
+escalation, a restart cap, and standing down entirely during upgrades and editor
+test deploys. Two independent targets with separate budgets. All thresholds are
+env-tunable; state is exposed via get_state(). See docs/upgrades.md.
 """
 import asyncio
 import json
@@ -154,11 +132,9 @@ def alt_scheme_url(url: str) -> str:
 
 
 async def _healthy(http: httpx.AsyncClient) -> bool:
-    # Try the configured URL, then the other scheme. The app normally serves
-    # HTTPS but runs plain HTTP in some states (e.g. before a self-signed cert
-    # exists on first run). A scheme mismatch must NOT be read as "unhealthy" —
-    # otherwise the watchdog restarts a perfectly healthy app on a loop
-    # (~STARTUP_GRACE + FAIL_THRESHOLD*INTERVAL after every boot).
+    # Try the configured URL, then the other scheme: the app serves HTTPS but
+    # runs plain HTTP in some states (before a self-signed cert exists). A scheme
+    # mismatch read as "unhealthy" restarts a healthy app on a loop.
     urls = [APP_HEALTH_URL]
     alt = alt_scheme_url(APP_HEALTH_URL)
     if alt != APP_HEALTH_URL:
@@ -198,22 +174,19 @@ async def _check_app(http: httpx.AsyncClient, t: Dict[str, int]):
 
     healthy = running and await _healthy(http)
 
-    # Recovery mode: the launcher's standby serves :8000 (health
-    # WILL fail) while the user repairs files via the manager —
-    # restarting the container would destroy their session. Only
-    # honoured while the app is actually unhealthy, so a stale
-    # marker (uncleanly killed session) can't disable us forever.
+    # Recovery mode: the launcher's standby serves :8000 and health WILL fail
+    # while the user repairs files. Only honoured while actually unhealthy, so a
+    # stale marker cannot disable us forever.
     if not healthy and os.path.isfile(RECOVERY_MARKER):
         t["streak"] = 0
         _set("recovery", streak=0, restarts=t["restarts"])
         return
 
     # Test-deploy mode: the editor's test-recovery cycle restarts the app
-    # in-process, so health WILL fail during its boot with no container
-    # startup grace to cover it. The confirm timer and boot_guard own both
-    # success and rollback here — a container restart from us would eat the
-    # confirm window and could trip boot_guard's failure counter into
-    # rolling back good code. Fresh markers only (see TEST_GRACE).
+    # in-process, so health WILL fail during its boot with no container startup
+    # grace. The confirm timer and boot_guard own both outcomes here — a restart
+    # from us would eat the confirm window and could trip boot_guard into rolling
+    # back good code. Fresh markers only (see TEST_GRACE).
     if not healthy and _test_deploy_active():
         t["streak"] = 0
         _set("test-deploy", streak=0, restarts=t["restarts"])

@@ -1,60 +1,10 @@
 """
-ac_controller.py
-================
-Local-LAN air-conditioner control for Gree-protocol units (EcoAir and other
-Gree clones) and Midea-protocol units (Comfee and other Midea clones). No
-Home Assistant bridge — both protocols are spoken directly on the LAN using
-the same libraries the popular HA components wrap:
+Local-LAN air-conditioner control for Gree-protocol units (EcoAir and clones)
+and Midea-protocol units (Comfee and clones), via greeclimate and midea-local.
 
-  • gree  — `greeclimate` (async UDP, port 7000). The per-device AES key is
-            derived once by bind() and persisted to config.
-  • midea — `midea-local` (TCP, port 6444). V3 devices need a token/key pair
-            fetched once from the Midea cloud (the library ships a preset
-            anonymous account, so no personal credentials are required);
-            after that everything is local.
-
-Both libraries are optional dependencies: the module degrades to reporting
-"library not installed" rather than breaking the app.
-
-Config shape (config.yaml)
---------------------------
-ac:
-  units:
-    - id: ac_living          # stable id, generated on add
-      name: Living Room AC
-      brand: gree | midea
-      host: 192.168.1.60
-      port: 7000             # gree default 7000, midea default 6444
-      mac: "ab12cd34ef56"    # gree only
-      key: "..."             # gree bind key / midea key
-      device_id: 12345       # midea only (appliance id)
-      token: "..."           # midea only
-      protocol: 3            # midea only (1/2/3)
-      model: ""              # midea only, optional
-      subtype: 0             # midea only, optional
-      room_id: room_abc      # optional heating/floor-plan room binding
-
-Normalised state
-----------------
-Every adapter reports/accepts the same shape:
-  { power: bool, mode: auto|cool|dry|fan|heat,
-    target_c: float, current_c: float|None, fan: auto|low|medium|high|turbo,
-    swing_v: bool, swing_h: bool,
-    extras: {toggle_name: bool, ...} }        # only supported toggles
-plus a `capabilities` block describing what the unit supports:
-  { modes: [...], fan: [...], swing_v: bool, swing_h: bool,
-    extras: [toggle names accepted by control()],
-    min_c: float|None, max_c: float|None,
-    source: b5|probed|assumed }
-Midea capabilities come from the protocol's B5 capability frames (decoded by
-midea-local during every refresh). Gree has no capability query, so support
-is inferred from which props the unit echoes back in its status response
-(`raw_properties`); an empty echo falls back to the standard Gree set.
-
-Normalised toggle names (control() keys, mapped per brand):
-  turbo, quiet, xfan, light, sleep, anion, eco, display, indirect_wind
-Vendor-specific keys (gree horizontal_swing ints, midea swing_vertical, …)
-still pass straight through for callers that want raw control.
+Both libraries are optional; the module degrades to "library not installed"
+rather than breaking the app. Config shape, normalised state and capability
+model: docs/air-conditioning.md.
 """
 
 from __future__ import annotations
@@ -77,10 +27,9 @@ STATUS_CACHE_SEC = 5.0
 # can render controls instantly instead of re-probing every unit.
 STATUS_STORE_PATH = "./data/ac_status_cache.json"
 STATUS_STORE_MIN_WRITE_SEC = 30.0
-# Midea dongles lock up and refuse TCP for a while if they see rapid
-# connect churn (verified against a Comfee 00000Q1D: ~3 reconnects in a few
-# seconds and port 6444 goes dead). After a failed connect, wait this long
-# before trying again rather than hammering it back into lockup.
+# Midea dongles refuse TCP for a while after rapid connect churn (verified on a
+# Comfee 00000Q1D: ~3 reconnects in a few seconds kills port 6444). Back off
+# after a failed connect rather than hammering it back into lockup.
 MIDEA_CONNECT_BACKOFF_SEC = 20.0
 
 # Midea AC mode values as used by midealocal.devices.ac
@@ -129,7 +78,7 @@ class ACError(Exception):
     """Raised for user-visible AC failures (bad config, offline, no lib)."""
 
 
-# ────────────────────────── Gree adapter ──────────────────────────
+# Gree adapter
 
 class GreeAdapter:
     """One Gree-protocol unit (EcoAir). All calls are async."""
@@ -166,11 +115,10 @@ class GreeAdapter:
         key = self.cfg.get("key")
         bound = False
         if key:
-            # greeclimate quirks on a keyed bind: it raises "cipher must be
-            # provided when key is provided" unless the cipher negotiated on
-            # first contact is passed back in (persisted as cfg["cipher"]),
-            # and it skips opening the UDP transport entirely — replicate
-            # the endpoint setup its negotiation path performs.
+            # greeclimate raises "cipher must be provided when key is provided"
+            # unless the cipher negotiated on first contact is passed back in
+            # (persisted as cfg["cipher"]), and it skips opening the UDP transport
+            # entirely — so replicate the endpoint setup its negotiation performs.
             try:
                 cipher_ver = int(self.cfg.get("cipher") or 1)
                 cipher = CipherV2() if cipher_ver == 2 else CipherV1()
@@ -296,7 +244,7 @@ class GreeAdapter:
         await d.push_state_update()
 
 
-# ────────────────────────── Midea adapter ──────────────────────────
+# Midea adapter
 
 class MideaAdapter:
     """
@@ -372,10 +320,9 @@ class MideaAdapter:
 
     def _status_sync(self) -> Dict[str, Any]:
         def _refresh(d):
-            # check_protocol=True is load-bearing: without it midea-local
-            # only SENDS the queries — responses are consumed by the
-            # library's background run() loop, which we don't run, so
-            # attributes would stay at their defaults forever.
+            # check_protocol=True is load-bearing: without it midea-local only SENDS
+            # the queries, and responses are consumed by the library's background
+            # run() loop, which is not running here.
             d.refresh_status(True)
             return d
         d = self._with_reconnect(_refresh)
@@ -516,7 +463,7 @@ class MideaAdapter:
             None, self._control_sync, changes)
 
 
-# ────────────────────────── controller ──────────────────────────
+# controller
 
 class ACController:
     """
@@ -563,7 +510,7 @@ class ACController:
                               if uid in new_ids}
         self.units = new_units
 
-    # ── status persistence ───────────────────────────────────────
+    # status persistence
 
     def _load_status_store(self) -> None:
         try:
@@ -667,7 +614,7 @@ class ACController:
         self._status_cache.pop(unit_id, None)
         return await self.status(unit_id, max_age_sec=0)
 
-    # ── discovery ────────────────────────────────────────────────
+    # discovery
 
     async def discover(self, wait_for: int = 4) -> Dict[str, List[Dict[str, Any]]]:
         """Scan the LAN for both protocols; returns candidates, not config."""
@@ -707,7 +654,7 @@ class ACController:
 
         return found
 
-    # ── midea cloud token fetch (one-time, then fully local) ─────
+    # midea cloud token fetch (one-time, then fully local)
 
     async def fetch_midea_keys(self, device_id: int,
                                account: Optional[str] = None,

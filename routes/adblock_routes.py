@@ -18,7 +18,7 @@ logger = logging.getLogger("routes.adblock")
 def register_adblock_routes(app: FastAPI):
     client = get_client()
 
-    # ── status / config ──────────────────────────────────────────────────────
+    # status / config
     @app.get("/api/adblock/status")
     async def adblock_status():
         return await client.status()
@@ -27,7 +27,7 @@ def register_adblock_routes(app: FastAPI):
     async def adblock_config():
         return await client.config()
 
-    # ── master switch (bind/unbind :53) + blocking toggles ───────────────────
+    # master switch (bind/unbind :53) + blocking toggles
     @app.post("/api/adblock/service")
     async def adblock_service(payload: dict = Body(default={})):
         return await client.service(str(payload.get("action", "")))
@@ -44,7 +44,7 @@ def register_adblock_routes(app: FastAPI):
     async def adblock_resume():
         return await client.resume()
 
-    # ── blocklists ────────────────────────────────────────────────────────────
+    # blocklists
     @app.post("/api/adblock/refresh")
     async def adblock_refresh():
         return await client.refresh()
@@ -67,7 +67,7 @@ def register_adblock_routes(app: FastAPI):
         return await client.toggle_list(str(payload.get("key", "")),
                                         bool(payload.get("enabled", True)))
 
-    # ── allow / deny rules ────────────────────────────────────────────────────
+    # allow / deny rules
     @app.get("/api/adblock/rules")
     async def adblock_rules():
         return await client.rules()
@@ -90,7 +90,7 @@ def register_adblock_routes(app: FastAPI):
     async def adblock_dig(domain: str = Query(...), type: int = 1):
         return await client.dig(domain, type)
 
-    # ── stats ─────────────────────────────────────────────────────────────────
+    # stats
     @app.get("/api/adblock/stats/summary")
     async def adblock_summary(hours: float = 24.0):
         return await client.summary(hours)

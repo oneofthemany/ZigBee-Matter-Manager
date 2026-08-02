@@ -1,14 +1,13 @@
 /**
- * Test-recovery banner — standalone, dependency-free.
+ * Test-recovery banner — standalone and dependency-free.
  *
- * Loaded as a CLASSIC script (no imports) so it still runs when a test
- * deploy ships broken JavaScript and the ES-module graph dies with a
- * SyntaxError. That exact failure once left a pending batch with no
- * working Confirm/Rollback UI — this file is the escape hatch, so it
- * must never depend on main.js, toasts.js, editor.js or Bootstrap.
+ * A CLASSIC script with no imports, so it still runs when a test deploy ships
+ * broken JavaScript and the ES-module graph dies with a SyntaxError. That exact
+ * failure once left a pending batch with no working Confirm/Rollback UI, so
+ * this must never depend on main.js, toasts.js, editor.js or Bootstrap.
  *
- * editor.js takes over the banner element for in-editor deploys; it calls
- * window.zmmTestBanner.stop() first so the two countdowns don't fight.
+ * editor.js takes over the element for in-editor deploys, calling
+ * window.zmmTestBanner.stop() first so the two countdowns do not fight.
  */
 (function () {
     'use strict';

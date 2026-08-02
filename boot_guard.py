@@ -1,30 +1,11 @@
 #!/usr/bin/env python3
 """
-Boot Guard — Pre-startup rollback for failed test deployments.
-================================================================
-Runs BEFORE main.py via the launcher (or systemd ExecStartPre).
-Uses ONLY stdlib so it cannot be broken by bad code deploys.
+Pre-startup rollback for failed test deployments.
 
-Supports BATCH pending state written by modules/test_recovery.py.
-
-Flow:
-  1. Check if a test deployment is pending (data/.test_pending)
-  2. If pending, check the boot-fail counter (data/.boot_failures)
-  3. If counter >= MAX_FAILURES, the previous start attempt failed:
-     → Restore every backup listed in the batch (or delete new files)
-     → Remove the pending marker and counter
-     → Exit 0 (launcher starts main.py with restored code)
-  4. If counter doesn't exist, this is the first start after deploy:
-     → Create counter with count=1
-     → Exit 0 (let main.py try to start)
-  5. If no test pending, ensure counter is clean:
-     → Remove any stale counter file
-     → Exit 0
-
-Files:
-  data/.test_pending    — written by test_recovery.py (batch schema)
-  data/.boot_failures   — written/read by this script only
-  .editor_backups/      — backup files created by test_recovery.py
+Runs BEFORE main.py, via the launcher or systemd ExecStartPre, using only stdlib
+so a bad deploy cannot break it. If a pending batch has already failed to boot
+MAX_FAILURES times it restores every backup in the batch and clears the markers.
+See docs/upgrades.md.
 """
 
 import json
@@ -34,9 +15,7 @@ import shutil
 import sys
 import time
 
-# ----------------------------------------------------------------------------
 # CONFIGURATION
-# ----------------------------------------------------------------------------
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -51,9 +30,7 @@ LOG_FILE = os.path.join(APP_DIR, "logs", "boot_guard.log")
 
 MAX_FAILURES_BEFORE_ROLLBACK = 1
 
-# ----------------------------------------------------------------------------
 # LOGGING
-# ----------------------------------------------------------------------------
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
@@ -67,10 +44,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("boot_guard")
 
-
-# ----------------------------------------------------------------------------
-# HELPERS
-# ----------------------------------------------------------------------------
 
 def _read_json(path: str) -> dict:
     try:
@@ -198,9 +171,7 @@ def _rollback_entry(entry: dict) -> bool:
         return False
 
 
-# ----------------------------------------------------------------------------
 # MAIN LOGIC
-# ----------------------------------------------------------------------------
 
 def main():
     log.info("Boot guard running...")
@@ -264,9 +235,7 @@ def main():
     return 0
 
 
-# ----------------------------------------------------------------------------
 # ENTRY POINT
-# ----------------------------------------------------------------------------
 
 if __name__ == "__main__":
     try:

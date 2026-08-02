@@ -1,12 +1,10 @@
 """
-Heating anomaly watcher.
+Heating anomaly watcher — on a timer, pulls recent telemetry for each room with
+a known baseline tau and looks for fast-cool / slow-heat anomalies.
 
-Runs on a timer. For each room with a known baseline tau, pulls recent
-telemetry (last ~3 hours), looks for fast-cool / slow-heat anomalies, and
-stores active ones in memory for the dashboard + tips to consume.
-
-Resolved anomalies (where the condition has ended) are moved into a short
-history buffer so the UI can show "was" cards briefly.
+Active ones stay in memory for the dashboard and tips; resolved ones move to a
+short history buffer so the UI can briefly show "was" cards.
+See docs/heating.md.
 """
 from __future__ import annotations
 
@@ -27,11 +25,9 @@ SCAN_INTERVAL_SEC = 300        # every 5 minutes
 HISTORY_KEEP_SEC = 6 * 3600    # keep resolved anomalies for 6h on dashboard
 
 
-# ── Heating-state gate builder ────────────────────────────────────────
-# Ticks are ~1/min; telemetry samples can be at different cadences. We
-# build a piecewise lookup that returns True for any timestamp falling
-# inside or immediately after a "heating active" tick, with a short
-# staleness grace so gaps in the tick log don't silently flip to "off".
+# Ticks are ~1/min and telemetry samples vary, so the gate is a piecewise lookup
+# returning True for any timestamp inside or just after a "heating active" tick,
+# with a staleness grace so gaps in the tick log do not silently read as "off".
 
 GATE_STALENESS_SEC = 180   # 3× expected tick interval — if the last tick
 # is older than this, we don't trust the gate

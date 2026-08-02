@@ -520,12 +520,11 @@ async function refreshPacketStats() {
  * Populate packet statistics
  */
 function populatePacketStats(nodes, summary) {
-    // --- CONFIGURATION ---
+    // CONFIGURATION
     // Define the "Red Line" for network traffic.
     // 5 Packets Per Second (300/min) is generally considered high for a single ZigBee device.
     const PPS_THRESHOLD = 5;
     const PPM_THRESHOLD = PPS_THRESHOLD * 60; // Convert to Per Minute for calculation
-    // ---------------------
 
     // Summary cards
     const onlineCount = nodes.filter(n => n.online).length;

@@ -1,19 +1,9 @@
 """
-Signal Inspector routes.
-========================
+Signal Inspector routes — snapshot, start/stop live streaming (which emits
+signal_inspector_update over the websocket), and clear for a fresh baseline
+before a learn-by-demonstration capture.
 
-A live, device-agnostic view of every raw signal a device emits — ZCL
-attribute reports, cluster commands, Tuya datapoints, Matter attributes and
-any derived state key. Backed by :mod:`modules.signal_inspector`.
-
-Endpoints
----------
-* ``GET  /api/signals/{ieee}``         — current snapshot of all signals.
-* ``POST /api/signals/{ieee}/start``   — begin live streaming for this device
-  (emits ``signal_inspector_update`` over the WebSocket). Returns a snapshot.
-* ``POST /api/signals/{ieee}/stop``    — stop live streaming.
-* ``POST /api/signals/{ieee}/clear``   — drop recorded signals (fresh baseline,
-  e.g. before a learn-by-demonstration capture).
+Backed by modules.signal_inspector. See docs/debugging.md.
 """
 import logging
 from typing import Any, Dict
@@ -101,7 +91,7 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
         inspector.clear(ieee)
         return {"success": True, "ieee": ieee, "signals": []}
 
-    # ---- learn-by-demonstration ---------------------------------------
+    # learn-by-demonstration
 
     def _device(ieee: str):
         try:
@@ -146,7 +136,7 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
 
         from modules.device_profiles import get_profile_store, _to_int
 
-        # --- command -> action mapping ---------------------------------
+        # command -> action mapping
         # A demonstrated button command becomes a named `action` (the z2m/ZHA
         # convention automations trigger on). Keyed by ep/cluster/command.
         if data.get("command"):
@@ -228,7 +218,7 @@ def register_signal_routes(app: FastAPI, get_zigbee_service):
                 dev.state.pop(m["name"], None)
         return {"success": ok, "ieee": ieee, "raw_key": raw_key}
 
-    # ---- mapped-signals management ------------------------------------
+    # mapped-signals management
 
     def _safe(v):
         if v is None or isinstance(v, (bool, int, float, str)):

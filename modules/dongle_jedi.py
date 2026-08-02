@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-Dongle Jedi — Zigbee Coordinator Auto-Detection Module
-=======================================================
-Wraps the standalone Zigbee Serial Interrogator as an importable module
-with async progress streaming for the web-based setup wizard.
-
-Usage from main.py / API:
-    from modules.dongle_jedi import DongleJedi
+Wraps the standalone Zigbee serial interrogator as an importable module with
+async progress streaming for the setup wizard.
 
     jedi = DongleJedi()
-    results = await jedi.scan_async(progress_callback=my_callback)
+    results = await jedi.scan_async(progress_callback=cb)
+
+See docs/onboarding.md.
 """
 
 import asyncio
@@ -22,11 +19,9 @@ from typing import Optional, Callable, Awaitable, List
 
 logger = logging.getLogger("modules.dongle_jedi")
 
-# ---------------------------------------------------------------------------
 # Import the interrogator classes from the standalone script.
 # The script lives alongside this module (copied during deploy).
 # We do a careful import to avoid the CLI entry-point executing.
-# ---------------------------------------------------------------------------
 
 try:
     import serial
@@ -65,9 +60,7 @@ def _ensure_interrogator():
     return mod
 
 
-# ---------------------------------------------------------------------------
 # Progress event types
-# ---------------------------------------------------------------------------
 
 class ScanPhase:
     DISCOVERY = "discovery"         # USB enumeration
@@ -98,9 +91,7 @@ class ScanProgress:
         return d
 
 
-# ---------------------------------------------------------------------------
 # Quick USB enumeration (no serial probing — fast, safe for UI)
-# ---------------------------------------------------------------------------
 
 def list_serial_ports() -> list[dict]:
     """
@@ -126,9 +117,7 @@ def list_serial_ports() -> list[dict]:
     return ports
 
 
-# ---------------------------------------------------------------------------
 # Main wrapper class
-# ---------------------------------------------------------------------------
 
 ProgressCallback = Callable[[ScanProgress], Awaitable[None]]
 
@@ -153,9 +142,7 @@ class DongleJedi:
     def last_results(self) -> list:
         return self._last_results
 
-    # ------------------------------------------------------------------
     # Async scan entry point
-    # ------------------------------------------------------------------
 
     async def scan_async(
             self,
@@ -217,9 +204,7 @@ class DongleJedi:
         finally:
             self._scanning = False
 
-    # ------------------------------------------------------------------
     # Blocking scan (runs in executor thread)
-    # ------------------------------------------------------------------
 
     def _run_scan_blocking(
             self,
@@ -344,9 +329,7 @@ class DongleJedi:
 
         return results
 
-    # ------------------------------------------------------------------
     # Apply detected config to config.yaml
-    # ------------------------------------------------------------------
 
     @staticmethod
     def apply_config(
@@ -485,9 +468,7 @@ class DongleJedi:
 
         return mqtt
 
-    # ------------------------------------------------------------------
     # Check if setup is needed
-    # ------------------------------------------------------------------
 
     @staticmethod
     def needs_setup(config_path: str = "./config/config.yaml") -> dict:

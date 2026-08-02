@@ -1,9 +1,6 @@
-/* ============================================================
-   Presence Users Settings UI
-   ============================================================
+/* Presence Users Settings UI
    Renders into a DOM container of your choice (id='presence-settings-host'
-   by default). Drop the markup in index.html and call initPresenceSettings().
-   ============================================================ */
+   by default). Drop the markup in index.html and call initPresenceSettings(). */
 
 (function () {
     'use strict';
@@ -189,9 +186,7 @@
             : 'Not currently watching.';
     }
 
-    // ----------------------------------------------------------
     // Editor modal
-    // ----------------------------------------------------------
     async function openEditor(userId) {
         // Fetch once, then reuse. The modal is built as a string, so the modes
         // must be in hand before it renders — there is nothing to patch later.
@@ -456,9 +451,7 @@
         }
     }
 
-    // ----------------------------------------------------------
     // Public init
-    // ----------------------------------------------------------
     window.initPresenceSettings = async function () {
         await fetchUsers();
         render();

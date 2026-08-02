@@ -166,7 +166,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
         const data = await res.json();
 
         if (data.success) {
-            // --- OPTIMISTIC UI UPDATE ---
+            // OPTIMISTIC UI UPDATE
             // Compute the expected state change from the command and apply
             // it to the local device state immediately, then refresh the
             // visible UI. We do not wait for the WebSocket echo.
@@ -196,7 +196,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
                 message: `Command ${command}${epLabel} succeeded`,
             });
         } else {
-            // --- FAILURE: toast the user ---
+            // FAILURE: toast the user
             const errMsg = data.error || 'Device did not respond';
             window.toast.error(`Command "${command}"${epLabel} failed: ${errMsg}`);
             addLogEntry({
@@ -1047,9 +1047,7 @@ export async function cleanupOrphans() {
     await fetchAllDevices();
 }
 
-// =============================================================================
 // MATTER INTEGRATION
-// =============================================================================
 
 /**
  * Commission a Matter device via setup code

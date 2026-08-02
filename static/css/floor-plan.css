@@ -1,13 +1,8 @@
-/* ============================================================
-   ZigBee Matter Manager — Floor-plan editor styles
-   ============================================================
-   The editor's SVG emits CSS classes only — every stroke/fill
-   colour is inherited from CSS variables defined here. Theme
-   switches via `[data-theme="dark"]` on <html> repaint instantly
-   without re-rendering the SVG.
-   ============================================================ */
+/* Floor-plan editor styles. The editor's SVG emits CSS classes only, so every
+   colour is inherited from the variables below and a [data-theme] switch
+   repaints without re-rendering the SVG. */
 
-/* ─────────────────────── design tokens (light) ─────────────────────── */
+/* design tokens (light) */
 :root {
     /* Bases ride the hive semantic tokens (hive-tokens.css); fallbacks
        keep the editor usable if that file ever fails to load. */
@@ -63,7 +58,7 @@
     --fp-sun-stroke:       rgba(245, 158, 11, 0.7);
 }
 
-/* ─────────────────────── design tokens (dark) ─────────────────────── */
+/* design tokens (dark) */
 [data-theme="dark"] {
     --fp-canvas-bg:        var(--night, #0b1620);
     --fp-sidebar-bg:       var(--comb, #101e2b);
@@ -117,7 +112,7 @@
     --fp-sun-stroke:       rgba(251, 191, 36, 0.7);
 }
 
-/* ─────────────────────── modal chrome ─────────────────────── */
+/* modal chrome */
 #floorPlanModal .modal-content {
     background: var(--fp-sidebar-bg);
     color: var(--fp-text);
@@ -224,7 +219,7 @@
     border-color: #6366f1;
 }
 
-/* ─────────────────────── canvas HUD ─────────────────────── */
+/* canvas HUD */
 
 #fpScaleBar,
 #fpLegend {
@@ -278,7 +273,7 @@
     box-shadow: 0 0 6px rgba(251, 191, 36, 0.8);
 }
 
-/* ─────────────────────── SVG features ─────────────────────── */
+/* SVG features */
 
 .fp-grid-line-fine  { stroke: var(--fp-grid-fine); }
 .fp-grid-line-minor { stroke: var(--fp-grid-minor); }
@@ -526,17 +521,9 @@
     stroke-dasharray: 0.12 0.08;
 }
 
-/* ============================================================
-   Mobile layout (phones)
-   ============================================================
-   The desktop editor is a fixed 3-column layout — 240px tools/levels rail,
-   flexible canvas, 300px properties rail. On a phone those two rails alone
-   (540px) are wider than the viewport, leaving the canvas zero room. Below
-   768px the rails become off-canvas drawers that slide over the canvas
-   instead of squeezing it: toggled by the header buttons in floor-plan.js
-   (#fpToggleSidebarBtn / #fpTogglePropsBtn), which add/remove
-   .fp-sidebar-open / .fp-props-open on #floorPlanModal.
-   ============================================================ */
+/* Mobile: the desktop rails (240px + 300px) are wider than a phone viewport,
+   leaving the canvas no room, so below 768px they become off-canvas drawers
+   toggled by floor-plan.js. See docs/structure.md. */
 @media (max-width: 767.98px) {
     #floorPlanModal .modal-body {
         position: relative;
@@ -605,14 +592,8 @@
     }
 }
 
-/* ----------------------------------------------------------
-   REDUCED MOTION
-   ----------------------------------------------------------
-   The overlays above loop indefinitely (spinning compass ring,
-   blinking overheat badge, breathing sun beams, particle flow).
-   Each animates opacity/transform from a visible resting state,
-   so stopping them leaves every reading legible — the colour and
-   the badge carry the meaning, the motion was only emphasis. */
+/* REDUCED MOTION — every looping overlay animates from a visible resting state,
+   so stopping them leaves all readings legible. The motion was only emphasis. */
 @media (prefers-reduced-motion: reduce) {
     .fp-thermo-ring,
     .fp-overheat-badge,

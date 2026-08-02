@@ -1,52 +1,9 @@
 """
-modules/frames.py
-=================
 Frames — dynamically-generated dashboards, laid out from device chamber + type.
 
 Pure module: no I/O, no FastAPI, no global state. Wired in by
-``routes/frame_routes.py``.
-
-Terminology
------------
-Hive = the install. Frame = a dashboard. Chamber = a room (see
-``modules/chambers.py``). **Cell = one device tile** — a honeycomb cell is the
-individual hexagon.
-
-Cell kind is precedence-ordered
--------------------------------
-A device carries many capabilities at once — a smart bulb reporting power and
-battery is still a light — so the cell's identity is its most specific *control*
-surface, resolved in this order::
-
-    climate > cover > light > switch > lock > sensor > unknown
-
-``battery`` / ``power_monitoring`` / ``lqi`` never decide cell kind; they render
-as badges. ``unknown`` still renders (name + last seen) rather than being
-silently dropped: a device you can't see is worse than a device you can't use.
-
-Why this module does NOT use CAPABILITY_TO_HA
----------------------------------------------
-There are two capability vocabularies in this codebase and they do not match.
-``DeviceCapabilities.get_capabilities()`` (modules/device_capabilities.py) emits
-``contact_sensor`` / ``motion_sensor`` / ``level_control`` / ``temperature_sensor``.
-``CAPABILITY_TO_HA`` (modules/device_profiles.py) keys are ``contact`` / ``motion``
-/ ``brightness`` / ``temperature``. Only ``on_off``, ``cover``, ``thermostat`` and
-``battery`` coincide. CAPABILITY_TO_HA belongs to the *profiles* layer and is not
-usable against ``capability_list``.
-
-Two deliberate subtleties
--------------------------
-1. The switch cell matches ``switch``, never ``on_off``. The quirk system adds
-   ``on_off`` whenever the cluster exists but *discards* ``switch`` to mean "this
-   is not a controllable actuator" — a Philips SML motion sensor has the OnOff
-   cluster on a controller endpoint, and ``lumi.sensor_magnet`` likewise. Matching
-   ``on_off`` would render motion and contact sensors as toggles.
-
-2. Contact vs motion is disambiguated by state, not capability alone.
-   ``device_capabilities`` maps IAS_ZONE to ``motion_sensor`` for every model
-   except ``lumi.sensor_magnet``, so non-Aqara door sensors (Sonoff, Tuya) arrive
-   typed as motion. A ``contact`` / ``is_open`` state key is stronger evidence and
-   wins — the same reasoning as ``overview.js:hasContactSensing()``.
+routes/frame_routes.py. Cell-kind precedence and the two capability
+vocabularies this deliberately does not mix: docs/frames.md.
 """
 from __future__ import annotations
 
@@ -62,7 +19,7 @@ logger = logging.getLogger("modules.frames")
 
 SCHEMA_VERSION = 1
 
-# ── cell kinds ──────────────────────────────────────────────────────
+# cell kinds
 
 CELL_CLIMATE = "climate"
 CELL_COVER = "cover"
@@ -73,11 +30,9 @@ CELL_SENSOR = "sensor"
 CELL_UNKNOWN = "unknown"
 
 #: Most specific control surface first. The first match decides the cell.
-#:
-#: ``lock`` is declared but nothing emits it yet: DeviceCapabilities has no lock
-#: detection (locks are Nuki, via modules/nuki_controller.py, outside the Zigbee
-#: capability path). It stays here so the precedence order is the whole story
-#: rather than a half-truth, and lands with the non-Zigbee adapters.
+#: ``lock`` is declared but unemitted: DeviceCapabilities has no lock detection
+#: (locks are Nuki, outside the Zigbee capability path). Kept so the precedence
+#: order is the whole story rather than a half-truth.
 _CONTROL_PRECEDENCE: Tuple[Tuple[str, frozenset], ...] = (
     (CELL_CLIMATE, frozenset({"thermostat", "fan_control"})),
     (CELL_COVER, frozenset({"cover", "window_covering"})),
@@ -110,7 +65,7 @@ TAB_OTHER_KEY = "__other__"
 TAB_OTHER_LABEL = "Other"
 TAB_UNASSIGNED_KEY = "__unassigned__"
 
-# ── sensor readouts ─────────────────────────────────────────────────
+# sensor readouts
 
 #: Read-only sensor kinds → the state keys that carry them, in display order.
 #: A single device may produce several (an Aqara THP is temp + humidity + pressure).
@@ -391,7 +346,7 @@ def is_zigbee(device: Dict[str, Any]) -> bool:
     return not protocol or protocol == "zigbee"
 
 
-# ── layout ──────────────────────────────────────────────────────────
+# layout
 
 SPLIT_CHAMBER = "chamber"
 SPLIT_TYPE = "type"
@@ -524,7 +479,7 @@ def build_auto_frame(
     }
 
 
-# ── tabs ────────────────────────────────────────────────────────────
+# tabs
 
 MAX_TABS = 12
 
@@ -601,7 +556,7 @@ def apply_saved_tabs(groups: List[dict], saved: List[dict]) -> List[dict]:
     return out if len(out) > 1 else []
 
 
-# ── saved frames ────────────────────────────────────────────────────
+# saved frames
 
 MAX_FRAMES = 50
 MAX_FRAME_NAME = 64

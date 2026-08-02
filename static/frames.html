@@ -9,10 +9,8 @@
     <title>Frames — ZigBee &amp; Matter Manager</title>
 
     <!-- Theme resolved before the first stylesheet so the page never paints
-         light and flips to dark. Duplicated inline in index.html BY CONVENTION
-         (same reason the manager duplicates the palette): FOUC-critical code
-         must not wait on a network fetch. Keep the storage key and the
-         light/dark default in sync with js/theme-toggle.js. -->
+         light and flips. Inlined by convention in both entry points: FOUC-critical
+         code must not wait on a fetch. Keep in sync with js/theme-toggle.js. -->
     <script>
         (function () {
             try {
@@ -68,11 +66,9 @@
             </div>
         </div>
     </div>
-    <!-- ?view=manager tells the server this is a deliberate switch, so a user
-         whose landing is "frames" isn't redirected straight back here.
-         Deliberately NOT mobile-only, unlike the Frames button in the manager:
-         a landing=frames user who opens the app on a desktop is redirected here,
-         and this is their only way out. Hiding it would strand them. -->
+    <!-- ?view=manager marks a deliberate switch, so a landing=frames user is not
+         redirected straight back. Deliberately not mobile-only: it is the only
+         way out for a landing=frames user on a desktop. -->
     <a href="/?view=manager" class="btn btn-sm btn-outline-light frames-page-switch" title="Open the manager">
         <i class="fas fa-sliders"></i>
         <span class="d-none d-sm-inline ms-1">Manager</span>
@@ -111,10 +107,8 @@
 <script type="module" src="/static/js/dialogs.js"></script>
 <script src="/static/js/theme-toggle.js"></script>
 <script src="/static/js/mobile-helpers.js"></script>
-<!-- PWA geolocation reporting. This page is the PWA start_url, so it is THE
-     phone app — without this, an installed Frames app reports no presence at
-     all. Self-bootstraps from localStorage prefs; the prefs UI lives in the
-     manager's Presence settings. -->
+<!-- This page is the PWA start_url, so it is THE phone app — without this an
+     installed Frames app reports no presence at all. Prefs UI is in the manager. -->
 <script src="/static/js/presence.js"></script>
 <!-- Header badge + "where is everyone" map. Started from frames-page.js once
      auth is ready, same gating as the manager (main.js). -->

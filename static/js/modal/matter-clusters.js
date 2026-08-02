@@ -7,9 +7,7 @@
  * and write for writable attributes.
  */
 
-// ============================================================================
 // RENDER
-// ============================================================================
 
 export function renderMatterClustersTab(device) {
     const nodeId = device.state?.node_id;
@@ -36,9 +34,7 @@ export function initMatterClustersTab(nodeId) {
     window._matterLoadClusters(nodeId);
 }
 
-// ============================================================================
 // LOAD ATTRIBUTES
-// ============================================================================
 
 window._matterLoadClusters = async function (nodeId) {
     const body = document.getElementById('matterClustersBody');
@@ -73,9 +69,7 @@ window._matterLoadClusters = async function (nodeId) {
     }
 };
 
-// ============================================================================
 // RENDER HELPERS
-// ============================================================================
 
 function renderEndpoint(ep, epIdx, nodeId) {
     const totalAttrs = ep.clusters.reduce((sum, c) => sum + c.attributes.length, 0);
@@ -191,9 +185,7 @@ function isLikelyWritable(clusterId, attrId) {
     return writableAttrs[clusterId]?.includes(attrId) || false;
 }
 
-// ============================================================================
 // WRITE ATTRIBUTE
-// ============================================================================
 
 window._matterWriteAttr = async function (nodeId, epId, clusterId, attrId, pathId) {
     const currentEl = document.getElementById(`mattr-val-${pathId}`);

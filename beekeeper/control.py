@@ -35,7 +35,7 @@ def build_app(server: BeekeeperServer) -> FastAPI:
     async def config():
         return server.cfg.to_public_dict()
 
-    # ── service (bind/unbind :53) + blocking toggle ──────────────────────────
+    # service (bind/unbind :53) + blocking toggle
     @app.post("/service/start")
     async def service_start():
         try:
@@ -69,7 +69,7 @@ def build_app(server: BeekeeperServer) -> FastAPI:
         server.resume()
         return {"ok": True, "runtime": server.state.status()}
 
-    # ── blocklists ────────────────────────────────────────────────────────────
+    # blocklists
     @app.post("/refresh")
     async def refresh():
         return await server.refresh_now()
@@ -94,7 +94,7 @@ def build_app(server: BeekeeperServer) -> FastAPI:
         return await server.set_source_enabled(str(payload.get("key", "")),
                                                bool(payload.get("enabled", True)))
 
-    # ── allow / deny rules ────────────────────────────────────────────────────
+    # allow / deny rules
     @app.get("/rules")
     async def get_rules():
         return {"allow": server.list_rules("allow"),
@@ -128,7 +128,7 @@ def build_app(server: BeekeeperServer) -> FastAPI:
     async def dig(domain: str = Query(...), type: int = 1):
         return await server.dig(domain, type)
 
-    # ── stats ─────────────────────────────────────────────────────────────────
+    # stats
     @app.get("/stats/summary")
     async def stats_summary(hours: float = 24.0):
         return await asyncio.to_thread(server.stats.summary, hours)

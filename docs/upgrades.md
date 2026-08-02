@@ -994,3 +994,311 @@ Known limitations and planned improvements:
 - [README — In-App Upgrades](../README.md#-in-app-upgrades) — feature overview and quick start
 - [docs/structure.md](structure.md) — full project file layout
 - [docs/multipan.md](multipan.md) — MultiPAN container internals (relevant for understanding the swap timing on Sonoff MG24 systems)
+## Version scheme (CalVer)
+
+Replaces plain semver as of the 2026-07-20 cutover. Implemented in
+`modules/upgrade_manager.py`.
+
+| Shape | Example | Significance | UI channel |
+| --- | --- | --- | --- |
+| `MM.YYYY` | `07.2026` | major — monthly milestone | Monthly |
+| `DD.MM.YYYY` | `20.07.2026` | minor — daily release | Daily |
+| `DD.NN.MM.YYYY` | `20.01.07.2026` | patch — same-day revision | Bleeding edge |
+
+`NN` is a 1-based counter of revisions published after that day's daily.
+
+The tag's own shape **is** its significance. There is no diff-based bump maths
+as old semver had, because a date has no inherent magnitude. Fewer components
+means a bigger, less frequent release.
+
+"Testing" (channel `prerelease`) is a fully separate axis: it means the GitHub
+release is flagged Pre-release, and applies to a tag of any of the three shapes
+above.
+
+Old semver tags (e.g. `3.4.7`) are still recognised for comparison so existing
+installs cross over cleanly. They always sort older than every CalVer tag, and
+are treated as maximally significant ("major"-equivalent) so an update is
+offered on whatever channel the user is on. `_KIND_RANK` gates channels off the
+tag shape directly — a release no longer needs comparing against current to
+know its significance.
+
+## Rust component build markers
+
+Native wheels are baked into the image at build time. `build.sh` / `upgrade.sh`
+read these marker files when generating the Containerfile; `"true"` installs the
+Rust toolchain and builds the wheel into the image.
+
+| Marker | Crate | Purpose |
+| --- | --- | --- |
+| `appender.enabled` | `zmm_telemetry` | fast DuckDB appender |
+| (own marker) | `zmm_eq` | Cast EQ DSP |
+
+The two crates are independent and get their own markers — see build.sh Part 2.
+
+The markers live in `STATE_DIR` (the shared data volume), so a toggle from the
+UI is picked up by the **next** host-side image build. It cannot change the
+image that is already running.
+
+## Live-edit detection
+
+The web editor and the test-batch ("time machine") write changes straight into
+`/app`. Those changes are not in git and are not carried into a freshly-built
+image, so a swap throws them away. `modules/live_edits.py` enumerates the
+divergence so the upgrade flow can warn — and offer to wait — before the point
+of no return.
+
+Detection is best-effort and never raises: the upgrade UI must keep working
+even if detection fails. Three strategies, in priority order:
+
+1. **Release manifest.** `build.sh` bakes `/app/.release_manifest` into the
+   image — a `sha256sum` line per shipped file. Comparing it against the tree on
+   disk gives exact paths for modified, added and deleted files with no git
+   dependency. Authoritative, and self-clearing: a fresh image's manifest
+   matches its own files by construction, so a completed upgrade always drops
+   the count to 0.
+2. **git.** Only present when running from a dev checkout — `.git` is excluded
+   from the image by `build.sh`'s `.dockerignore`, since a depth-1 `.git` is
+   ~7.5 MB, most of it the screenshot blobs that exclusion exists to strip.
+   Kept so detection still works when developing outside a container.
+3. **`.editor_backups` fallback.** Last resort, for pre-manifest images. Backups
+   record that a file was edited at *some* point; they live in the `data/` bind
+   mount and are never pruned, so they **outlive** the upgrade that discarded
+   the edit. Counting them naively reports the same phantom edits forever, so
+   each backup name is resolved back to a real path and kept only where the file
+   still diverges from the image (mtime newer than the image build).
+
+## Manager watchdog
+
+`manager/watchdog.py` runs as an asyncio task inside the manager, started from
+`app.py`'s lifespan. It is conservative by design, so it never makes things
+worse:
+
+- **Startup grace** — ignores health within `STARTUP_GRACE` of the container's
+  `StartedAt`, and after every restart, so a slow boot is not mistaken for a
+  failure and it cannot restart-loop.
+- **Escalate slowly** — only after `FAIL_THRESHOLD` consecutive unhealthy checks
+  does it restart the container.
+- **Stand down during upgrades** — never acts while a build, swap or rollback is
+  in progress; that is the watcher's job and the two must not fight. Likewise
+  for the ollama container while `manager.ollama` runs an image update.
+- **Stand down during editor test deploys** — a restart-type test deploy
+  restarts the app *in-process* (`os.execl`), so the container's `StartedAt`
+  never changes and the normal startup grace cannot protect the boot. While
+  `data/.test_pending` is fresh the test-recovery machinery (confirm timer,
+  `boot_guard`) owns the outcome; restarting the container mid-test destroys the
+  confirm window and can push `boot_guard` into rolling back a perfectly healthy
+  batch.
+- **Cap restarts** — after `MAX_RESTARTS` it stops and reports `exhausted`,
+  needing manual intervention, rather than thrashing.
+
+Two independent targets: the app container (`ZMM_APP_HEALTH_URL`) and the
+optional ollama sibling (its `/api/version`, silently skipped when the container
+does not exist). Each keeps its own streak and restart counters, so an ollama
+incident never eats into the app's restart budget.
+
+Health checks try the configured URL then the other scheme, because the app
+serves HTTPS but runs plain HTTP in some states — before a self-signed cert
+exists on first run. A scheme mismatch read as "unhealthy" would restart a
+healthy app on a loop.
+
+All thresholds are env-tunable. State is exposed via `get_state()` for the UI.
+
+## Boot Guard
+
+`boot_guard.py` runs **before** `main.py`, via the launcher or systemd
+`ExecStartPre`, and uses only the standard library so it cannot be broken by a
+bad code deploy. It supports the batch pending-state written by
+`modules/test_recovery.py`.
+
+Flow:
+
+1. Check whether a test deployment is pending (`data/.test_pending`).
+2. If pending, check the boot-fail counter (`data/.boot_failures`).
+3. If the counter is at or above `MAX_FAILURES`, the previous start attempt
+   failed: restore every backup listed in the batch (or delete files that were
+   newly added), remove the pending marker and the counter, and exit 0 so the
+   launcher starts `main.py` with restored code.
+4. If the counter does not exist, this is the first start after a deploy: create
+   it at 1 and exit 0, letting `main.py` try to start.
+5. If no test is pending, remove any stale counter file and exit 0.
+
+## Ollama sibling container
+
+`modules/ollama_manager.py` runs a local Ollama model server as a **sibling
+container**. ZMM ships as a root podman container with no podman/docker CLI
+inside it — slim image, sudo stripped — so it does not shell out to a binary
+that is not there. Instead it drives the **host's** container runtime over its
+Docker-compatible REST API via a mounted socket.
+
+Two auto-detected modes:
+
+- **socket** — the host's podman/docker socket is mounted in (e.g.
+  `/run/podman/podman.sock`). The `ollama` container is created, started, and
+  has models pulled over the REST API plus the Ollama API, with no CLI needed.
+  This is the path for the normal containerised deployment.
+- **cli** — a `podman` or `docker` binary is on `PATH` (ZMM running natively or
+  in dev), so it shells out, preserving the original behaviour.
+
+Everything privileged is **user-triggered**: the install and pull endpoints exist
+but only run when the operator clicks through in the UI, and only when the
+`HostCapabilityAssessor` says the host can actually back a model.
+
+Once the sibling container is up it publishes 11434 on the host. From inside the
+slirp4netns ZMM container the host is reached via the slirp gateway, so the model
+URL defaults to `http://10.0.2.2:11434`, overridable with `ZMM_OLLAMA_URL` — set
+it to the host's LAN IP if the gateway route is not available.
+
+## Safe deploy
+
+`modules/safe_deploy.py` replaces a naive `os.execl` restart with a
+systemd-aware pipeline:
+
+1. Snapshot the current working code to `./backups/<timestamp>/`
+2. Validate all `.py` files with a `py_compile` syntax check
+3. Restart via `systemctl`, so systemd tracks the process
+4. Health-check loop, polling `/api/devices` for a 200
+5. Auto-rollback if the health check fails within the timeout
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/system/deploy` | full pipeline: backup, restart, health |
+| `POST /api/system/rollback` | manual rollback to the last backup |
+| `GET /api/system/deploy/status` | current deploy state |
+| `GET /api/system/backups` | list available backups |
+
+The health check cannot run in the process serving the request — `systemctl
+restart` kills it. So the flow is two-phase: write a deploy marker carrying the
+`backup_id`, restart, and let the **new** process find the marker, validate
+health, and restore plus restart again if it fails.
+
+Restarting via systemctl requires the service user to have passwordless sudo for
+those specific commands:
+
+```
+sean ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart zigbee_manager
+sean ALL=(ALL) NOPASSWD: /usr/bin/systemctl status zigbee_manager
+```
+
+## Disaster recovery from the manager
+
+`manager/recovery.py` replaces the old `recovery_server.py`, which ran *inside*
+the app container — launched by `launcher.py` on a boot crash — and so could
+only exist while that container was alive. Moving recovery to the manager makes
+it strictly more capable:
+
+- Crash records, pending markers and editor backups live under the app's
+  `/app/data` bind mount (`${DATA_DIR}/data` on the host), which the manager also
+  mounts — readable and writable **even with the app container dead**.
+- App code files (`/app/...`) are reached through the container runtime's archive
+  API (`GET`/`PUT /containers/{name}/archive`) which, like `podman cp`, works on
+  stopped containers too.
+- "Retry the app" writes `data/.recovery_resume`; the launcher's recovery standby
+  polls for it and re-runs `main.py`. If the container is dead entirely, the
+  manager restarts it instead.
+
+The launcher signals recovery mode with `data/.recovery_active` and records the
+crash in `data/last_crash.json` — the same contract `recovery_server.py` used.
+Backups moved from `/app/.editor_backups` to `/app/data/.editor_backups` so they
+survive image swaps and are host-visible.
+
+## Blue-green container upgrades
+
+`modules/upgrade_manager.py` architecture:
+
+1. The app polls the GitHub releases API for new versions (CalVer scheme above).
+2. The app writes trigger files to a shared volume directory.
+3. A host-side watcher — a systemd-path unit, or a polling fallback — picks them
+   up.
+4. Host-side `upgrade.sh` builds the new image, swaps containers, and rolls back
+   on failure.
+5. State persists in `~/.zigbee-matter-manager/state/version.json`.
+
+**The running app never directly calls podman or docker.** All container
+operations happen on the host via the trigger mechanism, which keeps the
+container unprivileged and works across any Linux + podman/docker combination.
+
+Files in the upgrade shared volume (`/app/data/upgrade` inside the container):
+
+| File | Role |
+| --- | --- |
+| `trigger` | created by the app — action + payload; the watcher deletes it after reading |
+| `status.json` | the watcher writes progress; the app polls |
+| `build.log` | full build output; the app streams it to the UI |
+| `lock` | prevents concurrent upgrade operations |
+
+`version.json` holds the installed version, previous version, auto-update
+preferences and last check time.
+
+A "failed" host status combined with a freshly-built image means a previous swap
+rolled back at container start, so a retry is allowed.
+
+## Test and recovery (code editor)
+
+`modules/test_recovery.py` deploys code changes with automatic rollback,
+supporting both single-file (legacy) and multi-file batch deploys. **All files in
+a batch share one backup group and roll back together**, which is required when
+edits span dependent files — adding a new module plus updating its import site.
+
+1. The user stages N files and presses "Test".
+2. Every existing file is backed up, every new one written, and a single pending
+   batch recorded.
+3. Frontend files trigger a WebSocket reload then a confirm dialog; Python files
+   trigger a service restart, a startup health check, then confirm.
+4. Confirm clears the pending state and keeps the backups.
+5. A timeout, or a failed restart, atomically rolls back the whole batch.
+
+Pending state is persisted to disk so it survives service restarts, and is
+consumed by `boot_guard.py` on failed boots. Pending file:
+`<APP_DIR>/data/.test_pending`. Backups: `<APP_DIR>/.editor_backups/`.
+
+### Pre-flight checks
+
+A syntax error guarantees a boot crash, so `.py` files are compile-checked
+before anything touches disk, rather than discovering it through a
+restart → crash → rollback cycle. JSON and YAML get exact parsers too — broken
+YAML bricks config load just as hard.
+
+**JavaScript is deliberately not blocked**: the server-side check is a heuristic
+bracket balancer, and a false positive would leave no escape hatch. The editor
+compile-checks JS client-side with the real engine instead.
+
+Boot can eat most of the confirm window, and the user can only confirm once the
+app is serving again, so the window restarts after a service restart. "New code
+crashes the boot" is `boot_guard`'s job, not this wall clock's.
+
+## SGLang sibling container
+
+`modules/sglang_manager.py` mirrors the `OllamaManager` pattern, but SGLang
+differs in two ways that shape the module:
+
+- **GPU-only.** It realistically needs a CUDA GPU with real VRAM headroom.
+  Install is refused unless `HostCapabilityAssessor` marks the backend viable
+  **and** NVIDIA CDI passthrough is available to the runtime.
+- **Model at launch.** There is no separate pull step — the server starts with
+  `--model-path <hf-repo>` and downloads weights into the mounted HuggingFace
+  cache volume on first boot. Changing model means recreating the container.
+
+Reachability mirrors Ollama: the sibling publishes 30000 on the host, so from a
+slirp4netns ZMM container that is `http://10.0.2.2:30000`, overridable with
+`ZMM_SGLANG_URL`.
+
+## Manager-side upgrade actions
+
+`manager/upgrade.py` gives the manager **rollback** and **image retention**, so
+both work even when the app is down — the whole point of the sidecar.
+
+It reuses the existing host-watcher contract rather than inventing a second one:
+the manager mounts `DATA_DIR` and writes the same `data/upgrade/trigger` file the
+app's `upgrade_manager` writes, and the host watcher does the actual work.
+
+- **Rollback** — `do_rollback` already accepts any local image tag via the
+  `previous_image_tag` payload field, so "roll back to a specific version" is
+  just a trigger naming one of the retained images.
+- **Retention / GC** — `do_gc` reads `retention_count` from
+  `data/state/version.json`; the manager edits that field and can write a `gc`
+  trigger to apply it immediately.
+
+Actions require a bearer token (`data/state/manager_token`, generated on first
+start, mode 0600). The app's Upgrade tab shows the token to authenticated users,
+and it is also readable on the host. Reads stay unauthenticated, like the rest of
+the manager.

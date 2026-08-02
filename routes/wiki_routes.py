@@ -1,17 +1,10 @@
 """
-Wiki routes — serve the bundled ``docs/*.md`` as an in-app documentation wiki.
+Serve the bundled docs/*.md as an in-app wiki.
 
-The container image keeps ``docs/*.md`` (the ``docs/images`` screenshots are
-excluded at build time to save space, so image references in the markdown will
-not resolve — that is expected for the prototype).
-
-  GET /api/wiki          — list available docs  → {"docs": [{slug, title}]}
-  GET /api/wiki/{slug}   — one rendered doc      → {slug, title, html}
-
-Markdown is rendered server-side with markdown-it-py (already present in the
-image via ``rich``), with raw-HTML disabled so shipped docs can't inject markup.
-Slugs are validated against the actual on-disk file list, so there is no path
-traversal: only files we enumerated under ``docs/`` are ever read.
+Rendered server-side with markdown-it-py and raw HTML disabled, so shipped docs
+cannot inject markup. Slugs are validated against the enumerated on-disk file
+list, so there is no path traversal. Screenshot images are excluded from the
+image at build time, so those references will not resolve.
 """
 import logging
 from pathlib import Path

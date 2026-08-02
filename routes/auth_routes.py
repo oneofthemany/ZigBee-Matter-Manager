@@ -1,35 +1,8 @@
 """
-Auth API routes — MFA-aware version.
+Auth API routes — login, MFA enrolment and verification, lockout administration,
+and user/group/token CRUD.
 
-Login flow
-----------
-Step 1:  POST /api/auth/login                 username + password
-         → 200  {success: true, ...}                       (no MFA, fully logged in)
-         → 200  {mfa_required: true, challenge: "..."}     (MFA needed)
-         → 401  {detail: "..."}                            (rejected)
-         → 423  {detail: "...", locked_until: ts}          (account/IP locked)
-         → 403  {detail: "...", lan_only_violation: true}  (must be on LAN)
-
-Step 2:  POST /api/auth/login/mfa             challenge + code
-         → 200  {success: true, ...}                       (TOTP or recovery OK)
-         → 401  {detail: "..."}                            (bad code)
-
-MFA enrolment (self-service, while already logged in)
------------------------------------------------------
-POST   /api/auth/mfa/enrol/start                 → returns secret + otpauth URI
-POST   /api/auth/mfa/enrol/finish                → confirm with TOTP, get recovery codes
-POST   /api/auth/mfa/disable                     → self-disable (re-prompts password)
-POST   /api/auth/mfa/recovery-codes/regenerate   → new set, invalidates old
-GET    /api/auth/mfa/status                      → state for current user
-
-Admin
------
-GET    /api/auth/lockouts                        list locked accounts
-POST   /api/auth/lockouts/{username}/unlock      force-unlock
-POST   /api/auth/users/{username}/disable-mfa    admin: blow away MFA for a user
-GET    /api/auth/network                         show network policy
-
-Plus everything from the previous round (user/group/token CRUD).
+Login is two-step when MFA is enabled. Full status/response table: docs/auth.md.
 """
 
 from __future__ import annotations
@@ -54,7 +27,7 @@ from modules.auth_network import NetworkResolver
 logger = logging.getLogger("routes.auth")
 
 
-# --- request models --------------------------------------------------------
+# request models
 
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=32)
@@ -115,7 +88,7 @@ class IssueTokenRequest(BaseModel):
     device_id: Optional[str] = None
 
 
-# --- registration ----------------------------------------------------------
+# registration
 
 def register_auth_routes(
         app: FastAPI,
@@ -171,7 +144,7 @@ def register_auth_routes(
             path="/",
         )
 
-    # ---- public --------------------------------------------------------
+    # public
 
     @app.post("/api/auth/login")
     async def login(req: LoginRequest, request: Request, response: Response):
@@ -267,7 +240,7 @@ def register_auth_routes(
             "is_lan": _net().is_lan(_net().resolve(request)),
         }
 
-    # ---- MFA enrolment (self-service) ----------------------------------
+    # MFA enrolment (self-service)
 
     @app.post("/api/auth/mfa/enrol/start")
     async def mfa_start(
@@ -347,7 +320,7 @@ def register_auth_routes(
     ):
         return _sec().mfa_status(principal.user.username)
 
-    # ---- admin: lockouts and MFA reset ---------------------------------
+    # admin: lockouts and MFA reset
 
     @app.get("/api/auth/lockouts")
     async def list_lockouts(_=Depends(require_scope("admin"))):
@@ -376,7 +349,7 @@ def register_auth_routes(
         net = _net()
         return net.describe()
 
-    # ---- users (admin) -------------------------------------------------
+    # users (admin)
 
     @app.get("/api/auth/users")
     async def list_users(_=Depends(require_scope("admin"))):
@@ -462,15 +435,9 @@ def register_auth_routes(
         sec.mfa.pop(username, None)
         _auth()._save_locked()
 
-        # Cascade: remove the matching presence user.
-        #
-        # Presence users live in a separate registry keyed by user_id, linked to
-        # an account only by the convention that the two names match (the Mobile
-        # presence tick creates it that way). Left behind, the orphan keeps
-        # reporting a location for someone who no longer has an account, and any
-        # policy keyed on the account — MFA, for one — silently fails closed
-        # against a user record that isn't there. That mismatch is confusing
-        # precisely because both halves look correct in isolation.
+        # Cascade: remove the matching presence user. Left behind, the orphan keeps
+        # reporting a location for someone with no account, and any policy keyed on
+        # the account (MFA) fails closed against a user record that is not there.
         removed_presence: List[str] = []
         try:
             from modules.presence_users import get_presence_manager
@@ -502,7 +469,7 @@ def register_auth_routes(
             )
         return {"success": True, "presence_users_removed": removed_presence}
 
-    # ---- groups (admin) ------------------------------------------------
+    # groups (admin)
 
     @app.get("/api/auth/groups")
     async def list_groups(_=Depends(require_scope("admin"))):
@@ -537,7 +504,7 @@ def register_auth_routes(
             raise HTTPException(404, "Group not found")
         return {"success": True}
 
-    # ---- scopes --------------------------------------------------------
+    # scopes
 
     @app.get("/api/auth/scopes")
     async def list_scopes(_=Depends(require_authenticated)):
@@ -553,7 +520,7 @@ def register_auth_routes(
             ]
         }
 
-    # ---- tokens --------------------------------------------------------
+    # tokens
 
     @app.get("/api/auth/tokens")
     async def list_tokens(

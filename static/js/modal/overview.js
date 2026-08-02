@@ -96,7 +96,7 @@ export function renderOverviewTab(device) {
         const hasOnOff = hasCluster(0x0006) && device.model?.includes('SML');  // Philips motion sensors
         const hasTuya = hasCluster(0xEF00); // Tuya Cluster (0xEF00) for radar sensors
 
-        // --- Explicitly allow Tuya _TZE manufacturers ---
+        // Explicitly allow Tuya _TZE manufacturers
         const isTuyaSensor = (device.manufacturer || '').startsWith('_TZE') || (device.manufacturer || '').startsWith('_TZ3');
 
         return hasOccupancyCluster || hasIASZone || hasOnOff || hasTuya || isTuyaSensor;
@@ -345,7 +345,7 @@ export function renderOverviewTab(device) {
     `;
 }
 
-// === EXPORTED SAVE FUNCTION ===
+// EXPORTED SAVE FUNCTION
 export async function saveConfig(e) {
     e.preventDefault();
     const btn = document.getElementById('saveConfigBtn');

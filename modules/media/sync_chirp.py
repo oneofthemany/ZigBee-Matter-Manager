@@ -1,19 +1,11 @@
 """
-Acoustic chirp calibrator — the OpenZone §6.2 sensor (chirp calibration).
+Acoustic chirp calibrator — the OpenZone 6.2 sensor.
 
-The stream-mode status sensor aligns what devices REPORT playing; it cannot
-see each device's output-pipeline latency (DAC chain, speaker DSP) or, of
-course, the speed of sound. This module measures the audio in the air:
-during a running session each device plays a short logarithmic chirp in its
-own time slot, a microphone at the server records the room, and GCC-PHAT
-matched filtering recovers each chirp's arrival time to sub-millisecond
-precision. Differencing arrivals across devices cancels everything common
-(mic start latency, mic clock offset, shared acoustic path), leaving the
-true inter-device misalignment — which cast_sync converts into trims.
-
-Pure DSP + capture; all session state stays in cast_sync. numpy only (no
-scipy). sounddevice is imported lazily so the module loads on hosts with no
-audio stack and fails with a clear message only when calibration is used.
+Measures the audio in the air, which the status sensor cannot: each device
+chirps in its own slot, a mic records, and GCC-PHAT recovers arrival times.
+Differencing across devices cancels everything common, leaving true
+misalignment. Pure DSP, numpy only, sounddevice imported lazily.
+See docs/speaker_sync.md.
 """
 from __future__ import annotations
 
