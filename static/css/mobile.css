@@ -182,7 +182,8 @@ html, body {
     /* me-1 on the icons is !important (Bootstrap utility) — needs
        !important back, but only while the labels are hidden */
     .zmm-icon-rail:not(.labels-expanded) .nav-link .fas,
-    .zmm-icon-rail:not(.labels-expanded) .nav-link .far {
+    .zmm-icon-rail:not(.labels-expanded) .nav-link .far,
+    .zmm-icon-rail:not(.labels-expanded) .nav-link .zmm-openzone-icon {
         margin-right: 0 !important;
     }
 

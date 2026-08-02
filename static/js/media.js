@@ -1544,7 +1544,7 @@ function renderGroupBuilder() {
             <li class="nav-item">
               <button class="nav-link py-1 px-3" id="mediaGroupTabSync"
                       onclick="window.mediaGroupTab('sync')">
-                <i class="fab fa-chromecast me-1"></i>OpenZone <span class="badge bg-warning text-dark ms-1">beta</span></button>
+                <i class="zmm-openzone-icon me-1"></i>OpenZone <span class="badge bg-warning text-dark ms-1">beta</span></button>
             </li>
             <li class="nav-item ms-auto">
               <button class="nav-link py-1 px-3" onclick="window.mediaOpenGroupBuilder()">

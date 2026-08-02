@@ -635,3 +635,30 @@ body {
 @media (max-width: 575.98px) {
     .zmm-zone-spec { height: 64px; }
 }
+
+
+/* OPENZONE MARK — three comb cells emitting a broadcast fan. OpenZone is our
+   own multi-speaker transport, so it must not wear the Chromecast glyph; the
+   comb ties it to the hive motif and the fan says "sent over the air".
+   One mark, not two glyphs side by side. The fan's centre sits on the
+   perpendicular bisector of the two outer cell corners it emits between
+   (10.83,9.575) and (5.65,12.565), so it is symmetric about their 60deg
+   bisector and every arc is cut on the two rays aiming at those corners —
+   the outermost arc lands exactly on them. Paint order carries the rest:
+   arcs first, cells over the top, so the arcs come out from under the comb
+   rather than sitting beside it. Adjusting the cells means recomputing the
+   centre; scratch geometry is not kept, the corners above are the anchors.
+   Painted as a mask rather than an <svg> so it inherits currentColor and
+   follows nav-pill active/muted states like the Font Awesome glyphs it sits
+   beside. Sized above 1em because the artwork reaches the viewBox edges,
+   where FA glyphs carry built-in padding. */
+.zmm-openzone-icon {
+    display: inline-block;
+    width: 1.2em;
+    height: 1.2em;
+    vertical-align: -0.24em;
+    background-color: currentColor;
+    --openzone-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0.50 1.06 12.38 12.38'%3E%3Cg fill='none' stroke='%23000' stroke-width='0.64' stroke-linecap='round'%3E%3Cpath d='M8.34 9.41 A1.10 1.10 0 0 1 6.75 10.33'/%3E%3Cpath d='M9.58 9.49 A2.35 2.35 0 0 1 6.20 11.45'/%3E%3Cpath d='M10.83 9.57 A3.60 3.60 0 0 1 5.65 12.57'/%3E%3C/g%3E%3Cg fill='%23000'%3E%3Cpolygon points='1.0,3.9 2.55,1.215 5.65,1.215 7.2,3.9 5.65,6.585 2.55,6.585'/%3E%3Cpolygon points='1.0,9.88 2.55,7.195 5.65,7.195 7.2,9.88 5.65,12.565 2.55,12.565'/%3E%3Cpolygon points='6.18,6.89 7.73,4.205 10.83,4.205 12.38,6.89 10.83,9.575 7.73,9.575'/%3E%3C/g%3E%3C/svg%3E");
+    -webkit-mask: var(--openzone-mark) center / contain no-repeat;
+    mask: var(--openzone-mark) center / contain no-repeat;
+}

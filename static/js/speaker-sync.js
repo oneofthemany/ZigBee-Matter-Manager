@@ -77,7 +77,7 @@ async function render() {
       <li class="nav-item">
         <button class="nav-link${active === 'speakersZonePane' ? ' active' : ''}"
                 data-bs-toggle="tab" data-bs-target="#speakersZonePane">
-          <i class="fas fa-volume-up me-1"></i> <span class="tab-label">OpenZone</span>
+          <i class="zmm-openzone-icon me-1"></i> <span class="tab-label">OpenZone</span>
         </button>
       </li>
       <li class="nav-item">
@@ -99,7 +99,7 @@ async function render() {
     <div class="tab-pane fade${active === 'speakersZonePane' ? ' show active' : ''}" id="speakersZonePane">
     <div class="card shadow-sm mb-3">
       <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-        <span class="fw-bold"><i class="fas fa-volume-up me-1"></i> OpenZone</span>
+        <span class="fw-bold"><i class="zmm-openzone-icon me-1"></i> OpenZone</span>
         <div>
           <button class="btn btn-success btn-sm" onclick="speakerSyncSave()">
             <i class="fas fa-save me-1"></i> Save
