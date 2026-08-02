@@ -1168,9 +1168,24 @@ class CastSyncPoc:
                     if abs(residual) > jump_min \
                             and (concordant
                                  or (not st.acquired and len(st.err_hist) >= 2)):
-                        st.pos += med3 * RATE
-                        st.shift += med3 * RATE
-                        st.moved_s += med3
+                        # Clamp to the timeline that exists (open-zone.md §A.2).
+                        # Defensive: this runs inside the monitor's catch-all,
+                        # so a source without the accessor would not degrade
+                        # the clamp — it would kill every correction.
+                        step = med3 * RATE
+                        _latest = getattr(self._source, "latest_sample", None)
+                        ceil = ((_latest() - _rs.READ_MARGIN
+                                 - RATE * STREAM_BLOCK_S)
+                                if callable(_latest) else float("inf"))
+                        if st.pos + step > ceil:
+                            step = max(0.0, ceil - st.pos)
+                            logger.warning(
+                                f"Sync stream resync {st.name} clamped to the "
+                                f"write head: wanted {med3 * 1000:+.0f} ms, "
+                                f"moved {step / RATE * 1000:+.0f} ms")
+                        st.pos += step
+                        st.shift += step
+                        st.moved_s += step / RATE
                         st.slew_s = 0.0       # jump supersedes any pending slew
                         if st.resampler is not None:
                             st.resampler.reset()

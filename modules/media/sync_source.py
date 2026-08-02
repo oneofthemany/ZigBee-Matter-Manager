@@ -79,6 +79,9 @@ class GeneratedSource:
     def earliest_sample(self) -> int:
         return -(1 << 62)          # closed-form: seekable arbitrarily far back
 
+    def latest_sample(self) -> int:
+        return 1 << 62             # closed-form: no write head to overtake
+
     def buffered_s(self) -> float:
         return float("inf")
 
@@ -293,6 +296,12 @@ class MediaSource:
         """Oldest timeline sample still resident. A reader positioned before
         this gets silence, so it is the floor for any start position."""
         return self._ring.start
+
+    def latest_sample(self) -> int:
+        """Newest timeline sample written (open-zone.md §A.2). A reader at or
+        past this overtakes the write head, which is committed as silence for
+        the whole zone — so it is the ceiling for any move."""
+        return self._ring.end
 
     def buffered_s(self) -> float:
         return (self._ring.end - self._ring.start) / self._rate
