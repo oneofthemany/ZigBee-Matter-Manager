@@ -52,6 +52,11 @@ STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
 STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
 STREAM_RECONNECT_GRACE_S = 15.0
+# Floor between forced re-LOADs of the same receiver. A LOAD costs the device
+# its buffer and several seconds of re-acquisition, so it is the last rung of
+# the ladder and must not be reachable in a tight loop — if the first one did
+# not take, neither will three more in the same ten seconds.
+STREAM_RELOAD_MIN_INTERVAL_S = 30.0
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
 STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
@@ -190,6 +195,8 @@ class _Stream:
         self.cooldown_until: float = 0.0   # skip polls until then after a jump
         self.resyncs: int = 0
         self.reconnects: int = 0     # control-socket resets seen this session
+        self.reloads: int = 0        # receiver re-LOADs forced this session
+        self.last_reload: float = 0.0
         self.stats: dict = {}
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
         self.rate_prior: float = 0.0
@@ -1148,9 +1155,13 @@ class CastSyncPoc:
                         self._model_learn(st, "lag_s", lag - st.precomp_s)
                         batch.append(self._sample_row(st, "startup", lag=lag))
                     error = lag - self._target_lag   # >0: behind, serve faster
+                    # Rebuilt each poll, so every counter has to be restated
+                    # here — anything written into stats elsewhere is wiped.
                     st.stats = {"offset_ms": round(error * 1000),
                                 "rtt_ms": "n/a", "late": 0,
                                 "resyncs": st.resyncs,
+                                "reconnects": st.reconnects,
+                                "reloads": st.reloads,
                                 "drift_ppm": round(st.rate_ppm)}
                     batch.append(self._sample_row(st, "poll", lag=lag,
                                                   error=error))
@@ -1177,8 +1188,11 @@ class CastSyncPoc:
                         ceil = ((_latest() - _rs.READ_MARGIN
                                  - RATE * STREAM_BLOCK_S)
                                 if callable(_latest) else float("inf"))
+                        shortfall = 0.0
                         if st.pos + step > ceil:
-                            step = max(0.0, ceil - st.pos)
+                            clamped = max(0.0, ceil - st.pos)
+                            shortfall = (step - clamped) / RATE
+                            step = clamped
                             logger.warning(
                                 f"Sync stream resync {st.name} clamped to the "
                                 f"write head: wanted {med3 * 1000:+.0f} ms, "
@@ -1198,6 +1212,20 @@ class CastSyncPoc:
                                                       error=med3))
                         logger.info(f"Sync stream resync {st.name}: "
                                     f"{med3 * 1000:+.0f} ms")
+                        # The reader is at the live edge and cannot gain on
+                        # it, so what the clamp could not move is a gap only a
+                        # fresh LOAD can close. Not awaited: the LOAD is a
+                        # round-trip to the device and the poll pass owns the
+                        # other four speakers.
+                        if shortfall > STREAM_JUMP_MIN_S and (
+                                time.monotonic() - st.last_reload
+                                > STREAM_RELOAD_MIN_INTERVAL_S):
+                            # Stamped here, not in the coroutine: the interval
+                            # has to close from the moment the reload is
+                            # decided, or a second poll can schedule another
+                            # before the first has run.
+                            st.last_reload = time.monotonic()
+                            asyncio.create_task(self._reload_stream(st))
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
                             or len(st.err_hist) < 2:
                         self._pll_update(st, lag)
@@ -1488,6 +1516,63 @@ class CastSyncPoc:
         ramp = (t0 + np.arange(frames) / RATE) / STREAM_FADE_IN_S
         return np.clip(ramp, 0.0, 1.0).astype(np.float32)
 
+    def _seat_position(self, st: _Stream, source) -> None:
+        """Seat a reader for a device whose media clock starts at zero.
+
+        Zeroes ``shift`` and re-bases ``start_pos`` because the lag reading is
+        ``(start_pos + shift) / RATE + reported_time`` — a fresh LOAD restarts
+        the reported time, so leaving either behind makes every subsequent
+        measurement wrong by however far the session had already moved.
+        Bounded by both ends of the delay line (open-zone.md §A.2)."""
+        trim = int(st.trim_ms * RATE / 1000)
+        precomp = int(st.precomp_s * RATE)
+        pos = (int((time.monotonic() - self._epoch - source.delay_s) * RATE)
+               - trim - precomp)
+        floor = source.earliest_sample() + _rs.READ_MARGIN
+        _latest = getattr(source, "latest_sample", None)
+        ceil = ((_latest() - _rs.READ_MARGIN - int(RATE * STREAM_BLOCK_S))
+                if callable(_latest) else None)
+        if pos < floor:
+            logger.warning(
+                f"Sync stream {st.name} clamped {(floor - pos) / RATE:.2f}s "
+                f"forward — delay line was short at launch")
+            pos = floor
+        if ceil is not None and pos > ceil >= floor:
+            logger.warning(
+                f"Sync stream {st.name} clamped {(pos - ceil) / RATE:.2f}s "
+                f"back — seat was past the write head")
+            pos = ceil
+        st.shift = 0.0
+        st.moved_s = 0.0
+        st.pos = float(pos)
+        st.start_pos = int(pos)
+
+    async def _reload_stream(self, st: _Stream) -> None:
+        """Re-LOAD one receiver and re-seat its reader at the live edge.
+
+        The escape hatch for a device the ladder cannot reach: an assistant
+        notification or an incoming call holds the receiver for long enough
+        that the device ends up further behind than there is buffer ahead of
+        it, and no move of the reader can close a gap that large on a live
+        source (open-zone.md §A.2). Only the device's own buffer can be
+        dropped, which is what a fresh LOAD does."""
+        if not self.running or self._streams.get(st.sid) is not st:
+            return
+        st.reloads += 1
+        st.last_reload = time.monotonic()
+        logger.warning(f"Sync stream reloading {st.name} — too far behind to "
+                       f"correct by moving the reader (reload #{st.reloads})")
+        self._seat_position(st, self._source)
+        st.err_hist = []
+        st.lag_hist = []
+        st.slew_s = 0.0
+        st.acquired = False          # re-acquiring: step small offsets away
+        st.fit_lost_at = time.monotonic()
+        st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+        if st.resampler is not None:
+            st.resampler.reset()
+        await self._launch_stream(st.player_id, st.sid)
+
     async def _pcm_stream(self, st: _Stream):
         """Async generator: endless WAV cut from the shared timeline for one
         device, paced to stay at most STREAM_AHEAD_S ahead of real time."""
@@ -1503,17 +1588,7 @@ class CastSyncPoc:
             source = self._source
             delay = source.delay_s
             if st.pos is None:
-                trim = int(st.trim_ms * RATE / 1000)
-                precomp = int(st.precomp_s * RATE)
-                st.pos = (int((time.monotonic() - self._epoch - delay) * RATE)
-                          - trim - precomp)
-                floor = source.earliest_sample() + _rs.READ_MARGIN
-                if st.pos < floor:
-                    logger.warning(
-                        f"Sync stream {st.name} clamped {(floor - st.pos) / RATE:.2f}s "
-                        f"forward — delay line was short at launch")
-                    st.pos = floor
-                st.start_pos = st.pos
+                self._seat_position(st, source)
             block = int(RATE * STREAM_BLOCK_S)
             while (self.running and self._streams.get(st.sid) is st
                    and st.gen == mine):
