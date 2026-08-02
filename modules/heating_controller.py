@@ -86,17 +86,14 @@ from modules.thermal_profile import (
     STRATIFICATION_MAX_PLAUSIBLE_HEIGHT_M,
 )
 
-# Telemetry persistence for tick decisions. Lazy import inside _tick would
-# also work; top-level is fine because telemetry_db has no heavy deps.
+# Top-level import is fine: telemetry_db has no heavy deps.
 try:
     from modules.telemetry_db import write_heating_tick as _write_heating_tick
 except Exception:
     _write_heating_tick = None
 
-# Per-attribute freshness query — used by the health check to detect a
-# device that's still in the snapshot but hasn't reported its temperature
-# in a while (the "frozen attribute" failure mode that last_seen can't
-# distinguish from a healthy device that's just reporting battery).
+# Detects the "frozen attribute" failure last_seen cannot: a device still in
+# the snapshot but no longer reporting temperature.
 try:
     from modules.telemetry_db import query_last_report_age_sec as _query_last_report_age
 except Exception:
@@ -108,16 +105,11 @@ logger = logging.getLogger("modules.heating_controller")
 COLD_BAND = 0.5     # room is COLD if temp < target - 0.5
 HOT_BAND = 0.3      # room is HOT  if temp > target + 0.3
 
-# Per-room data freshness — if the configured external sensor hasn't reported
-# its temperature attribute in this many seconds, the room is flagged
-# critical and the user is alerted. Per-room override via room config
-# 'freshness_threshold_minutes'. 15 min default is forgiving enough for
-# Hue motion sensors (which only report on movement + periodic heartbeat)
-# but tight enough to catch an unpaired/dead sensor within one tick.
+# Room is flagged critical if its external sensor has not reported a temperature
+# in this long. Per-room override: room config 'freshness_threshold_minutes'.
 DEFAULT_FRESHNESS_THRESHOLD_SEC = 15 * 60
 
-# Force-close offset — when shutting a TRV, set it to (current - this) so the
-# TRV's own thermostat keeps the valve closed
+# When shutting a TRV, write (current - this) so its own thermostat holds it shut.
 FORCE_CLOSE_OFFSET = 1.0
 
 # Minimum setpoint change worth sending (avoid hammering battery TRVs)
@@ -129,9 +121,7 @@ TICK_INTERVAL_SEC = 60
 # Don't repeat the same setpoint command more often than this
 COMMAND_COOLDOWN_SEC = 300
 
-# How long a receiver can sit in commanded-but-unconfirmed state before
-# we bounce it (send off, next tick re-sends heat) to recover from
-# dropped ZigBee packets
+# Bounce a receiver stuck commanded-but-unconfirmed (off, then heat next tick).
 RECEIVER_STALL_RECOVERY_SEC = 300
 
 # Default external-temp push cadence when mode='push' and room doesn't override
@@ -140,31 +130,25 @@ DEFAULT_EXT_TEMP_PUSH_INTERVAL_SEC = 300
 # Min delta before we re-push external temp to a TRV (°C). Saves battery airtime.
 EXT_TEMP_PUSH_MIN_DELTA = 0.3
 
-# Back off external-temp pushes to a TRV whose background writes keep failing
-# (e.g. downlink dead while its own reports still arrive). After this many
-# consecutive failures the effective push interval doubles per further
-# failure, capped at the max — one dead TRV shouldn't log an error every cycle.
+# After this many consecutive failed writes the push interval doubles per
+# further failure, capped at the max. See docs/heating.md.
 EXT_PUSH_FAIL_STREAK_THRESHOLD = 3
 EXT_PUSH_BACKOFF_MAX_SEC = 3600.0
 
-# ── Weather-based heat suppression ─────────────────────────────────
-# Hysteresis prevents flap when outdoor temp hovers near a single threshold.
+# Weather suppression. Hysteresis prevents flap around a single threshold.
 WX_SUPPRESS_OFF_C = 16.0       # engage when current outdoor ≥ this
 WX_SUPPRESS_ON_C = 14.0        # release when current outdoor <  this
 WX_FORECAST_LOOKAHEAD_H = 6    # hours of forecast to consider
 WX_FORECAST_MIN_C = 12.0       # if forecast min within window < this → never suppress
-# ── Adaptive overshoot compensation ────────────────────────────────
 OVERSHOOT_LEARN_ALPHA = 0.3            # EWMA weight on each new observation
 OVERSHOOT_PEAK_DROP_C = 0.1            # peak considered set once temp drops by this
 OVERSHOOT_PEAK_TIMEOUT_SEC = 1200      # 20 min — accept whatever peak we have
 OVERSHOOT_MAX_OFFSET_C = 1.5           # safety cap
-# ── Window/door contact integration ────────────────────────────────
 CONTACT_DEBOUNCE_OPEN_SEC = 30          # ignore brief openings
 CONTACT_REQUIRE_TEMP_DROP_C = 0.5       # only act if room actually cooling
 CONTACT_REQUIRE_DROP_WINDOW_SEC = 600   # within 10 min of opening
 CONTACT_MAX_CLOSE_SEC = 3600            # safety release
 CONTACT_CLOSE_DEBOUNCE_SEC = 5          # avoid flutter on door close
-# ── Predictive pre-heat (uses thermal_profile) ─────────────────────
 PROFILE_CACHE_TTL_SEC = 1800        # refresh per-room W/K + tau every 30 min
 PREHEAT_SAFETY_MARGIN = 1.15        # start 15% earlier than the model says
 PREHEAT_LOOKAHEAD_MAX_MIN = 240     # don't preheat more than 4h ahead
@@ -173,7 +157,6 @@ PREHEAT_TELEMETRY_HOURS = 72        # window of temperature history to fit
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
-# ── Helpers ────────────────────────────────────────────────────────
 def _as_float(v, default: Optional[float] = None) -> Optional[float]:
     try:
         return float(v) if v is not None else default
@@ -275,24 +258,20 @@ def _primary_sensor_height_m(room: Dict[str, Any]) -> Optional[float]:
         return None
     return h
 
-# ── Per-attribute freshness ────────────────────────────────────────
-# Per-tick cache of "when did this IEEE last report a temperature?" so a
-# tick that evaluates 4 rooms doesn't fire 4 separate DuckDB queries when
-# rooms share sensors, and so subsequent ticks within a short window can
-# skip the query if we just checked.
+# Per-tick cache: IEEE -> (checked_at, last_report_age). Rooms sharing a sensor
+# then cost one DuckDB query per tick rather than one each.
 _freshness_cache: Dict[str, Tuple[float, Optional[float]]] = {}
 _FRESHNESS_CACHE_TTL_SEC = 30.0  # well under tick interval; just a cheap dedupe
 
-# Look back well beyond the threshold so a sensor reporting every 20 min
-# isn't falsely flagged just because nothing landed in the last 15.
+# Look back beyond the threshold so a sensor reporting every 20 min is not
+# flagged just because nothing landed in the last 15.
 FRESHNESS_LOOKBACK_HOURS = 6
 
 # Stale-sensor fallback warnings repeat every tick — rate-limit per sensor.
 _stale_warned: Dict[str, float] = {}
 _STALE_WARN_INTERVAL_SEC = 3600.0
 
-# Same rate-limit for "skipping external-temp push, sensor stale" warnings,
-# tracked separately so neither warning suppresses the other.
+# Tracked separately so neither warning suppresses the other.
 _push_stale_warned: Dict[str, float] = {}
 
 
@@ -364,7 +343,6 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
     sensor_ieee = room.get("temperature_sensor_ieee")
     ext_mode = room.get("external_temp_mode", "off")
 
-    # ── External sensor (if configured) ─────────────────────────────
     if sensor_ieee and ext_mode != "off":
         if not sensor_present_in_devices:
             reasons.append(
@@ -393,13 +371,10 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
                     stale.append({"ieee": sensor_ieee, "age_sec": int(age),
                                   "kind": "sensor"})
 
-    # The external sensor is the authoritative reading whenever
-    # decision.temp_source == "external". In that case the TRV's own
-    # internal local_temperature is not driving any control decision and
-    # its DuckDB freshness is not a health signal for this room.
+    # With temp_source == "external" the TRV's own local_temperature drives no
+    # decision, so its freshness is not a health signal for this room.
     using_external = (decision.temp_source == "external")
 
-    # ── TRVs ────────────────────────────────────────────────────────
     for t in (room.get("trvs") or []):
         ieee = t.get("ieee") if isinstance(t, dict) else None
         if not ieee:
@@ -414,21 +389,16 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
             reasons.append(f"TRV {ieee} offline")
             continue
         if trv_dec.get("current_temp") is None:
-            # No reading at all — distinct from "stale". This means the
-            # in-memory device state has no temperature key, which is a
-            # genuine failure even when an external sensor is present
-            # (the TRV is silent altogether, not just slow on local_temperature).
+            # No reading at all — distinct from "stale", and a genuine failure
+            # even when an external sensor is present.
             reasons.append(f"TRV {ieee} reports no temperature")
             continue
 
-        # Freshness check — skipped when the external sensor is the
-        # authoritative source. See the block comment above.
+        # Skipped when the external sensor is authoritative (see above).
         if not using_external:
             last_ts = _last_temperature_ts(ieee)
             if last_ts is None:
-                # No DuckDB history yet — don't flag as critical on its own;
-                # the in-memory state shows a value, and a fresh install hasn't
-                # had time to accumulate rows. Silent pass.
+                # No DuckDB history yet — a fresh install. Not critical alone.
                 pass
             else:
                 age = now - last_ts
@@ -442,7 +412,7 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
         if trv_dec.get("valve_alarm"):
             reasons.append(f"TRV {trv_dec.get('name') or ieee}: valve alarm (stuck/seized)")
 
-    # ── No data source at all ───────────────────────────────────────
+    # No data source at all.
     if decision.temp_source == "none":
         reasons.append("No temperature data available — room cannot be controlled")
 
@@ -454,7 +424,6 @@ def _check_room_health(room: dict, devices: Dict[str, Any],
     }
 
 
-# ── Room state ─────────────────────────────────────────────────────
 class RoomDecision:
     """Per-tick analysis of a single room."""
 
@@ -509,7 +478,6 @@ class RoomDecision:
         }
 
 
-# ── Controller ─────────────────────────────────────────────────────
 class HeatingController:
     """Active control of multi-zone heating with TRV coordination."""
 
@@ -574,9 +542,7 @@ class HeatingController:
         action = str(oh_cfg.get("out_of_hours_action", "setback")).lower()
         self._oh_action = action if action in ("setback", "off", "min_only") else "setback"
 
-        # Resolve circuits based on config_mode:
-        #   floor_plan → use heating.controller.circuits (populated by project_floor_plan_to_circuits)
-        #   manual / unset → use heating.circuits (the manually-configured list)
+        # config_mode: floor_plan -> heating.controller.circuits; manual -> heating.circuits
         config_mode = controller_cfg.get("config_mode") or "manual"
         if config_mode == "floor_plan":
             raw_circuits = controller_cfg.get("circuits") or config.get("circuits") or []
@@ -588,8 +554,7 @@ class HeatingController:
         self._last_command: Dict[str, Tuple[str, Any, float]] = {}
         # Last external-temp push tracking:  trv_ieee -> (last_pushed_c, ts)
         self._last_ext_push: Dict[str, Tuple[float, float]] = {}
-        # Last push *attempt* per TRV (backoff bookkeeping — unlike
-        # _last_ext_push this also advances on failed attempts)
+        # Last push *attempt* (advances on failure too, unlike _last_ext_push)
         self._ext_push_attempt: Dict[str, float] = {}
         # Last decision snapshot (for dashboard/API)
         self._last_decision: Dict[str, Any] = {}
@@ -598,16 +563,12 @@ class HeatingController:
         self._trv_config_applied: set = set()
         # Sticky weather-suppression state per circuit_id
         self._weather_suppressed: Dict[str, bool] = {}
-        # Per-room adaptive overshoot state.
-        # Keyed by room_id:
-        #   {learned_offset_c, phase, watch_started_ts, watch_target,
-        #    peak_temp, samples, last_observed_overshoot}
+        # room_id -> {learned_offset_c, phase, watch_started_ts, watch_target,
+        #              peak_temp, samples, last_observed_overshoot}
         self._overshoot: Dict[str, Dict[str, Any]] = {}
 
-        # Per-room window/door open state.
-        # Keyed by room_id:
-        #   {state, sensors_open: set, opened_ts, opened_temp,
-        #    activated_ts, last_closed_ts, observed_drop_c}
+        # room_id -> {state, sensors_open, opened_ts, opened_temp, activated_ts,
+        #              last_closed_ts, observed_drop_c}
         self._contact: Dict[str, Dict[str, Any]] = {}
 
         self._task: Optional[asyncio.Task] = None
@@ -638,7 +599,6 @@ class HeatingController:
         elif config.get("circuits"):
             logger.info("Heating Controller defined but not enabled (set heating.controller.enabled: true)")
 
-    # ── Hot-reload ─────────────────────────────────────────────────
     async def apply_config(self, new_config: dict,
                            reason: str = "user-edit") -> Dict[str, Any]:
         """
@@ -672,16 +632,14 @@ class HeatingController:
         The diff is the audit trail — both the user-facing toast and the
         log line are built from it, so they're guaranteed to match.
         """
-        # Cache the floor plan alongside the cleaned circuits so the
-        # thermal-profile path can reach it without another _load_config()
+        # Cached alongside the cleaned circuits so the thermal-profile path
+        # avoids a second _load_config().
         self._floor_plan_cache = (new_config or {}).get("_floor_plan_for_thermal")
 
         async with self._config_lock:
             new_config = new_config or {}
 
-            # ── Diagnostic: what did we receive? ────────────────────
-            # Log the raw incoming structure (one line per room) so we
-            # can verify the route handler passed the right data.
+            # Diagnostic: log the raw incoming structure, one line per room.
             try:
                 incoming_circuits = new_config.get("circuits") or []
                 logger.debug(
@@ -738,14 +696,13 @@ class HeatingController:
             new_oh_action = new_action_raw if new_action_raw in (
                 "setback", "off", "min_only"
             ) else self._oh_action
-            # Resolve circuits based on config_mode (same logic as __init__):
-            #   floor_plan → prefer heating.controller.circuits (the projected list)
-            #   manual / unset → prefer heating.circuits (manually configured)
+            # config_mode as in __init__: floor_plan -> controller.circuits;
+            # manual -> heating.circuits
             new_config_mode = (new_config.get("controller") or {}).get("config_mode") \
                               or new_config.get("config_mode") or "manual"
             if new_config_mode == "floor_plan":
-                # new_config may be the full heating block (has 'controller') or
-                # just the controller block (has 'circuits' directly)
+                # new_config may be the full heating block ('controller') or just
+                # the controller block ('circuits' directly)
                 ctrl_block = new_config.get("controller") or {}
                 raw_new_circuits = (
                     ctrl_block.get("circuits")
@@ -760,7 +717,7 @@ class HeatingController:
                 )
             new_circuits = self._clean_circuits(raw_new_circuits)
 
-            # ── Diagnostic: what came out of _clean_circuits? ───────
+            # Diagnostic: what _clean_circuits produced.
             try:
                 logger.debug(
                     f"[apply_config] post-parse: new_enabled={new_enabled} "
@@ -787,8 +744,7 @@ class HeatingController:
                 new_dry_run=new_dry_run,
             )
 
-            # Atomic swap. self.circuits is read by tick code; we only get
-            # here while the config lock is held, so no tick is mid-flight.
+            # Atomic swap under the config lock, so no tick is mid-flight.
             self.circuits = new_circuits
             self.enabled = new_enabled
             self.dry_run = new_dry_run
@@ -823,7 +779,7 @@ class HeatingController:
                 if k in valid_circuit_ids
             }
 
-            # ── Diagnostic: confirm the swap landed ─────────────────
+            # Diagnostic: confirm the swap landed.
             try:
                 logger.debug(
                     f"[apply_config] post-swap: self.enabled={self.enabled} "
@@ -841,10 +797,8 @@ class HeatingController:
             except Exception as diag_err:
                 logger.warning(f"[apply_config] post-swap-diag failed: {diag_err}")
 
-            # Forget _last_command entries for receivers/TRVs that no
-            # longer exist in the config — otherwise the idempotent gate
-            # could suppress a future legitimate command if the same IEEE
-            # is later re-added with a different desired state.
+            # Drop entries for IEEEs no longer in config, or the idempotent gate
+            # could suppress a legitimate command if one is re-added later.
             valid_ieees = set()
             for c in new_circuits:
                 if c.get("receiver_ieee"):
@@ -858,9 +812,7 @@ class HeatingController:
             for k in stale:
                 del self._last_command[k]
 
-            # _trv_config_applied: keep entries for TRVs still in config,
-            # drop entries for removed TRVs (so if they're re-added later
-            # we re-apply persistent settings).
+            # Drop removed TRVs so persistent settings re-apply if they return.
             current_trvs = {
                 t["ieee"]
                 for c in new_circuits
@@ -881,9 +833,8 @@ class HeatingController:
                 f"Heating Controller config reloaded ({reason}): no changes"
             )
 
-        # Trigger an immediate tick so the UI reflects the new config
-        # within seconds, not at the end of the next scheduled interval.
-        # Done outside the config lock so the tick can take it.
+        # Immediate tick so the UI reflects the new config within seconds.
+        # Outside the config lock so the tick can take it.
         tick_triggered = False
         if self.enabled and diff.get("any_changes"):
             try:
@@ -911,8 +862,7 @@ class HeatingController:
         old_circ_by_id = {c["id"]: c for c in old_circuits}
         new_circ_by_id = {c["id"]: c for c in new_circuits}
 
-        # Track per-room comparable fields. If you add a new room field
-        # that the user can edit, list it here so the diff picks it up.
+        # Add any new user-editable room field here so the diff picks it up.
         ROOM_FIELDS = (
             "name", "target_temp", "night_setback", "min_temp",
             "temperature_sensor_ieee", "external_temp_mode",
@@ -1057,7 +1007,6 @@ class HeatingController:
         )
         return f"{ieee}|{'|'.join(flags)}"
 
-    # ── Config normalisation ───────────────────────────────────────
     def _clean_circuits(self, circuits: list) -> List[Dict]:
         if not isinstance(circuits, list):
             return []
@@ -1077,8 +1026,7 @@ class HeatingController:
                 "weather_suppression": _as_bool(c.get("weather_suppression"), None),
                 "operating_hours": _as_bool(c.get("operating_hours"), None),
             }
-            # Optional receiver setpoint overrides — only carry when set so the
-            # call-site .get(default) fallbacks (30.0 / 7.0) still apply otherwise.
+            # Only carry when set, so the call-site .get() defaults still apply.
             call_sp = _as_float(c.get("receiver_call_setpoint"))
             if call_sp is not None:
                 cleaned["receiver_call_setpoint"] = call_sp
@@ -1281,7 +1229,6 @@ class HeatingController:
 
         return list(by_ieee.values())
 
-    # ── Lifecycle ──────────────────────────────────────────────────
     def start(self):
         if not self.enabled:
             return
@@ -1301,11 +1248,6 @@ class HeatingController:
     async def _control_loop(self):
         # Initial delay so other services finish startup
         await asyncio.sleep(15)
-        # Apply persistent per-TRV config once devices are online
-        #try:
-        #    await self._apply_all_trv_config()
-        #except Exception as e:
-        #    logger.error(f"Initial TRV config apply failed: {e}", exc_info=True)
 
         while True:
             try:
@@ -1336,7 +1278,6 @@ class HeatingController:
             sleep_for = max(60, min(sleep_for, 1800))
             await asyncio.sleep(sleep_for)
 
-    # ── Public introspection ───────────────────────────────────────
     def get_state(self) -> Dict[str, Any]:
         """Last decision snapshot for the dashboard/API."""
         return {
@@ -1361,7 +1302,6 @@ class HeatingController:
                         return c, r, t
         return None
 
-    # ── Core control loop ──────────────────────────────────────────
     async def _tick(self):
         # Gate: don't fire radio operations when the stack is in recovery
         try:
@@ -1380,19 +1320,14 @@ class HeatingController:
         except Exception:
             pass  # if we can't check, proceed — fail-open
 
-        # Hold the config lock for the duration of the tick body. This
-        # blocks apply_config() until we're done. Acquiring lock should be
-        # near-instant in practice (apply_config is a CPU-bound dict swap).
+        # Held for the whole tick body, blocking apply_config(). Near-instant
+        # in practice — apply_config is a CPU-bound dict swap.
         async with self._config_lock:
             await self._tick_body()
 
     async def _tick_body(self):
-        # ── Diagnostic: confirm what the tick is reading ───────────
-        # If apply_config swapped self.circuits but a stale snapshot is
-        # being held somewhere, this will reveal it. We log id() of the
-        # circuits list because two distinct list objects with the same
-        # contents will have different ids — useful for catching
-        # "I held a reference to the old list" bugs.
+        # Diagnostic: id() of the circuits list catches "held a reference to the
+        # old list" bugs.
         try:
             logger.debug(
                 f"[tick] reading self.circuits id={id(self.circuits)} "
@@ -1493,11 +1428,8 @@ class HeatingController:
         self._last_decision = {"circuits": circuits_out}
         self._last_decision_ts = time.time()
 
-        # Persist this tick for anomaly detection & post-hoc analysis.
-        # Non-blocking in fact, not just in spirit: the write takes the
-        # telemetry lock and waits however long the appender holds it, and
-        # this coroutine runs on the event loop — blocking here stalls every
-        # other loop task, stream generators included.
+        # Must not block: this runs on the event loop and the write waits on the
+        # telemetry lock, which would stall every other loop task.
         if _write_heating_tick is not None:
             try:
                 await asyncio.to_thread(
@@ -1526,7 +1458,6 @@ class HeatingController:
                 f"Heating controller: cleared command cache for {ieee} after rejoin"
             )
 
-    # ── Device snapshot ────────────────────────────────────────────
     def _snapshot_devices(self) -> Dict[str, Any]:
         try:
             raw = self._get_devices() or {}
@@ -1535,7 +1466,6 @@ class HeatingController:
             return {}
         return {str(ieee): dev for ieee, dev in raw.items()}
 
-    # ── Room evaluation ────────────────────────────────────────────
     def _evaluate_room(self, room: dict, devices: Dict[str, Any],
                        now: datetime) -> RoomDecision:
         decision = RoomDecision(room_id=room["id"], name=room["name"])
@@ -1599,13 +1529,9 @@ class HeatingController:
             else:
                 decision.sensor_online = False
 
-        # ── Stale-sensor fallback ──────────────────────────────────────
-        # The cached state value survives long after a sensor stops
-        # reporting, so a dead sensor would otherwise steer the room on a
-        # reading that could be weeks old. If DuckDB shows no temperature
-        # report within the room's freshness threshold, discard the external
-        # reading — the normal source selection below then falls back to the
-        # TRV mean (or "none", which classifies the room as unknown).
+        # Stale-sensor fallback: the cached value outlives the sensor, so a dead
+        # one would steer the room on a weeks-old reading. Discarding it lets
+        # source selection fall back to the TRV mean (or "none").
         if ext_temp is not None and _query_last_report_age is not None:
             last_ts = _last_temperature_ts(sensor_ieee)
             threshold_sec = _room_freshness_threshold_sec(room)
@@ -1629,14 +1555,8 @@ class HeatingController:
                 # Sensor recovered — allow an immediate warning on next stall.
                 del _stale_warned[sensor_ieee]
 
-        # ── Apply stratification correction to the chosen reading ─────
-        # Only the external sensor path has a configurable mounting height
-        # — TRVs sit near the floor by their nature, but their readings
-        # already factor in convective bias from their proximity to the
-        # radiator, so a separate height correction would be misleading.
-        # If the chosen source is "external" and the primary sensor has a
-        # height set, we shift the reported reading toward the 1.5 m
-        # comfort-zone reference.
+        # Stratification: shift an external reading toward the 1.5 m comfort
+        # reference. External only — TRV readings already carry convective bias.
         sensor_height_m = _primary_sensor_height_m(room)
         decision.sensor_height_m = sensor_height_m
 
@@ -1674,7 +1594,6 @@ class HeatingController:
         except Exception as e:
             logger.debug(f"preheat eval failed for {room['id']}: {e}")
 
-        # ── Adaptive overshoot compensation ────────────────────
         # Look up prior tick's calling state for this room.
         prior_calling = False
         try:
@@ -1716,12 +1635,8 @@ class HeatingController:
             decision.status = "cold"
             decision.calling_for_heat = True
 
-            # ── Solar suppression check ───────────────────────────────
-            # If solar gain alone can cover most of the temperature deficit,
-            # suppress the heat call for this tick. The boiler stays off and
-            # we re-evaluate on the next tick. Conservative: only suppresses
-            # when solar can cover SOLAR_SUPPRESS_FRACTION of the deficit so
-            # a cloud passing over doesn't strand a cold room for long.
+            # Solar suppression: skip the heat call when solar alone covers
+            # SOLAR_SUPPRESS_FRACTION of the deficit. Re-evaluated next tick.
             if self._weather is not None:
                 try:
                     _solar_profile = self._get_room_profile(room)
@@ -1758,7 +1673,6 @@ class HeatingController:
         else:
             decision.status = "ontarget"
 
-        # ── Door/window contact override ──────────────────────
         contact = self._evaluate_contact_state(
             room, devices, decision.current_temp, time.time()
         )
@@ -1767,9 +1681,8 @@ class HeatingController:
             decision.status = "contact_open"
             decision.calling_for_heat = False
 
-        # Health check — runs after classification so it can use temp_source.
-        # Failures are logged as WARNING so they're visible in journalctl
-        # without needing the panel open.
+        # Runs after classification so it can use temp_source. WARNING level so
+        # failures show in journalctl without the panel open.
         try:
             decision.health = _check_room_health(
                 room, devices, decision,
@@ -1786,9 +1699,8 @@ class HeatingController:
             decision.health = {"level": "ok", "reasons": [],
                                "stale_devices": [], "threshold_minutes": 15}
 
-        # ── Diagnostic log line ───────────────────────────────────────
-        # Surfaces every input that fed the classification, so a surprising
-        # call-for-heat can be traced to the exact value that caused it.
+        # Diagnostic: every input that fed the classification, so a surprising
+        # call-for-heat can be traced to the value that caused it.
         try:
             trv_dbg = [
                 f"{t['ieee'][-8:]}={t['current_temp']}"
@@ -1902,7 +1814,6 @@ class HeatingController:
 
         return target
 
-    # ── Weather-based suppression ──────────────────────────────────
     def _forecast_window_min(self, lookahead_h: int) -> Optional[float]:
         """Min forecast temperature in the next `lookahead_h` hours from now."""
         if not self._weather:
@@ -1932,7 +1843,6 @@ class HeatingController:
         ]
         return min(window) if window else None
 
-    # ── Window/door open detection ─────────────────────────────────
     def _evaluate_contact_state(
             self, room: dict, devices: Dict[str, Any],
             current_temp: Optional[float], now_ts: float
@@ -2006,7 +1916,6 @@ class HeatingController:
 
         prev_state = st["state"]
 
-        # ── Transitions ────────────────────────────────────────
         if prev_state == "closed":
             if any_open:
                 st["state"] = "open_pending"
@@ -2098,7 +2007,6 @@ class HeatingController:
             "is_active": st["state"] == "open_active",
         }
 
-    # ── Adaptive overshoot compensation ────────────────────────────
     def _track_overshoot(
             self, room_id: str, target_temp: Optional[float],
             current_temp: Optional[float], was_calling: bool,
@@ -2307,7 +2215,6 @@ class HeatingController:
         return out
 
 
-    # ── Predictive pre-heat ────────────────────────────────────────
     def _next_schedule_slot(
             self, room: dict, now: datetime
     ) -> Optional[Dict[str, Any]]:
@@ -2486,9 +2393,8 @@ class HeatingController:
             from modules.thermal_profile import compute_preheat
             from modules.solar_gain import solar_gain_window
 
-            # Solar gain over the expected preheat window — reduces lead time
-            # on sunny mornings. Requires weather service; degrades to no-solar
-            # if unavailable or room has no window geometry.
+            # Reduces lead time on sunny mornings. Degrades to no-solar without
+            # the weather service or window geometry.
             solar_gain_w: Optional[float] = None
             solar_has_orientation = False
             solar_shortwave_measured = False
@@ -2554,7 +2460,6 @@ class HeatingController:
 
         return None, info
 
-    # ── Receiver control ───────────────────────────────────────────
     async def _apply_receiver(self, circuit: dict, should_call: bool) -> Dict[str, Any]:
         """
         Control the receiver based on circuit config.
@@ -2579,10 +2484,8 @@ class HeatingController:
             return {"sent": False, "reason": "no receiver configured"}
 
         mode = str(circuit.get("receiver_command", "thermostat")).lower()
-        # Detect Hive-style receivers from the device model. The HVAC
-        # handler uses the same "SLR" / "RECEIVER" check internally; we
-        # mirror it here so the controller and the handler stay aligned
-        # on which write protocol is in play.
+        # Mirrors the "SLR"/"RECEIVER" check in the HVAC handler, so controller
+        # and handler agree on which write protocol is in play.
         is_hive_receiver = False
         dev = None
         try:
@@ -2604,10 +2507,9 @@ class HeatingController:
             target_command = "system_mode"
             target_value = "heat" if should_call else "off"
             display = f"system_mode → {target_value}"
-            # When calling for heat, also push a high setpoint to guarantee
-            # the receiver's internal comparator fires the boiler. When
-            # standing down, push a low one so the receiver doesn't fight us.
-            # Config override: circuit.receiver_call_setpoint / _idle_setpoint
+            # High setpoint when calling so the receiver's comparator fires the
+            # boiler, low when standing down so it does not fight us. Override:
+            # circuit.receiver_call_setpoint / _idle_setpoint
             call_sp = float(circuit.get("receiver_call_setpoint", 30.0))
             idle_sp = float(circuit.get("receiver_idle_setpoint", 7.0))
             target_setpoint = call_sp if should_call else idle_sp
@@ -2616,10 +2518,8 @@ class HeatingController:
             target_value = None
             display = target_command
 
-        # ── Stall recovery ─────────────────────────────────────────────
-        # If we commanded heat but the receiver hasn't confirmed after
-        # RECEIVER_STALL_RECOVERY_SEC, send an explicit off first so the
-        # device re-evaluates its state on the next tick (bounce off→heat).
+        # Stall recovery: commanded heat, unconfirmed after RECEIVER_STALL_RECOVERY_SEC
+        # — send an explicit off so the device re-evaluates (bounce off->heat).
         if mode == "thermostat" and should_call and dev is not None:
             prev = self._last_command.get(ieee)
             if (prev
@@ -2670,9 +2570,8 @@ class HeatingController:
                 and should_call
                 and is_hive_receiver
         )
-        # For Hive turning off: set_hvac_mode atomically writes system_mode=off +
-        # hold=0 + duration=0 + frost setpoint — don't call set_target_temperature
-        # (which would wrongly include system_mode=heat in the same write).
+        # Hive off: set_hvac_mode atomically writes system_mode=off + hold + frost
+        # setpoint. set_target_temperature would wrongly add system_mode=heat.
         skip_setpoint_send = (
                 mode == "thermostat"
                 and not should_call
@@ -2683,9 +2582,8 @@ class HeatingController:
             # 1) Push setpoint first (only in thermostat mode, not Hive turn-off)
             if mode == "thermostat" and not skip_setpoint_send:
                 last_sp = self._last_command.get(f"{ieee}:setpoint")
-                # Always send for Hive turn-on: the write atomically carries
-                # system_mode=heat, so it must fire even when the setpoint value
-                # is unchanged (e.g. still 30°C from the previous call cycle).
+                # Hive on: the write atomically carries system_mode=heat, so it
+                # must fire even when the setpoint value is unchanged.
                 if not last_sp or last_sp[0] != target_setpoint or skip_mode_send:
                     try:
                         await self._throttled_send(
@@ -2736,7 +2634,6 @@ class HeatingController:
             logger.error(f"Receiver command failed ({display}): {e}")
             return {"sent": False, "error": str(e)}
 
-    # ── TRV setpoint control ───────────────────────────────────────
     async def _apply_trvs(self, room: dict, decision: RoomDecision,
                           circuit_calling: bool) -> List[Dict]:
         """
@@ -2760,15 +2657,9 @@ class HeatingController:
             current_temp = trv.get("current_temp")
             current_sp = trv.get("current_setpoint")
 
-            # Decide intended setpoint.
-            #
-            # Room "hot" → force-close the valve by writing a setpoint comfortably
-            # below the current room temperature. We do this whether or not the
-            # circuit is currently calling — pre-emptive close so the very next
-            # time the circuit fires, this valve is already shut.
-            #
-            # The intended setpoint is floored at MIN_TRV_SETPOINT (5°C for Aqara
-            # E1; configurable per-TRV in config.yaml).
+            # Room "hot" -> force-close by writing below current room temp, whether
+            # or not the circuit is calling, so the valve is already shut next time
+            # it fires. Floored at MIN_TRV_SETPOINT.
             TRV_MIN_SETPOINT = float(trv.get("min_setpoint", 5.0))
             if decision.status in ("hot", "contact_open"):
                 reference = room_temp if room_temp is not None else current_temp
@@ -2848,7 +2739,6 @@ class HeatingController:
 
         return actions
 
-    # ── Per-TRV persistent config application ──────────────────────
     async def _apply_all_trv_config(self):
         """Apply window_detection / child_lock / valve_detection for every configured TRV."""
         for c in self.circuits:
@@ -2973,7 +2863,6 @@ class HeatingController:
         self._trv_config_applied.discard(ieee)
         return True
 
-    # ── External temperature push ──────────────────────────────────
     async def _push_external_temps_once(self):
         """
         For every room in push mode, read the sensor's current temperature and
@@ -2999,9 +2888,8 @@ class HeatingController:
                     logger.debug(f"Room {room['id']}: sensor {sensor_ieee} has no temperature")
                     continue
 
-                # Never forward a stale reading: a TRV in external mode
-                # regulates on whatever was pushed last, so a dead sensor
-                # would pin the TRV's view of the room at that value.
+                # Never forward a stale reading: a TRV in external mode regulates
+                # on whatever was pushed last.
                 if _query_last_report_age is not None:
                     last_report_ts = _last_temperature_ts(sensor_ieee)
                     threshold_sec = _room_freshness_threshold_sec(room)
@@ -3036,9 +2924,8 @@ class HeatingController:
                         if fresh_enough and tiny_change:
                             continue
 
-                    # Back off a TRV whose background writes keep failing
-                    # (write_fail_streak is maintained by the device command
-                    # executor; any successful write resets it).
+                    # write_fail_streak is maintained by the device command
+                    # executor; any successful write resets it.
                     trv_dev = devices.get(ieee)
                     streak = getattr(trv_dev, "write_fail_streak", 0) if trv_dev is not None else 0
                     if streak >= EXT_PUSH_FAIL_STREAK_THRESHOLD:
