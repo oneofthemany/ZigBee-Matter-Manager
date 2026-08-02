@@ -5,18 +5,48 @@ Follows the module-level getter pattern (see routes/ai_api.py) so FastAPI's
 lifespan owns the service instance and routes resolve it lazily.
 """
 import logging
+import re
 from typing import List, Optional
+from urllib.parse import quote, urljoin
 
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger("routes.media")
 
+_HLS_TYPES = ("application/vnd.apple.mpegurl", "application/x-mpegurl",
+              "audio/mpegurl", "audio/x-mpegurl")
+_HLS_MAX_BYTES = 4 * 1024 * 1024      # a playlist this big is not a playlist
+_HLS_URI_ATTR = re.compile(r'(URI=")([^"]+)(")')
+
+
+def _proxy_path(url: str) -> str:
+    return "/api/media/local/proxy?url=" + quote(url, safe="")
+
+
+def _rewrite_hls(text: str, base: str) -> str:
+    """Point every URI in an HLS playlist back through this proxy, so segments
+    and keys stay same-origin. See docs/speaker_sync.md."""
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+        elif stripped.startswith("#"):
+            # EXT-X-KEY / MEDIA / MAP / I-FRAME-STREAM-INF carry URI="…".
+            out.append(_HLS_URI_ATTR.sub(
+                lambda m: m.group(1) + _proxy_path(urljoin(base, m.group(2))) + m.group(3),
+                line))
+        else:
+            out.append(_proxy_path(urljoin(base, stripped)))
+    return "\n".join(out) + "\n"
+
 
 class PlayBody(BaseModel):
     player_id: str
     url: Optional[str] = None
     station_uuid: Optional[str] = None
+    station: Optional[dict] = None       # see LocalPlaylistBody.station
     title: str = ""
     artist: str = ""
     content_type: Optional[str] = None   # MIME hint (e.g. therapy's audio/wav)
@@ -30,6 +60,7 @@ class LocalPlaylistBody(BaseModel):
     ``kind``+``id`` (which may expand to a whole album/playlist).
     """
     station_uuid: Optional[str] = None
+    station: Optional[dict] = None   # caller's snapshot, used if the directory is down
     kind: Optional[str] = None       # track | album | playlist | artist | mix
     id: Optional[str] = None
     mode: str = "play"               # play | radio
@@ -160,7 +191,8 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "Media service not enabled"}
         try:
             if body.station_uuid:
-                item = await svc.play_radio_station(body.player_id, body.station_uuid)
+                item = await svc.play_radio_station(body.player_id, body.station_uuid,
+                                                    body.station)
             elif body.url:
                 from modules.media.models import MediaItem
                 item = MediaItem(url=body.url, title=body.title, artist=body.artist,
@@ -184,9 +216,11 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "Media service not enabled"}
         try:
             if body.station_uuid:
-                station = await svc.radio.get_station(body.station_uuid)
+                station = await svc.resolve_station(body.station_uuid, body.station)
                 if not station:
-                    return {"success": False, "error": "Radio station not found"}
+                    return {"success": False,
+                            "error": "Radio station not found (the radio directory "
+                                     "is unreachable — star the station to pin it)"}
                 items = [station.to_media_item()]
             elif body.kind and body.id:
                 if not _tidal(svc):
@@ -226,14 +260,12 @@ def register_media_routes(app: FastAPI, get_media_service):
 
     @app.get("/api/media/local/proxy")
     async def local_stream_proxy(url: str, request: Request):
-        """Same-origin passthrough for the browser player's Web Audio EQ.
+        """Same-origin passthrough for the browser player: carries streams that
+        can't be loaded direct (no CORS headers, http source, HLS segments).
 
-        A MediaElementSource on a cross-origin stream whose host sends no CORS
-        headers is pure silence, so when a stream refuses CORS the browser
-        player re-requests it through here: same origin as the page, so CORS
-        never applies and the EQ keeps working (see local-player.js). Range
-        headers pass through so seekable sources (Tidal AAC) stay seekable;
-        endless radio streams flow until the client disconnects.
+        Range headers pass through so seekable sources stay seekable; endless
+        radio streams flow until the client disconnects. HLS playlists are
+        rewritten rather than streamed. See docs/speaker_sync.md.
         """
         if not url.lower().startswith(("http://", "https://")):
             return Response("http(s) URLs only", status_code=400)
@@ -259,6 +291,26 @@ def register_media_routes(app: FastAPI, get_media_service):
             await upstream.aclose()
             await client.aclose()
             return Response(f"upstream returned {code}", status_code=502)
+
+        ctype = upstream.headers.get("content-type", "").split(";")[0].strip().lower()
+        final = str(upstream.url)     # post-redirect: the manifest's real base
+        if ctype in _HLS_TYPES or final.split("?")[0].lower().endswith(".m3u8"):
+            body = b""
+            try:
+                async for chunk in upstream.aiter_bytes(16384):
+                    body += chunk
+                    if len(body) > _HLS_MAX_BYTES:
+                        raise ValueError("playlist exceeded size limit")
+            except Exception as e:
+                logger.warning(f"HLS playlist read failed for {url}: {e}")
+                return Response(f"playlist read failed: {e}", status_code=502)
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+            return Response(
+                _rewrite_hls(body.decode("utf-8", "replace"), final),
+                media_type=ctype or "application/vnd.apple.mpegurl",
+                headers={"Cache-Control": "no-store"})
 
         async def gen():
             try:

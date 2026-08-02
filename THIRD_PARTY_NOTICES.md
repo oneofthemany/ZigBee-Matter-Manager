@@ -16,11 +16,12 @@ with no internet access.
 |---|---|---|
 | [Apache ECharts](https://echarts.apache.org/) (`js/vendor/echarts.min.js`) | The Apache Software Foundation | Apache-2.0 |
 | [pdf.js](https://mozilla.github.io/pdf.js/) (`js/vendor/pdf.min.js`, `pdf.worker.min.js`) | Mozilla Foundation | Apache-2.0 |
+| [hls.js](https://github.com/video-dev/hls.js) 1.6.16 (`js/vendor/hls.min.js`) | Dailymotion and hls.js contributors | Apache-2.0 |
 | [Bootstrap](https://getbootstrap.com/) 5.3.0 (`vendor/bootstrap.min.css`, `bootstrap.bundle.min.js`) | The Bootstrap Authors | MIT |
 | [Leaflet](https://leafletjs.com/) (`vendor/leaflet.js`, `leaflet.css`) | Vladimir Agafonkin, CloudMade | BSD-2-Clause |
 | [Font Awesome Free](https://fontawesome.com/) 6.5.1 (`vendor/fontawesome/`) | Fonticons, Inc. | see below |
 
-ECharts and pdf.js are provided under the Apache License, Version 2.0:
+ECharts, pdf.js and hls.js are provided under the Apache License, Version 2.0:
 <http://www.apache.org/licenses/LICENSE-2.0>. They are distributed on an
 "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 or implied.

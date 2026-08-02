@@ -523,6 +523,10 @@ function eqLocalHtml() {
         ${bypassed ? `<div class="small text-warning mb-1"><i class="fas fa-triangle-exclamation me-1"></i>
             This stream refused browser audio processing (no CORS) and the server relay
             failed too — playing it unprocessed.</div>` : ''}
+        ${st.enabled ? `<div class="small text-muted mb-1"><i class="fas fa-mobile-screen me-1"></i>
+            With the EQ on, playback needs this page awake — a phone that locks its
+            screen suspends browser audio processing. Switch the EQ off for
+            background listening.</div>` : ''}
         <canvas id="eqspec-local" class="zmm-eq-spec" height="46"></canvas>
         <div class="zmm-eq-bands">
           ${eq.BANDS.map((f, i) => `
@@ -617,6 +621,7 @@ async function eqDevFetch(pid) {
 async function eqEnable(pid, on) {
     if (pid === LOCAL_ID) {
         eq.eqSetEnabled(on);
+        local.eqRoutingChanged();     // audio path itself changes — see local-player.js
         renderEqPanel(pid);           // sliders follow the enabled state
         return;
     }
@@ -630,6 +635,7 @@ async function eqEnable(pid, on) {
 async function eqPreset(pid, name) {
     if (pid === LOCAL_ID) {
         eq.eqApplyPreset(name);
+        local.eqRoutingChanged();     // a named curve switches the EQ on
         renderEqPanel(pid);
         return;
     }
@@ -912,6 +918,7 @@ async function radioSearch() {
     const stations = data.stations || [];
     if (!stations.length) { out.innerHTML = '<div class="text-muted small py-2">No stations found.</div>'; return; }
     _radioSearchCache = stations;
+    if (stations.some(s => s.hls)) local.warmHls();   // load it before play is clicked
     out.innerHTML = stations.map((s, i) => {
         const faved = isFav(s.uuid);
         return `
@@ -942,6 +949,7 @@ function isFav(uuid) {
 async function loadRadioFavourites() {
     const data = await apiGet('/api/media/radio/favourites');
     _radioFavs = (data && data.success && data.stations) ? data.stations : [];
+    if (_radioFavs.some(f => f.hls)) local.warmHls();   // see radioSearch()
     renderRadioFavStrip();
 }
 
@@ -997,18 +1005,30 @@ async function playLocal(body, name) {
     toast(`Playing ${name} on this device${n > 1 ? ` (${n} tracks)` : ''}`, 'success');
 }
 
+// Snapshot for a uuid from what's already on screen; sent with every play so
+// a directory outage can't lose a station we can already see.
+function knownStation(uuid) {
+    return _radioFavs.find(f => f.uuid === uuid)
+        || _radioSearchCache.find(s => s.uuid === uuid)
+        || null;
+}
+
 async function playFavourite(uuid, name) {
     if (!requireSelected()) return;
-    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid }, name);
-    const r = await apiPost('/api/media/radio/favourites/play', { player_id: _selectedId, station_uuid: uuid });
+    const station = knownStation(uuid);
+    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid, station }, name);
+    const r = await apiPost('/api/media/radio/favourites/play',
+        { player_id: _selectedId, station_uuid: uuid, station });
     if (!r.success) toast(r.error || 'Play failed', 'error');
     else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
 }
 
 async function playStation(uuid, name) {
     if (!requireSelected()) return;
-    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid }, name);
-    const r = await apiPost('/api/media/play', { player_id: _selectedId, station_uuid: uuid });
+    const station = knownStation(uuid);
+    if (_selectedId === LOCAL_ID) return playLocal({ station_uuid: uuid, station }, name);
+    const r = await apiPost('/api/media/play',
+        { player_id: _selectedId, station_uuid: uuid, station });
     if (!r.success) toast(r.error || 'Play failed', 'error');
     else { toast(`Playing ${name}`, 'success'); setTimeout(loadPlayers, 1500); setTimeout(loadRecent, 2000); }
 }

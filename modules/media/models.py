@@ -59,15 +59,22 @@ class RadioStation:
     tags: str = ""
     codec: str = ""
     bitrate: int = 0
+    hls: bool = False      # stream is an HLS playlist, not a plain byte stream
 
     def to_media_item(self) -> MediaItem:
+        if self.hls:
+            ctype = "application/vnd.apple.mpegurl"   # hls.js / Cast HLS pipeline
+        elif (self.codec or "").upper() == "AAC":
+            ctype = "audio/aac"
+        else:
+            ctype = "audio/mpeg"
         return MediaItem(
             url=self.url,
             title=self.name,
             artist=self.country or "Radio",
             artwork_url=self.favicon,
             media_type="radio",
-            content_type="audio/mpeg" if (self.codec or "").upper() != "AAC" else "audio/aac",
+            content_type=ctype,
         )
 
     def to_dict(self) -> Dict[str, Any]:

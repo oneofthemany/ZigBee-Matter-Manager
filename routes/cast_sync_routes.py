@@ -82,7 +82,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             svc = get_media()
             station = None
             if svc is not None and getattr(svc, "radio", None) is not None:
-                station = await svc.radio.get_station(media["station_uuid"])
+                station = await svc.resolve_station(media["station_uuid"])
             if station is None:
                 return {"success": False,
                         "error": "Radio station not found (or directory unreachable)"}

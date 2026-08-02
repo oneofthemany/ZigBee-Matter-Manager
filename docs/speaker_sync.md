@@ -679,6 +679,85 @@ user-edited config, hence not in `config.yaml`. Login is a device/OAuth flow: th
 UI is handed a `link.tidal.com` URL while a background task waits for
 authorisation.
 
+### "This device" (browser) playback
+
+`static/js/local-player.js` plays radio and Tidal in the page itself, presented
+as an ordinary player so the Players list treats it like a speaker. Two routing
+modes, chosen per track from whether the local EQ is switched on:
+
+| Mode | Path | Trade-off |
+|---|---|---|
+| plain (default) | `<audio>` → output | Keeps playing with the phone's screen locked |
+| eq | `<audio>` → `MediaElementSource` → `eq.js` | Sliders and spectrum work, but a locked/backgrounded phone suspends the page's `AudioContext` and the audio stops with it |
+
+EQ mode's constraint is the browser's, not something the page can opt out of:
+routing an element through a `MediaElementSource` makes its audio a product of
+the `AudioContext`, and a locked phone suspends that context. So the EQ panel
+warns about it, and toggling the EQ mid-stream re-routes the running track
+(`eqRoutingChanged()`, which swaps the element — a `MediaElementSource` is
+permanent once created, and disconnecting it yields silence, not direct output).
+
+EQ mode also needs `crossorigin="anonymous"`: a `MediaElementSource` on a
+cross-origin stream that sends no CORS headers is pure silence, and *with* the
+attribute a non-CORS stream refuses to load at all. Hosts that refuse CORS are
+remembered for the session so the next track skips the failing attempt.
+
+The Media Session API is kept current in both modes — metadata, artwork,
+transport handlers, `playbackState`, and a position state for tracks (skipped
+for radio, whose duration is `Infinity`). Beyond the lock-screen controls, this
+is what marks the tab as an audio session rather than one the browser may freeze.
+
+#### Getting the bytes to the element
+
+Sources are tried in this order, and the *stage* is chosen up front rather than
+purely on failure:
+
+1. **direct** — the stream URL on the element.
+2. **proxy** — `/api/media/local/proxy`, same-origin, so neither CORS nor mixed
+   content applies. Chosen up front for the two cases known to fail: the app is
+   HTTPS-only, so the directory's many `http://` stations can never load direct,
+   and hosts already recorded as refusing CORS.
+3. **plain** (EQ mode only) — direct with the EQ routing dropped, so a stream
+   that defeats both of the above still plays, unprocessed.
+
+**HLS** is separate: much of the directory (the BBC among it) publishes HLS, and
+no browser but Safari plays a playlist from an `<audio>` element. Those go to
+hls.js (`static/js/vendor/hls.min.js`), vendored but loaded lazily — half a
+megabyte nothing else needs — and warmed as soon as a search or the favourites
+strip contains an HLS station, so the click that starts playback isn't waiting
+on the download and losing its user-gesture privilege. Fatal network/media
+errors are recovered at most three times before the stream is given up on.
+
+Detection is by the directory's own `hls` flag, carried into
+`RadioStation.hls` and out as an `application/vnd.apple.mpegurl` content type
+(which Cast also needs to route the station to its HLS pipeline); a `.m3u8` URL
+is the fallback signal for favourites pinned before the flag existed. Safari
+gets the manifest on the element directly; everyone else gets hls.js over MSE,
+which the EQ can still process because MSE feeds the element from a blob.
+
+Manifests always go through the proxy, which **rewrites** them rather than
+streaming them through: hls.js fetches segments and keys by XHR, so each one
+would otherwise need CORS headers the stations don't send. Every URI in the
+playlist — segments, `EXT-X-KEY`, `EXT-X-MEDIA`, `EXT-X-MAP`, variant playlists
+— is rewritten to come back through the proxy, resolved against the manifest's
+post-redirect URL. Rewrites are root-relative, which resolves correctly against
+the proxy URL the playlist was served from, and nested variant playlists are
+rewritten recursively because they arrive back through the proxy too.
+
+#### Resolving a station
+
+`MediaService.resolve_station()` tries a pinned favourite's stored snapshot,
+then the Radio-Browser directory, then the snapshot the page sent with the
+request (search results and favourites are already on screen, so a directory
+outage should never lose a station the user can see).
+
+The directory itself is volunteer-run and individual mirrors are routinely slow
+or down, so `radio_browser` keeps the whole mirror list and walks **distinct**
+mirrors per request rather than retrying one that just failed, re-resolving the
+list when it's exhausted and falling back to the round-robin host itself when
+reverse DNS is blocked. A failed lookup means "try the next mirror", never "the
+station doesn't exist". DNS is blocking, so it always runs in a thread.
+
 ### Plain-HTTP device listener
 
 The main app is HTTPS-only with a self-signed certificate, which Cast and WiiM

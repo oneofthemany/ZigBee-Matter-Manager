@@ -11,7 +11,7 @@ import time
 from typing import List, Optional
 
 from modules.media.controller import MediaController
-from modules.media.models import MediaItem, PlayerState
+from modules.media.models import MediaItem, PlayerState, RadioStation
 from modules.media.players.wiim import WiiMPlayerProvider
 from modules.media.sources.radio_browser import RadioBrowserSource
 
@@ -148,8 +148,32 @@ class MediaService:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 
     # Public helpers used by routes
-    async def play_radio_station(self, player_id: str, station_uuid: str) -> MediaItem:
+    async def resolve_station(self, station_uuid: str,
+                              hint: Optional[dict] = None) -> Optional[RadioStation]:
+        """Turn a station UUID into a playable station: pinned snapshot, then
+        the directory, then `hint` (the caller's own snapshot). The directory
+        is last because it is regularly unreachable."""
+        keys = ("uuid", "name", "url", "favicon", "homepage",
+                "country", "tags", "codec", "bitrate", "hls")
+
+        def _from(d: dict) -> RadioStation:
+            return RadioStation(**{k: d.get(k) for k in keys if d.get(k) is not None})
+
+        fav = self.radio_favourites.get(station_uuid)
+        if fav and fav.get("url"):
+            return _from(fav)
         station = await self.radio.get_station(station_uuid)
+        if station:
+            return station
+        if hint and hint.get("url"):
+            logger.info(f"Radio directory unreachable — playing {station_uuid} "
+                        f"from caller snapshot")
+            return _from({**hint, "uuid": station_uuid})
+        return None
+
+    async def play_radio_station(self, player_id: str, station_uuid: str,
+                                 hint: Optional[dict] = None) -> MediaItem:
+        station = await self.resolve_station(station_uuid, hint)
         if not station:
             raise ValueError(f"Radio station {station_uuid} not found "
                              f"(or radio directory unreachable)")
@@ -201,16 +225,7 @@ class MediaService:
     async def play_radio_favourite(self, player_id: str, uuid: str) -> MediaItem:
         """Play a pinned station straight from its stored snapshot — no
         directory lookup. Falls back to a live lookup if it isn't pinned."""
-        fav = self.radio_favourites.get(uuid)
-        if not fav:
-            return await self.play_radio_station(player_id, uuid)
-        from modules.media.models import RadioStation
-        station = RadioStation(**{k: fav.get(k) for k in (
-            "uuid", "name", "url", "favicon", "homepage",
-            "country", "tags", "codec", "bitrate") if fav.get(k) is not None})
-        item = station.to_media_item()
-        await self.controller.play_items(player_id, [item])
-        return item
+        return await self.play_radio_station(player_id, uuid)
 
     async def announce(self, player_id: str, text: str, lang: str = None,
                        volume: float = None) -> dict:

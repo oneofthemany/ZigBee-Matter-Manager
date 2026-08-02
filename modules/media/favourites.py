@@ -22,7 +22,7 @@ logger = logging.getLogger("modules.media.favourites")
 # Fields we keep from a RadioStation dict. Anything else the caller sends is
 # dropped so the file stays small and predictable.
 _FIELDS = ("uuid", "name", "url", "favicon", "homepage",
-           "country", "tags", "codec", "bitrate")
+           "country", "tags", "codec", "bitrate", "hls")
 
 
 class RadioFavourites:

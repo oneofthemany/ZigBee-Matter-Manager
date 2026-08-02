@@ -5,14 +5,15 @@ Radio-Browser source — the free community internet-radio directory
 Etiquette the directory asks for and this honours: resolve a concrete mirror
 from the round-robin host and reuse it rather than hammering one, send a
 descriptive unique User-Agent, and use `url_resolved` so the player gets a
-directly-playable stream.
+directly-playable stream. Mirror failover: docs/speaker_sync.md.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import socket
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import httpx
 
@@ -23,6 +24,7 @@ logger = logging.getLogger("modules.media.radio_browser")
 
 USER_AGENT = "ZigBeeMatterManager/1.0 (+media-subsystem)"
 _BOOTSTRAP_HOST = "all.api.radio-browser.info"
+_MIRROR_TRIES = 3          # distinct mirrors per request before giving up
 
 
 class RadioBrowserSource(SourceProvider):
@@ -30,62 +32,71 @@ class RadioBrowserSource(SourceProvider):
 
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
-        self._base_url: Optional[str] = None
+        self._base_url: Optional[str] = None    # mirror that last answered
+        self._mirrors: List[str] = []           # known mirrors, in try order
 
     async def start(self) -> None:
         if not self.enabled:
             return
-        self._base_url = self._resolve_server()
+        self._mirrors = await asyncio.to_thread(self._resolve_mirrors)
+        self._base_url = self._mirrors[0] if self._mirrors else None
         if self._base_url:
-            logger.info(f"Radio-Browser using mirror {self._base_url}")
+            logger.info(f"Radio-Browser using mirror {self._base_url} "
+                        f"({len(self._mirrors)} known)")
         else:
             logger.warning("Radio-Browser: could not resolve a mirror; will retry on demand")
 
-    def _resolve_server(self) -> Optional[str]:
-        """
-        Pick a random Radio-Browser mirror by resolving the bootstrap host.
-        Synchronous DNS, but only called once at startup (and lazily on retry).
-        """
+    def _resolve_mirrors(self) -> List[str]:
+        """Every mirror behind the round-robin host, shuffled. Blocking DNS —
+        always call in a thread."""
+        hosts: Set[str] = set()
         try:
             infos = socket.getaddrinfo(_BOOTSTRAP_HOST, 443, proto=socket.IPPROTO_TCP)
-            hosts = set()
             for info in infos:
                 ip = info[4][0]
                 try:
-                    name = socket.gethostbyaddr(ip)[0]
-                    hosts.add(name)
+                    hosts.add(socket.gethostbyaddr(ip)[0])
                 except (socket.herror, OSError):
                     hosts.add(ip)
-            if hosts:
-                return f"https://{random.choice(sorted(hosts))}"
         except (socket.gaierror, OSError) as e:
             logger.warning(f"Radio-Browser DNS resolution failed: {e}")
-        return None
+        mirrors = [f"https://{h}" for h in sorted(hosts)]
+        random.shuffle(mirrors)
+        mirrors.append(f"https://{_BOOTSTRAP_HOST}")   # last resort: reverse DNS blocked
+        return mirrors
 
-    async def _ensure_base(self) -> Optional[str]:
-        if not self._base_url:
-            self._base_url = self._resolve_server()
-        return self._base_url
+    async def _next_mirror(self, tried: Set[str]) -> Optional[str]:
+        """An untried mirror; re-resolves the list once it's exhausted."""
+        if self._base_url and self._base_url not in tried:
+            return self._base_url
+        candidates = [m for m in self._mirrors if m not in tried]
+        if not candidates:
+            self._mirrors = await asyncio.to_thread(self._resolve_mirrors)
+            candidates = [m for m in self._mirrors if m not in tried]
+        return candidates[0] if candidates else None
 
     async def _get_json(self, path: str, params: Optional[dict] = None):
-        """GET a Radio-Browser endpoint. If the cached mirror has gone stale,
-        re-resolve and retry once within this call (rather than failing now
-        and only succeeding on the caller's next attempt). Returns None if
-        both attempts fail."""
+        """GET a Radio-Browser endpoint, walking distinct mirrors on failure.
+        Returns None if every attempt fails."""
         headers = {"User-Agent": USER_AGENT}
-        for attempt in (1, 2):
-            base = await self._ensure_base()
+        tried: Set[str] = set()
+        for attempt in range(1, _MIRROR_TRIES + 1):
+            base = await self._next_mirror(tried)
             if not base:
                 return None
+            tried.add(base)
             try:
                 async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
                     resp = await client.get(f"{base}{path}", params=params)
                     resp.raise_for_status()
-                    return resp.json()
+                    data = resp.json()
+                self._base_url = base       # this one answers — stick with it
+                return data
             except (httpx.HTTPError, ValueError) as e:
                 logger.warning(f"Radio-Browser request failed on {base} "
-                               f"(attempt {attempt}/2): {e}")
-                self._base_url = None
+                               f"(attempt {attempt}/{_MIRROR_TRIES}): {e}")
+                if self._base_url == base:
+                    self._base_url = None
         return None
 
     async def search(self, query: str, limit: int = 25) -> List[MediaItem]:
@@ -121,6 +132,7 @@ class RadioBrowserSource(SourceProvider):
                 tags=r.get("tags", ""),
                 codec=r.get("codec", ""),
                 bitrate=int(r.get("bitrate", 0) or 0),
+                hls=bool(int(r.get("hls", 0) or 0)),
             ))
         return stations
 
@@ -136,12 +148,13 @@ class RadioBrowserSource(SourceProvider):
         if not stream:
             return None
         # Best-effort click counter — the directory uses it for ranking.
-        try:
-            async with httpx.AsyncClient(timeout=5.0,
-                                         headers={"User-Agent": USER_AGENT}) as client:
-                await client.get(f"{self._base_url}/json/url/{uuid}")
-        except httpx.HTTPError:
-            pass
+        if self._base_url:
+            try:
+                async with httpx.AsyncClient(timeout=5.0,
+                                             headers={"User-Agent": USER_AGENT}) as client:
+                    await client.get(f"{self._base_url}/json/url/{uuid}")
+            except httpx.HTTPError:
+                pass
         return RadioStation(
             uuid=r.get("stationuuid", ""),
             name=r.get("name", "").strip() or "Unknown station",
@@ -152,4 +165,5 @@ class RadioBrowserSource(SourceProvider):
             tags=r.get("tags", ""),
             codec=r.get("codec", ""),
             bitrate=int(r.get("bitrate", 0) or 0),
+            hls=bool(int(r.get("hls", 0) or 0)),
         )
