@@ -44,6 +44,49 @@ Speeds are stored and aggregated in m/s (the phone reports GPS doppler speed
 in m/s); the UI converts for display. Where the phone sent no speed, a speed
 is derived from consecutive fixes as a fallback.
 
+Drivers:
+    A trip is recorded by a phone, not by a person: user_id says whose phone
+    was in the car, which is only the same thing as who was driving when the
+    owner drove. Pooling every recording user's trips into one score, or
+    crediting a passenger's phone with the driving, both produce a number that
+    describes nobody. So attribution is a separate concept — a roster of
+    drivers, one of whom owns each trip.
+
+    A driver may be linked to a presence user, in which case that user's trips
+    are attributed to them automatically at close; the link is optional so a
+    household member who carries no tracked phone can still be scored on trips
+    reassigned to them. driver_id stays NULL until someone claims the trip, and
+    unattributed trips are counted separately rather than folded into whoever
+    happened to be carrying the phone.
+
+    Attribution is automatic where the evidence allows and records how it was
+    decided, because a guess presented as a fact is worse than no attribution:
+    `attribution` says which rule fired and `confidence` how far to trust it, so
+    the UI can mark a trip as needing confirmation rather than silently
+    crediting the wrong person. A manual assignment is always 'high' — someone
+    who was there said so, which outranks every inference here.
+
+Co-presence:
+    trip_id is minted on the phone, so two journey-enabled phones in one car
+    record the same physical drive as two unrelated trips. Left alone that
+    double-counts distance and averages one drive into the aggregate twice.
+    A pass over recently-closed trips pairs them up by time overlap and
+    endpoints, keeps one as the journey, and points the other at it through
+    primary_trip_id — duplicates stay in the table (they are that phone's own
+    record) but are excluded from every aggregate and from the trip list.
+
+    Which of the two occupants was driving is not knowable from anything the
+    hub can see, so a collapsed pair is attributed at 'low' confidence and
+    flagged for confirmation rather than guessed at silently.
+
+    car_bt_address identifies the vehicle and never the driver. A household
+    with one car has every driver sharing that address, so the two facts are
+    independent by construction: the same car appears under every name on the
+    leaderboard, and a trip is attributed by who recorded it, not by what they
+    drove. The column is here for per-vehicle reporting and to key a future
+    learned prior — which must be conditioned on time and occupancy as well,
+    never on the car alone.
+
 Privacy:
     Recording is opt-in per presence user (UserConfig.journeys_enabled) —
     this module persists movement history, which presence_users.py
@@ -169,6 +212,37 @@ MIN_SCORE_DISTANCE_M = 2000.0
 #: limits, road class and time of day this hub has no access to.
 SCORE_DECAY_EVENTS_PER_100KM = 100.0
 
+#: Measured distance a driver must have covered before they are ranked (m;
+#: ~25 miles). The per-trip score is already distance-normalised, so a single
+#: clean three-mile run scores as well as a careful month of commuting and
+#: would take first place on a leaderboard that ranked everyone. Drivers below
+#: this are listed but unranked — held back rather than hidden, because "not
+#: enough data yet" is the honest reading and a missing name looks like a bug.
+MIN_LEADERBOARD_DISTANCE_M = 40000.0
+
+#: How far back the co-presence pass looks (s). Both phones disconnect from the
+#: car within seconds of each other, so their trips close on the same pass or
+#: the next one; six hours is slack for a hub that was down for the afternoon,
+#: while keeping the pairwise comparison over a handful of rows.
+COPRESENCE_LOOKBACK_S = 6 * 3600
+
+#: Fraction of the shorter trip that must overlap in time before two trips can
+#: be the same drive. One car cannot carry two people along different roads,
+#: so a genuine pair overlaps almost entirely; the slack is for the phones
+#: starting and stopping their fixes at slightly different moments.
+COPRESENCE_MIN_OVERLAP = 0.6
+
+#: How close two trips' start points, and their end points, must be to be the
+#: same drive (m). Wide enough for two phones acquiring GPS at different
+#: moments as the car pulls away, tight enough that two cars leaving the same
+#: house for different places do not pair.
+COPRESENCE_ENDPOINT_M = 500.0
+
+#: How far two trips' distances may differ and still be one drive (fraction).
+#: The same road measured by two phones differs by a few percent through fix
+#: timing alone; a quarter is generous and only rules out gross mismatches.
+COPRESENCE_DISTANCE_TOL = 0.25
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trip_fixes (
     trip_id     TEXT   NOT NULL,
@@ -206,6 +280,18 @@ CREATE TABLE IF NOT EXISTS trip_events (
     duration_s DOUBLE
 );
 CREATE INDEX IF NOT EXISTS idx_trip_events_trip ON trip_events (trip_id);
+CREATE TABLE IF NOT EXISTS drivers (
+    driver_id  TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    -- The presence user whose trips are attributed here by default. NULL for a
+    -- driver who carries no tracked phone, who is scored only on trips
+    -- reassigned to them by hand. Note that _open splits this schema on
+    -- semicolons, so no comment here may contain one.
+    user_id    TEXT,
+    colour     TEXT,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at DOUBLE  NOT NULL
+);
 """
 
 # Columns added after the first release. CREATE TABLE IF NOT EXISTS is a no-op
@@ -245,6 +331,19 @@ _MIGRATIONS = (
     ("trips", "descent_m", "DOUBLE"),
     ("trips", "smoothness_score", "DOUBLE"),
     ("trips", "motion_fix_count", "BIGINT"),
+    # Attribution. driver_id is who drove; the other two say how confidently
+    # that was decided, so the UI can ask rather than assert. NULL driver_id
+    # means nobody has claimed the trip — never "the phone's owner by default",
+    # which is the assumption this whole column exists to stop making.
+    ("trips", "driver_id", "TEXT"),
+    ("trips", "attribution", "TEXT"),
+    ("trips", "confidence", "TEXT"),
+    # Which vehicle. Filled by the companion app once it sends the address it
+    # already matches on; NULL on every trip recorded before then.
+    ("trips", "car_bt_address", "TEXT"),
+    # Set on the redundant copy when two phones recorded one drive; points at
+    # the trip kept as the journey. NULL on a trip that is itself a journey.
+    ("trips", "primary_trip_id", "TEXT"),
 )
 
 # Distance + speed statistics for one trip, all in the engine. Consecutive
@@ -392,6 +491,17 @@ SELECT ts, lat, lon, speed_mps, bearing_deg, accuracy_m, altitude_m,
 FROM grad
 ORDER BY ts
 """
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle metres. The Python twin of the SQL in _FINALIZE_SQL, for
+    the co-presence pairing, which compares trips rather than fixes."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = (math.sin(dp / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
+    return 2.0 * 6371000.0 * math.asin(math.sqrt(a))
 
 
 class JourneyManager:
@@ -548,6 +658,10 @@ class JourneyManager:
                     closed = await self._run(self._close_idle_trips)
                     for trip_id, user_id in closed:
                         await self._resolve_places(trip_id, user_id)
+                    # After closing, not before: a pair is only detectable once
+                    # both phones' trips have distance and endpoints, and the
+                    # second one may not have closed until this same pass.
+                    await self._run(self._collapse_copresent)
                     if time.time() - last_purge > 24 * 3600:
                         await self._run(self._purge_old_tracks)
                         last_purge = time.time()
@@ -581,6 +695,7 @@ class JourneyManager:
                 continue
             _, distance_m, avg_v, max_v, min_v, sd_v, t0, t1 = row
             b = self._behaviour(trip_id, distance_m)
+            driver_id = self._driver_for_user(user_id)
             self._con.execute(
                 "UPDATE trips SET status = 'closed', fix_count = ?, "
                 "distance_m = ?, duration_s = ?, avg_speed_mps = ?, "
@@ -590,7 +705,13 @@ class JourneyManager:
                 "harsh_corner_count = ?, harsh_event_count = ?, "
                 "max_brake_mps2 = ?, max_accel_mps2 = ?, max_lat_mps2 = ?, "
                 "roughness_mps2 = ?, idle_s = ?, stop_count = ?, climb_m = ?, "
-                "descent_m = ?, smoothness_score = ?, motion_fix_count = ? "
+                "descent_m = ?, smoothness_score = ?, motion_fix_count = ?, "
+                # COALESCE, not assignment: a trip reopened by a late fix (see
+                # _record_fix) comes back through here, and refinalising it must
+                # not discard an attribution someone made by hand in between.
+                "driver_id = COALESCE(driver_id, ?), "
+                "attribution = COALESCE(attribution, ?), "
+                "confidence = COALESCE(confidence, ?) "
                 "WHERE trip_id = ?",
                 [fix_count, distance_m, (t1 - t0) if t0 is not None else None,
                  avg_v, max_v, min_v, sd_v, t0, t1,
@@ -600,6 +721,12 @@ class JourneyManager:
                  b["roughness_mps2"], b["idle_s"], b["stop_count"],
                  b["climb_m"], b["descent_m"], b["smoothness_score"],
                  b["motion_fix_count"],
+                 driver_id,
+                 "sole_phone" if driver_id else None,
+                 # High until the co-presence pass finds another phone in the
+                 # car, which is the only thing that can undermine it: one
+                 # phone recording means one person known to have been there.
+                 "high" if driver_id else None,
                  trip_id],
             )
             closed.append((trip_id, user_id))
@@ -608,6 +735,164 @@ class JourneyManager:
                 f"{(distance_m or 0) / 1000:.1f} km, {fix_count} fixes"
             )
         return closed
+
+    # Recently-closed journeys with their endpoints, for co-presence pairing.
+    # Only trips that are still journeys in their own right are considered:
+    # once a trip has been pointed at a primary it is out of the running, which
+    # is what keeps repeated passes from re-pairing a settled group.
+    _COPRESENCE_SQL = """
+    WITH candidate AS (
+        SELECT trip_id, user_id, started_at, ended_at, distance_m,
+               fix_count, motion_fix_count
+        FROM trips
+        WHERE status = 'closed' AND primary_trip_id IS NULL
+          AND ended_at >= ? AND started_at IS NOT NULL AND ended_at IS NOT NULL
+    ),
+    ends AS (
+        SELECT trip_id,
+               arg_min(lat, ts) AS slat, arg_min(lon, ts) AS slon,
+               arg_max(lat, ts) AS elat, arg_max(lon, ts) AS elon
+        FROM trip_fixes
+        WHERE trip_id IN (SELECT trip_id FROM candidate)
+        GROUP BY trip_id
+    )
+    SELECT c.trip_id, c.user_id, c.started_at, c.ended_at, c.distance_m,
+           c.fix_count, c.motion_fix_count,
+           e.slat, e.slon, e.elat, e.elon
+    FROM candidate c JOIN ends e ON e.trip_id = c.trip_id
+    ORDER BY c.started_at
+    """
+
+    def _collapse_copresent(self) -> int:
+        """
+        Point one of each pair of same-drive trips at the other. DB thread.
+
+        Two phones in one car produce two trips describing one journey. Keeping
+        both would count the distance twice and average the drive into the
+        aggregates twice, so one is kept as the journey and the other marked as
+        a duplicate of it. Returns how many were newly marked.
+        """
+        rows = self._con.execute(
+            self._COPRESENCE_SQL, [time.time() - COPRESENCE_LOOKBACK_S]
+        ).fetchall()
+        if len(rows) < 2:
+            return 0
+
+        # Trips that already have duplicates pointing at them. A settled group
+        # must keep the primary it has: if a third phone's trip closes later
+        # and outranks the current primary, promoting it would leave the old
+        # primary's duplicates pointing at a trip that is no longer a journey.
+        established = {
+            r[0] for r in self._con.execute(
+                "SELECT DISTINCT primary_trip_id FROM trips "
+                "WHERE primary_trip_id IS NOT NULL"
+            ).fetchall()
+        }
+
+        marked = 0
+        for group in self._cluster_drives(rows):
+            if len(group) < 2:
+                continue
+            # One journey per group, chosen once — pairwise marking would let
+            # three phones in one car chain A→B→C, and A would resolve to a
+            # trip that is not itself a journey.
+            primary = max(group, key=lambda t: (t[0] in established,) + self._rank(t))
+            for dup in group:
+                if dup[0] == primary[0]:
+                    continue
+                self._con.execute(
+                    "UPDATE trips SET primary_trip_id = ? WHERE trip_id = ?",
+                    [primary[0], dup[0]],
+                )
+                marked += 1
+                logger.info(
+                    f"[journeys] co-presence: {dup[0]} ({dup[1]}) is the same "
+                    f"drive as {primary[0]} ({primary[1]}) — collapsed"
+                )
+            # Several people were in the car and nothing the hub can see says
+            # which one drove, so the surviving journey stops claiming to know.
+            # A manual assignment is left alone: someone who was there has
+            # already answered the question this is asking.
+            self._con.execute(
+                "UPDATE trips SET attribution = 'copresence', confidence = 'low' "
+                "WHERE trip_id = ? AND COALESCE(attribution, '') <> 'manual'",
+                [primary[0]],
+            )
+        return marked
+
+    def _cluster_drives(self, rows) -> List[list]:
+        """
+        Group closed trips that describe the same physical drive.
+
+        Membership is by similarity to anything already in the group rather
+        than to a fixed representative, so three phones in one car land in one
+        group even where the first and last of them pair only through the
+        middle one.
+        """
+        groups: List[list] = []
+        for row in rows:
+            for g in groups:
+                if any(self._same_drive(row, other) for other in g):
+                    g.append(row)
+                    break
+            else:
+                groups.append([row])
+        return groups
+
+    @staticmethod
+    def _same_drive(a, b) -> bool:
+        """Whether two closed trips are one physical journey."""
+        (_, a_user, a_t0, a_t1, a_dist, _, _, a_slat, a_slon, a_elat, a_elon) = a
+        (_, b_user, b_t0, b_t1, b_dist, _, _, b_slat, b_slon, b_elat, b_elon) = b
+
+        # The same phone cannot be a passenger in its own car. Two trips from
+        # one user that overlap are a recording fault, not two occupants, and
+        # collapsing them would hide it.
+        if a_user == b_user:
+            return False
+
+        overlap = min(a_t1, b_t1) - max(a_t0, b_t0)
+        shorter = min(a_t1 - a_t0, b_t1 - b_t0)
+        if shorter <= 0 or overlap / shorter < COPRESENCE_MIN_OVERLAP:
+            return False
+
+        if _haversine_m(a_slat, a_slon, b_slat, b_slon) > COPRESENCE_ENDPOINT_M:
+            return False
+        if _haversine_m(a_elat, a_elon, b_elat, b_elon) > COPRESENCE_ENDPOINT_M:
+            return False
+
+        # Endpoints and timing agreeing while the distances do not means the
+        # two phones did not travel the same roads between them.
+        if a_dist and b_dist:
+            if abs(a_dist - b_dist) / max(a_dist, b_dist) > COPRESENCE_DISTANCE_TOL:
+                return False
+        return True
+
+    @staticmethod
+    def _rank(t):
+        """
+        How good a candidate a trip is for surviving as the journey.
+
+        The richer recording wins — motion data first, then fix count — so the
+        trip that is kept is the one that can be scored at all. trip_id breaks
+        a tie, only so that repeated passes reach the same answer.
+        """
+        return (1 if (t[6] or 0) > 0 else 0, t[5] or 0, t[0])
+
+    def _driver_for_user(self, user_id: str) -> Optional[str]:
+        """
+        The active driver linked to a recording presence user, if any.
+
+        Returns None when nobody has claimed that phone, which leaves the trip
+        unattributed rather than inventing a driver from the user_id — a
+        leaderboard entry nobody created is worse than a missing one.
+        """
+        row = self._con.execute(
+            "SELECT driver_id FROM drivers WHERE user_id = ? AND active "
+            "ORDER BY created_at LIMIT 1",
+            [user_id],
+        ).fetchone()
+        return row[0] if row else None
 
     def _behaviour(self, trip_id: str,
                    distance_m: Optional[float]) -> Dict[str, Any]:
@@ -763,23 +1048,149 @@ class JourneyManager:
                   "harsh_corner_count", "harsh_event_count",
                   "max_brake_mps2", "max_accel_mps2", "max_lat_mps2",
                   "roughness_mps2", "idle_s", "stop_count", "climb_m",
-                  "descent_m", "smoothness_score", "motion_fix_count")
+                  "descent_m", "smoothness_score", "motion_fix_count",
+                  "driver_id", "attribution", "confidence", "car_bt_address",
+                  "primary_trip_id")
 
     async def list_trips(self, user_id: Optional[str] = None,
-                         limit: int = 50) -> List[Dict[str, Any]]:
-        return await self._run(self._list_trips, user_id, limit)
+                         limit: int = 50,
+                         driver_id: Optional[str] = None,
+                         include_duplicates: bool = False) -> List[Dict[str, Any]]:
+        return await self._run(self._list_trips, user_id, limit, driver_id,
+                               include_duplicates)
 
-    def _list_trips(self, user_id, limit) -> List[Dict[str, Any]]:
+    def _list_trips(self, user_id, limit, driver_id,
+                    include_duplicates) -> List[Dict[str, Any]]:
         sql = (f"SELECT {', '.join(self._TRIP_COLS)} FROM trips "
                "WHERE status = 'closed'")
         params: List[Any] = []
+        # One row per physical journey by default. The duplicate is still that
+        # phone's own record of the drive, so it is filtered rather than
+        # deleted, and reachable by asking for it.
+        if not include_duplicates:
+            sql += " AND primary_trip_id IS NULL"
         if user_id:
             sql += " AND user_id = ?"
             params.append(user_id)
+        if driver_id:
+            sql += " AND driver_id = ?"
+            params.append(driver_id)
         sql += " ORDER BY started_at DESC LIMIT ?"
         params.append(int(limit))
         rows = self._con.execute(sql, params).fetchall()
         return [dict(zip(self._TRIP_COLS, r)) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Drivers
+    # ------------------------------------------------------------------
+    _DRIVER_COLS = ("driver_id", "name", "user_id", "colour", "active",
+                    "created_at")
+
+    async def list_drivers(self) -> List[Dict[str, Any]]:
+        return await self._run(self._list_drivers)
+
+    def _list_drivers(self) -> List[Dict[str, Any]]:
+        rows = self._con.execute(
+            f"SELECT {', '.join(self._DRIVER_COLS)} FROM drivers ORDER BY name"
+        ).fetchall()
+        return [dict(zip(self._DRIVER_COLS, r)) for r in rows]
+
+    async def save_driver(self, driver_id: str, name: str,
+                          user_id: Optional[str] = None,
+                          colour: Optional[str] = None,
+                          active: bool = True) -> Dict[str, Any]:
+        return await self._run(self._save_driver, driver_id, name, user_id,
+                               colour, active)
+
+    def _save_driver(self, driver_id, name, user_id, colour,
+                     active) -> Dict[str, Any]:
+        self._con.execute(
+            "INSERT INTO drivers (driver_id, name, user_id, colour, active, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (driver_id) DO UPDATE SET name = EXCLUDED.name, "
+            "user_id = EXCLUDED.user_id, colour = EXCLUDED.colour, "
+            "active = EXCLUDED.active",
+            [driver_id, name, user_id, colour, bool(active), time.time()],
+        )
+        return {"driver_id": driver_id, "claimed": self._claim_history(driver_id, user_id)}
+
+    def _claim_history(self, driver_id: str, user_id: Optional[str]) -> int:
+        """
+        Attribute a newly linked user's unclaimed trips to this driver.
+
+        Without it a driver created today starts with an empty leaderboard row
+        while months of their own trips sit unattributed. Only NULL driver_id
+        rows are touched: linking a phone must never take a trip away from
+        whoever is already credited with it.
+        """
+        if not user_id:
+            return 0
+        # Counted over journeys only. A collapsed duplicate is claimed too —
+        # it is still that phone's record — but it reaches no aggregate, so
+        # reporting it as a claimed journey would promise history that never
+        # appears in the driver's totals.
+        n = self._con.execute(
+            "SELECT COUNT(*) FROM trips WHERE user_id = ? AND driver_id IS NULL "
+            "AND primary_trip_id IS NULL",
+            [user_id],
+        ).fetchone()[0]
+        self._con.execute(
+            "UPDATE trips SET driver_id = ?, "
+            # COALESCE, so a trip the co-presence pass already labelled keeps
+            # that label. Claiming a phone says who was in the car, not that
+            # they were alone in it — overwriting would turn the more accurate
+            # verdict into the less accurate one and raise its confidence.
+            "attribution = COALESCE(attribution, 'sole_phone'), "
+            # Backfill is an inference over history rather than an observation
+            # of it: trips older than COPRESENCE_LOOKBACK_S were never checked
+            # for a second phone, so 'high' would be claiming more than is known.
+            "confidence = COALESCE(confidence, 'medium') "
+            "WHERE user_id = ? AND driver_id IS NULL",
+            [driver_id, user_id],
+        )
+        return int(n)
+
+    async def delete_driver(self, driver_id: str) -> bool:
+        return await self._run(self._delete_driver, driver_id)
+
+    def _delete_driver(self, driver_id) -> bool:
+        found = self._con.execute(
+            "SELECT 1 FROM drivers WHERE driver_id = ?", [driver_id]).fetchone()
+        if not found:
+            return False
+        # Unattribute rather than cascade: the trips happened, and deleting a
+        # driver is a statement about the roster, not about the history.
+        self._con.execute(
+            "UPDATE trips SET driver_id = NULL, attribution = NULL, "
+            "confidence = NULL WHERE driver_id = ?",
+            [driver_id],
+        )
+        self._con.execute("DELETE FROM drivers WHERE driver_id = ?", [driver_id])
+        return True
+
+    async def set_trip_driver(self, trip_id: str,
+                              driver_id: Optional[str]) -> bool:
+        return await self._run(self._set_trip_driver, trip_id, driver_id)
+
+    def _set_trip_driver(self, trip_id, driver_id) -> bool:
+        if not self._con.execute(
+                "SELECT 1 FROM trips WHERE trip_id = ?", [trip_id]).fetchone():
+            return False
+        if driver_id is not None and not self._con.execute(
+                "SELECT 1 FROM drivers WHERE driver_id = ?", [driver_id]).fetchone():
+            raise KeyError(driver_id)
+        # 'manual' at 'high': someone who was in the car has answered the
+        # question, which outranks every inference this module can make — and
+        # is why the co-presence pass leaves manual attributions alone.
+        self._con.execute(
+            "UPDATE trips SET driver_id = ?, attribution = ?, confidence = ? "
+            "WHERE trip_id = ?",
+            [driver_id,
+             "manual" if driver_id else None,
+             "high" if driver_id else None,
+             trip_id],
+        )
+        return True
 
     async def get_trip(self, trip_id: str,
                        include_track: bool = False) -> Optional[Dict[str, Any]]:
@@ -793,6 +1204,16 @@ class JourneyManager:
         if not row:
             return None
         trip = dict(zip(self._TRIP_COLS, row))
+
+        # Who else's phone recorded this same drive. The reason a journey is
+        # attributed at low confidence is usually right here, so the detail
+        # panel can explain the flag instead of just showing it.
+        trip["also_recorded_by"] = [
+            r[0] for r in self._con.execute(
+                "SELECT user_id FROM trips WHERE primary_trip_id = ? ORDER BY user_id",
+                [trip_id],
+            ).fetchall()
+        ]
 
         # Events carry no coordinates, so unlike the track they are not behind
         # the admin gate: "braked hard four minutes in" says how someone drove,
@@ -820,15 +1241,115 @@ class JourneyManager:
             ]
         return trip
 
-    async def user_stats(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        return await self._run(self._user_stats, user_id)
+    # Per-driver aggregates. Deliberately a LEFT JOIN from drivers: a driver
+    # with no trips yet is a row of nulls on the leaderboard, not a missing
+    # name, because "registered but hasn't driven" is a state worth showing.
+    #
+    # Duplicates are excluded here as everywhere — the whole point of
+    # collapsing them is that one drive counts once, for one driver.
+    _LEADERBOARD_SQL = """
+    SELECT d.driver_id, d.name, d.colour, d.user_id, d.active,
+           COUNT(t.trip_id),
+           SUM(t.distance_m),
+           SUM(t.duration_s),
+           MAX(t.max_speed_mps),
+           CASE WHEN SUM(t.duration_s) > 0
+                THEN SUM(t.distance_m) / SUM(t.duration_s) END,
+           COUNT(t.trip_id) FILTER (WHERE t.motion_fix_count > 0),
+           SUM(t.distance_m) FILTER (WHERE t.smoothness_score IS NOT NULL),
+           -- Distance-weighted, matching the single-driver figure in
+           -- _user_stats: a two-mile trip's score must not weigh as much as a
+           -- fifty-mile one when ranking how someone drives.
+           CASE WHEN SUM(t.distance_m) FILTER (WHERE t.smoothness_score IS NOT NULL) > 0
+                THEN SUM(t.smoothness_score * t.distance_m)
+                     / SUM(t.distance_m) FILTER (WHERE t.smoothness_score IS NOT NULL) END,
+           SUM(t.harsh_event_count),
+           SUM(t.harsh_brake_count), SUM(t.harsh_accel_count),
+           SUM(t.harsh_corner_count),
+           MAX(t.max_brake_mps2), MAX(t.max_lat_mps2),
+           COUNT(t.trip_id) FILTER (WHERE t.confidence IN ('low', 'medium'))
+    FROM drivers d
+    LEFT JOIN trips t
+           ON t.driver_id = d.driver_id
+          AND t.status = 'closed'
+          AND t.primary_trip_id IS NULL
+    GROUP BY d.driver_id, d.name, d.colour, d.user_id, d.active
+    """
 
-    def _user_stats(self, user_id) -> Dict[str, Any]:
-        where = "WHERE status = 'closed'"
+    _LEADERBOARD_COLS = ("driver_id", "name", "colour", "user_id", "active",
+                         "trip_count", "total_distance_m", "total_duration_s",
+                         "top_speed_mps", "overall_avg_speed_mps",
+                         "measured_trip_count", "measured_distance_m",
+                         "smoothness_score", "harsh_event_count",
+                         "harsh_brake_count", "harsh_accel_count",
+                         "harsh_corner_count", "max_brake_mps2",
+                         "max_lat_mps2", "unconfirmed_trip_count")
+
+    async def leaderboard(self) -> Dict[str, Any]:
+        return await self._run(self._leaderboard)
+
+    def _leaderboard(self) -> Dict[str, Any]:
+        rows = [dict(zip(self._LEADERBOARD_COLS, r))
+                for r in self._con.execute(self._LEADERBOARD_SQL).fetchall()]
+
+        for d in rows:
+            if d["smoothness_score"] is not None:
+                d["smoothness_score"] = round(d["smoothness_score"], 1)
+            # Harsh events per 100 km — the raw rate behind the score, shown
+            # alongside it because "3 events in 60 miles" is checkable in a way
+            # that a 0-100 number is not.
+            dist = d["measured_distance_m"]
+            ev = d["harsh_event_count"]
+            d["events_per_100km"] = (
+                round(ev / (dist / 100_000.0), 1)
+                if ev is not None and dist else None
+            )
+            d["qualified"] = bool(
+                d["smoothness_score"] is not None
+                and (d["measured_distance_m"] or 0) >= MIN_LEADERBOARD_DISTANCE_M
+            )
+
+        # Ranked drivers first, best score down; everyone else after, ordered
+        # by how close they are to qualifying rather than by an unearned score.
+        ranked = sorted((d for d in rows if d["qualified"]),
+                        key=lambda d: -d["smoothness_score"])
+        for i, d in enumerate(ranked, 1):
+            d["rank"] = i
+        unranked = sorted((d for d in rows if not d["qualified"]),
+                          key=lambda d: -(d["measured_distance_m"] or 0))
+        for d in unranked:
+            d["rank"] = None
+
+        unattributed = self._con.execute(
+            "SELECT COUNT(*), SUM(distance_m) FROM trips "
+            "WHERE status = 'closed' AND primary_trip_id IS NULL "
+            "AND driver_id IS NULL"
+        ).fetchone()
+
+        return {
+            "drivers": ranked + unranked,
+            "min_distance_m": MIN_LEADERBOARD_DISTANCE_M,
+            # Surfaced so the UI can say how much history is sitting outside
+            # the table; a leaderboard that quietly omits half the driving
+            # invites more trust than it has earned.
+            "unattributed_trip_count": unattributed[0] or 0,
+            "unattributed_distance_m": unattributed[1] or 0.0,
+        }
+
+    async def user_stats(self, user_id: Optional[str] = None,
+                         driver_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self._run(self._user_stats, user_id, driver_id)
+
+    def _user_stats(self, user_id, driver_id=None) -> Dict[str, Any]:
+        # Duplicates never reach an aggregate: one drive, counted once.
+        where = "WHERE status = 'closed' AND primary_trip_id IS NULL"
         params: List[Any] = []
         if user_id:
             where += " AND user_id = ?"
             params.append(user_id)
+        if driver_id:
+            where += " AND driver_id = ?"
+            params.append(driver_id)
         row = self._con.execute(
             "SELECT COUNT(*), SUM(distance_m), SUM(duration_s), "
             # Overall average speed as total distance over total time —
