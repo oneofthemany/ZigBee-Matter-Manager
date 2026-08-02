@@ -909,14 +909,18 @@ async def lifespan(app: FastAPI):
         logger.info(f"AI Assistant initialised: {ai_assistant.provider}/{ai_assistant.model} "
                     f"configured={ai_assistant.is_configured()}")
 
-        # AI config persistence helper
+        # AI config persistence helper.
+        #
+        # update_block rather than safe_load + dump: the latter round-trips the
+        # whole file through an emitter with no concept of comments, so saving
+        # one API key would delete every explanatory comment in config.yaml.
+        # This rewrites only the keys it is given and leaves the rest byte for
+        # byte, including any ai: setting this function has never heard of.
         def _save_ai_config(ai_cfg):
+            from modules.config_yaml import update_block
             try:
-                with open("./config/config.yaml", "r") as f:
-                    cfg = yaml.safe_load(f) or {}
-                cfg["ai"] = ai_cfg
-                with open("./config/config.yaml", "w") as f:
-                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+                update_block("./config/config.yaml", "ai", ai_cfg,
+                             block_comment="AI assistant provider settings.")
                 logger.info("AI config saved to config.yaml")
             except Exception as e:
                 logger.error(f"Failed to save AI config: {e}")

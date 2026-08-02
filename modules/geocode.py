@@ -61,6 +61,8 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 
+from modules.config_yaml import update_block
+
 logger = logging.getLogger("modules.geocode")
 
 DB_PATH = Path("./data/geocode.duckdb")
@@ -256,59 +258,17 @@ _FIRST_TOWN_TIER = 4
 
 CONFIG_PATH = Path("./config/config.yaml")
 
-_GEOCODE_BLOCK_RE = re.compile(r"^geocode:\s*(#.*)?$")
-_FALLBACK_KEY_RE = re.compile(r"^(\s+)online_fallback:\s*\S.*$")
-#: A line that continues the block above it — indented, or blank. Anything else
-#: at column zero starts a new top-level key and ends the geocode block.
-_IN_BLOCK_RE = re.compile(r"^(\s+\S|\s*$)")
-
 
 def persist_online_fallback(enabled: bool, path: Path = CONFIG_PATH) -> None:
-    """
-    Write geocode.online_fallback back to config.yaml, in place.
-
-    A targeted text edit rather than a YAML round-trip, and deliberately so:
-    config.yaml is roughly a third comments, and load-then-dump discards every
-    one of them. Losing a hundred lines of documentation to persist a single
-    boolean is not a trade worth making, and it is silent when it happens.
-
-    Writes through a temporary file in the same directory and renames, so an
-    interrupted save cannot leave the hub with a half-written config.
-    """
-    value = "true" if enabled else "false"
-    path = Path(path)
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-
-    start = next((i for i, ln in enumerate(lines)
-                  if _GEOCODE_BLOCK_RE.match(ln)), None)
-
-    if start is None:
-        # No block yet — append one, with the comment it would have had if it
-        # had been written by hand.
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines += ["\n",
-                  "# Place search for the apiary location picker.\n",
-                  "geocode:\n",
-                  "  # Fall back to OpenStreetMap for street addresses and\n",
-                  "  # businesses when the local postal data has no answer.\n",
-                  "  # Sends the typed search off the hub, so it is opt-in.\n",
-                  f"  online_fallback: {value}\n"]
-    else:
-        end = start + 1
-        while end < len(lines) and _IN_BLOCK_RE.match(lines[end]):
-            end += 1
-        for i in range(start + 1, end):
-            m = _FALLBACK_KEY_RE.match(lines[i])
-            if m:
-                lines[i] = f"{m.group(1)}online_fallback: {value}\n"
-                break
-        else:
-            lines.insert(start + 1, f"  online_fallback: {value}\n")
-
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("".join(lines), encoding="utf-8")
-    tmp.replace(path)
+    """Write geocode.online_fallback back to config.yaml, comments intact."""
+    update_block(
+        path, "geocode", {"online_fallback": bool(enabled)},
+        block_comment="Place search for the apiary location picker.",
+        comments={"online_fallback":
+                  "Fall back to OpenStreetMap for street addresses and\n"
+                  "businesses when the local postal data has no answer.\n"
+                  "Sends the typed search off the hub, so it is opt-in."},
+    )
 
 
 def _norm(s: str) -> str:
