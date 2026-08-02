@@ -1611,6 +1611,7 @@ async function _syncFetch() {
     ]);
     _syncGroups = g.groups || [];
     _syncStatus = s;
+    _zonePlayMigrate();
 }
 
 function _syncDeviceInfo(pid) {
@@ -1914,52 +1915,117 @@ async function syncDeleteGroup(gid) {
     renderSyncPane();
 }
 
-// Test-window length per group, remembered locally. Fixed windows keep the
-// learned model and the Sync Lab's session-by-session trends comparable —
-// a 5-minute run and a 40-second run don't measure the same thing.
+// What a zone plays
+// Held on the server with the zone (cast_sync.group_config), not in this tab:
+// a zone whose source only existed in one browser could not be started by an
+// automation, a schedule, or a second phone. `key`, `custom_url` and `loop`
+// are this picker's memory; `media` is the block the start path reads, derived
+// from them on every change so the two cannot drift.
+const ZONE_PLAY_DEFAULT = { key: '', custom_url: '', loop: false, media: null,
+                            duration_s: null, crossfade_s: null };
+
+function _zonePlay(gid) {
+    const g = _syncGroups.find(x => x.id === gid);
+    return Object.assign({}, ZONE_PLAY_DEFAULT, (g && g.play) || {});
+}
+
+/** Apply a change to the zone's playback config and persist it. The patch
+ *  lands first so `_syncMediaFor` — which reads the picker through these same
+ *  accessors — sees the new state when it rebuilds the media block. */
+function _zonePlaySet(gid, patch, delay) {
+    const g = _syncGroups.find(x => x.id === gid);
+    if (!g) return;
+    g.play = Object.assign(_zonePlay(gid), patch);
+    g.play.media = _syncMediaFor(gid);
+    _zonePlayPush(gid, delay);
+}
+
+// Debounced: a dragged crossfade slider and a typed URL both fire per event,
+// and only the value the user stops on is worth a round trip.
+const _zonePlayTimers = {};
+
+function _zonePlayPush(gid, delay = 400) {
+    clearTimeout(_zonePlayTimers[gid]);
+    _zonePlayTimers[gid] = setTimeout(async () => {
+        const r = await apiPost('/api/media/sync/groups/config',
+                                Object.assign({ id: gid }, _zonePlay(gid)));
+        if (!r.success) toast(r.error || 'Could not save what this zone plays', 'error');
+    }, delay);
+}
+
+// Test-window length per zone. Fixed windows keep the learned model and the
+// Sync Lab's session-by-session trends comparable — a 5-minute run and a
+// 40-second run don't measure the same thing.
 function _syncDurFor(gid) {
-    const v = Number(localStorage.getItem('zmm.syncdur.' + gid));
+    const v = Number(_zonePlay(gid).duration_s);
     return Number.isFinite(v) && [0, 120, 300, 600].includes(v) ? v : 300;
 }
 
 function syncSetDuration(gid, val) {
-    localStorage.setItem('zmm.syncdur.' + gid, String(Number(val) || 0));
+    _zonePlaySet(gid, { duration_s: Number(val) || 0 }, 0);
 }
 
 // Sync source picker
-// Stored per group as a stable key — "" (test signal), "fav:<uuid>",
-// "url:<url>" or "custom" — never a list index, because favourites and
+// A stable key — "" (test signal), "fav:<uuid>", "tidal:<id>", "url:<url>",
+// "tc:<kind>[:<id>]" or "custom" — never a list index, because favourites and
 // recently-played both reorder underneath us. Split on the FIRST colon so a
-// URL keeps its own. The custom URL and its loop flag live in their own keys
-// so switching away to a favourite and back doesn't lose what was typed.
+// URL keeps its own. The custom URL and the loop flag are held apart from the
+// key so switching away to a favourite and back doesn't lose what was typed.
 function _syncSrcFor(gid) {
-    return localStorage.getItem('zmm.syncsrc.' + gid) || '';
+    return _zonePlay(gid).key;
 }
 
 function _syncCustomUrl(gid) {
-    return (localStorage.getItem('zmm.syncurl.' + gid) || '').trim();
+    return (_zonePlay(gid).custom_url || '').trim();
 }
 
 function _syncLoopFor(gid) {
-    return localStorage.getItem('zmm.syncloop.' + gid) === '1';
+    return !!_zonePlay(gid).loop;
 }
 
 function syncSetSource(gid, val) {
-    if (val) localStorage.setItem('zmm.syncsrc.' + gid, val);
-    else localStorage.removeItem('zmm.syncsrc.' + gid);
+    _zonePlaySet(gid, { key: val || '' }, 0);
     renderSyncPane();                     // the start button follows the choice
 }
 
 function syncSetCustomUrl(gid, val) {
-    const u = String(val || '').trim();
-    if (u) localStorage.setItem('zmm.syncurl.' + gid, u);
-    else localStorage.removeItem('zmm.syncurl.' + gid);
+    _zonePlaySet(gid, { custom_url: String(val || '').trim() }, 0);
     renderSyncPane();                     // enables/disables the start button
 }
 
 function syncSetLoop(gid, on) {
-    if (on) localStorage.setItem('zmm.syncloop.' + gid, '1');
-    else localStorage.removeItem('zmm.syncloop.' + gid);
+    _zonePlaySet(gid, { loop: !!on });
+}
+
+/** Carry a zone's source out of this browser and onto the server, once.
+ *  Zones predating server-side config have their choice in localStorage;
+ *  leaving it there would mean an automation could not play what the Media
+ *  page shows the zone playing. */
+function _zonePlayMigrate() {
+    for (const g of _syncGroups) {
+        const key = localStorage.getItem('zmm.syncsrc.' + g.id);
+        const url = localStorage.getItem('zmm.syncurl.' + g.id);
+        const dur = localStorage.getItem('zmm.syncdur.' + g.id);
+        const xf = localStorage.getItem('zmm.syncxfade.' + g.id);
+        const loop = localStorage.getItem('zmm.syncloop.' + g.id);
+        const local = key !== null || url !== null || dur !== null
+                      || xf !== null || loop !== null;
+        // Only for a zone the server has nothing for — a config saved from
+        // another browser is newer than whatever this tab remembers.
+        if (!local || (g.play && g.play.key)) continue;
+        g.play = Object.assign(_zonePlay(g.id), {
+            key: key || '',
+            custom_url: (url || '').trim(),
+            loop: loop === '1',
+            duration_s: dur === null ? null : Number(dur) || 0,
+            crossfade_s: xf === null ? null : Number(xf) || 0,
+        });
+        g.play.media = _syncMediaFor(g.id);
+        _zonePlayPush(g.id, 0);
+        for (const k of ['syncsrc', 'syncurl', 'syncdur', 'syncxfade', 'syncloop'])
+            localStorage.removeItem(`zmm.${k}.${g.id}`);
+        log.info(`Migrated zone ${g.id} playback config to the server`);
+    }
 }
 
 /** Load one slice of the library, once. The picker renders "Loading…" until
@@ -1975,6 +2041,13 @@ async function _syncLoadTidalLib(kind) {
     } catch (e) {
         _tidalLib[kind] = [];
         toast('Tidal library unavailable: ' + e.message, 'error');
+    }
+    // The stored media block carries the title and art a speaker shows while
+    // the set plays; a zone whose choice was saved before this slice loaded
+    // holds a placeholder. Re-derive it now that the row exists.
+    for (const g of _syncGroups) {
+        const t = _syncTidalPick(g.id);
+        if (t && t.id && t.kind === kind && _syncTidalItem(g.id)) _zonePlaySet(g.id, {});
     }
     renderSyncPane();
 }
@@ -1994,15 +2067,14 @@ async function _ensureTidalState() {
 /** Switch which slice of the Tidal library the zone picker is showing.
  *  Clears the chosen item: an album id means nothing under Artists. */
 async function syncTidalKind(gid, kind) {
-    localStorage.setItem('zmm.syncsrc.' + gid, `tc:${kind}`);
+    _zonePlaySet(gid, { key: `tc:${kind}` }, 0);
     renderSyncPane();                     // shows "Loading…" against the list
     await _syncLoadTidalLib(kind);
 }
 
 function syncTidalItem(gid, id) {
     const t = _syncTidalPick(gid) || { kind: 'playlists' };
-    localStorage.setItem('zmm.syncsrc.' + gid,
-                         id ? `tc:${t.kind}:${id}` : `tc:${t.kind}`);
+    _zonePlaySet(gid, { key: id ? `tc:${t.kind}:${id}` : `tc:${t.kind}` }, 0);
     renderSyncPane();                     // enables Play once something is set
 }
 
@@ -2323,9 +2395,9 @@ function _syncCustomRow(gid, disabled) {
 }
 
 // Crossfade (per zone, applied at session start)
-// Held client-side like duration, source and loop, and sent in the start body:
-// the engine reads it once when it builds the source, so a change takes effect
-// on the next session rather than the current one.
+// Stored with the zone like duration, source and loop, and sent in the start
+// body: the engine reads it once when it builds the source, so a change takes
+// effect on the next session rather than the current one.
 
 const XFADE_FALLBACK_MAX_S = 1.65;   // until /status reports the real ceiling
 
@@ -2339,15 +2411,15 @@ function _syncXfadeMax() {
 }
 
 function _syncXfadeFor(gid) {
-    const raw = localStorage.getItem('zmm.syncxfade.' + gid);
+    const raw = _zonePlay(gid).crossfade_s;
     const dflt = Number(_syncStatus?.crossfade?.default_s) || 0;
-    const v = raw === null ? dflt : Number(raw);
+    const v = raw === null || raw === undefined ? dflt : Number(raw);
     return Number.isFinite(v) ? Math.min(Math.max(v, 0), _syncXfadeMax()) : 0;
 }
 
 function syncSetCrossfade(gid, val) {
     const v = Math.min(Math.max(Number(val) || 0, 0), _syncXfadeMax());
-    localStorage.setItem('zmm.syncxfade.' + gid, String(v));
+    _zonePlaySet(gid, { crossfade_s: v });
     const out = document.getElementById(`syncxfv-${gid}`);
     if (out) out.textContent = _syncXfadeLabel(v);
 }

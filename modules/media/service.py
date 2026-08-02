@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from modules.media.controller import MediaController
 from modules.media.models import MediaItem, PlayerState, RadioStation
@@ -237,7 +237,7 @@ class MediaService:
         if volume is not None:
             await self.controller.set_volume(player_id, float(volume))
         item = MediaItem(
-            url=self._tts_url(text, lang),
+            url=self.tts_url(text, lang),
             title=text[:60],
             artist="Announcement",
             media_type="tts",            # no resolver → URL used as-is
@@ -246,7 +246,9 @@ class MediaService:
         await self.controller.play_url(player_id, item)
         return {"success": True}
 
-    def _tts_url(self, text: str, lang: str = None) -> str:
+    def tts_url(self, text: str, lang: str = None) -> str:
+        """URL of a spoken clip. Public because a zone speaks it as ordinary
+        media through the shared timeline rather than via announce()."""
         from urllib.parse import quote
         # The Translate TTS endpoint caps ~200 chars/request; truncate for safety.
         return (f"{self._tts_base}?ie=UTF-8&client=tw-ob"
@@ -310,6 +312,111 @@ class MediaService:
             return {"success": False, "error": str(e)}
         await self.controller.play_items(player_id, items, auto_extend=radio)
         return {"success": True, "count": len(items), "radio": radio}
+
+    # OpenZone
+    # A zone is started from three places — the Media page, an automation rule
+    # and a session resume — and each of them has to turn a saved reference
+    # (a station id, a Tidal container) into something playable. That belongs
+    # in one place, so all three fail and succeed the same way.
+
+    ZONE_PREFIX = "zone:"
+
+    @staticmethod
+    def zone_id(player_id: str) -> str:
+        """The group id inside a ``zone:<gid>`` player id, or "" if it is an
+        ordinary player."""
+        pid = player_id or ""
+        return pid[len(MediaService.ZONE_PREFIX):] \
+            if pid.startswith(MediaService.ZONE_PREFIX) else ""
+
+    async def start_zone(self, group_id: str, media: Optional[dict] = None,
+                         duration_s: Optional[int] = None,
+                         crossfade_s: Optional[float] = None,
+                         use_saved: bool = False) -> dict:
+        """Start an OpenZone group.
+
+        ``use_saved`` takes the zone's stored source and window — what the
+        Media page last set — which is how a rule can say "play the kitchen"
+        without restating what the kitchen plays. An explicit ``media``
+        overrides it; ``media=None`` without ``use_saved`` is the test signal,
+        exactly as the API has always meant it.
+        """
+        sync = self.cast_sync
+        if sync is None:
+            return {"success": False,
+                    "error": "OpenZone is disabled — enable it under Settings → Audio"}
+        saved = sync.group_config(group_id)
+        if use_saved and media is None:
+            media = saved.get("media")
+            if media is None:
+                # Falling through to the test signal would answer "play the
+                # kitchen" with two hours of clicks.
+                return {"success": False,
+                        "error": "This zone has no saved source — pick one "
+                                 "under Media → OpenZone"}
+        if duration_s is None:
+            duration_s = (saved.get("duration_s") or 0) if use_saved else 0
+        if crossfade_s is None and use_saved:
+            crossfade_s = saved.get("crossfade_s")
+
+        if media:
+            media = dict(media)
+            ok, err = await self.resolve_zone_media(media)
+            if not ok:
+                return {"success": False, "error": err}
+        return await sync.start_session(
+            None, group_id=group_id,
+            duration_s=min(max(int(duration_s or 0), 0), 3600),
+            media=media or None, crossfade_s=crossfade_s)
+
+    async def resolve_zone_media(self, media: dict) -> Tuple[bool, str]:
+        """Validate a zone media block in place, resolving a station id to a
+        stream URL. Returns ``(ok, error)``.
+
+        Stations resolve here rather than being stored as URLs: directory
+        stream URLs move, and a favourite saved months ago should still start.
+        Tidal deliberately does not resolve here — the engine re-resolves its
+        signed URLs per item, which is what lets a long session outlive them.
+        """
+        if media.get("station_uuid") and not media.get("url"):
+            station = None
+            if self.radio is not None:
+                station = await self.resolve_station(media["station_uuid"])
+            if station is None:
+                return False, "Radio station not found (or directory unreachable)"
+            media["url"] = station.url
+            media["title"] = media.get("title") or station.name
+            # The directory's logo is what a screened speaker shows while the
+            # station plays — same picture the single-player path sends.
+            media["artwork_url"] = media.get("artwork_url") or station.favicon
+        kind = (media.get("kind") or "track").strip().lower()
+        if kind not in ("track", "album", "playlist", "artist", "mix"):
+            return False, "kind must be track|album|playlist|artist|mix"
+        media["kind"] = kind
+        if kind != "track" and not media.get("source_id"):
+            return False, f"a {kind} needs a source_id to expand"
+        url = (media.get("url") or "").strip()
+        # A source_id block carries no URL yet on purpose — the engine resolves
+        # one at session start and again whenever it expires.
+        if not url and not media.get("source_id"):
+            return False, "Media given with no url, station_uuid or source_id"
+        if url.startswith("-"):
+            # The decoder takes its input as a bare argument, so a leading dash
+            # would be read as an option instead of a source.
+            return False, "URL may not start with '-'"
+        media["url"] = url
+        return True, ""
+
+    async def zone_members(self, group_id: str) -> List[str]:
+        """Member player ids of a zone, for the things that act per speaker
+        (volume, fades) rather than on the shared timeline."""
+        sync = self.cast_sync
+        if sync is None:
+            return []
+        for g in sync.list_groups().get("groups", []):
+            if g["id"] == group_id:
+                return [m["player_id"] for m in g.get("members", [])]
+        return []
 
     def start(self):
         if not self.enabled:

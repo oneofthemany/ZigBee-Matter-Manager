@@ -213,6 +213,7 @@ function _mediaStepText(s) {
     if (a === 'volume_fade') return `fade ${who} volume to ${Math.round((s.volume ?? 0) * 100)}% over ${s.fade_seconds || 300}s${s.stop_at_end ? ', then stop' : ''}`;
     if (a === 'announce') return `announce on ${who}: “${String(s.text || '').slice(0, 40)}”`;
     if (a === 'control') return `${s.control_action || 'control'} ${who}`;
+    if (a === 'play_zone') return `play ${who}`;
     if (a === 'play_radio') return `play ${s.label || 'radio'} on ${who}`;
     if (a === 'play_tidal') return `play ${s.label || s.tidal_kind || 'Tidal'} on ${who}`;
     return `media: ${a}`;
@@ -264,6 +265,12 @@ export async function loadAutomationsPage() {
             playerNameCache = {};
             (pj.players || []).forEach(p => { playerNameCache[p.player_id] = p.name + (p.is_group ? ' (group)' : ''); });
         } catch { /* media service off — fall back to raw ids */ }
+
+        // ...and OpenZone zones, which a media step can target as zone:<id>.
+        try {
+            const zj = await (await fetch('/api/media/sync/groups')).json();
+            (zj.groups || []).forEach(z => { playerNameCache['zone:' + z.id] = `the ${z.name} zone`; });
+        } catch { /* OpenZone off — fall back to raw ids */ }
 
         // Place names for humanizing zone (enter/leave) conditions.
         try {

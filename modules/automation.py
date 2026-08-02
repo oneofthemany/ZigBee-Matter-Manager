@@ -651,8 +651,12 @@ class AutomationEngine:
                     return f"{label}[{i+1}]: media needs player_id"
                 ma = step.get("media_action")
                 if ma not in ("play_radio", "play_tidal", "control", "volume",
-                              "announce", "volume_fade", "volume_adjust"):
+                              "announce", "volume_fade", "volume_adjust",
+                              "play_zone"):
                     return f"{label}[{i+1}]: invalid media_action"
+                is_zone = str(step.get("player_id", "")).startswith("zone:")
+                if ma == "play_zone" and not is_zone:
+                    return f"{label}[{i+1}]: play_zone needs an OpenZone zone"
                 if ma == "volume_adjust" and not isinstance(step.get("delta"), (int, float)):
                     return f"{label}[{i+1}]: volume_adjust needs a numeric delta"
                 if ma == "play_radio" and not step.get("station_uuid"):
@@ -662,6 +666,12 @@ class AutomationEngine:
                 if ma == "control" and step.get("control_action") not in (
                         "pause", "resume", "stop", "next", "prev"):
                     return f"{label}[{i+1}]: control needs a valid control_action"
+                # A zone is one timeline built server-side, not a transport
+                # with a queue to skip around in — only stop applies.
+                if (ma == "control" and is_zone
+                        and step.get("control_action") != "stop"):
+                    return (f"{label}[{i+1}]: a zone only supports stop "
+                            f"(no pause/resume/next/prev)")
                 if ma == "announce" and not step.get("text"):
                     return f"{label}[{i+1}]: announce needs text"
             elif st == "request":
@@ -1634,7 +1644,10 @@ class AutomationEngine:
         self._trace(rule_id, "step", "MEDIA", f"{tag} ♪ {label} → {player_id}")
         try:
             ok, detail = True, ""
-            if action == "play_radio":
+            gid = svc.zone_id(player_id)
+            if gid:
+                ok, detail = await self._media_zone(svc, gid, action, step)
+            elif action == "play_radio":
                 # Favourited stations play from their pinned snapshot (no
                 # directory lookup), so the rule still fires when the
                 # radio-browser directory is unreachable; falls back to a
@@ -1683,6 +1696,82 @@ class AutomationEngine:
             self._trace(rule_id, "step", "EXCEPTION",
                         f"{tag} 💥 media {label}: {e}", level="ERROR",
                         traceback=traceback.format_exc())
+
+    async def _media_zone(self, svc, gid, action, step):
+        """A media step whose target is an OpenZone zone (``zone:<gid>``).
+
+        Playback is one server-built timeline shared by every member, so
+        anything that starts audio starts a session; volume stays a property of
+        each speaker and fans out. Returns ``(ok, detail)``.
+        """
+        zone = getattr(svc, "cast_sync", None)
+        if zone is None:
+            return False, "OpenZone is disabled"
+        if action == "play_zone":
+            res = await svc.start_zone(gid, use_saved=True)
+            return (res.get("success", False),
+                    res.get("error", "") or "playing its saved source")
+        if action == "play_radio":
+            res = await svc.start_zone(
+                gid, media={"station_uuid": step["station_uuid"]},
+                use_saved=True)
+            return res.get("success", False), res.get("error", "")
+        if action == "play_tidal":
+            # A zone walks a queue the engine re-resolves as it goes; it has no
+            # auto-extending radio, so tidal_mode is not offered for a zone.
+            res = await svc.start_zone(gid, media={
+                "source_id": step.get("tidal_id", ""),
+                "media_type": "tidal",
+                "kind": step.get("tidal_kind", "track"),
+                "title": step.get("label", "") or "Tidal",
+            }, use_saved=True)
+            return res.get("success", False), res.get("error", "")
+        if action == "announce":
+            # Spoken through the zone rather than device-by-device: one
+            # timeline means one voice, not a room full of echoes. The source
+            # is finite, so the session ends itself when it has been heard.
+            if step.get("volume") is not None:
+                await self._zone_volume(svc, gid, float(step["volume"]))
+            text = (step.get("text") or "").strip()
+            res = await svc.start_zone(gid, media={
+                "url": svc.tts_url(text), "title": text[:60],
+                "artist": "Announcement"})
+            return res.get("success", False), res.get("error", "")
+        if action == "control":
+            if step.get("control_action") != "stop":
+                return False, "a zone only supports stop"
+            if zone.active_group != gid:
+                return True, "already stopped"
+            res = await zone.stop_session()
+            return res.get("success", True), ""
+        if action == "volume":
+            n = await self._zone_volume(svc, gid, float(step.get("volume", 0.3)))
+            return n > 0, f"{n} speaker(s)" if n else "no members reachable"
+        if action == "volume_adjust":
+            delta = float(step.get("delta", 0.1))
+            members = await svc.zone_members(gid)
+            for pid in members:
+                await svc.controller.adjust_volume(pid, delta)
+            return bool(members), (f"{'+' if delta >= 0 else ''}"
+                                   f"{int(delta * 100)}% on {len(members)} speaker(s)")
+        if action == "volume_fade":
+            members = await svc.zone_members(gid)
+            for pid in members:
+                svc.controller.fade_volume(
+                    pid, float(step.get("volume", 0.3)),
+                    int(step.get("fade_seconds", 300)),
+                    bool(step.get("stop_at_end", False)))
+            return bool(members), (f"→ {int(float(step.get('volume', 0.3)) * 100)}% "
+                                   f"over {step.get('fade_seconds', 300)}s "
+                                   f"on {len(members)} speaker(s)")
+        return False, f"unknown media_action '{action}'"
+
+    @staticmethod
+    async def _zone_volume(svc, gid, volume):
+        members = await svc.zone_members(gid)
+        for pid in members:
+            await svc.controller.set_volume(pid, volume)
+        return len(members)
 
     async def _step_group_command(self, rule_id, step, tag):
         """Execute a command step targeting a group."""

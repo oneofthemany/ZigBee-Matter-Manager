@@ -783,6 +783,14 @@ class NLAutomationParser:
             if svc and getattr(svc, "enabled", False):
                 self._players = [{"player_id": p.player_id, "name": p.name}
                                  for p in svc.controller.snapshot()]
+                # OpenZone zones answer to their name like any other target;
+                # what they accept differs, which _parse_media_action handles.
+                sync = getattr(svc, "cast_sync", None)
+                if sync is not None:
+                    self._players += [
+                        {"player_id": "zone:" + g["id"], "name": g["name"],
+                         "is_zone": True}
+                        for g in sync.list_groups().get("groups", [])]
         except Exception:
             self._players = []
         return self._players
@@ -823,13 +831,22 @@ class NLAutomationParser:
                     f"volume {pm.group(1)}% → {pname}")
 
         # CONTROL (pause / resume / stop / next / previous)
+        # A zone has no transport of its own: "play it" means start its saved
+        # source, and the queue verbs have nothing to act on.
+        zone = bool(player.get("is_zone"))
         for pat, act in ((r"\bpause\b", "pause"), (r"\b(resume|unpause|play)\b", "resume"),
                          (r"\b(skip|next)\b", "next"), (r"\b(previous|prev|back)\b", "prev"),
                          (r"\bstop\b", "stop")):
-            if re.search(pat, low):
+            if not re.search(pat, low):
+                continue
+            if zone and act == "resume":
                 return ({"type": "media", "player_id": pid,
-                         "media_action": "control", "control_action": act},
-                        f"{act} → {pname}")
+                         "media_action": "play_zone"}, f"play {pname}")
+            if zone and act != "stop":
+                return None, None
+            return ({"type": "media", "player_id": pid,
+                     "media_action": "control", "control_action": act},
+                    f"{act} → {pname}")
         return None, None
 
     def _extract_announce_text(self, clause: str) -> str:

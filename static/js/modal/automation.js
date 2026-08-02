@@ -14,6 +14,7 @@ import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
+let cachedZones = [];     // OpenZone zones, targetable as zone:<id>
 let cachedPlaces = [];    // named places (geofences) for zone conditions
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
@@ -36,8 +37,16 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message'};
 
 // Media action picker options (label, value).
-const MEDIA_ACTIONS = [['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
+const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
 const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
+
+// A zone plays one server-built timeline rather than driving a device's own
+// transport, so the queue controls have nothing to act on and only Stop is
+// offered. play_zone is the mirror image — it means "whatever this zone is
+// set to play", which only a zone has.
+const ZONE_CONTROLS = [['stop','Stop']];
+const isZoneId = pid => String(pid||'').startsWith('zone:');
+const zoneOf = pid => cachedZones.find(z => 'zone:'+z.id === pid) || null;
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
 // Readable label for a dynamic sun condition (sunrise/sunset window).
@@ -190,6 +199,11 @@ export async function initAutomationTab(ieee) {
     // Media players are optional — a failure here must not break the tab.
     try { const pj = await (await fetch('/api/media/players')).json(); cachedPlayers = pj.success ? (pj.players||[]) : []; }
     catch(e) { cachedPlayers = []; }
+    // OpenZone zones are targets too, addressed as zone:<id>. Their own
+    // endpoint, not /players: a zone is a saved arrangement of speakers, not a
+    // device the media controller polls.
+    try { const zj = await (await fetch('/api/media/sync/groups')).json(); cachedZones = zj.success ? (zj.groups||[]) : []; }
+    catch(e) { cachedZones = []; }
     // Presence users feed the Request step's To/From dropdowns. Optional for
     // the same reason: no presence users just means a free-text field.
     try {
@@ -654,7 +668,9 @@ function _renderStep(step, path, idx, total) {
             ${_addBtns(`par-${sid}-${bi}`)}</div>`).join('');
         body += `<button class="btn btn-sm btn-outline-info" onclick="window._aAddBranch(${sid})"><i class="fas fa-plus"></i> Branch</button>`;
     } else if(step.type==='media') {
-        body = _mediaStepBody(step, sid);
+        // Wrapped so switching target can rebuild the whole body — a zone and
+        // a speaker do not offer the same actions.
+        body = `<div id="step-body-${sid}">${_mediaStepBody(step, sid)}</div>`;
     } else if(step.type==='request') {
         // A message into the user-to-user messaging system (step type keeps
         // its historical name for saved rules). Lands in the recipient's
@@ -704,18 +720,48 @@ function _renderInlineCond(ic, idx, parentSid, total) {
 
 // Media step rendering
 function _mediaStepBody(step, sid) {
+    const zone = isZoneId(step.player_id);
     const players = cachedPlayers.map(p=>`<option value="${p.player_id}" ${step.player_id===p.player_id?'selected':''}>${p.name}${p.is_group?' (group)':''}</option>`).join('');
-    const playerSel = `<select class="form-select form-select-sm s-mplayer" data-sid="${sid}"><option value="">Player…</option>${players}</select>`;
-    const actSel = `<select class="form-select form-select-sm s-maction" data-sid="${sid}" onchange="window._aMAction(${sid},this)">${MEDIA_ACTIONS.map(([v,l])=>`<option value="${v}" ${(step.media_action||'play_tidal')===v?'selected':''}>${l}</option>`).join('')}</select>`;
-    const hint = cachedPlayers.length ? '' : `<div class="small text-warning mt-1">No media players found — is the media service enabled?</div>`;
+    const zones = cachedZones.length
+        ? `<optgroup label="── OpenZone ──">${cachedZones.map(z=>`<option value="zone:${z.id}" ${step.player_id==='zone:'+z.id?'selected':''}>${String(z.name).replace(/</g,'&lt;')} (${(z.members||[]).length} speakers)</option>`).join('')}</optgroup>`
+        : '';
+    // Changing the target changes which actions make sense, so re-render.
+    const playerSel = `<select class="form-select form-select-sm s-mplayer" data-sid="${sid}" onchange="window._aMPlayer(${sid},this)"><option value="">Player…</option>${players}${zones}</select>`;
+    const actSel = `<select class="form-select form-select-sm s-maction" data-sid="${sid}" onchange="window._aMAction(${sid},this)">${_mediaActionsFor(step.player_id).map(([v,l])=>`<option value="${v}" ${(step.media_action||'play_tidal')===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    const hint = cachedPlayers.length || cachedZones.length ? '' : `<div class="small text-warning mt-1">No media players found — is the media service enabled?</div>`;
     return `<div class="row g-1 mb-1"><div class="col-md-6">${playerSel}</div><div class="col-md-6">${actSel}</div></div>
-        <div id="media-sub-${sid}">${_mediaSubHtml(step, sid)}</div>${hint}`;
+        <div id="media-sub-${sid}">${_mediaSubHtml(step, sid)}</div>${zone?_zoneNote(step.player_id):''}${hint}`;
+}
+
+/** Play Zone is offered only for a zone; a zone has no infinite-radio queue,
+ *  so Tidal's Radio∞ mode is quietly absent from its sub-form instead. */
+function _mediaActionsFor(pid) {
+    return isZoneId(pid) ? MEDIA_ACTIONS : MEDIA_ACTIONS.filter(([v])=>v!=='play_zone');
+}
+
+/** What the zone would do if played now — the saved source and window are the
+ *  reason a rule can just say "play it", so they belong in front of whoever is
+ *  writing the rule. */
+function _zoneNote(pid) {
+    const z = zoneOf(pid);
+    if (!z) return '';
+    const p = z.play || {};
+    const src = p.media
+        ? String(p.media.title || p.media.url || p.media.station_uuid || 'a saved source').replace(/</g,'&lt;')
+        : '';
+    const dur = p.duration_s ? ` for ${Math.round(p.duration_s/60)} min` : ' until stopped';
+    return src
+        ? `<div class="small text-muted mt-1"><i class="fas fa-circle-info me-1"></i>Saved source: <em>${src}</em>${dur}. Change it under Media → OpenZone.</div>`
+        : `<div class="small text-warning mt-1"><i class="fas fa-triangle-exclamation me-1"></i>This zone has no saved source yet — pick one under Media → OpenZone, or use Play Tidal / Play Radio here.</div>`;
 }
 
 function _mediaSubHtml(step, sid) {
     const a = step.media_action || 'play_tidal';
+    const zone = isZoneId(step.player_id);
+    if (a === 'play_zone')
+        return '';                       // the zone's own config is the input
     if (a === 'control')
-        return `<select class="form-select form-select-sm s-mctrl" data-sid="${sid}" style="max-width:170px">${MEDIA_CONTROLS.map(([v,l])=>`<option value="${v}" ${step.control_action===v?'selected':''}>${l}</option>`).join('')}</select>`;
+        return `<select class="form-select form-select-sm s-mctrl" data-sid="${sid}" style="max-width:170px">${(zone?ZONE_CONTROLS:MEDIA_CONTROLS).map(([v,l])=>`<option value="${v}" ${step.control_action===v?'selected':''}>${l}</option>`).join('')}</select>`;
     if (a === 'volume') {
         const pct = step.volume!=null ? Math.round(step.volume*100) : 30;
         return `<div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${pct}" min="0" max="100" style="width:80px"><span class="small">% volume</span></div>`;
@@ -752,7 +798,10 @@ function _mediaSubHtml(step, sid) {
     const search = kind === 'track'
         ? `<input type="text" class="form-control s-msearch" data-sid="${sid}" placeholder="Search tracks…" onkeydown="if(event.key==='Enter'){event.preventDefault();window._aMediaSearch(${sid},'tidal');}"><button class="btn btn-outline-secondary" type="button" onclick="window._aMediaSearch(${sid},'tidal')"><i class="fas fa-search"></i></button>`
         : '';
-    const modeSel = `<select class="form-select form-select-sm s-mmode" data-sid="${sid}" style="max-width:88px"><option value="play" ${step.tidal_mode!=='radio'?'selected':''}>Play</option><option value="radio" ${step.tidal_mode==='radio'?'selected':''}>Radio∞</option></select>`;
+    // Radio∞ tops the queue up as it drains, which is a property of the
+    // controller's queue — a zone walks a fixed list, so it isn't offered one.
+    const modeSel = zone ? ''
+        : `<select class="form-select form-select-sm s-mmode" data-sid="${sid}" style="max-width:88px"><option value="play" ${step.tidal_mode!=='radio'?'selected':''}>Play</option><option value="radio" ${step.tidal_mode==='radio'?'selected':''}>Radio∞</option></select>`;
     return `<div class="input-group input-group-sm">${kindSel}${search}
         <select class="form-select s-mtarget" data-sid="${sid}">${_mediaSavedOpt(step)}</select>${modeSel}</div>`;
 }
@@ -765,6 +814,7 @@ function _mediaSavedOpt(step) {
 }
 
 function _mediaDesc(s) {
+    if (s.media_action==='play_zone') return 'Play zone';
     if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
     if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
     if (s.media_action==='volume_adjust') return `VOL ${(s.delta||0)>=0?'+':'-'}${Math.abs(Math.round((s.delta||0)*100))}%`;
@@ -790,6 +840,23 @@ async function _aMediaLoadLib(sid, kind, selId) {
             sel.insertAdjacentHTML('afterbegin', `<option value="${selId}" selected>${selId}</option>`);
     } catch(e) { sel.innerHTML = '<option value="">load failed</option>'; }
 }
+
+// Switching between a speaker and a zone changes which actions exist, so the
+// whole step body is rebuilt — and an action the new target cannot do falls
+// back rather than being saved as something that would fail at run time.
+window._aMPlayer = (sid, sel) => {
+    _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
+    const s = _findStepById(sid); if(!s) return;
+    s.player_id = sel.value;
+    const zone = isZoneId(s.player_id);
+    if (!zone && s.media_action === 'play_zone') s.media_action = 'play_tidal';
+    if (zone && s.media_action === 'control') s.control_action = 'stop';
+    if (zone) s.tidal_mode = 'play';
+    const body = document.getElementById(`step-body-${sid}`);
+    if (body) body.innerHTML = _mediaStepBody(s, sid);
+    if (s.media_action==='play_tidal' && (s.tidal_kind||'playlist')!=='track')
+        _aMediaLoadLib(sid, s.tidal_kind||'playlist', s.tidal_id);
+};
 
 window._aMAction = (sid, sel) => {
     _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
@@ -1337,7 +1404,9 @@ function _cleanTree(steps) {
         else if(s.type==='request'){d.to_user=s.to_user;d.message=(s.message||'').trim();if(s.from_user)d.from_user=s.from_user;}
         else if(s.type==='media'){
             d.player_id=s.player_id; d.media_action=s.media_action;
-            if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
+            // The zone's name, so the run trace names the room rather than an id.
+            if(s.media_action==='play_zone'){const z=zoneOf(s.player_id);if(z)d.label=`Play ${z.name}`;}
+            else if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
             else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
             else if(s.media_action==='control'){d.control_action=s.control_action;}
             else if(s.media_action==='volume'){d.volume=s.volume;}
@@ -1355,6 +1424,7 @@ function _cleanTree(steps) {
         if(d.type==='parallel')return(d.branches||[]).length>=2;
         if(d.type==='media'){
             if(!d.player_id)return false;
+            if(d.media_action==='play_zone')return isZoneId(d.player_id);
             if(d.media_action==='play_radio')return !!d.station_uuid;
             if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
             if(d.media_action==='control')return !!d.control_action;

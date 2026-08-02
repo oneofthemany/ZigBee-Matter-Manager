@@ -327,9 +327,61 @@ Full steps also in `static/cast/README.md`.
 | `/api/media/sync/start` | POST | `{group_id}` or `{player_ids:[…]}`; optional `{media:{url \| station_uuid \| source_id+media_type, kind?, title?, artist?, artwork_url?, loop?}}` — omit `media` for the test signal. `station_uuid` is resolved through the radio directory at start (and carries its logo through as `artwork_url`); `kind` is `track` (default) or `album\|playlist\|artist\|mix`, which expands into the session queue; a `media` block that resolves to no URL, or a URL starting with `-`, is rejected rather than passed to the decoder |
 | `/api/media/sync/stop` | POST | — |
 | `/api/media/sync/trim` | POST | `{player_id, trim_ms}` (±2000, live-pushed) |
-| `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active}]}` |
-| `/api/media/sync/groups` | POST | `{name, members:[…], id?}` (id = update) |
+| `/api/media/sync/groups` | GET | `{groups:[{id, name, members:[…], active, play:{…}}]}` |
+| `/api/media/sync/groups` | POST | `{name, members:[…], id?}` (id = update; the zone's `play` block is preserved) |
+| `/api/media/sync/groups/config` | POST | `{id, key?, custom_url?, loop?, media?, duration_s?, crossfade_s?}` — what the zone plays when started without a source. Replaces the block wholesale |
 | `/api/media/sync/groups/delete` | POST | `{id}` |
+
+`/api/media/sync/start` also takes `use_saved: true` (with `group_id`), which
+fills `media`, `duration_s` and `crossfade_s` from the zone's own config.
+
+---
+
+## What a zone plays, and who can start it
+
+A zone stores its source alongside its members, in the same
+`data/cast_sync_groups.json` record:
+
+```json
+"a1b2c3d4": {
+  "name": "Downstairs",
+  "members": ["cast:…", "cast:…"],
+  "play": {
+    "key": "tc:playlists:12345",     // the Media page's picker state
+    "custom_url": "", "loop": false, //   …kept so any browser opens the same
+    "media": {"source_id": "12345", "media_type": "tidal", "kind": "playlist"},
+    "duration_s": 300, "crossfade_s": 0.4
+  }
+}
+```
+
+Only `media`, `duration_s` and `crossfade_s` are read by the start path;
+`key`, `custom_url` and `loop` are the picker's memory. `null` for either
+timing field means "never chosen", so the server default stands — distinct
+from a deliberate `0`, which means *until stopped* / *no crossfade*.
+
+This is what makes a zone startable by something other than the tab that built
+it. `MediaService.start_zone()` is the single entry point — the Media page, an
+automation rule and a post-restart resume all go through it, so a station id
+resolves the same way and a Tidal container expands the same way for all three.
+Sources are stored as **ids, not URLs**: a directory stream URL moves, and a
+Tidal URL is signed for minutes.
+
+### In automations
+
+A media step can target `zone:<group_id>` instead of a player id. The step
+editor lists zones under an *OpenZone* group in the player picker.
+
+| Action | On a zone |
+|---|---|
+| `play_zone` | Start the zone's saved source and window. Zone targets only |
+| `play_radio` / `play_tidal` | Override the source for this run; the zone's window and crossfade still apply |
+| `announce` | Spoken **through** the zone as ordinary finite media — one timeline, one voice, and the session ends itself when the clip has been heard |
+| `control` | `stop` only. A zone is one server-built timeline, not a device transport with a queue to skip around in |
+| `volume`, `volume_adjust`, `volume_fade` | Fanned out to every member — volume is a property of each speaker, not of the timeline |
+
+Tidal's `Radio∞` mode is not offered for a zone: auto-extension belongs to the
+controller's queue, and a zone walks a fixed list.
 
 Receiver stats fields: `offset_ms`, `rtt_ms`, `out_latency_ms`, `ctx_rate`,
 `scheduled`, `late`, `resyncs`, `uptime_s`.
@@ -406,7 +458,10 @@ gave up anyway, or a sync session whose members must be re-launched.
 - One session at a time — starting a second stops the first.
 - Cast devices only (WiiM has native multiroom; mixing ecosystems in one sync
   group would need this pipeline on WiiM too).
-- Group volume isn't fanned out yet — use each speaker's own volume.
+- Group volume isn't fanned out in the UI — use each speaker's own volume.
+  (An automation targeting a zone does fan volume out across its members.)
+- A zone has no pause/resume/next/prev: the timeline is built server-side and
+  every device is chasing it, so there is nothing local to pause.
 - The receiver must stay reachable at the registered URL: changing
   `http_port` or the host IP means re-registering (or updating) the Cast
   console entry.
@@ -421,7 +476,10 @@ gave up anyway, or a sync session whose members must be re-launched.
 | `static/cast/sync_receiver.html` | CAF receiver: clock sync + Web Audio scheduling |
 | `routes/cast_sync_routes.py` | REST endpoints (main app) |
 | `static/js/speaker-sync.js` | Settings → Audio tab |
-| `static/js/media.js` | Group-builder sub-tabs (WiiM / Speaker sync) |
+| `static/js/media.js` | Group-builder sub-tabs (WiiM / Speaker sync), zone source picker |
+| `modules/media/service.py` | `start_zone()` — the one way a zone is started |
+| `modules/automation.py` | `_media_zone()` — media steps targeting `zone:<id>` |
+| `static/js/modal/automation.js` | Zone targets and the Play Zone action in the step editor |
 | `routes/config_routes.py` | `media.cast.sync` slice merge on save |
 
 ## Sync Lab (frontend)

@@ -84,6 +84,12 @@ SPECTRUM_F_LO = 25.0
 SPECTRUM_F_HI = 18000.0
 SPECTRUM_FLOOR_DB = -72.0
 
+# The media block a session start accepts (SyncMediaBody). Named here because
+# a zone stores one, and stored config must round-trip through the same
+# vocabulary the start path reads.
+MEDIA_FIELDS = ("url", "station_uuid", "source_id", "media_type", "kind",
+                "title", "artwork_url", "artist", "loop")
+
 
 _GENERATED = GeneratedSource()
 
@@ -927,8 +933,69 @@ class CastSyncPoc:
                     "trim_ms": self.trim_ms(pid),
                 } for pid in g.get("members", [])],
                 "active": self.running and self._active_group == gid,
+                "play": self.group_config(gid),
             })
         return {"success": True, "groups": groups}
+
+    @property
+    def active_group(self) -> str:
+        """Group id of the running session, "" when idle or when the session
+        was started from a loose list of players."""
+        return self._active_group if self.running else ""
+
+    def group_config(self, group_id: str) -> dict:
+        """What this zone plays when nobody says otherwise.
+
+        A zone that only ever existed in a browser tab could not be started by
+        a schedule or a rule; holding the choice here is what makes the zone a
+        thing the server can act on. ``media`` and the two timing fields are
+        read by the start path; ``key``, ``custom_url`` and ``loop`` are the
+        picker's own memory, stored so any browser opens on the same state.
+        None for a timing field means "never chosen" — the server default
+        stands, which is not the same as a deliberate 0.
+        """
+        play = (self._groups.get(group_id) or {}).get("play") or {}
+        dur, xf = play.get("duration_s"), play.get("crossfade_s")
+        return {
+            "key": str(play.get("key") or ""),
+            "custom_url": str(play.get("custom_url") or ""),
+            "loop": bool(play.get("loop")),
+            "media": play.get("media") or None,
+            "duration_s": None if dur is None else int(dur),
+            "crossfade_s": None if xf is None else float(xf),
+        }
+
+    def set_group_config(self, group_id: str, cfg: dict) -> dict:
+        """Replace a zone's playback config wholesale. The caller holds the
+        whole block already, so a partial merge would only invite the two
+        copies to disagree."""
+        if group_id not in self._groups:
+            return {"success": False, "error": "Unknown sync group"}
+        cfg = cfg or {}
+        media = cfg.get("media")
+        if media is not None:
+            if not isinstance(media, dict):
+                return {"success": False, "error": "media must be an object"}
+            # Only the fields the start path understands, so an old browser
+            # cannot park arbitrary keys in the group file.
+            media = {k: media[k] for k in MEDIA_FIELDS if k in media}
+            if not (media.get("url") or media.get("station_uuid")
+                    or media.get("source_id")):
+                return {"success": False,
+                        "error": "media needs a url, station_uuid or source_id"}
+        dur, xf = cfg.get("duration_s"), cfg.get("crossfade_s")
+        self._groups[group_id]["play"] = {
+            "key": str(cfg.get("key") or "")[:128],
+            "custom_url": str(cfg.get("custom_url") or "")[:2048],
+            "loop": bool(cfg.get("loop")),
+            "media": media,
+            "duration_s": (None if dur is None
+                           else min(max(int(dur), 0), 3600)),
+            "crossfade_s": (None if xf is None
+                            else min(max(float(xf), 0.0), self._crossfade_max())),
+        }
+        self._write_json(self._groups_file, self._groups)
+        return {"success": True, "play": self.group_config(group_id)}
 
     def save_group(self, name: str, members: List[str],
                    group_id: str = "") -> dict:
@@ -941,7 +1008,12 @@ class CastSyncPoc:
         gid = group_id or uuid_mod.uuid4().hex[:8]
         if group_id and group_id not in self._groups:
             return {"success": False, "error": "Unknown sync group"}
+        existing = self._groups.get(gid) or {}
         self._groups[gid] = {"name": name, "members": members}
+        # Renaming a zone or changing its speakers must not silently discard
+        # what it plays — that config is edited through its own endpoint.
+        if existing.get("play"):
+            self._groups[gid]["play"] = existing["play"]
         self._write_json(self._groups_file, self._groups)
         return {"success": True, "id": gid}
 

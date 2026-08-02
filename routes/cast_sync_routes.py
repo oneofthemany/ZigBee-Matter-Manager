@@ -36,6 +36,9 @@ class SyncStartBody(BaseModel):
     # default" — distinct from 0.0, which is a caller explicitly asking for
     # plain seams and must not be overridden by config.
     crossfade_s: Optional[float] = None
+    # Start a zone from its own saved source/window instead of the body's.
+    # Only meaningful with group_id; an explicit media still wins.
+    use_saved: bool = False
 
 
 class SyncTrimBody(BaseModel):
@@ -51,6 +54,20 @@ class SyncGroupBody(BaseModel):
 
 class SyncGroupDeleteBody(BaseModel):
     id: str
+
+
+class SyncGroupConfigBody(BaseModel):
+    """What a zone plays when it is started without being told. Stored with
+    the zone so a rule, a schedule or another browser can start it."""
+    id: str
+    key: str = ""                # the picker's own key, opaque to the server
+    custom_url: str = ""         # ...and what it had typed, kept across switches
+    loop: bool = False
+    media: Optional[SyncMediaBody] = None    # None = the generated test signal
+    # None = never chosen, so the server default stands. A deliberate 0 means
+    # "until stopped" / "no crossfade" and must survive as itself.
+    duration_s: Optional[int] = None
+    crossfade_s: Optional[float] = None
 
 
 def register_cast_sync_routes(app: FastAPI, get_media):
@@ -75,43 +92,19 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         if not body.player_ids and not body.group_id:
             return {"success": False, "error": "No players or group given"}
         media = body.media.model_dump() if body.media else None
-        if media and media.get("station_uuid") and not media.get("url"):
-            # Resolve here rather than storing a URL in the picker: directory
-            # stream URLs move, and a favourite saved months ago should still
-            # start. Same source the ordinary play path uses.
-            svc = get_media()
-            station = None
-            if svc is not None and getattr(svc, "radio", None) is not None:
-                station = await svc.resolve_station(media["station_uuid"])
-            if station is None:
-                return {"success": False,
-                        "error": "Radio station not found (or directory unreachable)"}
-            media["url"] = station.url
-            media["title"] = media.get("title") or station.name
-            # The directory's logo is what a screened speaker shows while the
-            # station plays — same picture the single-player path sends.
-            media["artwork_url"] = media.get("artwork_url") or station.favicon
+        svc = get_media()
+        if body.group_id:
+            # Zones go through the service so the Media page, a rule and a
+            # resume all resolve their sources identically.
+            return await svc.start_zone(body.group_id, media=media,
+                                        duration_s=body.duration_s,
+                                        crossfade_s=body.crossfade_s,
+                                        use_saved=body.use_saved)
         if media:
-            kind = (media.get("kind") or "track").strip().lower()
-            if kind not in ("track", "album", "playlist", "artist", "mix"):
-                return {"success": False,
-                        "error": "kind must be track|album|playlist|artist|mix"}
-            media["kind"] = kind
-            if kind != "track" and not media.get("source_id"):
-                return {"success": False,
-                        "error": f"a {kind} needs a source_id to expand"}
-            url = (media.get("url") or "").strip()
-            # A source_id block carries no URL yet on purpose — the engine
-            # resolves one at session start and again whenever it expires.
-            if not url and not media.get("source_id"):
-                return {"success": False,
-                        "error": "Media given with no url, station_uuid or source_id"}
-            if url.startswith("-"):
-                # The decoder takes its input as a bare argument, so a leading
-                # dash would be read as an option instead of a source.
-                return {"success": False, "error": "URL may not start with '-'"}
-            media["url"] = url
-        return await sync.start_session(body.player_ids, group_id=body.group_id,
+            ok, err = await svc.resolve_zone_media(media)
+            if not ok:
+                return {"success": False, "error": err}
+        return await sync.start_session(body.player_ids, group_id="",
                                         duration_s=min(max(body.duration_s, 0),
                                                        3600),
                                         media=media,
@@ -154,6 +147,21 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             return {"success": False,
                     "error": "OpenZone is disabled — enable it under Settings → Audio"}
         return sync.save_group(body.name, body.members, body.id)
+
+    @app.post("/api/media/sync/groups/config")
+    async def sync_group_config(body: SyncGroupConfigBody):
+        sync = _sync()
+        if sync is None:
+            return {"success": False,
+                    "error": "OpenZone is disabled — enable it under Settings → Audio"}
+        return sync.set_group_config(body.id, {
+            "key": body.key,
+            "custom_url": body.custom_url,
+            "loop": body.loop,
+            "media": body.media.model_dump() if body.media else None,
+            "duration_s": body.duration_s,
+            "crossfade_s": body.crossfade_s,
+        })
 
     @app.post("/api/media/sync/groups/delete")
     async def sync_group_delete(body: SyncGroupDeleteBody):
