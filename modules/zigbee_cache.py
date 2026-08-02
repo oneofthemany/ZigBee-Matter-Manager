@@ -42,6 +42,22 @@ def _get_db():
     return _db
 
 
+def warm():
+    """Open the DB and create the schema (seconds on first touch after boot).
+
+    Call via asyncio.to_thread early in startup, before any service runs.
+    duckdb.connect() replays the WAL and migrates the storage format when the
+    duckdb version has moved, and every caller here is otherwise on the event
+    loop thread — the first one pays that cost inline and stalls the loop.
+
+    Fails open: if it raises, `_db` is left unset and the next caller pays the
+    whole open, so callers must surface the failure rather than assume the
+    cache is ready.
+    """
+    _get_db()
+    _init_schema()
+
+
 def _safe_execute(sql: str, params=None, *, context: str = ""):
     """
     Execute a SQL statement and log a full traceback on any failure.
@@ -478,13 +494,25 @@ def purge_device(ieee) -> None:
 
 
 def prune_history(retention_days=30) -> int:
+    """Drop history rows past retention. Returns the number deleted."""
     _init_schema()
-    _safe_execute(
-        f"DELETE FROM attribute_history "
-        f"WHERE ts < now() - INTERVAL '{int(retention_days)} days'",
-        context="prune history"
+    cutoff = f"ts < now() - INTERVAL '{int(retention_days)} days'"
+
+    # DuckDB's DELETE reports no row count, so count first — the janitor logs
+    # this and "pruned 0" every pass would be indistinguishable from a no-op.
+    cursor = _safe_execute(
+        f"SELECT COUNT(*) FROM attribute_history WHERE {cutoff}",
+        context="count prunable history"
     )
-    return 0
+    row = cursor.fetchone() if cursor else None
+    doomed = int(row[0]) if row else 0
+    if not doomed:
+        return 0
+
+    if _safe_execute(f"DELETE FROM attribute_history WHERE {cutoff}",
+                     context="prune history") is None:
+        return 0
+    return doomed
 
 
 def debug_info() -> Dict[str, Any]:

@@ -501,6 +501,14 @@ async def lifespan(app: FastAPI):
         warm_error = e
         logger.warning(f"Telemetry DB warm-up failed: {e}")
 
+    # Same treatment for the zigbee cache DB: zigbee_service.start() touches it
+    # from the loop thread, so the open must already be paid for by then.
+    try:
+        from modules import zigbee_cache
+        await asyncio.to_thread(zigbee_cache.warm)
+    except Exception as e:
+        logger.warning(f"Zigbee cache DB warm-up failed: {e}")
+
     # Application alert center: capture ERROR-level logs as user-visible
     # alerts and push them over the WebSocket hub
     try:

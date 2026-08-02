@@ -156,6 +156,7 @@ class ZigbeeService(
         # Background tasks
         self._save_task = None
         self._watchdog_task = None
+        self._db_maintenance_task = None
         self._announce_task = None
         self._zones_init_task = None
         self._scan_task = None
@@ -488,12 +489,6 @@ class ZigbeeService(
                         self.group_manager.resync_from_zigbee()
                 except Exception as e:
                     logger.warning(f"Group registry resync failed: {e}")
-                # Purge cached topology/attrs/history
-                try:
-                    from modules.zigbee_cache import purge_device
-                    purge_device(ieee)
-                except Exception as e:
-                    logger.warning(f"[{ieee}] Cache purge failed: {e}")
 
                 # OTA manager
                 if self.app:
@@ -504,6 +499,9 @@ class ZigbeeService(
                 self.polling_scheduler.start()
                 self._watchdog_task = asyncio.create_task(
                     self.polling_scheduler._availability_watchdog_loop()
+                )
+                self._db_maintenance_task = asyncio.create_task(
+                    self._db_maintenance_loop()
                 )
 
                 # Load saved polling intervals
@@ -677,8 +675,8 @@ class ZigbeeService(
             except Exception as e:
                 logger.error(f"Failed to save zones config: {e}")
 
-        for task in [self._save_task, self._watchdog_task, self._announce_task,
-                     self._zones_init_task, self._scan_task]:
+        for task in [self._save_task, self._watchdog_task, self._db_maintenance_task,
+                     self._announce_task, self._zones_init_task, self._scan_task]:
             if task and not task.done():
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1391,7 +1389,7 @@ class ZigbeeService(
 
             # 3.5. Force database cleanup if requested
             if force:
-                self._force_clean_database(ieee)
+                await asyncio.to_thread(self._force_clean_database, ieee)
 
             # 4. Remove MQTT discovery BEFORE deleting device wrapper
             if self.mqtt and ieee in self.devices:
