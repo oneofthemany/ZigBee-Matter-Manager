@@ -342,11 +342,27 @@ Presence → Permissions → Location.
 | Pairing: 401 | Token wrong, expired or revoked. Reissue it. |
 | Pairing: 403 | Token lacks `presence:read:<user>`. See §6.4. |
 | Pairing: "No home location set" | Set home lat/lon and radius on the hub first. |
-| Geofence never fires | Missing **Allow all the time**, or an OEM battery manager. See §10. |
+| Geofence never fires | Missing **Allow all the time**, or an OEM battery manager. See §11. |
 
 ---
 
-## 10. Known limits
+## 10. The car screen
+
+The Android Auto fuel screen cannot be tested by sideloading. Android Auto's
+**Unknown sources** developer setting does not cover apps built with the Android
+for Cars App Library, so a sideloaded `CarAppService` is ignored by a real head
+unit no matter how the phone is configured.
+
+- **To develop against it**, use the Desktop Head Unit: `./run_dhu.sh`. That
+  script documents the one-time phone setup and the version floor (DHU 2.0 is
+  too old to complete a session against current Android Auto).
+- **To get it into a real car**, see [PUBLISHING.md](PUBLISHING.md) — Internal
+  App Sharing or an Internal Test Track. Note the 31 August 2026 target-API
+  deadline covered there.
+
+---
+
+## 11. Known limits
 
 - Geofence transitions can lag **1–2 minutes**. The OS batches them to save
   power; this is not tunable.
