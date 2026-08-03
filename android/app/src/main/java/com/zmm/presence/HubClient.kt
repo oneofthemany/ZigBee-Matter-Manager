@@ -72,7 +72,13 @@ object HubClient {
 
     sealed class Result<out T> {
         data class Ok<T>(val value: T) : Result<T>()
-        data class Err(val message: String) : Result<Nothing>()
+        /**
+         * [authFailed] marks the hub having actively rejected the credential
+         * (401/403) as opposed to any other failure. Callers need the two apart:
+         * a rejected token must drop the paired state, whereas a timeout on a
+         * train must not — it says nothing about whether the token is good.
+         */
+        data class Err(val message: String, val authFailed: Boolean = false) : Result<Nothing>()
     }
 
     /** Fetch this user's own home geofence. Needs scope presence:read:<user>. */
@@ -84,9 +90,14 @@ object HubClient {
             val body = readBody(conn)
             conn.disconnect()
 
-            if (code == 401) return@withContext Result.Err("Token rejected (401). Re-issue it on the hub.")
+            if (code == 401) return@withContext Result.Err(
+                "Token rejected (401). Re-issue it on the hub — the hub only ever " +
+                "shows a token once, so the id in its token list is not the token.",
+                authFailed = true
+            )
             if (code == 403) return@withContext Result.Err(
-                "Token lacks presence:read:${prefs.userId} (403)."
+                "Token lacks presence:read:${prefs.userId} (403).",
+                authFailed = true
             )
             if (code == 404) return@withContext Result.Err(
                 "No presence user '${prefs.userId}'. Tick Mobile presence for them on the hub."

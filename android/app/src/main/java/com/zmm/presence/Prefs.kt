@@ -239,6 +239,21 @@ class Prefs(context: Context) {
     val isPaired: Boolean
         get() = hubUrl.isNotEmpty() && userId.isNotEmpty() && token.isNotEmpty()
 
+    /**
+     * Whether the hub has actually accepted these credentials.
+     *
+     * [isPaired] only says the three fields are non-empty, which is the right
+     * test for "is there anything to try" but a dangerous one to show the user:
+     * a mistyped or revoked token still fills the fields, so a screen driven by
+     * isPaired alone reports "Paired" while every request comes back 401. Set
+     * only by a successful hub round-trip, cleared when a credential is edited
+     * or the hub rejects one. A transient network failure deliberately leaves
+     * it alone — being briefly offline is not evidence the token went bad.
+     */
+    var verified: Boolean
+        get() = sp.getBoolean(KEY_VERIFIED, false)
+        set(v) = sp.edit().putBoolean(KEY_VERIFIED, v).apply()
+
     val hasHome: Boolean
         get() = !homeLat.isNaN() && !homeLon.isNaN() && radiusM > 0f
 
@@ -275,6 +290,7 @@ class Prefs(context: Context) {
         private const val KEY_LON = "home_lon"
         private const val KEY_RADIUS = "radius_m"
         private const val KEY_ARMED = "armed"
+        private const val KEY_VERIFIED = "verified"
         private const val KEY_PIN = "cert_pin"
         private const val KEY_TRUST = "trust_mode"
         private const val KEY_MODE = "mode_name"

@@ -20,6 +20,9 @@
          full sentence underneath, so they must not repeat it. -->
     <string name="pill_paired">Paired</string>
     <string name="pill_unpaired">Not paired</string>
+    <!-- Credentials are filled in but the hub has not accepted them (or has not
+         been asked yet). Distinct from "Not paired", which means nothing typed. -->
+    <string name="pill_unverified">Unverified</string>
     <string name="pill_armed">Armed</string>
     <string name="pill_disarmed">Disarmed</string>
     <string name="pill_ok">OK</string>

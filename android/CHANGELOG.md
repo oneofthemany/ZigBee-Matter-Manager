@@ -14,6 +14,29 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.4.1 (7)
+
+The pairing screen told the truth about the wrong thing, and read bottom-up.
+
+- The hub pill said "Paired" whenever the three fields were non-empty. A
+  mistyped or revoked token still fills fields, so the pill sat green while
+  every request came back 401 and the geofence quietly refused to arm — the
+  screen contradicted itself and the pill was the part that was wrong. It now
+  has three states, and "Paired" requires the hub to have actually answered:
+  `Prefs.verified` is set only by a successful `fetchHome`, cleared when a
+  credential is edited or the hub rejects one.
+- A 401/403 is now distinguishable from any other failure (`Result.Err.authFailed`),
+  so a rejected token drops the paired state but a timeout on a train does not.
+- The 401 message names the real trap: the hub shows a token's plaintext once,
+  at creation, so the id in its token list is not the token.
+- Permissions moved above Geofence. Arm stays disabled until location is
+  granted, and the grant buttons were below the button they unlock — arming
+  meant scrolling past a dead control, granting, then scrolling back. Cards now
+  run in dependency order.
+- The status line is pinned below the scroll instead of sitting at the bottom
+  of it. Pressing Pair at the top used to write its answer below the fold.
+  Hidden until there is something to say, so it costs no height when idle.
+
 ## 1.4.0 (6)
 
 Activity recognition, so a journey is the drive and nothing else.

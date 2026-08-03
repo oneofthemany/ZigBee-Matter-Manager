@@ -6,10 +6,16 @@
     can't operate isn't worth the metaphor. The comb is texture; the hex chip
     and the ⬡ micro-labels carry the motif.
 -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:orientation="vertical">
+
+<ScrollView
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1"
     android:fillViewport="true"
     android:scrollbars="none">
 
@@ -178,55 +184,12 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- geofence -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="@string/label_geofence"
-                        android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
-
-                    <TextView
-                        android:id="@+id/geoPill"
-                        style="@style/Widget.Zmm.Pill"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/homeState"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:textAppearance="@style/TextAppearance.Zmm.Body" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/armBtn"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/arm" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- permissions -->
+        <!-- Permissions before geofence, because Arm is disabled until location
+             is granted (render(): isPaired && hasHome && fg && bg). With the
+             grant buttons below the button they unlock, the only way to arm was
+             to scroll past a dead control, grant, then scroll back up to it.
+             Cards now run in dependency order: hub, then what the geofence
+             needs, then the geofence. -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -296,6 +259,54 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:text="@string/battery_btn" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- geofence -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/label_geofence"
+                        android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
+
+                    <TextView
+                        android:id="@+id/geoPill"
+                        style="@style/Widget.Zmm.Pill"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/homeState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textAppearance="@style/TextAppearance.Zmm.Body" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/armBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="@string/arm" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
@@ -388,18 +399,32 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Status line. Sits outside the cards because it reports on whatever
-             action just ran, not on any one section. -->
-        <TextView
-            android:id="@+id/status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="8dp"
-            android:paddingHorizontal="4dp"
-            android:fontFamily="monospace"
-            android:textSize="11sp"
-            android:lineSpacingMultiplier="1.2"
-            android:textColor="@color/text_secondary" />
     </LinearLayout>
 </ScrollView>
+
+    <!-- Status line. Reports on whatever action just ran rather than on any one
+         section, so it sits outside the cards — and outside the ScrollView,
+         pinned. Buttons are spread down a screen taller than the viewport, so
+         inside the scroll it landed off-screen: pressing Pair at the top wrote
+         its answer below the fold, which is what made the screen feel like it
+         needed reading twice. Hidden entirely until there is something to say
+         (see status()), so it costs no height on a fresh install. -->
+    <View
+        android:id="@+id/statusDivider"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:visibility="gone"
+        android:background="@color/border_color" />
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:background="@color/bg_surface_raised"
+        android:padding="14dp"
+        android:fontFamily="monospace"
+        android:textSize="11sp"
+        android:lineSpacingMultiplier="1.2"
+        android:textColor="@color/text_secondary" />
+</LinearLayout>

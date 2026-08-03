@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -148,6 +149,15 @@ class PairActivity : AppCompatActivity() {
     // ---- actions ----
 
     private fun pair() {
+        // Any edit to a credential invalidates the previous verification: the
+        // hub has never seen the new value, so claiming it accepted one is a
+        // lie until it answers again. Compared before the assignment, since
+        // that is what overwrites the old values.
+        val edited = prefs.hubUrl != Prefs.normaliseUrl(b.hubUrl.text.toString()) ||
+            prefs.userId != b.userId.text.toString().trim() ||
+            prefs.token != b.token.text.toString().trim()
+        if (edited) prefs.verified = false
+
         prefs.hubUrl = b.hubUrl.text.toString()
         prefs.userId = b.userId.text.toString()
         prefs.token = b.token.text.toString()
@@ -238,10 +248,19 @@ class PairActivity : AppCompatActivity() {
                         is HubClient.Result.Ok -> prefs.savePlaces(pr.value)
                         is HubClient.Result.Err -> prefs.savePlaces(emptyList())
                     }
+                    // The hub answered on this credential: the only evidence
+                    // that actually justifies showing "Paired".
+                    prefs.verified = true
                     status("Paired. Home is ${fmt(r.value.lat)}, ${fmt(r.value.lon)} " +
                         "(${r.value.radiusM.toInt()} m).")
                 }
-                is HubClient.Result.Err -> status("Pairing failed: ${r.message}")
+                is HubClient.Result.Err -> {
+                    // Only an outright rejection disproves the credential. A
+                    // timeout leaves an established pairing alone rather than
+                    // demoting it every time the phone is out of signal.
+                    if (r.authFailed) prefs.verified = false
+                    status("Pairing failed: ${r.message}")
+                }
             }
             b.pairBtn.isEnabled = true
             render()
@@ -607,9 +626,20 @@ class PairActivity : AppCompatActivity() {
 
         // Pills restate the section's state in one word, so the whole screen
         // can be read down the right-hand edge without parsing the sentences.
+        // Three states, not two. "Filled in" and "accepted by the hub" are
+        // different things, and collapsing them is what let a rejected token
+        // sit behind a green Paired pill while the geofence refused to arm.
         pill(b.hubPill,
-            if (prefs.isPaired) R.string.pill_paired else R.string.pill_unpaired,
-            if (prefs.isPaired) Tone.OK else Tone.IDLE)
+            when {
+                !prefs.isPaired -> R.string.pill_unpaired
+                prefs.verified -> R.string.pill_paired
+                else -> R.string.pill_unverified
+            },
+            when {
+                !prefs.isPaired -> Tone.IDLE
+                prefs.verified -> Tone.OK
+                else -> Tone.WARN
+            })
 
         pill(b.geoPill,
             if (prefs.armed) R.string.pill_armed else R.string.pill_disarmed,
@@ -705,7 +735,18 @@ class PairActivity : AppCompatActivity() {
             (color and 0x00FFFFFF) or (0x24 shl 24))
     }
 
-    private fun status(s: String) { b.status.text = s }
+    /**
+     * The status bar is pinned below the scroll, so it would otherwise eat a
+     * strip of every screen to say nothing. Shown only once there is something
+     * to report, and never hidden again for the life of the screen — a message
+     * that vanished on the next action would be worse than one that stays.
+     */
+    private fun status(s: String) {
+        b.status.text = s
+        val show = s.isNotEmpty()
+        b.status.visibility = if (show) View.VISIBLE else View.GONE
+        b.statusDivider.visibility = if (show) View.VISIBLE else View.GONE
+    }
 
     private fun fmt(d: Double) = String.format("%.5f", d)
 
