@@ -492,10 +492,33 @@ class MediaSource:
         return int(max(0, room))
 
     def _gap_close(self) -> None:
-        """Commit an overrun before decoded audio lands on top of it (§4.1)."""
+        """Commit an overrun before decoded audio lands on top of it (§4.1).
+
+        Bounded by the play point, and that bound is what keeps one reader's
+        fault from becoming the zone's. A reader past ``play_now`` is asking
+        for audio that has not happened yet, so no amount of silence settles
+        it — and committing that silence is harmful twice over. It goes into
+        the timeline *every other device* reads, and it pushes the write head
+        past ``_throttle``'s ceiling, which stalls the decoder. The two
+        together latch: the head is dragged forward by the reader, the reader
+        keeps pace with the head, and the source settles at a few percent real
+        audio until something happens to reseat the reader. Live session
+        2026-08-05 held 93% silence for an unbroken hour this way.
+
+        A reader that has genuinely run off the end is better served by
+        ``_Ring.read``, which zero-fills for that reader alone and counts the
+        underrun against it — a local fault, reported as one.
+
+        The bound never binds on a healthy reader: those are seated at
+        ``play_now - delay_s`` and paced to stay at most ``STREAM_AHEAD_S``
+        ahead of that, so they sit below the play point by construction. A
+        source that has genuinely fallen behind real time still gaps normally,
+        because its readers are behind the play point too.
+        """
         head = self._reader_head()
         if head is None:
             return
+        head = min(head, (time.monotonic() - self.epoch) * self._rate)
         n = self._ring.fill_silence(int(head + XFADE_READER_MARGIN_S * self._rate))
         if not n:
             return

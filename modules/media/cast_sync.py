@@ -57,6 +57,11 @@ STREAM_RECONNECT_GRACE_S = 15.0
 # loop: if the first did not take, neither will three more in ten seconds.
 STREAM_RELOAD_MIN_INTERVAL_S = 30.0
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
+# Kept clear of the write head when seating or stepping a reader: the slack
+# sync_source._gap_close leaves above the furthest reader, plus the block it
+# is about to serve. See CastSyncPoc._reader_ceiling for why the bare head is
+# the one position a reader must never be given.
+STREAM_HEAD_GUARD_S = _src.XFADE_READER_MARGIN_S + STREAM_BLOCK_S
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
 STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
 STREAM_SLEW_FAST_THRESH_S = 0.030
@@ -530,6 +535,48 @@ class CastSyncPoc:
         heads = [st.pos for st in self._streams.values() if st.pos is not None]
         return max(heads) if heads else None
 
+    def _reader_ceiling(self, source) -> float:
+        """The furthest a reader may ever be seated or stepped, in timeline
+        samples. Two bounds; the tighter one wins.
+
+        **The write head, less STREAM_HEAD_GUARD_S.** Clamping to the bare
+        head reads as harmless — it is the newest sample that exists — but it
+        parks the reader exactly where it overtakes the head on every block,
+        and ``sync_source._gap_close`` closes that overtake by committing
+        silence into the timeline the *whole zone* reads. One clamped step
+        therefore takes every speaker down, not the device that earned it, and
+        nothing in the correction ladder can recover it: the reader keeps pace
+        with the head while the head is dragged along by the reader. Worse,
+        the ladder cannot even see it — the device's deep buffer absorbs the
+        step, so it goes on reporting a healthy on-target lag while the zone
+        plays silence. Only a reload, which reseats the reader, ends it.
+
+        **The play point.** A reader ahead of it is being served audio before
+        it is due and has no decoded headroom left, so the next decoder hiccup
+        puts it past the head regardless of the guard. Healthy readers sit a
+        full ``delay_s`` below this, so it only ever binds on a move.
+        """
+        play_now = (time.monotonic() - self._epoch) * RATE
+        _latest = getattr(source, "latest_sample", None)
+        if not callable(_latest):
+            return play_now
+        return min(play_now,
+                   _latest() - _rs.READ_MARGIN - RATE * STREAM_HEAD_GUARD_S)
+
+    def _step_cooldown_s(self) -> float:
+        """How long to ignore a device's polls after moving its reader.
+
+        A step moves the reader; the device only reveals it after playing out
+        what it had already buffered, which is the group's target lag. A
+        cooldown shorter than that guarantees at least one poll of pre-step
+        data, and since the decision is a median over three readings, stale
+        readings re-authorise the very step that produced them. The fixed 7 s
+        was under the 8.4 s target lag of a live five-device group, which
+        stepped one device +4.2 s and then +4.4 s again 27 s later, having
+        already corrected it.
+        """
+        return max(STREAM_COOLDOWN_S, (self._target_lag or 0.0) + STREAM_POLL_S)
+
     def _crossfade_max(self) -> float:
         """Ceiling advertised to the UI. The overlap actually granted is
         decided per seam against measured headroom (open-zone.md §4.1a)."""
@@ -814,11 +861,23 @@ class CastSyncPoc:
             s.trim_ms = trim_ms
             if s.pos is None:
                 continue          # not serving yet: picked up when it opens
-            s.pos -= delta_s * RATE
-            s.shift -= delta_s * RATE
-            s.moved_s -= delta_s
+            # Reducing a trim walks the reader forward, and the full ±2 s range
+            # is enough to walk it into the write head — the same seat that
+            # takes the whole zone to silence (_reader_ceiling). Bound it here
+            # too; a trim the timeline cannot hold is one the listener has to
+            # ask for again, which is cheap, and audible only to them.
+            moved = -delta_s * RATE
+            ceil = self._reader_ceiling(self._source)
+            if s.pos + moved > ceil:
+                moved = max(0.0, ceil - s.pos)
+                logger.warning(
+                    f"Sync stream trim {s.name} clamped to "
+                    f"{moved / RATE * 1000:+.0f} ms — no timeline ahead of it")
+            s.pos += moved
+            s.shift += moved
+            s.moved_s += moved / RATE
             if abs(delta_ms) > STREAM_TRIM_QUIET_MS:
-                s.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+                s.cooldown_until = time.monotonic() + self._step_cooldown_s()
                 s.err_hist = []   # baseline moved — old medians invalid
             await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
@@ -1234,41 +1293,56 @@ class CastSyncPoc:
                     if abs(residual) > jump_min \
                             and (concordant
                                  or (not st.acquired and len(st.err_hist) >= 2)):
-                        # Clamp to the timeline that exists (open-zone.md A.2).
-                        # Defensive: inside the monitor catch-all, a source without
-                        # the accessor would kill every correction, not just this.
+                        # Bounded by the timeline that exists (open-zone.md
+                        # A.2) — and by the guard band above it, which is the
+                        # part that is not merely arithmetic (_reader_ceiling).
                         step = med3 * RATE
-                        _latest = getattr(self._source, "latest_sample", None)
-                        ceil = ((_latest() - _rs.READ_MARGIN
-                                 - RATE * STREAM_BLOCK_S)
-                                if callable(_latest) else float("inf"))
+                        ceil = self._reader_ceiling(self._source)
                         shortfall = 0.0
                         if st.pos + step > ceil:
-                            clamped = max(0.0, ceil - st.pos)
-                            shortfall = (step - clamped) / RATE
-                            step = clamped
+                            # Move nothing. A partial step cannot close an
+                            # offset the timeline is too short to hold — that
+                            # is what the reload below is for — and every
+                            # sample of it drags the reader toward the write
+                            # head, the one place a reader must never end up
+                            # (_reader_ceiling). Leaving the device out of
+                            # alignment for another cycle is a fault local to
+                            # it; parking its reader on the head is not.
+                            shortfall = (step - max(0.0, ceil - st.pos)) / RATE
+                            step = 0.0
                             logger.warning(
-                                f"Sync stream resync {st.name} clamped to the "
-                                f"write head: wanted {med3 * 1000:+.0f} ms, "
-                                f"moved {step / RATE * 1000:+.0f} ms")
+                                f"Sync stream resync {st.name} not moved: "
+                                f"wanted {med3 * 1000:+.0f} ms with only "
+                                f"{max(0.0, ceil - st.pos) / RATE * 1000:.0f} ms "
+                                f"of timeline ahead of the reader — a reload is "
+                                f"the only correction that fits")
                         st.pos += step
                         st.shift += step
                         st.moved_s += step / RATE
                         st.slew_s = 0.0       # jump supersedes any pending slew
-                        if st.resampler is not None:
-                            st.resampler.reset()
+                        if step and st.resampler is not None:
+                            st.resampler.reset()   # nothing moved, nothing to reset
                         st.resyncs += 1
-                        st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+                        # Long enough for the step to have reached the device's
+                        # output, or the readings that follow describe the state
+                        # before it (_step_cooldown_s).
+                        st.cooldown_until = time.monotonic() + self._step_cooldown_s()
                         st.err_hist = []
                         st.lag_hist = []      # device-buffer transient follows
                         st.fit_lost_at = time.monotonic()
                         batch.append(self._sample_row(st, "resync", lag=lag,
                                                       error=med3))
-                        logger.info(f"Sync stream resync {st.name}: "
-                                    f"{med3 * 1000:+.0f} ms")
-                        # The reader is at the live edge, so what the clamp could
-                        # not move is a gap only a fresh LOAD closes. Not awaited:
-                        # the poll pass owns the other four speakers.
+                        if step:
+                            logger.info(f"Sync stream resync {st.name}: "
+                                        f"{med3 * 1000:+.0f} ms")
+                        # The reader has run out of timeline ahead of it, so the
+                        # offset is one only a fresh LOAD closes — it drops the
+                        # device's own buffer, which is the part the reader
+                        # cannot reach. Rate-limited, and now safe to lose to
+                        # that limit: the step above moved nothing, so a
+                        # deferred reload costs alignment on one device rather
+                        # than leaving its reader on the head. Not awaited: the
+                        # poll pass owns the other four speakers.
                         if shortfall > STREAM_JUMP_MIN_S and (
                                 time.monotonic() - st.last_reload
                                 > STREAM_RELOAD_MIN_INTERVAL_S):
@@ -1580,18 +1654,16 @@ class CastSyncPoc:
         pos = (int((time.monotonic() - self._epoch - source.delay_s) * RATE)
                - trim - precomp)
         floor = source.earliest_sample() + _rs.READ_MARGIN
-        _latest = getattr(source, "latest_sample", None)
-        ceil = ((_latest() - _rs.READ_MARGIN - int(RATE * STREAM_BLOCK_S))
-                if callable(_latest) else None)
+        ceil = self._reader_ceiling(source)
         if pos < floor:
             logger.warning(
                 f"Sync stream {st.name} clamped {(floor - pos) / RATE:.2f}s "
                 f"forward — delay line was short at launch")
             pos = floor
-        if ceil is not None and pos > ceil >= floor:
+        if pos > ceil >= floor:
             logger.warning(
                 f"Sync stream {st.name} clamped {(pos - ceil) / RATE:.2f}s "
-                f"back — seat was past the write head")
+                f"back — seat was inside the write head's guard band")
             pos = ceil
         st.shift = 0.0
         st.moved_s = 0.0
@@ -1619,7 +1691,14 @@ class CastSyncPoc:
         st.slew_s = 0.0
         st.acquired = False          # re-acquiring: step small offsets away
         st.fit_lost_at = time.monotonic()
-        st.cooldown_until = time.monotonic() + STREAM_COOLDOWN_S
+        # The heaviest disturbance there is — the device drops its buffer and
+        # refills it — so it needs at least the full observation latency before
+        # its readings mean anything (_step_cooldown_s). A reload demotes the
+        # device to unacquired, where two readings authorise a step, so a
+        # cooldown that expires early does not merely delay the recovery: the
+        # stale pair steps the reader straight back to where the reload just
+        # rescued it from.
+        st.cooldown_until = time.monotonic() + self._step_cooldown_s()
         if st.resampler is not None:
             st.resampler.reset()
         await self._launch_stream(st.player_id, st.sid)
