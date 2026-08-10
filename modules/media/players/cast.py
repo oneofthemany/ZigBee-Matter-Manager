@@ -122,16 +122,25 @@ class CastPlayerProvider(PlayerProvider):
 
         Output-pipeline latency — decode to DAC to speaker — is a property of
         the hardware, not of the individual unit, so anything measured for one
-        device applies to every other of the same model. ``cast_type`` is kept
-        in the key because Google reports it per form factor ('audio' for
-        speakers, 'cast' for screened devices), and the screened ones are
-        exactly where the long pipelines live."""
+        device applies to every other of the same model.
+
+        **The model name alone, because ``cast_type`` is not stable per device.**
+        It used to be prefixed, on the reasoning that Google reports it per form
+        factor ('audio' for speakers, 'cast' for screened devices) and the
+        screened ones are where the long pipelines live. But mDNS does not
+        always carry it: a Pixel Tablet enumerates as ``cast_type=None`` on some
+        discoveries and ``cast`` on others, so one physical device minted two
+        keys — and the live store ended up holding ``cast/Pixel Tablet: 0``
+        beside ``/Pixel Tablet: 219``, one of them silently wrong depending on
+        which discovery ran last. The prefix also bought nothing it could not
+        get from the name: a "Google Nest Hub" is screened and a "Google Home"
+        is not, whatever the discovery says. An identity that flickers is worse
+        than a coarse one, because the value keyed on it flickers with it.
+        """
         info = self._infos.get(player_id.split(":", 1)[-1])
         if info is None:
             return ""
-        model = (getattr(info, "model_name", "") or "").strip()
-        ctype = str(getattr(info, "cast_type", "") or "").lower()
-        return f"{ctype}/{model}" if model else ""
+        return (getattr(info, "model_name", "") or "").strip()
 
     def _drop_cast(self, uuid_str: str) -> None:
         """Discard a cached connection so the next control call reconnects to

@@ -16,6 +16,34 @@ logger = logging.getLogger("routes.heating")
 
 CONFIG_PATH = "./config/config.yaml"
 
+# Temperature attribute names devices use, in the order the routes prefer them.
+_TEMP_ATTRS = ("temperature", "local_temperature",
+               "current_temperature", "internal_temperature")
+
+
+async def _temp_series(sensor_ieee: str, hours: int):
+    """``(rows, attribute)`` for the first temperature attribute with history.
+
+    Off the event loop, and that is the point rather than a nicety. These are
+    DuckDB scans over days of `device_states`, and every route in this module
+    shares its loop with the OpenZone audio engine, whose stream generators are
+    plain loop tasks — a scan on the loop stops all of them and the speakers
+    drain their buffers (open-zone.md §A.1). A 10.5 s block from one such query
+    put a five-speaker group 2.4-6.4 s out on 2026-08-10.
+
+    The attribute walk runs *inside* the worker so a sensor whose readings live
+    under the fourth name costs one hop rather than four.
+    """
+    def _walk():
+        from modules.telemetry_db import query_device_state_history
+        for attr in _TEMP_ATTRS:
+            rows = query_device_state_history(sensor_ieee, attr, hours) or []
+            if rows:
+                return rows, attr
+        return [], None
+
+    return await asyncio.to_thread(_walk)
+
 # Schema defaults
 _PROPERTY_DEFAULTS = {
     "type": "semi-detached",
@@ -781,7 +809,10 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
         if not adv or not getattr(adv, "enabled", False):
             return {"success": False, "error": "Heating advisor not enabled"}
         try:
-            return {"success": True, "data": adv.get_heating_history(hours)}
+            # Walks query_device_state_history per attribute per device — off
+            # the loop for the same reason as _temp_series.
+            data = await asyncio.to_thread(adv.get_heating_history, hours)
+            return {"success": True, "data": data}
         except Exception as e:
             logger.error(f"History endpoint failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
@@ -1110,15 +1141,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             telemetry_attr_used = None
             if sensor_ieee:
                 try:
-                    from modules.telemetry_db import query_device_state_history
-                    hours = max(24, int(days) * 24)
-                    for attr in ("temperature", "local_temperature",
-                                 "current_temperature", "internal_temperature"):
-                        rows = query_device_state_history(sensor_ieee, attr, hours) or []
-                        if rows:
-                            temp_series = rows
-                            telemetry_attr_used = attr
-                            break
+                    temp_series, telemetry_attr_used = await _temp_series(
+                        sensor_ieee, max(24, int(days) * 24))
                 except Exception as e:
                     logger.warning(f"diagnostics: telemetry fetch failed: {e}")
 
@@ -1142,7 +1166,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             if cid:
                 try:
                     from modules.telemetry_db import query_room_heating_state
-                    tick_rows = query_room_heating_state(
+                    tick_rows = await asyncio.to_thread(
+                        query_room_heating_state,
                         circuit_id=cid, room_id=room_id, hours=int(days) * 24,
                     )
                 except Exception as e:
@@ -1351,14 +1376,8 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             temp_series = []
             if sensor_ieee:
                 try:
-                    from modules.telemetry_db import query_device_state_history
-                    hours = max(24, int(days) * 24)
-                    for attr in ("temperature", "local_temperature",
-                                 "current_temperature", "internal_temperature"):
-                        rows = query_device_state_history(sensor_ieee, attr, hours) or []
-                        if rows:
-                            temp_series = rows
-                            break
+                    temp_series, _ = await _temp_series(
+                        sensor_ieee, max(24, int(days) * 24))
                 except Exception as e:
                     logger.warning(f"history fetch failed: {e}")
 
@@ -1445,13 +1464,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             temp_series = []
             if sensor_ieee:
                 try:
-                    from modules.telemetry_db import query_device_state_history
-                    for attr in ("temperature", "local_temperature",
-                                 "current_temperature", "internal_temperature"):
-                        rows = query_device_state_history(sensor_ieee, attr, 14 * 24) or []
-                        if rows:
-                            temp_series = rows
-                            break
+                    temp_series, _ = await _temp_series(sensor_ieee, 14 * 24)
                 except Exception as e:
                     logger.debug(f"history fetch failed: {e}")
 
@@ -1565,13 +1578,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             temp_series = []
             if sensor_ieee:
                 try:
-                    from modules.telemetry_db import query_device_state_history
-                    for attr in ("temperature", "local_temperature",
-                                 "current_temperature", "internal_temperature"):
-                        rows = query_device_state_history(sensor_ieee, attr, 14 * 24) or []
-                        if rows:
-                            temp_series = rows
-                            break
+                    temp_series, _ = await _temp_series(sensor_ieee, 14 * 24)
                 except Exception as e:
                     logger.debug(f"history fetch failed: {e}")
 

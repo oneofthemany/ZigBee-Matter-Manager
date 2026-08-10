@@ -56,6 +56,16 @@ STREAM_RECONNECT_GRACE_S = 15.0
 # buffer and seconds of re-acquisition, so it must not be reachable in a tight
 # loop: if the first did not take, neither will three more in ten seconds.
 STREAM_RELOAD_MIN_INTERVAL_S = 30.0
+# Reloads of one device before the group is re-aligned instead. A single-device
+# reload can only restore alignment if that receiver resumes within roughly
+# `target_lag - (delay_s + trim + precomp)` — a quarter-second for the most
+# pre-compensated device in a wide group — so past a couple of attempts it is
+# not a slow rescue, it is one that cannot work (_realign_group).
+STREAM_RELOADS_BEFORE_REALIGN = 2
+# A re-align re-LOADs every receiver, so it costs the whole zone several
+# seconds. Rare by construction: it is the rung above a per-device reload.
+STREAM_REALIGN_MIN_INTERVAL_S = 180.0
+STREAM_CLAMP_LOG_EVERY_S = 10.0  # a clamped step now re-decides every poll
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 # Kept clear of the write head when seating or stepping a reader: the slack
 # sync_source._gap_close leaves above the furthest reader, plus the block it
@@ -206,7 +216,20 @@ class _Stream:
         self.resyncs: int = 0
         self.reconnects: int = 0     # control-socket resets seen this session
         self.reloads: int = 0        # receiver re-LOADs forced this session
+        # Reloads since this device was last aligned. Separate from the session
+        # counter above, which the UI and the sample rows report: a re-align
+        # re-establishes the group's timing, so the question the ladder asks —
+        # "has reloading stopped working *against the current target*" — starts
+        # over, while the session total must not.
+        self.reloads_since_align: int = 0
         self.last_reload: float = 0.0
+        self.clamp_logged: float = 0.0     # rate-limit for the "not moved" warn
+        self.learn_lag: bool = True  # False once a re-align re-measured this
+                                     # device: the lag it shows after a forced
+                                     # LOAD is a re-acquisition figure, not the
+                                     # device's natural startup latency, and
+                                     # writing it to the model would seed every
+                                     # future session with it (§7.2)
         self.stats: dict = {}
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
         self.rate_prior: float = 0.0
@@ -266,6 +289,7 @@ class CastSyncPoc:
                                          "./data/cast_sync_model_trims.json")
         self._model_trims: Dict[str, int] = {
             k: int(v) for k, v in self._read_json(self._model_trims_file).items()}
+        self._model_trims_reconciled = False
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
@@ -282,7 +306,22 @@ class CastSyncPoc:
 
         self._source = _GENERATED
         self._resampler_kind = str(cfg.get("resampler", "rust"))
-        self._source_delay_s = float(cfg.get("source_delay_s", 2.0))
+        # The delay line's depth ahead of the play point, and — because the
+        # serve loop paces each reader `STREAM_AHEAD_S` behind it — the ladder's
+        # entire forward step authority is `source_delay_s - STREAM_AHEAD_S`.
+        # At the original 2.0 that was 800 ms against group latencies of 8 s
+        # and more: any disturbance larger than that could not be stepped away
+        # at all, only reloaded. A 10.5 s event-loop stall on 2026-08-10 left
+        # five speakers 2.4-6.4 s out, every one of them beyond the step rung.
+        # 4.0 puts 2.8 s inside it, which covers a stall of that size outright.
+        # The cost is 2 s more group latency (music only — §10.2), a longer
+        # prime, and 2 s more decoded headroom to keep. It does NOT widen what
+        # a reload can fix: that budget is `target_lag - (delay_s + trim +
+        # precomp)`, and target_lag grows with delay_s, so the term cancels
+        # (_escalate_shortfall).
+        self._source_delay_s = float(cfg.get("source_delay_s", 4.0))
+        # Must span the delay plus the widest startup pre-compensation (§4.1),
+        # ~9.8 s for a five-device group at the delay above.
         self._ring_capacity_s = float(cfg.get("ring_capacity_s", 20.0))
         self._crossfade_s = float(cfg.get("crossfade_s", 0.0))
         self._session_crossfade_s = self._crossfade_s
@@ -312,6 +351,13 @@ class CastSyncPoc:
         self._monitor: Optional[asyncio.Task] = None
         self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
+        self._realigning: bool = False                 # _realign_group in flight
+        self._last_realign: float = 0.0
+        # Bounds on deriving _target_lag: nothing before _target_wait_until,
+        # and after _acquire_deadline take whatever has reported. Both are set
+        # at session start and again by _realign_group.
+        self._target_wait_until: float = 0.0
+        self._acquire_deadline: float = 0.0
 
     def start(self):
         """Bring up the plain-HTTP receiver/WS listener (idempotent)."""
@@ -364,6 +410,67 @@ class CastSyncPoc:
             return get(player_id) if callable(get) else ""
         except Exception:
             return ""
+
+    def _reconcile_model_trims(self) -> None:
+        """Fold legacy ``cast_type/model`` model-trim keys onto the model name.
+
+        ``model_key`` used to prefix the cast_type, which mDNS does not report
+        consistently, so one physical device could write under two keys: the
+        live store held ``cast/Pixel Tablet: 0`` beside ``/Pixel Tablet: 219``.
+        Runs once per process, at session start rather than at load, because
+        the tiebreak needs discovery to be up.
+
+        Where a model has one legacy value, it carries over. Where it has
+        several, an explicit per-device trim on a unit of that model decides —
+        that is a value the listener set deliberately, against a stale entry
+        nobody has looked at. Failing that, values that agree within
+        ``TRIM_MODEL_AGREE_MS`` collapse to their median and values that do not
+        are dropped: contradictory evidence about a model is exactly the case
+        §7.4 says to abandon the default for, and an explicit per-device trim
+        (which is where these values are actually in use) is untouched either
+        way."""
+        if self._model_trims_reconciled:
+            return
+        self._model_trims_reconciled = True
+        if not any("/" in k for k in self._model_trims):
+            return
+        explicit: Dict[str, List[int]] = {}
+        for pid, val in self._trims.items():
+            key = self._model_key(pid)
+            if key:
+                explicit.setdefault(key, []).append(int(val))
+
+        folded: Dict[str, List[int]] = {}
+        for key, val in self._model_trims.items():
+            folded.setdefault(key.split("/", 1)[-1].strip() or key,
+                              []).append(int(val))
+
+        out: Dict[str, int] = {}
+        for model, vals in folded.items():
+            uniq = sorted(set(vals))
+            if len(uniq) == 1:
+                out[model] = uniq[0]
+                continue
+            owned = explicit.get(model) or []
+            match = [v for v in uniq
+                     if any(abs(v - e) <= TRIM_MODEL_AGREE_MS for e in owned)]
+            if len(set(match)) == 1:
+                out[model] = match[0]
+                logger.info(
+                    f"Model trim for '{model}' resolved to {match[0]:+d} ms "
+                    f"from {', '.join(f'{v:+d}' for v in uniq)} — the value a "
+                    f"unit of this model is explicitly trimmed to")
+            elif max(uniq) - min(uniq) <= TRIM_MODEL_AGREE_MS:
+                out[model] = int(round(self._median([float(v) for v in uniq])))
+            else:
+                logger.warning(
+                    f"Model trim for '{model}' dropped: the store held "
+                    f"{', '.join(f'{v:+d}' for v in uniq)} ms under different "
+                    f"cast_type keys for one model, and nothing decides between "
+                    f"them — per-device trims are unaffected")
+        if out != self._model_trims:
+            self._model_trims = out
+            self._write_json(self._model_trims_file, out)
 
     def trim_ms(self, player_id: str) -> int:
         """Effective trim: an explicit per-device value, else whatever this
@@ -628,6 +735,11 @@ class CastSyncPoc:
             self._crossfade_s if crossfade_s is None
             else min(max(float(crossfade_s), 0.0), self._crossfade_max()))
 
+        if stream_mode:
+            # Needs discovery, so it cannot run at construction; once per
+            # process, before any trim is latched into a stream.
+            self._reconcile_model_trims()
+
         if stream_mode and _sdb is not None:
             try:
                 db_model = await asyncio.to_thread(_sdb.query_device_model)
@@ -642,6 +754,10 @@ class CastSyncPoc:
         self._streams = {}
         self._pending = {}
         self._target_lag = None
+        self._realigning = False
+        self._last_realign = 0.0
+        self._target_wait_until = 0.0
+        self._acquire_deadline = self._epoch + 25
         self._fade_start = None      # every session re-acquires under silence
         source, err = await self._build_source(media, group_id)
         if source is None:
@@ -1250,10 +1366,18 @@ class CastSyncPoc:
                 if not lags:
                     continue
                 if self._target_lag is None:
+                    # A re-align clears the target so it can be re-derived, but
+                    # every receiver is refilling at that moment and reporting a
+                    # media time near zero — deriving from those would define
+                    # "aligned" as the middle of the disturbance. Nothing is
+                    # read until the re-acquisition cooldown has run out. Zero
+                    # at session start, so that path is unchanged.
+                    if time.monotonic() < self._target_wait_until:
+                        continue
                     n_connected = len([s for s in self._streams.values()
                                        if s.connected])
                     if (len(lags) < n_connected
-                            and time.monotonic() - self._epoch < 25):
+                            and time.monotonic() < self._acquire_deadline):
                         continue     # wait until every connected device reports
                     self._target_lag = max(lags.values()) + STREAM_LAG_MARGIN_S
                     logger.info(f"Sync stream target lag: {self._target_lag:.2f}s")
@@ -1266,7 +1390,8 @@ class CastSyncPoc:
                         continue
                     if st.natural_lag is None:
                         st.natural_lag = lag
-                        self._model_learn(st, "lag_s", lag - st.precomp_s)
+                        if st.learn_lag:
+                            self._model_learn(st, "lag_s", lag - st.precomp_s)
                         batch.append(self._sample_row(st, "startup", lag=lag))
                     error = lag - self._target_lag   # >0: behind, serve faster
                     # Rebuilt each poll, so every counter has to be restated
@@ -1310,47 +1435,58 @@ class CastSyncPoc:
                             # it; parking its reader on the head is not.
                             shortfall = (step - max(0.0, ceil - st.pos)) / RATE
                             step = 0.0
-                            logger.warning(
-                                f"Sync stream resync {st.name} not moved: "
-                                f"wanted {med3 * 1000:+.0f} ms with only "
-                                f"{max(0.0, ceil - st.pos) / RATE * 1000:.0f} ms "
-                                f"of timeline ahead of the reader — a reload is "
-                                f"the only correction that fits")
-                        st.pos += step
-                        st.shift += step
-                        st.moved_s += step / RATE
-                        st.slew_s = 0.0       # jump supersedes any pending slew
-                        if step and st.resampler is not None:
-                            st.resampler.reset()   # nothing moved, nothing to reset
-                        st.resyncs += 1
-                        # Long enough for the step to have reached the device's
-                        # output, or the readings that follow describe the state
-                        # before it (_step_cooldown_s).
-                        st.cooldown_until = time.monotonic() + self._step_cooldown_s()
-                        st.err_hist = []
-                        st.lag_hist = []      # device-buffer transient follows
-                        st.fit_lost_at = time.monotonic()
-                        batch.append(self._sample_row(st, "resync", lag=lag,
-                                                      error=med3))
+                            if time.monotonic() - st.clamp_logged \
+                                    > STREAM_CLAMP_LOG_EVERY_S:
+                                st.clamp_logged = time.monotonic()
+                                logger.warning(
+                                    f"Sync stream resync {st.name} not moved: "
+                                    f"wanted {med3 * 1000:+.0f} ms with only "
+                                    f"{max(0.0, ceil - st.pos) / RATE * 1000:.0f} ms "
+                                    f"of timeline ahead of the reader — only a "
+                                    f"reload or a group re-align fits")
                         if step:
+                            st.pos += step
+                            st.shift += step
+                            st.moved_s += step / RATE
+                            st.slew_s = 0.0   # jump supersedes any pending slew
+                            if st.resampler is not None:
+                                st.resampler.reset()
+                            st.resyncs += 1
+                            # Long enough for the step to have reached the
+                            # device's output, or the readings that follow
+                            # describe the state before it (_step_cooldown_s).
+                            st.cooldown_until = (time.monotonic()
+                                                 + self._step_cooldown_s())
+                            st.err_hist = []
+                            st.lag_hist = []  # device-buffer transient follows
+                            st.fit_lost_at = time.monotonic()
+                            batch.append(self._sample_row(st, "resync", lag=lag,
+                                                          error=med3))
                             logger.info(f"Sync stream resync {st.name}: "
                                         f"{med3 * 1000:+.0f} ms")
+                        # A clamped step changed NOTHING, so none of the above
+                        # applies to it and applying it anyway is what turned a
+                        # 10.5 s loop stall into a four-minute outage on
+                        # 2026-08-10. The cooldown exists to wait out a
+                        # discontinuity reaching the device's output; with no
+                        # discontinuity there is nothing to wait for, and the
+                        # ~11 s blackout (target lag + a poll) merely delays the
+                        # one correction that can still work. Clearing the error
+                        # history compounds it: the next decision then needs
+                        # three fresh readings on top of the blackout, which
+                        # spaced reload attempts at ~42 s against a 30 s limit.
+                        # Leaving both alone lets the next poll re-confirm, so
+                        # the rung below fires as soon as its own limit allows.
+                        # The warning is rate-limited instead, because the
+                        # decision now repeats every poll.
+                        #
                         # The reader has run out of timeline ahead of it, so the
                         # offset is one only a fresh LOAD closes — it drops the
                         # device's own buffer, which is the part the reader
-                        # cannot reach. Rate-limited, and now safe to lose to
-                        # that limit: the step above moved nothing, so a
-                        # deferred reload costs alignment on one device rather
-                        # than leaving its reader on the head. Not awaited: the
-                        # poll pass owns the other four speakers.
-                        if shortfall > STREAM_JUMP_MIN_S and (
-                                time.monotonic() - st.last_reload
-                                > STREAM_RELOAD_MIN_INTERVAL_S):
-                            # Stamped here, not in the coroutine: the interval must
-                            # close when the reload is decided, or a second poll
-                            # schedules another before the first runs.
-                            st.last_reload = time.monotonic()
-                            asyncio.create_task(self._reload_stream(st))
+                        # cannot reach. Not awaited: the poll pass owns the
+                        # other four speakers.
+                        if shortfall > STREAM_JUMP_MIN_S:
+                            self._escalate_shortfall(st, med3)
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
                             or len(st.err_hist) < 2:
                         self._pll_update(st, lag)
@@ -1670,6 +1806,118 @@ class CastSyncPoc:
         st.pos = float(pos)
         st.start_pos = int(pos)
 
+    def _escalate_shortfall(self, st: _Stream, med3: float) -> None:
+        """A step the timeline was too short to hold: pick the rung above it.
+
+        Two rungs, and which one applies is not a matter of severity but of
+        whether the cheaper one is *capable* of working. A single-device reload
+        re-seats that reader at ``play_now - delay_s - trim - precomp`` and the
+        device then plays that sample only once it has refilled, so it lands on
+        target only if it resumes within ``target_lag - (delay_s + trim +
+        precomp)``. That budget is fixed by the group's geometry, not by how
+        badly the device is out — for the most pre-compensated speaker in a
+        wide group it is a couple of hundred milliseconds, against Cast refills
+        measured in seconds. Past ``STREAM_RELOADS_BEFORE_REALIGN`` attempts
+        the reload is therefore not a slow rescue but one that keeps
+        re-creating the fault, and only re-deriving the group's target can
+        converge (open-zone.md §7.1)."""
+        now = time.monotonic()
+        if st.reloads_since_align >= STREAM_RELOADS_BEFORE_REALIGN:
+            # Past this point a reload is not a slower rescue but one that
+            # cannot work, so a re-align held off by its own floor waits — it
+            # must not fall back to re-dropping this device's buffer for
+            # nothing, which is the loop that cost four minutes on 2026-08-10.
+            if (not self._realigning
+                    and now - self._last_realign > STREAM_REALIGN_MIN_INTERVAL_S):
+                self._last_realign = now  # stamped on decision, not in the task
+                asyncio.create_task(self._realign_group(
+                    f"{st.name} still {med3 * 1000:+.0f} ms out after "
+                    f"{st.reloads_since_align} reload(s)"))
+            return
+        # Rate-limited, and safe to lose to that limit: the step moved nothing,
+        # so a deferred reload costs alignment on one device rather than
+        # leaving its reader on the head.
+        if now - st.last_reload > STREAM_RELOAD_MIN_INTERVAL_S:
+            # Stamped here, not in the coroutine: the interval must close when
+            # the reload is decided, or a second poll schedules another before
+            # the first runs.
+            st.last_reload = now
+            asyncio.create_task(self._reload_stream(st))
+
+    async def _realign_group(self, reason: str) -> None:
+        """Re-establish the whole group's timing, as at session start.
+
+        The ladder's last rung. Session start is the only path that reliably
+        converges, and the reason is that it does not aim at a fixed target:
+        every device is LOADed at once and ``_target_lag`` is then *derived*
+        from the lags that result (``max + STREAM_LAG_MARGIN_S``), so whatever
+        the receivers actually did becomes the definition of aligned. A
+        mid-session reload of one device inherits a target set when conditions
+        were different and has no way to move it, which is why it can reproduce
+        the same offset indefinitely (`_escalate_shortfall`).
+
+        So: re-LOAD everyone together, re-seat every reader from the model, and
+        clear the target so the monitor re-derives it from the fresh lags. The
+        source is untouched — the timeline was never the problem, only the
+        devices' relationship to it — so this costs the zone a few seconds of
+        re-acquisition, not a gap in the audio.
+
+        The re-measured lags must NOT reach the learned model. They are
+        re-acquisition figures taken while five receivers refill at once, not
+        the natural startup latency the model is meant to hold; recording them
+        would seed every future session's pre-compensation with this incident
+        (§7.2, on seed values re-recording themselves as fresh evidence).
+        """
+        if not self.running or self.app_id:
+            return
+        streams = [st for st in self._streams.values() if st.pos is not None]
+        if not streams:
+            return
+        self._realigning = True
+        try:
+            logger.warning(f"Sync group re-aligning {len(streams)} device(s) "
+                           f"— {reason}")
+            # Read before clearing the target: _step_cooldown_s is derived from
+            # it, and the cooldown below has to outlast a full re-acquisition.
+            cooldown = self._step_cooldown_s()
+            self._target_lag = None
+            # One poll past the per-device cooldown, not level with it: the
+            # target must come from readings taken after the devices became
+            # eligible, not from the ones straddling the boundary.
+            self._target_wait_until = time.monotonic() + cooldown + STREAM_POLL_S
+            self._acquire_deadline = self._target_wait_until + 25
+            model_lags = {st.player_id: self._model.get(st.player_id, {}).get("lag_s")
+                          for st in streams}
+            provisional = (max(model_lags.values()) + STREAM_LAG_MARGIN_S
+                           if all(v is not None for v in model_lags.values())
+                           else None)
+            now = time.monotonic()
+            for st in streams:
+                lag = model_lags.get(st.player_id)
+                st.precomp_s = (max(0.0, provisional - lag)
+                                if provisional is not None and lag is not None
+                                else 0.0)
+                st.natural_lag = None     # re-derive the target from what lands
+                st.learn_lag = False
+                st.reloads_since_align = 0
+                st.clamp_logged = 0.0
+                st.err_hist = []
+                st.lag_hist = []
+                st.slew_s = 0.0
+                st.acquired = False
+                st.fit_lost_at = now
+                st.cooldown_until = now + cooldown
+                if st.resampler is not None:
+                    st.resampler.reset()
+                self._seat_position(st, self._source)
+            await asyncio.gather(
+                *(self._launch_stream(st.player_id, st.sid) for st in streams),
+                return_exceptions=True)
+        except Exception as e:
+            logger.warning(f"Sync group re-align failed: {e}")
+        finally:
+            self._realigning = False
+
     async def _reload_stream(self, st: _Stream) -> None:
         """Re-LOAD one receiver and re-seat its reader at the live edge.
 
@@ -1682,6 +1930,7 @@ class CastSyncPoc:
         if not self.running or self._streams.get(st.sid) is not st:
             return
         st.reloads += 1
+        st.reloads_since_align += 1
         st.last_reload = time.monotonic()
         logger.warning(f"Sync stream reloading {st.name} — too far behind to "
                        f"correct by moving the reader (reload #{st.reloads})")

@@ -196,6 +196,92 @@ def _primary_sensor_height_m(room: Dict[str, Any]) -> Optional[float]:
 _freshness_cache: Dict[str, Tuple[float, Optional[float]]] = {}
 _FRESHNESS_CACHE_TTL_SEC = 30.0  # well under tick interval; just a cheap dedupe
 
+
+def _on_event_loop() -> bool:
+    """Whether this thread is running the asyncio event loop.
+
+    The freshness query is a DuckDB scan of `device_states`, and this module
+    shares its event loop with the OpenZone audio engine, whose stream
+    generators are plain loop tasks (open-zone.md §A.1: anything blocking the
+    loop stops every generator with it, and the speakers drain their buffers).
+    On 2026-08-10 this query took 10.5 s on the loop thread — telemetry.duckdb
+    was 14 MB behind a 9.6 MB un-checkpointed WAL — and put all five speakers
+    2.4-6.4 s out of sync, which cost the group four and a half minutes.
+
+    The cache TTL is under the tick interval, so *every* tick used to miss and
+    query. Callers on the loop now pre-warm off-thread (`prewarm_freshness`)
+    and the miss path below refuses to query rather than blocking.
+    """
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _query_freshness(ieee: str) -> Optional[float]:
+    """The DuckDB half of `_last_temperature_ts`. Blocking — worker only."""
+    try:
+        age = _query_last_report_age(
+            ieee,
+            ["local_temperature", "current_temperature", "temperature"],
+            FRESHNESS_LOOKBACK_HOURS,
+        )
+    except Exception as e:
+        logger.debug(f"freshness query failed for {ieee}: {e}")
+        return None
+    return None if age is None else time.time() - age
+
+
+def _freshness_ieees(circuits) -> set:
+    """Every IEEE a tick's freshness checks can ask about: each room's external
+    sensor, plus its TRVs — `_check_room_health` falls back to those whenever no
+    external sensor is authoritative. Over-collecting is cheap (the batch is
+    deduped and cached); under-collecting puts a query back on the loop."""
+    out = set()
+    for circuit in (circuits or []):
+        for room in (circuit.get("rooms") or []):
+            sensor = room.get("temperature_sensor_ieee")
+            if sensor:
+                out.add(sensor)
+            for trv in (room.get("trvs") or []):
+                ieee = trv.get("ieee") if isinstance(trv, dict) else None
+                if ieee:
+                    out.add(ieee)
+    return out
+
+
+async def prewarm_freshness(ieees) -> None:
+    """Refresh the freshness cache for `ieees` on a worker thread.
+
+    Every loop-thread consumer of `_last_temperature_ts` must call this first:
+    it is what keeps the DuckDB scan off the event loop (see `_on_event_loop`).
+    One `to_thread` hop for the whole batch — the queries are sequential inside
+    it, which is fine at one per room and keeps a slow DB to a single hop.
+    """
+    if _query_last_report_age is None:
+        return
+    now = time.time()
+    due = sorted({
+        i for i in ieees if i
+        and not (_freshness_cache.get(i)
+                 and (now - _freshness_cache[i][0]) < _FRESHNESS_CACHE_TTL_SEC)
+    })
+    if not due:
+        return
+
+    def _batch() -> Dict[str, Optional[float]]:
+        return {i: _query_freshness(i) for i in due}
+
+    try:
+        fetched = await asyncio.to_thread(_batch)
+    except Exception as e:
+        logger.debug(f"freshness prewarm failed: {e}")
+        return
+    stamped = time.time()
+    for ieee, most_recent in fetched.items():
+        _freshness_cache[ieee] = (stamped, most_recent)
+
 # Look back beyond the threshold so a sensor reporting every 20 min is not
 # flagged just because nothing landed in the last 15.
 FRESHNESS_LOOKBACK_HOURS = 6
@@ -228,6 +314,12 @@ def _last_temperature_ts(ieee: str) -> Optional[float]:
     session timezone (typically UTC) differs from Python's local time, and
     mixing the two skewed every report's age by the UTC↔local offset,
     flagging actively-reporting sensors as stale.
+
+    **Never queries from the event-loop thread** (`_on_event_loop`). A caller
+    on the loop is served the cache, which `prewarm_freshness` is responsible
+    for having filled; an expired entry is preferred over blocking, because
+    the freshness *of the freshness reading* is measured against a threshold
+    in minutes and one tick of slack cannot change a verdict.
     """
     if _query_last_report_age is None:
         return None
@@ -235,20 +327,14 @@ def _last_temperature_ts(ieee: str) -> Optional[float]:
     now = time.time()
     if cached and (now - cached[0]) < _FRESHNESS_CACHE_TTL_SEC:
         return cached[1]
+    if _on_event_loop():
+        if cached is None:
+            logger.debug(f"freshness for {ieee} not pre-warmed — "
+                         f"reporting unknown rather than blocking the loop")
+            return None
+        return cached[1]
 
-    most_recent: Optional[float] = None
-    try:
-        age = _query_last_report_age(
-            ieee,
-            ["local_temperature", "current_temperature", "temperature"],
-            FRESHNESS_LOOKBACK_HOURS,
-        )
-    except Exception as e:
-        logger.debug(f"freshness query failed for {ieee}: {e}")
-        age = None
-    if age is not None:
-        most_recent = now - age
-
+    most_recent = _query_freshness(ieee)
     _freshness_cache[ieee] = (now, most_recent)
     return most_recent
 
@@ -1278,6 +1364,11 @@ class HeatingController:
             logger.warning(f"[tick] entry-diag failed: {diag_err}")
 
         devices = self._snapshot_devices()
+        # Off-thread, before any room is evaluated: _evaluate_room and
+        # _check_room_health both read sensor freshness synchronously, and that
+        # read is a DuckDB scan. On the loop it stalls every other task on it —
+        # including the OpenZone stream generators (see `_on_event_loop`).
+        await prewarm_freshness(_freshness_ieees(self.circuits))
         now = datetime.now()
         circuits_out = []
 
@@ -2803,6 +2894,9 @@ class HeatingController:
         redundant (same reading within EXT_TEMP_PUSH_MIN_DELTA of last push).
         """
         devices = self._snapshot_devices()
+        # Same reason as _tick_body: the staleness check below is a DuckDB read
+        # and this coroutine runs on the shared loop (see `_on_event_loop`).
+        await prewarm_freshness(_freshness_ieees(self.circuits))
         now_ts = time.time()
 
         for c in self.circuits:
