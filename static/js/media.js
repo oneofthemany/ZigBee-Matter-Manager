@@ -921,6 +921,7 @@ function setSource(src) {
 function renderTidalTabs() {
     const out = document.getElementById('mediaSearchResults');
     if (!out) return;
+    _ensureFavIds();          // every Tidal view draws hearts; load them once
     const tab = (key, label) =>
         `<li class="nav-item"><button class="nav-link ${_tidalTab === key ? 'active' : ''}"
             onclick="window.mediaTidalTab('${key}')">${label}</button></li>`;
@@ -1214,14 +1215,62 @@ function radioBtn(kind, id, name) {
       onclick="window.mediaTidalPlay('${kind}','${esc(id)}','radio', ${JSON.stringify(name).replace(/"/g, '&quot;')})">
       <i class="fas fa-infinity"></i></button>`;
 }
-// Heart toggle. `faved` seeds the visual state (library items are favourites
-// already; search results default to un-favourited). State flips optimistically
-// from the server response, tracked on the button's data-faved attribute.
-function favBtn(kind, id, faved) {
+// Heart toggle. The real state comes from the cached favourite id-sets;
+// `fallback` is what to draw before they have loaded (a library row is a
+// favourite by definition, a search result usually isn't). State flips
+// optimistically from the server response, tracked on data-faved.
+function favBtn(kind, id, fallback) {
+    const faved = _favIds[kind] ? _favIds[kind].has(String(id)) : !!fallback;
     return `<button class="btn ${faved ? 'btn-danger' : 'btn-outline-danger'}"
       title="${faved ? 'Remove from' : 'Add to'} favourites" data-faved="${faved ? '1' : '0'}"
       onclick="window.mediaTidalFav('${kind}','${esc(id)}', this)">
       <i class="fas fa-heart"></i></button>`;
+}
+
+// Favourited ids per kind, so a heart is drawn in the state it is actually in
+// rather than always empty. Null until loaded — favBtn falls back meanwhile.
+let _favIds = { track: null, album: null, artist: null, playlist: null };
+let _favLoading = false;
+
+/** Load the id-sets once, then repaint whatever is on screen. The server
+ *  builds them in the background, so an unready answer is retried once. */
+async function _ensureFavIds(retry = true) {
+    if (_favLoading || _favIds.track) return;
+    _favLoading = true;
+    try {
+        const d = await apiGet('/api/media/tidal/favorites');
+        if (d.success && d.ids) {
+            const loaded = !!d.ready || Object.values(d.ids).some(v => v.length);
+            if (loaded) {
+                for (const k of Object.keys(_favIds))
+                    _favIds[k] = new Set((d.ids[k] || []).map(String));
+                _repaintHearts();
+            }
+            if (!d.ready && retry) {
+                // Still building — one look back, long enough for a big
+                // library's paged walk to have finished.
+                setTimeout(() => { _favIds.track = null; _ensureFavIds(false); }, 6000);
+            }
+        }
+    } catch (e) {
+        log.debug('Tidal favourites unavailable: ' + e.message);
+    } finally {
+        _favLoading = false;
+    }
+}
+
+/** Re-seed every heart on screen from the loaded sets, in place — a full
+ *  re-render would lose a search result list or scroll position. */
+function _repaintHearts() {
+    document.querySelectorAll('button[data-faved]').forEach(el => {
+        const m = /mediaTidalFav\('([^']+)','([^']*)'/.exec(el.getAttribute('onclick') || '');
+        if (!m || !_favIds[m[1]]) return;
+        const on = _favIds[m[1]].has(String(m[2]));
+        el.setAttribute('data-faved', on ? '1' : '0');
+        el.classList.toggle('btn-danger', on);
+        el.classList.toggle('btn-outline-danger', !on);
+        el.title = (on ? 'Remove from' : 'Add to') + ' favourites';
+    });
 }
 function lyricsBtn(trackId, title) {
     return `<button class="btn btn-outline-secondary" title="Lyrics"
@@ -1238,6 +1287,12 @@ async function tidalFav(kind, id, el) {
     el.classList.toggle('btn-danger', on);
     el.classList.toggle('btn-outline-danger', !on);
     el.title = (on ? 'Remove from' : 'Add to') + ' favourites';
+    // The same item can be on screen twice (a search hit and a library row),
+    // so update the set and repaint rather than just this one button.
+    if (_favIds[kind]) {
+        on ? _favIds[kind].add(String(id)) : _favIds[kind].delete(String(id));
+        _repaintHearts();
+    }
     toast(on ? 'Added to favourites' : 'Removed from favourites', 'success');
 }
 

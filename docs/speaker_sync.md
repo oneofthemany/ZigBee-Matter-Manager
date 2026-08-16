@@ -802,6 +802,36 @@ as albums and playlists — `id`, `name`, `artist`, `artwork`, `type`, plus
 They were previously unreachable despite being the most-used collection in the
 service.
 
+#### Knowing what is already a favourite
+
+`GET /api/media/tidal/favorites` answers which ids are favourited, per kind:
+
+```json
+{"success": true, "ready": true, "age_s": 12.4,
+ "ids": {"track": ["1", "2"], "album": [], "artist": [], "playlist": ["uuid"]}}
+```
+
+The favourite API used to be write-only, so every heart rendered empty — a
+track favourited years ago looked un-favourited, and the first click "added" it
+again. The UI now draws each heart from these sets and falls back to the old
+assumption (library rows favourited, search hits not) only until they load.
+
+**Nothing waits for the build.** A stale or absent cache is served as-is with
+`ready: false` while a background task fills it, and the page asks once more a
+few seconds later, then repaints the hearts in place. The reason is the cost of
+the slow path: there are two ways to build the sets, and only one is cheap.
+
+| Path | Cost | When |
+|---|---|---|
+| `users/<id>/favorites/ids` | one request, every kind | Undocumented and absent from tidalapi, so tried first and never relied on |
+| Walk the favourites lists | one request per 50 rows, per kind | Fallback; bounded by `FAVOURITE_WALK_MAX` |
+
+A 1000-track library costs ~20 requests on the fallback, which is fine in the
+background and unacceptable inside a search. Cached for `FAVOURITE_TTL_S`
+(10 min), and a toggle updates both the server set and the browser's copy
+directly — waiting out the TTL would let the heart you just filled empty itself
+on the next render.
+
 ### "This device" (browser) playback
 
 `static/js/local-player.js` plays radio and Tidal in the page itself, presented

@@ -29,6 +29,15 @@ SESSION_PATH = "./data/media/tidal_session.json"
 LIBRARY_PAGE = 50
 LIBRARY_MAX = 500
 
+# Favourite-state cache (docs/speaker_sync.md → Tidal).
+FAVOURITE_KINDS = ("track", "album", "artist", "playlist")
+FAVOURITE_TTL_S = 600
+FAVOURITE_WALK_MAX = 3000       # bound on the fallback walk, per kind
+# users/<id>/favorites/ids answers every kind in one request; it is undocumented
+# and not in tidalapi, so the paged walk stays as the fallback.
+FAVOURITE_IDS_TYPES = {"TRACK": "track", "ALBUM": "album",
+                       "ARTIST": "artist", "PLAYLIST": "playlist"}
+
 
 def _quality_enum(tidalapi, want: str):
     """Map our quality name to a tidalapi Quality enum, defensive across versions.
@@ -68,6 +77,11 @@ class TidalSource(SourceProvider):
         # Serialises the brief session.audio_quality swap during stream resolution
         # (tidalapi has no per-call quality override; the swap is global).
         self._stream_lock = threading.Lock()
+        # Favourited ids per kind, so a heart can be drawn in the state it is
+        # actually in. Built off the request path — see favourite_ids().
+        self._fav_ids: dict = {k: set() for k in FAVOURITE_KINDS}
+        self._fav_built_at: float = 0.0
+        self._fav_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         if not self.enabled:
@@ -592,10 +606,107 @@ class TidalSource(SourceProvider):
         try:
             # Playlist ids are UUID strings; tracks/albums/artists are ints.
             fn(item_id if kind == "playlist" else int(item_id))
-            return True
         except Exception as e:
             logger.warning(f"Tidal favourite {kind} {'add' if on else 'remove'} failed: {e}")
             return False
+        # Keep the cache in step rather than waiting out its TTL, or the heart
+        # this click just filled would empty again on the next render.
+        ids = self._fav_ids.get(kind)
+        if ids is not None:
+            ids.add(str(item_id)) if on else ids.discard(str(item_id))
+        return True
+
+    # Favourites (read) — which ids are already favourited
+    async def favourite_ids(self, refresh: bool = False) -> dict:
+        """Favourited ids per kind, for drawing a heart in the right state.
+
+        Never blocks on a rebuild: a stale or absent cache is served as-is with
+        ``ready`` false while a background task fills it, because the fallback
+        walk costs one request per 50 rows and no render should wait for it.
+        """
+        out = {"ids": {k: sorted(v) for k, v in self._fav_ids.items()},
+               "ready": self._fav_fresh(), "age_s": self._fav_age()}
+        if not self._session:
+            return {**out, "ready": False}
+        if refresh or not self._fav_fresh():
+            self._start_fav_build()
+        return out
+
+    def _fav_fresh(self) -> bool:
+        return bool(self._fav_built_at
+                    and (time.time() - self._fav_built_at) < FAVOURITE_TTL_S)
+
+    def _fav_age(self) -> Optional[float]:
+        return round(time.time() - self._fav_built_at, 1) if self._fav_built_at else None
+
+    def _start_fav_build(self) -> None:
+        if self._fav_task is not None and not self._fav_task.done():
+            return
+        self._fav_task = asyncio.create_task(self._build_fav_ids())
+
+    async def _build_fav_ids(self) -> None:
+        try:
+            ids = await asyncio.to_thread(self._collect_fav_ids)
+        except Exception as e:
+            logger.warning(f"Tidal favourite ids build failed: {e}")
+            return
+        if ids is None:
+            return
+        self._fav_ids = ids
+        self._fav_built_at = time.time()
+        logger.info("Tidal favourites cached: "
+                    + ", ".join(f"{len(v)} {k}s" for k, v in ids.items()))
+
+    def _collect_fav_ids(self) -> Optional[dict]:
+        return self._fav_ids_bulk() or self._fav_ids_walked()
+
+    def _fav_ids_bulk(self) -> Optional[dict]:
+        """One request for every kind, where the account's API offers it."""
+        try:
+            user = self._session.user
+            resp = self._session.request.request(
+                "GET", f"users/{user.id}/favorites/ids")
+            data = resp.json() if hasattr(resp, "json") else resp
+        except Exception as e:
+            logger.debug(f"Tidal bulk favourite ids unavailable: {e}")
+            return None
+        if not isinstance(data, dict):
+            return None
+        out = {k: set() for k in FAVOURITE_KINDS}
+        seen = False
+        for api_type, kind in FAVOURITE_IDS_TYPES.items():
+            rows = data.get(api_type)
+            if isinstance(rows, list):
+                seen = True
+                out[kind] = {str(r) for r in rows if r not in (None, "")}
+        return out if seen else None
+
+    def _fav_ids_walked(self) -> dict:
+        """Page every favourites list for its ids. The slow path, bounded."""
+        out = {k: set() for k in FAVOURITE_KINDS}
+        for kind in FAVOURITE_KINDS:
+            try:
+                fetch, summarise = self._library_source(f"{kind}s")
+            except Exception:
+                fetch = None
+            if fetch is None:
+                continue
+            pos = 0
+            while pos < FAVOURITE_WALK_MAX:
+                try:
+                    rows = list(fetch(LIBRARY_PAGE, pos) or [])
+                except Exception as e:
+                    logger.warning(f"Tidal favourite {kind} ids at {pos}: {e}")
+                    break
+                for r in rows:
+                    try:
+                        out[kind].add(summarise(r)["id"])
+                    except Exception:
+                        continue
+                pos += len(rows)
+                if len(rows) < LIBRARY_PAGE:
+                    break
+        return out
 
     # Mixes (personalised — "My Daily Discovery", "Mix 1-8", "New Arrivals")
     def _mixes(self) -> List[dict]:

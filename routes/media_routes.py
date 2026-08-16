@@ -666,6 +666,21 @@ def register_media_routes(app: FastAPI, get_media_service):
         albums = await src.artist_albums(artist["id"]) if artist.get("id") else []
         return {"success": True, "artist": artist, "albums": albums}
 
+    @app.get("/api/media/tidal/favorites")
+    async def tidal_favorites(refresh: bool = False):
+        """Which ids are already favourited, so the UI can draw a heart in the
+        state it is in. `ready` false means a build is running — ask again."""
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        try:
+            return {"success": True, **await src.favourite_ids(refresh)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     @app.post("/api/media/tidal/favorite")
     async def tidal_favorite(body: TidalFavoriteBody):
         svc = _svc()
