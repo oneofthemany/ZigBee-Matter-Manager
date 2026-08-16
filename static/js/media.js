@@ -8,7 +8,7 @@
  */
 const log = zmmLog('media');
 
-import { confirmDialog } from './dialogs.js';
+import { confirmDialog, promptDialog } from './dialogs.js';
 import { openSyncLab, restoreSyncLab, syncLabGroup } from './sync-lab.js';
 import * as local from './local-player.js';
 import { LOCAL_ID } from './local-player.js';
@@ -151,6 +151,16 @@ export function initMedia() {
     window.mediaTidalPlay = tidalPlay;
     window.mediaTidalTab = tidalTab;
     window.mediaTidalMore = tidalLibMore;
+    window.mediaTidalAddTo = tidalAddTo;
+    window.mediaTidalAddToPick = tidalAddToPick;
+    window.mediaTidalAddToNew = tidalAddToNew;
+    window.mediaTidalNewPl = tidalNewPlaylist;
+    window.mediaTidalOpenPl = openTidalPlaylist;
+    window.mediaTidalPlRemove = tidalPlRemove;
+    window.mediaTidalPlMove = tidalPlMove;
+    window.mediaTidalPlRename = tidalPlRename;
+    window.mediaTidalPlPublic = tidalPlPublic;
+    window.mediaTidalPlDelete = tidalPlDelete;
     window.mediaTidalFav = tidalFav;
     window.mediaTidalLyrics = tidalLyrics;
     window.mediaQueueMode = queueMode;
@@ -330,6 +340,8 @@ function renderPlayers() {
                   onclick="event.stopPropagation();window.mediaTidalLyrics('${esc(p.now_playing_id)}', ${JSON.stringify(p.title || 'Lyrics').replace(/"/g, '&quot;')})"><i class="fas fa-align-left"></i></button>`
               + ` <button class="btn btn-link p-0 ms-1 align-baseline" title="Full-screen synced lyrics" style="font-size:.72rem"
                   onclick="event.stopPropagation();window.mediaLyricsScreen('${esc(p.player_id)}')"><i class="fas fa-closed-captioning"></i></button>`
+              + ` <button class="btn btn-link p-0 ms-1 align-baseline" title="Add to a playlist" style="font-size:.72rem"
+                  onclick="event.stopPropagation();window.mediaTidalAddTo('${esc(p.now_playing_id)}', ${JSON.stringify(p.title || '').replace(/"/g, '&quot;')})"><i class="fas fa-plus"></i></button>`
             : '';
         const nowPlaying = (p.title || p.artist)
             ? `<div class="small text-truncate">${esc(p.title)}${p.artist ? ' — ' + esc(p.artist) : ''}${lyricsLink}</div>`
@@ -935,6 +947,7 @@ function renderTidalTabs() {
 
 function tidalTab(key) {
     _tidalTab = key;
+    _plView = '';                 // leaving a playlist's tracks behind
     document.querySelectorAll('#mediaSearchResults .nav-link').forEach(b =>
         b.classList.toggle('active', b.textContent.trim().toLowerCase() === key));
     showSearchBar(key === 'search');
@@ -1108,7 +1121,8 @@ async function tidalSearch() {
     const section = (title, rows) => rows ? `<div class="fw-bold small text-uppercase text-muted mt-2">${title}</div>${rows}` : '';
     const tracks = (r.tracks || []).map(t => mediaCard(t.artwork_url, t.title, t.artist, [
         playBtn('track', t.source_id, t.title), radioBtn('track', t.source_id, t.title),
-        lyricsBtn(t.source_id, t.title), favBtn('track', t.source_id, false),
+        lyricsBtn(t.source_id, t.title), addToBtn(t.source_id, t.title),
+        favBtn('track', t.source_id, false),
     ])).join('');
     const albums = (r.albums || []).map(a => mediaCard(a.artwork, a.name, a.artist, [
         playBtn('album', a.id, a.name), favBtn('album', a.id, false),
@@ -1117,7 +1131,8 @@ async function tidalSearch() {
         playBtn('artist', a.id, a.name), radioBtn('artist', a.id, a.name), favBtn('artist', a.id, false),
     ])).join('');
     const playlists = (r.playlists || []).map(pl => mediaCard(pl.artwork, pl.name, pl.artist, [
-        playBtn('playlist', pl.id, pl.name), favBtn('playlist', pl.id, false),
+        playBtn('playlist', pl.id, pl.name), openPlBtn(pl.id),
+        favBtn('playlist', pl.id, false),
     ])).join('');
     out.innerHTML = (tracks || albums || artists || playlists)
         ? section('Tracks', tracks) + section('Artists', artists) + section('Albums', albums) + section('Playlists', playlists)
@@ -1157,8 +1172,13 @@ function renderTidalLibrary(kind) {
     const out = document.getElementById('tidalTabContent');
     if (!out) return;
     const { items, hasMore, total } = _libPage;
+    const newPl = kind === 'playlists'
+        ? `<div class="d-grid pb-2"><button class="btn btn-sm btn-outline-primary"
+             onclick="window.mediaTidalNewPl()"><i class="fas fa-plus me-1"></i>New playlist</button></div>`
+        : '';
     if (!items.length) {
-        out.innerHTML = `<div class="text-muted small py-2">No ${kind} in your library.</div>`;
+        out.innerHTML = newPl
+            + `<div class="text-muted small py-2">No ${kind} in your library.</div>`;
         return;
     }
     const count = total && total > items.length
@@ -1166,7 +1186,7 @@ function renderTidalLibrary(kind) {
     const more = hasMore
         ? `<div class="d-grid py-2"><button class="btn btn-sm btn-outline-secondary" id="tidalLibMore"
              onclick="window.mediaTidalMore()">Load more</button></div>` : '';
-    out.innerHTML = count + items.map(it => {
+    out.innerHTML = newPl + count + items.map(it => {
         const k = it.type;  // album | artist | playlist | mix | track
         let actions;
         if (k === 'mix') {
@@ -1177,7 +1197,11 @@ function renderTidalLibrary(kind) {
                        favBtn('artist', it.id, true)];
         } else if (k === 'track') {
             actions = [playBtn('track', it.id, it.name), radioBtn('track', it.id, it.name),
-                       lyricsBtn(it.id, it.name), favBtn('track', it.id, true)];
+                       lyricsBtn(it.id, it.name), addToBtn(it.id, it.name),
+                       favBtn('track', it.id, true)];
+        } else if (k === 'playlist') {
+            actions = [playBtn(k, it.id, it.name), openPlBtn(it.id),
+                       favBtn(k, it.id, true)];
         } else {
             actions = [playBtn(k, it.id, it.name), favBtn(k, it.id, true)];
         }
@@ -1272,6 +1296,27 @@ function _repaintHearts() {
         el.title = (on ? 'Remove from' : 'Add to') + ' favourites';
     });
 }
+/** A JS literal safe to embed in a double-quoted HTML attribute. Without the
+ *  entity escape the attribute ends at the string's own opening quote. */
+function jsArg(v) {
+    return JSON.stringify(v === undefined || v === null ? '' : String(v))
+        .replace(/"/g, '&quot;');
+}
+
+// Open a playlist's tracks, where they can be reordered and removed.
+function openPlBtn(id) {
+    return `<button class="btn btn-outline-secondary" title="Open playlist"
+      onclick="window.mediaTidalOpenPl('${esc(id)}')">
+      <i class="fas fa-list-ul"></i></button>`;
+}
+
+// "Add to playlist" — the verb the integration was missing entirely.
+function addToBtn(trackId, title) {
+    return `<button class="btn btn-outline-secondary" title="Add to a playlist"
+      onclick="window.mediaTidalAddTo('${esc(trackId)}', ${JSON.stringify(title || '').replace(/"/g, '&quot;')})">
+      <i class="fas fa-plus"></i></button>`;
+}
+
 function lyricsBtn(trackId, title) {
     return `<button class="btn btn-outline-secondary" title="Lyrics"
       onclick="window.mediaTidalLyrics('${esc(trackId)}', ${JSON.stringify(title).replace(/"/g, '&quot;')})">
@@ -1315,6 +1360,179 @@ function lrcToPlain(lrc) {
 }
 
 // Lightweight centred modal overlay (used for lyrics). Click the backdrop to close.
+// Playlist management
+// Only playlists the signed-in user created can be written to — Tidal rejects
+// an edit to anyone else's, so `owned` gates every control rather than letting
+// the button exist and fail.
+
+/** Pick a playlist to drop a track into, or make one on the spot. */
+async function tidalAddTo(trackId, title) {
+    showOverlay(`Add “${title || 'track'}” to…`, spinner());
+    const rows = [];
+    for (let page = 0; page < 10; page++) {
+        const d = await apiGet('/api/media/tidal/library?kind=playlists'
+                               + `&limit=200&offset=${rows.length}`);
+        if (!d.success) {
+            showOverlay('Add to playlist', warn(d.error || 'Could not load playlists'));
+            return;
+        }
+        rows.push(...(d.items || []));
+        if (!d.has_more || !(d.items || []).length) break;
+    }
+    const mine = rows.filter(p => p.owned);
+    const tid = jsArg(trackId);
+    const list = mine.length
+        ? mine.map(p => `
+            <button class="list-group-item list-group-item-action d-flex align-items-center gap-2"
+                    onclick="window.mediaTidalAddToPick(${jsArg(p.id)}, ${tid})">
+              <i class="fas fa-list-ul text-muted"></i>
+              <span class="text-truncate">${esc(p.name)}</span>
+              <span class="ms-auto small text-muted flex-shrink-0">${esc(p.artist || '')}</span>
+            </button>`).join('')
+        : `<div class="text-muted small py-2">No playlists of your own yet —
+             the ones you follow belong to someone else and can't be added to.</div>`;
+    showOverlay(`Add “${title || 'track'}” to…`, `
+      <div class="list-group list-group-flush mb-3">${list}</div>
+      <div class="input-group input-group-sm">
+        <input type="text" class="form-control" id="tidalNewPl" placeholder="New playlist name…"
+               onkeydown="if(event.key==='Enter')window.mediaTidalAddToNew(${tid})">
+        <button class="btn btn-outline-primary" onclick="window.mediaTidalAddToNew(${tid})">
+          <i class="fas fa-plus me-1"></i>Create &amp; add</button>
+      </div>`);
+}
+
+async function tidalAddToPick(playlistId, trackId) {
+    const r = await apiPost('/api/media/tidal/playlist/edit',
+                            { id: playlistId, action: 'add', track_ids: [String(trackId)] });
+    if (!r.success) { toast(r.error || 'Could not add to the playlist', 'error'); return; }
+    // Tidal skips duplicates rather than erroring, so nothing added means it
+    // was already there — worth saying, since the count is otherwise silent.
+    toast(r.added ? 'Added to the playlist' : 'Already in that playlist',
+          r.added ? 'success' : 'info');
+    document.getElementById('mediaOverlay')?.remove();
+    if (_plView) openTidalPlaylist(_plView);
+}
+
+async function tidalAddToNew(trackId) {
+    const name = document.getElementById('tidalNewPl')?.value?.trim();
+    if (!name) { toast('Give the playlist a name', 'warning'); return; }
+    await _createPlaylist(name, trackId ? [String(trackId)] : []);
+    document.getElementById('mediaOverlay')?.remove();
+}
+
+/** Create one from the Playlists tab, with nothing in it yet. */
+async function tidalNewPlaylist() {
+    const name = await promptDialog({ message: 'New playlist', label: 'Name',
+                                      placeholder: 'e.g. Sunday morning' });
+    if (name) await _createPlaylist(name.trim(), []);
+}
+
+async function _createPlaylist(name, trackIds) {
+    if (!name) { toast('Give the playlist a name', 'warning'); return; }
+    const r = await apiPost('/api/media/tidal/playlist/create',
+                            { name, track_ids: trackIds });
+    if (!r.success) { toast(r.error || 'Could not create the playlist', 'error'); return; }
+    toast(`Created “${name}”`, 'success');
+    if (_tidalTab === 'playlists' && !_plView) loadTidalLibrary('playlists');
+}
+
+// Which playlist the detail view is showing, so an edit can repaint it.
+let _plView = '';
+
+async function openTidalPlaylist(playlistId) {
+    const out = document.getElementById('tidalTabContent');
+    if (!out) return;
+    _plView = playlistId;
+    out.innerHTML = spinner();
+    const d = await apiGet(`/api/media/tidal/playlist/${encodeURIComponent(playlistId)}`);
+    if (!d.success) { out.innerHTML = warn(d.error || 'Could not open the playlist'); return; }
+    const p = d.playlist;
+    const pid = jsArg(p.id);
+    const owned = !!p.owned;
+    const head = `
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <button class="btn btn-sm btn-outline-secondary" onclick="window.mediaTidalTab('playlists')"
+                title="Back to playlists"><i class="fas fa-arrow-left"></i></button>
+        <div class="text-truncate flex-grow-1">
+          <div class="fw-semibold text-truncate">${esc(p.name)}</div>
+          <div class="text-muted" style="font-size:.72rem">${p.tracks.length} tracks${
+              owned ? (p.public ? ' · public' : ' · private') : ' · someone else’s'}</div>
+        </div>
+        ${playBtn('playlist', p.id, p.name)}
+        ${owned ? `
+          <button class="btn btn-sm btn-outline-secondary" title="Rename"
+                  onclick="window.mediaTidalPlRename(${pid}, ${jsArg(p.name)})">
+            <i class="fas fa-pen"></i></button>
+          <button class="btn btn-sm btn-outline-secondary" title="${p.public ? 'Make private' : 'Make public'}"
+                  onclick="window.mediaTidalPlPublic(${pid}, ${!p.public})">
+            <i class="fas fa-${p.public ? 'lock-open' : 'lock'}"></i></button>
+          <button class="btn btn-sm btn-outline-danger" title="Delete playlist"
+                  onclick="window.mediaTidalPlDelete(${pid}, ${jsArg(p.name)})">
+            <i class="far fa-trash-alt"></i></button>` : ''}
+      </div>`;
+    const rows = p.tracks.map((t, i) => {
+        const tid = jsArg(t.id);
+        const actions = [playBtn('track', t.id, t.name), lyricsBtn(t.id, t.name)];
+        if (owned) {
+            actions.push(
+                `<button class="btn btn-outline-secondary" title="Move up" ${i === 0 ? 'disabled' : ''}
+                   onclick="window.mediaTidalPlMove(${pid}, ${tid}, ${i - 1})">
+                   <i class="fas fa-arrow-up"></i></button>`,
+                `<button class="btn btn-outline-secondary" title="Move down"
+                   ${i === p.tracks.length - 1 ? 'disabled' : ''}
+                   onclick="window.mediaTidalPlMove(${pid}, ${tid}, ${i + 1})">
+                   <i class="fas fa-arrow-down"></i></button>`,
+                `<button class="btn btn-outline-danger" title="Remove from playlist"
+                   onclick="window.mediaTidalPlRemove(${pid}, ${tid}, ${jsArg(t.name)})">
+                   <i class="fas fa-minus"></i></button>`);
+        } else {
+            actions.push(addToBtn(t.id, t.name), favBtn('track', t.id, false));
+        }
+        return mediaCard(t.artwork, t.name, t.artist, actions);
+    }).join('');
+    out.innerHTML = head + (rows || '<div class="text-muted small py-2">This playlist is empty.</div>');
+}
+
+async function _plEdit(body, okMsg) {
+    const r = await apiPost('/api/media/tidal/playlist/edit', body);
+    if (!r.success) { toast(r.error || 'Tidal rejected that change', 'error'); return false; }
+    if (okMsg) toast(okMsg, 'success');
+    return true;
+}
+
+async function tidalPlRemove(playlistId, trackId, name) {
+    if (!await confirmDialog(`Remove “${name}” from this playlist?`)) return;
+    if (await _plEdit({ id: playlistId, action: 'remove', track_id: trackId }, 'Removed'))
+        openTidalPlaylist(playlistId);
+}
+
+async function tidalPlMove(playlistId, trackId, position) {
+    if (await _plEdit({ id: playlistId, action: 'move', track_id: trackId, position }))
+        openTidalPlaylist(playlistId);
+}
+
+async function tidalPlRename(playlistId, current) {
+    const name = await promptDialog({ message: 'Rename playlist',
+                                      label: 'Name', value: current });
+    if (!name || name === current) return;
+    if (await _plEdit({ id: playlistId, action: 'edit', name }, 'Renamed'))
+        openTidalPlaylist(playlistId);
+}
+
+async function tidalPlPublic(playlistId, makePublic) {
+    if (await _plEdit({ id: playlistId, action: 'visibility', public: makePublic },
+                      makePublic ? 'Now public' : 'Now private'))
+        openTidalPlaylist(playlistId);
+}
+
+async function tidalPlDelete(playlistId, name) {
+    if (!await confirmDialog(`Delete the playlist “${name}”? This can't be undone.`)) return;
+    if (await _plEdit({ id: playlistId, action: 'delete' }, 'Playlist deleted')) {
+        _plView = '';
+        loadTidalLibrary('playlists');
+    }
+}
+
 function showOverlay(title, innerHtml) {
     let ov = document.getElementById('mediaOverlay');
     if (!ov) {

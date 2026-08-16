@@ -838,6 +838,44 @@ as albums and playlists — `id`, `name`, `artist`, `artwork`, `type`, plus
 They were previously unreachable despite being the most-used collection in the
 service.
 
+#### Playlist management
+
+Writes go through one endpoint, `POST /api/media/tidal/playlist/edit`, with an
+`action` of `add | remove | move | edit | delete | visibility`; creation is
+separate (`/playlist/create`, which optionally seeds the new playlist with
+tracks so "add to a new playlist" is one request). `GET /playlist/<id>` returns
+the metadata and ordered tracks the editing view renders.
+
+**Only playlists the signed-in user created can be written to.** Tidal refuses
+an edit to anyone else's, and a followed playlist is someone else's however it
+looks in your library. tidalapi expresses this through `Playlist.factory()`,
+which upgrades to a `UserPlaylist` — the class that actually has `add`,
+`remove_by_id`, `edit`, `delete` — only for the creator. Every mutation goes
+through `playlist_write`, which performs that upgrade and refuses with a stated
+reason if it doesn't happen, so the check and its wording exist once.
+
+The same answer has to reach the UI *before* it draws a button, or it offers
+edits that fail. Summaries therefore carry `owned`, decided by two signals,
+either sufficient:
+
+- **The row is already a `UserPlaylist`.** Library rows come back through
+  `parse_factory`, which has run `factory()` already — so this is literally the
+  write path's own test, and it holds even when the row carries no creator.
+- **The creator matches the logged-in user.** A playlist fetched by id has not
+  been through `parse_factory`, so the detail view falls back to this.
+
+Two Tidal behaviours are worth stating because they are not failures:
+
+- **Adding a duplicate is a no-op.** The add is sent with `onDupes: SKIP`, so a
+  track already present comes back as zero added. The UI says "already in that
+  playlist" rather than reporting an error.
+- **Removes and moves address the track by id, not by index.** tidalapi resolves
+  the index itself, which matters because the browser's view of the order can be
+  stale — and removing the wrong track is not recoverable.
+
+Not exposed: playlist folders, and `merge`. Both are real API surface; neither
+has a place in this UI yet.
+
 #### Knowing what is already a favourite
 
 `GET /api/media/tidal/favorites` answers which ids are favourited, per kind:

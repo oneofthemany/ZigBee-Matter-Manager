@@ -752,6 +752,102 @@ class TidalSource(SourceProvider):
                     break
         return out
 
+    # Playlist management (owned playlists only — see docs/speaker_sync.md)
+    async def playlist_detail(self, playlist_id: str) -> Optional[dict]:
+        """A playlist's metadata and ordered tracks, for an editing view."""
+        if not self._session:
+            return None
+        return await asyncio.to_thread(self._playlist_detail, playlist_id)
+
+    def _playlist_detail(self, playlist_id: str) -> Optional[dict]:
+        try:
+            pl = self._session.playlist(playlist_id)
+            tracks = pl.tracks()
+        except Exception as e:
+            logger.warning(f"Tidal playlist {playlist_id} load failed: {e}")
+            return None
+        return {
+            **self._playlist_summary(pl),
+            "description": getattr(pl, "description", "") or "",
+            "public": bool(getattr(pl, "public", False)),
+            "tracks": [self._track_summary(t) for t in (tracks or [])],
+        }
+
+    async def playlist_create(self, name: str, description: str = "") -> dict:
+        if not self._session:
+            return {"success": False, "error": "Not signed in to Tidal"}
+        name = (name or "").strip()
+        if not name:
+            return {"success": False, "error": "A playlist needs a name"}
+        return await asyncio.to_thread(self._playlist_create, name, description)
+
+    def _playlist_create(self, name: str, description: str) -> dict:
+        try:
+            user = self._session.user
+            pl = user.create_playlist(name, description or "")
+        except Exception as e:
+            logger.warning(f"Tidal playlist create failed: {e}")
+            return {"success": False, "error": f"Could not create the playlist: {e}"}
+        logger.info(f"Tidal playlist created: {name}")
+        return {"success": True, "playlist": self._playlist_summary(pl)}
+
+    async def playlist_write(self, action: str, playlist_id: str, **kw) -> dict:
+        """Every mutation of an owned playlist, behind one entry point so the
+        ownership check and the error wording are stated once."""
+        if not self._session:
+            return {"success": False, "error": "Not signed in to Tidal"}
+        return await asyncio.to_thread(self._playlist_write, action, playlist_id, kw)
+
+    def _playlist_write(self, action: str, playlist_id: str, kw: dict) -> dict:
+        try:
+            pl = self._session.playlist(playlist_id).factory()
+        except Exception as e:
+            logger.warning(f"Tidal playlist {playlist_id} lookup failed: {e}")
+            return {"success": False, "error": "Playlist not found"}
+        # factory() hands back a plain Playlist for anything the user did not
+        # create, which has no write methods at all — a followed playlist is
+        # someone else's, and Tidal will not take an edit to it.
+        if type(pl).__name__ != "UserPlaylist":
+            return {"success": False,
+                    "error": "That playlist belongs to someone else — "
+                             "only your own can be edited"}
+        try:
+            ok, extra = self._playlist_apply(pl, action, kw)
+        except Exception as e:
+            logger.warning(f"Tidal playlist {action} on {playlist_id} failed: {e}")
+            return {"success": False, "error": str(e)}
+        if not ok:
+            return {"success": False, "error": f"Tidal rejected the {action}"}
+        logger.info(f"Tidal playlist {playlist_id}: {action}")
+        return {"success": True, **(extra or {})}
+
+    def _playlist_apply(self, pl, action: str, kw: dict):
+        if action == "add":
+            ids = [str(i) for i in (kw.get("track_ids") or []) if str(i).strip()]
+            if not ids:
+                raise ValueError("No tracks to add")
+            added = pl.add(ids, allow_duplicates=bool(kw.get("allow_duplicates")))
+            # SKIP on duplicates means an empty result is "already there",
+            # which is a no-op rather than a failure worth reporting as one.
+            return True, {"added": len(added or []), "requested": len(ids)}
+        if action == "remove":
+            # By id, not by index: the caller's view of the order may be stale,
+            # and removing the wrong track is not a recoverable mistake.
+            return bool(pl.remove_by_id(str(kw.get("track_id") or ""))), None
+        if action == "move":
+            return bool(pl.move_by_id(str(kw.get("track_id") or ""),
+                                      int(kw.get("position", 0)))), None
+        if action == "edit":
+            name = (kw.get("name") or "").strip() or None
+            desc = kw.get("description")
+            return bool(pl.edit(title=name, description=desc)), None
+        if action == "delete":
+            return bool(pl.delete()), None
+        if action == "visibility":
+            return (bool(pl.set_playlist_public() if kw.get("public")
+                         else pl.set_playlist_private()), None)
+        raise ValueError(f"Unknown playlist action '{action}'")
+
     # Mixes (personalised — "My Daily Discovery", "Mix 1-8", "New Arrivals")
     def _mixes(self) -> List[dict]:
         rows = []
@@ -854,7 +950,26 @@ class TidalSource(SourceProvider):
             "artist": f"{getattr(p, 'num_tracks', '')} tracks",
             "artwork": artwork,
             "type": "playlist",
+            # Only the creator can edit one, so the UI must know which is which
+            # before it offers a rename or a remove.
+            "owned": self._owns(p),
         }
+
+    def _owns(self, p) -> bool:
+        """Whether a write to this playlist can succeed.
+
+        Two signals, either sufficient. Library rows arrive through
+        ``parse_factory``, which has already upgraded the user's own to
+        ``UserPlaylist`` — the very decision the write path repeats. A single
+        playlist fetched by id has not been through it, so fall back to
+        comparing creators. Answering with the write path's own test is what
+        stops the UI offering an edit that Tidal will refuse.
+        """
+        if type(p).__name__ == "UserPlaylist":
+            return True
+        uid = getattr(getattr(self._session, "user", None), "id", None)
+        cid = getattr(getattr(p, "creator", None), "id", None)
+        return bool(uid is not None and cid is not None and str(cid) == str(uid))
 
     def _artist_summary(self, a) -> dict:
         artwork = ""

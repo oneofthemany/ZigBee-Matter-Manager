@@ -108,6 +108,24 @@ class TidalFavoriteBody(BaseModel):
     action: str               # add | remove
 
 
+class TidalPlaylistCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    track_ids: List[str] = []    # seed it in one go ("add to a new playlist")
+
+
+class TidalPlaylistEditBody(BaseModel):
+    id: str
+    action: str                  # add | remove | move | edit | delete | visibility
+    track_ids: List[str] = []    # add
+    track_id: Optional[str] = None   # remove | move
+    position: int = 0                # move
+    name: Optional[str] = None       # edit
+    description: Optional[str] = None
+    public: Optional[bool] = None    # visibility
+    allow_duplicates: bool = False
+
+
 class AnnounceBody(BaseModel):
     player_id: str
     text: str
@@ -665,6 +683,54 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "No artist info for this track"}
         albums = await src.artist_albums(artist["id"]) if artist.get("id") else []
         return {"success": True, "artist": artist, "albums": albums}
+
+    @app.get("/api/media/tidal/playlist/{playlist_id}")
+    async def tidal_playlist(playlist_id: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        detail = await src.playlist_detail(playlist_id)
+        if not detail:
+            return {"success": False, "error": "Playlist not found"}
+        return {"success": True, "playlist": detail}
+
+    @app.post("/api/media/tidal/playlist/create")
+    async def tidal_playlist_create(body: TidalPlaylistCreateBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        res = await src.playlist_create(body.name, body.description or "")
+        # A playlist created to hold tracks should come back holding them.
+        if res.get("success") and body.track_ids:
+            pid = res["playlist"]["id"]
+            add = await src.playlist_write("add", pid, track_ids=body.track_ids)
+            res["added"] = add.get("added", 0)
+            if not add.get("success"):
+                res["error"] = add.get("error")
+        return res
+
+    @app.post("/api/media/tidal/playlist/edit")
+    async def tidal_playlist_edit(body: TidalPlaylistEditBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": False, "error": "Tidal unavailable"}
+        if body.action not in ("add", "remove", "move", "edit", "delete",
+                               "visibility"):
+            return {"success": False, "error": "unknown playlist action"}
+        return await src.playlist_write(
+            body.action, body.id, track_ids=body.track_ids,
+            track_id=body.track_id, position=body.position, name=body.name,
+            description=body.description, public=body.public,
+            allow_duplicates=body.allow_duplicates)
 
     @app.get("/api/media/tidal/favorites")
     async def tidal_favorites(refresh: bool = False):
