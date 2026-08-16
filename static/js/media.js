@@ -42,6 +42,7 @@ let _posAnchors = {};        // player_id -> {pos,at,dur,playing} for smooth pro
 let _posTimer = null;        // 1s interpolation ticker for the progress bars
 let _eqOpen = new Set();     // player_ids with their EQ panel expanded
 let _ctlOpen = new Set();    // player_ids with their controls expanded (touch only)
+let _syncTrimOpen = new Set(); // player_ids with their trim slider expanded (touch only)
 let _eqDev = {};             // player_id -> cached /api/media/eq result (wiim/cast)
 let _eqSend = {};            // player_id -> {timer, gains} debounced slider POSTs
 
@@ -127,6 +128,7 @@ export function initMedia() {
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
+    window.mediaSyncTrimToggle = syncTrimToggle;
     // The group card's lab button now also switches to the Results tab —
     // opening a view you cannot see is worse than not opening it.
     window.mediaSyncLab = (gid) => {
@@ -1660,31 +1662,72 @@ function _syncMeterPaint(pid, st) {
 }
 
 function _syncMemberRow(m, groupActive) {
+    const pidE = esc(m.player_id);
     const st = groupActive ? _syncDeviceInfo(m.player_id) : null;
     const pill = !groupActive ? ''
         : (st && st.connected
             ? '<span class="badge bg-success ms-1">connected</span>'
             : '<span class="badge bg-secondary ms-1">launching…</span>');
+    const open = _syncTrimOpen.has(m.player_id);
     return `
       <div class="border-top pt-2 mt-2">
         <div class="d-flex align-items-center small">
           <span class="fw-semibold text-truncate">${esc(m.name)}</span>
-          <span id="syncpill-${esc(m.player_id)}" class="flex-shrink-0">${pill}</span>
+          <span id="syncpill-${pidE}" class="flex-shrink-0">${pill}</span>
           <span class="ms-auto d-flex align-items-center gap-1 flex-shrink-0">
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms earlier"
-                    onclick="window.mediaSyncNudge('${esc(m.player_id)}', -1)">−</button>
-            <span class="text-muted" id="synctrimlbl-${esc(m.player_id)}">${m.trim_ms} ms</span>
+                    onclick="window.mediaSyncNudge('${pidE}', -1)">−</button>
+            <span class="text-muted" id="synctrimlbl-${pidE}">${m.trim_ms} ms</span>
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms later"
-                    onclick="window.mediaSyncNudge('${esc(m.player_id)}', 1)">+</button>
+                    onclick="window.mediaSyncNudge('${pidE}', 1)">+</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step d-lg-none"
+                    id="synctrimbtn-${pidE}" data-name="${esc(m.name)}"
+                    aria-expanded="${open}" aria-controls="synctrimbox-${pidE}"
+                    title="${open ? 'Hide' : 'Show'} trim slider"
+                    aria-label="${open ? 'Hide' : 'Show'} trim slider for ${esc(m.name)}"
+                    onclick="window.mediaSyncTrimToggle('${pidE}')">
+              <i class="fas ${open ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>
+            </button>
           </span>
         </div>
         ${groupActive ? _syncMeter(m.player_id) : ''}
-        <input type="range" class="form-range" min="-500" max="500" step="1"
-               value="${m.trim_ms}" id="synctrim-${esc(m.player_id)}"
-               oninput="document.getElementById('synctrimlbl-${esc(m.player_id)}').textContent = this.value + ' ms'"
-               onchange="window.mediaSyncTrim('${esc(m.player_id)}', this.value)">
-        <div class="small text-muted" id="syncstat-${esc(m.player_id)}">${_syncStatLine(st)}</div>
+        <div class="zmm-sync-trim${open ? ' zmm-trim-open' : ''}"
+             id="synctrimbox-${pidE}" data-pid="${pidE}">
+          <input type="range" class="form-range" min="-500" max="500" step="1"
+                 value="${m.trim_ms}" id="synctrim-${pidE}"
+                 oninput="document.getElementById('synctrimlbl-${pidE}').textContent = this.value + ' ms'"
+                 onchange="window.mediaSyncTrim('${pidE}', this.value)">
+        </div>
+        <div class="small text-muted" id="syncstat-${pidE}">${_syncStatLine(st)}</div>
       </div>`;
+}
+
+// Below lg a member row's trim slider is folded away until asked for. It is
+// the one full-width horizontal control on the row, so left open on every
+// member it lines the whole scroll path and a swipe that starts on one
+// re-times a speaker by tens of ms instead of scrolling — pan-y hands back a
+// clean vertical gesture, not a diagonal one. One row open at a time keeps
+// the sliders that aren't being aimed at out of reach; the ±1 ms buttons and
+// the readout stay visible, so a deliberate nudge never needs the fold. The
+// class is a no-op above lg, so desktop rows are untouched.
+//
+// Repaints in place rather than through renderSyncPane(): that refetches, and
+// would tear down a live Sync Lab and any trim drag in flight.
+function syncTrimToggle(pid) {
+    const open = !_syncTrimOpen.has(pid);
+    _syncTrimOpen.clear();
+    if (open) _syncTrimOpen.add(pid);
+    for (const box of document.querySelectorAll('#mediaGroupPane .zmm-sync-trim')) {
+        const on = _syncTrimOpen.has(box.dataset.pid);
+        box.classList.toggle('zmm-trim-open', on);
+        const btn = document.getElementById('synctrimbtn-' + box.dataset.pid);
+        if (!btn) continue;
+        const label = `${on ? 'Hide' : 'Show'} trim slider`;
+        btn.setAttribute('aria-expanded', String(on));
+        btn.title = label;
+        btn.setAttribute('aria-label', `${label} for ${btn.dataset.name || 'speaker'}`);
+        btn.innerHTML = `<i class="fas ${on ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+    }
 }
 
 /** Show one OpenZone sub-tab. Both panes stay in the DOM — the hidden one

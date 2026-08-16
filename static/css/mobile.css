@@ -1302,6 +1302,22 @@ body.controlling {
         min-width: 34px;
         min-height: 32px;
     }
+
+    /* Same guard the player cards get: a zone member's trim slider stays
+       folded until its chevron asks for it. Open on every member the sliders
+       line the scroll path, and a swipe that starts on one re-times that
+       speaker rather than scrolling the page — pan-y (section above) hands
+       back a straight vertical gesture, not a diagonal one, and a trim is a
+       correction you then have to undo by ear. media.js opens one row at a
+       time; the readout and the ±1 ms buttons never fold, so a deliberate
+       nudge costs no extra tap. Absent above lg — desktop rows are untouched. */
+    #mediaGroupPane .zmm-sync-trim:not(.zmm-trim-open) {
+        display: none;
+    }
+
+    #mediaGroupPane .zmm-sync-trim .form-range {
+        height: 40px;
+    }
 }
 
 
