@@ -833,9 +833,17 @@ async function _aMediaLoadLib(sid, kind, selId) {
     const libKind = kind==='mix' ? 'mixes' : kind+'s';
     sel.innerHTML = '<option value="">Loading…</option>';
     try {
-        const j = await (await fetch(`/api/media/tidal/library?kind=${libKind}`)).json();
-        const items = j.success ? (j.items||[]) : [];
-        if (!items.length) { sel.innerHTML = `<option value="">${(j.error||'none in library')}</option>`; return; }
+        // A <select> has no "load more": page it out (TIDAL caps a favourites
+        // request at 50) and bound the loop so a big library stays one dropdown.
+        const items = []; let err = '';
+        for (let page = 0; page < 10; page++) {
+            const j = await (await fetch(`/api/media/tidal/library?kind=${libKind}`
+                                         + `&limit=200&offset=${items.length}`)).json();
+            if (!j.success) { err = j.error || ''; break; }
+            items.push(...(j.items || []));
+            if (!j.has_more || !(j.items || []).length) break;
+        }
+        if (!items.length) { sel.innerHTML = `<option value="">${(err||'none in library')}</option>`; return; }
         sel.innerHTML = '<option value="">— pick —</option>' + items.map(it=>
             `<option value="${it.id}" data-label="${String(it.name||it.id).replace(/"/g,'&quot;')}" ${String(it.id)===String(selId)?'selected':''}>${it.name||it.id}</option>`).join('');
         if (selId && !items.some(it=>String(it.id)===String(selId)))

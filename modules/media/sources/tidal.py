@@ -24,6 +24,11 @@ logger = logging.getLogger("modules.media.tidal")
 
 SESSION_PATH = "./data/media/tidal_session.json"
 
+# TIDAL caps a favourites request at 50 rows, so a larger page is assembled
+# from several requests. A ceiling, not a preference.
+LIBRARY_PAGE = 50
+LIBRARY_MAX = 500
+
 
 def _quality_enum(tidalapi, want: str):
     """Map our quality name to a tidalapi Quality enum, defensive across versions.
@@ -355,49 +360,104 @@ class TidalSource(SourceProvider):
             return []
 
     # User library (favourites + own playlists)
-    async def library(self, kind: str) -> List[dict]:
-        """kind: 'playlists' | 'albums' | 'artists' → summary dicts with artwork."""
-        if not self._session:
-            return []
-        return await asyncio.to_thread(self._library, kind)
+    LIBRARY_KINDS = ("playlists", "albums", "artists", "tracks", "mixes")
 
-    def _library(self, kind: str) -> List[dict]:
+    async def library(self, kind: str, limit: int = 100,
+                      offset: int = 0) -> dict:
+        """One page of the user's library.
+
+        Returns ``{"items", "offset", "has_more", "total"}``. ``total`` is None
+        when the kind can't report one. See docs/speaker_sync.md → Tidal.
+        """
+        empty = {"items": [], "offset": offset, "has_more": False, "total": None}
+        if not self._session:
+            return empty
+        limit = max(1, min(int(limit or 100), LIBRARY_MAX))
+        offset = max(0, int(offset or 0))
+        return await asyncio.to_thread(self._library, kind, limit, offset)
+
+    def _library(self, kind: str, limit: int, offset: int) -> dict:
+        if kind == "mixes":
+            # A curated page rather than an offset list — it arrives whole.
+            rows = self._mixes()
+            return {"items": rows, "offset": 0, "has_more": False,
+                    "total": len(rows)}
         try:
-            if kind == "mixes":
-                return self._mixes()
-            user = self._session.user
-            fav = getattr(user, "favorites", None)
-            if kind == "albums":
-                rows = fav.albums() if fav else []
-                return [self._album_summary(a) for a in (rows or [])]
-            if kind == "artists":
-                rows = fav.artists() if fav else []
-                return [self._artist_summary(a) for a in (rows or [])]
-            if kind == "playlists":
-                # User's own playlists + followed/favourited playlists.
-                rows = []
-                for getter in ("playlist_and_favorite_playlists", "playlists"):
-                    fn = getattr(user, getter, None)
-                    if callable(fn):
-                        try:
-                            rows = fn()
-                            break
-                        except Exception:
-                            continue
-                if not rows and fav:
-                    rows = fav.playlists()
-                # Normalise tuples (some versions return (playlist, type) pairs).
-                out, seen = [], set()
-                for r in (rows or []):
-                    pl = r[0] if isinstance(r, tuple) else r
-                    pid = str(getattr(pl, "id", ""))
-                    if pid and pid not in seen:
-                        seen.add(pid)
-                        out.append(self._playlist_summary(pl))
-                return out
+            fetch, summarise = self._library_source(kind)
         except Exception as e:
-            logger.warning(f"Tidal library({kind}) failed: {e}")
-        return []
+            logger.warning(f"Tidal library({kind}) unavailable: {e}")
+            fetch = None
+        if fetch is None:
+            return {"items": [], "offset": offset, "has_more": False,
+                    "total": None}
+
+        items, seen, pos, exhausted = [], set(), offset, False
+        while len(items) < limit and not exhausted:
+            want = min(LIBRARY_PAGE, limit - len(items))
+            try:
+                rows = list(fetch(want, pos) or [])
+            except Exception as e:
+                logger.warning(f"Tidal library({kind}) page at {pos} failed: {e}")
+                break
+            pos += len(rows)
+            if len(rows) < want:
+                exhausted = True
+            for r in rows:
+                try:
+                    row = summarise(r)
+                except Exception:
+                    continue
+                if row["id"] and row["id"] not in seen:
+                    seen.add(row["id"])
+                    items.append(row)
+        return {"items": items, "offset": offset,
+                "has_more": not exhausted,
+                "total": self._library_total(kind) if offset == 0 else None}
+
+    def _library_source(self, kind: str):
+        """``((limit, offset) -> rows, row -> summary)`` for a library kind."""
+        user = self._session.user
+        fav = getattr(user, "favorites", None)
+        if kind == "albums" and fav:
+            return (lambda n, o: fav.albums(limit=n, offset=o),
+                    self._album_summary)
+        if kind == "artists" and fav:
+            return (lambda n, o: fav.artists(limit=n, offset=o),
+                    self._artist_summary)
+        if kind == "tracks" and fav:
+            return (lambda n, o: fav.tracks(limit=n, offset=o),
+                    self._track_summary)
+        if kind == "playlists":
+            # Own + followed, which only this endpoint returns together; it
+            # pages, where LoggedInUser.playlists() does not.
+            fn = getattr(user, "playlist_and_favorite_playlists", None)
+            if callable(fn):
+                return (lambda n, o: fn(offset=o, limit=n),
+                        self._playlist_row_summary)
+            if fav:
+                return (lambda n, o: fav.playlists(limit=n, offset=o),
+                        self._playlist_row_summary)
+        return None, None
+
+    def _library_total(self, kind: str) -> Optional[int]:
+        """Total rows for a kind — one limit=1 request, so cheap enough to ask
+        for on the first page only."""
+        fav = getattr(getattr(self._session, "user", None), "favorites", None)
+        fn = getattr(fav, {
+            "albums": "get_albums_count", "artists": "get_artists_count",
+            "tracks": "get_tracks_count", "playlists": "get_playlists_count",
+        }.get(kind, ""), None) if fav else None
+        if not callable(fn):
+            return None
+        try:
+            return int(fn())
+        except Exception as e:
+            logger.debug(f"Tidal {kind} count unavailable: {e}")
+            return None
+
+    def _playlist_row_summary(self, r) -> dict:
+        # Some versions return (playlist, type) pairs.
+        return self._playlist_summary(r[0] if isinstance(r, tuple) else r)
 
     # Artist play / radio (infinite)
     async def artist_tracks(self, artist_id: str) -> List[MediaItem]:
@@ -596,6 +656,22 @@ class TidalSource(SourceProvider):
             source_id=str(getattr(t, "id", "")),
             duration_ms=int((getattr(t, "duration", 0) or 0) * 1000),
         )
+
+    def _track_summary(self, t) -> dict:
+        artwork = ""
+        try:
+            album = getattr(t, "album", None)
+            artwork = album.image(320) if album is not None else ""
+        except Exception:
+            pass
+        return {
+            "id": str(getattr(t, "id", "")),
+            "name": getattr(t, "name", "") or "Unknown",
+            "artist": getattr(getattr(t, "artist", None), "name", "") or "",
+            "artwork": artwork,
+            "type": "track",
+            "duration_ms": int((getattr(t, "duration", 0) or 0) * 1000),
+        }
 
     def _album_summary(self, a) -> dict:
         artwork = ""

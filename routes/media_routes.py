@@ -607,17 +607,20 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": str(e)}
 
     @app.get("/api/media/tidal/library")
-    async def tidal_library(kind: str):
+    async def tidal_library(kind: str, limit: int = 100, offset: int = 0):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
         src = _tidal(svc)
         if not src:
             return {"success": False, "error": "Tidal unavailable"}
-        if kind not in ("playlists", "albums", "artists", "mixes"):
-            return {"success": False, "error": "kind must be playlists|albums|artists|mixes"}
+        kinds = src.LIBRARY_KINDS
+        if kind not in kinds:
+            return {"success": False, "error": f"kind must be {'|'.join(kinds)}"}
         try:
-            return {"success": True, "items": await src.library(kind)}
+            # Paged: TIDAL caps a favourites request at 50 rows, so a library
+            # larger than that was previously truncated in silence.
+            return {"success": True, **await src.library(kind, limit, offset)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

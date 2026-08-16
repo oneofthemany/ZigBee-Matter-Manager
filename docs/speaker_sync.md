@@ -764,6 +764,44 @@ user-edited config, hence not in `config.yaml`. Login is a device/OAuth flow: th
 UI is handed a `link.tidal.com` URL while a background task waits for
 authorisation.
 
+#### The library, and why it pages
+
+`GET /api/media/tidal/library?kind=&limit=&offset=` returns one page:
+
+```json
+{"success": true, "items": [...], "offset": 0, "has_more": true, "total": 312}
+```
+
+`kind` is `playlists | albums | artists | tracks | mixes`. `total` is a single
+`limit=1` request and is answered on the first page only; `null` where the kind
+cannot report one. `mixes` is a curated page rather than an offset list, so it
+arrives whole and never reports `has_more`.
+
+**TIDAL caps a favourites request at 50 rows whatever you ask for**, which is
+the whole reason this shape exists: the previous call passed no limit at all,
+took the library's default first 50, and presented them as the library. A
+listener with 300 albums saw 50 and nothing said so. The source now assembles a
+requested page out of as many 50-row requests as it needs (`LIBRARY_PAGE`), so
+`limit` means what it says up to `LIBRARY_MAX` (500), and a short page from
+TIDAL is what ends the walk.
+
+Three clients consume it, and they want different things:
+
+| Client | Strategy |
+|---|---|
+| Media page library tabs | One page of 100, then **Load more**, with "Showing 100 of 312" |
+| OpenZone source picker | Pages the whole slice — a `<select>` has no "load more" |
+| Automation step editor | Same, for the same reason |
+
+Both `<select>` consumers cap at 10 pages of 200, so an enormous library cannot
+turn one dropdown into an unbounded run of requests.
+
+**Favourite tracks** are a library kind (`tracks`), summarised in the same shape
+as albums and playlists — `id`, `name`, `artist`, `artwork`, `type`, plus
+`duration_ms` — so the existing row renderer handles them with no special case.
+They were previously unreachable despite being the most-used collection in the
+service.
+
 ### "This device" (browser) playback
 
 `static/js/local-player.js` plays radio and Tidal in the page itself, presented

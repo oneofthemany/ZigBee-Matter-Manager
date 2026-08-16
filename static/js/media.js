@@ -150,6 +150,7 @@ export function initMedia() {
     window.mediaSearch = doSearch;
     window.mediaTidalPlay = tidalPlay;
     window.mediaTidalTab = tidalTab;
+    window.mediaTidalMore = tidalLibMore;
     window.mediaTidalFav = tidalFav;
     window.mediaTidalLyrics = tidalLyrics;
     window.mediaQueueMode = queueMode;
@@ -916,7 +917,7 @@ function setSource(src) {
     else { showSearchBar(true); renderRadioFavStrip(); }
 }
 
-// Tidal sub-tabs: Search | Playlists | Albums | Artists (the library)
+// Tidal sub-tabs: Search | Mixes | Playlists | Albums | Tracks | Artists
 function renderTidalTabs() {
     const out = document.getElementById('mediaSearchResults');
     if (!out) return;
@@ -925,7 +926,7 @@ function renderTidalTabs() {
             onclick="window.mediaTidalTab('${key}')">${label}</button></li>`;
     out.innerHTML = `
       <ul class="nav nav-pills nav-fill mb-2 small">
-        ${tab('search', 'Search')}${tab('mixes', 'Mixes')}${tab('playlists', 'Playlists')}${tab('albums', 'Albums')}${tab('artists', 'Artists')}
+        ${tab('search', 'Search')}${tab('mixes', 'Mixes')}${tab('playlists', 'Playlists')}${tab('albums', 'Albums')}${tab('tracks', 'Tracks')}${tab('artists', 'Artists')}
       </ul>
       <div id="tidalTabContent"></div>`;
     tidalTab(_tidalTab);
@@ -1122,17 +1123,50 @@ async function tidalSearch() {
         : '<div class="text-muted small py-2">No results.</div>';
 }
 
-async function loadTidalLibrary(kind) {
+// One page of a library slice. TIDAL caps a favourites request at 50, so a
+// library bigger than that arrives a page at a time — `_libPage` accumulates
+// what has been fetched so a "Load more" appends rather than replaces.
+const LIB_PAGE = 100;
+let _libPage = { kind: '', items: [], offset: 0, hasMore: false, total: null };
+
+async function loadTidalLibrary(kind, more = false) {
     const out = document.getElementById('tidalTabContent');
     if (!out) return;
     if (_tidalState !== 'logged_in') { await refreshTidalNotice(); if (_tidalState !== 'logged_in') { out.innerHTML = ''; return; } }
-    out.innerHTML = spinner();
-    const data = await apiGet(`/api/media/tidal/library?kind=${kind}`);
+    if (!more) {
+        _libPage = { kind, items: [], offset: 0, hasMore: false, total: null };
+        out.innerHTML = spinner();
+    } else {
+        const btn = document.getElementById('tidalLibMore');
+        if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+    }
+    const data = await apiGet(`/api/media/tidal/library?kind=${encodeURIComponent(kind)}`
+                              + `&limit=${LIB_PAGE}&offset=${_libPage.offset}`);
+    if (_libPage.kind !== kind) return;         // tab changed under the fetch
     if (!data.success) { out.innerHTML = warn(data.error || 'Load failed'); return; }
     const items = data.items || [];
-    if (!items.length) { out.innerHTML = `<div class="text-muted small py-2">No ${kind} in your library.</div>`; return; }
-    out.innerHTML = items.map(it => {
-        const k = it.type;  // album | artist | playlist | mix
+    _libPage.items = _libPage.items.concat(items);
+    _libPage.offset += items.length;
+    _libPage.hasMore = !!data.has_more && items.length > 0;
+    if (data.total !== null && data.total !== undefined) _libPage.total = data.total;
+    renderTidalLibrary(kind);
+}
+
+function renderTidalLibrary(kind) {
+    const out = document.getElementById('tidalTabContent');
+    if (!out) return;
+    const { items, hasMore, total } = _libPage;
+    if (!items.length) {
+        out.innerHTML = `<div class="text-muted small py-2">No ${kind} in your library.</div>`;
+        return;
+    }
+    const count = total && total > items.length
+        ? `<div class="text-muted small py-1">Showing ${items.length} of ${total}</div>` : '';
+    const more = hasMore
+        ? `<div class="d-grid py-2"><button class="btn btn-sm btn-outline-secondary" id="tidalLibMore"
+             onclick="window.mediaTidalMore()">Load more</button></div>` : '';
+    out.innerHTML = count + items.map(it => {
+        const k = it.type;  // album | artist | playlist | mix | track
         let actions;
         if (k === 'mix') {
             // Mixes are personalised, not favouritable — just play them.
@@ -1140,11 +1174,18 @@ async function loadTidalLibrary(kind) {
         } else if (k === 'artist') {
             actions = [playBtn('artist', it.id, it.name), radioBtn('artist', it.id, it.name),
                        favBtn('artist', it.id, true)];
+        } else if (k === 'track') {
+            actions = [playBtn('track', it.id, it.name), radioBtn('track', it.id, it.name),
+                       lyricsBtn(it.id, it.name), favBtn('track', it.id, true)];
         } else {
             actions = [playBtn(k, it.id, it.name), favBtn(k, it.id, true)];
         }
         return mediaCard(it.artwork, it.name, it.artist, actions);
-    }).join('');
+    }).join('') + more;
+}
+
+function tidalLibMore() {
+    if (_libPage.hasMore) loadTidalLibrary(_libPage.kind, true);
 }
 
 // A result row with album/artist artwork thumbnail + action buttons.
@@ -2083,9 +2124,18 @@ async function _syncLoadTidalLib(kind) {
     if (_tidalLib[kind] !== undefined) return;
     _tidalLib[kind] = null;
     try {
-        const d = await apiGet(`/api/media/tidal/library?kind=${encodeURIComponent(kind)}`);
-        _tidalLib[kind] = d.success ? (d.items || []) : [];
-        if (!d.success) toast(d.error || 'Tidal library unavailable', 'error');
+        // A <select> has no "load more", so this one wants the whole slice —
+        // paged because TIDAL caps a favourites request at 50, and bounded so
+        // an enormous library can't turn one dropdown into fifty requests.
+        const rows = [];
+        for (let page = 0; page < 10; page++) {
+            const d = await apiGet(`/api/media/tidal/library?kind=${encodeURIComponent(kind)}`
+                                   + `&limit=200&offset=${rows.length}`);
+            if (!d.success) { toast(d.error || 'Tidal library unavailable', 'error'); break; }
+            rows.push(...(d.items || []));
+            if (!d.has_more || !(d.items || []).length) break;
+        }
+        _tidalLib[kind] = rows;
     } catch (e) {
         _tidalLib[kind] = [];
         toast('Tidal library unavailable: ' + e.message, 'error');
