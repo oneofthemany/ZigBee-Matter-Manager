@@ -161,6 +161,40 @@ class PlayerQueue:
         q._cycle_played = {q.index} if q.index >= 0 else set()
         return q
 
+    def move_to(self, index: int) -> Optional[QueueItem]:
+        """Linear cursor move, for players that navigate by index rather than
+        by asking the queue what comes next."""
+        if not (0 <= index < len(self.items)):
+            return None
+        if self.index >= 0 and self.index != index:
+            self._history.append(self.index)
+        self.index = index
+        self._cycle_played.add(index)
+        return self.current()
+
+    def shuffled_order(self) -> List[QueueItem]:
+        """The current item first, the rest randomised. Materialises shuffle as
+        an order for providers that are handed the whole queue up front."""
+        rest = [qi for i, qi in enumerate(self.items) if i != self.index]
+        random.shuffle(rest)
+        cur = self.current()
+        return ([cur] if cur else []) + rest
+
+    def align_to_source_id(self, source_id: str) -> bool:
+        """Move the cursor to the item a self-advancing provider says it is on.
+        Returns True if it moved."""
+        if not source_id:
+            return False
+        cur = self.current()
+        if cur and cur.item.source_id == source_id:
+            return False
+        for i, qi in enumerate(self.items):
+            if qi.item.source_id == source_id:
+                self.index = i
+                self._cycle_played.add(i)
+                return True
+        return False
+
     def align_to_title(self, title: str) -> bool:
         """Best-effort: move the cursor to the queue item whose title matches what
         the device reports now playing (the device may have advanced while the app

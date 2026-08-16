@@ -44,7 +44,9 @@ const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['
 // transport, so the queue controls have nothing to act on and only Stop is
 // offered. play_zone is the mirror image — it means "whatever this zone is
 // set to play", which only a zone has.
-const ZONE_CONTROLS = [['stop','Stop']];
+// A zone is a player, so it takes the full transport. Next/prev move its
+// server-side queue and are heard once the delay line drains (open-zone.md §4.1b).
+const ZONE_CONTROLS = MEDIA_CONTROLS;
 const isZoneId = pid => String(pid||'').startsWith('zone:');
 const zoneOf = pid => cachedZones.find(z => 'zone:'+z.id === pid) || null;
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
@@ -850,8 +852,7 @@ window._aMPlayer = (sid, sel) => {
     s.player_id = sel.value;
     const zone = isZoneId(s.player_id);
     if (!zone && s.media_action === 'play_zone') s.media_action = 'play_tidal';
-    if (zone && s.media_action === 'control') s.control_action = 'stop';
-    if (zone) s.tidal_mode = 'play';
+    if (zone) s.tidal_mode = 'play';       // no Radio∞ on a shared timeline
     const body = document.getElementById(`step-body-${sid}`);
     if (body) body.innerHTML = _mediaStepBody(s, sid);
     if (s.media_action==='play_tidal' && (s.tidal_kind||'playlist')!=='track')

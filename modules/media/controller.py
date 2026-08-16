@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 from modules.media.models import MediaItem, PlayerState, PlaybackState
 from modules.media.players.base import PlayerProvider
+from modules.media.players.zone import zone_id
 from modules.media.sources.base import SourceProvider
 from modules.media.queue import QueueController
 
@@ -69,6 +70,10 @@ class MediaController:
         out = {}
         for pid, st in self._cache.items():
             if st.state not in _ACTIVE:
+                continue
+            # A self-advancing provider snapshots and resumes its own session
+            # (MediaService._resume_playback); two resume paths would fight.
+            if self._self_advancing(pid):
                 continue
             q = self._queue.get(pid)
             cur = q.current() if q else None
@@ -180,6 +185,10 @@ class MediaController:
         prefix = player_id.split(":", 1)[0]
         return self._players.get(prefix)
 
+    def _self_advancing(self, player_id: str) -> bool:
+        p = self._provider_for(player_id)
+        return bool(p is not None and p.self_advancing)
+
     async def refresh(self) -> List[PlayerState]:
         """Poll all providers and update the cache. Returns the flat snapshot."""
         results = await asyncio.gather(
@@ -229,6 +238,12 @@ class MediaController:
                 if q.align_to_title(s.title):
                     logger.info(f"Reconciled {s.player_id} queue to '{s.title}'")
                 self._needs_reconcile.discard(s.player_id)
+        # A self-advancing provider owns the cursor and the now-playing fields;
+        # follow it rather than overwrite what it reported.
+        if self._self_advancing(s.player_id):
+            q.align_to_source_id(s.now_playing_id)
+            s.queue = q.to_dict()
+            return
         s.queue = q.to_dict()
         cur = q.current()
         if cur and s.state in _ACTIVE + (PlaybackState.PAUSED,):
@@ -332,7 +347,7 @@ class MediaController:
         if eq is None:
             return
         try:
-            await eq.release(player_id)
+            await eq.release(self._eq_key(player_id))
         except Exception as e:
             logger.warning(f"EQ release failed for {player_id}: {e}")
 
@@ -347,8 +362,25 @@ class MediaController:
         cur = q.load(items, start)
         q.auto_extend = auto_extend
         self._advancing.discard(player_id)
-        if cur:
-            await self.play_url(player_id, cur.item)
+        if not cur:
+            return
+        if self._self_advancing(player_id):
+            await self._push_queue(player_id, q)
+            return
+        await self.play_url(player_id, cur.item)
+
+    async def _push_queue(self, player_id: str, q) -> None:
+        """Hand a self-advancing provider the whole queue in play order.
+
+        Shuffle is materialised here rather than left to the queue's own
+        random pick: the provider walks the list it is given, so the order it
+        holds and the cursor we hold have to be the same one.
+        """
+        if q.shuffle:
+            q.load([qi.item for qi in q.shuffled_order()], 0)
+        await self._dispatch(player_id, "play_queue",
+                             [qi.item for qi in q.items], q.index,
+                             q.repeat == "all")
 
     async def queue_add(self, player_id: str, items: List[MediaItem]) -> None:
         q = self._queue.get(player_id, create=True)
@@ -358,6 +390,8 @@ class MediaController:
             await self.play_url(player_id, q.current().item)
 
     async def queue_next(self, player_id: str) -> None:
+        if self._self_advancing(player_id):
+            return await self._step_queue(player_id, 1)
         q = self._queue.get(player_id)
         if q and q.items:
             nxt = q.advance()
@@ -368,6 +402,8 @@ class MediaController:
         await self._dispatch(player_id, "next_track")
 
     async def queue_prev(self, player_id: str) -> None:
+        if self._self_advancing(player_id):
+            return await self._step_queue(player_id, -1)
         q = self._queue.get(player_id)
         if q and q.items:
             prev = q.previous()
@@ -376,6 +412,22 @@ class MediaController:
                 await self.play_url(player_id, prev.item)
                 return
         await self._dispatch(player_id, "prev_track")
+
+    async def _step_queue(self, player_id: str, delta: int) -> None:
+        """Navigate a self-advancing provider by index. Linear, because the
+        order it holds is the order we handed it (see _push_queue)."""
+        q = self._queue.get(player_id)
+        if not q or not q.items:
+            return await self._dispatch(
+                player_id, "next_track" if delta > 0 else "prev_track")
+        n = len(q.items)
+        idx = q.index + delta
+        if idx >= n:
+            idx = 0 if q.repeat == "all" else n - 1
+        elif idx < 0:
+            idx = n - 1 if q.repeat == "all" else 0
+        q.move_to(idx)
+        await self._dispatch(player_id, "skip_to", idx)
 
     def set_repeat(self, player_id: str, mode: str) -> None:
         self._queue.get(player_id, create=True).set_repeat(mode)
@@ -398,6 +450,10 @@ class MediaController:
         for player_id, state in list(self._cache.items()):
             q = self._queue.get(player_id)
             if not q or not q.items or not state.available:
+                continue
+            # The provider walks its own queue; _attach_queue already followed
+            # its cursor, and advancing here would fight it.
+            if self._self_advancing(player_id):
                 continue
             # A new track is running → clear the advance latch.
             if state.state in _ACTIVE:
@@ -456,6 +512,9 @@ class MediaController:
             # Keep the cache current so back-to-back relative adjusts stack
             # correctly between polls.
             cached.volume = level
+            provider = self._provider_for(player_id)
+            if provider is not None and provider.fans_out_volume:
+                return                      # the provider already did it
             # WiiM/LinkPlay slaves don't follow their master's volume (Cast
             # groups do, and list no members here) — push the level to each.
             for member_id in cached.group_members:
@@ -514,13 +573,21 @@ class MediaController:
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._dispatch(player_id, "set_muted", muted)
 
+    @staticmethod
+    def _eq_key(player_id: str) -> str:
+        """A zone equalises inside its own decode loop, keyed by group."""
+        gid = zone_id(player_id)
+        return f"syncgroup:{gid}" if gid else player_id
+
     def _eq_proxied(self, player_id: str) -> bool:
-        """Cast EQ lives in the stream proxy, not on the (DSP-less) device."""
-        return bool(self._eq_engine and player_id.startswith("cast:"))
+        """Cast EQ lives in the stream proxy, not on the (DSP-less) device;
+        a zone's lives in the sync engine's chain. Neither is on the device."""
+        return bool(self._eq_engine
+                    and (player_id.startswith("cast:") or zone_id(player_id)))
 
     async def eq_info(self, player_id: str) -> Optional[dict]:
         if self._eq_proxied(player_id):
-            return self._eq_engine.info(player_id)
+            return self._eq_engine.info(self._eq_key(player_id))
         provider = self._provider_for(player_id)
         if not provider:
             raise ValueError(f"No provider for player {player_id}")
@@ -530,14 +597,19 @@ class MediaController:
                      preset: Optional[str] = None,
                      gains: Optional[List[float]] = None) -> Optional[dict]:
         if self._eq_proxied(player_id):
-            r = self._eq_engine.set(player_id, enabled, preset, gains)
+            key = self._eq_key(player_id)
+            r = self._eq_engine.set(key, enabled, preset, gains)
+            # A zone builds its chain at session start, so any change to it
+            # needs the session rebuilt — not only the off→on the proxy flags.
+            restart = r.get("restart") or (self._self_advancing(player_id)
+                                           and enabled is not None)
             restarted = False
-            if r.get("restart"):
+            if restart:
                 # The audio path itself changes (direct → proxy), which only a
                 # fresh load can do. Gain changes never come through here as a
                 # restart — the proxy retunes those live.
                 restarted = await self._replay_current(player_id)
-            return {**self._eq_engine.info(player_id), "restarted": restarted}
+            return {**self._eq_engine.info(key), "restarted": restarted}
         await self._dispatch(player_id, "set_eq", enabled, preset)
         return await self.eq_info(player_id)
 
@@ -553,7 +625,10 @@ class MediaController:
         if not cur:
             return False
         try:
-            await self.play_url(player_id, cur.item)
+            if self._self_advancing(player_id):
+                await self._push_queue(player_id, q)   # keeps the whole queue
+            else:
+                await self.play_url(player_id, cur.item)
             return True
         except Exception as e:
             logger.warning(f"EQ replay failed for {player_id}: {e}")

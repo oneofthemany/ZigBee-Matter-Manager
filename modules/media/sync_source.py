@@ -86,6 +86,12 @@ class GeneratedSource:
     async def close(self) -> None:
         pass
 
+    def skip(self) -> bool:
+        return False               # one endless item — there is nothing to skip
+
+    def item_position_s(self) -> Optional[float]:
+        return None                # no item boundaries to measure from
+
     def stats(self) -> dict:
         return {"kind": self.kind, "title": "Sync test signal", "delay_s": 0.0}
 
@@ -250,6 +256,10 @@ class MediaSource:
         self._url_provider = url_provider
         self._last_rc: Optional[int] = None
         self._finished = False
+        # Skip in flight: the exit that follows is a seam, not a fault.
+        self._skipping = False
+        # Timeline sample the current item starts at (open-zone.md §4.1b).
+        self._item_origin: Optional[int] = None
         self.epoch = epoch
         self.delay_s = float(delay_s)
         self.channels = channels
@@ -373,6 +383,11 @@ class MediaSource:
                 self._last_rc = await self._decode_once()
                 if not self._running:
                     return
+                # Charged like a clean item end: no restart count, no backoff.
+                if self._skipping:
+                    self._xfade_arm = self._xfade_s > 0
+                    backoff = 0.5
+                    continue
                 if self._finished:      # the provider said there is no more
                     logger.info(f"Sync source finished: {self.title or self.url[:60]}")
                     return
@@ -400,6 +415,7 @@ class MediaSource:
             backoff = min(backoff * 2, 10.0)
 
     async def _refresh_url(self) -> None:
+        skipped, self._skipping = self._skipping, False
         if self._url_provider is None:
             return
         try:
@@ -411,13 +427,15 @@ class MediaSource:
         if isinstance(fresh, dict):     # queue-aware provider: url + metadata
             title, fresh = (fresh.get("title") or ""), (fresh.get("url") or "")
         if not fresh:
-            if self._last_rc == 0:
+            # Only a clean play-out means the material ran out, never a skip.
+            if self._last_rc == 0 and not skipped:
                 self._finished = True
             return
         if fresh != self.url:
-            logger.info(
-                "Sync source URL re-resolved "
-                f"({'next item' if self._last_rc == 0 else 'previous one expired or rotated'})")
+            reason = ("skipped to" if skipped else
+                      "next item" if self._last_rc == 0 else
+                      "previous one expired or rotated")
+            logger.info(f"Sync source URL re-resolved ({reason})")
         self.url = fresh
         if title:
             self.title = title
@@ -428,6 +446,8 @@ class MediaSource:
             return self._last_rc      # nothing more to play — don't start ffmpeg
         if not self.url:
             raise RuntimeError("no playable URL for this source")
+        # A restart re-decodes from the top, so a fault re-origins like a seam.
+        self._item_origin = self._ring.end
         # The arm survives the spawn; _xfade_open runs on the first block.
         self._proc = await asyncio.create_subprocess_exec(
             *self._cmd(), stdout=asyncio.subprocess.PIPE,
@@ -615,6 +635,24 @@ class MediaSource:
         nothing to follow it with. The session owner polls this to stop the
         group instead of leaving it on silence."""
         return self._finished
+
+    def skip(self) -> bool:
+        """End the current item so the supervisor resolves the queue's current
+        position. Caller moves its cursor first; audible only once the delay
+        line drains. See open-zone.md §4.1b."""
+        if self._finished or not self._running:
+            return False
+        self._skipping = True
+        self._kill_nowait()
+        return True
+
+    def item_position_s(self) -> Optional[float]:
+        """How far into the current item the group is *hearing*, in timeline
+        samples rather than wall clock. None before the first item starts."""
+        if self._item_origin is None:
+            return None
+        played = (time.monotonic() - self.epoch - self.delay_s) * self._rate
+        return max(0.0, (played - self._item_origin) / self._rate)
 
     def read(self, n0: int, frames: int) -> np.ndarray:
         return self._ring.read(n0, frames)

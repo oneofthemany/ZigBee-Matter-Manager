@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from modules.media.controller import MediaController
 from modules.media.models import MediaItem, PlayerState, RadioStation
 from modules.media.players.wiim import WiiMPlayerProvider
+from modules.media.players.zone import PREFIX as _ZONE_PREFIX, zone_id as _zone_id
 from modules.media.sources.radio_browser import RadioBrowserSource
 
 logger = logging.getLogger("modules.media")
@@ -144,6 +145,11 @@ class MediaService:
                 # one track: the engine walks this list and re-resolves each
                 # item's (expiring) URL as it reaches it.
                 self.cast_sync.set_queue_resolver(self.sync_queue_items)
+                # A zone as an ordinary player, so the Media page, the API and
+                # the queue/lyrics/favourite actions can all target one.
+                from modules.media.players.zone import ZonePlayerProvider
+                self.controller.add_player_provider(
+                    ZonePlayerProvider(self.cast_sync, self.start_zone))
             except Exception as e:
                 logger.warning(f"Cast sync PoC unavailable: {e}")
 
@@ -296,8 +302,10 @@ class MediaService:
         if media_type != "tidal":
             return []
         items = await self.tidal_items(kind, container_id)
+        # duration_ms rides along so a zone can report a position against it.
         return [{"source_id": i.source_id, "title": i.title,
-                 "artist": i.artist, "artwork_url": i.artwork_url}
+                 "artist": i.artist, "artwork_url": i.artwork_url,
+                 "media_type": i.media_type, "duration_ms": i.duration_ms}
                 for i in items if i.source_id]
 
     async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
@@ -306,6 +314,12 @@ class MediaService:
         ``mode='radio'`` makes track/artist play an infinite auto-extending queue.
         Shared by the API route and the automation engine."""
         radio = mode == "radio"
+        if radio and self.zone_id(player_id):
+            # A zone plays one server-built timeline, which the controller does
+            # not top up — saying so beats quietly playing a finite 50 tracks.
+            return {"success": False,
+                    "error": "Radio∞ isn't available on a zone — play the "
+                             "artist, album or a mix instead"}
         try:
             items = await self.tidal_items(kind, tidal_id, mode)
         except ValueError as e:
@@ -319,15 +333,13 @@ class MediaService:
     # (a station id, a Tidal container) into something playable. That belongs
     # in one place, so all three fail and succeed the same way.
 
-    ZONE_PREFIX = "zone:"
+    ZONE_PREFIX = _ZONE_PREFIX
 
     @staticmethod
     def zone_id(player_id: str) -> str:
         """The group id inside a ``zone:<gid>`` player id, or "" if it is an
         ordinary player."""
-        pid = player_id or ""
-        return pid[len(MediaService.ZONE_PREFIX):] \
-            if pid.startswith(MediaService.ZONE_PREFIX) else ""
+        return _zone_id(player_id)
 
     async def start_zone(self, group_id: str, media: Optional[dict] = None,
                          duration_s: Optional[int] = None,
@@ -378,6 +390,13 @@ class MediaService:
         Tidal deliberately does not resolve here — the engine re-resolves its
         signed URLs per item, which is what lets a long session outlive them.
         """
+        rows = media.get("items")
+        if rows is not None:
+            # An explicit queue is already resolved — each row carries the id
+            # or URL the engine re-resolves per item.
+            if not [r for r in rows if r.get("source_id") or r.get("url")]:
+                return False, "That queue has nothing a zone can play"
+            return True, ""
         if media.get("station_uuid") and not media.get("url"):
             station = None
             if self.radio is not None:

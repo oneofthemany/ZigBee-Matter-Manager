@@ -377,11 +377,38 @@ editor lists zones under an *OpenZone* group in the player picker.
 | `play_zone` | Start the zone's saved source and window. Zone targets only |
 | `play_radio` / `play_tidal` | Override the source for this run; the zone's window and crossfade still apply |
 | `announce` | Spoken **through** the zone as ordinary finite media — one timeline, one voice, and the session ends itself when the clip has been heard |
-| `control` | `stop` only. A zone is one server-built timeline, not a device transport with a queue to skip around in |
+| `control` | `stop`, `pause`, `resume`, `next`, `prev` — a zone is an ordinary player (below) |
 | `volume`, `volume_adjust`, `volume_fade` | Fanned out to every member — volume is a property of each speaker, not of the timeline |
 
 Tidal's `Radio∞` mode is not offered for a zone: auto-extension belongs to the
-controller's queue, and a zone walks a fixed list.
+controller's queue, and a zone walks a fixed list. Asking for it returns an
+error rather than quietly playing the finite seed list.
+
+### A zone is a player
+
+A zone is addressed as `zone:<group_id>` wherever a player id is taken — the
+Media page's speaker list, `/api/media/tidal/play`, `/api/media/control`,
+`/api/media/queue/*`, the EQ endpoints — and not only in automations. That is
+what gives a zone the queue, the lyrics overlay, the favourite button and the
+artist actions that the single-speaker path already had: they are written
+against the player interface, and a zone now satisfies it
+(`modules/media/players/zone.py`; the architecture is open-zone.md §4.1b).
+
+Four differences from a speaker are worth knowing, all of them consequences of
+a zone being one server-built timeline rather than a device:
+
+- **Next/prev are heard at arm's length.** The cut is made at the point the
+  decoder has reached, and everything already decoded and sent plays first, so
+  a skip lands a group latency later — seconds, not milliseconds. Nothing in
+  the queue layer can shorten that.
+- **Pause stops the timeline.** There is no per-device transport to hold.
+  Resume re-issues the same queue at the same item, from that item's start.
+- **Shuffle is fixed at the moment you press play.** The order is handed to
+  the engine up front; toggling shuffle mid-session takes effect the next time
+  playback starts. Repeat-all works (it becomes the engine's loop);
+  repeat-one has no equivalent.
+- **EQ is the zone's own chain**, keyed `syncgroup:<gid>`, not the per-speaker
+  proxy. Turning it on or off rebuilds the session; moving a gain does not.
 
 Receiver stats fields: `offset_ms`, `rtt_ms`, `out_latency_ms`, `ctx_rate`,
 `scheduled`, `late`, `resyncs`, `uptime_s`.

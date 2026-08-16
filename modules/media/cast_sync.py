@@ -101,7 +101,8 @@ SPECTRUM_FLOOR_DB = -72.0
 
 # The media block a session start accepts (SyncMediaBody). Named here because
 # a zone stores one, and stored config must round-trip through the same
-# vocabulary the start path reads.
+# vocabulary the start path reads. `items`/`start_index` are excluded on
+# purpose — an explicit queue is one act of playback, not a standing choice.
 MEDIA_FIELDS = ("url", "station_uuid", "source_id", "media_type", "kind",
                 "title", "artwork_url", "artist", "loop")
 
@@ -132,9 +133,12 @@ async def _broadcast_spectrum(payload: dict) -> None:
 def _media_key(media: Optional[dict]) -> tuple:
     """Identity of a start request's media, for duplicate detection."""
     m = media or {}
+    # An explicit list has no id of its own — without it, two different queues
+    # collide and the second start is swallowed as a duplicate.
+    items = tuple(str(r.get("source_id") or "") for r in (m.get("items") or []))
     return (str(m.get("kind") or "track").lower(),
             m.get("media_type") or "", m.get("source_id") or "",
-            m.get("station_uuid") or "", (m.get("url") or "").strip())
+            m.get("station_uuid") or "", (m.get("url") or "").strip(), items)
 
 
 def _encode_s16(pcm: np.ndarray) -> bytes:
@@ -397,12 +401,45 @@ class CastSyncPoc:
         self._queue_resolver = fn
 
     def now_playing(self) -> dict:
-        """The item a zone is currently on, for the UI and the Cast display."""
+        """The item a zone is currently on, for the UI and the Cast display.
+        ``position_ms`` is where the group *hears*, not where the decoder is,
+        so it is comparable with any other player's."""
         q, i = self._queue, self._queue_pos
         item = q[i] if 0 <= i < len(q) else {}
+        duration_ms = int(item.get("duration_ms") or 0)
+        pos_s = self._source.item_position_s() if self.running else None
+        position_ms = int(max(0.0, pos_s) * 1000) if pos_s is not None else 0
+        if duration_ms:
+            position_ms = min(position_ms, duration_ms)
         return {"title": item.get("title", ""), "artist": item.get("artist", ""),
                 "artwork_url": item.get("artwork_url", ""),
+                "source_id": item.get("source_id", ""),
+                "media_type": (item.get("media_type")
+                               or (self._session_media or {}).get("media_type", "")),
+                "duration_ms": duration_ms, "position_ms": position_ms,
                 "index": i if q else 0, "count": len(q)}
+
+    async def skip_to(self, index: int) -> dict:
+        """Move the zone's queue to ``index`` and re-cut the timeline there.
+        The seam lands at the write head, so it is heard once the delay line
+        drains — open-zone.md §4.1b."""
+        if not self.running:
+            return {"success": False, "error": "This zone is not playing"}
+        n = len(self._queue)
+        if not n:
+            return {"success": False, "error": "This zone has no queue to move through"}
+        if not 0 <= index < n:
+            return {"success": False,
+                    "error": f"No item {index + 1} in a queue of {n}"}
+        if index == self._queue_pos:
+            return {"success": True, "index": index, "unchanged": True}
+        previous, self._queue_pos = self._queue_pos, index
+        if not self._source.skip():
+            self._queue_pos = previous
+            return {"success": False,
+                    "error": "This zone's source cannot be skipped"}
+        logger.info(f"Zone queue moved {previous + 1} → {index + 1} of {n}")
+        return {"success": True, "index": index}
 
     def _model_key(self, player_id: str) -> str:
         try:
@@ -519,10 +556,14 @@ class CastSyncPoc:
         """What it would take to stand this session back up, or {} when idle."""
         if not self.running or not self._streams:
             return {}
+        media = self._session_media
+        if media and media.get("items"):
+            # Resume where the queue got to, not where it was told to start.
+            media = {**media, "start_index": self._queue_pos}
         snap = {
             "group_id": self._active_group,
             "player_ids": [st.player_id for st in self._streams.values()],
-            "media": self._session_media,
+            "media": media,
         }
         if self._duration_s:
             elapsed = time.monotonic() - self._epoch
@@ -563,8 +604,17 @@ class CastSyncPoc:
         stype, sid = media.get("media_type") or "", media.get("source_id") or ""
         kind = (media.get("kind") or "track").strip() or "track"
         loop_forever = bool(media.get("loop"))
-        if sid and self._url_resolver is not None:
-            if kind != "track" and self._queue_resolver is not None:
+        rows = media.get("items") or []
+        if (sid or rows) and self._url_resolver is not None:
+            if rows:
+                # Order settled by the caller (shuffle/repeat already applied).
+                self._queue = [dict(r) for r in rows
+                               if r.get("source_id") or r.get("url")]
+                if not self._queue:
+                    return None, "that queue has no playable items"
+                start = int(media.get("start_index") or 0)
+                self._queue_pos = start if 0 <= start < len(self._queue) else 0
+            elif kind != "track" and self._queue_resolver is not None:
                 try:
                     self._queue = list(await self._queue_resolver(stype, kind, sid))
                 except Exception as e:
@@ -585,7 +635,10 @@ class CastSyncPoc:
                             return ""
                         self._queue_pos = 0
                 item = self._queue[self._queue_pos]
-                url = await self._url_resolver(stype, item.get("source_id") or "")
+                # Mixed queues: an item's own media_type wins over the block's.
+                sub = item.get("source_id") or ""
+                url = (await self._url_resolver(item.get("media_type") or stype, sub)
+                       if sub else (item.get("url") or ""))
                 if not url:
                     return ""
                 return {"url": url, "title": item.get("title") or ""}
@@ -599,7 +652,8 @@ class CastSyncPoc:
                 return None, (f"{stype or 'source'} returned no playable stream "
                               f"(is the account still signed in?)")
             media.setdefault("title", "")
-            media["title"] = media["title"] or self._queue[0].get("title") or ""
+            media["title"] = (media["title"]
+                              or self._queue[self._queue_pos].get("title") or "")
         if not media or not (media.get("url") or "").strip():
             return _GENERATED, ""
         chain = None

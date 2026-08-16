@@ -18,6 +18,13 @@ from modules.media.models import PlayerState, MediaItem
 class PlayerProvider(ABC):
     #: short, stable provider key — must match the player_id prefix
     provider: str = "base"
+    #: the provider walks its own queue (OpenZone's shared timeline). The
+    #: controller then hands it whole queues, follows its index instead of
+    #: auto-advancing, and navigates with skip_to. See docs/open-zone.md §4.1b.
+    self_advancing: bool = False
+    #: volume is fanned out to members by the provider, so the controller
+    #: must not fan out over group_members as well.
+    fans_out_volume: bool = False
 
     async def start(self) -> None:
         """Begin discovery / open connections. Override if needed."""
@@ -53,6 +60,16 @@ class PlayerProvider(ABC):
 
     async def prev_track(self, player_id: str) -> None:
         """Optional — radio has no prev; override where meaningful."""
+
+    # Self-advancing providers only (self_advancing = True)
+    async def play_queue(self, player_id: str, items: List["MediaItem"],
+                         start: int = 0, loop: bool = False) -> None:
+        """Play an ordered queue from ``start``; ``loop`` is repeat-all."""
+        raise NotImplementedError(f"{self.provider} does not support play_queue")
+
+    async def skip_to(self, player_id: str, index: int) -> None:
+        """Move the provider's own queue cursor to ``index``."""
+        raise NotImplementedError(f"{self.provider} does not support skip_to")
 
     @abstractmethod
     async def set_volume(self, player_id: str, level: float) -> None:

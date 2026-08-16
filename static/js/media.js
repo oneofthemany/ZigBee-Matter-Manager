@@ -275,6 +275,7 @@ function iconFor(p) {
     // Return the FULL Font Awesome class incl. style prefix. `fa-chromecast`
     // is a BRAND icon (fab); `fa-speaker` doesn't exist in FA6-free — both
     // render as a missing-glyph box if forced to `fas`.
+    if (p.provider === 'zone') return 'fas fa-object-group';     // an OpenZone zone
     if (p.is_group) return 'fas fa-layer-group';          // any group: stacked icon
     if (p.provider === 'local') return 'fas fa-mobile-screen';   // this browser
     return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
@@ -284,6 +285,10 @@ function iconFor(p) {
 // from an individual Cast device and from a WiiM group.
 function groupBadge(p) {
     if (!p.is_group) return '';
+    if (p.provider === 'zone') {
+        return `<span class="badge bg-success ms-1" title="OpenZone — one clock-aligned timeline across ${p.group_members.length} speakers">`
+             + `<i class="zmm-openzone-icon me-1"></i>Zone · ${p.group_members.length}</span>`;
+    }
     if (p.provider === 'cast') {
         return '<span class="badge bg-primary ms-1" title="Google Cast speaker group">'
              + '<i class="fab fa-chromecast me-1"></i>Cast group</span>';

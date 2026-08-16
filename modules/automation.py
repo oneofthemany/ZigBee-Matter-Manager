@@ -666,12 +666,6 @@ class AutomationEngine:
                 if ma == "control" and step.get("control_action") not in (
                         "pause", "resume", "stop", "next", "prev"):
                     return f"{label}[{i+1}]: control needs a valid control_action"
-                # A zone is one timeline built server-side, not a transport
-                # with a queue to skip around in — only stop applies.
-                if (ma == "control" and is_zone
-                        and step.get("control_action") != "stop"):
-                    return (f"{label}[{i+1}]: a zone only supports stop "
-                            f"(no pause/resume/next/prev)")
                 if ma == "announce" and not step.get("text"):
                     return f"{label}[{i+1}]: announce needs text"
             elif st == "request":
@@ -1738,12 +1732,13 @@ class AutomationEngine:
                 "artist": "Announcement"})
             return res.get("success", False), res.get("error", "")
         if action == "control":
-            if step.get("control_action") != "stop":
-                return False, "a zone only supports stop"
-            if zone.active_group != gid:
+            act = step.get("control_action", "stop")
+            if act == "stop" and zone.active_group != gid:
                 return True, "already stopped"
-            res = await zone.stop_session()
-            return res.get("success", True), ""
+            # Zones are ordinary players now, so the controller routes
+            # stop/pause/resume/next/prev to the zone provider.
+            await svc.controller.control(f"{svc.ZONE_PREFIX}{gid}", act)
+            return True, ""
         if action == "volume":
             n = await self._zone_volume(svc, gid, float(step.get("volume", 0.3)))
             return n > 0, f"{n} speaker(s)" if n else "no members reachable"
