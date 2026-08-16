@@ -24,7 +24,14 @@ set -euo pipefail
 # complete PREFLIGHT against current Android Auto: TLS negotiates, then both
 # ends report a failed read and the session dies. 2.1 is on the beta channel:
 #   dl.google.com/android/repository/desktop-head-unit-linux-x64_r02.1.zip
-DHU_HOME=/var/home/sean/Android/Sdk/extras/google/auto
+SDK_HOME=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}
+DHU_HOME=$SDK_HOME/extras/google/auto
+
+if [[ ! -x "$DHU_HOME/desktop-head-unit" ]]; then
+    echo "No DHU at $DHU_HOME." >&2
+    echo "Unzip the r02.1 archive above into that directory, or set ANDROID_HOME." >&2
+    exit 1
+fi
 
 if ! adb get-state >/dev/null 2>&1; then
     echo "No device: plug the phone in and check 'adb devices'." >&2
@@ -44,8 +51,9 @@ if ! adb shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" \
 fi
 
 # Fedora Silverblue ships no libc++, and the base image is immutable, so the
-# two libs the DHU binary needs were extracted from the Fedora RPMs into lib/
-# rather than layered onto the host with rpm-ostree. Scoped to this one exec
+# two libs the DHU binary needs (libc++.so.1, libc++abi.so.1, from the libcxx
+# and libcxxabi RPMs) were extracted into lib/ rather than layered onto the
+# host with rpm-ostree. Scoped to this one exec
 # on purpose: exporting it earlier makes adb itself pick up the bundled
 # libc++ and fail every call above with a bare "no device".
 exec env LD_LIBRARY_PATH="$DHU_HOME/lib:$DHU_HOME" "$DHU_HOME/desktop-head-unit" "$@"
