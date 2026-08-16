@@ -1420,16 +1420,18 @@ function renderTidalSection(config) {
         <label class="form-label small fw-semibold">Quality</label>
         <select class="form-select" id="cfg_media_tidal_quality">
           <option value="high" ${(tidal.quality || 'high') === 'high' ? 'selected' : ''}>High (320k AAC — Cast + WiiM)</option>
-          <option value="lossless" ${tidal.quality === 'lossless' ? 'selected' : ''}>Lossless (FLAC/DASH — Cast only)</option>
+          <option value="lossless" ${tidal.quality === 'lossless' ? 'selected' : ''}>Lossless (FLAC/DASH — Cast + OpenZone)</option>
         </select>
-        <small class="text-muted">Lossless needs the Manifest URL below; WiiM auto-falls back to AAC.</small>
+        <small class="text-muted">Zones decode here, so they go lossless with nothing else set.
+          Cast needs the Manifest URL; WiiM auto-falls back to AAC.</small>
       </div>
       <div class="col-md-8">
         <label class="form-label small fw-semibold">Manifest Base URL</label>
         <input type="text" class="form-control" id="cfg_media_tidal_manifest"
                value="${w_escape(tidal.manifest_base_url || '')}" placeholder="https://192.168.1.1:8000">
         <small class="text-muted">Public URL of THIS app, reachable by Cast on the LAN (needs valid
-          TLS or http). Required for lossless so Cast can fetch the DASH manifest.</small>
+          TLS or http). Required for lossless on Cast, which fetches the DASH manifest
+          itself — not needed for zones.</small>
       </div>
     </div>
     <div id="tidalStatusRow" class="mb-2"></div>

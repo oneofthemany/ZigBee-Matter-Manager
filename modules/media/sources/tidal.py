@@ -29,6 +29,11 @@ SESSION_PATH = "./data/media/tidal_session.json"
 LIBRARY_PAGE = 50
 LIBRARY_MAX = 500
 
+# A DASH manifest's segment URLs are signed for minutes, so this caches only
+# long enough to bridge the lossless check and the fetch that follows it.
+MPD_CACHE_TTL_S = 30
+MPD_CACHE_MAX = 64
+
 # Favourite-state cache (docs/speaker_sync.md → Tidal).
 FAVOURITE_KINDS = ("track", "album", "artist", "playlist")
 FAVOURITE_TTL_S = 600
@@ -60,7 +65,7 @@ class TidalSource(SourceProvider):
     source = "tidal"
 
     def __init__(self, enabled: bool = False, quality: str = "high",
-                 manifest_base_url: str = ""):
+                 manifest_base_url: str = "", local_base=None):
         self.enabled = enabled
         # "high" (320k AAC, single URL, every device) or "lossless" (FLAC via a
         # DASH manifest — Cast only; WiiM transparently falls back to AAC).
@@ -69,6 +74,13 @@ class TidalSource(SourceProvider):
         # used to serve the DASH manifest for lossless (e.g. "https://192.168.1.1:8000").
         # Empty → lossless disabled (AAC everywhere), so nothing breaks if unset.
         self._manifest_base = (manifest_base_url or "").rstrip("/")
+        # () -> base URL of this host's plain-HTTP device listener. Lossless to
+        # a zone is decoded here, so it needs no operator-supplied address.
+        self._local_base = local_base
+        # track_id -> (fetched_at, mpd). The zone path checks a track has a
+        # lossless variant before committing to it; without this the route
+        # would then fetch the same manifest again seconds later.
+        self._mpd_cache: dict = {}
         self._session = None
         self._available = False           # tidalapi importable + session usable
         self._login_future = None
@@ -202,25 +214,47 @@ class TidalSource(SourceProvider):
         """Return a fresh, directly-playable stream for ``source_id``.
 
         Returns a ``{"url", "content_type"}`` dict (the controller applies both).
-        For a Cast target with lossless enabled we hand back a URL to *our own*
-        DASH-manifest route (served fresh on fetch, segment URLs being short-lived);
-        otherwise a single 320k-AAC URL that plays on Cast and WiiM alike."""
+        Lossless is handed over as a URL to *our own* DASH-manifest route, which
+        Cast fetches over the LAN and a zone's decoder fetches over loopback;
+        otherwise a single 320k-AAC URL that plays on Cast and WiiM alike.
+        See docs/speaker_sync.md → Tidal."""
         if not self._session:
             return None
-        if self._wants_lossless(provider):
-            return {
-                "url": f"{self._manifest_base}/api/media/tidal/manifest/{source_id}.mpd",
-                "content_type": "application/dash+xml",
-            }
+        base = self._lossless_base(provider)
+        if base:
+            mpd = f"{base}/api/media/tidal/manifest/{source_id}.mpd"
+            dash = {"url": mpd, "content_type": "application/dash+xml"}
+            if provider != "zone":
+                return dash
+            # A zone's decoder retries one item forever rather than skipping,
+            # so a track with no lossless variant has to be found here, where
+            # falling back to AAC still costs nothing. Warms the manifest
+            # cache the route then serves.
+            if await self.dash_manifest(source_id):
+                return dash
+            logger.info(f"Tidal {source_id} has no lossless variant — zone gets AAC")
         url = await asyncio.to_thread(self._aac_url, source_id)
         return {"url": url, "content_type": "audio/mp4"} if url else None
 
-    def _wants_lossless(self, provider: Optional[str]) -> bool:
-        # FLAC/DASH only works on Cast, and only if we have a base URL Cast can
-        # reach to fetch the manifest. WiiM (LinkPlay) can't play DASH → AAC.
-        return (self._quality == "lossless"
-                and provider == "cast"
-                and bool(self._manifest_base))
+    def _lossless_base(self, provider: Optional[str]) -> str:
+        """Base URL the manifest route should be fetched from for this target,
+        or "" when lossless doesn't apply.
+
+        Cast needs an address reachable across the LAN, which only the operator
+        can supply. A zone decodes on this host, so it needs nothing configured
+        — the plain-HTTP device listener on loopback already serves the route.
+        WiiM (LinkPlay) cannot play DASH at all.
+        """
+        if self._quality != "lossless":
+            return ""
+        if provider == "cast":
+            return self._manifest_base
+        if provider == "zone" and self._local_base:
+            try:
+                return (self._local_base() or "").rstrip("/")
+            except Exception:
+                return ""
+        return ""
 
     def _aac_url(self, track_id: str) -> Optional[str]:
         """A single directly-playable 320k-AAC URL (the BTS manifest path).
@@ -271,10 +305,20 @@ class TidalSource(SourceProvider):
 
     async def dash_manifest(self, track_id: str) -> Optional[str]:
         """The raw DASH MPD (XML) for a lossless track, segment URLs and all —
-        served to Cast by the manifest route. Fetched fresh so URLs aren't stale."""
+        served by the manifest route. Cached only for the seconds between the
+        zone path checking a track is lossless and the route serving it; the
+        segment URLs inside are short-lived, so nothing older is reused."""
         if not self._session:
             return None
-        return await asyncio.to_thread(self._dash_manifest, track_id)
+        hit = self._mpd_cache.get(track_id)
+        if hit and (time.time() - hit[0]) < MPD_CACHE_TTL_S:
+            return hit[1]
+        mpd = await asyncio.to_thread(self._dash_manifest, track_id)
+        if mpd:
+            if len(self._mpd_cache) > MPD_CACHE_MAX:
+                self._mpd_cache.clear()
+            self._mpd_cache[track_id] = (time.time(), mpd)
+        return mpd
 
     def _dash_manifest(self, track_id: str) -> Optional[str]:
         import tidalapi

@@ -74,6 +74,9 @@ class MediaService:
             enabled=tidal_cfg.get("enabled", False),
             quality=tidal_cfg.get("quality", "high"),
             manifest_base_url=tidal_cfg.get("manifest_base_url", ""),
+            # Lossless to a zone is decoded on this host, so it fetches the
+            # manifest over loopback — deferred, the listener is built below.
+            local_base=lambda: f"http://127.0.0.1:{self.device_http.port}",
         )
         self.controller.add_source(self.tidal)
         self.controller.register_resolver("tidal", self.tidal.resolve_url)
@@ -136,11 +139,11 @@ class MediaService:
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)
-                # No player_id: the sync engine decodes server-side, so it
-                # wants the plain single-URL form (Tidal → AAC), not a
-                # device-specific manifest.
+                # Resolved as a zone: ffmpeg decodes the timeline here, so it
+                # takes Tidal's DASH/FLAC where a speaker would need AAC.
                 self.cast_sync.set_url_resolver(
-                    lambda mt, sid: self.controller.resolve_source_url(mt, sid))
+                    lambda mt, sid: self.controller.resolve_source_url(
+                        mt, sid, provider="zone"))
                 # Lets a zone play a Tidal album/playlist/mix/artist, not just
                 # one track: the engine walks this list and re-resolves each
                 # item's (expiring) URL as it reaches it.

@@ -290,8 +290,9 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
     signed-out account rather than falling back to the test tone — and
     re-resolves every time the decoder restarts, which is what lets a session
     outlive the token expiring underneath it. Expiry then costs the same as a
-    station dropping: a gap, then it continues. Server-side decoding means the
-    plain AAC form is requested, not the Cast-only DASH manifest.
+    station dropping: a gap, then it continues. With `quality: lossless` a zone
+    takes the DASH/FLAC form over loopback rather than AAC — it decodes here,
+    so it needs no reachable address of its own (see Tidal, below).
 
     While a session runs the card shows what is playing and the running
     underrun count.
@@ -750,10 +751,45 @@ scheme cached. HTTPS uses `verify=False`, since the cert is the device's own.
 
 ### Tidal
 
-`modules/media/sources/tidal.py` uses the unofficial `tidalapi`. Phase 2 serves
+`modules/media/sources/tidal.py` uses the unofficial `tidalapi`. The default is
 **AAC** (HIGH quality) via a directly playable URL so Cast and WiiM can fetch it
-without our stream server; lossless/HiRes DASH/FLAC manifests parsed and served
-server-side are Phase 3 and explicitly not here.
+without our stream server; `quality: lossless` serves FLAC through a DASH
+manifest where the target can take one.
+
+#### Who gets lossless, and why the answer differs
+
+The stream URL is chosen per *target*, because the targets are not alike:
+
+| Target | Form | Needs |
+|---|---|---|
+| Cast | DASH manifest from `manifest_base_url` | An address the speaker can reach across the LAN — only the operator can supply it |
+| OpenZone | DASH manifest over loopback | Nothing configured: ffmpeg decodes on this host |
+| WiiM | AAC | LinkPlay cannot play DASH at all |
+
+A zone was the odd one out until recently: it decodes the timeline here with
+ffmpeg, which reads DASH perfectly well, but the resolver was called without
+naming a target and so fell through to AAC. It now resolves as `zone` and
+fetches the manifest from the plain-HTTP device listener on `127.0.0.1`. That
+matters more for a zone than for a speaker, because the zone's timeline is
+float32 PCM and its receivers are served PCM — so a lossless source stays
+lossless end to end, where AAC would have been the only lossy step in the chain.
+
+Two constraints hold this together:
+
+- **A track with no lossless variant must not reach a zone's decoder.** The
+  decoder retries one item forever rather than skipping, so a 404 from the
+  manifest route would leave the zone silent and looping. The zone path
+  therefore confirms the manifest exists at resolve time and falls back to AAC
+  for that track; the manifest is cached for the seconds between that check and
+  the route serving it (`MPD_CACHE_TTL_S`), since its segment URLs are signed
+  for minutes. Cast is not pre-checked — one item fails on the device and the
+  next plays, which costs nothing.
+- **Tidal's `SegmentTemplate` carries absolute CDN URLs.** This is what lets the
+  manifest be served from a path with no relation to the segments'; tidalapi's
+  own `DashInfo.get_urls` substitutes `$Number$` and prepends no base, which is
+  only valid for absolute URLs. If Tidal ever emitted relative ones, both the
+  Cast and the zone routes would break the same way — segments resolved against
+  our manifest URL and 404ing.
 
 Hard-isolated: `tidalapi` is imported lazily and every failure is swallowed, so a
 Tidal breakage never affects Cast, WiiM or radio. The library is blocking

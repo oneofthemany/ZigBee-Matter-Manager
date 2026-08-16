@@ -106,16 +106,19 @@ class MediaController:
         return n
 
     async def resolve_source_url(self, media_type: str, source_id: str,
-                                 player_id: Optional[str] = None) -> str:
+                                 player_id: Optional[str] = None,
+                                 provider: Optional[str] = None) -> str:
         """Current playable URL for a source that issues time-limited ones.
 
-        Callers that decode server-side pass no player_id: the source then
-        hands back its plain single-URL form (Tidal → AAC) rather than a
-        device-specific manifest, which is what ffmpeg wants."""
+        The target decides the format, so pass whichever names it: a player_id
+        to resolve as that device would, or ``provider`` directly for a caller
+        that has no single player to speak for (the sync engine decodes one
+        timeline for a whole zone)."""
         resolver = self._resolvers.get(media_type)
         if not resolver or not source_id:
             return ""
-        provider = player_id.split(":", 1)[0] if player_id else None
+        if provider is None and player_id:
+            provider = player_id.split(":", 1)[0]
         fresh = await resolver(source_id, provider)
         if isinstance(fresh, dict):
             return fresh.get("url") or ""
