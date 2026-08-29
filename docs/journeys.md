@@ -416,10 +416,23 @@ sources, tried in order.
 service. The Motor Fuel Price (Open Data) Regulations 2025 require forecourts
 to publish a price change within 30 minutes, which is both why it is preferred
 and why the refresh interval is 30 minutes rather than a guess. It is an OAuth2
-client-credentials API (scope `fuelfinder.read`, hour-long tokens) over two
-endpoints — `/api/v1/pfs` for sites and `/api/v1/pfs/fuel-prices` for prices —
-joined on `node_id`. Neither documents a geographic filter, so the snapshot is
-national and the radius is applied locally; that is also why it is cached.
+client-credentials API over two endpoints — `/api/v1/pfs` for sites and
+`/api/v1/pfs/fuel-prices` for prices — joined on `node_id`. Neither documents a
+geographic filter, so the snapshot is national and the radius is applied
+locally; that is also why it is cached.
+
+Two things about the token exchange are worth knowing, because the portal's
+general "API Authentication" page describes neither and the published OpenAPI
+spec is what the server implements. It is `POST
+/api/v1/oauth/generate_access_token` with a **JSON** body of `client_id` and
+`client_secret` — not a form-encoded `client_credentials` grant, and no scope —
+and the token comes back **nested under `data`**, alongside a 48-hour refresh
+token. Reading `access_token` off the top level yields nothing from a 200 that
+plainly worked.
+
+Both collections are paged by a required 1-indexed `batch-number`, 500 rows a
+batch, returned as bare JSON arrays with no envelope, total or next link — so a
+short batch is the only end-of-data signal there is.
 
 Credentials are per-operator and never ship with this project. They are entered
 in Settings → External APIs → Fuel and stored in `config/secrets.yaml`
