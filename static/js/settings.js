@@ -776,9 +776,11 @@ function renderFuelFinderSection() {
         <small class="text-muted" id="cfg_ff_secret_hint"></small>
       </div>
       <div class="col-md-6">
-        <label class="form-label small fw-semibold">Token URL</label>
+        <label class="form-label small fw-semibold">Token URL <span class="text-muted fw-normal">(optional)</span></label>
         <input type="text" class="form-control" id="cfg_ff_token_url"
-               placeholder="OAuth2 token endpoint, from the portal">
+               placeholder="Leave blank — derived from Base URL">
+        <small class="text-muted">Blank uses <code>&lt;Base URL&gt;/api/v1/oauth/generate_access_token</code>,
+        the endpoint in the published spec. Only set this if your deployment fronts the API elsewhere.</small>
       </div>
       <div class="col-md-6">
         <label class="form-label small fw-semibold">Base URL</label>

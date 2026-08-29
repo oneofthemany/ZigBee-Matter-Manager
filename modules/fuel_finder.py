@@ -99,6 +99,18 @@ PASSTHROUGH_GRADES = ("B10", "HVO")
 
 EARTH_RADIUS_KM = 6371.0
 
+#: Paths are fixed by the published spec, so only the host is configurable.
+TOKEN_PATH = "/api/v1/oauth/generate_access_token"
+SITES_PATH = "/api/v1/pfs"
+PRICES_PATH = "/api/v1/pfs/fuel-prices"
+
+#: "Each API response returns data for up to 500 forecourts" — batch 1 is
+#: 0-500, batch 2 is 501-1000. A short batch is therefore the last one, which
+#: is the only end-of-data signal the API gives: responses are bare arrays with
+#: no envelope, no total and no next link.
+BATCH_SIZE = 500
+MAX_BATCHES = 200
+
 #: Tokens last 3600s. Renew early: a token that expires mid-flight surfaces as
 #: a 401 on a query the driver is waiting on, and the whole point of the car
 #: screen is that it answers at a glance.
@@ -211,6 +223,8 @@ class FuelFinderClient:
         self.enabled = bool(config.get("enabled", False))
         self.client_id, self.client_secret = _resolve_credentials(config)
         self.base_url = str(config.get("base_url") or "").strip().rstrip("/")
+        # Optional: the path is fixed by the spec, so this only exists for a
+        # deployment that fronts the API somewhere unusual.
         self.token_url = str(config.get("token_url") or "").strip()
         self.scope = str(config.get("scope") or "fuelfinder.read").strip()
         # The regulations put a 30-minute ceiling on staleness at the source,
@@ -218,6 +232,7 @@ class FuelFinderClient:
         self.refresh_s = max(60, int(config.get("refresh_minutes") or 30) * 60)
 
         self._token: Optional[str] = None
+        self._refresh_token: Optional[str] = None
         self._token_expires: float = 0.0
         self._stations: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
@@ -226,14 +241,14 @@ class FuelFinderClient:
 
     # ---------------------------------------------------------------- config
 
+    def _token_endpoint(self) -> str:
+        return self.token_url or f"{self.base_url}{TOKEN_PATH}"
+
     @property
     def configured(self) -> bool:
+        # token_url is not required: it defaults to base_url + the spec's path.
         return bool(
-            self.enabled
-            and self.client_id
-            and self.client_secret
-            and self.base_url
-            and self.token_url
+            self.enabled and self.client_id and self.client_secret and self.base_url
         )
 
     @property
@@ -251,16 +266,16 @@ class FuelFinderClient:
         if self._token and time.time() < self._token_expires - TOKEN_REFRESH_MARGIN_S:
             return self._token
 
-        form = {
-            "grant_type": "client_credentials",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "scope": self.scope,
-        }
+        # JSON, not form-encoded, and no grant_type or scope. The portal's
+        # general "API Authentication" page describes a textbook
+        # x-www-form-urlencoded client_credentials exchange; the published
+        # OpenAPI spec for this endpoint does not agree with it, and the spec is
+        # what the server implements. Sending the documented form body gets a
+        # 400.
         async with sess.post(
-            self.token_url,
-            data=form,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            self._token_endpoint(),
+            json={"client_id": self.client_id, "client_secret": self.client_secret},
+            headers={"Content-Type": "application/json"},
         ) as resp:
             if resp.status != 200:
                 body = (await resp.text())[:200]
@@ -276,13 +291,20 @@ class FuelFinderClient:
                 return None
             data = await resp.json()
 
-        token = data.get("access_token")
+        # The token is nested: {"success", "data": {...}, "message"}. Read the
+        # top level and you get None from a 200 that plainly worked.
+        body = data.get("data") if isinstance(data.get("data"), dict) else data
+        token = body.get("access_token")
         if not token:
             self._last_error = "Fuel Finder auth returned no access_token"
             logger.error(self._last_error)
             return None
         self._token = str(token)
-        self._token_expires = time.time() + float(data.get("expires_in") or 3600)
+        self._token_expires = time.time() + float(body.get("expires_in") or 3600)
+        # Kept for the regenerate endpoint (48h). Unused for now: an hourly
+        # token on a 30-minute refresh is one exchange every other cycle, and
+        # the second code path only earns its keep above that rate.
+        self._refresh_token = body.get("refresh_token")
         return self._token
 
     async def verify(self) -> Dict[str, Any]:
@@ -299,7 +321,6 @@ class FuelFinderClient:
                 name for name, value in (
                     ("client_id", self.client_id),
                     ("client_secret", self.client_secret),
-                    ("token_url", self.token_url),
                     ("base_url", self.base_url),
                 ) if not value
             ]
@@ -322,61 +343,51 @@ class FuelFinderClient:
 
     # ----------------------------------------------------------------- fetch
 
-    async def _get_paged(
+    async def _get_batched(
         self, sess: aiohttp.ClientSession, token: str, path: str
     ) -> List[Dict[str, Any]]:
         """
-        GET every page of a collection.
+        GET every batch of a collection.
 
-        The developer guidelines say the API paginates but the public docs do
-        not pin the shape, so all three common ones are handled: a bare list, a
-        wrapper with an items/data/results array, and either a `next` link or a
-        page counter. Unknown shapes stop the loop rather than spinning.
+        `batch-number` is a required parameter, 1-indexed, and the response is
+        a bare JSON array — no envelope, no total, no next link. So the only
+        way to know the data has run out is a batch that comes back shorter
+        than BATCH_SIZE, and MAX_BATCHES is the guard against a server that
+        never returns one.
         """
         out: List[Dict[str, Any]] = []
-        url: Optional[str] = f"{self.base_url}{path}"
-        page = 1
-        seen: set[str] = set()
+        sep = "&" if "?" in path else "?"
 
-        while url and url not in seen and page <= 200:
-            seen.add(url)
+        for batch in range(1, MAX_BATCHES + 1):
+            url = f"{self.base_url}{path}{sep}batch-number={batch}"
             async with sess.get(
                 url, headers={"Authorization": f"Bearer {token}"}
             ) as resp:
                 if resp.status == 401:
-                    self._token = None          # force re-auth on the next pass
+                    self._token = None        # force re-auth on the next pass
                     raise RuntimeError("Fuel Finder rejected the token (401)")
+                if resp.status == 429:
+                    # Back off rather than hammering: partial data beats a
+                    # rate-limit ban, and the next refresh will fill the gap.
+                    logger.warning(
+                        "Fuel Finder rate-limited at batch %d of %s — keeping "
+                        "the %d rows already fetched", batch, path, len(out))
+                    break
                 if resp.status != 200:
-                    raise RuntimeError(
-                        f"Fuel Finder {path} returned {resp.status}"
-                    )
+                    raise RuntimeError(f"Fuel Finder {path} returned {resp.status}")
                 payload = await resp.json()
 
-            if isinstance(payload, list):
-                out.extend(payload)
+            if not isinstance(payload, list):
+                logger.warning("Fuel Finder %s batch %d was not a list", path, batch)
                 break
 
-            if not isinstance(payload, dict):
+            out.extend(payload)
+            if len(payload) < BATCH_SIZE:
                 break
-
-            batch = None
-            for key in ("items", "data", "results", "content"):
-                if isinstance(payload.get(key), list):
-                    batch = payload[key]
-                    break
-            if batch is None:
-                break
-            out.extend(batch)
-
-            nxt = payload.get("next") or payload.get("nextPage") or payload.get("_next")
-            if isinstance(nxt, str) and nxt:
-                url = nxt if nxt.startswith("http") else f"{self.base_url}{nxt}"
-            elif payload.get("hasMore") or payload.get("has_more"):
-                page += 1
-                sep = "&" if "?" in path else "?"
-                url = f"{self.base_url}{path}{sep}page={page}"
-            else:
-                url = None
+        else:
+            logger.warning(
+                "Fuel Finder %s still returning full batches at %d — stopping",
+                path, MAX_BATCHES)
 
         return out
 
@@ -404,8 +415,8 @@ class FuelFinderClient:
                     if not token:
                         return bool(self._stations)
 
-                    sites = await self._get_paged(sess, token, "/api/v1/pfs")
-                    prices = await self._get_paged(sess, token, "/api/v1/pfs/fuel-prices")
+                    sites = await self._get_batched(sess, token, SITES_PATH)
+                    prices = await self._get_batched(sess, token, PRICES_PATH)
 
                 merged = self._merge(sites, prices)
                 if not merged:
