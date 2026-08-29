@@ -1234,11 +1234,24 @@ import { createChart } from './chart-utils.js';
     // Price-history chart
     // The snapshots fuel_history.py records at every search, drawn as a
     // daily MEDIAN line over a shaded MIN–MAX band. One measure, one axis
-    // (£/L over time); single series so the card title is the legend.
+    // (pence/L over time); single series so the card title is the legend.
     //
     // Colour: the same blue the Energy tab uses for its "cheap" pole,
     // validated (dataviz six-checks) against both card surfaces.
     var historyChart = null;
+
+    // Pence to one decimal — the way a forecourt sign quotes it, and the way
+    // the price is actually set. Prices are stored per-litre in pounds, so the
+    // conversion happens here rather than in the data: history rows already on
+    // disk are in pounds and must keep meaning the same thing.
+    //
+    // The decimal is not decoration. UK pump prices are set to a tenth of a
+    // penny and in practice always end in .9, so dropping it rounds 159.9 to
+    // 160 — dearer than the station charges, and identical for two stations a
+    // penny apart.
+    function pence(pounds) {
+        return (pounds * 100).toFixed(1) + 'p';
+    }
 
     function priceLineColour() {
         return document.documentElement.getAttribute('data-theme') === 'dark'
@@ -1334,15 +1347,15 @@ import { createChart } from './chart-utils.js';
                     var i = params[0].dataIndex;
                     var s = h.series[i];
                     return '<strong>' + s.day + '</strong><br>' +
-                        'Median £' + s.median.toFixed(2) + '<br>' +
-                        'Range £' + s.min.toFixed(2) + ' – £' + s.max.toFixed(2) + '<br>' +
+                        'Median ' + pence(s.median) + '<br>' +
+                        'Range ' + pence(s.min) + ' – ' + pence(s.max) + '<br>' +
                         s.stations + ' station(s)';
                 },
             },
             xAxis: { type: 'category', data: daysAxis, boundaryGap: false },
             yAxis: {
                 type: 'value', scale: true,
-                axisLabel: { formatter: function (v) { return '£' + v.toFixed(2); } },
+                axisLabel: { formatter: function (v) { return (v * 100).toFixed(1); } },
             },
             series: [
                 { name: 'min', type: 'line', data: minS, stack: 'band',
@@ -1386,7 +1399,7 @@ import { createChart } from './chart-utils.js';
             host.innerHTML =
                 '<div class="small text-muted border-top pt-2 mt-2">' +
                   arrow + ' Cheapest seen in ' + h.series.length + ' day(s) of history: ' +
-                  '<strong>£' + h.cheapest_seen.price.toFixed(2) + '</strong> — ' +
+                  '<strong>' + pence(h.cheapest_seen.price) + '</strong> — ' +
                   escape(h.cheapest_seen.brand || '?') + ' ' +
                   escape(h.cheapest_seen.postcode || '') +
                   ' (' + escape(h.cheapest_seen.day) + ')' +
@@ -1409,9 +1422,9 @@ import { createChart } from './chart-utils.js';
                 '<strong>' + escape(s.brand || '?') + '</strong><br>' +
                 '<span class="text-muted">' + escape(s.address || '') + '</span>' +
               '</td>' +
-              '<td class="text-nowrap">£' + s.price.toFixed(2) +
+              '<td class="text-nowrap">' + pence(s.price) +
                 (i > 0 && delta > 0.001
-                    ? '<br><span class="small text-muted">+' + Math.round(delta * 100) + 'p</span>'
+                    ? '<br><span class="small text-muted">+' + (delta * 100).toFixed(1) + 'p</span>'
                     : '<br><span class="small text-success fw-bold">cheapest</span>') +
               '</td>' +
               '<td class="small text-nowrap">' +
@@ -1438,7 +1451,7 @@ import { createChart } from './chart-utils.js';
           '<div class="table-responsive">' +
             '<table class="table table-sm table-hover align-middle mb-0">' +
               '<thead class="table-light"><tr>' +
-                '<th>Station</th><th>Price/L</th><th>Dist</th><th>Maps</th>' +
+                '<th>Station</th><th>Price/L (p)</th><th>Dist</th><th>Maps</th>' +
               '</tr></thead><tbody>' + rows + '</tbody>' +
             '</table>' +
           '</div>' +

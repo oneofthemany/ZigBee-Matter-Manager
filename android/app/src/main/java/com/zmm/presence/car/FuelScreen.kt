@@ -106,7 +106,16 @@ class FuelScreen(carContext: CarContext) : Screen(carContext) {
     }
 
     private fun stationRow(s: HubClient.Station): Row {
-        val price = "£%.2f".format(s.price)
+        // Pence to one decimal — "159.9p", the way the forecourt sign quotes
+        // it. The hub stores per-litre prices in pounds, so the conversion is
+        // here rather than in the data.
+        //
+        // The decimal is not decoration. UK pump prices are set to a tenth of a
+        // penny and in practice always end in .9, so dropping it rounds 159.9
+        // to 160 — dearer than the station charges, and identical for two
+        // stations a penny apart, which is the whole question this screen
+        // answers.
+        val price = "%.1fp".format(s.price * 100)
 
         // DistanceSpan rather than a formatted string: the host renders it in
         // the unit the car is set to and keeps it aligned with its own map.
@@ -124,8 +133,12 @@ class FuelScreen(carContext: CarContext) : Screen(carContext) {
                             .setMarker(
                                 PlaceMarker.Builder()
                                     // Marker labels are capped at three glyphs, so
-                                    // the pence figure is all that fits — "134",
-                                    // not "£1.34".
+                                    // whole pence is all that fits — "134", not
+                                    // "133.9" and not "£1.34". Rounded rather than
+                                    // truncated: the tenth cannot be shown here at
+                                    // any precision, and rounding is out by at most
+                                    // 0.5p where truncation is reliably 0.9p light.
+                                    // The row title carries the exact figure.
                                     .setLabel("%.0f".format(s.price * 100))
                                     .setColor(CarColor.GREEN)
                                     .build()

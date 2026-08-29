@@ -14,6 +14,20 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.5.1 (9)
+
+Fuel prices are quoted in pence again, and no longer rounded to the penny.
+
+- The station row shows `159.9p`, the way a forecourt sign quotes it, instead of
+  `£1.60`. UK pump prices are set to a tenth of a penny and in practice always
+  end in .9, so rounding to the penny reported every station as dearer than it
+  is and made two stations a penny apart look identical — the one question this
+  screen exists to answer.
+- The map marker still shows whole pence. Marker labels are capped at three
+  glyphs, so the tenth cannot be shown there at any precision; it rounds rather
+  than truncates, which is at worst 0.5p out where truncation is reliably 0.9p
+  light. The row title carries the exact figure.
+
 ## 1.5.0 (8)
 
 Setup is a sequence now, not a wall of five open cards.
