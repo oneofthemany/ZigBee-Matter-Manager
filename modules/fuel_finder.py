@@ -363,9 +363,14 @@ class FuelFinderClient:
             async with sess.get(
                 url, headers={"Authorization": f"Bearer {token}"}
             ) as resp:
-                if resp.status == 401:
+                if resp.status in (401, 403):
+                    # 403, not 401, is what these endpoints return for a
+                    # missing or expired token ("Missing access token"). Only
+                    # clearing on 401 would leave a stale token in place to
+                    # fail forever.
                     self._token = None        # force re-auth on the next pass
-                    raise RuntimeError("Fuel Finder rejected the token (401)")
+                    raise RuntimeError(
+                        f"Fuel Finder rejected the token ({resp.status})")
                 if resp.status == 429:
                     # Back off rather than hammering: partial data beats a
                     # rate-limit ban, and the next refresh will fill the gap.

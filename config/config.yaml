@@ -358,7 +358,10 @@ fuel:
     # ZMM_FUEL_FINDER_CLIENT_ID / ZMM_FUEL_FINDER_CLIENT_SECRET.
     # Host only — the paths (/api/v1/pfs, /api/v1/pfs/fuel-prices and
     # /api/v1/oauth/generate_access_token) are fixed by the published spec.
-    base_url: "https://api.fuel-finder.service.gov.uk"
+    # Verified by probe: the token path 400s here with the API's own
+    # "client_id and client_secret are required", and an unknown path 404s.
+    # There is no api.* host — the service domain serves the API directly.
+    base_url: "https://www.fuel-finder.service.gov.uk"
     # Optional override. Blank = base_url + /api/v1/oauth/generate_access_token,
     # which is what the spec documents.
     token_url: ""
