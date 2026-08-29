@@ -569,6 +569,11 @@ function renderApisTab(config) {
         </button>
       </li>
       <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneFuel" type="button">
+          <i class="fas fa-gas-pump me-1"></i> <span class="tab-label">Fuel</span>
+        </button>
+      </li>
+      <li class="nav-item">
         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneSecurity" type="button">
           <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
         </button>
@@ -580,6 +585,7 @@ function renderApisTab(config) {
       <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
       <div class="tab-pane fade" id="apiPaneEnergy">${renderOctopusSection(config)}</div>
+      <div class="tab-pane fade" id="apiPaneFuel">${renderFuelFinderSection()}</div>
       <div class="tab-pane fade" id="apiPaneSecurity">${renderSecuritySection(config)}</div>
     </div>
     `;
@@ -588,6 +594,7 @@ function renderApisTab(config) {
     loadTidalStatus();
     loadAcUnits();
     loadOctopusStatus();
+    loadFuelFinderConfig();
     SECURITY_PROVIDERS.forEach(p => p.onShow?.());
 }
 
@@ -729,6 +736,166 @@ function renderOctopusSection(config) {
     <div id="octopusTestResult" class="mt-2"></div>
     `;
 }
+
+// FUEL FINDER SECTION — lives in the External APIs tab
+//
+// Rendered empty and filled by loadFuelFinderConfig(), unlike its neighbours
+// which read from the config blob: these credentials are deliberately NOT in
+// config.yaml (that file is in git), so they arrive from their own endpoint.
+//
+// The secret is write-only throughout. It is never sent to the browser, and a
+// blank field means "keep what is stored" rather than "clear it" — the same
+// contract as the Octopus key above.
+
+function renderFuelFinderSection() {
+    return `
+    <p class="text-muted small mb-3">
+      Fuel Finder is the UK government's statutory fuel price service — forecourts must
+      publish price changes within 30 minutes by law. Used for cheapest-fuel lookups in the
+      Drive tab and on the Android Auto screen, falling back to the retailer open-data feeds
+      if it is unavailable.
+      Create an application (Information Recipients) with a GOV.UK One Login at
+      <a href="https://www.developer.fuel-finder.service.gov.uk" target="_blank" rel="noopener" class="ms-1">developer.fuel-finder.service.gov.uk <i class="fas fa-external-link-alt fa-xs"></i></a>
+      to get your own credentials.
+    </p>
+    <div id="fuelFinderSource" class="mb-3"></div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-2">
+        <label class="form-label small fw-semibold">Enabled</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_ff_enabled">
+        </div>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Client ID</label>
+        <input type="text" class="form-control" id="cfg_ff_client_id" autocomplete="off">
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Client Secret</label>
+        <input type="password" class="form-control" id="cfg_ff_client_secret" autocomplete="off">
+        <small class="text-muted" id="cfg_ff_secret_hint"></small>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label small fw-semibold">Token URL</label>
+        <input type="text" class="form-control" id="cfg_ff_token_url"
+               placeholder="OAuth2 token endpoint, from the portal">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label small fw-semibold">Base URL</label>
+        <input type="text" class="form-control" id="cfg_ff_base_url"
+               placeholder="https://api.fuelfinder.service.gov.uk">
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm me-1" onclick="window.saveFuelFinderConfig()">
+      <i class="fas fa-save me-1"></i> Save
+    </button>
+    <button class="btn btn-outline-primary btn-sm" onclick="window.testFuelFinder()">
+      <i class="fas fa-plug me-1"></i> Test Connection
+    </button>
+    <div id="fuelFinderTestResult" class="mt-2"></div>
+    `;
+}
+
+async function loadFuelFinderConfig() {
+    const src = document.getElementById('fuelFinderSource');
+    try {
+        const res = await fetch('/api/fuel/finder/config', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const c = await res.json();
+
+        const el = id => document.getElementById(id);
+        if (el('cfg_ff_enabled')) el('cfg_ff_enabled').checked = !!c.enabled;
+        if (el('cfg_ff_token_url')) el('cfg_ff_token_url').value = c.token_url || '';
+        if (el('cfg_ff_base_url')) el('cfg_ff_base_url').value = c.base_url || '';
+        if (el('cfg_ff_client_id')) el('cfg_ff_client_id').value = c.client_id || '';
+        if (el('cfg_ff_secret_hint')) {
+            el('cfg_ff_secret_hint').textContent = c.secret_set
+                ? 'Saved — leave blank to keep the current secret.'
+                : 'Not set.';
+        }
+
+        // Environment variables win over anything saved here, so the fields are
+        // locked rather than left to write a file that would be ignored.
+        if (!c.editable) {
+            ['cfg_ff_client_id', 'cfg_ff_client_secret'].forEach(id => {
+                if (el(id)) el(id).disabled = true;
+            });
+        }
+
+        if (src) {
+            if (c.source === 'environment') {
+                src.innerHTML = '<div class="alert alert-info py-2 mb-0 small">' +
+                    'Credentials are supplied by the environment ' +
+                    '(<code>ZMM_FUEL_FINDER_CLIENT_ID</code> / <code>_SECRET</code>) ' +
+                    'and cannot be edited here.</div>';
+            } else if (c.configured) {
+                src.innerHTML = '<div class="alert alert-success py-2 mb-0 small">' +
+                    'Credentials stored in <code>' + w_escape(c.secrets_file) +
+                    '</code> (git-ignored, chmod 600).</div>';
+            } else {
+                src.innerHTML = '<div class="alert alert-warning py-2 mb-0 small">' +
+                    'No credentials set — cheapest-fuel lookups fall back to the ' +
+                    'retailer open-data feeds.</div>';
+            }
+        }
+    } catch (e) {
+        if (src) src.innerHTML = '<div class="text-danger small">Could not load: ' +
+            w_escape(String(e)) + '</div>';
+    }
+}
+
+window.saveFuelFinderConfig = async function () {
+    const out = document.getElementById('fuelFinderTestResult');
+    const val = id => (document.getElementById(id)?.value || '').trim();
+    const body = {
+        enabled: !!document.getElementById('cfg_ff_enabled')?.checked,
+        token_url: val('cfg_ff_token_url'),
+        base_url: val('cfg_ff_base_url'),
+    };
+    // Only send credentials when both are present: a blank secret means "keep
+    // the stored one", and sending a client_id without it would half-write.
+    const id = val('cfg_ff_client_id'), secret = val('cfg_ff_client_secret');
+    if (id && secret) { body.client_id = id; body.client_secret = secret; }
+
+    try {
+        const res = await fetch('/api/fuel/finder/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+        if (out) out.innerHTML = '<div class="text-success small">Saved.</div>';
+        const sec = document.getElementById('cfg_ff_client_secret');
+        if (sec) sec.value = '';          // never leave a secret sitting in the DOM
+        loadFuelFinderConfig();
+    } catch (e) {
+        if (out) out.innerHTML = '<div class="text-danger small">' +
+            w_escape(String(e.message || e)) + '</div>';
+    }
+};
+
+window.testFuelFinder = async function () {
+    const out = document.getElementById('fuelFinderTestResult');
+    if (out) out.innerHTML = '<span class="text-muted small">Testing…</span>';
+    try {
+        const res = await fetch('/api/fuel/finder/test', {
+            method: 'POST', credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.success) {
+            out.innerHTML = '<div class="text-success small">' +
+                'Authenticated — token valid for ' + (data.expires_in_s || 0) + 's.</div>';
+        } else {
+            out.innerHTML = '<div class="text-danger small">' +
+                w_escape(data.error || data.detail || 'Authentication failed') + '</div>';
+        }
+    } catch (e) {
+        if (out) out.innerHTML = '<div class="text-danger small">' +
+            w_escape(String(e.message || e)) + '</div>';
+    }
+};
 
 // MEDIA SECTION (Cast / WiiM / Radio) — lives in the External APIs tab
 

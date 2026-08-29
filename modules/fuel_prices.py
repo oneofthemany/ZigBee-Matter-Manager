@@ -1,10 +1,15 @@
 """
-Cheapest fuel near a location, from the UK retailer open-data feeds via
-uk-fuel-prices-api.
+Cheapest fuel near a location.
+
+Two sources, tried in order: the government Fuel Finder API (statutory, prices
+published within 30 minutes of a change by law), falling back to the retailer
+open-data feeds via uk-fuel-prices-api. Both present the same station shape —
+see modules/fuel_finder.py — so everything below this docstring is source
+agnostic and the fallback costs one branch rather than a second implementation.
 
 Adds a refresh guard, postcode lookup via postcodes.io, and cheapest-first
 "best nearby" queries with a Maps link per station. Every query is snapshotted
-into fuel history, because the feeds publish only today's number.
+into fuel history, because neither source publishes an archive.
 See docs/journeys.md.
 """
 
@@ -51,36 +56,83 @@ def maps_url(station: Dict[str, Any]) -> str:
 
 
 class FuelPriceService:
-    """Owns the uk-fuel-prices-api client and answers nearby-price queries."""
+    """Holds whichever price source is live and answers nearby-price queries."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self._api = None                       # lazy: import failure is survivable
+        self._finder = None                    # Fuel Finder, when configured
+        # Whichever source last answered. Every query reads through this rather
+        # than naming a source, which is what makes the fallback invisible to
+        # best_nearby.
+        self._active = None
+        self._config = config or {}
         self._refresh_lock = asyncio.Lock()
         self._last_refresh: float = 0.0
         self._last_error: Optional[str] = None
+        self._source: str = "none"
 
     # Data refresh
+    def _finder_client(self):
+        """The Fuel Finder client, or None when it isn't configured."""
+        if self._finder is None:
+            try:
+                from modules.fuel_finder import FuelFinderClient
+                self._finder = FuelFinderClient(
+                    (self._config.get("fuel") or {}).get("finder") or {}
+                )
+            except Exception as e:                        # noqa: BLE001
+                logger.warning(f"Fuel Finder unavailable: {e}")
+                return None
+        return self._finder if self._finder.configured else None
+
     async def _ensure_fresh(self, force: bool = False) -> bool:
-        """Fetch/refresh price data. Returns True if data is available."""
+        """
+        Fetch/refresh price data. Returns True if data is available.
+
+        Fuel Finder is tried first and the retailer feeds are the fallback, so a
+        misconfigured or unreachable government API degrades to the source this
+        project used before it rather than to an empty Drive tab. Whichever
+        answers becomes [_active] until the next refresh.
+        """
         async with self._refresh_lock:
+            finder = self._finder_client()
+            if finder is not None:
+                try:
+                    if await finder.get_prices(force_refresh=force):
+                        self._active = finder
+                        self._source = "fuel_finder"
+                        self._last_refresh = time.time()
+                        self._last_error = None
+                        return True
+                    logger.warning(
+                        "Fuel Finder returned no data (%s) — falling back to "
+                        "the retailer feeds", finder.last_error)
+                except Exception as e:                    # noqa: BLE001
+                    logger.warning(f"Fuel Finder failed, falling back: {e}")
+
             if self._api is None:
                 try:
                     from uk_fuel_prices_api import UKFuelPricesApi
                     self._api = UKFuelPricesApi()
                 except ImportError as e:
-                    self._last_error = f"uk-fuel-prices-api not installed: {e}"
+                    self._last_error = (
+                        f"Fuel Finder unavailable and uk-fuel-prices-api not "
+                        f"installed: {e}"
+                    )
                     logger.error(self._last_error)
                     return False
             try:
                 ok = await self._api.get_prices(force_refresh=force)
                 if ok:
+                    self._active = self._api
+                    self._source = "retailer_feeds"
                     self._last_refresh = time.time()
                     self._last_error = None
                 else:
                     self._last_error = "No fuel data returned from any retailer feed"
                 return ok
             except Exception as e:                        # noqa: BLE001
-                # A retailer feed being down must degrade to "stale data" or
+                # A source being down must degrade to "stale data" or
                 # "unavailable", never to a 500 that breaks the Drive tab.
                 self._last_error = f"Fuel price refresh failed: {e}"
                 logger.warning(self._last_error)
@@ -88,7 +140,7 @@ class FuelPriceService:
 
     def _stations_empty(self) -> bool:
         try:
-            return self._api is None or len(self._api.stations) == 0
+            return self._active is None or len(self._active.stations) == 0
         except Exception:                                 # noqa: BLE001
             return True
 
@@ -113,7 +165,7 @@ class FuelPriceService:
                     "error": self._last_error or "Fuel data unavailable"}
 
         try:
-            raw = self._api.stationsWithinRadius(lat, lon, radius_km)
+            raw = self._active.stationsWithinRadius(lat, lon, radius_km)
         except Exception as e:                            # noqa: BLE001
             return {"success": False, "error": f"Station lookup failed: {e}"}
 
@@ -185,12 +237,16 @@ class FuelPriceService:
     def status(self) -> Dict[str, Any]:
         count = 0
         try:
-            if self._api is not None:
-                count = int(len(self._api.stations))
+            if self._active is not None:
+                count = int(len(self._active.stations))
         except Exception:                                 # noqa: BLE001
             pass
         return {
             "stations_loaded": count,
+            # Which feed actually answered. Worth surfacing: the two can
+            # disagree, and "why is this price different from the app" starts
+            # with knowing which source produced it.
+            "source": self._source,
             "last_refresh": self._last_refresh or None,
             "last_error": self._last_error,
             "fuel_types": FUEL_TYPES,
@@ -204,9 +260,29 @@ class FuelPriceService:
 _service: Optional[FuelPriceService] = None
 
 
-def get_fuel_service() -> FuelPriceService:
+def get_fuel_service(config: Optional[Dict[str, Any]] = None) -> FuelPriceService:
     """Created on first use — no startup cost, no startup wiring to forget."""
     global _service
     if _service is None:
-        _service = FuelPriceService()
+        if config is None:
+            # Imported here rather than at module scope: main imports this
+            # module, so a top-level import of main would be circular.
+            try:
+                from main import CONFIG
+                config = CONFIG
+            except Exception:                             # noqa: BLE001
+                config = {}
+        _service = FuelPriceService(config)
     return _service
+
+
+def reset_fuel_service() -> None:
+    """
+    Drop the cached service so the next query rebuilds it.
+
+    Credentials are read when the client is constructed, so without this a save
+    from the settings page appears to do nothing until the hub is restarted —
+    and the operator's reasonable conclusion is that the save failed.
+    """
+    global _service
+    _service = None

@@ -344,3 +344,21 @@ zigbee:
   # ================================================================
   deconz:
     baudrate: auto           # 38400 for ConBee II/III/RaspBee, 57600 for ConBee I
+
+fuel:
+  # Cheapest-fuel lookups for the Drive tab and the Android Auto screen.
+  #
+  # Two sources: the government Fuel Finder API first, the retailer open-data
+  # feeds (uk-fuel-prices-api) as the fallback. Disabling the block below just
+  # means the fallback is always used — nothing breaks.
+  finder:
+    enabled: true
+    # NO CREDENTIALS HERE. This file is tracked in git. client_id/client_secret
+    # go in config/secrets.yaml (gitignored) or the environment as
+    # ZMM_FUEL_FINDER_CLIENT_ID / ZMM_FUEL_FINDER_CLIENT_SECRET.
+    base_url: "https://api.fuelfinder.service.gov.uk"
+    token_url: ""             # OAuth2 token endpoint, from the developer portal
+    scope: "fuelfinder.read"
+    # The regulations cap staleness at the source at 30 minutes, so polling
+    # faster spends rate limit to learn nothing new.
+    refresh_minutes: 30

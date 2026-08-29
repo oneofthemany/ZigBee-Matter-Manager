@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 
 from modules.auth_middleware import require_authenticated, require_scope
 from modules.fuel_prices import FUEL_TYPES, get_fuel_service
@@ -123,5 +123,84 @@ def register_fuel_routes(app: FastAPI):
     async def fuel_history_status(_=Depends(require_authenticated)):
         from modules.fuel_history import get_fuel_history
         return await get_fuel_history().status()
+
+    # ---- Fuel Finder credentials -------------------------------------------
+    #
+    # Admin only, and the secret is write-only: it is accepted here and never
+    # returned. Each operator supplies their own credentials from the GOV.UK
+    # developer portal — nothing ships with this project, and nothing about
+    # them reaches the phone, which only ever talks to its own hub.
+
+    def _config() -> dict:
+        from main import CONFIG
+        return CONFIG
+
+    @app.get("/api/fuel/finder/config")
+    async def fuel_finder_config(_=Depends(require_scope("admin"))):
+        from modules.fuel_finder import credentials_status
+        cfg = _config()
+        finder = (cfg.get("fuel") or {}).get("finder") or {}
+        return {
+            **credentials_status(finder),
+            "enabled": bool(finder.get("enabled", False)),
+            "base_url": finder.get("base_url") or "",
+            "token_url": finder.get("token_url") or "",
+        }
+
+    @app.post("/api/fuel/finder/config")
+    async def save_fuel_finder_config(
+            body: dict = Body(...),
+            _=Depends(require_scope("admin")),
+    ):
+        from modules.fuel_finder import credentials_status, save_credentials
+        from modules.fuel_prices import reset_fuel_service
+
+        cfg = _config()
+        finder = (cfg.get("fuel") or {}).get("finder") or {}
+
+        client_id = str(body.get("client_id") or "").strip()
+        client_secret = str(body.get("client_secret") or "").strip()
+        if client_id or client_secret:
+            if credentials_status(finder).get("source") == "environment":
+                raise HTTPException(
+                    409,
+                    "Credentials come from the environment "
+                    "(ZMM_FUEL_FINDER_CLIENT_ID/SECRET); a saved file would be "
+                    "ignored. Unset those to edit them here.",
+                )
+            try:
+                save_credentials(client_id, client_secret)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            except OSError as e:
+                raise HTTPException(500, f"Could not write the secrets file: {e}") from e
+
+        # The endpoints are not secret, so they stay in config.yaml where they
+        # are visible and reviewable alongside the rest of the deployment.
+        urls = {k: str(body.get(k) or "").strip()
+                for k in ("base_url", "token_url") if body.get(k) is not None}
+        if urls or "enabled" in body:
+            import yaml
+            path = "./config/config.yaml"
+            with open(path, "r") as fh:
+                disk = yaml.safe_load(fh) or {}
+            section = disk.setdefault("fuel", {}).setdefault("finder", {})
+            section.update(urls)
+            if "enabled" in body:
+                section["enabled"] = bool(body["enabled"])
+            with open(path, "w") as fh:
+                yaml.dump(disk, fh, default_flow_style=False, sort_keys=False)
+            cfg.setdefault("fuel", {}).setdefault("finder", {}).update(section)
+
+        reset_fuel_service()
+        finder = (cfg.get("fuel") or {}).get("finder") or {}
+        return {"success": True, **credentials_status(finder)}
+
+    @app.post("/api/fuel/finder/test")
+    async def test_fuel_finder(_=Depends(require_scope("admin"))):
+        """Prove the credentials by exchanging them for a token."""
+        from modules.fuel_finder import FuelFinderClient
+        finder = (_config().get("fuel") or {}).get("finder") or {}
+        return await FuelFinderClient(finder).verify()
 
     logger.info("Fuel price routes registered")

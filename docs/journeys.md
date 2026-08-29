@@ -409,13 +409,38 @@ record it lands on, which is a claim about a person rather than a view of one.
 
 ## Fuel prices
 
-`modules/fuel_prices.py` finds the cheapest fuel near a location from the
-[UK retailer open-data feeds](https://www.gov.uk/guidance/access-fuel-price-data)
-via the `uk-fuel-prices-api` package.
+`modules/fuel_prices.py` finds the cheapest fuel near a location from two
+sources, tried in order.
 
-That package fetches ~15 retailer JSON feeds (Asda, Tesco, BP, Shell, …) and
+**Fuel Finder** (`modules/fuel_finder.py`) is the government's statutory
+service. The Motor Fuel Price (Open Data) Regulations 2025 require forecourts
+to publish a price change within 30 minutes, which is both why it is preferred
+and why the refresh interval is 30 minutes rather than a guess. It is an OAuth2
+client-credentials API (scope `fuelfinder.read`, hour-long tokens) over two
+endpoints — `/api/v1/pfs` for sites and `/api/v1/pfs/fuel-prices` for prices —
+joined on `node_id`. Neither documents a geographic filter, so the snapshot is
+national and the radius is applied locally; that is also why it is cached.
+
+Credentials are per-operator and never ship with this project. They are entered
+in Settings → External APIs → Fuel and stored in `config/secrets.yaml`
+(git-ignored, chmod 600), or supplied as `ZMM_FUEL_FINDER_CLIENT_ID` /
+`ZMM_FUEL_FINDER_CLIENT_SECRET`, which take precedence. They deliberately do
+**not** live in `config.yaml`, which is tracked in git — a secret pasted there
+is a secret pushed to the remote, and the client says so loudly if it finds one.
+Nothing about them reaches the phone: the Android Auto screen asks its own hub,
+never the API.
+
+**The retailer open-data feeds** remain the fallback, reached via the
+[`uk-fuel-prices-api`](https://www.gov.uk/guidance/access-fuel-price-data)
+package when Fuel Finder is unconfigured, unreachable or empty. That package
+fetches ~15 retailer JSON feeds (Asda, Tesco, BP, Shell, …) and
 holds them in memory with an hour's cache; most retailers only refresh daily, so
-that cadence loses nothing. This module wraps it with a refresh guard (one
+that cadence loses nothing. `/api/fuel/status` reports which of the two actually
+answered, because the two can disagree and "why is this price different" starts
+there.
+
+Both sources present the same station shape, so everything downstream is source
+agnostic. This module wraps whichever is live with a refresh guard (one
 refresh at a time, with callers sharing the result), postcode → coordinates via
 postcodes.io (free, no key, and no logging of who asked), and "best nearby"
 queries: stations within a radius selling the wanted fuel, sorted cheapest
