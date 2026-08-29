@@ -66,7 +66,7 @@ async def _broadcast_scan_progress(progress: ScanProgress):
 
 @router.post("/create-admin")
 async def create_first_admin(req: CreateAdminRequest, response: Response):
-    from modules.auth import get_auth_manager
+    from modules.auth import get_auth_manager, validate_password
     from modules.auth_middleware import issue_session_cookie, _derive_session_secret
 
     auth = get_auth_manager()
@@ -83,8 +83,10 @@ async def create_first_admin(req: CreateAdminRequest, response: Response):
 
     if not req.username.strip():
         raise HTTPException(400, "Username required")
-    if len(req.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    try:
+        validate_password(req.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
     user = await auth.create_user(
         username=req.username.strip(),

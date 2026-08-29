@@ -132,11 +132,44 @@ If the phone is later lost or the person leaves the household, revoke the
 token from the same screen. The phone loses access immediately on its
 next request.
 
+## Changing passwords
+
+**Your own** — Settings → My Account → Change Password. You must enter your
+current password, then the new one twice. `PATCH /api/auth/users/<you>` with
+`{"password": ..., "current_password": ...}`; a wrong current password is a
+403, a missing one a 400.
+
+**Someone else's (admin)** — Settings → Users → edit the user → set Password
+and Confirm password, then Save. `PATCH /api/auth/users/<them>` with
+`{"password": ...}`. No current password is required: an admin resetting an
+account they don't own has none to give. Admins editing their *own* account
+in that screen still have to confirm, same as anywhere else.
+
+Either way:
+
+- The new password must be at least 8 characters. This is enforced in
+  `AuthManager`, so the API, the setup wizard and the UI all agree.
+- **Every existing session for that user is invalidated** — the browser you
+  are not sitting at, and any live WebSocket, which is hung up rather than
+  left streaming until it happens to drop. Clients reconnect on their own and
+  land on the login page. The person who made the change keeps their own
+  session: they get a fresh cookie in the response.
+- Issued **API tokens are not affected**. A token is a separate credential
+  with its own lifecycle — revoke those from Settings → Users → Tokens. If
+  you are resetting a password because an account was compromised, revoke
+  the user's tokens too.
+- The change is logged at WARNING with who changed whose password and
+  whether it was a self-service change or an admin reset.
+
+Sending `{"password": null}` clears a password, leaving an account reachable
+only by token. Admins may do this to other accounts; nobody may do it to
+their own.
+
 ## Self-service
 
 Non-admin users see a stripped-down Settings → Tokens screen where they
 can:
-- Change their own password.
+- Change their own password (current password required).
 - Issue tokens for themselves (within the scope of their groups).
 - Revoke their own tokens.
 
@@ -158,9 +191,13 @@ back to `enforce=True` once you're confident.
   per-password 16-byte salt.
 - **Tokens** are stored as SHA-256 hashes. Plaintext exists only on the
   client (or briefly in the issue response).
-- **Session cookies** are HMAC-SHA256-signed with a secret derived from
-  the auth file's inode + mtime. Replacing the file (e.g. backup
-  restore) invalidates all sessions — by design.
+- **Session cookies** are HMAC-SHA256-signed with a secret held in
+  `data/session_secret.bin`. Deleting that file invalidates every session
+  on every account.
+- **Changing a password invalidates that user's sessions.** Cookies carry
+  their issue time; the account records `pw_changed_at`, and a cookie
+  issued before it is refused. Accounts that have never changed a password
+  record nothing and are unaffected.
 - **No JWT, OIDC, or OAuth** is used. Tokens are static until revoked
   or expired. This is appropriate for a home gateway; it would not be
   appropriate for a multi-tenant SaaS.
@@ -198,7 +235,8 @@ spoof presence, and a stolen device token can be revoked individually.
 - Tokens are stored hashed (SHA-256). The plaintext is shown **once**, at issue.
 - Tokens carry 256 bits of entropy from `secrets.token_urlsafe(32)`.
 - Passwords are stored as PBKDF2-HMAC-SHA256, 200 000 iterations, 16-byte salt,
-  base64-encoded. No external password-hashing dependency is needed.
+  base64-encoded. No external password-hashing dependency is needed. Minimum
+  length 8; changing one cuts every session for that account.
 - There is deliberately **no** OAuth, OIDC, JWT, refresh token or rotation.
   Tokens are static until revoked or expired: simple enough to reason about, and
   sufficient for the threat model.

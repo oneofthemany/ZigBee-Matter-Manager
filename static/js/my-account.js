@@ -334,6 +334,10 @@
         err.style.display = 'none';
         ok.style.display = 'none';
 
+        if (!cur) {
+            err.textContent = 'Enter your current password.';
+            err.style.display = ''; return;
+        }
         if (!nw || nw.length < 8) {
             err.textContent = 'New password must be at least 8 characters.';
             err.style.display = ''; return;
@@ -342,15 +346,12 @@
             err.textContent = 'New passwords do not match.';
             err.style.display = ''; return;
         }
-        // Server doesn't currently re-verify the old password on PATCH /users/{me};
-        // we still ask for it as a UI guard rail. Backend hardening would add this
-        // server-side too — out of scope here.
         var me = window.zmmAuth.whoami();
         var r = await fetch('/api/auth/users/' + encodeURIComponent(me.username), {
             method: 'PATCH',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: nw }),
+            body: JSON.stringify({ password: nw, current_password: cur }),
         });
         if (!r.ok) {
             var e = await r.json().catch(function () { return {}; });
@@ -361,7 +362,8 @@
         document.getElementById('pw-cur').value = '';
         document.getElementById('pw-new').value = '';
         document.getElementById('pw-conf').value = '';
-        ok.textContent = 'Password updated.';
+        ok.textContent = 'Password updated. Any other devices signed in as ' +
+            me.username + ' have been signed out.';
         ok.style.display = '';
     }
 

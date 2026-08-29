@@ -354,6 +354,10 @@
         var existing = username
             ? state.users.find(function (u) { return u.username === username; })
             : null;
+        // Editing yourself follows the self-service rules: the server wants the
+        // current password before it will accept a new one.
+        var me = window.zmmAuth && window.zmmAuth.whoami();
+        var isSelf = !!(existing && me && me.username === existing.username);
         var u = existing || {
             username: '', groups: [], extra_scopes: [],
             disabled: false, description: '', has_password: false,
@@ -383,9 +387,24 @@
                 '<div class="mb-3"><label class="form-label">Username</label>' +
                   '<input id="uname" class="form-control" value="' + escape(u.username) + '"' +
                     (existing ? ' readonly' : '') + '></div>' +
+                (isSelf
+                  ? '<div class="mb-3"><label class="form-label">Your current password</label>' +
+                      '<input id="ucurpass" type="password" class="form-control" ' +
+                        'autocomplete="current-password">' +
+                      '<div class="form-text">Required to change your own password.</div></div>'
+                  : '') +
                 '<div class="mb-3"><label class="form-label">Password ' +
                   (existing ? '(leave blank to keep)' : '') + '</label>' +
                   '<input id="upass" type="password" class="form-control" autocomplete="new-password"></div>' +
+                '<div class="mb-3"><label class="form-label">Confirm password</label>' +
+                  '<input id="upass2" type="password" class="form-control" autocomplete="new-password">' +
+                  '<div class="form-text">' +
+                    (existing
+                      ? 'Setting a password signs ' +
+                        (isSelf ? 'your other devices' : escape(u.username) + '\'s devices') +
+                        ' out.'
+                      : 'At least 8 characters.') +
+                  '</div></div>' +
                 '<div class="mb-3"><label class="form-label">Groups</label>' +
                   '<div>' + groupCheckboxes + '</div></div>' +
                 '<div class="mb-3"><label class="form-label">Extra scopes (comma-separated)</label>' +
@@ -450,6 +469,29 @@
         modal.show();
 
         document.getElementById('user-save-btn').onclick = async function () {
+            // Passwords first — a typo caught here costs nothing, whereas one
+            // that reaches the server locks the account holder out.
+            var pw = document.getElementById('upass').value;
+            var pw2 = document.getElementById('upass2').value;
+            if (pw || pw2) {
+                if (pw.length < 8) {
+                    showErr('user-edit-error',
+                        'Password must be at least 8 characters.');
+                    return;
+                }
+                if (pw !== pw2) {
+                    showErr('user-edit-error', 'Passwords do not match.');
+                    return;
+                }
+            }
+            var curPw = isSelf && document.getElementById('ucurpass')
+                ? document.getElementById('ucurpass').value : '';
+            if (pw && isSelf && !curPw) {
+                showErr('user-edit-error',
+                    'Enter your current password to change your own password.');
+                return;
+            }
+
             var groups = [];
             document.querySelectorAll('#userEditModal input[type=checkbox][id^=ugrp-]').forEach(function (cb) {
                 if (cb.checked) groups.push(cb.value);
@@ -492,8 +534,10 @@
                 description: document.getElementById('udesc').value,
                 landing: document.getElementById('ulanding').value,
             };
-            var pw = document.getElementById('upass').value;
-            if (pw) body.password = pw;
+            if (pw) {
+                body.password = pw;
+                if (isSelf) body.current_password = curPw;
+            }
             if (existing) {
                 var dis = document.getElementById('udisabled');
                 if (dis) body.disabled = dis.checked;
@@ -549,7 +593,6 @@
                 await loadPresenceUsers();
             } else {
                 body.username = document.getElementById('uname').value.trim();
-                if (pw) body.password = pw;
                 var r2 = await fetch('/api/auth/users',
                     { method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify(body) });

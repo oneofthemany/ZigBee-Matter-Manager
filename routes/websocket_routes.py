@@ -4,6 +4,8 @@ Extracted from main.py.
 """
 import json
 import logging
+from typing import Dict, Optional
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from modules.json_helpers import prepare_for_json
 
@@ -20,16 +22,43 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections = []
+        # ws -> username, for sockets that authenticated as someone. Anonymous
+        # setup-phase sockets are absent. Only used to hang up on a user whose
+        # credentials changed; broadcast still goes to every connection.
+        self._owners: Dict[WebSocket, str] = {}
 
-    async def connect(self, ws: WebSocket):
+    async def connect(self, ws: WebSocket, username: Optional[str] = None):
         await ws.accept()
         self.active_connections.append(ws)
+        if username:
+            self._owners[ws] = username
         logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, ws: WebSocket):
         if ws in self.active_connections:
             self.active_connections.remove(ws)
+        self._owners.pop(ws, None)
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+
+    async def disconnect_user(self, username: str) -> int:
+        """Hang up every socket authenticated as `username`; returns the count.
+
+        Credentials are checked when the socket is accepted and never again, so
+        a password change would otherwise leave an already-open socket streaming
+        until it happened to drop. Clients reconnect on their own and re-present
+        whatever credentials they now have.
+        """
+        doomed = [ws for ws, owner in self._owners.items() if owner == username]
+        for ws in doomed:
+            try:
+                await ws.close(code=1008)   # Policy Violation
+            except Exception:
+                pass
+            self.disconnect(ws)
+        if doomed:
+            logger.info("Closed %d WebSocket(s) for '%s' after a credential change",
+                        len(doomed), username)
+        return len(doomed)
 
     async def broadcast(self, message: dict):
         """Broadcast message to all connected clients with safe JSON serialization."""
@@ -77,7 +106,7 @@ def register_websocket_routes(app: FastAPI):
             cookie = ws.cookies.get("zmm_session")
             if cookie:
                 secret = _derive_session_secret(str(auth_mgr.config_path))
-                username = _verify_session(cookie, secret)
+                username = _verify_session(cookie, secret, auth=auth_mgr)
                 if username and username in auth_mgr.users:
                     user = auth_mgr.users[username]
                     if not user.disabled:
@@ -135,7 +164,7 @@ def register_websocket_routes(app: FastAPI):
             logger.warning("WebSocket connection rejected (no auth)")
             return
 
-        await manager.connect(ws)
+        await manager.connect(ws, auth_username)
         try:
             while True:
                 data = await ws.receive_text()

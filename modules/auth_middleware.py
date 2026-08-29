@@ -73,8 +73,14 @@ def _sign_session(username: str, issued_at: int, secret: bytes) -> str:
 
 
 def _verify_session(token: str, secret: bytes,
-                    max_age_s: int = 30 * 24 * 3600) -> Optional[str]:
-    """Returns username if the cookie is valid and unexpired, else None."""
+                    max_age_s: int = 30 * 24 * 3600,
+                    auth: Optional[AuthManager] = None) -> Optional[str]:
+    """Returns username if the cookie is valid and unexpired, else None.
+
+    Pass `auth` to also refuse cookies issued before the user's last password
+    change. The signature alone cannot express this: cookies are stateless, so
+    without the lookup a stolen session outlives the reset meant to kill it.
+    """
     try:
         padding = "=" * (-len(token) % 4)
         raw = base64.urlsafe_b64decode(token + padding)
@@ -89,6 +95,12 @@ def _verify_session(token: str, secret: bytes,
         issued = int(issued_str)
         if time.time() - issued > max_age_s:
             return None
+        if auth is not None:
+            user = auth.users.get(username)
+            if user is None:
+                return None
+            if user.pw_changed_at and issued < user.pw_changed_at:
+                return None
         return username
     except Exception:
         return None
@@ -308,7 +320,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 2. Session cookie
         cookie = request.cookies.get("zmm_session")
         if cookie:
-            username = _verify_session(cookie, self._secret())
+            username = _verify_session(cookie, self._secret(), auth=self.auth)
             if username:
                 user = self.auth.users.get(username)
                 if user and not user.disabled:

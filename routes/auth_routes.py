@@ -52,7 +52,7 @@ class DisableMFARequest(BaseModel):
 
 class CreateUserRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=32)
-    password: Optional[str] = None
+    password: Optional[str] = Field(None, max_length=200)
     groups: List[str] = Field(default_factory=list)
     extra_scopes: List[str] = Field(default_factory=list)
     description: str = ""
@@ -61,7 +61,11 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    password: Optional[str] = None
+    password: Optional[str] = Field(None, max_length=200)
+    # Required when changing your OWN password: proves the caller is the
+    # account holder rather than a borrowed session. Admins resetting someone
+    # else's password have nothing to confirm and omit it.
+    current_password: Optional[str] = Field(None, max_length=200)
     groups: Optional[List[str]] = None
     extra_scopes: Optional[List[str]] = None
     disabled: Optional[bool] = None
@@ -382,6 +386,8 @@ def register_auth_routes(
     async def update_user(
             username: str,
             req: UpdateUserRequest,
+            request: Request,
+            response: Response,
             principal: Principal = Depends(require_authenticated),
     ):
         mgr = _auth()
@@ -408,13 +414,56 @@ def register_auth_routes(
             if not others:
                 raise HTTPException(400, "Cannot disable the last admin")
 
+        changes = req.dict(exclude_unset=True)
+        current_password = changes.pop("current_password", None)
+        changing_password = "password" in changes
+
+        if changing_password:
+            target = mgr.users.get(username)
+            if target is None:
+                raise HTTPException(404, "User not found")
+            # Changing your own password means re-confirming the old one. A
+            # hijacked session could otherwise lock the real owner out of their
+            # own account. Nothing to confirm if they have no password yet.
+            if is_self and target.password_hash:
+                if not current_password:
+                    raise HTTPException(400, "Current password is required")
+                if not mgr.verify_password(username, current_password):
+                    raise HTTPException(403, "Current password is incorrect")
+            # Clearing a password (null, or "" — both mean "no password" to
+            # the manager) leaves an account reachable only by token. Useful
+            # for service accounts, never for the person making the request.
+            if not changes["password"] and is_self:
+                raise HTTPException(400, "Cannot clear your own password")
+
         try:
-            changes = req.dict(exclude_unset=True)
             user = await mgr.update_user(username, **changes)
         except KeyError:
             raise HTTPException(404, "User not found")
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+        if changing_password:
+            logger.warning(
+                "Password for '%s' changed by '%s' (%s)",
+                username, principal.user.username,
+                "self-service" if is_self else "admin reset",
+            )
+            # Sockets authenticate once at accept and never again, so an open
+            # one outlives the cookie that opened it. Imported lazily: this
+            # module must stay importable without the WebSocket stack.
+            try:
+                from routes.websocket_routes import manager as ws_manager
+                await ws_manager.disconnect_user(username)
+            except Exception as e:      # never fail a password change over this
+                logger.warning("Could not close WebSockets for '%s': %s", username, e)
+
+            # The change just invalidated every session for this user,
+            # including the caller's own. Hand them a fresh cookie so a
+            # self-service change doesn't bounce them to the login page.
+            if is_self:
+                _set_session(request, response, username, remember=True)
+
         return {"success": True, "user": user.public_view()}
 
     @app.delete("/api/auth/users/{username}")

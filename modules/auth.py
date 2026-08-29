@@ -71,6 +71,21 @@ DEFAULT_GROUPS: Dict[str, List[str]] = {
 PBKDF2_ITER = 200_000
 PBKDF2_SALT_BYTES = 16
 
+#: Shortest password we will store. Enforced in the manager rather than the
+#: route models so the API, the setup wizard and any future CLI all agree.
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 200
+
+
+def validate_password(plain: str) -> None:
+    """Raise ValueError if `plain` is unusable as a password."""
+    if not isinstance(plain, str) or len(plain) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if len(plain) > MAX_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Password must be at most {MAX_PASSWORD_LENGTH} characters")
+
 
 def hash_password(plain: str) -> str:
     """Return PBKDF2-HMAC-SHA256 hash; format: pbkdf2$<iter>$<salt_b64>$<hash_b64>."""
@@ -206,6 +221,11 @@ class User:
     created_at: float = field(default_factory=time.time)
     description: str = ""
     landing: str = DEFAULT_LANDING
+    #: Whole seconds; session cookies issued strictly before this are refused.
+    #: Truncated to an int so a cookie re-issued in the same second as the
+    #: change survives — otherwise you log yourself out changing your own
+    #: password. None means "never changed", which revokes nothing.
+    pw_changed_at: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -256,6 +276,9 @@ class AuthManager:
                         # hand-typo can never strand someone somewhere odd.
                         landing=(u.get("landing") if u.get("landing") in VALID_LANDINGS
                                  else DEFAULT_LANDING),
+                        pw_changed_at=(int(u["pw_changed_at"])
+                                       if u.get("pw_changed_at") is not None
+                                       else None),
                     )
                     self.users[user.username] = user
                 for t in raw.get("tokens", []) or []:
@@ -342,9 +365,12 @@ class AuthManager:
                     "Username must be 2-32 chars, alphanumeric/_/-")
             if landing is not None and landing not in VALID_LANDINGS:
                 raise ValueError(f"landing must be one of {VALID_LANDINGS}")
+            if password:
+                validate_password(password)
             user = User(
                 username=username,
                 password_hash=hash_password(password) if password else None,
+                pw_changed_at=int(time.time()) if password else None,
                 groups=list(groups or []),
                 extra_scopes=list(extra_scopes or []),
                 description=description,
@@ -364,7 +390,16 @@ class AuthManager:
                 raise KeyError(username)
             if "password" in changes:
                 pw = changes.pop("password")
-                user.password_hash = hash_password(pw) if pw else None
+                if pw:
+                    validate_password(pw)
+                    user.password_hash = hash_password(pw)
+                else:
+                    # Explicit clear — the account keeps working for tokens
+                    # but can no longer log in to the UI.
+                    user.password_hash = None
+                # Stamped on a clear too: dropping the password must not leave
+                # the old browser session alive.
+                user.pw_changed_at = int(time.time())
             if changes.get("landing") is not None and changes["landing"] not in VALID_LANDINGS:
                 raise ValueError(f"landing must be one of {VALID_LANDINGS}")
             for key in ("groups", "extra_scopes", "disabled", "description", "landing"):
