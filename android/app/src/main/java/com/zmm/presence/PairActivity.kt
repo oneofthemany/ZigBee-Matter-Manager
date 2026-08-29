@@ -2,6 +2,7 @@ package com.zmm.presence
 
 import android.Manifest
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +23,16 @@ class PairActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityPairBinding
     private lateinit var prefs: Prefs
+
+    /**
+     * Setup runs as an accordion: one open body at a time, and by default it is
+     * the first step that isn't finished. Finishing that step opens the next.
+     *
+     * The screen outlives setup, though — it is also where you disarm, change
+     * car or repoint the hub — so a header tap overrides the choice. The state
+     * machine lives in [StepAccordion], under test.
+     */
+    private val steps = StepAccordion()
 
     private val requestForeground = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -87,6 +98,11 @@ class PairActivity : AppCompatActivity() {
         b.armBtn.setOnClickListener { if (prefs.armed) disarm() else arm() }
         b.forgetBtn.setOnClickListener { forget() }
         b.discoverBtn.setOnClickListener { discover() }
+
+        b.hubHeader.setOnClickListener { toggle(StepAccordion.Step.HUB) }
+        b.permHeader.setOnClickListener { toggle(StepAccordion.Step.PERMISSIONS) }
+        b.geoHeader.setOnClickListener { toggle(StepAccordion.Step.GEOFENCE) }
+        b.driveHeader.setOnClickListener { toggle(StepAccordion.Step.DRIVE) }
         b.themeBtn.setOnClickListener { cycleTheme() }
         renderThemeButton()
 
@@ -596,11 +612,12 @@ class PairActivity : AppCompatActivity() {
         val fg = Geofencing.hasForegroundLocation(this)
         val bg = Geofencing.hasBackgroundLocation(this)
 
-        b.permState.text = when {
+        val permText = when {
             !fg -> getString(R.string.perm_none)
             !bg -> getString(R.string.perm_fg_only)
             else -> getString(R.string.perm_ok)
         }
+        b.permState.text = permText
         b.permsBtn.isEnabled = !fg || !bg
 
         val batteryOk = isIgnoringBatteryOptimizations()
@@ -612,17 +629,19 @@ class PairActivity : AppCompatActivity() {
         // when the phone is off the home Wi-Fi. See Prefs.isPublicUrl.
         val publicHub = Prefs.isPublicUrl(prefs.hubUrl)
         b.carBtn.isEnabled = publicHub
-        b.carState.text = when {
+        val carText = when {
             !publicHub -> getString(R.string.car_needs_public)
             prefs.carBtAddress.isEmpty() -> getString(R.string.car_none)
             else -> getString(R.string.car_fmt, prefs.carBtName.ifEmpty { prefs.carBtAddress })
         }
+        b.carState.text = carText
 
         b.armBtn.isEnabled = prefs.isPaired && prefs.hasHome && fg && bg
         b.armBtn.setText(if (prefs.armed) R.string.disarm else R.string.arm)
-        b.homeState.text = if (prefs.hasHome) {
+        val homeText = if (prefs.hasHome) {
             getString(R.string.home_fmt, fmt(prefs.homeLat), fmt(prefs.homeLon), prefs.radiusM.toInt())
         } else getString(R.string.home_none)
+        b.homeState.text = homeText
 
         // Pills restate the section's state in one word, so the whole screen
         // can be read down the right-hand edge without parsing the sentences.
@@ -672,6 +691,109 @@ class PairActivity : AppCompatActivity() {
                 driveOn -> Tone.OK
                 else -> Tone.IDLE
             })
+
+        applySteps(
+            // Pairing is finished when the hub has answered, not when the
+            // fields are full — the same distinction the hub pill draws.
+            hubDone = prefs.isPaired && prefs.verified,
+            // Battery exemption deliberately does not gate this step. Arm only
+            // requires fg && bg, and a declined system dialog would otherwise
+            // wedge the accordion here forever. It is called out in the
+            // summary instead, where declining it stays visible.
+            permDone = fg && bg,
+            geoDone = prefs.armed,
+            driveDone = prefs.carBtAddress.isNotEmpty(),
+            driveBlocked = !publicHub,
+            hubSummary = if (prefs.isPaired) prefs.hubUrl else getString(R.string.sum_hub_none),
+            permSummary =
+                if (batteryOk) permText
+                else getString(R.string.sum_two_part, permText, getString(R.string.sum_battery_capped)),
+            geoSummary = homeText,
+            driveSummary = carText,
+        )
+    }
+
+    // ---- the setup accordion ----
+
+    private fun toggle(step: StepAccordion.Step) {
+        steps.toggle(step)
+        render()
+    }
+
+    /** Decide which step is open, then paint all four headers to match. */
+    private fun applySteps(
+        hubDone: Boolean,
+        permDone: Boolean,
+        geoDone: Boolean,
+        driveDone: Boolean,
+        driveBlocked: Boolean,
+        hubSummary: String,
+        permSummary: String,
+        geoSummary: String,
+        driveSummary: String,
+    ) {
+        val open = steps.resolve(
+            done = mapOf(
+                StepAccordion.Step.HUB to hubDone,
+                StepAccordion.Step.PERMISSIONS to permDone,
+                StepAccordion.Step.GEOFENCE to geoDone,
+                StepAccordion.Step.DRIVE to driveDone,
+            ),
+            blocked = if (driveBlocked) setOf(StepAccordion.Step.DRIVE) else emptySet(),
+        )
+
+        section(1, b.hubHeader, b.hubStep, b.hubChevron, b.hubSummary, b.hubBody,
+            hubDone, open == StepAccordion.Step.HUB, hubSummary)
+        section(2, b.permHeader, b.permStep, b.permChevron, b.permSummary, b.permBody,
+            permDone, open == StepAccordion.Step.PERMISSIONS, permSummary)
+        section(3, b.geoHeader, b.geoStep, b.geoChevron, b.geoSummary, b.geoBody,
+            geoDone, open == StepAccordion.Step.GEOFENCE, geoSummary)
+        section(4, b.driveHeader, b.driveStep, b.driveChevron, b.driveSummary, b.driveBody,
+            driveDone, open == StepAccordion.Step.DRIVE, driveSummary)
+    }
+
+    /**
+     * One header + body pair. The summary and the body are mutually exclusive:
+     * the body already states everything the summary does, so showing both
+     * would print the same sentence twice.
+     */
+    private fun section(
+        index: Int,
+        header: View,
+        marker: android.widget.TextView,
+        chevron: android.widget.ImageView,
+        summaryView: android.widget.TextView,
+        body: View,
+        isDone: Boolean,
+        isOpen: Boolean,
+        summary: String,
+    ) {
+        body.visibility = if (isOpen) View.VISIBLE else View.GONE
+        summaryView.visibility = if (isOpen) View.GONE else View.VISIBLE
+        summaryView.text = summary
+        chevron.rotation = if (isOpen) 180f else 0f
+        header.contentDescription =
+            getString(if (isOpen) R.string.step_collapse else R.string.step_expand)
+
+        marker.text = if (isDone) getString(R.string.step_done) else index.toString()
+        marker.backgroundTintList = ColorStateList.valueOf(
+            getColor(
+                when {
+                    isDone -> R.color.honey
+                    isOpen -> R.color.accent
+                    else -> R.color.border_color
+                }
+            )
+        )
+        marker.setTextColor(
+            getColor(
+                when {
+                    isDone -> R.color.honey_ink
+                    isOpen -> R.color.wax
+                    else -> R.color.text_secondary
+                }
+            )
+        )
     }
 
     // ---- theme ----

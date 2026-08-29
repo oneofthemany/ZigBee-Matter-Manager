@@ -10,11 +10,21 @@
         layout means a translation can drop it if a locale renders it badly.
     -->
     <string name="hex_mark">Z</string>
-    <string name="label_hub">⬡  Hub</string>
-    <string name="label_geofence">⬡  Home geofence</string>
-    <string name="label_permissions">⬡  Permissions</string>
-    <string name="label_drive">⬡  Drive mode</string>
+    <string name="label_hub">Hub</string>
+    <string name="label_geofence">Home geofence</string>
+    <string name="label_permissions">Permissions</string>
+    <string name="label_drive">Drive mode</string>
     <string name="label_device">⬡  This device</string>
+
+    <!-- Collapsed-step summaries. Each replaces the section's body with the one
+         fact you would have opened it to check. -->
+    <string name="sum_hub_none">No hub configured</string>
+    <string name="sum_battery_capped">Background activity still restricted</string>
+    <!-- Joins a summary to a caveat on one collapsed line. -->
+    <string name="sum_two_part">%1$s · %2$s</string>
+    <string name="step_expand">Expand section</string>
+    <string name="step_collapse">Collapse section</string>
+    <string name="step_done">\u2713</string>
 
     <!-- Status pills. Deliberately terse: they are read at a glance against the
          full sentence underneath, so they must not repeat it. -->

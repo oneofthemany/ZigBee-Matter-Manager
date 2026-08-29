@@ -62,12 +62,22 @@ production for individual accounts.
 | **Distribution** | A link. Tester opens it, installs. | Testers by email list, updates arrive through Play |
 | **Good for** | Iterating on the car screen | Living with it day to day |
 
-Start with **Internal App Sharing**. It is the lower-commitment of the two, and
-the reusable version code matters more than it sounds — you will rebuild this
-screen more than once, and bumping `versionCode` on every attempt gets old.
+**Read §8 before choosing.** Until 31 August 2026 this was a free choice, and
+the advice was to start with Internal App Sharing: lower commitment, and the
+reusable version code matters more than it sounds when you are rebuilding the
+screen repeatedly. The target API deadline changed the calculus.
 
-Move to the Internal Test Track once the screen is right and you want it to
-update itself.
+**Go straight to the Internal Test Track if you have not uploaded yet.** It is
+the route that establishes the app record the Android Auto form factor needs
+(§7), it is the one you want for living with the screen day to day, and it is
+the one the deadline applies to. Internal App Sharing does not create an app in
+the Console, so time spent there is not progress toward a car launcher entry.
+
+Whether Internal App Sharing enforces the target API requirement is not
+documented either way. Do not find out at the deadline.
+
+Internal App Sharing remains the better tool once the app exists and you are
+iterating on the screen — reusing version code `7` forever is worth having.
 
 ---
 
@@ -87,11 +97,21 @@ update itself.
 
    This is one of the two things Play checks when you opt into Android Auto.
 
-Leave `android.hardware.type.automotive` at `required="false"`. That is correct
-for a phone app that projects to Android Auto, and the manifest comment already
-explains why. `required="true"` targets **Android Automotive OS** — a different
-product, with its own track, its own screenshots, and a much heavier review.
-Not what you want.
+**Do not declare `android.hardware.type.automotive` at all** — not even with
+`required="false"`. Play rejects the bundle outright:
+
+> The app cannot declare 'android.hardware.type.automotive' device feature and
+> 'com.google.android.gms.car.application' metadata at the same time.
+
+The two declarations describe different products. The feature marks an app as
+built for **Android Automotive OS**, the embedded platform — a different track,
+its own screenshots, a much heavier review. The metadata marks an app as
+projecting to **Android Auto** from a phone, which is this one. Play permits
+either, never both, and the check is on the declaration being *present*, so
+`required="false"` is not the safe middle ground it looks like.
+
+The manifest no longer declares it, and carries a comment saying why so it does
+not get helpfully re-added.
 
 ---
 
@@ -130,15 +150,32 @@ Settings → License testing.
 The track needs an **App Bundle**, not an APK:
 
 ```bash
-./gradlew bundleRelease
+python3 build_release.py --aab
 # app/build/outputs/bundle/release/app-release.aab
 ```
+
+That wraps `./gradlew bundleRelease` (which works standalone if you prefer) and
+adds the checks that matter for an upload: that the bundle is signed with your
+key and not the debug one, that the debug network config did not leak into it,
+and that the pinning guards compiled in. It prints the `versionCode` it built,
+which is the one thing Play refuses an upload over without warning you first.
 
 `versionCode` must strictly increase on every upload — Play rejects a reused
 one. It is at **7** in `app/build.gradle.kts`; bump it and `versionName`
 together, per the CHANGELOG's rule.
 
 1. Console → **Create app**. Name it, pick *App*, *Free*, accept declarations.
+
+   **The package name binds here and is permanent.** It comes from the first
+   bundle the app record accepts, and it can never be changed or reused
+   afterwards — not by editing the record, not by deleting it. If the Console
+   is asking for a package name that is not `com.zmm.presence`, the record is
+   bound to something else and this bundle will never upload to it. Fix the
+   record, not the bundle: delete the app in the Console (possible only while
+   nothing has been rolled out to any track) and create it again. Changing
+   `applicationId` to match instead makes a different app — new identity on the
+   phone, and the sideloaded copy's pairing is not inherited.
+
 2. **Testing → Internal testing → Create new release**.
 3. Upload the `.aab`. Accept Play App Signing when prompted — this is the point
    at which `zmm-release.jks` becomes your *upload* key and Google generates the
@@ -181,24 +218,45 @@ is most of the work done.
 
 ---
 
-## 8. Deadline you need to know about
+## 8. The target API deadline, and the order it forces
 
-**From 31 August 2026, new apps and app updates must target API 36** to be
-accepted by Play ([target API requirements](https://developer.android.com/google/play/requirements/target-sdk)).
+This project is on `targetSdk = 35` / `compileSdk = 35`, and **31 August 2026**
+is the date that matters ([target API requirements](https://developer.android.com/google/play/requirements/target-sdk)).
 
-This project is on `targetSdk = 35` / `compileSdk = 35`. As of this writing that
-is **under a month away**. Two consequences:
+Two separate rules apply, and confusing them is the trap:
 
-- Uploading before the deadline works as-is.
-- Any upload after it needs `compileSdk = 36` and `targetSdk = 36` in
-  `app/build.gradle.kts`, plus whatever Android 16 behaviour changes bite.
+| Rule | Requires | Effect on this app at 35 |
+|---|---|---|
+| New apps and app **updates**, from 31 Aug 2026 | API **36** | An upload *after* the date is rejected |
+| Existing apps, to stay available to **new users** | API **35** | Already satisfied, indefinitely |
 
-An extension to 1 November 2026 can be requested from the Console if you need
-the room. Existing apps separately need to target 35+ to stay available to new
-users, which this already satisfies.
+### The sequencing
+
+**Get the bundle uploaded at 35 before 31 August 2026.** An upload accepted
+before the deadline stays accepted, and 35 already satisfies the availability
+rule — so the app keeps working and keeps installing after the date passes.
+Only the *next update* needs 36.
+
+Miss the date and the position is worse than it sounds: the very first upload
+now needs 36, so the fuel screen does not reach the car until the SDK bump is
+done and tested. Uploading first turns the bump into unhurried work; not
+uploading makes it a blocker.
 
 Bumping to 36 is not a one-line change to make blind — do it as its own piece of
-work with a device to test on, not in the middle of a release.
+work with a device to test on, not in the middle of a release. That is precisely
+why it is worth getting an accepted upload behind you first.
+
+An extension to 1 November 2026 can be requested from the Console if the bump
+cannot be done in time.
+
+### One thing not to misread
+
+The requirements table lists **Android Automotive OS** apps as needing only API
+35. That exemption does **not** apply here. This is a phone app that projects to
+Android Auto, which is the general case at 36 — see §4 on why
+`android.hardware.type.automotive` is not declared at all. Reading the AAOS row
+as cover for staying on 35 is the same confusion §4 warns about, arriving by a
+different door.
 
 ---
 
@@ -210,6 +268,9 @@ work with a device to test on, not in the middle of a release.
 | App still absent from the car launcher | The Android Auto form factor is not enabled, or no artifact has been released to a track yet. §7. |
 | Play rejects the AAB: version code already used | Internal Test Track requires a strictly increasing `versionCode`. Internal App Sharing does not — if you are iterating, use that instead. |
 | "App bundle expected, APK found" | The track needs `bundleRelease`, not `assembleRelease`. §6. |
+| Play rejects the upload: cannot declare `android.hardware.type.automotive` and `com.google.android.gms.car.application` together | The AAOS feature declaration must be absent entirely, `required="false"` included. §4. |
+| Play rejects the upload: "needs to have the package name ..." | The Console app record is bound to a different `applicationId` than the bundle's, permanently. §6. |
+| Play rejects the upload over target API level | Uploading after 31 Aug 2026 on `targetSdk = 35`. Needs the bump to 36, or a Console extension. §8. |
 | Fuel screen appears, then the app is dropped by the host | A template the POI category does not permit, or the missing `androidx.car.app.MAP_TEMPLATES` permission. Both are already correct in this repo — suspect a manifest edit. |
 | Review rejected on driver distraction | Car app quality guidelines. The screen must stay a template; anything custom-drawn fails. |
 

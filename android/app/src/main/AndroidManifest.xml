@@ -73,12 +73,14 @@
         android:name="android.hardware.location.gps"
         android:required="false" />
 
-    <!-- The car app is an extra, never a requirement: this is a phone app that
-         happens to also answer a head unit. required=true would hide it from
-         every device without automotive hardware — i.e. all of them. -->
-    <uses-feature
-        android:name="android.hardware.type.automotive"
-        android:required="false" />
+    <!-- android.hardware.type.automotive is deliberately NOT declared here, at
+         any required= value. It marks an app as built for Android Automotive
+         OS — the embedded platform — and Play rejects a manifest carrying it
+         alongside the com.google.android.gms.car.application metadata below,
+         because the two describe different products. This app is a phone app
+         that projects to Android Auto, so the metadata is the half to keep.
+         required="false" is not a neutral middle ground: the rejection is on
+         the declaration being present at all, not on its value. -->
 
     <application
         android:allowBackup="false"

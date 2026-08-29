@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-Build and verify a signed release APK of ZMM Presence.
+Build and verify a signed release APK — or App Bundle — of ZMM Presence.
 
 Locates a JDK, creates a signing key if needed, builds, then proves the result
 is signed and that the security config survived into the release variant — an
 unsigned APK still "succeeds" as far as Gradle is concerned. Exit status is 0
 only if every check passed. Usage and flags: android/BUILDING.md.
+
+--aab produces the App Bundle the Play internal test track requires instead of
+an APK, and puts it through the same checks. Play re-signs what you upload, so
+the signature here proves only that the upload key is yours; the value of
+running the checks on the exact artifact you hand to Google is the other two —
+that the debug network config did not leak in, and that the pinning guards
+shipped. See android/PUBLISHING.md.
 """
 
 from __future__ import annotations
@@ -706,6 +713,20 @@ def find_apk(release: bool) -> Path:
     )
 
 
+def find_aab() -> Path:
+    """
+    The release App Bundle. There is no debug bundle and no unsigned variant to
+    disambiguate — bundleRelease emits exactly one file, and an absent signing
+    config yields an unsigned bundle under that same name rather than a renamed
+    one. verify_aab_signature is what catches that case.
+    """
+    d = HERE / "app/build/outputs/bundle/release"
+    aabs = sorted(d.glob("*.aab"))
+    if not aabs:
+        raise Failed(f"No AAB in {d}")
+    return aabs[0]
+
+
 # ---------------------------------------------------------------- verification
 
 def verify_signature(sdk: Path, apk: Path) -> bool:
@@ -760,6 +781,104 @@ def apk_version(sdk: Path, apk: Path) -> tuple[str, int] | None:
     return name.group(1), int(code.group(1))
 
 
+def verify_aab_signature(jdk: Path, aab: Path) -> bool:
+    """
+    Confirm the App Bundle is signed, using jarsigner rather than apksigner.
+
+    apksigner cannot read an AAB at all — it rejects the file outright with
+    "could not identify format of APK", because a bundle is a plain jar-signed
+    zip and not an APK signing block. jarsigner is the tool that matches the
+    format.
+
+    Two jarsigner outputs must NOT be read as failures here. It reports the
+    certificate chain as invalid, because a self-signed release key has no
+    chain to a public root — expected, and true of every Android upload key.
+    It also notes entries "signed in JarFile but not in JarInputStream" for the
+    BUNDLE-METADATA/ files, which is how bundletool writes them. Only the
+    literal "jar verified." line means signed.
+    """
+    head("Signature")
+    jarsigner = jdk / "bin" / "jarsigner"
+    if not jarsigner.exists():
+        bad(f"jarsigner not found at {jarsigner} — this is a toolchain fault")
+        return False
+
+    r = run([str(jarsigner), "-verify", "-certs", "-verbose", str(aab)],
+            env=jdk_env(jdk))
+    out = (r.stdout or "") + (r.stderr or "")
+
+    if "jar verified." not in out:
+        # An unsigned bundle is the case worth spelling out: Gradle emits one
+        # under the same filename and only warns, so nothing upstream failed.
+        if "no manifest" in out.lower() or "not signed" in out.lower():
+            bad("the AAB is UNSIGNED — Play will reject it")
+            info(f"Gradle could not find {KEY_PROPS.name}; run --setup")
+        else:
+            bad("jarsigner did not verify the AAB")
+        info(out.strip()[:400])
+        return False
+
+    ok("AAB is signed and the signature verifies")
+
+    signers = sorted(set(re.findall(r"CN=[^,\"\n]+", out)))
+    for cn in signers:
+        info(cn.strip())
+
+    if any("CN=Android Debug" in c for c in signers):
+        warn("signed with the ANDROID DEBUG KEY — Play will reject this upload")
+
+    return True
+
+
+# In a bundle, an XmlAttribute is length-delimited field 2 (the name, 0x12)
+# immediately followed by length-delimited field 3 (the value, 0x1a). Both are
+# plain strings — including android:versionCode, which is stored as "7" and not
+# as an int — so the pairs can be lifted without a protobuf runtime. This is a
+# scan, not a parser: it reads attributes and knows nothing of element nesting,
+# which is all the two callers below need.
+_PROTO_NAME = re.compile(r"^[A-Za-z_][\w.:-]*$")
+
+
+def _proto_xml_attrs(blob: bytes) -> list[tuple[str, str]]:
+    attrs: list[tuple[str, str]] = []
+    i = blob.find(b"\x12")
+    while i >= 0:
+        try:
+            nlen = blob[i + 1]
+            name = blob[i + 2:i + 2 + nlen]
+            k = i + 2 + nlen
+            if len(name) == nlen and blob[k] == 0x1A:
+                vlen = blob[k + 1]
+                value = blob[k + 2:k + 2 + vlen]
+                if len(value) == vlen:
+                    n = name.decode("ascii")
+                    v = value.decode("ascii")
+                    if _PROTO_NAME.match(n) and v.isprintable():
+                        attrs.append((n, v))
+        except (IndexError, UnicodeDecodeError):
+            pass
+        i = blob.find(b"\x12", i + 1)
+    return attrs
+
+
+def aab_version(aab: Path) -> tuple[str, int] | None:
+    """
+    versionName and versionCode as built into the bundle.
+
+    Read from the artifact for the same reason apk_version does, and it matters
+    more here: the internal test track rejects a versionCode it has already
+    seen, so the number you are about to upload is worth seeing before Play
+    tells you about it.
+    """
+    with zipfile.ZipFile(aab) as z:
+        blob = z.read("base/manifest/AndroidManifest.xml")
+    attrs = dict(_proto_xml_attrs(blob))
+    name, code = attrs.get("versionName"), attrs.get("versionCode")
+    if not name or not code or not code.isdigit():
+        return None
+    return name, int(code)
+
+
 def _release_res_path(aapt2: Path, apk: Path, name: str) -> str | None:
     """
     Map a resource name to its path inside the APK.
@@ -781,7 +900,48 @@ def _release_res_path(aapt2: Path, apk: Path, name: str) -> str | None:
     return None
 
 
-def verify_security_config(sdk: Path, apk: Path, release: bool) -> bool:
+def _security_config_aab(aab: Path) -> bool:
+    """
+    The AAB half of verify_security_config.
+
+    Split out because a bundle differs from a release APK in both respects the
+    APK path works around: resources keep their real names, so the path is
+    fixed rather than looked up, and the XML is protobuf rather than binary,
+    so aapt2 cannot dump it. There is no debug bundle, so unlike the APK path
+    every finding here is a failure and none are merely expected.
+    """
+    path = "base/res/xml/network_security_config.xml"
+    with zipfile.ZipFile(aab) as z:
+        try:
+            blob = z.read(path)
+        except KeyError:
+            bad("no network_security_config in the AAB")
+            return False
+    info(f"resource: {path}")
+
+    attrs = _proto_xml_attrs(blob)
+    good = True
+
+    if ("src", "user") in attrs:
+        bad("trusts USER CAs — any CA installed on the phone could intercept traffic")
+        good = False
+    else:
+        ok("user CA store not trusted (pinning is the sole hub authentication)")
+
+    if ("src", "system") in attrs:
+        ok("system CA trust anchor present")
+
+    if ("cleartextTrafficPermitted", "true") in attrs:
+        bad("permits cleartext — the debug config leaked into the release build")
+        good = False
+    else:
+        ok("cleartext traffic disabled")
+
+    return good
+
+
+def verify_security_config(sdk: Path, apk: Path, release: bool,
+                           is_aab: bool = False) -> bool:
     """
     Confirm the APK's network security config matches its variant.
 
@@ -795,6 +955,8 @@ def verify_security_config(sdk: Path, apk: Path, release: bool) -> bool:
     every debug build is a check people learn to ignore on release ones.
     """
     head(f"Network security config ({'release' if release else 'debug'} variant)")
+    if is_aab:
+        return _security_config_aab(apk)
     aapt2 = build_tool(sdk, "aapt2")
 
     path = _release_res_path(aapt2, apk, "network_security_config")
@@ -830,7 +992,7 @@ def verify_security_config(sdk: Path, apk: Path, release: bool) -> bool:
     return good
 
 
-def verify_pinning_code(apk: Path) -> bool:
+def verify_pinning_code(apk: Path, is_aab: bool = False) -> bool:
     """
     Confirm the pinning guards are compiled into the shipped dex.
 
@@ -850,10 +1012,14 @@ def verify_pinning_code(apk: Path) -> bool:
         "pinned-without-pin guard": b"Pinned mode with no stored pin",
         "plaintext refusal": b"Refusing to send credentials over plain http",
     }
+    # A bundle keeps the base module's dex under base/dex/ rather than at the
+    # root, so matching on the bare "classes" prefix would find nothing and
+    # report every guard as missing.
+    prefix = "base/dex/classes" if is_aab else "classes"
     blob = b""
     with zipfile.ZipFile(apk) as z:
         for n in z.namelist():
-            if n.startswith("classes") and n.endswith(".dex"):
+            if n.startswith(prefix) and n.endswith(".dex"):
                 blob += z.read(n)
 
     good = True
@@ -870,7 +1036,7 @@ def verify_pinning_code(apk: Path) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Build and verify a signed release APK.",
+        description="Build and verify a signed release APK, or App Bundle.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Exit status is 0 only if every check passes.",
     )
@@ -880,6 +1046,10 @@ def main() -> int:
                     help="verify the existing APK without rebuilding")
     ap.add_argument("--debug", action="store_true",
                     help="build the debug variant instead of release")
+    ap.add_argument("--aab", action="store_true",
+                    help="build the release App Bundle (bundleRelease) instead "
+                         "of an APK. This is what the Play internal test track "
+                         "requires; it cannot be installed with adb.")
     ap.add_argument("--install", nargs="?", const="__prompt__", default=None,
                     metavar="SERIAL",
                     help="install to a device after a successful build. With "
@@ -896,6 +1066,12 @@ def main() -> int:
 
     if args.reinstall and args.install is None:
         ap.error("--reinstall only means anything alongside --install")
+    if args.aab and args.debug:
+        ap.error("--aab is release-only; there is no debug bundle")
+    if args.aab and args.install is not None:
+        ap.error("--aab cannot be installed: a bundle is an upload format, and "
+                 "the installable APKs are generated by Play. Drop --aab to "
+                 "install, or upload per android/PUBLISHING.md.")
 
     release = not args.debug
 
@@ -911,27 +1087,33 @@ def main() -> int:
         preflight_tools(jdk, sdk)
 
         if release and not KEY_PROPS.exists():
-            warn(f"{KEY_PROPS.name} not found — the APK will be unsigned")
+            warn(f"{KEY_PROPS.name} not found — "
+                 f"the {'AAB' if args.aab else 'APK'} will be unsigned")
             info("run with --setup to create a signing key")
 
         tests_ok = True
         if not args.verify_only:
-            gradle_build(jdk, sdk, "assembleRelease" if release else "assembleDebug")
+            if args.aab:
+                task = "bundleRelease"
+            else:
+                task = "assembleRelease" if release else "assembleDebug"
+            gradle_build(jdk, sdk, task)
             if not args.skip_tests:
                 tests_ok = run_unit_tests(jdk, sdk)
 
-        apk = find_apk(release)
+        artifact = find_aab() if args.aab else find_apk(release)
         head("Artifact")
-        ok(f"{apk.relative_to(HERE)}  ({apk.stat().st_size / 1e6:.1f} MB)")
-        version = apk_version(sdk, apk)
+        ok(f"{artifact.relative_to(HERE)}  ({artifact.stat().st_size / 1e6:.1f} MB)")
+        version = aab_version(artifact) if args.aab else apk_version(sdk, artifact)
         if version:
             ok(f"version {version[0]} (code {version[1]})")
 
         results = [
             tests_ok,
-            verify_signature(sdk, apk),
-            verify_security_config(sdk, apk, release),
-            verify_pinning_code(apk),
+            verify_aab_signature(jdk, artifact) if args.aab
+            else verify_signature(sdk, artifact),
+            verify_security_config(sdk, artifact, release, is_aab=args.aab),
+            verify_pinning_code(artifact, is_aab=args.aab),
         ]
         if release:
             check_gitignored()
@@ -950,14 +1132,24 @@ def main() -> int:
             adb = find_adb(sdk)
             devices = list_devices(adb)
             serial = choose_device(devices, args.install)
-            if not install_apk(adb, serial, apk, allow_reinstall=args.reinstall,
+            if not install_apk(adb, serial, artifact, allow_reinstall=args.reinstall,
                                version=version):
                 return 1
+        elif args.aab:
+            # versionCode is the one thing Play refuses an upload over that is
+            # invisible until it does, so end on it.
+            print(f"\n  Upload to the Play internal test track:\n"
+                 f"    {artifact.relative_to(HERE)}\n")
+            if version:
+                info(f"versionCode {version[1]} — Play rejects a code it has "
+                     f"already seen; bump it in app/build.gradle.kts for the "
+                     f"next upload.")
+            print("  Steps: android/PUBLISHING.md §6\n")
         else:
             print(f"\n  Install with:\n"
                  f"    python3 {Path(__file__).name} --install\n"
                  f"  or:\n"
-                 f"    adb install -r {apk.relative_to(HERE)}\n")
+                 f"    adb install -r {artifact.relative_to(HERE)}\n")
 
         return 0
 

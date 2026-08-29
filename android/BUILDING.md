@@ -55,7 +55,8 @@ environment, never as command-line arguments — `ps` shows every argument of
 every running process, including to other users on the machine.
 
 Other flags: `--verify-only` re-checks an existing APK without rebuilding,
-`--debug` builds the debug variant instead.
+`--debug` builds the debug variant instead, and `--aab` builds the App Bundle
+the Play internal test track wants rather than an APK (PUBLISHING.md).
 
 The rest of this document explains what the script automates, in case you would
 rather do it by hand or need to debug it.
@@ -393,6 +394,8 @@ python3 build_release.py                    # build, signing if configured
 python3 build_release.py --setup            # create keystore + properties first
 python3 build_release.py --verify-only      # re-check an existing APK
 python3 build_release.py --debug            # debug APK instead
+python3 build_release.py --aab              # release App Bundle for Play
+                                            # upload; cannot be installed
 python3 build_release.py --install          # ...then install; one device installs
                                             # straight away, several prompt
 python3 build_release.py --install SERIAL   # ...to that device, no prompt
@@ -404,6 +407,14 @@ python3 build_release.py --install --reinstall
 
 Exit status is 0 only if every check passed — and, with `--install`, the install
 itself succeeded — so it is safe to use in a script.
+
+`--aab` runs the same three checks against the bundle, by different means:
+`apksigner` cannot read an AAB, so the signature is verified with `jarsigner`;
+the network security config and the dex are read straight out of the zip,
+because a bundle stores them as protobuf that `aapt2` will not dump. The checks
+matter more here than for an APK, not less — Play re-signs the upload, so the
+signature it ends up shipping is not the one you made, and the debug config and
+pinning guards are the two things nobody downstream will check for you.
 
 `ANDROID_HOME` is passed to Gradle explicitly rather than inherited: `find_sdk()`
 also accepts the SDK at its conventional path, so preflight can succeed on a

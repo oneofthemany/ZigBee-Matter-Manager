@@ -14,6 +14,29 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.5.0 (8)
+
+Setup is a sequence now, not a wall of five open cards.
+
+- The four setup sections are an accordion: one body open at a time, and it is
+  the first step that isn't finished. Finishing a step collapses it to a summary
+  line and opens the next, so the screen only ever asks for one thing.
+- A collapsed step shows the one fact you would have opened it to check — the
+  hub URL, the granted permissions, the geofence, the paired car — and hides the
+  controls behind it.
+- Each step header carries a hex chip: its number while pending, a tick once
+  done. Progress reads down the left edge the way state already read down the
+  right. The ⬡ prefix came off those four labels, since the chip now carries the
+  motif; "This device" keeps it and stays open, because it is not a step.
+- Any header reopens its step. The screen outlives setup — it is also where you
+  disarm, change car or repoint the hub — so nothing is locked behind having
+  finished.
+- Drive mode is skipped when the hub is LAN-only rather than opened onto a
+  disabled button, and the battery exemption does not gate the permissions step:
+  Arm needs only foreground and background location, and a declined system
+  dialog would otherwise wedge the sequence. It is called out on the collapsed
+  summary instead.
+
 ## 1.4.1 (7)
 
 The pairing screen told the truth about the wrong thing, and read bottom-up.

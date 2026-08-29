@@ -5,6 +5,19 @@
     a hex grid looks the part but cramps labels and buttons, and a screen you
     can't operate isn't worth the metaphor. The comb is texture; the hex chip
     and the ⬡ micro-labels carry the motif.
+
+    Setup is an accordion, not a list. Each of the four steps is a header that
+    is always visible and a body that is not: exactly one body is open at a
+    time, and it is the first step that isn't finished yet. Finishing a step
+    collapses it to its summary line and opens the next, so the screen only
+    ever asks for one thing. Everything stays reachable afterwards — a header
+    tap reopens any step — because this screen is also the place you come back
+    to to disarm, change car, or repoint the hub.
+
+    The hex chip on each header is the step marker: number while pending, tick
+    once done. It is why the step labels no longer carry the ⬡ prefix — the
+    chip is the motif on these four cards. "This device" keeps the prefix; it
+    is not a step and has no chip.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -13,6 +26,7 @@
     android:orientation="vertical">
 
 <ScrollView
+    android:id="@+id/scroller"
     android:layout_width="match_parent"
     android:layout_height="0dp"
     android:layout_weight="1"
@@ -23,7 +37,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:padding="16dp"
+        android:animateLayoutChanges="true">
 
         <!-- hero -->
         <LinearLayout
@@ -89,7 +104,7 @@
             android:text="@string/blurb"
             android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-        <!-- hub -->
+        <!-- step 1: hub -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -98,19 +113,35 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/hubHeader"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:padding="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground">
+
+                    <TextView
+                        android:id="@+id/hubStep"
+                        android:layout_width="26dp"
+                        android:layout_height="30dp"
+                        android:background="@drawable/hex_chip"
+                        android:gravity="center"
+                        android:fontFamily="monospace"
+                        android:textStyle="bold"
+                        android:textSize="12sp"
+                        android:textColor="@color/honey_ink" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
+                        android:layout_marginStart="10dp"
                         android:text="@string/label_hub"
                         android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
 
@@ -119,77 +150,101 @@
                         style="@style/Widget.Zmm.Pill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
+
+                    <ImageView
+                        android:id="@+id/hubChevron"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_marginStart="8dp"
+                        android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
 
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                <TextView
+                    android:id="@+id/hubSummary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:hint="@string/hub_hint">
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp"
+                    android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/hubUrl"
+                <LinearLayout
+                    android:id="@+id/hubBody"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp">
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="textUri"
-                        android:autofillHints="" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:hint="@string/hub_hint">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/discoverBtn"
-                    style="@style/Widget.Material3.Button.TextButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="end"
-                    android:text="@string/discover" />
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/hubUrl"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="textUri"
+                            android:autofillHints="" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:hint="@string/user_hint">
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/discoverBtn"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end"
+                        android:text="@string/discover" />
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/userId"
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="text"
-                        android:autofillHints="" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="8dp"
+                        android:hint="@string/user_hint">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:hint="@string/token_hint"
-                    app:passwordToggleEnabled="true">
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/userId"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="text"
+                            android:autofillHints="" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/token"
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="textPassword"
-                        android:autofillHints="" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="8dp"
+                        android:hint="@string/token_hint"
+                        app:passwordToggleEnabled="true">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/pairBtn"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/pair" />
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/token"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="textPassword"
+                            android:autofillHints="" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/pairBtn"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:text="@string/pair" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Permissions before geofence, because Arm is disabled until location
-             is granted (render(): isPaired && hasHome && fg && bg). With the
-             grant buttons below the button they unlock, the only way to arm was
-             to scroll past a dead control, grant, then scroll back up to it.
-             Cards now run in dependency order: hub, then what the geofence
-             needs, then the geofence. -->
+        <!-- Step 2, permissions, before the geofence because Arm is disabled
+             until location is granted (render(): isPaired && hasHome && fg &&
+             bg). The accordion now enforces what the ordering only suggested:
+             the geofence body does not open until this one is satisfied. -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -198,19 +253,35 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/permHeader"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:padding="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground">
+
+                    <TextView
+                        android:id="@+id/permStep"
+                        android:layout_width="26dp"
+                        android:layout_height="30dp"
+                        android:background="@drawable/hex_chip"
+                        android:gravity="center"
+                        android:fontFamily="monospace"
+                        android:textStyle="bold"
+                        android:textSize="12sp"
+                        android:textColor="@color/honey_ink" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
+                        android:layout_marginStart="10dp"
                         android:text="@string/label_permissions"
                         android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
 
@@ -219,50 +290,76 @@
                         style="@style/Widget.Zmm.Pill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
+
+                    <ImageView
+                        android:id="@+id/permChevron"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_marginStart="8dp"
+                        android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/permState"
+                    android:id="@+id/permSummary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp"
                     android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/permsBtn"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                <LinearLayout
+                    android:id="@+id/permBody"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/grant_location" />
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp">
 
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginVertical="14dp"
-                    android:background="@color/border_color" />
+                    <TextView
+                        android:id="@+id/permState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-                <!-- Background-throttling exemption. See battery_body for why
-                     this is not optional polish: without it, reports silently
-                     degrade to once every few hours the less often the app is
-                     opened. -->
-                <TextView
-                    android:id="@+id/batteryState"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textAppearance="@style/TextAppearance.Zmm.Body" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/permsBtn"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/grant_location" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/batteryBtn"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/battery_btn" />
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="14dp"
+                        android:background="@color/border_color" />
+
+                    <!-- Background-throttling exemption. See battery_body for why
+                         this is not optional polish: without it, reports silently
+                         degrade to once every few hours the less often the app is
+                         opened. -->
+                    <TextView
+                        android:id="@+id/batteryState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="@style/TextAppearance.Zmm.Body" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/batteryBtn"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/battery_btn" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- geofence -->
+        <!-- step 3: geofence -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -271,19 +368,35 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/geoHeader"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:padding="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground">
+
+                    <TextView
+                        android:id="@+id/geoStep"
+                        android:layout_width="26dp"
+                        android:layout_height="30dp"
+                        android:background="@drawable/hex_chip"
+                        android:gravity="center"
+                        android:fontFamily="monospace"
+                        android:textStyle="bold"
+                        android:textSize="12sp"
+                        android:textColor="@color/honey_ink" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
+                        android:layout_marginStart="10dp"
                         android:text="@string/label_geofence"
                         android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
 
@@ -292,25 +405,51 @@
                         style="@style/Widget.Zmm.Pill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
+
+                    <ImageView
+                        android:id="@+id/geoChevron"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_marginStart="8dp"
+                        android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/homeState"
+                    android:id="@+id/geoSummary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp"
                     android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/armBtn"
+                <LinearLayout
+                    android:id="@+id/geoBody"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/arm" />
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp">
+
+                    <TextView
+                        android:id="@+id/homeState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="@style/TextAppearance.Zmm.Body" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/armBtn"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:text="@string/arm" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- drive mode -->
+        <!-- step 4: drive mode -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -319,19 +458,35 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/driveHeader"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:padding="16dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground">
+
+                    <TextView
+                        android:id="@+id/driveStep"
+                        android:layout_width="26dp"
+                        android:layout_height="30dp"
+                        android:background="@drawable/hex_chip"
+                        android:gravity="center"
+                        android:fontFamily="monospace"
+                        android:textStyle="bold"
+                        android:textSize="12sp"
+                        android:textColor="@color/honey_ink" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
+                        android:layout_marginStart="10dp"
                         android:text="@string/label_drive"
                         android:textAppearance="@style/TextAppearance.Zmm.MicroLabel" />
 
@@ -340,26 +495,54 @@
                         style="@style/Widget.Zmm.Pill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
+
+                    <ImageView
+                        android:id="@+id/driveChevron"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_marginStart="8dp"
+                        android:src="@drawable/ic_chevron"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/carState"
+                    android:id="@+id/driveSummary"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp"
                     android:textAppearance="@style/TextAppearance.Zmm.Body" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/carBtn"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                <LinearLayout
+                    android:id="@+id/driveBody"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/car_btn" />
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="16dp">
+
+                    <TextView
+                        android:id="@+id/carState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="@style/TextAppearance.Zmm.Body" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/carBtn"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/car_btn" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- this device -->
+        <!-- This device is not a step: nothing here is set up, and the forget
+             button is the one control on the screen you must never be walked
+             into. It keeps the ⬡ label and stays permanently open. -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
