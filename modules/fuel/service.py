@@ -198,6 +198,12 @@ class FuelPriceService:
             "units": provider.units(),
             "station_level": provider.station_level,
             "attribution": provider.attribution,
+            # The region's whole grade list rides along so a client can offer
+            # the alternatives without a second request. The car screen is why:
+            # it cycles grades from a head unit on a mobile link, and a round
+            # trip per tap is a round trip too many.
+            "fuel_types": grades,
+            "default_grade": provider.default_grade,
         }
 
     async def resolve_place(self, query: str) -> Optional[Dict[str, float]]:

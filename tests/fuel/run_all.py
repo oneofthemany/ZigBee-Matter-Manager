@@ -27,6 +27,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 PY_MODULES = ["test_base", "test_service", "test_providers", "test_history"]
+ANDROID_CHECK = "check_android.py"
 JS_TESTS = ["test_formatters.js", "test_settings.js", "test_drive_render.js"]
 
 
@@ -59,10 +60,20 @@ def run_node() -> tuple[list[str], list[str]]:
     return failures, skipped
 
 
+def run_android() -> list[str]:
+    """Static checks on the Kotlin. Not a compile — see the script's docstring."""
+    print(f"\n{'=' * 62}\n{ANDROID_CHECK}\n{'=' * 62}")
+    result = subprocess.run([sys.executable, str(HERE / ANDROID_CHECK)],
+                            capture_output=True, text=True)
+    print(result.stdout.rstrip() or result.stderr.rstrip())
+    return [ANDROID_CHECK] if result.returncode else []
+
+
 def main() -> int:
     passed, failures, skipped = run_python()
     js_failures, js_skipped = run_node()
     failures.extend(js_failures)
+    failures.extend(run_android())
     skipped.extend(js_skipped)
 
     print(f"\n{'=' * 62}")

@@ -29,7 +29,7 @@ function check(name, cond, extra) {
   if (!cond) fails.push(name);
 }
 
-const GB = { currency:'GBP', symbol:'£',  volume:'L',      distance:'km', display_scale:'minor', decimals:3 };
+const GB = { currency:'GBP', symbol:'£',  volume:'L',      distance:'mi', display_scale:'minor', decimals:3 };
 const DE = { currency:'EUR', symbol:'€',  volume:'L',      distance:'km', display_scale:'major', decimals:3 };
 const US = { currency:'USD', symbol:'$',  volume:'gal_us', distance:'mi', display_scale:'major', decimals:3 };
 const AU = { currency:'AUD', symbol:'A$', volume:'L',      distance:'km', display_scale:'minor', decimals:3 };
@@ -41,10 +41,15 @@ check('1.599 does not round to 160', F.fuelPrice(1.599) === '159.9p', F.fuelPric
 check('a delta carries no symbol', F.fuelDelta(0.042) === '4.2p', F.fuelDelta(0.042));
 check('the axis label is bare', F.fuelAxisLabel(1.399) === '139.9');
 check('the header names pence per litre', F.fuelPriceHeader() === 'Price/L (p)');
-check('distance in km', F.fuelDistance(2.345) === '2.3 km');
-check('radius in km', F.fuelRadiusLabel(8) === '8 km');
+check('UK distance in miles', F.fuelDistance(8.04672) === '5.0 mi', F.fuelDistance(8.04672));
+check('UK radius in miles', F.fuelRadiusLabel(40) === '25 mi', F.fuelRadiusLabel(40));
 check('a null price is a dash', F.fuelPrice(null) === '—');
 check('NaN is a dash', F.fuelPrice(NaN) === '—');
+
+console.log('\n  km is still km where the region says so');
+F.setUnits(DE);
+check('German distance in km', F.fuelDistance(2.345) === '2.3 km');
+check('German radius in km', F.fuelRadiusLabel(8) === '8 km');
 
 console.log('\n  Germany — euro');
 F.setUnits(DE);

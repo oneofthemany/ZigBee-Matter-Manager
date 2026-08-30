@@ -25,7 +25,8 @@ from modules.fuel.service import FUEL_TYPES, FuelPriceService, maps_url
 
 NEARBY_KEYS = {"success", "fuel", "fuel_label", "radius_km", "count",
                "stations", "data_age_s"}
-NEARBY_ADDED = {"region", "units", "station_level", "attribution"}
+NEARBY_ADDED = {"region", "units", "station_level", "attribution",
+                "fuel_types", "default_grade"}
 STATION_KEYS = {"site_id", "brand", "address", "postcode", "distance_km",
                 "latitude", "longitude", "price", "prices", "last_updated",
                 "maps_url"}
@@ -91,6 +92,9 @@ async def _responses(c: Checker) -> None:
     c.check("the UK displays pence", r["units"]["display_scale"] == "minor")
     c.check("prices stay in major units", r["stations"][0]["price"] == 1.359)
     c.check("attribution passed through", r["attribution"] == "Test attribution")
+    c.check("the region's whole grade list rides along",
+            r["fuel_types"] == FUEL_TYPES, r["fuel_types"])
+    c.check("and its default grade", r["default_grade"] == "", r["default_grade"])
 
     c.section("limits and errors")
     r = await _service(Fake()).best_nearby(51.5074, -0.1278, "E10", 8.0, 1)
@@ -287,6 +291,13 @@ def _registry(c: Checker) -> None:
                 for k in registry.REGIONS))
 
     c.section("dialects")
+    c.section("distance units")
+    for key, expect in (("GB", "mi"), ("US", "mi"), ("DE", "km"), ("FR", "km"),
+                        ("ES", "km"), ("IT", "km"), ("AU-NSW", "km"),
+                        ("AU-QLD", "km"), ("AU-WA", "km")):
+        got = registry.build_provider(key, cfg).distance_unit
+        c.check(f"{key} shows distances in {expect}", got == expect, got)
+
     for key, currency, scale in (("GB", "GBP", "minor"), ("DE", "EUR", "major"),
                                  ("ES", "EUR", "major"), ("FR", "EUR", "major"),
                                  ("IT", "EUR", "major"), ("AU-NSW", "AUD", "minor"),

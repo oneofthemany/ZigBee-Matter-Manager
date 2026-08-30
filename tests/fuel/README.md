@@ -21,11 +21,22 @@ would be a dependency for its own sake. Each module exposes `run()` and
 | `js/test_formatters.js` | the price/distance formatters in `drive.js` |
 | `js/test_settings.js` | the Settings region picker in `settings.js` |
 | `js/test_drive_render.js` | the Drive tab's fuel render path |
+| `check_android.py` | static checks on the Kotlin — see below |
 
 The JavaScript tests slice the real functions out of the shipped `.js` files and
 run them. That is the point: `node --check` parses but cannot see an undefined
 identifier inside a function body, which is how a `ReferenceError` once reached
 the browser. `test_settings.js` fails on exactly that bug if it is reintroduced.
+
+## The Android checks are not a compile
+
+There is no JVM in this project's dev setup, so `check_android.py` cannot build
+the Kotlin. It catches what is findable without a compiler: unbalanced
+delimiters, references to symbols that were renamed, `getString()` calls whose
+argument count does not match the string resource, and hardcoded currency or
+unit literals creeping back into the car screen.
+
+Anything touching `android/` still needs a real build before it is trusted.
 
 ## Fixtures
 

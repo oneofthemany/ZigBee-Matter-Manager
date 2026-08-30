@@ -334,8 +334,107 @@ object HubClient {
         val lat: Double,
         val lon: Double,
         val distanceKm: Double,
-        /** Pence per litre, as the feeds publish it. */
+        /**
+         * The price in the region's *major* currency unit — pounds, euro,
+         * dollars — per litre or per US gallon. How it is shown is
+         * [FuelUnits.displayScale]; this is never the displayed number.
+         */
         val price: Double,
+    )
+
+    /**
+     * How the active region quotes a price, straight from the hub.
+     *
+     * The car app used to hardcode pence per litre and miles, which was right
+     * for the only region the hub supported. It now serves nine, and a screen
+     * that renders euro as pence is worse than one that renders nothing.
+     */
+    data class FuelUnits(
+        val currency: String,
+        val symbol: String,
+        /** "L", or "gal_us" where a country prices by the gallon. */
+        val volume: String,
+        /** "km" or "mi" — a display choice; the wire is always kilometres. */
+        val distance: String,
+        /** "minor" shows 1.399 as 139.9p; "major" shows it as £1.399. */
+        val displayScale: String,
+        val decimals: Int,
+    ) {
+        /** The suffix for a price quoted in a currency's minor unit. */
+        val minorSuffix: String get() = if (currency == "GBP") "p" else "c"
+
+        /** "L" or "gal", for a per-unit label. */
+        val volumeLabel: String get() = if (volume == "gal_us") "gal" else "L"
+
+        /**
+         * A price the way the region's forecourts quote it.
+         *
+         * The decimal is not decoration. Pump prices are set to a tenth of the
+         * smallest unit and in practice always end in .9, so dropping it rounds
+         * 159.9 to 160 — dearer than the station charges, and identical for two
+         * stations a penny apart, which is the whole question this screen
+         * answers.
+         */
+        fun format(price: Double): String =
+            if (displayScale == "minor") "%.1f%s".format(price * 100, minorSuffix)
+            else "$symbol%.${decimals}f".format(price)
+
+        /**
+         * The most a marker label can say. Three glyphs is the host's cap, so
+         * a minor-unit region gets whole pence ("134") and a major-unit one
+         * gets the units and first decimal ("1.7") — the row title carries the
+         * exact figure either way.
+         *
+         * Rounded rather than truncated: the tenth cannot be shown here at any
+         * precision, and rounding is out by at most half a unit where
+         * truncation is reliably nine tenths light.
+         */
+        fun markerLabel(price: Double): String =
+            if (displayScale == "minor") "%.0f".format(price * 100)
+            else "%.1f".format(price)
+
+        companion object {
+            /**
+             * What to assume before the hub has answered. The UK's, because
+             * that is the only region this app shipped with — an existing
+             * install must render exactly as it did until told otherwise.
+             */
+            val UK = FuelUnits("GBP", "\u00a3", "L", "mi", "minor", 3)
+
+            fun from(o: JSONObject?): FuelUnits {
+                if (o == null) return UK
+                return FuelUnits(
+                    currency = o.optString("currency", UK.currency),
+                    symbol = o.optString("symbol", UK.symbol),
+                    volume = o.optString("volume", UK.volume),
+                    distance = o.optString("distance", UK.distance),
+                    displayScale = o.optString("display_scale", UK.displayScale),
+                    decimals = o.optInt("decimals", UK.decimals),
+                )
+            }
+        }
+    }
+
+    /**
+     * A nearby lookup: the stations, plus everything needed to render them.
+     *
+     * The grade list rides along so the head unit can cycle grades without a
+     * round trip per tap, and `stationLevel` says whether these are forecourts
+     * at all — the US publishes an area average instead, and one average must
+     * not be drawn on the map as though it were a place to drive to.
+     */
+    data class FuelNearby(
+        val stations: List<Station>,
+        val units: FuelUnits,
+        val region: String,
+        val stationLevel: Boolean,
+        /** Grade code -> display label, for the region that answered. */
+        val grades: Map<String, String>,
+        val defaultGrade: String,
+        /** For an area average: what area it covers. Empty otherwise. */
+        val areaName: String,
+        /** For an area average: the period it covers. Empty otherwise. */
+        val asOf: String,
     )
 
     /**
@@ -353,7 +452,7 @@ object HubClient {
         fuel: String,
         radiusKm: Double = 8.0,
         limit: Int = 12,
-    ): Result<List<Station>> = withContext(Dispatchers.IO) {
+    ): Result<FuelNearby> = withContext(Dispatchers.IO) {
         val url = "${prefs.hubUrl}/api/fuel/nearby" +
                 "?fuel=${enc(fuel)}&lat=$lat&lon=$lon&radius_km=$radiusKm&limit=$limit"
         try {
@@ -372,11 +471,24 @@ object HubClient {
             )
             if (code !in 200..299) return@withContext Result.Err("Hub returned $code")
 
-            val arr = JSONObject(body).optJSONArray("stations")
-                ?: return@withContext Result.Ok(emptyList())
-            val out = ArrayList<Station>(arr.length())
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
+            val root = JSONObject(body)
+            val units = FuelUnits.from(root.optJSONObject("units"))
+            // Absent on an older hub, where every region was station-level.
+            val stationLevel = root.optBoolean("station_level", true)
+
+            val grades = LinkedHashMap<String, String>()
+            root.optJSONObject("fuel_types")?.let { types ->
+                val keys = types.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    grades[k] = types.optString(k, k)
+                }
+            }
+
+            val arr = root.optJSONArray("stations")
+            val out = ArrayList<Station>(arr?.length() ?: 0)
+            for (i in 0 until (arr?.length() ?: 0)) {
+                val o = arr?.optJSONObject(i) ?: continue
                 val sLat = o.optDouble("latitude", Double.NaN)
                 val sLon = o.optDouble("longitude", Double.NaN)
                 if (sLat.isNaN() || sLon.isNaN()) continue
@@ -391,7 +503,23 @@ object HubClient {
                     price = o.optDouble("price", Double.NaN),
                 ))
             }
-            Result.Ok(out.filter { !it.price.isNaN() })
+            val priced = out.filter { !it.price.isNaN() }
+            val first = priced.firstOrNull()
+
+            Result.Ok(FuelNearby(
+                stations = priced,
+                units = units,
+                region = root.optString("region"),
+                stationLevel = stationLevel,
+                grades = grades,
+                defaultGrade = root.optString("default_grade"),
+                // For an average the "brand" is the area it covers and
+                // last_updated is the week it belongs to; both are empty for a
+                // real forecourt, where they would mean something else.
+                areaName = if (stationLevel) "" else (first?.brand ?: ""),
+                asOf = if (stationLevel) "" else
+                    (arr?.optJSONObject(0)?.optString("last_updated") ?: ""),
+            ))
         } catch (e: Exception) {
             Log.w(TAG, "fetchFuelNearby failed", e)
             Result.Err(e.message ?: "Could not reach the hub")

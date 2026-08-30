@@ -32,6 +32,10 @@ class UKRetailerFeeds(BulkSnapshotProvider):
     currency = "GBP"
     currency_symbol = "£"
     volume_unit = "L"
+    # Miles, not kilometres: UK road signs are in miles, the Journeys
+    # pane on this same tab has always shown miles, and so has the car
+    # screen. Fuel showing kilometres was the odd one out.
+    distance_unit = "mi"
     display_scale = "minor"
     display_decimals = 3
     attribution = "UK retailer open-data fuel price scheme"

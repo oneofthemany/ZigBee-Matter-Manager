@@ -14,6 +14,29 @@ tree) and prints the transition on install, e.g. `1.0 (1) -> 1.1.0 (2)`.
 
 ---
 
+## 1.6.0 (10)
+
+The car screen follows whatever region the hub is set to, instead of assuming
+the UK.
+
+- Prices are formatted the way the region quotes them: `159.9p` in the UK,
+  `€1.719` in Germany, `220.9c` in Australia, `$4.085` in the US. The hub sends
+  a units block; nothing on the phone decides what a price means any more. A
+  driver glancing at "159.9p" when the pump says "1,599 €" has been told
+  something false at exactly the wrong moment.
+- The grade action cycles the grades the region actually sells, not the UK's
+  four. They are cached from the last lookup, so the first tap of a drive works
+  before any request is made, and a grade left over from a region change is
+  swapped for one that exists rather than failing every lookup.
+- Distances follow the region too — miles in the UK and US, kilometres
+  elsewhere. The wire is kilometres regardless; only the display changed.
+- Regions that publish an area average rather than forecourt prices — the US,
+  where no station-level feed exists — say so in one line instead of drawing a
+  single pin in the middle of a state. There is nowhere to drive to, and the
+  figure can be a week old.
+- Nothing changes for a UK hub except that fuel distances are now miles, which
+  is what the Journeys pane and this screen always showed.
+
 ## 1.5.1 (9)
 
 Fuel prices are quoted in pence again, and no longer rounded to the penny.

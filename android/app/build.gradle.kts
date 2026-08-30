@@ -31,8 +31,8 @@ android {
         // Android compares to decide an upgrade is an upgrade; versionName is
         // what the hero strip shows, and is the only way to tell from the phone
         // which build is actually running. CHANGELOG.md records what changed.
-        versionCode = 9
-        versionName = "1.5.1"
+        versionCode = 10
+        versionName = "1.6.0"
     }
 
     signingConfigs {

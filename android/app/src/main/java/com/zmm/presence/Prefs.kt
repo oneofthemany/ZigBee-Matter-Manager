@@ -232,6 +232,52 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_CAR_FUEL, "E10") ?: "E10"
         set(v) = sp.edit().putString(KEY_CAR_FUEL, v).apply()
 
+    /**
+     * The grades the hub's region offers, cached from the last lookup.
+     *
+     * Cached rather than fetched because the head unit cycles grades with a
+     * tap: the list has to be in hand before the first request of a drive, or
+     * the first tap would either do nothing or offer a UK grade to a driver in
+     * Germany. Stored as a JSON array of `{"c": code, "l": label}` so the order
+     * the region declared them in survives — a map would not promise that.
+     *
+     * Empty until the first successful lookup, which is what
+     * [carFuelGradeCodes] falling back to the UK four is for.
+     */
+    var carFuelGrades: String
+        get() = sp.getString(KEY_CAR_FUEL_GRADES, "") ?: ""
+        set(v) = sp.edit().putString(KEY_CAR_FUEL_GRADES, v).apply()
+
+    /** The cached grade codes in order, or the UK four if none are cached. */
+    val carFuelGradeCodes: List<String>
+        get() = parseGrades().map { it.first }.ifEmpty { UK_GRADE_CODES }
+
+    /** The label for a grade code, or the code itself when it is not known. */
+    fun carFuelGradeLabel(code: String): String =
+        parseGrades().firstOrNull { it.first == code }?.second ?: code
+
+    private fun parseGrades(): List<Pair<String, String>> {
+        val raw = carFuelGrades
+        if (raw.isEmpty()) return emptyList()
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val code = o.optString("c")
+                if (code.isEmpty()) null else code to o.optString("l", code)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** Store a region's grades, in the order it declared them. */
+    fun setCarFuelGrades(grades: Map<String, String>) {
+        val arr = org.json.JSONArray()
+        grades.forEach { (code, label) ->
+            arr.put(org.json.JSONObject().put("c", code).put("l", label))
+        }
+        carFuelGrades = arr.toString()
+    }
+
     var armed: Boolean
         get() = sp.getBoolean(KEY_ARMED, false)
         set(v) = sp.edit().putBoolean(KEY_ARMED, v).apply()
@@ -304,6 +350,15 @@ class Prefs(context: Context) {
         private const val KEY_DRIVE_INTERVAL = "drive_interval_s"
         private const val KEY_PASSIVE_POST = "passive_last_post_ms"
         private const val KEY_CAR_FUEL = "car_fuel_type"
+        private const val KEY_CAR_FUEL_GRADES = "car_fuel_grades"
+
+        /**
+         * What the car app offers before it has heard from the hub. The UK's
+         * four, because that is the only region this app ever shipped with —
+         * an install that upgrades must behave exactly as it did until the
+         * first lookup tells it otherwise.
+         */
+        val UK_GRADE_CODES = listOf("E10", "E5", "B7", "SDV")
         private const val KEY_TRIP_ID = "drive_trip_id"
         private const val KEY_TRIP_LAST = "drive_trip_last_ms"
         private const val KEY_THEME = "theme_mode"

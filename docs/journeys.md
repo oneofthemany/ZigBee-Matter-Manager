@@ -585,8 +585,32 @@ one — so a national feed that loses more than half its stations between polls
 keeps the previous snapshot and logs why. Half a country reads to a user as "no
 station near you", which is worse than data a few minutes old.
 
+### The car screen
+
+`android/.../car/FuelScreen.kt` renders whatever the hub tells it. `/api/fuel/nearby`
+carries the units block, the region's whole grade list and `station_level`, so
+the phone decides nothing about what a price means — it formats what it is
+given. That matters more in a car than in a browser: a driver glancing at
+"159.9p" when the pump says "1,599 €" has been told something false at exactly
+the wrong moment.
+
+The grade list rides along on the nearby response rather than being fetched
+separately, and is cached in `Prefs`, because the head unit cycles grades with a
+tap: the list has to be in hand before the first request of a drive. A grade
+left over from a region change is swapped for one the new region sells instead
+of failing every lookup until the driver taps past it.
+
+A region with no station-level prices gets one line saying so rather than a pin
+in the middle of a state. There is nowhere to navigate to.
+
+The UK's `distance_unit` is miles, not kilometres — UK road signs are in miles,
+and the Journeys pane on the same web tab always showed miles. Fuel showing
+kilometres was the odd one out, and the car screen had been quietly overriding
+it all along.
+
 Tests for all of this live in `tests/fuel/` — `run_all.py` for the offline
-suite, `live_check.py` to prove an adapter against the real service. See that
+suite, `live_check.py` to prove an adapter against the real service, and
+`check_android.py` for what can be checked in the Kotlin without a JVM. See that
 directory's README.
 
 ### The United States is not a station list

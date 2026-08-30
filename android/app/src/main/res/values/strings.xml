@@ -56,6 +56,9 @@
     <string name="car_fuel_title">Cheapest %1$s nearby</string>
     <string name="car_refresh">Refresh</string>
     <string name="car_no_stations">No stations with a price nearby</string>
+    <!-- Regions that publish an area average rather than forecourt prices (the
+         US). Says there is nothing to drive to, because there is not. -->
+    <string name="car_fuel_average">Average %1$s per %2$s in %3$s%4$s — no station prices published here</string>
     <string name="car_not_paired">Pair the app on your phone first</string>
     <string name="car_no_location">No location yet</string>
 

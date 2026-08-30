@@ -226,6 +226,10 @@ class FuelFinderClient(BulkSnapshotProvider):
     currency = "GBP"
     currency_symbol = "\u00a3"
     volume_unit = "L"
+    # Miles, not kilometres: UK road signs are in miles, the Journeys
+    # pane on this same tab has always shown miles, and so has the car
+    # screen. Fuel showing kilometres was the odd one out.
+    distance_unit = "mi"
     # UK pump prices are quoted in pence, and a Drive tab showing "\u00a31.399"
     # would be read as a mistake even though it is the same number.
     display_scale = "minor"
