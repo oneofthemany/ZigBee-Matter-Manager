@@ -222,6 +222,14 @@ class HeartbeatWorker(
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
+                // Unreachable as things stand — doWork never returns Retry,
+                // deliberately (see the no-fix branch). Kept only so that a
+                // future path which does retry has a policy rather than the
+                // default, and left EXPONENTIAL as a reminder of the cost:
+                // on periodic work a retry displaces the next scheduled run,
+                // so backing off is backing away from the report the hub is
+                // waiting for. Prefer returning success and letting the
+                // period stand.
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 60, TimeUnit.SECONDS)
                 .build()
 

@@ -585,18 +585,41 @@ class PresenceUserManager:
         if dev.cfg.home_lat is None or dev.cfg.home_lon is None:
             return {"success": False, "error": "User has no home location set"}
 
-        # Drop low-accuracy fixes
+        # A fix can be unusable as a POSITION and still be proof of CONTACT,
+        # and the two guards below must not conflate them. Both used to return
+        # here without touching last_seen, so a phone whose every heartbeat was
+        # rejected looked, to the stale watcher, exactly like a phone that was
+        # switched off — and both rejections are routine, not exceptional:
+        #
+        #   accuracy  a phone indoors falls back to wifi/cell trilateration,
+        #             which regularly reports worse than the 250 m default
+        #   age       a phone that has not moved is not asked for a new fix by
+        #             anything, so its cached position ages past six hours
+        #             overnight while sitting on a bedside table
+        #
+        # Either way the heartbeat arrived, which is what the stale window is
+        # actually asking about. Record the contact, decline to move the
+        # position, and leave presence at its last known value — "nothing has
+        # changed" is the correct reading of a phone that is still checking in.
+        def _contact_only(reason: str) -> Dict[str, Any]:
+            dev.last_seen = time.time()
+            return {"success": False, "error": reason, "ignored": True,
+                    "contact": True}
+
         if accuracy is not None and accuracy > dev.cfg.min_accuracy_m:
             logger.debug(
                 f"[{user_id}] dropping low-accuracy fix ({accuracy:.0f} m > "
                 f"{dev.cfg.min_accuracy_m:.0f} m) from {source}"
             )
-            return {"success": False, "error": "accuracy too low", "ignored": True}
+            return _contact_only("accuracy too low")
 
         ts = timestamp or time.time()
         # Reject obviously stale fixes
         if ts < time.time() - 6 * 3600:
-            return {"success": False, "error": "fix too old", "ignored": True}
+            logger.debug(
+                f"[{user_id}] dropping fix {time.time() - ts:.0f}s old from {source}"
+            )
+            return _contact_only("fix too old")
 
         distance = _haversine_m(lat, lon, dev.cfg.home_lat, dev.cfg.home_lon)
 
