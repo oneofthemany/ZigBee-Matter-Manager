@@ -38,6 +38,8 @@ const REGIONS = { regions: [
   { region:'AU-NSW', country:'AU', label:'Australia — NSW & ACT', note:'NSW note' },
   { region:'AU-QLD', country:'AU', label:'Australia — Queensland',note:'QLD note' },
   { region:'AU-WA',  country:'AU', label:'Australia — WA',        note:'WA note'  },
+  { region:'US',     country:'US', label:'United States',
+    note:'EIA weekly averages, not station prices', station_level:false },
 ]};
 
 async function run(payload, ok = true) {
@@ -123,6 +125,24 @@ async function run(payload, ok = true) {
   check('clearing posts an empty country',
         JSON.stringify(await save('')) === '{"country":"","subdivision":""}',
         await save(''));
+
+  console.log('\n  the US is selectable and says what it is');
+  r = await run({ ...REGIONS, active:'US',
+                  configured:{country:'US',subdivision:''}, detected:'US' });
+  opts = r.dom.els.cfg_fuel_region.innerHTML;
+  check('the US is listed', opts.includes('United States'), opts);
+  check('and preselected when configured', /value="US" selected/.test(opts), opts);
+  check('its note warns it is an average',
+        r.dom.els.cfg_fuel_region_note.textContent.includes('averages'),
+        r.dom.els.cfg_fuel_region_note.textContent);
+  check('US posts a plain country',
+        JSON.stringify(await (async () => {
+          const s2 = await run({ ...REGIONS, active:'GB',
+                                 configured:{country:'',subdivision:''} });
+          s2.dom.els.cfg_fuel_region.value = 'US';
+          await s2.win.saveFuelRegion();
+          return s2.posted[0];
+        })()) === '{"country":"US","subdivision":""}');
 
   console.log('\n  failure paths');
   r = await run({}, false);

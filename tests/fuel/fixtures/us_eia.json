@@ -1,0 +1,156 @@
+{
+ "_note": "envelope is the documented EIA API v2 shape; every value is real, from api.eia.gov/bulk/PET.zip, week ending 2026-08-24",
+ "response": {
+  "total": "12",
+  "dateFormat": "YYYY-MM-DD",
+  "frequency": "weekly",
+  "data": [
+   {
+    "period": "2026-08-24",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_NUS_DPG",
+    "value": 4.085,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-17",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_NUS_DPG",
+    "value": 4.049,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-10",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_NUS_DPG",
+    "value": 4.006,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-24",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMM",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMM_PTE_NUS_DPG",
+    "value": 4.68,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-17",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMM",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMM_PTE_NUS_DPG",
+    "value": 4.649,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-10",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMM",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMM_PTE_NUS_DPG",
+    "value": 4.613,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-24",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMP",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMP_PTE_NUS_DPG",
+    "value": 5.06,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-17",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMP",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMP_PTE_NUS_DPG",
+    "value": 5.02,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-10",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPMP",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMP_PTE_NUS_DPG",
+    "value": 5,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-24",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPD2DXL0",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPD2DXL0_PTE_NUS_DPG",
+    "value": 5.652,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-17",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPD2DXL0",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPD2DXL0_PTE_NUS_DPG",
+    "value": 5.454,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-10",
+    "duoarea": "NUS",
+    "area-name": "U.S.",
+    "product": "EPD2DXL0",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPD2DXL0_PTE_NUS_DPG",
+    "value": 5.257,
+    "units": "$/GAL"
+   }
+  ],
+  "description": "Weekly retail gasoline and diesel prices"
+ },
+ "apiVersion": "2.1.8"
+}

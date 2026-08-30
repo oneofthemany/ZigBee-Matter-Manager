@@ -80,14 +80,24 @@ META_KEYS = {"site_id", "brand", "address", "town", "postcode",
              "latitude", "longitude", "last_updated", "dist"}
 
 
-def implausible_prices(stations, lo=0.3, hi=5.0):
+#: What a pump price plausibly costs, per unit sold. A US gallon is about 3.8
+#: litres, so the same fuel is a much bigger number there — American diesel was
+#: $5.65 a gallon when these bounds were set, which a per-litre ceiling would
+#: have flagged as a bug.
+PRICE_BOUNDS = {"L": (0.3, 5.0), "gal_us": (1.5, 12.0)}
+
+
+def implausible_prices(stations, lo=None, hi=None, volume="L"):
     """
-    Prices that are not plausible money per litre.
+    Prices that are not plausible money per unit sold.
 
     The assertion that earns its keep: it is what catches a comma decimal read
     as an English one (1599.0), an Australian cents value left unscaled (180.0),
     and a Queensland tenth-of-a-cent value divided by the wrong factor.
     """
+    default_lo, default_hi = PRICE_BOUNDS.get(volume, PRICE_BOUNDS["L"])
+    lo = default_lo if lo is None else lo
+    hi = default_hi if hi is None else hi
     return [(s.get("site_id"), k, v) for s in stations for k, v in s.items()
             if k not in META_KEYS and isinstance(v, (int, float))
             and not (lo <= v <= hi)]

@@ -398,6 +398,25 @@ class Geocoder:
                 # blocked rather than rate-limited.
                 self._last_nominatim = time.monotonic()
 
+    async def reverse_place(self, lat: float, lon: float,
+                            zoom: int = 3) -> Dict[str, Any]:
+        """
+        Nominatim's address breakdown for a coordinate, or {}.
+
+        `zoom` picks how specific the answer is: 3 is the country, 5 the state.
+        Kept coarse on purpose — this is for deciding which country's or state's
+        data feed to use, never for finding out whose house it is.
+        """
+        try:
+            data = await self._nominatim_get(NOMINATIM_REVERSE, {
+                "lat": str(float(lat)), "lon": str(float(lon)),
+                "format": "jsonv2", "zoom": str(int(zoom)),
+                "addressdetails": "1"})
+        except Exception as e:                            # noqa: BLE001
+            logger.warning(f"reverse geocode failed for {lat},{lon}: {e}")
+            return {}
+        return (data or {}).get("address") or {}
+
     async def reverse_country(self, lat: float, lon: float) -> Optional[str]:
         """
         The ISO-3166 alpha-2 country at a coordinate, or None.
@@ -405,18 +424,10 @@ class Geocoder:
         Used to suggest a region for things that are country-specific — fuel
         prices most of all, where the whole feed differs per country. Only ever
         a suggestion the user confirms: a hub near a border would otherwise
-        silently switch country on them, and zoom=3 keeps this a country-level
-        question rather than asking OSM for someone's street.
+        silently switch country on them.
         """
-        try:
-            data = await self._nominatim_get(NOMINATIM_REVERSE, {
-                "lat": str(float(lat)), "lon": str(float(lon)),
-                "format": "jsonv2", "zoom": "3", "addressdetails": "1"})
-        except Exception as e:                            # noqa: BLE001
-            logger.warning(f"reverse geocode failed for {lat},{lon}: {e}")
-            return None
-        cc = ((data or {}).get("address") or {}).get("country_code")
-        cc = str(cc or "").upper()
+        address = await self.reverse_place(lat, lon, zoom=3)
+        cc = str(address.get("country_code") or "").upper()
         return cc if _CC_RE.match(cc) else None
 
     async def _nominatim(self, query: str, limit: int) -> List[Dict[str, Any]]:

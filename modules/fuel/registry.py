@@ -79,6 +79,11 @@ def _au_wa(config: Dict[str, Any]) -> FuelProvider:
     return WesternAustraliaFuelWatch((config.get("fuel") or {}).get("fuelwatch") or {})
 
 
+def _us(config: Dict[str, Any]) -> FuelProvider:
+    from modules.fuel.providers.us_eia import UnitedStatesEIA
+    return UnitedStatesEIA((config.get("fuel") or {}).get("eia") or {})
+
+
 #: region key -> how to describe and how to build it. `build` is a callable
 #: rather than a class so a region can be a chain (GB) or a single client
 #: without the caller caring which.
@@ -161,6 +166,19 @@ REGIONS: Dict[str, Dict[str, Any]] = {
         "note": ("FuelWatch. No key needed. Under WA's 24-hour rule a price is "
                  "fixed a day ahead, so today's price is what is shown and it "
                  "will not move before tomorrow."),
+    },
+    "US": {
+        "label": "United States",
+        "country": "US",
+        "build": _us,
+        "needs_credentials": True,
+        # The one region that is not a list of forecourts. The Drive tab shows
+        # an average rather than a table, because that is what the number is.
+        "station_level": False,
+        "note": ("EIA weekly averages. No station-level price feed exists for "
+                 "the US, so this is the average for your state or region, up "
+                 "to a week old — not the cheapest station near you. Needs a "
+                 "free API key."),
     },
 }
 

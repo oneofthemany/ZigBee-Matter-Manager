@@ -35,6 +35,12 @@ handful of stations. Two exceptions, both stated in the files themselves:
 - **Queensland** is built from the worked examples in the published spec
   (*Fuel Prices QLD Direct API (OUT) v1.6*), because the API needs a subscriber
   token. Its adapter has never been run against the live service.
+- **The United States** envelope is the documented EIA API v2 shape, but every
+  price in it is real, lifted from EIA's own public bulk file
+  (`api.eia.gov/bulk/PET.zip`) for the week ending 2026-08-24. The adapter has
+  never run against the keyed API. Its other moving part — resolving a
+  coordinate to a state and then to an EIA area — *has* been checked live
+  against Nominatim for nine states.
 - **Germany's** prices are placeholders — the fixture was fetched with
   Tankerkönig's public demo key, which returns `1.009` for everything. The
   shape is real; the numbers are not.
@@ -44,11 +50,16 @@ and trim it to a few stations, keeping at least one with a missing price.
 
 ## The assertion that earns its keep
 
-`implausible_prices()` asserts every price falls between 0.30 and 5.00 per
-litre. That one check catches a Spanish comma decimal read as an English one
-(1599.0), an Australian cents value left unscaled (203.9), and a Queensland
+`implausible_prices()` asserts every price is plausible money per unit sold.
+That one check catches a Spanish comma decimal read as an English one (1599.0),
+an Australian cents value left unscaled (203.9), and a Queensland
 tenth-of-a-cent value divided by the wrong factor — three bugs that would
 otherwise reach a user looking like a plausible price.
+
+Its bounds follow the **unit**, not the currency: a US gallon is about 3.8
+litres, and American diesel was $5.65 a gallon when these were set, which a
+per-litre ceiling would have flagged as a parsing bug. `PRICE_BOUNDS` in
+`harness.py` holds both.
 
 ## Live checks
 

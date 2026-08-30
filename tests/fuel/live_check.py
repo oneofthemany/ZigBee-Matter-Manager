@@ -36,6 +36,7 @@ PLACES = {
     "AU-NSW": ("Sydney", -33.8688, 151.2093),
     "AU-QLD": ("Brisbane", -27.4698, 153.0251),
     "AU-WA": ("Perth", -31.9523, 115.8613),
+    "US": ("Denver", 39.7392, -104.9903),
 }
 
 TANKERKOENIG_DEMO = "00000000-0000-0000-0000-000000000002"
@@ -90,10 +91,12 @@ async def check_region(region: str) -> list[str]:
         print(f"    {low:.3f}–{high:.3f}, median {median:.3f} "
               f"{provider.currency}/{provider.volume_unit} "
               f"(shown as {shown:.1f})")
-        # A pump price in any of these currencies, per litre, in 2026.
-        check("the median is a plausible pump price", 0.5 <= median <= 3.5, median)
-        check("no price is absurd", all(0.2 <= p <= 6.0 for p in prices),
-              [p for p in prices if not (0.2 <= p <= 6.0)][:5])
+        # A US gallon is about 3.8 litres, so the same fuel is a far bigger
+        # number there; the bounds follow the unit, not the currency.
+        lo, hi = (1.5, 12.0) if provider.volume_unit == "gal_us" else (0.3, 5.0)
+        check("the median is a plausible pump price", lo <= median <= hi, median)
+        check("no price is absurd", all(lo <= p <= hi for p in prices),
+              [p for p in prices if not (lo <= p <= hi)][:5])
 
     check("every station has coordinates",
           all(s.get("latitude") is not None and s.get("longitude") is not None

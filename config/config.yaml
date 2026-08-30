@@ -427,3 +427,20 @@ fuel:
     # to a station that is dearer when they arrive.
     enabled: true
     only_open: false
+
+  # United States. Unlike every other region this is an *area average*, not a
+  # list of forecourts: no free station-level price feed exists for the US, so
+  # the Drive tab shows the weekly figure for your state or PADD region rather
+  # than the cheapest station near you. It can be up to a week old.
+  eia:
+    enabled: true
+    # NO KEY HERE. This file is tracked in git. The key goes in
+    # config/secrets.yaml under eia.api_key, or in the environment as
+    # ZMM_EIA_API_KEY. Register free at
+    # https://www.eia.gov/opendata/register.php
+    #
+    # Optional: pin the EIA area instead of deriving it from the hub's
+    # coordinates. NUS is the nation; R1X/R1Y/R1Z/R20/R30/R40/R50 are the PADD
+    # regions; SCA, SCO, SFL, SMA, SMN, SNY, SOH, STX and SWA are the nine
+    # states EIA publishes separately. Blank derives it.
+    area: ""

@@ -23,6 +23,8 @@ from modules.fuel.providers.es_minetur import _num as es_num
 from modules.fuel.providers.fr_gouv import FranceGouv
 from modules.fuel.providers.fr_gouv import _num as fr_num
 from modules.fuel.providers.it_mimit import ItalyMimit
+from modules.fuel.providers.us_eia import (UnitedStatesEIA, _area_name,
+                                           area_for_state)
 
 
 def _spain(c: Checker) -> None:
@@ -393,9 +395,96 @@ def _qld(c: Checker) -> None:
             len(empty._parse([{"SiteId": 61290151, "FuelId": 8, "Price": 1899}])) == 1)
 
 
+def _us(c: Checker) -> None:
+    c.section("United States — EIA area averages")
+    c.check("a state with its own series", area_for_state("California") == ("SCA", "California"))
+    c.check("a state code works too", area_for_state("TX")[0] == "STX")
+    c.check("lowercase works", area_for_state("ohio")[0] == "SOH")
+    c.check("a state without one falls back to its PADD",
+            area_for_state("Wyoming") == ("R40", "the Rocky Mountains (PADD 4)"))
+    c.check("New England is PADD 1A", area_for_state("Vermont")[0] == "R1X")
+    c.check("the Gulf Coast is PADD 3", area_for_state("Louisiana")[0] == "R30")
+    c.check("somewhere unrecognised falls back to the nation",
+            area_for_state("Puerto Rico") == ("NUS", "the United States"))
+    c.check("blank falls back to the nation", area_for_state("")[0] == "NUS")
+    c.check("every state maps to a PADD",
+            len(__import__("modules.fuel.providers.us_eia", fromlist=["x"]).STATE_PADDS) == 51)
+    c.check("area names round-trip", _area_name("SCA") == "California")
+    c.check("an unknown area code is returned as itself", _area_name("ZZZ") == "ZZZ")
+
+    provider = UnitedStatesEIA({"api_key": "x"})
+    stations = provider._parse(fixture("us_eia.json"), "NUS",
+                               "the United States", 39.7392, -104.9903)
+    c.check("exactly one record", len(stations) == 1, len(stations))
+    s = stations[0]
+    c.check("it is an area, not a station", s["site_id"] == "EIA:NUS", s["site_id"])
+    c.check("named for the area", s["brand"] == "the United States", s["brand"])
+    c.check("no address invented", s["address"] is None and s["postcode"] is None)
+    c.check("distance is zero — you are in it", s["dist"] == 0.0)
+    c.check("carries the query point", (s["latitude"], s["longitude"]) == (39.7392, -104.9903))
+    c.check("regular price", s.get("REGULAR") == 4.085, s.get("REGULAR"))
+    c.check("midgrade price", s.get("MIDGRADE") == 4.68, s.get("MIDGRADE"))
+    c.check("premium price", s.get("PREMIUM") == 5.06, s.get("PREMIUM"))
+    c.check("diesel price", s.get("DIESEL") == 5.652, s.get("DIESEL"))
+    c.check("the week-ending date is carried",
+            s["last_updated"] == "2026-08-24", s["last_updated"])
+    c.check("newest row wins, not the oldest",
+            s["REGULAR"] == 4.085, [s.get(g) for g in ("REGULAR",)])
+    c.check("prices plausible per gallon",
+            not implausible_prices(stations, volume="gal_us"),
+            implausible_prices(stations, volume="gal_us"))
+    c.check("a per-litre ceiling would wrongly flag these",
+            bool(implausible_prices(stations, volume="L")))
+    c.check("no undeclared grades", not undeclared_grades(stations, UnitedStatesEIA),
+            undeclared_grades(stations, UnitedStatesEIA))
+
+    california = provider._parse(fixture("us_eia_sca.json"), "SCA", "California",
+                                 34.05, -118.24)
+    c.check("a state series parses", california[0]["REGULAR"] == 5.45, california)
+    c.check("named for the state", california[0]["brand"] == "California")
+    c.check("only the grades it publishes",
+            set(california[0]) - set(META_KEYS_FOR_US) == {"REGULAR"},
+            sorted(set(california[0])))
+
+    c.section("United States — declarations and failure")
+    c.check("station_level is False", UnitedStatesEIA.station_level is False)
+    c.check("priced per US gallon", UnitedStatesEIA.volume_unit == "gal_us")
+    c.check("distances shown in miles", UnitedStatesEIA.distance_unit == "mi")
+    c.check("dollars are shown as dollars", UnitedStatesEIA.display_scale == "major")
+    c.check("no key means unconfigured", UnitedStatesEIA({}).configured is False)
+    c.check("a key means configured", UnitedStatesEIA({"api_key": "k"}).configured is True)
+    c.check("disabled means unconfigured",
+            UnitedStatesEIA({"api_key": "k", "enabled": False}).configured is False)
+    c.check("an area can be pinned",
+            UnitedStatesEIA({"api_key": "k", "area": "sca"}).area_override == "SCA")
+
+    failing = UnitedStatesEIA({"api_key": "x"})
+    c.check("an empty reply yields nothing",
+            failing._parse({"response": {"data": []}}, "NUS", "n", 0, 0) == [])
+    c.check("and says which area", "NUS" in (failing.last_error or ""), failing.last_error)
+    c.check("an error envelope is surfaced",
+            failing._parse({"error": "API_KEY_INVALID"}, "NUS", "n", 0, 0) == [])
+    c.check("a null payload is empty",
+            failing._parse(None, "NUS", "n", 0, 0) == [])
+    c.check("an unwrapped data list is accepted",
+            len(failing._parse({"data": [{"period": "2026-08-24", "product": "EPMR",
+                                          "value": 4.085}]}, "NUS", "n", 0, 0)) == 1)
+    c.check("a non-numeric value is skipped",
+            failing._parse({"data": [{"period": "p", "product": "EPMR",
+                                      "value": None}]}, "NUS", "n", 0, 0) == [])
+    c.check("an unknown product is ignored",
+            failing._parse({"data": [{"period": "p", "product": "ZZZZ",
+                                      "value": 3.0}]}, "NUS", "n", 0, 0) == [])
+
+
+#: The US record carries the same meta keys as any other station.
+META_KEYS_FOR_US = {"site_id", "brand", "address", "town", "postcode",
+                    "latitude", "longitude", "last_updated", "dist"}
+
+
 def run() -> Checker:
     c = Checker("providers")
     for section in (_spain, _france, _italy, _germany,
-                    _au_common, _nsw, _wa, _qld):
+                    _au_common, _nsw, _wa, _qld, _us):
         section(c)
     return c

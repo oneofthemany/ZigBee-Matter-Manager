@@ -127,6 +127,45 @@ async def _responses(c: Checker) -> None:
     c.check("a grade no station sells succeeds with zero",
             r["success"] is True and r["count"] == 0, r)
 
+    c.section("an area average is not a station")
+
+    class Average(Fake):
+        region, label = "US", "eia"
+        station_level = False
+        grades = {"REGULAR": "Regular", "DIESEL": "Diesel (ULSD)"}
+        currency, currency_symbol = "USD", "$"
+        volume_unit, distance_unit, display_scale = "gal_us", "mi", "major"
+
+        async def _fetch_all(self):
+            return [{"site_id": "EIA:R40", "brand": "the Rocky Mountains (PADD 4)",
+                     "address": None, "postcode": None, "latitude": 39.7,
+                     "longitude": -104.9, "dist": 0.0,
+                     "last_updated": "2026-08-24",
+                     "REGULAR": 4.085, "DIESEL": 5.652}]
+
+    svc = FuelPriceService({})
+    svc._provider = Average()
+    svc._region = "US"
+    r = await svc.best_nearby(39.7, -104.9, "REGULAR", 8.0, 10)
+    c.check("the average answers", r["success"] is True and r["count"] == 1, r)
+    c.check("station_level is flagged false", r["station_level"] is False)
+    c.check("no Maps link for an average", r["stations"][0]["maps_url"] is None,
+            r["stations"][0]["maps_url"])
+    c.check("priced per gallon", r["units"]["volume"] == "gal_us")
+    c.check("distances in miles", r["units"]["distance"] == "mi")
+    c.check("a gallon price above five is not rejected",
+            r["stations"][0]["price"] == 4.085, r["stations"][0]["price"])
+    c.check("the other grade is offered",
+            r["stations"][0]["prices"] == {"REGULAR": 4.085, "DIESEL": 5.652},
+            r["stations"][0]["prices"])
+    c.check("the week-ending date survives",
+            r["stations"][0]["last_updated"] == "2026-08-24")
+
+    # A station-level region must still get its link.
+    r = await _service(Fake()).best_nearby(51.5074, -0.1278, "E10", 8.0, 10)
+    c.check("a real station still gets a Maps link",
+            bool(r["stations"][0]["maps_url"]))
+
     c.section("status contract")
     st = _service(Fake()).status()
     c.check("no original status key lost", STATUS_KEYS <= set(st), STATUS_KEYS - set(st))
@@ -200,7 +239,7 @@ def _locations(c: Checker) -> None:
 
 def _registry(c: Checker) -> None:
     c.section("registry")
-    expected = ["GB", "DE", "ES", "FR", "IT", "AU-NSW", "AU-QLD", "AU-WA"]
+    expected = ["GB", "DE", "ES", "FR", "IT", "AU-NSW", "AU-QLD", "AU-WA", "US"]
     c.check("every region registered", list(registry.REGIONS) == expected,
             list(registry.REGIONS))
     c.check("known_regions drops the build callable",
@@ -236,13 +275,23 @@ def _registry(c: Checker) -> None:
                 for k in ("ES", "FR", "IT", "AU-NSW", "AU-WA")))
     c.check("regions needing a key are not",
             not any(registry.build_provider(k, cfg).configured
-                    for k in ("DE", "AU-QLD")))
+                    for k in ("DE", "AU-QLD", "US")))
+
+    c.section("station_level")
+    c.check("only the US publishes averages",
+            [k for k in registry.REGIONS
+             if not registry.build_provider(k, cfg).station_level] == ["US"])
+    c.check("the registry agrees with the provider",
+            all(registry.REGIONS[k].get("station_level", True)
+                == registry.build_provider(k, cfg).station_level
+                for k in registry.REGIONS))
 
     c.section("dialects")
     for key, currency, scale in (("GB", "GBP", "minor"), ("DE", "EUR", "major"),
                                  ("ES", "EUR", "major"), ("FR", "EUR", "major"),
                                  ("IT", "EUR", "major"), ("AU-NSW", "AUD", "minor"),
-                                 ("AU-QLD", "AUD", "minor"), ("AU-WA", "AUD", "minor")):
+                                 ("AU-QLD", "AUD", "minor"), ("AU-WA", "AUD", "minor"),
+                                 ("US", "USD", "major")):
         provider = registry.build_provider(key, cfg)
         c.check(f"{key} is {currency}", provider.currency == currency, provider.currency)
         c.check(f"{key} displays {scale} units",
@@ -256,6 +305,7 @@ async def _region_from_config(c: Checker) -> None:
                         ({"location": {"country": "DE"}}, "DE"),
                         ({"location": {"country": "fr"}}, "FR"),
                         ({"location": {"country": "AU", "subdivision": "QLD"}}, "AU-QLD"),
+                        ({"location": {"country": "US"}}, "US"),
                         ({"location": {"country": "JP"}}, "GB")):
         got = FuelPriceService(cfg).region
         c.check(f"{cfg.get('location', {}) or 'blank'} -> {expect}", got == expect, got)

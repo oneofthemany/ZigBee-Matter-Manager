@@ -161,7 +161,9 @@ class FuelPriceService:
                 # All grades so the UI can show alternatives without re-querying.
                 "prices": {ft: s.get(ft) for ft in grades if s.get(ft) is not None},
                 "last_updated": s.get("last_updated"),
-                "maps_url": maps_url(s),
+                # An area average has nowhere to navigate to, so it gets no
+                # link rather than one that searches for the name of a state.
+                "maps_url": maps_url(s) if provider.station_level else None,
             })
 
         # Cheapest first; distance breaks ties so two same-price stations

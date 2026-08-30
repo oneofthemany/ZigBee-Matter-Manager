@@ -542,6 +542,7 @@ predates the block keeps working unedited.
 | AU-NSW | FuelCheck (also covers the ACT) | radius query | no | one request per grade, fetched together |
 | AU-QLD | Fuel Price Reporting | national download | yes | prices in tenths of a cent |
 | AU-WA | FuelWatch | national download | no | tomorrow's price is already fixed |
+| US | EIA weekly retail prices | **area average** | yes | not a station list — see below |
 
 Each carries its own grade codes, currency and attribution, so nothing above the
 provider needs to know which country answered. The three keyless feeds work the
@@ -587,6 +588,34 @@ station near you", which is worse than data a few minutes old.
 Tests for all of this live in `tests/fuel/` — `run_all.py` for the offline
 suite, `live_check.py` to prove an adapter against the real service. See that
 directory's README.
+
+### The United States is not a station list
+
+Every other region here rests on a law requiring retailers to publish their
+prices. The United States has no such scheme, and no free station-level feed
+exists as a result. What the EIA publishes instead is a **weekly average** — for
+the nation, for each PADD region, for nine states and for ten cities.
+
+So the US provider declares `station_level: False` and returns one record: the
+average where you are. The Drive tab branches on that and shows a figure instead
+of a cheapest-first table, drops the radius slider, and says plainly that there
+is nowhere to navigate to and that the number can be a week old. Presenting an
+average as though it were a forecourt would be a lie about what the number is.
+
+Coverage thins as it gets local. Nine states have their own series; every other
+state falls back to its PADD region — the Rocky Mountain district is six states
+— and failing that, to the national figure. `area_for_state` is written as that
+fallback chain because the honest answer for Wyoming is "the Rocky Mountains",
+not "no data".
+
+It is also the one region priced by the **US gallon** rather than the litre,
+which is why `volume_unit` exists at all. The number is never converted, only
+labelled — and it is why the tests' plausibility bounds follow the unit rather
+than the currency: American diesel was $5.65 a gallon when this was written,
+which a per-litre ceiling would have flagged as a parsing bug.
+
+If a commercial station-level US feed is ever bought, it drops in beside this as
+an ordinary provider and nothing else changes.
 
 `GET /api/fuel/regions` lists what is available, what is configured, and a
 `detected` country reverse-geocoded from the hub's coordinates. That last one is

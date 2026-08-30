@@ -36,6 +36,9 @@ import { createChart } from './chart-utils.js';
                       distance: 'km', display_scale: 'minor', decimals: 3 };
     var fuelAttribution = '';
     var fuelDefaultGrade = '';
+    // False for a region that publishes area averages rather than
+    // forecourts. Changes what the card asks for as well as what it shows.
+    var fuelStationLevel = true;
 
     // Suffix for a price quoted in a currency's minor unit. Only regions that
     // price that way need an entry; anywhere else shows the major unit instead.
@@ -210,6 +213,7 @@ import { createChart } from './chart-utils.js';
             if (st.units) fuelUnits = st.units;
             fuelAttribution = st.attribution || '';
             fuelDefaultGrade = st.default_grade || '';
+            if (typeof st.station_level === 'boolean') fuelStationLevel = st.station_level;
         } catch (e) { /* keep defaults */ }
     }
 
@@ -1195,20 +1199,29 @@ import { createChart } from './chart-utils.js';
                   'placeholder="home" value="' + escape(prefs.postcode) + '" maxlength="120" ' +
                   'autocomplete="postal-code">' +
               '</div>' +
-              '<div class="col-6 col-sm-3">' +
-                '<label class="form-label small fw-bold mb-1">' +
-                  'Within <span id="fuel-radius-label">' +
-                    escape(fuelRadiusLabel(Number(prefs.radius))) + '</span></label>' +
-                '<input type="range" class="form-range" id="fuel-radius" ' +
-                  'min="2" max="40" step="1" value="' + prefs.radius + '">' +
-              '</div>' +
+              // A radius means nothing when the answer is one figure for a
+              // whole state, so the slider is left out rather than shown
+              // doing nothing.
+              (fuelStationLevel
+                ? '<div class="col-6 col-sm-3">' +
+                    '<label class="form-label small fw-bold mb-1">' +
+                      'Within <span id="fuel-radius-label">' +
+                        escape(fuelRadiusLabel(Number(prefs.radius))) + '</span></label>' +
+                    '<input type="range" class="form-range" id="fuel-radius" ' +
+                      'min="2" max="40" step="1" value="' + prefs.radius + '">' +
+                  '</div>'
+                : '') +
             '</div>' +
             '<div class="d-grid mt-2">' +
               '<button class="btn btn-sm btn-primary" id="fuel-search">' +
-                '<i class="fas fa-magnifying-glass me-1"></i> Find cheapest</button>' +
+                '<i class="fas fa-magnifying-glass me-1"></i> ' +
+                (fuelStationLevel ? 'Find cheapest' : 'Show average') + '</button>' +
             '</div>' +
             '<div class="small text-muted mt-1" id="fuel-note">' +
-              'Leave blank to search around home. ' +
+              (fuelStationLevel
+                ? 'Leave blank to search around home. '
+                : 'Leave blank to use the hub\'s location. This region publishes ' +
+                  'an area average rather than individual stations. ') +
               escape(fuelAttribution || 'Prices come from published open data.') +
             '</div>' +
             '<div class="mt-3" id="fuel-results"></div>' +
@@ -1243,7 +1256,7 @@ import { createChart } from './chart-utils.js';
 
         out.innerHTML = '<div class="text-center text-muted py-3">' +
             '<i class="fas fa-spinner fa-spin"></i> Fetching prices… ' +
-            '<span class="small">(first search loads all retailer feeds; can take ~20 s)</span></div>';
+            '<span class="small">(the first search of the day loads the feed; can take ~20 s)</span></div>';
         if (btn) btn.disabled = true;
 
         var qs = '?fuel=' + encodeURIComponent(fuel) +
@@ -1518,11 +1531,54 @@ import { createChart } from './chart-utils.js';
         } catch (e) { /* history is a bonus, never an error */ }
     }
 
+    // An area average is not a station, and must not be dressed up as one.
+    // The US is the only region like this — no free station-level feed exists
+    // there — so instead of a cheapest-first table it gets one figure, named
+    // for the area it covers and dated, because it can be a week old.
+    function renderFuelAverage(out, data) {
+        var s = (data.stations || [])[0];
+        if (!s) {
+            out.innerHTML = '<div class="text-center text-muted py-3">' +
+                'No average published for ' + escape(data.fuel_label || data.fuel) +
+                ' in this area.</div>';
+            return;
+        }
+        var alternatives = Object.keys(s.prices || {})
+            .filter(function (k) { return k !== data.fuel; })
+            .map(function (k) {
+                return '<span class="me-3">' + escape(fuelTypes[k] || k) + ' ' +
+                       '<strong>' + fuelPrice(s.prices[k]) + '</strong></span>';
+            }).join('');
+
+        out.innerHTML =
+          '<div class="card border-0 bg-body-tertiary">' +
+            '<div class="card-body text-center py-4">' +
+              '<div class="small text-muted mb-1">Average price in ' +
+                escape(s.brand || 'your area') + '</div>' +
+              '<div class="display-6 fw-bold">' + fuelPrice(s.price) + '</div>' +
+              '<div class="small text-muted">' +
+                escape(data.fuel_label || data.fuel) + ' per ' + volumeLabel() +
+                (s.last_updated
+                    ? ' — week ending ' + escape(s.last_updated) : '') +
+              '</div>' +
+              (alternatives
+                  ? '<div class="small mt-3">' + alternatives + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="small text-muted mt-2">' +
+            'This is a published average, not a station. No station-level price ' +
+            'feed exists for this region, so there is nowhere to navigate to and ' +
+            'the figure can be up to a week old.' +
+          '</div>' +
+          '<div id="fuel-trend"></div>';
+    }
+
     function renderFuelResults(out, data) {
         // The response is what the region actually answered with, so it wins
         // over whatever was cached when the tab was first opened.
         if (data.units) fuelUnits = data.units;
         if (data.attribution) fuelAttribution = data.attribution;
+        if (data.station_level === false) { renderFuelAverage(out, data); return; }
         if (!data.stations || !data.stations.length) {
             out.innerHTML = '<div class="text-center text-muted py-3">' +
                 'No stations selling ' + escape(data.fuel_label || data.fuel) +

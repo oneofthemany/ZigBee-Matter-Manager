@@ -1,0 +1,43 @@
+{
+ "_note": "as above, California regular only",
+ "response": {
+  "data": [
+   {
+    "period": "2026-08-24",
+    "duoarea": "SCA",
+    "area-name": "CALIFORNIA",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_SCA_DPG",
+    "value": 5.45,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-17",
+    "duoarea": "SCA",
+    "area-name": "CALIFORNIA",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_SCA_DPG",
+    "value": 5.397,
+    "units": "$/GAL"
+   },
+   {
+    "period": "2026-08-10",
+    "duoarea": "SCA",
+    "area-name": "CALIFORNIA",
+    "product": "EPMR",
+    "product-name": "Total Gasoline",
+    "process": "PTE",
+    "process-name": "Retail Sales",
+    "series": "EMM_EPMR_PTE_SCA_DPG",
+    "value": 5.428,
+    "units": "$/GAL"
+   }
+  ]
+ }
+}
