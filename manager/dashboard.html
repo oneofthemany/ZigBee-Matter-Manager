@@ -50,37 +50,44 @@ header{position:sticky;top:0;z-index:10;display:flex;align-items:center;
 main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 #appver{font-family:var(--mono);color:var(--muted);font-size:.74rem}
 
-/* the honeycomb: SIX fixed cells, and they are the navigation.
+/* the honeycomb: FIVE fixed cells, and they are the navigation.
    The count is fixed on purpose. The old comb appended one cell per
    container, so the nth-child parity that produces the stagger — and the
    centring of the whole band — changed whenever a container appeared or
    went away. `-previous` arrives mid-upgrade and is removed after, so the
    comb re-laid itself out exactly when you were watching it. Containers
-   now aggregate into ONE cell and the six slots never move. */
+   now aggregate into one cell and the five slots never move.
+
+   STRUCTURE: .hexwrap > button.cell > span.in
+   The wrap exists because clip-path is applied AFTER filter, so a
+   drop-shadow on the clipped element gets clipped away with it — the glow
+   simply never paints. The wrap is unclipped and carries the filter; the
+   button carries the clip, which also keeps the click target hexagonal. */
 .comb{--hexw:132px;--hexh:112px;display:flex;flex-wrap:nowrap;
-  justify-content:center;overflow-x:auto;scrollbar-width:none;
-  padding:.7rem 0 calc(.9rem + var(--hexh)/2);margin:0 0 .2rem}
-.comb::-webkit-scrollbar{display:none}
+  justify-content:center;overflow:visible;
+  padding:1.5rem .8rem calc(1.6rem + var(--hexh)/2);margin:0 0 .2rem}
 @media(max-width:900px){.comb{--hexw:112px;--hexh:96px}}
 @media(max-width:680px){.comb{--hexw:98px;--hexh:84px;justify-content:flex-start;
-  padding-left:.6rem;padding-right:.6rem}}
-/* Moulded-wax look: the outer element is the CELL WALL and carries a lit rim
-   gradient; `.in` is the face, inset far enough that the wall reads as
-   thickness rather than a border. Light comes from the top-left throughout,
-   so the bevel, the sheen and the drop shadow all agree on one light source.
-   drop-shadow (not box-shadow) is what makes this work — it follows the
-   clip-path silhouette, so shadow and glow trace the hexagon, not a box. */
-.cell{--ty:0;--glow:var(--wax);
+  overflow-x:auto;scrollbar-width:none}
+  .comb::-webkit-scrollbar{display:none}}
+
+.hexwrap{--ty:0;--glow:var(--wax);
   position:relative;width:var(--hexw);height:var(--hexh);flex:none;
-  margin:0 calc(var(--hexw)*-0.125 + 1.5px);
-  clip-path:var(--hexclip);
-  background:linear-gradient(148deg,#8fb6d1 0%,#4a7392 16%,#27455f 42%,
-    #142634 70%,#070f16 100%);
-  padding:0;border:0;font:inherit;color:inherit;cursor:pointer;
+  margin:0 calc(var(--hexw)*-0.125 + 6px);
   transform:translateY(var(--ty));
   filter:drop-shadow(0 5px 7px rgba(0,0,0,.55));
   transition:transform .16s cubic-bezier(.2,.8,.3,1.1),filter .16s ease}
-.cell:nth-child(even){--ty:calc(var(--hexh)/2)}
+.hexwrap:nth-child(even){--ty:calc(var(--hexh)/2)}
+
+/* Moulded-wax look: the button is the CELL WALL and carries a lit rim
+   gradient; `.in` is the face, inset far enough that the wall reads as
+   thickness rather than a border. Light comes from the top-left throughout,
+   so bevel, sheen and shadow all agree on one light source. */
+.cell{position:absolute;inset:0;width:100%;height:100%;
+  clip-path:var(--hexclip);
+  background:linear-gradient(148deg,#8fb6d1 0%,#4a7392 16%,#27455f 42%,
+    #142634 70%,#070f16 100%);
+  padding:0;border:0;font:inherit;color:inherit;cursor:pointer;display:block}
 .cell .in{position:absolute;inset:5px;clip-path:var(--hexclip);
   display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:.1rem;text-align:center;padding:0 18px;
@@ -92,69 +99,71 @@ main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 .cell .in::before{content:"";position:absolute;inset:0;pointer-events:none;
   background:linear-gradient(158deg,rgba(255,255,255,.13) 0%,
     rgba(255,255,255,.03) 16%,rgba(255,255,255,0) 34%)}
-.cell:hover{transform:translateY(calc(var(--ty) - 2px));
+.hexwrap:hover{transform:translateY(calc(var(--ty) - 2px));
   filter:drop-shadow(0 8px 11px rgba(0,0,0,.6))}
+
 /* Selection = a halo in the cell's OWN severity colour, plus a lift. Two
    independent channels: the glow says "you are here", the hue says how that
    thing is doing — so a selected warning still reads amber, and selecting
    something never makes it look like a warning. */
-.cell[aria-selected="true"]{transform:translateY(var(--ty)) scale(1.09);z-index:2;
-  filter:drop-shadow(0 8px 12px rgba(0,0,0,.65))
-         drop-shadow(0 0 4px color-mix(in srgb,var(--glow) 95%,transparent))
-         drop-shadow(0 0 12px color-mix(in srgb,var(--glow) 75%,transparent))
-         drop-shadow(0 0 26px color-mix(in srgb,var(--glow) 50%,transparent))
-         drop-shadow(0 0 48px color-mix(in srgb,var(--glow) 28%,transparent))}
-.cell[aria-selected="true"] .in{background:
-  radial-gradient(115% 80% at 26% 6%,rgba(255,255,255,.14),rgba(255,255,255,0) 58%),
-  linear-gradient(158deg,var(--comb2) 0%,#132433 55%,#0b1723 100%)}
-.cell[aria-selected="true"] b{color:var(--wax)}
-.cell[aria-selected="true"]:hover{transform:translateY(calc(var(--ty) - 2px)) scale(1.09)}
+.hexwrap.sel{transform:translateY(var(--ty)) scale(1.09);z-index:2;
+  filter:drop-shadow(0 8px 12px rgba(0,0,0,.7))
+         drop-shadow(0 0 2px var(--glow))
+         drop-shadow(0 0 6px color-mix(in srgb,var(--glow) 85%,transparent))
+         drop-shadow(0 0 13px color-mix(in srgb,var(--glow) 52%,transparent))
+         drop-shadow(0 0 24px color-mix(in srgb,var(--glow) 26%,transparent))}
+.hexwrap.sel:hover{transform:translateY(calc(var(--ty) - 2px)) scale(1.09)}
+.hexwrap.sel .in{background:
+  radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.22),rgba(255,255,255,0) 55%),
+  radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.5),rgba(0,0,0,0) 55%),
+  linear-gradient(158deg,#25405a 0%,#152838 55%,#0b1723 100%)}
+.hexwrap.sel b{color:var(--wax)}
 /* Fallback for engines without color-mix(): a plain wax halo still reads. */
 @supports not (color: color-mix(in srgb,red,blue)){
-  .cell[aria-selected="true"]{filter:drop-shadow(0 7px 10px rgba(0,0,0,.6))
-    drop-shadow(0 0 10px rgba(234,242,244,.55))
-    drop-shadow(0 0 24px rgba(234,242,244,.28))}}
+  .hexwrap.sel{filter:drop-shadow(0 7px 10px rgba(0,0,0,.6))
+    drop-shadow(0 0 10px rgba(234,242,244,.6))
+    drop-shadow(0 0 26px rgba(234,242,244,.3))}}
 .cell:focus-visible{outline:2px solid var(--honey);outline-offset:4px}
-@media (prefers-reduced-motion:reduce){.cell{transition:none}}
+@media (prefers-reduced-motion:reduce){.hexwrap{transition:none}}
 .cell b{font-family:var(--mono);font-weight:400;font-size:.62rem;
   letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .cell .v{font-family:var(--mono);font-weight:700;font-size:.86rem;
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell .s{font-size:.62rem;color:var(--muted);max-width:100%;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;min-height:.9em}
-/* Severity tints the WALL (and the glow hue), never the selection state. */
-.cell.ok{--glow:var(--ok);
-  background:linear-gradient(148deg,#b6ffe4 0%,#4fd7a8 16%,#248a68 44%,#10402f 72%,#05170f 100%)}
-.cell.ok .in{background:
+/* Severity tints the WALL and sets the glow hue. It is set on the WRAP so
+   --glow is in scope for the wrap's own drop-shadow filter. */
+.hexwrap.ok{--glow:var(--ok)}
+.hexwrap.ok .cell{background:linear-gradient(148deg,#b6ffe4 0%,#4fd7a8 16%,#248a68 44%,#10402f 72%,#05170f 100%)}
+.hexwrap.ok .in{background:
   radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
   radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
   linear-gradient(158deg,#16362f 0%,var(--comb) 55%,#08121b 100%)}
-.cell.ok .v{color:var(--ok)}
-.cell.bad{--glow:var(--bad);
-  background:linear-gradient(148deg,#ffc3ce 0%,#f4536e 16%,#b32a41 44%,#4a121c 72%,#1c0509 100%);
-  animation:throb 1.5s ease-in-out infinite}
-.cell.bad .in{background:
+.hexwrap.ok .v{color:var(--ok)}
+.hexwrap.bad{--glow:var(--bad);animation:throb 1.5s ease-in-out infinite}
+.hexwrap.bad .cell{background:linear-gradient(148deg,#ffc3ce 0%,#f4536e 16%,#b32a41 44%,#4a121c 72%,#1c0509 100%)}
+.hexwrap.bad .in{background:
   radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
   radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
   linear-gradient(158deg,#3a1a22 0%,var(--comb) 55%,#08121b 100%)}
-.cell.bad .v{color:var(--bad)}
-.cell.warn{--glow:var(--honey);
-  background:linear-gradient(148deg,#ffe6b8 0%,#f2a93b 16%,#b3761a 44%,#4a320b 72%,#1c1204 100%)}
-.cell.warn .in{background:
+.hexwrap.bad .v{color:var(--bad)}
+.hexwrap.warn{--glow:var(--honey)}
+.hexwrap.warn .cell{background:linear-gradient(148deg,#ffe6b8 0%,#f2a93b 16%,#b3761a 44%,#4a320b 72%,#1c1204 100%)}
+.hexwrap.warn .in{background:
   radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
   radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
   linear-gradient(158deg,#392c14 0%,var(--comb) 55%,#08121b 100%)}
-.cell.warn .v{color:var(--honey)}
-.cell.mut{--glow:var(--muted)}
-.cell.mut .v{color:var(--muted)}
+.hexwrap.warn .v{color:var(--honey)}
+.hexwrap.mut{--glow:var(--muted)}
+.hexwrap.mut .v{color:var(--muted)}
 @keyframes throb{50%{opacity:.55}}
 .born{animation:settle .45s cubic-bezier(.2,.8,.3,1.2) backwards}
-.cell:nth-child(1){animation-delay:.02s}.cell:nth-child(2){animation-delay:.08s}
-.cell:nth-child(3){animation-delay:.14s}.cell:nth-child(4){animation-delay:.2s}
-.cell:nth-child(5){animation-delay:.26s}.cell:nth-child(6){animation-delay:.32s}
+.hexwrap:nth-child(1){animation-delay:.02s}.hexwrap:nth-child(2){animation-delay:.08s}
+.hexwrap:nth-child(3){animation-delay:.14s}.hexwrap:nth-child(4){animation-delay:.2s}
+.hexwrap:nth-child(5){animation-delay:.26s}
 @keyframes settle{from{opacity:0;scale:.85}}
 @media (prefers-reduced-motion:reduce){
-  .born,.cell.bad,.rec-flag{animation:none!important}}
+  .born,.hexwrap.bad,.rec-flag{animation:none!important}}
 
 /* panels: one section on screen at a time — no scroll-doom */
 .panel[hidden]{display:none}
@@ -328,16 +337,21 @@ dialog .remember input{accent-color:var(--honey)}
 <!-- The honeycomb IS the navigation: six fixed slots, each one a tab and
      that section's status pill. Nothing is added or removed at runtime. -->
 <nav class="comb" id="comb" role="tablist" aria-label="Manager sections">
-  <button class="cell mut born" role="tab" id="tHealth" data-panel="health" aria-selected="true" aria-controls="p-health" tabindex="0">
-    <span class="in"><b>health</b><span class="v" id="tHealthV">&hellip;</span><span class="s" id="tHealthS"></span></span></button>
-  <button class="cell mut born" role="tab" id="tDeployment" data-panel="deployment" aria-selected="false" aria-controls="p-deployment" tabindex="-1">
-    <span class="in"><b>deployment</b><span class="v" id="tDeploymentV">&hellip;</span><span class="s" id="tDeploymentS"></span></span></button>
-  <button class="cell mut born" role="tab" id="tLogs" data-panel="logs" aria-selected="false" aria-controls="p-logs" tabindex="-1">
-    <span class="in"><b>logs</b><span class="v" id="tLogsV">&hellip;</span><span class="s" id="tLogsS"></span></span></button>
-  <button class="cell mut born" role="tab" id="tHost" data-panel="host" aria-selected="false" aria-controls="p-host" tabindex="-1">
-    <span class="in"><b>host os</b><span class="v" id="tHostV">&hellip;</span><span class="s" id="tHostS"></span></span></button>
-  <button class="cell mut born" role="tab" id="tServices" data-panel="services" aria-selected="false" aria-controls="p-services" tabindex="-1">
-    <span class="in"><b>services</b><span class="v" id="tServicesV">&hellip;</span><span class="s" id="tServicesS"></span></span></button>
+  <span class="hexwrap mut born sel" id="wHealth">
+    <button class="cell" role="tab" id="tHealth" data-panel="health" aria-selected="true" aria-controls="p-health" tabindex="0">
+      <span class="in"><b>health</b><span class="v" id="tHealthV">&hellip;</span><span class="s" id="tHealthS"></span></span></button></span>
+  <span class="hexwrap mut born" id="wDeployment">
+    <button class="cell" role="tab" id="tDeployment" data-panel="deployment" aria-selected="false" aria-controls="p-deployment" tabindex="-1">
+      <span class="in"><b>deployment</b><span class="v" id="tDeploymentV">&hellip;</span><span class="s" id="tDeploymentS"></span></span></button></span>
+  <span class="hexwrap mut born" id="wLogs">
+    <button class="cell" role="tab" id="tLogs" data-panel="logs" aria-selected="false" aria-controls="p-logs" tabindex="-1">
+      <span class="in"><b>logs</b><span class="v" id="tLogsV">&hellip;</span><span class="s" id="tLogsS"></span></span></button></span>
+  <span class="hexwrap mut born" id="wHost">
+    <button class="cell" role="tab" id="tHost" data-panel="host" aria-selected="false" aria-controls="p-host" tabindex="-1">
+      <span class="in"><b>host os</b><span class="v" id="tHostV">&hellip;</span><span class="s" id="tHostS"></span></span></button></span>
+  <span class="hexwrap mut born" id="wServices">
+    <button class="cell" role="tab" id="tServices" data-panel="services" aria-selected="false" aria-controls="p-services" tabindex="-1">
+      <span class="in"><b>services</b><span class="v" id="tServicesV">&hellip;</span><span class="s" id="tServicesS"></span></span></button></span>
 </nav>
 
 <!-- 1. HEALTH — is the hub alive? -->
@@ -563,6 +577,13 @@ const SEV={mut:0,ok:1,warn:2,bad:3};
 /* DEPLOYMENT is fed by two independent polls (/status for containers,
    /upgrade for images), so each keeps its half and repaints the shared hex. */
 const dep={cnt:'mut',cntTxt:'…',up:'mut',upTxt:''};
+/* During a swap the app IS down and containers DO churn — that is the
+   procedure working, not a fault. The watchdog already stands down for these
+   states (manager/watchdog.py:120); the UI has to agree, or it cries
+   "unhealthy" at the user every single upgrade. */
+const DEPLOYING=['building','swapping','rolling_back'];
+let upState='idle';
+const deploying=()=>DEPLOYING.includes(upState);
 function paintDeployment(){
  setCell('deployment',worst(dep.cnt,dep.up),
   dep.up!=='mut'&&dep.upTxt&&dep.upTxt!=='idle'?dep.upTxt:dep.cntTxt,
@@ -571,10 +592,13 @@ const SEVNAME=['mut','ok','warn','bad'];
 function worst(...list){return SEVNAME[Math.max(0,...list.map(x=>SEV[x]??0))];}
 
 function setCell(id,cls,val,sub){
- const c=$('t'+id[0].toUpperCase()+id.slice(1));if(!c)return;
+ const Cap=id[0].toUpperCase()+id.slice(1);
+ const c=$('t'+Cap),w=$('w'+Cap);if(!c||!w)return;
  const sel=c.getAttribute('aria-selected')==='true';
- c.className='cell '+cls+(c.className.includes('born')?' born':'');
- $(c.id+'V').textContent=val;$(c.id+'S').textContent=sub||'';
+ // Severity lives on the wrap: --glow has to be in scope for the wrap's
+ // drop-shadow filter, and custom properties only inherit downwards.
+ w.className='hexwrap '+cls+(w.className.includes('born')?' born':'')+(sel?' sel':'');
+ $('t'+Cap+'V').textContent=val;$('t'+Cap+'S').textContent=sub||'';
  const name=c.querySelector('b');
  c.setAttribute('aria-label',
   (name?name.textContent+': ':'')+val+(sub?(' — '+sub):'')+
@@ -594,6 +618,8 @@ function showPanel(id,{focus=false}={}){
   const panel=$('p-'+pid),tab=$('t'+pid[0].toUpperCase()+pid.slice(1));
   const on=pid===id;
   if(panel)panel.hidden=!on;
+  const wrap=$('w'+pid[0].toUpperCase()+pid.slice(1));
+  if(wrap)wrap.classList.toggle('sel',on);
   if(tab){tab.setAttribute('aria-selected',on?'true':'false');
    tab.tabIndex=on?0:-1;if(on&&focus)tab.focus();}});
  try{localStorage.setItem('zmm.manager.tab',id);}catch(e){}
@@ -638,6 +664,10 @@ async function refresh(){
   if(a.ok&&bringup==='starting'){appSev='warn';appVal='starting';
    appSub=ver?('v'+ver+' — services booting'):'services booting';}
   else if(a.ok){appSev='ok';appVal='healthy';appSub=ver?('version '+ver):'';}
+  else if(deploying()){
+   // Expected mid-swap: the old container is gone and the new one is booting.
+   appSev='warn';appVal=upState==='rolling_back'?'rolling back':'deploying';
+   appSub='new version starting — health check in progress';}
   else{appSev='bad';appVal=bringup==='failed'?'boot failed':'unhealthy';
    appSub=(a.body&&a.body.error)||a.error||('HTTP '+(a.status_code??'—'));}
   const w=d.watchdog||{};const ws=w.status||'?';
@@ -687,8 +717,8 @@ async function refresh(){
    const dead=list.filter(x=>['exited','dead'].includes((x.state||'').toLowerCase()));
    // `-previous` exits cleanly by design after a good swap, so it is not a fault.
    const faults=dead.filter(x=>!x.name.endsWith('-previous'));
-   dep.cnt=faults.length?'bad':(up===list.length?'ok':'warn');
-   dep.cntTxt=up+'/'+list.length+' up';}
+   dep.cnt=faults.length?(deploying()?'warn':'bad'):(up===list.length?'ok':'warn');
+   dep.cntTxt=up+'/'+list.length+' up'+(faults.length&&deploying()?' · swapping':'');}
   paintDeployment();
   $('cont').innerHTML=!c.available
    ?'<span class="muted">'+esc(c.error||'unavailable')+'</span>'
@@ -791,6 +821,7 @@ async function loadUpgrade(){
   const st=d.status||{};const s=st.state||'idle';
   const cls=s==='idle'?'mut':(s==='failed'?'bad':'warn');
   const cur=d.current_version?('v'+d.current_version):'';
+  upState=s;
   dep.up=cls;dep.upTxt=s;dep.upSub=s==='idle'?cur:(st.current_step||st.error||'');
   paintDeployment();
   // `swapping` is the restart-guard window — say so, since it explains why
@@ -816,6 +847,7 @@ async function loadUpgrade(){
   if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
  }catch(e){
   upIdx=Math.min(upIdx+1,BACKOFF.length-1);
+  upState='idle';
   dep.up='mut';dep.upTxt='';dep.upSub='upgrade status unavailable';paintDeployment();
   $('upState').textContent='upgrade status unavailable';
  }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
