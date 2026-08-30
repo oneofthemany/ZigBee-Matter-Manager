@@ -25,6 +25,7 @@
   <a href="#-the-gateway">Gateway</a> ·
   <a href="#-the-house">The House</a> ·
   <a href="#-the-platform">Platform</a> ·
+  <a href="#-zmm-manager-the-sidecar">ZMM Manager</a> ·
   <a href="#-web-interface">Web Interface</a> ·
   <a href="#-configuration">Configuration</a> ·
   <a href="#-roadmap">Roadmap</a> ·
@@ -53,7 +54,9 @@ Around that core the app has grown into the hub for the house:
 - it **knows who's home** — per-user presence from phones, shared geofenced places, and RSSI-based room occupancy from the mesh itself;
 - it **is its own admin surface** — users, groups, scoped tokens, TOTP MFA, Cloudflare-tunnel remote access, an in-app code editor with test-and-rollback, in-app upgrades, and a bundled wiki.
 
-Everything runs in one container, on one Python event loop, with a DuckDB time-series store underneath and a single-page web UI on top. The design target is a production household: automatic NCP failure recovery, exponential backoff, a fast-path pipeline for latency-critical sensor events, and a watchdog that would rather restart than wedge.
+Everything runs on one Python event loop, with a DuckDB time-series store underneath and a single-page web UI on top. The design target is a production household: automatic NCP failure recovery, exponential backoff, a fast-path pipeline for latency-critical sensor events, and a watchdog that would rather restart than wedge.
+
+The deployment is **two processes, deliberately**. The app serves the house on `:8000`. A second, much smaller **[ZMM Manager](#-zmm-manager-the-sidecar)** sidecar serves `:8001` and does nothing but watch, recover and upgrade the app — so the surface you need when the app is broken is never part of the app that broke.
 
 **Current release:** `v29.02.08.2026`
 
@@ -102,7 +105,7 @@ sudo bash deploy.sh
 sudo systemctl start zigbee-matter-manager
 ```
 
-Open **http://YOUR_IP:8000** in your browser (or **https://** once you enable SSL in Settings).
+Open **http://YOUR_IP:8000** in your browser (or **https://** once you enable SSL in Settings). The **[ZMM Manager](#-zmm-manager-the-sidecar)** sidecar comes up alongside it on **`:8001`**, and stays reachable even when the app is not.
 
 On first boot, if `channel`, `pan_id`, `extended_pan_id`, or `network_key` are absent or placeholder values, the system will **auto-generate valid random credentials** and write them to `config.yaml` before starting the radio. No manual YAML editing required for initial setup.
 
@@ -443,7 +446,7 @@ Upgrade from the web UI — no SSH, no `build.sh` re-run. The system pulls a tag
 
 - **Blue-green deployment** — new image builds in parallel; only the final swap causes a brief (~15 s) interruption
 - **Atomic swap with auto-rollback** — health-check-gated; if the new container doesn't respond at `/api/status` within 60 s, the previous container is restored
-- **One-click manual rollback** — the previous container and image are retained after every successful upgrade
+- **One-click manual rollback** — the previous container and image are retained after every successful upgrade, and rollback to *any* retained version is driven from the [ZMM Manager](#-zmm-manager-the-sidecar), so it works with the app down
 - **GitHub tag polling** — background check every 6 hours with a toast when a release appears; manual "Check now" too
 - **Configurable auto-update** — off by default; when enabled, updates install only inside a quiet window (default 03:00–05:00) so the hub never restarts mid heating cycle or mid pairing
 - **Multi-arch aware** — images are tagged per architecture (`…:29.02.08.2026-arm64` vs `-amd64`) and the right one is picked automatically
@@ -530,9 +533,58 @@ It also ships an **Android Auto** screen for the cheapest-fuel lookup. See **[an
 
 ---
 
+## 🐝 ZMM Manager (the sidecar)
+
+The deployment is two processes on purpose. The app serves the house on **`:8000`**. **ZMM Manager** is a second, much smaller FastAPI service on **`:8001`** whose entire job is to watch, recover and upgrade the app — so **the surface you need when the app is broken is never part of the app that broke**.
+
+It replaces an older in-container `recovery_server.py`, which had the obvious flaw: it could only run while the app was alive, which is exactly when you don't need it.
+
+**How it is wired**
+
+- A second member of the `zmm` pod, **sharing the host network namespace**, so it reaches the app at `127.0.0.1:8000`
+- **Mounts the container-runtime socket**, so it can inspect and manage the pod's containers over podman/docker's Docker-compatible REST API
+- **Never imports from `modules/`.** It is the disaster-recovery surface, so it stays standalone; the pieces duplicated from the app (the Ollama container create-config, for instance) are duplicated *by convention* and kept in sync deliberately
+- **Matches the app's scheme.** If the app's self-signed cert exists in the mounted data dir it serves HTTPS, so it is reachable at the same scheme as the app — which also satisfies the HSTS that `https://…:8000` imposes on the whole host. No cert, and it falls back to plain HTTP
+- It stays up while the app restarts, upgrades, rolls back or crashes
+
+<p align="center">
+  <img src="docs/images/screenshot-manager.jpg" alt="ZMM Manager status honeycomb, containers and version control" width="90%">
+  <br><em>The status honeycomb, containers and version control. Captured live during a real event: the upgrade to v30.08.2026 failed its health check, the manager rolled the app back to v29.02.08.2026 on its own, and the application hexagon is green again.</em>
+</p>
+
+**What it does**
+
+| Panel | Capability |
+|:---|:---|
+| **Status honeycomb** | Application health, watchdog state, upgrade state, host OS updates, and per-container status at a glance |
+| **Watchdog** | An asyncio task that auto-recovers the app *and* Ollama when unhealthy — conservative by design: startup grace, slow escalation, a restart cap, two independent targets with separate budgets, and it **stands down entirely during upgrades and editor test deploys** so it never fights a deliberate restart |
+| **Containers** | Inspect and restart this deployment's containers plus the siblings it looks after (default: `ollama`) |
+| **Version control** | Roll back to **any retained image**, delete images, set the retention count, prune old images — all of which work with the app down |
+| **Host OS** | Host status and updates. The manager can't touch the host package manager from inside a container, so host-side helpers installed by `install_watcher.sh` do the work; the manager reads their output and writes the trigger files their systemd path units watch — `refresh`, `apply`, and `release_upgrade` (which reboots the host) |
+| **AI models** | Ollama sibling-container status, model list / pull / delete, and image update |
+| **Beekeeper** | DNS sinkhole container lifecycle and the host firewall's port 53, since the day-to-day dashboard lives in the app's Beekeeper tab |
+| **Live logs** | File logs from the mounted data dir — **readable with the app container down**, and rotation-safe — and container logs, both as Server-Sent Events. Nothing streams unless asked for; generators end when the client disconnects |
+| **Recovery** | Crash records and backups from a shared bind mount, and app code through the runtime's archive API, so both work **with the app container dead**. "Retry" writes `data/.recovery_resume` for the launcher's standby |
+
+<p align="center">
+  <img src="docs/images/screenshot-manager-services.jpg" alt="Host OS updates, Ollama model management and Beekeeper controls" width="90%">
+  <br><em>Host OS updates, Ollama model management, and Beekeeper's container and firewall controls</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/screenshot-manager-logs.jpg" alt="Live log streaming over Server-Sent Events" width="90%">
+  <br><em>Live logs — file and container streams over SSE, opened on demand and closed when you navigate away</em>
+</p>
+
+**Auth.** Reads are open; **actions require a bearer token** from `data/state/manager_token` on the host, which the app surfaces in its Upgrade tab. Because reads are unauthenticated, treat `:8001` as LAN-only and do not expose it through the tunnel.
+
+See **[docs/upgrades.md](docs/upgrades.md)**.
+
+---
+
 ## 🌐 Web Interface
 
-Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSocket.
+Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSocket. The separate [ZMM Manager](#-zmm-manager-the-sidecar) surface lives on `:8001`.
 
 | Tab | Description |
 |:---|:---|
@@ -621,6 +673,7 @@ Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSock
 | **Telemetry** | `modules/telemetry_db.py` (DuckDB) | Time-series metrics, packet stats, device states, spectrum |
 | **MultiPAN** | `modules/tdm/zmm_cpc/` (Rust), `pty_bridge.py`, `multipan.py` | CPC/HDLC framing, PTY↔TCP relay, concurrent Zigbee + Thread |
 | **Upgrade Manager** | `modules/upgrade_manager.py` + `/opt/zmm/` | Tag polling, blue-green build/swap with health-check rollback |
+| **ZMM Manager** | `manager/` (FastAPI on `:8001`) | Always-on sidecar: watchdog, container control, rollback, host OS, log streaming, disaster recovery |
 | **Editor Safety** | `test_recovery.py`, `safe_deploy.py`, `live_edits.py`, `boot_guard.py` | Batch rollback, health-gated deploy, boot-time revert |
 | **Frontend** | HTML, Bootstrap 5, ECharts, D3.js | SPA over WebSocket for real-time updates |
 
@@ -770,6 +823,7 @@ signals are the agreed next tier.
 
 ### Debugging Workflow
 
+0. **If the app itself is down or unreachable**, go to the [ZMM Manager](#-zmm-manager-the-sidecar) on `:8001` — container states, log streams and recovery all work with the app container dead
 1. **Alert Center** — check the bell first; errors are surfaced as alerts rather than left in the log
 2. **Live Logs** — real-time WebSocket log stream with level and IEEE filtering
 3. **Signal Inspector** — see every raw signal a device emits, with no device-class assumptions
@@ -819,6 +873,8 @@ is picked up automatically once it's present when the container is created. The
 same plug-in-then-recreate rule applies to a USB microphone for speaker-sync.
 
 ### Upgrade Issues
+
+Check the **[ZMM Manager](#-zmm-manager-the-sidecar)** at `https://YOUR_IP:8001` first — it shows the upgrade state, the app's health, every retained image with a Roll back button, and the live `upgrade_watcher.log` stream, all without needing the app to be running. The commands below are the SSH fallback.
 
 ```bash
 # Check the upgrade watcher status
