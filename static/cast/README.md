@@ -3,7 +3,7 @@
 Two custom Google Cast Web Receivers live here:
 
 - `receiver.html` — album art + synced lyrics (see below).
-- `sync_receiver.html` — **sync PoC**: synchronised multi-speaker playback
+- `sync_receiver.html` — **OpenZone**: synchronised multi-speaker playback
   without a Google-Home group (see the last section).
 
 # Cast lyrics receiver
@@ -51,12 +51,12 @@ It's fully static: ZigBee Manager sends the artwork + LRC-timed lyrics inline as
 - If you later publish the app in the Cast console you can drop the per-device
   registration from step 3.
 
-# Sync PoC receiver (`sync_receiver.html`)
+# OpenZone receiver (`sync_receiver.html`)
 
-Proof-of-concept for **echo-free multi-speaker playback without a Google-Home
-group**. ZMM streams timestamped PCM chunks over a WebSocket; the receiver
-estimates its offset to the ZMM server clock (NTP-style) and schedules each
-chunk sample-accurately with the Web Audio API. A per-speaker trim (±ms)
+**Echo-free multi-speaker playback without a Google-Home group.** ZMM streams
+timestamped PCM chunks over a WebSocket; the receiver estimates its offset to
+the ZMM server clock (NTP-style) and schedules each chunk sample-accurately
+with the Web Audio API. A per-speaker trim (±ms)
 compensates each device's fixed output latency — tune it once by ear against
 the 2-second click track, it stays valid.
 

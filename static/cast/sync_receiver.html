@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  ZigBee Manager — sync PoC Cast receiver.
+  ZigBee Manager — OpenZone Cast receiver.
 
   Plays timestamped PCM chunks pushed over a same-origin WebSocket, scheduled
   sample-accurately with the Web Audio API against the ZMM server clock
@@ -146,7 +146,7 @@
         if (msg.type === 'pong') onPong(msg);
         else if (msg.type === 'hello_ack') {
           rate = msg.rate; channels = msg.channels; trimMs = msg.trim_ms || 0;
-          $('state').textContent = 'Playing (sync PoC)';
+          $('state').textContent = 'Playing (OpenZone)';
         }
         else if (msg.type === 'trim') trimMs = msg.trim_ms || 0;
       };
