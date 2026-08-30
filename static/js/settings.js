@@ -8,6 +8,8 @@ const log = zmmLog('settings');
 
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
+ import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
+          startRestartGuardWatch } from './restart-guard.js';
 
 
 let _spectrumChart = null;   // ECharts: live channel-energy bar chart
@@ -814,10 +816,13 @@ async function loadFuelRegion() {
                 '<strong>' + w_escape(active ? active.label : c.active) + '</strong>.';
             // Detection is only ever a suggestion: changing country changes the
             // currency prices are quoted in, so it takes a deliberate save.
-            if (c.detected && c.detected !== configured) {
+            // Compared against the configured *country*, not the region key —
+            // reverse geocoding answers "AU", never "AU-NSW".
+            if (c.detected && c.detected !== cfg.country) {
+                const label = (c.regions || []).find(r => r.country === c.detected);
                 html += ' This hub\'s coordinates look like <strong>' +
-                    w_escape(c.detected) + '</strong>' +
-                    (configured ? '' : ' — pick it above to use that feed') + '.';
+                    w_escape(label ? label.label : c.detected) + '</strong>' +
+                    (cfg.country ? '' : ' — pick it above to use that feed') + '.';
             }
             status.innerHTML = html + '</div>';
         }
@@ -2681,11 +2686,28 @@ export async function saveSettingsConfig() {
 }
 
 export async function saveSettingsConfigAndRestart() {
+    // Check before saving: if the restart can't happen the user should choose
+    // whether to save now and restart later, rather than find out afterwards.
+    const blocked = await blockIfRestartForbidden();
+    if (blocked) {
+        showSettingsAlert('warning', restartBlockedText(blocked) +
+            ' Use Save on its own to keep your changes — they apply at the next restart.');
+        return;
+    }
+
     const ok = await saveStructuredConfig(true);
     if (!ok) return;
     showSettingsAlert('warning', 'Configuration saved — restarting the service. This page will reconnect shortly…');
     try {
-        await fetch('/api/system/restart', { method: 'POST' });
+        const res = await fetch('/api/system/restart', { method: 'POST' });
+        if (res && res.status === 409) {
+            // A swap began between the pre-check and the click.
+            const body = await res.json().catch(() => ({}));
+            showSettingsAlert('warning', 'Configuration saved, but the restart was refused: ' +
+                restartBlockedText(body.reason));
+            applyRestartGuard({ allowed: false, reason: body.reason });
+            return;
+        }
     } catch (e) {
         // The connection drops as the process restarts — that's expected.
     }
@@ -2696,6 +2718,8 @@ export async function saveSettingsConfigAndRestart() {
 window.runSpectrumScan = runSpectrumScan;
 window.saveSettingsConfig = saveSettingsConfig;
 window.saveSettingsConfigAndRestart = saveSettingsConfigAndRestart;
+// Keep the restart controls in step with the server while Settings is loaded.
+startRestartGuardWatch();
 window.loadSpectrumHistory = loadSpectrumHistory;
 window.createNetworkBackup = createNetworkBackup;
 window.handleRestoreFile = handleRestoreFile;
