@@ -65,26 +65,44 @@ class HeartbeatWorker(
         val loc = awaitFix(applicationContext)
         if (loc == null) {
             Log.w(TAG, "no location fix available this cycle")
-            // Retry rather than fail: a single cycle with no fix is routine
-            // indoors, and WorkManager backs off instead of hammering.
-            return Result.retry()
+            // Success, NOT retry. A cycle with no fix is routine indoors, and
+            // this is periodic work: the next period is already scheduled, so
+            // "nothing to report" needs no rescheduling. Retry here did the
+            // opposite of what it looks like — a retry REPLACES the next
+            // periodic run with a backed-off one, and the backoff doubles per
+            // attempt up to WorkManager's five-hour ceiling. A few no-fix
+            // cycles in a row therefore pushed the heartbeat hours past the
+            // stale window, so the very condition that most needed the next
+            // report on time was the one that delayed it furthest.
+            return Result.success()
         }
 
-        return when (val r = HubClient.postFix(
-            prefs, loc.latitude, loc.longitude,
+        val payload = HubClient.fixPayload(
+            loc.latitude, loc.longitude,
             if (loc.hasAccuracy()) loc.accuracy else null,
             loc.time / 1000.0,
-        )) {
+        )
+
+        return when (val r = HubClient.postRaw(prefs, payload)) {
             is HubClient.Result.Ok -> {
                 Log.i(TAG, "heartbeat reported")
                 Result.success()
             }
             is HubClient.Result.Err -> {
-                // Could be transient (no signal) or permanent (revoked token).
-                // Retry covers the first; the second surfaces in the hub as a
-                // user going stale, which is the correct visible outcome.
-                Log.w(TAG, "heartbeat failed: ${r.message}")
-                Result.retry()
+                // Could be transient (no signal, hub off the network while the
+                // user is out) or permanent (revoked token). Spool rather than
+                // retry: the drain at the top of the next cycle redelivers it
+                // on the schedule already running, which covers the transient
+                // case without the backoff compounding described above. A
+                // permanent failure still surfaces in the hub as a user going
+                // stale, which is the correct visible outcome.
+                Log.w(TAG, "heartbeat failed, spooled: ${r.message}")
+                try {
+                    FixSpool(applicationContext).offer(payload)
+                } catch (e: Exception) {
+                    Log.w(TAG, "spool write failed", e)
+                }
+                Result.success()
             }
         }
     }

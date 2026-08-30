@@ -35,6 +35,12 @@ object Geofencing {
     const val PLACE_PREFIX = "zmm_place_"
     private const val TAG = "ZmmGeofence"
 
+    /**
+     * Floor for [maxCacheAgeMs]. Half of the 15-minute responsive heartbeat,
+     * so even the most aggressive mode accepts a cache of ordinary age.
+     */
+    private const val MIN_CACHE_AGE_MS = 7L * 60 * 1000
+
     fun hasForegroundLocation(ctx: Context): Boolean =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
@@ -78,15 +84,62 @@ object Geofencing {
         else -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
     }
 
+    /**
+     * How old a cached position may be and still be worth reporting.
+     *
+     * Half the reporting period: a fix no older than that is no staler than
+     * the cadence the hub already expects, while anything older is a position
+     * the user may well have left. Floored so the shortest mode still tolerates
+     * a normally-aged cache rather than rejecting almost everything.
+     */
+    private fun maxCacheAgeMs(prefs: Prefs): Long =
+        (prefs.heartbeatS * 1000L / 2).coerceAtLeast(MIN_CACHE_AGE_MS)
+
+    /**
+     * Age of a fix, measured on the monotonic clock.
+     *
+     * Not `System.currentTimeMillis() - loc.time`: that is wall clock, and an
+     * NTP correction or a timezone-crossing phone can make a fresh fix look
+     * hours old (or a stale one look current). elapsedRealtime cannot run
+     * backwards, which is the only property this check needs.
+     */
+    private fun ageMs(loc: android.location.Location): Long =
+        (android.os.SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L
+
     @SuppressLint("MissingPermission")   // checked explicitly below
     fun currentFix(ctx: Context, cb: (android.location.Location?) -> Unit) {
         if (!hasForegroundLocation(ctx)) { cb(null); return }
         val client = LocationServices.getFusedLocationProviderClient(ctx)
-        val priority = priorityOf(Prefs(ctx).priority)
+        val prefs = Prefs(ctx)
+        val priority = priorityOf(prefs.priority)
+        val maxAge = maxCacheAgeMs(prefs)
 
+        // getCurrentLocation returns null more often than it looks: under
+        // LOW_POWER or BALANCED, from a Doze-throttled worker, indoors, it is
+        // the common outcome rather than the exception — so this fallback is
+        // the heartbeat's usual path, not its edge case.
+        //
+        // lastLocation is whatever the fused provider happens to still hold,
+        // and on a phone that has been sitting still that can be hours old.
+        // Reporting it unchecked told the hub the user was at a position they
+        // may have left long ago, and it is the only channel still speaking
+        // when someone is settled at home: the geofence emits nothing without
+        // a crossing, and the passive subscription is filtered at 50 m of
+        // displacement at the source. An old position is worse than none —
+        // no fix is a gap the next cycle closes, a wrong one is believed.
         fun fallbackToLastKnown() {
             client.lastLocation
-                .addOnSuccessListener { cb(it) }
+                .addOnSuccessListener { loc ->
+                    when {
+                        loc == null -> cb(null)
+                        ageMs(loc) > maxAge -> {
+                            Log.i(TAG, "cached fix too old (${ageMs(loc) / 1000}s > " +
+                                "${maxAge / 1000}s); reporting no fix")
+                            cb(null)
+                        }
+                        else -> cb(loc)
+                    }
+                }
                 .addOnFailureListener { cb(null) }
         }
 

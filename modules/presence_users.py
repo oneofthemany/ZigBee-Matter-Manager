@@ -613,7 +613,14 @@ class PresenceUserManager:
         async with self._lock:
             dev._last_lat = lat
             dev._last_lon = lon
-            dev.last_seen = ts
+            # Receipt time, NOT the fix's own timestamp. The stale watcher asks
+            # "how long since this phone checked in?", and a fix can be much
+            # older than the report carrying it — a heartbeat routinely reports
+            # a cached position when the phone is indoors and settled. Keyed on
+            # `ts`, a punctual report of a 90-minute-old fix marked the user
+            # unknown while they were sitting at home. How old the position is
+            # remains recorded, as `last_update` below.
+            dev.last_seen = time.time()
 
             # Resolved here, not on the phone, so one implementation decides and a
             # new or widened place applies immediately. "home" wins over any place
