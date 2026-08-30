@@ -450,7 +450,16 @@ A deliberate restart inside that window is indistinguishable from a crash. The w
 |---|---|
 | `POST /api/system/restart` | `409` with a `Retry-After` header and a `reason` object |
 | `POST /api/editor/test-restart` | `409`; the test batch stays pending and can be restarted after |
+| `POST /api/editor/test-rollback` | **Not refused.** The file restore always runs; only the restart is deferred, and the response carries `restart_deferred: true` plus the reason |
 | `GET /api/system/restart-allowed` | Read-only view of the same answer, for the UI |
+
+Rollback is deliberately the odd one out. Refusing it outright would be the
+worse failure: you would be left running code you have already decided is bad,
+with the one control that undoes it disabled. So `_do_rollback()` restores the
+files unconditionally — it runs inside `trm.rollback()` before the route ever
+consults the guard — and only the process restart that activates the restore is
+held back. The caller is told plainly that the files are back but the running
+process is not yet, and that a restart from Settings will finish the job.
 
 A restart is refused when either:
 

@@ -434,6 +434,7 @@ An editor for the running container, with the safety rails that makes necessary.
 - **Survives restarts** — pending state persists to disk and is consumed by `boot_guard.py` on a failed boot, so a bad edit self-reverts rather than bricking the hub
 - **Safe deploy** — backup, validate, restart, health-check, rollback. The health check cannot run in the process being restarted, so a deploy marker hands the job to the new one, which restores and restarts again on failure.
 - **Live-edit detection** — in-container edits aren't in git and aren't carried into a new image, so the Upgrade tab **warns before an upgrade would silently discard them**, and offers to export them as a zip
+- **Guarded against the upgrade window** — a test deploy's restart is refused while a release is being verified, and a test *rollback* still restores your files but defers its restart, so you are never left running code you already rejected. See [the restart guard](#-in-app-upgrades)
 
 <p align="center">
   <img src="docs/images/screenshot-editor.jpg" alt="In-app code editor with project tree" width="90%">

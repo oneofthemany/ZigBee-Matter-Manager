@@ -1112,7 +1112,16 @@ window.editorTestDeploy = async function() {
 
         if (data.action === 'restart') {
             if (typeof state !== 'undefined') state.isRestarting = true;
-            await fetch('/api/editor/test-restart', { method: 'POST' });
+            const rr = await fetch('/api/editor/test-restart', { method: 'POST' });
+            if (rr && rr.status === 409) {
+                // Deployed, but an upgrade is being verified — see restart_guard.
+                const rb = await rr.json().catch(() => ({}));
+                if (typeof state !== 'undefined') state.isRestarting = false;
+                window.toast.warning('Deployed, but not restarted: ' +
+                    ((rb.reason && rb.reason.message) || rb.error || 'restart unavailable'),
+                    { timeout: 15000 });
+                return;
+            }
         } else {
             showTestRecoveryBanner('pending', data.timeout);
             setTimeout(() => {
@@ -1164,7 +1173,12 @@ window.editorTestRollback = async function() {
     try {
         const res = await fetch('/api/editor/test-rollback', { method: 'POST' });
         const data = await res.json();
-        if (data.success) {
+        if (data.success && data.restart_deferred) {
+            // Restored on disk, but the running process still has the bad
+            // code — do not reload, and do not call this a success.
+            hideTestRecoveryBanner();
+            window.toast.warning(data.message, { timeout: 15000 });
+        } else if (data.success) {
             hideTestRecoveryBanner();
             window.toast.success('Rolled back: ' + data.message);
             if (data.message && data.message.includes('restart')) {
@@ -1652,7 +1666,16 @@ window.editorBatchDeploy = async function () {
 
         if (data.action === 'restart') {
             if (typeof state !== 'undefined') state.isRestarting = true;
-            await fetch('/api/editor/test-restart', { method: 'POST' });
+            const rr = await fetch('/api/editor/test-restart', { method: 'POST' });
+            if (rr && rr.status === 409) {
+                // Deployed, but an upgrade is being verified — see restart_guard.
+                const rb = await rr.json().catch(() => ({}));
+                if (typeof state !== 'undefined') state.isRestarting = false;
+                window.toast.warning('Deployed, but not restarted: ' +
+                    ((rb.reason && rb.reason.message) || rb.error || 'restart unavailable'),
+                    { timeout: 15000 });
+                return;
+            }
         } else {
             if (typeof showTestRecoveryBanner === 'function') {
                 showTestRecoveryBanner('pending', data.timeout);

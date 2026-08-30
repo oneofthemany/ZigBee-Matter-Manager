@@ -75,9 +75,28 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
     @app.post("/api/editor/test-rollback")
     async def test_rollback():
         """Manually rollback the pending batch."""
+        # The file restore always runs. Only the restart that activates it is
+        # guarded — refusing the whole endpoint during an upgrade would strand
+        # the user with the bad code and no way back, which is the worse
+        # failure. See modules/restart_guard.py.
         result = await get_trm().rollback()
 
         if result.get("needs_restart"):
+            from modules.restart_guard import restart_block
+
+            block = restart_block(getattr(app.state, "bringup_status", None))
+            if block is not None:
+                result["restart_deferred"] = True
+                result["reason"] = block
+                result["message"] = (
+                    (result.get("message") or "")
+                    + " Your files were restored, but the service was NOT restarted: "
+                    + block["message"]
+                    + " The restored code takes effect at the next restart — use"
+                      " Settings → Restart Service once the upgrade finishes."
+                )
+                return result
+
             import asyncio
             import sys
             import os as _os

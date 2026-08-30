@@ -31,7 +31,13 @@
         fetch(url, { method: 'POST' })
             .then(function (r) { return r.json(); })
             .then(function (d) {
-                if (d.success) {
+                if (d.success && d.restart_deferred) {
+                    // Files are restored but the old code is still running,
+                    // so the banner must not read as "all done".
+                    statusLine(banner, 'Files restored — service NOT restarted. ' +
+                               (d.reason ? d.reason.message : '') +
+                               ' Restart from Settings once it clears.', '#b45309');
+                } else if (d.success) {
                     statusLine(banner, okText, okBg);
                     setTimeout(function () { banner.remove(); }, 4000);
                 } else {
