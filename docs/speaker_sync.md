@@ -31,7 +31,7 @@ sample-accurately, the same architecture Snapcast uses.
                       ┌────────────────────────────────────────────┐
                       │ ZMM (modules/media/cast_sync.py)           │
                       │                                            │
-   HTTPS :8000        │  CastSyncPoc                               │
+   HTTPS :8000        │  OpenZone                                  │
    main app ──────────│   ├─ session control (routes)              │
    (UI + API)         │   ├─ chunk producer (numpy test signal)    │
                       │   └─ plain-HTTP listener :8010 (uvicorn)   │
@@ -250,7 +250,7 @@ Data files: `data/cast_sync_trims.json` (player_id → trim ms),
   slice (merged key-wise server-side, so it can't clobber other tabs).
 - **Media → Group** — now two sub-tabs:
   - *WiiM multiroom*: the pre-existing native LinkPlay builder, unchanged.
-  - *OpenZone (beta)*: itself split in two — **Zones** (build and run) and
+  - *OpenZone*: itself split in two — **Zones** (build and run) and
     **Results** (the Sync Lab), because a page of charts under every control
     made both halves hard to read. Zones holds create/delete for named groups
     of ≥ 2 Cast speakers, a **source picker** (sync test signal, favourite

@@ -1,7 +1,7 @@
 """
 OpenZone player provider — a zone as an ordinary player.
 
-Adapts CastSyncPoc to the PlayerProvider interface so ``zone:<gid>`` routes
+Adapts OpenZone to the PlayerProvider interface so ``zone:<gid>`` routes
 through the controller like any speaker, which is what gives a zone the queue,
 lyrics, favourites and artist actions the single-player path already has.
 A zone walks its own queue server-side, so this provider is self-advancing:

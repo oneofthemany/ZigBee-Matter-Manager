@@ -1,7 +1,7 @@
 """
-Cast sync PoC routes — control the synchronised multi-speaker experiment.
+OpenZone routes — control synchronised multi-speaker casting.
 
-Thin wrappers over modules.media.cast_sync.CastSyncPoc (owned by MediaService
+Thin wrappers over modules.media.cast_sync.OpenZone (owned by MediaService
 as ``media_service.cast_sync``; None unless media.cast.sync.enabled). Same
 lazy-getter pattern as the other media routes.
 """
@@ -80,7 +80,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         sync = _sync()
         if sync is None:
             return {"running": False, "configured": False,
-                    "error": "Sync PoC disabled — set media.cast.sync.enabled"}
+                    "error": "OpenZone is disabled — set media.cast.sync.enabled"}
         return sync.status()
 
     @app.post("/api/media/sync/start")
@@ -88,7 +88,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         sync = _sync()
         if sync is None:
             return {"success": False,
-                    "error": "Sync PoC disabled — set media.cast.sync.enabled"}
+                    "error": "OpenZone is disabled — set media.cast.sync.enabled"}
         if not body.player_ids and not body.group_id:
             return {"success": False, "error": "No players or group given"}
         media = body.media.model_dump() if body.media else None
@@ -114,14 +114,14 @@ def register_cast_sync_routes(app: FastAPI, get_media):
     async def sync_stop():
         sync = _sync()
         if sync is None:
-            return {"success": False, "error": "Sync PoC disabled"}
+            return {"success": False, "error": "OpenZone is disabled"}
         return await sync.stop_session()
 
     @app.post("/api/media/sync/trim")
     async def sync_trim(body: SyncTrimBody):
         sync = _sync()
         if sync is None:
-            return {"success": False, "error": "Sync PoC disabled"}
+            return {"success": False, "error": "OpenZone is disabled"}
         return await sync.set_trim(body.player_id, body.trim_ms)
 
     @app.post("/api/media/sync/calibrate")
@@ -130,7 +130,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         server mic and set trims automatically (needs a running session)."""
         sync = _sync()
         if sync is None:
-            return {"success": False, "error": "Sync PoC disabled"}
+            return {"success": False, "error": "OpenZone is disabled"}
         return await sync.calibrate()
 
     @app.get("/api/media/sync/groups")
@@ -167,7 +167,7 @@ def register_cast_sync_routes(app: FastAPI, get_media):
     async def sync_group_delete(body: SyncGroupDeleteBody):
         sync = _sync()
         if sync is None:
-            return {"success": False, "error": "Sync PoC disabled"}
+            return {"success": False, "error": "OpenZone is disabled"}
         return await sync.delete_group(body.id)
 
     @app.get("/api/media/sync/history")

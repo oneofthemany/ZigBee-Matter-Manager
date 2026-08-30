@@ -1865,7 +1865,7 @@ function renderGroupBuilder() {
             <li class="nav-item">
               <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSync"
                       onclick="window.mediaGroupTab('sync')">
-                <i class="zmm-openzone-icon me-1"></i>OpenZone <span class="badge bg-warning text-dark ms-1">beta</span></button>
+                <i class="zmm-openzone-icon me-1"></i>OpenZone</button>
             </li>
             <li class="nav-item ms-auto">
               <button class="nav-link py-1 px-3 text-nowrap" onclick="window.mediaOpenGroupBuilder()"
@@ -1944,7 +1944,13 @@ function _syncStatLine(st) {
     if (!s || s.offset_ms == null) return '';
     const rtt = Number.isFinite(s.rtt_ms) ? ` · rtt ${s.rtt_ms} ms` : '';
     const drift = Number.isFinite(s.drift_ppm) ? ` · drift ${s.drift_ppm} ppm` : '';
-    return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late} · resyncs ${s.resyncs}`;
+    // Shown only once they happen: a resync count climbing on its own says the
+    // step rung is looping, while a reload or a spell of silence says the
+    // ladder escalated past it. Distinguishing the two is the whole diagnosis.
+    const reloads = s.reloads > 0 ? ` · reloads ${s.reloads}` : '';
+    const quiet = s.silent_s > 10 ? ` · quiet ${s.silent_s}s` : '';
+    return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late}`
+        + ` · resyncs ${s.resyncs}${reloads}${quiet}`;
 }
 
 // Deviation meter: a centered bar on the same ±500 ms scale as the trim

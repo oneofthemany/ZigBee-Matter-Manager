@@ -255,7 +255,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     if "karaoke" in cast_in:
                         cast_cfg["karaoke"] = bool(cast_in["karaoke"])
                     if "sync" in cast_in:
-                        # Speaker-sync PoC (Settings → Audio tab saves only
+                        # OpenZone (Settings → Audio tab saves only
                         # this slice, so merge key-wise like everything else).
                         sync_in = cast_in["sync"] or {}
                         sync_cfg = cast_cfg.setdefault("sync", {})

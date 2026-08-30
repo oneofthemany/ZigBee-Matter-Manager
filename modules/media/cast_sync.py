@@ -1,5 +1,5 @@
 """
-CastSyncPoc — synchronised multi-speaker casting.
+OpenZone — synchronised multi-speaker casting.
 """
 from __future__ import annotations
 
@@ -50,6 +50,12 @@ STREAM_STATUS_READS_ACQ = 5      # ...while acquiring: denser + more robust.
 STREAM_STATUS_WAIT_S = 0.2       # wait for each status push to land
 STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
+# Ceiling on the observation latency a single lag reading may buy itself. The
+# cooldown scales with the device's own lag so a step is not re-decided on
+# pre-step data, but a bogus reading would otherwise blind the ladder for as
+# long as the reading was wrong — and a blinded device is exactly what the
+# silence watchdog cannot see, since a device in cooldown is still measured.
+STREAM_COOLDOWN_MAX_S = 45.0
 STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
 STREAM_RECONNECT_GRACE_S = 15.0
 # Floor between forced re-LOADs of one receiver. A LOAD costs the device its
@@ -65,11 +71,26 @@ STREAM_RELOADS_BEFORE_REALIGN = 2
 # A re-align re-LOADs every receiver, so it costs the whole zone several
 # seconds. Rare by construction: it is the rung above a per-device reload.
 STREAM_REALIGN_MIN_INTERVAL_S = 180.0
+# A step corrects by exactly the error it measured, so the error that follows
+# it should be a fraction of the one before. An error still this large a
+# cooldown later means the reader moved but the device did not follow it, and
+# repeating the step cannot fix that.
+STREAM_STEP_FUTILE_FRACTION = 0.5
+# Consecutive futile steps before escalating past the step rung. Two is a
+# demonstration, not a sample: each one is an audible discontinuity, and a
+# correction that has failed twice running on fresh post-cooldown evidence
+# is not going to succeed on the third.
+STREAM_FUTILE_STEPS = 2
+# A device that has reported no playable media time for this long has left the
+# correction loop's reach: a call or assistant interruption took the receiver
+# out of PLAYING, or its HTTP fetch ended and was never re-issued. Must exceed
+# a re-LOAD's re-acquisition, which is stamped as a fresh reading.
+STREAM_SILENT_MAX_S = 30.0
 STREAM_CLAMP_LOG_EVERY_S = 10.0  # a clamped step now re-decides every poll
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 # Kept clear of the write head when seating or stepping a reader: the slack
 # sync_source._gap_close leaves above the furthest reader, plus the block it
-# is about to serve. See CastSyncPoc._reader_ceiling for why the bare head is
+# is about to serve. See OpenZone._reader_ceiling for why the bare head is
 # the one position a reader must never be given.
 STREAM_HEAD_GUARD_S = _src.XFADE_READER_MARGIN_S + STREAM_BLOCK_S
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
@@ -226,8 +247,20 @@ class _Stream:
         # "has reloading stopped working *against the current target*" — starts
         # over, while the session total must not.
         self.reloads_since_align: int = 0
-        self.last_reload: float = 0.0
+        # None, not 0.0: these gate a rung on elapsed time, and 0.0 only
+        # reads as "long ago" because time.monotonic() is usually large.
+        # On a host whose monotonic clock starts near zero — a hub that has
+        # just rebooted — a floor compared against 0.0 suppresses the very
+        # first escalation of a session, which is the one that matters.
+        self.last_reload: Optional[float] = None
         self.clamp_logged: float = 0.0     # rate-limit for the "not moved" warn
+        # Last time this device returned a usable media time. A receiver that
+        # leaves PLAYING — an incoming call, an assistant, a torn-down media
+        # session — reports nothing at all, which is silence the ladder cannot
+        # read as an error and would otherwise never act on.
+        self.last_lag_at: Optional[float] = None   # None = never seated
+        self.futile_steps: int = 0         # consecutive steps that did not take
+        self.last_step_error: Optional[float] = None
         self.learn_lag: bool = True  # False once a re-align re-measured this
                                      # device: the lag it shows after a forced
                                      # LOAD is a re-acquisition figure, not the
@@ -280,7 +313,7 @@ class _ConnWatch:
                     f"(reconnect #{st.reconnects})")
 
 
-class CastSyncPoc:
+class OpenZone:
     def __init__(self, cast_provider, cfg: dict):
         cfg = cfg or {}
         self.cast = cast_provider                      # CastPlayerProvider
@@ -356,7 +389,7 @@ class CastSyncPoc:
         self._spectrum: Optional[asyncio.Task] = None
         self._target_lag: Optional[float] = None       # common lag target (s)
         self._realigning: bool = False                 # _realign_group in flight
-        self._last_realign: float = 0.0
+        self._last_realign: Optional[float] = None   # see _Stream.last_reload
         # Bounds on deriving _target_lag: nothing before _target_wait_until,
         # and after _acquire_deadline take whatever has reported. Both are set
         # at session start and again by _realign_group.
@@ -374,7 +407,7 @@ class CastSyncPoc:
         )
         self._http_server = uvicorn.Server(config)
         self._http_task = asyncio.create_task(self._http_server.serve())
-        logger.info(f"Cast sync PoC HTTP listener on :{self.http_port} "
+        logger.info(f"OpenZone HTTP listener on :{self.http_port} "
                     f"(receiver at /cast/sync_receiver.html)")
 
     def stop(self):
@@ -724,19 +757,33 @@ class CastSyncPoc:
         return min(play_now,
                    _latest() - _rs.READ_MARGIN - RATE * STREAM_HEAD_GUARD_S)
 
-    def _step_cooldown_s(self) -> float:
+    def _step_cooldown_s(self, lag: Optional[float] = None) -> float:
         """How long to ignore a device's polls after moving its reader.
 
         A step moves the reader; the device only reveals it after playing out
-        what it had already buffered, which is the group's target lag. A
-        cooldown shorter than that guarantees at least one poll of pre-step
-        data, and since the decision is a median over three readings, stale
-        readings re-authorise the very step that produced them. The fixed 7 s
-        was under the 8.4 s target lag of a live five-device group, which
-        stepped one device +4.2 s and then +4.4 s again 27 s later, having
-        already corrected it.
+        what it had already buffered. A cooldown shorter than that guarantees
+        at least one poll of pre-step data, and since the decision is a median
+        over three readings, stale readings re-authorise the very step that
+        produced them.
+
+        **What it has buffered is its own lag, not the group's target.** The
+        two are equal only for a device that is already aligned — which is
+        precisely the device that never gets stepped. A device the ladder
+        moves is by definition behind, and behind by `error` means holding
+        `target + error` of undrained audio; waiting only `target` leaves the
+        whole error's worth of pre-step readings inside the window that
+        decides the next move. The loop then re-issues the same step against
+        the same stale evidence, for as many polls as the error is deep, and
+        the rung it needs to escalate to is never reached because each step
+        was accepted rather than clamped. Passing the reading that authorised
+        the move makes the wait match the disturbance instead of the group.
+
+        Capped, because the wait is bought by a single measurement and a wrong
+        one must not blind the ladder for as long as it was wrong.
         """
-        return max(STREAM_COOLDOWN_S, (self._target_lag or 0.0) + STREAM_POLL_S)
+        observed = max(self._target_lag or 0.0, lag or 0.0)
+        return min(STREAM_COOLDOWN_MAX_S,
+                   max(STREAM_COOLDOWN_S, observed + STREAM_POLL_S))
 
     def _crossfade_max(self) -> float:
         """Ceiling advertised to the UI. The overlap actually granted is
@@ -809,7 +856,7 @@ class CastSyncPoc:
         self._pending = {}
         self._target_lag = None
         self._realigning = False
-        self._last_realign = 0.0
+        self._last_realign = None
         self._target_wait_until = 0.0
         self._acquire_deadline = self._epoch + 25
         self._fade_start = None      # every session re-acquires under silence
@@ -1409,14 +1456,22 @@ class CastSyncPoc:
                     return
                 items = [(sid, st) for sid, st in list(self._streams.items())
                          if st.connected and st.pos is not None]
-                if not items:
-                    continue
-                results = await asyncio.gather(
-                    *(self._measure_lag(st) for _, st in items),
-                    return_exceptions=True)
+                results = []
+                if items:
+                    results = await asyncio.gather(
+                        *(self._measure_lag(st) for _, st in items),
+                        return_exceptions=True)
                 lags: Dict[str, float] = {
                     sid: r for (sid, _), r in zip(items, results)
                     if isinstance(r, float)}
+                # Stamped for every device that answered, including ones still
+                # in cooldown: a device being ignored is not a device that has
+                # gone quiet, and the sweep below must not confuse the two.
+                for sid in lags:
+                    st = self._streams.get(sid)
+                    if st is not None:
+                        st.last_lag_at = time.monotonic()
+                self._sweep_silent()
                 if not lags:
                     continue
                 if self._target_lag is None:
@@ -1499,6 +1554,24 @@ class CastSyncPoc:
                                     f"of timeline ahead of the reader — only a "
                                     f"reload or a group re-align fits")
                         if step:
+                            # The step rung needs a failure signal of its own.
+                            # A step corrects by exactly the error it measured
+                            # and the cooldown outlasts the device's buffer, so
+                            # the next reading should be a fraction of the last
+                            # — an error still this large, and still the same
+                            # sign, means the reader moved and the device did
+                            # not follow. Repeating it cannot converge, and
+                            # without this the only way out of the rung is a
+                            # step the timeline was too short to hold: a device
+                            # whose steps are all accepted and none effective
+                            # resyncs indefinitely and never escalates.
+                            prev = st.last_step_error
+                            unmoved = (prev is not None
+                                       and med3 * prev > 0
+                                       and abs(med3) >= abs(prev)
+                                       * STREAM_STEP_FUTILE_FRACTION)
+                            st.futile_steps = st.futile_steps + 1 if unmoved else 0
+                            st.last_step_error = med3
                             st.pos += step
                             st.shift += step
                             st.moved_s += step / RATE
@@ -1508,9 +1581,11 @@ class CastSyncPoc:
                             st.resyncs += 1
                             # Long enough for the step to have reached the
                             # device's output, or the readings that follow
-                            # describe the state before it (_step_cooldown_s).
+                            # describe the state before it. That is this
+                            # device's own lag, which is what it still holds
+                            # undrained — not the group target (_step_cooldown_s).
                             st.cooldown_until = (time.monotonic()
-                                                 + self._step_cooldown_s())
+                                                 + self._step_cooldown_s(lag))
                             st.err_hist = []
                             st.lag_hist = []  # device-buffer transient follows
                             st.fit_lost_at = time.monotonic()
@@ -1518,6 +1593,11 @@ class CastSyncPoc:
                                                           error=med3))
                             logger.info(f"Sync stream resync {st.name}: "
                                         f"{med3 * 1000:+.0f} ms")
+                            if st.futile_steps >= STREAM_FUTILE_STEPS:
+                                self._escalate_shortfall(
+                                    st, f"{st.name} still {med3 * 1000:+.0f} ms "
+                                        f"out after {st.futile_steps + 1} "
+                                        f"consecutive steps")
                         # A clamped step changed NOTHING, so none of the above
                         # applies to it and applying it anyway is what turned a
                         # 10.5 s loop stall into a four-minute outage on
@@ -1540,7 +1620,10 @@ class CastSyncPoc:
                         # cannot reach. Not awaited: the poll pass owns the
                         # other four speakers.
                         if shortfall > STREAM_JUMP_MIN_S:
-                            self._escalate_shortfall(st, med3)
+                            self._escalate_shortfall(
+                                st, f"{st.name} {med3 * 1000:+.0f} ms out with "
+                                    f"only {shortfall * 1000:.0f} ms more "
+                                    f"timeline than the reader can reach")
                     elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
                             or len(st.err_hist) < 2:
                         self._pll_update(st, lag)
@@ -1561,9 +1644,16 @@ class CastSyncPoc:
                                            else ""))
                         self._pll_update(st, lag)
                     else:
+                        # Inside the sensor's own noise: whatever the last step
+                        # was aimed at is gone, so it is not evidence about the
+                        # next one.
                         st.slew_s = med3
+                        st.futile_steps = 0
+                        st.last_step_error = None
                         self._pll_update(st, lag)
                     st.stats["slew_ms"] = round(st.slew_s * 1000, 1)
+                    st.stats["silent_s"] = round(
+                        time.monotonic() - (st.last_lag_at or 0.0), 1)
                 await self._record_samples(batch)
         except asyncio.CancelledError:
             pass
@@ -1651,7 +1741,7 @@ class CastSyncPoc:
     @staticmethod
     def _fit_slope(pts: List[tuple]) -> Optional[float]:
         """Least-squares slope of (t, y) points; None if degenerate."""
-        got = CastSyncPoc._fit_slope_se(pts)
+        got = OpenZone._fit_slope_se(pts)
         return None if got is None else got[0]
 
     @staticmethod
@@ -1859,9 +1949,47 @@ class CastSyncPoc:
         st.moved_s = 0.0
         st.pos = float(pos)
         st.start_pos = int(pos)
+        # Seating is the moment the device becomes the ladder's responsibility,
+        # so it is also when its silence clock starts: one that never reports
+        # is escalated rather than left in the zone unwatched.
+        st.last_lag_at = time.monotonic()
 
-    def _escalate_shortfall(self, st: _Stream, med3: float) -> None:
-        """A step the timeline was too short to hold: pick the rung above it.
+    def _sweep_silent(self) -> None:
+        """Escalate any device that has stopped reporting a playable position.
+
+        The whole correction ladder is driven by measured error, so a device
+        that reports no error at all is not corrected — it is not even seen.
+        That is not a hypothetical state: an incoming call or an assistant
+        takes the receiver out of PLAYING, a torn-down media session leaves it
+        IDLE, and a dropped HTTP fetch that the receiver never re-issues
+        leaves it disconnected. In each case ``_measure_lag`` yields nothing,
+        the device falls out of the poll's ``lags`` map, every rung above is
+        unreachable, and the speaker sits in the zone playing whatever it has
+        left — or nothing — for as long as the session lasts. Silence is
+        therefore read as its own fault class and escalated through the same
+        ladder, because the answer is the same one: only a fresh LOAD gets
+        back a receiver that has stopped following the stream.
+
+        Held off during a re-align, when every receiver is expected to be
+        quiet, and gated on ``last_lag_at`` having ever been set so a device
+        still coming up is not escalated before it has had a chance to report.
+        """
+        if self._realigning:
+            return
+        now = time.monotonic()
+        for st in list(self._streams.values()):
+            if st.pos is None or st.last_lag_at is None:
+                continue
+            silent = now - st.last_lag_at
+            if silent < STREAM_SILENT_MAX_S:
+                continue
+            st.stats["silent_s"] = round(silent, 1)
+            self._escalate_shortfall(
+                st, f"{st.name} has reported no playable position for "
+                    f"{silent:.0f}s")
+
+    def _escalate_shortfall(self, st: _Stream, reason: str) -> None:
+        """A correction the rung below could not deliver: pick the one above.
 
         Two rungs, and which one applies is not a matter of severity but of
         whether the cheaper one is *capable* of working. A single-device reload
@@ -1880,22 +2008,26 @@ class CastSyncPoc:
             # Past this point a reload is not a slower rescue but one that
             # cannot work, so a re-align held off by its own floor waits — it
             # must not fall back to re-dropping this device's buffer for
-            # nothing, which is the loop that cost four minutes on 2026-08-10.
+            # nothing, which is a loop that outlasts the outage it is treating.
             if (not self._realigning
-                    and now - self._last_realign > STREAM_REALIGN_MIN_INTERVAL_S):
+                    and (self._last_realign is None
+                         or now - self._last_realign
+                         > STREAM_REALIGN_MIN_INTERVAL_S)):
                 self._last_realign = now  # stamped on decision, not in the task
                 asyncio.create_task(self._realign_group(
-                    f"{st.name} still {med3 * 1000:+.0f} ms out after "
-                    f"{st.reloads_since_align} reload(s)"))
+                    f"{reason}, after {st.reloads_since_align} reload(s)"))
             return
-        # Rate-limited, and safe to lose to that limit: the step moved nothing,
-        # so a deferred reload costs alignment on one device rather than
-        # leaving its reader on the head.
-        if now - st.last_reload > STREAM_RELOAD_MIN_INTERVAL_S:
+        # Rate-limited, and safe to lose to that limit: the rung below either
+        # moved nothing or moved something the device did not follow, so a
+        # deferred reload costs alignment on one device rather than leaving its
+        # reader on the head.
+        if (st.last_reload is None
+                or now - st.last_reload > STREAM_RELOAD_MIN_INTERVAL_S):
             # Stamped here, not in the coroutine: the interval must close when
             # the reload is decided, or a second poll schedules another before
             # the first runs.
             st.last_reload = now
+            logger.warning(f"Sync stream escalating — {reason}")
             asyncio.create_task(self._reload_stream(st))
 
     async def _realign_group(self, reason: str) -> None:
@@ -1959,6 +2091,11 @@ class CastSyncPoc:
                 st.lag_hist = []
                 st.slew_s = 0.0
                 st.acquired = False
+                st.futile_steps = 0
+                st.last_step_error = None
+                # The device is about to be quiet for a re-acquisition, which
+                # is expected and must not read as the silence fault.
+                st.last_lag_at = now
                 st.fit_lost_at = now
                 st.cooldown_until = now + cooldown
                 if st.resampler is not None:
@@ -1986,13 +2123,21 @@ class CastSyncPoc:
         st.reloads += 1
         st.reloads_since_align += 1
         st.last_reload = time.monotonic()
-        logger.warning(f"Sync stream reloading {st.name} — too far behind to "
-                       f"correct by moving the reader (reload #{st.reloads})")
+        logger.warning(f"Sync stream reloading {st.name} — the correction "
+                       f"ladder could not reach it by moving the reader "
+                       f"(reload #{st.reloads})")
         self._seat_position(st, self._source)
         st.err_hist = []
         st.lag_hist = []
         st.slew_s = 0.0
         st.acquired = False          # re-acquiring: step small offsets away
+        st.futile_steps = 0          # a fresh LOAD is a fresh relationship
+        st.last_step_error = None
+        # A reload's own re-acquisition is silence the sweep must not charge
+        # against the device, and it is also what paces the next escalation:
+        # a receiver that does not come back reaches the rung above one
+        # STREAM_SILENT_MAX_S later, not immediately.
+        st.last_lag_at = time.monotonic()
         st.fit_lost_at = time.monotonic()
         # The heaviest disturbance there is — the device drops its buffer and
         # refills it — so it needs at least the full observation latency before

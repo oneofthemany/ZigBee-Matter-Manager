@@ -498,7 +498,7 @@ web:
   port: 8000
   ssl: false
 
-media:                         # Optional: Cast media + multi-speaker sync (experimental)
+media:                         # Optional: Cast media + OpenZone multi-speaker sync
   cast:
     sync:
       mic_device: "USB"        # Substring match to pick the capture device used

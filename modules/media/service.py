@@ -127,15 +127,16 @@ class MediaService:
             except ImportError as e:
                 logger.warning(f"Cast support unavailable (pychromecast not installed?): {e}")
 
-        # Sync PoC — synchronised multi-speaker casting without a Google-Home
-        # group (custom receiver + shared server clock). Off by default; see
-        # modules/media/cast_sync.py and static/cast/README.md.
+        # OpenZone — synchronised multi-speaker casting without a Google-Home
+        # group (custom receiver + shared server clock). Off by default with
+        # the rest of the optional media stack; see modules/media/cast_sync.py
+        # and docs/open-zone.md.
         self.cast_sync = None
         sync_cfg = cast_cfg.get("sync", {}) or {}
         if self.cast is not None and sync_cfg.get("enabled", False):
             try:
-                from modules.media.cast_sync import CastSyncPoc
-                self.cast_sync = CastSyncPoc(self.cast, sync_cfg)
+                from modules.media.cast_sync import OpenZone
+                self.cast_sync = OpenZone(self.cast, sync_cfg)
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)
@@ -154,7 +155,7 @@ class MediaService:
                 self.controller.add_player_provider(
                     ZonePlayerProvider(self.cast_sync, self.start_zone))
             except Exception as e:
-                logger.warning(f"Cast sync PoC unavailable: {e}")
+                logger.warning(f"OpenZone unavailable: {e}")
 
     # Public helpers used by routes
     async def resolve_station(self, station_uuid: str,
