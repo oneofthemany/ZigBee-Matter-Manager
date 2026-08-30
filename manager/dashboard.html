@@ -50,35 +50,102 @@ header{position:sticky;top:0;z-index:10;display:flex;align-items:center;
 main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 #appver{font-family:var(--mono);color:var(--muted);font-size:.74rem}
 
-/* the honeycomb: one hex cell per thing that must be alive */
-/* True tessellation: neighbours overlap by the slanted-face width (25% of
-   the hex width) and every even cell drops half the hex height, so the
-   diagonal faces sit parallel with a thin uniform seam between them. */
-.comb{--hexw:138px;--hexh:118px;display:flex;flex-wrap:wrap;justify-content:center;
-  row-gap:calc(var(--hexh)/2 + 10px);
-  padding:.6rem 0 calc(1rem + var(--hexh)/2);margin:0 0 .4rem}
-.cell{position:relative;width:var(--hexw);height:var(--hexh);flex:none;
+/* the honeycomb: SIX fixed cells, and they are the navigation.
+   The count is fixed on purpose. The old comb appended one cell per
+   container, so the nth-child parity that produces the stagger — and the
+   centring of the whole band — changed whenever a container appeared or
+   went away. `-previous` arrives mid-upgrade and is removed after, so the
+   comb re-laid itself out exactly when you were watching it. Containers
+   now aggregate into ONE cell and the six slots never move. */
+.comb{--hexw:132px;--hexh:112px;display:flex;flex-wrap:nowrap;
+  justify-content:center;overflow-x:auto;scrollbar-width:none;
+  padding:.7rem 0 calc(.9rem + var(--hexh)/2);margin:0 0 .2rem}
+.comb::-webkit-scrollbar{display:none}
+@media(max-width:900px){.comb{--hexw:112px;--hexh:96px}}
+@media(max-width:680px){.comb{--hexw:98px;--hexh:84px;justify-content:flex-start;
+  padding-left:.6rem;padding-right:.6rem}}
+/* Moulded-wax look: the outer element is the CELL WALL and carries a lit rim
+   gradient; `.in` is the face, inset far enough that the wall reads as
+   thickness rather than a border. Light comes from the top-left throughout,
+   so the bevel, the sheen and the drop shadow all agree on one light source.
+   drop-shadow (not box-shadow) is what makes this work — it follows the
+   clip-path silhouette, so shadow and glow trace the hexagon, not a box. */
+.cell{--ty:0;--glow:var(--wax);
+  position:relative;width:var(--hexw);height:var(--hexh);flex:none;
   margin:0 calc(var(--hexw)*-0.125 + 1.5px);
-  clip-path:var(--hexclip);background:var(--line)}
-.cell:nth-child(even){transform:translateY(calc(var(--hexh)/2))}
-.cell .in{position:absolute;inset:1px;clip-path:var(--hexclip);
-  background:var(--comb);display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:.1rem;text-align:center;padding:0 20px}
+  clip-path:var(--hexclip);
+  background:linear-gradient(148deg,#8fb6d1 0%,#4a7392 16%,#27455f 42%,
+    #142634 70%,#070f16 100%);
+  padding:0;border:0;font:inherit;color:inherit;cursor:pointer;
+  transform:translateY(var(--ty));
+  filter:drop-shadow(0 5px 7px rgba(0,0,0,.55));
+  transition:transform .16s cubic-bezier(.2,.8,.3,1.1),filter .16s ease}
+.cell:nth-child(even){--ty:calc(var(--hexh)/2)}
+.cell .in{position:absolute;inset:5px;clip-path:var(--hexclip);
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:.1rem;text-align:center;padding:0 18px;
+  background:
+    radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.16),rgba(255,255,255,0) 52%),
+    radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
+    linear-gradient(158deg,#1d354a 0%,var(--comb) 52%,#08121b 100%)}
+/* specular sheen skimming the two top faces */
+.cell .in::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(158deg,rgba(255,255,255,.13) 0%,
+    rgba(255,255,255,.03) 16%,rgba(255,255,255,0) 34%)}
+.cell:hover{transform:translateY(calc(var(--ty) - 2px));
+  filter:drop-shadow(0 8px 11px rgba(0,0,0,.6))}
+/* Selection = a halo in the cell's OWN severity colour, plus a lift. Two
+   independent channels: the glow says "you are here", the hue says how that
+   thing is doing — so a selected warning still reads amber, and selecting
+   something never makes it look like a warning. */
+.cell[aria-selected="true"]{transform:translateY(var(--ty)) scale(1.09);z-index:2;
+  filter:drop-shadow(0 8px 12px rgba(0,0,0,.65))
+         drop-shadow(0 0 4px color-mix(in srgb,var(--glow) 95%,transparent))
+         drop-shadow(0 0 12px color-mix(in srgb,var(--glow) 75%,transparent))
+         drop-shadow(0 0 26px color-mix(in srgb,var(--glow) 50%,transparent))
+         drop-shadow(0 0 48px color-mix(in srgb,var(--glow) 28%,transparent))}
+.cell[aria-selected="true"] .in{background:
+  radial-gradient(115% 80% at 26% 6%,rgba(255,255,255,.14),rgba(255,255,255,0) 58%),
+  linear-gradient(158deg,var(--comb2) 0%,#132433 55%,#0b1723 100%)}
+.cell[aria-selected="true"] b{color:var(--wax)}
+.cell[aria-selected="true"]:hover{transform:translateY(calc(var(--ty) - 2px)) scale(1.09)}
+/* Fallback for engines without color-mix(): a plain wax halo still reads. */
+@supports not (color: color-mix(in srgb,red,blue)){
+  .cell[aria-selected="true"]{filter:drop-shadow(0 7px 10px rgba(0,0,0,.6))
+    drop-shadow(0 0 10px rgba(234,242,244,.55))
+    drop-shadow(0 0 24px rgba(234,242,244,.28))}}
+.cell:focus-visible{outline:2px solid var(--honey);outline-offset:4px}
+@media (prefers-reduced-motion:reduce){.cell{transition:none}}
 .cell b{font-family:var(--mono);font-weight:400;font-size:.62rem;
   letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .cell .v{font-family:var(--mono);font-weight:700;font-size:.86rem;
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell .s{font-size:.62rem;color:var(--muted);max-width:100%;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;min-height:.9em}
-.cell.ok{background:rgba(52,211,153,.6)}
-.cell.ok .in{background:linear-gradient(180deg,rgba(52,211,153,.08),rgba(52,211,153,0) 65%),var(--comb)}
+/* Severity tints the WALL (and the glow hue), never the selection state. */
+.cell.ok{--glow:var(--ok);
+  background:linear-gradient(148deg,#b6ffe4 0%,#4fd7a8 16%,#248a68 44%,#10402f 72%,#05170f 100%)}
+.cell.ok .in{background:
+  radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
+  radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
+  linear-gradient(158deg,#16362f 0%,var(--comb) 55%,#08121b 100%)}
 .cell.ok .v{color:var(--ok)}
-.cell.bad{background:var(--bad);animation:throb 1.5s ease-in-out infinite}
-.cell.bad .in{background:linear-gradient(180deg,rgba(244,83,110,.14),rgba(244,83,110,0) 65%),var(--comb)}
+.cell.bad{--glow:var(--bad);
+  background:linear-gradient(148deg,#ffc3ce 0%,#f4536e 16%,#b32a41 44%,#4a121c 72%,#1c0509 100%);
+  animation:throb 1.5s ease-in-out infinite}
+.cell.bad .in{background:
+  radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
+  radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
+  linear-gradient(158deg,#3a1a22 0%,var(--comb) 55%,#08121b 100%)}
 .cell.bad .v{color:var(--bad)}
-.cell.warn{background:rgba(242,169,59,.65)}
-.cell.warn .in{background:linear-gradient(180deg,rgba(242,169,59,.1),rgba(242,169,59,0) 65%),var(--comb)}
+.cell.warn{--glow:var(--honey);
+  background:linear-gradient(148deg,#ffe6b8 0%,#f2a93b 16%,#b3761a 44%,#4a320b 72%,#1c1204 100%)}
+.cell.warn .in{background:
+  radial-gradient(120% 85% at 24% 4%,rgba(255,255,255,.17),rgba(255,255,255,0) 52%),
+  radial-gradient(120% 85% at 82% 98%,rgba(0,0,0,.55),rgba(0,0,0,0) 55%),
+  linear-gradient(158deg,#392c14 0%,var(--comb) 55%,#08121b 100%)}
 .cell.warn .v{color:var(--honey)}
+.cell.mut{--glow:var(--muted)}
 .cell.mut .v{color:var(--muted)}
 @keyframes throb{50%{opacity:.55}}
 .born{animation:settle .45s cubic-bezier(.2,.8,.3,1.2) backwards}
@@ -88,6 +155,18 @@ main{max-width:1060px;margin:0 auto;padding:1.2rem 1.2rem 3rem}
 @keyframes settle{from{opacity:0;scale:.85}}
 @media (prefers-reduced-motion:reduce){
   .born,.cell.bad,.rec-flag{animation:none!important}}
+
+/* panels: one section on screen at a time — no scroll-doom */
+.panel[hidden]{display:none}
+.panel h1{margin:0 0 .8rem;font-family:var(--mono);font-weight:400;
+  font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--honey)}
+.panel h1::before{content:"\2b21  "}
+.panel h1 .hint{color:var(--muted);letter-spacing:.02em;text-transform:none}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:.35rem 1rem;
+  font-size:.82rem;align-items:baseline}
+.kv dt{font-family:var(--mono);font-size:.64rem;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted)}
+.kv dd{margin:0;font-family:var(--mono)}
 
 /* cards */
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
@@ -246,23 +325,48 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<!-- The honeycomb: hive health at a glance -->
-<div class="comb" id="comb">
-  <div class="cell mut born" id="cApp"><div class="in">
-    <b>application</b><span class="v" id="cAppV">&hellip;</span><span class="s" id="cAppS"></span></div></div>
-  <div class="cell mut born" id="cWd"><div class="in">
-    <b>watchdog</b><span class="v" id="cWdV">&hellip;</span><span class="s" id="cWdS"></span></div></div>
-  <div class="cell mut born" id="cUp"><div class="in">
-    <b>upgrade</b><span class="v" id="cUpV">&hellip;</span><span class="s" id="cUpS"></span></div></div>
-  <div class="cell mut born" id="cHost"><div class="in">
-    <b>host os</b><span class="v" id="cHostV">&hellip;</span><span class="s" id="cHostS"></span></div></div>
-</div>
+<!-- The honeycomb IS the navigation: six fixed slots, each one a tab and
+     that section's status pill. Nothing is added or removed at runtime. -->
+<nav class="comb" id="comb" role="tablist" aria-label="Manager sections">
+  <button class="cell mut born" role="tab" id="tHealth" data-panel="health" aria-selected="true" aria-controls="p-health" tabindex="0">
+    <span class="in"><b>health</b><span class="v" id="tHealthV">&hellip;</span><span class="s" id="tHealthS"></span></span></button>
+  <button class="cell mut born" role="tab" id="tDeployment" data-panel="deployment" aria-selected="false" aria-controls="p-deployment" tabindex="-1">
+    <span class="in"><b>deployment</b><span class="v" id="tDeploymentV">&hellip;</span><span class="s" id="tDeploymentS"></span></span></button>
+  <button class="cell mut born" role="tab" id="tLogs" data-panel="logs" aria-selected="false" aria-controls="p-logs" tabindex="-1">
+    <span class="in"><b>logs</b><span class="v" id="tLogsV">&hellip;</span><span class="s" id="tLogsS"></span></span></button>
+  <button class="cell mut born" role="tab" id="tHost" data-panel="host" aria-selected="false" aria-controls="p-host" tabindex="-1">
+    <span class="in"><b>host os</b><span class="v" id="tHostV">&hellip;</span><span class="s" id="tHostS"></span></span></button>
+  <button class="cell mut born" role="tab" id="tServices" data-panel="services" aria-selected="false" aria-controls="p-services" tabindex="-1">
+    <span class="in"><b>services</b><span class="v" id="tServicesV">&hellip;</span><span class="s" id="tServicesS"></span></span></button>
+</nav>
 
-<div class="grid">
-  <!-- Containers -->
+<!-- 1. HEALTH — is the hub alive? -->
+<section class="panel" id="p-health" role="tabpanel" aria-labelledby="tHealth">
+  <h1>Health <span class="hint">&mdash; the app, the watchdog watching it, and this sidecar</span></h1>
+  <div class="grid">
+    <section class="card"><h2>Application</h2>
+      <dl class="kv" id="healthApp"><dd class="muted">&hellip;</dd></dl>
+    </section>
+    <section class="card"><h2>Watchdog</h2>
+      <dl class="kv" id="healthWd"><dd class="muted">&hellip;</dd></dl>
+      <div class="muted" style="font-size:.76rem;margin-top:.6rem">
+        Auto-recovers the app and Ollama when unhealthy. Stands down entirely
+        during upgrades and editor test deploys, so it never fights a
+        deliberate restart.
+      </div>
+    </section>
+  </div>
+</section>
+
+<!-- 2. DEPLOYMENT — what is running, what version it is, how to undo it.
+     Containers and Version Control answer the same question from two sides,
+     so they share a tab. -->
+<section class="panel" id="p-deployment" role="tabpanel" aria-labelledby="tDeployment" hidden>
+  <h1>Deployment <span class="hint">&mdash; what is running now, and rollback that works with the app down</span></h1>
+  <section class="card"><h2>Upgrade</h2>
+    <div class="rowline" style="border:0"><span id="upState" class="muted">&hellip;</span></div>
+  </section>
   <section class="card"><h2>Containers</h2><div id="cont" class="muted">&hellip;</div></section>
-
-  <!-- Version control -->
   <section class="card"><h2>Version Control</h2>
     <div id="upimgs" class="muted">&hellip;</div>
     <div class="rowline" style="border:0;margin-top:.5rem">
@@ -273,11 +377,12 @@ dialog .remember input{accent-color:var(--honey)}
       <button class="btn" onclick="runGC(this)">Prune old images</button>
     </div>
   </section>
-</div>
+</section>
 
-<!-- Host OS updates — collected & applied by the host-side helpers -->
+<!-- 5. HOST — routine upkeep of the machine underneath -->
+<section class="panel" id="p-host" role="tabpanel" aria-labelledby="tHost" hidden>
+  <h1>Host OS <span class="hint">&mdash; update check runs on the host every 6h</span></h1>
 <section class="card">
-  <h2>Host OS <span class="hint">— update check runs on the host every 6h</span></h2>
   <div class="rowline" style="border:0">
     <span id="hoInfo" class="muted">&hellip;</span>
     <span class="spacer"></span>
@@ -292,8 +397,11 @@ dialog .remember input{accent-color:var(--honey)}
   </table></div>
   <div id="hoFoot" class="muted" style="margin-top:.4rem"></div>
 </section>
+</section>
 
-<!-- AI models (Ollama) — hidden unless the ollama container/volume exists -->
+<!-- 6. SERVICES — the sibling containers this manager also looks after -->
+<section class="panel" id="p-services" role="tabpanel" aria-labelledby="tServices" hidden>
+  <h1>Services <span class="hint">&mdash; sibling containers: local AI and the DNS sinkhole</span></h1>
 <section id="ollamaCard" class="card" hidden>
   <h2>AI models <span class="hint">— ollama sibling container</span></h2>
   <div class="rowline" style="border:0">
@@ -341,10 +449,15 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
-<!-- Live logs -->
-<section class="card"><h2>Live logs <span class="hint">— streams only while open</span></h2>
-  <div id="logbtns" class="chips muted">&hellip;</div>
-  <pre id="logview" class="term"></pre>
+</section><!-- /p-services -->
+
+<!-- 4. LOGS — why did it break? Works with the app container dead. -->
+<section class="panel" id="p-logs" role="tabpanel" aria-labelledby="tLogs" hidden>
+  <h1>Live logs <span class="hint">&mdash; streams only while this tab is open</span></h1>
+  <section class="card">
+    <div id="logbtns" class="chips muted">&hellip;</div>
+    <pre id="logview" class="term"></pre>
+  </section>
 </section>
 
 </main>
@@ -443,29 +556,65 @@ async function authGet(url){
   toast('Token rejected — you will be asked again','err');return null;}
  return r.json().catch(()=>null);}
 
-/* honeycomb cells */
-function setCell(id,cls,val,sub){const c=$(id);if(!c)return;
+/* ── the honeycomb: six fixed cells that are also the tabs ──────────────
+   setCell(panelId, severity, value, sub) paints one nav hex. The ids are
+   the panel names, so nothing has to map between nav and content. */
+const SEV={mut:0,ok:1,warn:2,bad:3};
+/* DEPLOYMENT is fed by two independent polls (/status for containers,
+   /upgrade for images), so each keeps its half and repaints the shared hex. */
+const dep={cnt:'mut',cntTxt:'…',up:'mut',upTxt:''};
+function paintDeployment(){
+ setCell('deployment',worst(dep.cnt,dep.up),
+  dep.up!=='mut'&&dep.upTxt&&dep.upTxt!=='idle'?dep.upTxt:dep.cntTxt,
+  dep.up!=='mut'&&dep.upTxt&&dep.upTxt!=='idle'?dep.cntTxt:(dep.upSub||''));}
+const SEVNAME=['mut','ok','warn','bad'];
+function worst(...list){return SEVNAME[Math.max(0,...list.map(x=>SEV[x]??0))];}
+
+function setCell(id,cls,val,sub){
+ const c=$('t'+id[0].toUpperCase()+id.slice(1));if(!c)return;
+ const sel=c.getAttribute('aria-selected')==='true';
  c.className='cell '+cls+(c.className.includes('born')?' born':'');
- $(id+'V').textContent=val;$(id+'S').textContent=sub||'';
+ $(c.id+'V').textContent=val;$(c.id+'S').textContent=sub||'';
  const name=c.querySelector('b');
- c.setAttribute('role','group');
- c.setAttribute('aria-label',(name?name.textContent+': ':'')+val+(sub?(' — '+sub):''));}
-let combKey='';
-function syncContainerCells(list){
- const key=list.map(x=>x.name+':'+x.state).join('|');
- if(key===combKey)return;combKey=key;
- document.querySelectorAll('.cell.dyn').forEach(e=>e.remove());
- list.forEach(x=>{
-  const s=(x.state||'').toLowerCase();
-  const cls=s==='running'?'ok':(s==='exited'||s==='dead'?'bad':'warn');
-  const short=x.name.replace('zigbee-matter-manager','zmm').replace('zmm-','');
-  const d=document.createElement('div');d.className='cell dyn '+cls;
-  const label=short==='zmm'?'app cntr':short;
-  d.setAttribute('role','group');
-  d.setAttribute('aria-label',label+': '+(s||'?')+(x.status?(' — '+x.status):''));
-  d.innerHTML='<div class="in"><b>'+esc(label)+'</b>'+
-   '<span class="v">'+esc(s||'?')+'</span><span class="s">'+esc(x.status||'')+'</span></div>';
-  $('comb').appendChild(d);});}
+ c.setAttribute('aria-label',
+  (name?name.textContent+': ':'')+val+(sub?(' — '+sub):'')+
+  (sel?' (selected)':''));}
+
+/* ── tabs ────────────────────────────────────────────────────────────── */
+const PANELS=['health','deployment','logs','host','services'];
+let activePanel=null;
+function showPanel(id,{focus=false}={}){
+ if(!PANELS.includes(id))id='health';
+ if(id===activePanel)return;
+ // Logs stream "only while open" — leaving the tab must close the SSE, not
+ // leave it draining in the background.
+ if(activePanel==='logs'&&typeof stopStream==='function')stopStream();
+ activePanel=id;
+ PANELS.forEach(pid=>{
+  const panel=$('p-'+pid),tab=$('t'+pid[0].toUpperCase()+pid.slice(1));
+  const on=pid===id;
+  if(panel)panel.hidden=!on;
+  if(tab){tab.setAttribute('aria-selected',on?'true':'false');
+   tab.tabIndex=on?0:-1;if(on&&focus)tab.focus();}});
+ try{localStorage.setItem('zmm.manager.tab',id);}catch(e){}
+ if(location.hash.slice(1)!==id)history.replaceState(null,'','#'+id);}
+
+document.querySelectorAll('.cell[data-panel]').forEach(btn=>{
+ btn.addEventListener('click',()=>showPanel(btn.dataset.panel));});
+$('comb').addEventListener('keydown',e=>{
+ const i=PANELS.indexOf(activePanel);if(i<0)return;
+ let n=null;
+ if(e.key==='ArrowRight')n=(i+1)%PANELS.length;
+ else if(e.key==='ArrowLeft')n=(i-1+PANELS.length)%PANELS.length;
+ else if(e.key==='Home')n=0;else if(e.key==='End')n=PANELS.length-1;
+ if(n===null)return;e.preventDefault();showPanel(PANELS[n],{focus:true});});
+window.addEventListener('hashchange',()=>showPanel(location.hash.slice(1)));
+paintLogs(null);
+(function initTab(){
+ let want=location.hash.slice(1);
+ if(!PANELS.includes(want)){
+  try{want=localStorage.getItem('zmm.manager.tab')||'health';}catch(e){want='health';}}
+ activePanel=null;showPanel(want);})();
 
 /* status poll — backs off 2s→5s→10s→30s while offline */
 function dot(cls){return '<span class="sdot '+cls+'"></span>';}
@@ -485,10 +634,12 @@ async function refresh(){
   const ver=a.body&&a.body.version;
   const bringup=a.body&&a.body.bringup;   /* starting|ready|failed (absent pre-3.2.9) */
   $('appver').textContent=ver?('v'+ver):'';
-  if(a.ok&&bringup==='starting')setCell('cApp','warn','starting',ver?('v'+ver+' — services booting'):'services booting');
-  else if(a.ok)setCell('cApp','ok','healthy',ver?('version '+ver):'');
-  else setCell('cApp','bad',bringup==='failed'?'boot failed':'unhealthy',
-   (a.body&&a.body.error)||a.error||('HTTP '+(a.status_code??'—')));
+  let appSev,appVal,appSub;
+  if(a.ok&&bringup==='starting'){appSev='warn';appVal='starting';
+   appSub=ver?('v'+ver+' — services booting'):'services booting';}
+  else if(a.ok){appSev='ok';appVal='healthy';appSub=ver?('version '+ver):'';}
+  else{appSev='bad';appVal=bringup==='failed'?'boot failed':'unhealthy';
+   appSub=(a.body&&a.body.error)||a.error||('HTTP '+(a.status_code??'—'));}
   const w=d.watchdog||{};const ws=w.status||'?';
   const wcls=ws==='ok'?'ok':(ws==='unhealthy'||ws==='exhausted'?'bad'
    :(ws==='restarted'||ws==='recovery'||ws==='test-deploy'?'warn':'mut'));
@@ -498,21 +649,47 @@ async function refresh(){
       ?': '+td.files.slice(0,2).join(', ')+(td.files.length>2?' +'+(td.files.length-2):'')
       :''))
    :(w.restarts?w.restarts+' restart(s)':(w.last_action||''));
-  setCell('cWd',wcls,ws,wdetail);
+  // HEALTH hex carries the worse of the app and its watchdog: one glance,
+  // one verdict. The panel below splits them apart again.
+  setCell('health',worst(appSev,wcls),appVal,appSub);
+  const loop=(a.body&&a.body.loop)||null;
+  $('healthApp').innerHTML=
+   '<dt>state</dt><dd>'+dot('s-'+appSev)+esc(appVal)+'</dd>'+
+   '<dt>version</dt><dd>'+esc(ver||'—')+'</dd>'+
+   '<dt>bring-up</dt><dd>'+esc(bringup||'—')+'</dd>'+
+   (appSub&&appSub!=='version '+ver?'<dt>detail</dt><dd>'+esc(appSub)+'</dd>':'')+
+   (loop?'<dt>event loop</dt><dd>'+esc(loop.stalls||0)+' stall(s)'+
+     (loop.worst_ms?' · worst '+esc(loop.worst_ms)+'ms':'')+'</dd>':'');
+  $('healthWd').innerHTML=
+   '<dt>state</dt><dd>'+dot('s-'+(wcls==='mut'?'mut':wcls))+esc(ws)+'</dd>'+
+   '<dt>restarts</dt><dd>'+esc(w.restarts??0)+'</dd>'+
+   (wdetail?'<dt>detail</dt><dd>'+esc(wdetail)+'</dd>':'')+
+   (w.checked_at?'<dt>checked</dt><dd>'+esc(String(w.checked_at).replace('T',' ').replace(/\..*/,'Z'))+'</dd>':'');
   const h=d.host||{};
+  // Severity rule: red means the hub is not working. Pending host packages —
+  // security ones included — are upkeep, not an outage, so they cap at warn.
+  // Red here throbbed on a perfectly healthy hub and taught you to ignore it.
   if(h.status==='attention'){
    const why=h.security_count?(h.security_count+' security'):
     (h.reboot_required?'reboot required':'kernel pending');
-   setCell('cHost','bad',why,(h.update_count||0)+' update(s)'+(h.stale?' · stale':''));
+   setCell('host','warn',why,(h.update_count||0)+' update(s)'+(h.stale?' · stale':''));
   }else if(h.status==='updates')
-   setCell('cHost','warn',h.update_count+' update'+(h.update_count>1?'s':''),
+   setCell('host','warn',h.update_count+' update'+(h.update_count>1?'s':''),
     h.stale?'stale check':'available');
-  else if(h.status==='ok')setCell('cHost','ok','up to date',h.stale?'stale check':'');
-  else if(h.status==='unsupported')setCell('cHost','mut','unsupported',h.error||'');
-  else setCell('cHost','mut','no data','collector not installed?');
+  else if(h.status==='ok')setCell('host','ok','up to date',h.stale?'stale check':'');
+  else if(h.status==='unsupported')setCell('host','mut','unsupported',h.error||'');
+  else setCell('host','mut','no data','collector not installed?');
   const c=d.containers||{};
   const list=c.containers||[];
-  syncContainerCells(c.available?list:[]);
+  if(!c.available){dep.cnt='mut';dep.cntTxt='no runtime socket';}
+  else{
+   const up=list.filter(x=>(x.state||'').toLowerCase()==='running').length;
+   const dead=list.filter(x=>['exited','dead'].includes((x.state||'').toLowerCase()));
+   // `-previous` exits cleanly by design after a good swap, so it is not a fault.
+   const faults=dead.filter(x=>!x.name.endsWith('-previous'));
+   dep.cnt=faults.length?'bad':(up===list.length?'ok':'warn');
+   dep.cntTxt=up+'/'+list.length+' up';}
+  paintDeployment();
   $('cont').innerHTML=!c.available
    ?'<span class="muted">'+esc(c.error||'unavailable')+'</span>'
    :list.map(x=>{
@@ -532,21 +709,37 @@ async function refresh(){
 refresh();
 
 /* Beekeeper (DNS ad/tracker blocker) enablement */
+/* SERVICES hex = the worse of Ollama and Beekeeper. Neither is required for
+   the hub to work, so "not installed" is grey, never a fault. */
+const svc={ollama:'mut',bee:'mut',ollamaTxt:'',beeTxt:''};
+function paintServices(){
+ const sev=worst(svc.ollama,svc.bee);
+ const short=t=>t==='running'?'ok':t;
+ const bits=[svc.beeTxt&&('bee '+short(svc.beeTxt)),
+             svc.ollamaTxt&&('ai '+short(svc.ollamaTxt))].filter(Boolean);
+ const label=sev==='ok'?'ok':(sev==='mut'?'none':(sev==='bad'?'stopped':'attention'));
+ setCell('services',sev,label,bits.join(' · '));}
+
 function updateBeekeeper(bk){
  const info=$('bkInfo'),en=$('bkEnableBtn'),dis=$('bkDisableBtn'),re=$('bkRestartBtn');
  if(!info)return;
  if(bk.available===false){
   info.innerHTML=dot('s-warn')+'<span class="muted">'+esc(bk.error||'runtime socket unavailable')+'</span>';
-  en.hidden=dis.hidden=re.hidden=true;return;}
+  en.hidden=dis.hidden=re.hidden=true;
+  svc.bee='warn';svc.beeTxt='unavailable';paintServices();return;}
  if(!bk.installed){
   info.innerHTML=dot('s-mut')+'<span>not installed</span>';
-  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;return;}
+  en.hidden=false;en.textContent='Enable';dis.hidden=re.hidden=true;
+  svc.bee='mut';svc.beeTxt='';paintServices();return;}
  if(bk.running){
   info.innerHTML=dot('s-ok')+'<code>'+esc(bk.name)+'</code><span class="muted">running</span>';
-  en.hidden=true;dis.hidden=re.hidden=false;}
+  en.hidden=true;dis.hidden=re.hidden=false;
+  svc.bee='ok';svc.beeTxt='running';}
  else{
   info.innerHTML=dot('s-bad')+'<code>'+esc(bk.name)+'</code><span class="muted">'+esc(bk.state||'stopped')+'</span>';
-  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;}
+  en.hidden=false;en.textContent='Start';dis.hidden=true;re.hidden=false;
+  svc.bee='bad';svc.beeTxt=bk.state||'stopped';}
+ paintServices();
  updateBeekeeperFirewall(bk.firewall||{},bk.installed);}
 function updateBeekeeperFirewall(fw,installed){
  const info=$('bkFwInfo'),btn=$('bkFwOpenBtn');
@@ -597,7 +790,22 @@ async function loadUpgrade(){
   upIdx=0;
   const st=d.status||{};const s=st.state||'idle';
   const cls=s==='idle'?'mut':(s==='failed'?'bad':'warn');
-  setCell('cUp',cls,s,st.current_step||st.error||'');
+  const cur=d.current_version?('v'+d.current_version):'';
+  dep.up=cls;dep.upTxt=s;dep.upSub=s==='idle'?cur:(st.current_step||st.error||'');
+  paintDeployment();
+  // `swapping` is the restart-guard window — say so, since it explains why
+  // the app refuses to restart itself right now.
+  $('upState').innerHTML=dot('s-'+(cls==='mut'?'ok':cls))+
+   '<strong>'+esc(s)+'</strong>'+
+   (st.target_version?' &rarr; v'+esc(st.target_version):'')+
+   (st.current_step?' <span class="muted">— '+esc(st.current_step)+'</span>':'')+
+   (st.error?' <span class="muted">— '+esc(st.error)+'</span>':'')+
+   (s==='swapping'
+     ?'<div class="muted" style="font-size:.76rem;margin-top:.4rem">'+
+      'The new version is being health-checked and soaked. The app refuses '+
+      'to restart itself until this finishes — a restart now would look like '+
+      'a crash and roll the release back.</div>'
+     :'');
   $('upimgs').innerHTML=(d.images||[]).map(i=>
    '<div class="rowline"><code>v'+esc(i.version)+'</code>'+
    '<span class="muted">'+esc(i.arch)+'</span><span class="spacer"></span>'+
@@ -608,7 +816,8 @@ async function loadUpgrade(){
   if(document.activeElement!==$('upkeep'))$('upkeep').value=d.retention_count;
  }catch(e){
   upIdx=Math.min(upIdx+1,BACKOFF.length-1);
-  setCell('cUp','mut','unavailable','');
+  dep.up='mut';dep.upTxt='';dep.upSub='upgrade status unavailable';paintDeployment();
+  $('upState').textContent='upgrade status unavailable';
  }finally{setTimeout(loadUpgrade,Math.max(5000,BACKOFF[upIdx]));}}
 loadUpgrade();
 
@@ -743,7 +952,10 @@ async function loadOllama(){
   olIdx=0;
   const card=$('ollamaCard');
   card.hidden=!d.installed;
-  if(!d.installed){olPrevJob='';return;}
+  if(!d.installed){olPrevJob='';svc.ollama='mut';svc.ollamaTxt='';paintServices();return;}
+  svc.ollama=d.healthy?'ok':(d.present&&!d.running?'bad':'warn');
+  svc.ollamaTxt=d.healthy?'running':(d.present&&!d.running?'stopped':'starting');
+  paintServices();
   $('olMissing').hidden=!!d.present;
   const img=d.image||{};
   $('olInfo').innerHTML=
@@ -793,13 +1005,16 @@ loadOllama();
 
 /* live logs */
 let es=null,esBtn=null;const MAX_LOG_LINES=2000;
+function paintLogs(name){
+ setCell('logs',name?'ok':'mut',name?'streaming':'idle',name||'nothing open');}
 function stopStream(){if(es){es.close();es=null;}
  if(esBtn){esBtn.classList.remove('active');esBtn=null;}
- $('logview').style.display='none';$('logview').textContent='';}
+ $('logview').style.display='none';$('logview').textContent='';paintLogs(null);}
 function startStream(url,btn){
  const again=(esBtn===btn);stopStream();if(again)return;
  const v=$('logview');v.style.display='block';v.textContent='connecting…\n';
  btn.classList.add('active');esBtn=btn;
+ paintLogs((btn.textContent||'').replace(/^\S+\s*/,''));
  es=new EventSource(url);
  es.onmessage=e=>{
   const stick=v.scrollTop+v.clientHeight>=v.scrollHeight-8;
