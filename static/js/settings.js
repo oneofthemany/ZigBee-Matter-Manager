@@ -9,7 +9,7 @@ const log = zmmLog('settings');
  import { createChart } from './chart-utils.js';
  import { confirmDialog } from './dialogs.js';
  import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard,
-          startRestartGuardWatch } from './restart-guard.js';
+          startRestartGuardWatch, stopRestartGuardWatch } from './restart-guard.js';
 
 
 let _spectrumChart = null;   // ECharts: live channel-energy bar chart
@@ -21,7 +21,13 @@ let _currentConfig = {};
 export function initSettings() {
     const tab = document.querySelector('[data-bs-target="#settings"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => loadSettingsPanel());
+        tab.addEventListener('shown.bs.tab', () => {
+            loadSettingsPanel();
+            // Only poll the restart guard while Settings is actually visible —
+            // it is the only tab with restart controls.
+            startRestartGuardWatch();
+        });
+        tab.addEventListener('hidden.bs.tab', () => stopRestartGuardWatch());
     }
 }
 
@@ -2718,8 +2724,6 @@ export async function saveSettingsConfigAndRestart() {
 window.runSpectrumScan = runSpectrumScan;
 window.saveSettingsConfig = saveSettingsConfig;
 window.saveSettingsConfigAndRestart = saveSettingsConfigAndRestart;
-// Keep the restart controls in step with the server while Settings is loaded.
-startRestartGuardWatch();
 window.loadSpectrumHistory = loadSpectrumHistory;
 window.createNetworkBackup = createNetworkBackup;
 window.handleRestoreFile = handleRestoreFile;

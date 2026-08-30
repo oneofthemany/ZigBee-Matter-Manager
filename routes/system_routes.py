@@ -32,9 +32,36 @@ _APP_VERSION = _read_app_version()
 def register_system_routes(app: FastAPI, get_zigbee_service, get_mqtt_service, get_manager):
     """Register system management routes."""
 
+    @app.get("/api/system/restart-allowed")
+    async def restart_allowed():
+        """
+        Whether a self-restart is permitted right now, and why not if it isn't.
+
+        The UI polls this to disable its restart controls; the check is enforced
+        server-side in the restart endpoints regardless. See
+        modules/restart_guard.py.
+        """
+        from modules.restart_guard import restart_status
+        return restart_status(getattr(app.state, "bringup_status", None))
+
     @app.post("/api/system/restart")
     async def restart_system():
         """Restart the application."""
+        from fastapi.responses import JSONResponse
+        from modules.restart_guard import restart_block
+
+        block = restart_block(getattr(app.state, "bringup_status", None))
+        if block is not None:
+            # A restart inside the upgrade verify window reads as a crash and
+            # rolls back a healthy release, so this is refused rather than
+            # merely discouraged in the UI.
+            logger.warning("System restart refused: %s", block["code"])
+            return JSONResponse(
+                {"success": False, "error": block["message"], "reason": block},
+                status_code=409,
+                headers={"Retry-After": str(block["retry_after_s"])},
+            )
+
         logger.warning("System restart requested via API")
 
         async def perform_restart():

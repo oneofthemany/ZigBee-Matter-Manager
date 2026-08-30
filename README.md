@@ -449,6 +449,7 @@ Upgrade from the web UI — no SSH, no `build.sh` re-run. The system pulls a tag
 - **One-click manual rollback** — the previous container and image are retained after every successful upgrade, and rollback to *any* retained version is driven from the [ZMM Manager](#-zmm-manager-the-sidecar), so it works with the app down
 - **GitHub tag polling** — background check every 6 hours with a toast when a release appears; manual "Check now" too
 - **Configurable auto-update** — off by default; when enabled, updates install only inside a quiet window (default 03:00–05:00) so the hub never restarts mid heating cycle or mid pairing
+- **Restart guard** — after a swap the watcher health-checks the new version and then soaks it for a stability period, up to **eight minutes** in total. A deliberate restart in that window is indistinguishable from a crash, so **Save & Restart and Restart Service are refused while it is open** — otherwise a settings change made just after upgrading would roll back a release that was fine. The controls disable themselves and say how long is left; the server enforces it regardless
 - **Multi-arch aware** — images are tagged per architecture (`…:29.02.08.2026-arm64` vs `-amd64`) and the right one is picked automatically
 - **Stable / pre-release channel**, **image retention policy**, and **build log streaming** in the UI
 - **Cross-distro watcher** — `systemd-path` units where available (event-driven, no CPU when idle) with a polling fallback; scripts live under `/opt/zmm/` so SELinux's `init_t → usr_t` policy lets systemd execute them without relabelling
@@ -549,7 +550,12 @@ It replaces an older in-container `recovery_server.py`, which had the obvious fl
 
 <p align="center">
   <img src="docs/images/screenshot-manager.jpg" alt="ZMM Manager status honeycomb, containers and version control" width="90%">
-  <br><em>The status honeycomb, containers and version control. Captured live during a real event: the upgrade to v30.08.2026 failed its health check, the manager rolled the app back to v29.02.08.2026 on its own, and the application hexagon is green again.</em>
+  <br><em>The status honeycomb, containers and version control — a completed upgrade to v30.08.2026, watchdog <code>ok</code>, every container up, and each retained image one click from a rollback</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/screenshot-manager-verifying.jpg" alt="Manager showing an upgrade being health-checked" width="90%">
+  <br><em>Mid-swap: the app is already answering on the new version while the watcher health-checks and soaks it. This is the window in which the app refuses to restart itself — see <a href="#-in-app-upgrades">the restart guard</a>.</em>
 </p>
 
 **What it does**

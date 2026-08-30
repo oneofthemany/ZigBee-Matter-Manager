@@ -7,6 +7,8 @@
  * clobber fields owned by other settings tabs. Sync groups themselves are built
  * in Media -> Group. See docs/speaker_sync.md.
  */
+import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard } from './restart-guard.js';
+
 const log = zmmLog('speaker-sync');
 
 let _cfg = { enabled: false, http_port: 8010, app_id: '', mic_device: '' };
@@ -104,7 +106,7 @@ async function render() {
           <button class="btn btn-success btn-sm" onclick="speakerSyncSave()">
             <i class="fas fa-save me-1"></i> Save
           </button>
-          <button class="btn btn-primary btn-sm ms-2" onclick="speakerSyncSaveRestart()"
+          <button class="btn btn-primary btn-sm ms-2" onclick="speakerSyncSaveRestart()" data-restart-control
                   title="Save and restart the service to apply changes now">
             <i class="fas fa-rotate me-1"></i> Save &amp; Restart
           </button>
@@ -169,7 +171,7 @@ async function render() {
           <button class="btn btn-success btn-sm" onclick="speakerSyncSave()">
             <i class="fas fa-save me-1"></i> Save
           </button>
-          <button class="btn btn-primary btn-sm ms-2" onclick="speakerSyncSaveRestart()"
+          <button class="btn btn-primary btn-sm ms-2" onclick="speakerSyncSaveRestart()" data-restart-control
                   title="Save and restart the service to apply changes now">
             <i class="fas fa-rotate me-1"></i> Save &amp; Restart
           </button>
@@ -284,8 +286,22 @@ async function save(silent = false) {
 }
 
 async function saveAndRestart() {
+    const blocked = await blockIfRestartForbidden();
+    if (blocked) {
+        alertBox('warning', restartBlockedText(blocked) +
+            ' Your changes can be saved now and will apply at the next restart.');
+        return;
+    }
     if (!await save(true)) return;
     alertBox('warning', 'Saved — restarting the service. This page will reload shortly…');
-    try { await fetch('/api/system/restart', { method: 'POST' }); } catch (e) { /* expected drop */ }
+    try {
+        const res = await fetch('/api/system/restart', { method: 'POST' });
+        if (res && res.status === 409) {
+            const body = await res.json().catch(() => ({}));
+            alertBox('warning', 'Saved, but the restart was refused: ' + restartBlockedText(body.reason));
+            applyRestartGuard({ allowed: false, reason: body.reason });
+            return;
+        }
+    } catch (e) { /* expected drop */ }
     setTimeout(() => window.location.reload(), 8000);
 }

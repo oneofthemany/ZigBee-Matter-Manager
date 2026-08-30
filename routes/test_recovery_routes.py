@@ -51,6 +51,20 @@ def register_test_recovery_routes(app: FastAPI, get_manager):
     @app.post("/api/editor/test-restart")
     async def test_restart():
         """Trigger service restart after Python-file test deploy."""
+        from fastapi.responses import JSONResponse
+        from modules.restart_guard import restart_block
+
+        block = restart_block(getattr(app.state, "bringup_status", None))
+        if block is not None:
+            # Same reasoning as /api/system/restart: during an upgrade's verify
+            # window a restart is read as a crash. The test batch stays pending
+            # and can be restarted once the window closes.
+            return JSONResponse(
+                {"success": False, "error": block["message"], "reason": block},
+                status_code=409,
+                headers={"Retry-After": str(block["retry_after_s"])},
+            )
+
         return await get_trm().trigger_restart()
 
     @app.post("/api/editor/test-confirm")

@@ -593,11 +593,13 @@
                     <div class="card shadow-sm">
                         <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
                             <span class="fw-bold"><i class="fas fa-sliders-h me-1"></i> Configuration</span>
+                            <div class="alert alert-warning py-2 px-3 mb-0 me-3 small d-none"
+                                 id="restartGuardBanner" role="status"></div>
                             <div>
                                 <button class="btn btn-success btn-sm" onclick="saveSettingsConfig()">
                                     <i class="fas fa-save me-1"></i> Save
                                 </button>
-                                <button class="btn btn-danger btn-sm ms-2" onclick="restartSystem()">
+                                <button class="btn btn-danger btn-sm ms-2" onclick="restartSystem()" data-restart-control>
                                     <i class="fas fa-power-off me-1"></i> Restart Service
                                 </button>
                             </div>
@@ -896,7 +898,7 @@
                                     <i class="fas fa-save me-1"></i> Save
                                 </button>
                                 <button class="btn btn-primary btn-sm ms-2" onclick="saveSettingsConfigAndRestart()"
-                                        title="Save and restart the service to apply changes now">
+                                        title="Save and restart the service to apply changes now" data-restart-control>
                                     <i class="fas fa-rotate me-1"></i> Save &amp; Restart
                                 </button>
                             </div>

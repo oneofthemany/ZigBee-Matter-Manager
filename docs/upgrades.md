@@ -428,9 +428,43 @@ This means the user sees the actual Python startup error (or OOM kill, or import
 
 ### Step E — health check
 
-Polls `/api/system/health` from the host, every 3 seconds, up to `HEALTH_TIMEOUT` seconds total (default 60). Both `https://127.0.0.1:8000/api/system/health` and `http://127.0.0.1:8000/api/system/health` are tried — the URL is determined from `web.ssl.enabled` in `config.yaml`. The endpoint returns 200 as soon as the FastAPI app is listening — even before all services are fully initialized. This is intentional: full readiness can take 30+ seconds with 40+ devices, longer than the swap window allows.
+Polls `/api/system/health` from the host, up to `ZMM_HEALTH_TIMEOUT` seconds total (default **300**), and requires **two consecutive passes** before calling it healthy. Both `https://127.0.0.1:8000/api/system/health` and `http://127.0.0.1:8000/api/system/health` are tried — the URL is determined from `web.ssl.enabled` in `config.yaml`. The endpoint returns 200 as soon as the FastAPI app is listening, even before bring-up finishes; `bringup` in the body reports the real phase. This is intentional: full readiness can take 30+ seconds with 40+ devices.
 
-If health check fails, rollback is automatic — no user action needed. The drop-in override is removed and the supervisor is restarted as part of the rollback so the previous container is supervised properly.
+The probe also compares the `version` in the response against the target, so a swap that silently left the *old* image running is caught rather than passed.
+
+### Step E2 — stability soak
+
+Passing once is not enough. `soak_until_stable` then watches the new version for `ZMM_STABILITY_SOAK` seconds (default **180**), polling every 5 seconds and tolerating one transient blip. A version that comes up and then dies 40 seconds later is a failed upgrade, and this is what catches it.
+
+If either the health check or the soak fails, rollback is automatic — no user action needed. The drop-in override is removed and the supervisor is restarted as part of the rollback so the previous container is supervised properly.
+
+### The restart guard
+
+Health check (`ZMM_HEALTH_TIMEOUT`, 300 s) **plus** stability soak (`ZMM_STABILITY_SOAK`, 180 s) means the app is under observation for up to **480 s — eight minutes** — after a swap, and for that whole window `status.json` reads `state: "swapping"`. The guard blocks on that state, so it covers the soak as well as the health check; the timer only drives the countdown shown to the user.
+
+A deliberate restart inside that window is indistinguishable from a crash. The watcher sees the app stop answering, concludes the new release is bad, and rolls back a version that was actually fine. This is not hypothetical — it is exactly what happens if you upgrade and then use **Settings → Save & Restart** a minute later.
+
+`modules/restart_guard.py` closes that hole. It is the single place that answers "may the app restart itself right now?", and every restart entry point asks it first:
+
+| Entry point | Behaviour while blocked |
+|---|---|
+| `POST /api/system/restart` | `409` with a `Retry-After` header and a `reason` object |
+| `POST /api/editor/test-restart` | `409`; the test batch stays pending and can be restarted after |
+| `GET /api/system/restart-allowed` | Read-only view of the same answer, for the UI |
+
+A restart is refused when either:
+
+- the watcher's `status.json` reads `swapping` or `rolling_back`, or
+- the app's own `bringup_status` is still `starting`.
+
+Two deliberate escape hatches keep the guard from becoming its own outage:
+
+- **Staleness.** The watcher writes `status.json` once when it starts probing and then not again for the whole window, so a `swapping` status older than **30 minutes** is treated as an abandoned upgrade and stops blocking. That floor is deliberately far beyond the 8-minute window: `ZMM_HEALTH_TIMEOUT` and `ZMM_STABILITY_SOAK` are read by `upgrade.sh` on the *host*, and the container only sees them if they are passed through, so the floor — not the computed sum — is what holds the guard closed if they are raised on the host alone. Override it with `ZMM_RESTART_GUARD_STALE_S`. A hub that can never restart is worse than one that restarts at an awkward moment.
+- **Fail-open.** If `status.json` is missing, corrupt, or unreadable, restarts are allowed and the reason is logged. The guard prevents a known-bad interaction; it is not a security control.
+
+`building` deliberately does **not** block: the host is compiling an image and the running container is untouched.
+
+The UI half (`static/js/restart-guard.js`) disables anything marked `data-restart-control` while blocked and explains why, but it is only an affordance — the server re-checks on every call, so the window between the poll and the click is covered too.
 
 ---
 

@@ -5,6 +5,7 @@
 
 import { state } from './state.js';
 import { confirmDialog } from './dialogs.js';
+import { blockIfRestartForbidden, restartBlockedText, applyRestartGuard } from './restart-guard.js';
 
 /**
  * Load configuration YAML into editor
@@ -46,6 +47,12 @@ export async function saveConfigYaml() {
  * Restart the Zigbee service
  */
 export async function restartSystem() {
+    const blocked = await blockIfRestartForbidden();
+    if (blocked) {
+        window.toast.warning(restartBlockedText(blocked), { timeout: 12000 });
+        return;
+    }
+
     if (!await confirmDialog({
         title: 'Restart service',
         message: 'Restart the service now?',
@@ -54,8 +61,15 @@ export async function restartSystem() {
         variant: 'danger'
     })) return;
 
+    const res = await fetch('/api/system/restart', { method: 'POST' });
+    if (res && res.status === 409) {
+        // A swap began between the pre-check and this call.
+        const body = await res.json().catch(() => ({}));
+        applyRestartGuard({ allowed: false, reason: body.reason });
+        window.toast.warning(restartBlockedText(body.reason), { timeout: 12000 });
+        return;
+    }
     state.isRestarting = true;
-    await fetch('/api/system/restart', { method: 'POST' });
     setTimeout(() => location.reload(), 15000);
 }
 
