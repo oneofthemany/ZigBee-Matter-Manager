@@ -370,6 +370,10 @@ dialog .remember input{accent-color:var(--honey)}
       </div>
     </section>
   </div>
+  <section class="card"><h2>Logs <span class="hint">&mdash; the app&rsquo;s own logs, readable with its container down</span></h2>
+    <div class="chips muted" id="logbtnsHealth">&hellip;</div>
+    <pre id="logviewHealth" class="term"></pre>
+  </section>
 </section>
 
 <!-- 2. DEPLOYMENT — what is running, what version it is, how to undo it.
@@ -391,6 +395,10 @@ dialog .remember input{accent-color:var(--honey)}
       <button class="btn" onclick="runGC(this)">Prune old images</button>
     </div>
   </section>
+  <section class="card"><h2>Logs <span class="hint">&mdash; watch the build and swap as it happens</span></h2>
+    <div class="chips muted" id="logbtnsDeployment">&hellip;</div>
+    <pre id="logviewDeployment" class="term"></pre>
+  </section>
 </section>
 
 <!-- 5. HOST — routine upkeep of the machine underneath -->
@@ -411,6 +419,10 @@ dialog .remember input{accent-color:var(--honey)}
   </table></div>
   <div id="hoFoot" class="muted" style="margin-top:.4rem"></div>
 </section>
+  <section class="card"><h2>Logs <span class="hint">&mdash; what the host-side update helpers actually did</span></h2>
+    <div class="chips muted" id="logbtnsHost">&hellip;</div>
+    <pre id="logviewHost" class="term"></pre>
+  </section>
 </section>
 
 <!-- 6. SERVICES — the sibling containers this manager also looks after -->
@@ -463,11 +475,15 @@ dialog .remember input{accent-color:var(--honey)}
   </div>
 </section>
 
+  <section class="card"><h2>Logs <span class="hint">&mdash; the sibling containers&rsquo; own output</span></h2>
+    <div class="chips muted" id="logbtnsServices">&hellip;</div>
+    <pre id="logviewServices" class="term"></pre>
+  </section>
 </section><!-- /p-services -->
 
 <!-- 4. LOGS — why did it break? Works with the app container dead. -->
 <section class="panel" id="p-logs" role="tabpanel" aria-labelledby="tLogs" hidden>
-  <h1>Live logs <span class="hint">&mdash; streams only while this tab is open</span></h1>
+  <h1>Live logs <span class="hint">&mdash; every source; the ones that explain a section also live on that section&rsquo;s tab</span></h1>
   <section class="card">
     <div id="logbtns" class="chips muted">&hellip;</div>
     <pre id="logview" class="term"></pre>
@@ -612,7 +628,9 @@ function showPanel(id,{focus=false}={}){
  if(id===activePanel)return;
  // Logs stream "only while open" — leaving the tab must close the SSE, not
  // leave it draining in the background.
- if(activePanel==='logs'&&typeof stopStream==='function')stopStream();
+ // A stream can live in any tab now, so leaving ANY tab closes it — the
+ // "streams only while open" promise has to hold everywhere.
+ if(activePanel&&typeof stopStream==='function')stopStream();
  activePanel=id;
  PANELS.forEach(pid=>{
   const panel=$('p-'+pid),tab=$('t'+pid[0].toUpperCase()+pid.slice(1));
@@ -1035,17 +1053,42 @@ async function loadOllama(){
  }finally{setTimeout(loadOllama,delay);}}
 loadOllama();
 
-/* live logs */
-let es=null,esBtn=null;const MAX_LOG_LINES=2000;
+/* ── live logs ────────────────────────────────────────────────────────────
+   Each tab carries the logs that explain THAT tab, because the moment you
+   want a log is the moment you pressed the button — being sent to a separate
+   tab to find it is backwards. The Logs tab stays as the catch-all with
+   every source.
+
+   One stream at a time, as before; it simply renders into whichever viewer
+   owns the chip you clicked. */
+let es=null,esBtn=null,esView=null;const MAX_LOG_LINES=2000;
+
+/* Which sources belong to which tab. Names are matched against what /logs
+   actually reports, so a source that does not exist on this host never
+   becomes a dead button. `null` means "everything" (the Logs tab). */
+const LOG_SCOPES={
+ Health:{containers:['zigbee-matter-manager'],
+         files:['zigbee.log','zigbee_debug.log','launcher.log','boot_guard.log']},
+ Deployment:{containers:['zigbee-matter-manager','zigbee-matter-manager-previous'],
+             files:['upgrade_watcher.log']},
+ Host:{files:['os_updates.log','os_apply.log']},
+ Services:{containers:['ollama','zigbee-matter-manager-beekeeper'],
+           files:['beekeeper_firewall.log']},
+ '':null};
+/* scope key -> the panel it lives in, so a stream can be revealed by name */
+const SCOPE_PANEL={Health:'health',Deployment:'deployment',Host:'host',
+                   Services:'services','':'logs'};
+
 function paintLogs(name){
  setCell('logs',name?'ok':'mut',name?'streaming':'idle',name||'nothing open');}
 function stopStream(){if(es){es.close();es=null;}
  if(esBtn){esBtn.classList.remove('active');esBtn=null;}
- $('logview').style.display='none';$('logview').textContent='';paintLogs(null);}
-function startStream(url,btn){
+ if(esView){esView.style.display='none';esView.textContent='';esView=null;}
+ paintLogs(null);}
+function startStream(url,btn,view){
  const again=(esBtn===btn);stopStream();if(again)return;
- const v=$('logview');v.style.display='block';v.textContent='connecting…\n';
- btn.classList.add('active');esBtn=btn;
+ const v=view||$('logview');v.style.display='block';v.textContent='connecting…\n';
+ btn.classList.add('active');esBtn=btn;esView=v;
  paintLogs((btn.textContent||'').replace(/^\S+\s*/,''));
  es=new EventSource(url);
  es.onmessage=e=>{
@@ -1055,25 +1098,47 @@ function startStream(url,btn){
   if(lines.length>MAX_LOG_LINES)v.textContent=lines.slice(-MAX_LOG_LINES).join('\n');
   if(stick)v.scrollTop=v.scrollHeight;};
  es.onerror=()=>{v.textContent+='── connection lost ──\n';};}
-function mkbtn(label,url){const b=document.createElement('button');
- b.className='btn';b.textContent=label;b.onclick=()=>startStream(url,b);return b;}
-/* Open a DATA_DIR log by name (used by the Host OS card's "watch log"). */
+function mkbtn(label,url,view){const b=document.createElement('button');
+ b.className='btn';b.textContent=label;b.onclick=()=>startStream(url,b,view);return b;}
+
+/* Open a log by name in the tab that owns it — used by the Host OS card's
+   "watch log" link, which should not bounce you to another tab. */
 function openLog(name){
- const url='/logs/file/'+encodeURIComponent(name);
- let btn=[...document.querySelectorAll('#logbtns .btn')]
-  .find(b=>b.textContent.includes(name));
- if(!btn){btn=mkbtn('\u{1F4C4} '+name,url);$('logbtns').appendChild(btn);}
- if(esBtn!==btn)startStream(url,btn);
- $('logview').scrollIntoView({behavior:'smooth'});}
+ const scope=Object.keys(LOG_SCOPES).find(k=>
+   LOG_SCOPES[k]&&(LOG_SCOPES[k].files||[]).includes(name));
+ const key=scope||'';
+ showPanel(SCOPE_PANEL[key]);
+ const strip=$('logbtns'+key),view=$('logview'+key);
+ if(!strip||!view)return;
+ const btn=[...strip.querySelectorAll('.btn')].find(b=>b.textContent.includes(name));
+ if(!btn)return;
+ if(esBtn!==btn)startStream('/logs/file/'+encodeURIComponent(name),btn,view);
+ view.scrollIntoView({behavior:'smooth',block:'nearest'});}
+
+function fillStrip(key,d){
+ const el=$('logbtns'+key),view=$('logview'+key);
+ if(!el||!view)return;
+ const want=LOG_SCOPES[key];
+ const cons=(d.containers||[]).filter(n=>!want||(want.containers||[]).includes(n));
+ const files=(d.files||[]).filter(f=>!want||(want.files||[]).includes(f.name));
+ // Preserve the running stream's button so switching tabs mid-stream, or a
+ // 30s source refresh, does not kill the log you are reading.
+ const live=esBtn&&el.contains(esBtn)?esBtn.textContent:null;
+ el.textContent='';el.classList.remove('muted');
+ const add=b=>{if(live&&b.textContent===live){b.classList.add('active');esBtn=b;}
+               el.appendChild(b);};
+ cons.forEach(n=>add(mkbtn('\u{1F4E6} '+n,'/logs/container/'+encodeURIComponent(n),view)));
+ files.forEach(f=>add(mkbtn('\u{1F4C4} '+f.name,'/logs/file/'+encodeURIComponent(f.name),view)));
+ if(!el.childNodes.length){
+  el.classList.add('muted');
+  el.innerHTML='<span class="muted">no sources for this section</span>';}}
+
 async function loadLogSources(){
  try{const r=await fetch('/logs');if(!r.ok)throw 0;const d=await r.json();
-  const el=$('logbtns');el.textContent='';el.classList.remove('muted');
-  (d.containers||[]).forEach(n=>el.appendChild(
-   mkbtn('\u{1F4E6} '+n,'/logs/container/'+encodeURIComponent(n))));
-  (d.files||[]).forEach(f=>el.appendChild(
-   mkbtn('\u{1F4C4} '+f.name,'/logs/file/'+encodeURIComponent(f.name))));
-  if(!el.childNodes.length)el.innerHTML='<span class="muted">no sources</span>';
- }catch(e){$('logbtns').innerHTML='<span class="muted">unavailable</span>';}}
+  Object.keys(LOG_SCOPES).forEach(k=>fillStrip(k,d));
+ }catch(e){
+  Object.keys(LOG_SCOPES).forEach(k=>{const el=$('logbtns'+k);
+   if(el)el.innerHTML='<span class="muted">unavailable</span>';});}}
 loadLogSources();setInterval(()=>{if(!es)loadLogSources();},30000);
 
 /* recovery console */
