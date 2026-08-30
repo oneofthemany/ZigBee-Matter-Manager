@@ -539,6 +539,9 @@ predates the block keeps working unedited.
 | ES | Ministerio price register | national download | no | comma decimals throughout |
 | FR | *flux instantané* | national download | no | no brand names in the dataset |
 | IT | Osservaprezzi Carburanti | national download | no | two CSVs joined on `idImpianto` |
+| AU-NSW | FuelCheck (also covers the ACT) | radius query | no | one request per grade, fetched together |
+| AU-QLD | Fuel Price Reporting | national download | yes | prices in tenths of a cent |
+| AU-WA | FuelWatch | national download | no | tomorrow's price is already fixed |
 
 Each carries its own grade codes, currency and attribution, so nothing above the
 provider needs to know which country answered. The three keyless feeds work the
@@ -553,12 +556,37 @@ twice, self-service and served, for about half its stations; the self-service
 price is preferred, because showing the served one beside a competitor's
 self-service price makes a station look dearer than it is.
 
+Australia reports per state rather than nationally — fuel price reporting is
+state law, and Victoria and South Australia run no scheme at all — so
+`location.subdivision` picks between `AU-NSW`, `AU-QLD` and `AU-WA` and there is
+no national key to fall back to. All three quote cents at the pump, which is why
+they display in minor units the way the UK does.
+
+Each has its own trap. Queensland publishes prices in *tenths* of a cent, and
+uses `9999` in the price field to mean "unavailable" rather than "expensive".
+Western Australia's 24-hour rule fixes tomorrow's price today and publishes
+both; only today's is offered, because a cheapest-first list built from
+tomorrow's numbers would send someone to a station that is dearer when they
+arrive. New South Wales answers for one grade per request, so the grades are
+fetched concurrently and merged, and it lists EV charging at a price of zero,
+which would otherwise sort to the top as free petrol.
+
+NSW is served by the `FuelCheckApp/v1` endpoint the official mobile app uses:
+it needs no credentials, which is the whole reason it is preferred. The
+supported alternative is `FuelCheck/v2` behind OAuth on the OneGov gateway, and
+if the app endpoint is ever closed that is where to go — only `_fetch_nearby`
+would change.
+
 France also demonstrated why `BulkSnapshotProvider` rejects a shrunken snapshot:
 one request during testing returned 930 stations instead of 9,677, with an HTTP
 200. "Stale beats empty" does not catch that — a truncated body is not an empty
 one — so a national feed that loses more than half its stations between polls
 keeps the previous snapshot and logs why. Half a country reads to a user as "no
 station near you", which is worse than data a few minutes old.
+
+Tests for all of this live in `tests/fuel/` — `run_all.py` for the offline
+suite, `live_check.py` to prove an adapter against the real service. See that
+directory's README.
 
 `GET /api/fuel/regions` lists what is available, what is configured, and a
 `detected` country reverse-geocoded from the hub's coordinates. That last one is

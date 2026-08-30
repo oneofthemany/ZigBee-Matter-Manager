@@ -1,0 +1,12 @@
+{
+ "Brands": [
+  {
+   "BrandId": 2,
+   "Name": "Caltex"
+  },
+  {
+   "BrandId": 3,
+   "Name": "BP"
+  }
+ ]
+}

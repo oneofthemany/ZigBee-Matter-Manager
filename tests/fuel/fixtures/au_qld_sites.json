@@ -1,0 +1,49 @@
+{
+ "_note": "spec-derived, not captured \u2014 API (OUT) v1.6 examples",
+ "S": [
+  {
+   "S": 61290151,
+   "A": "61 Burrowes St",
+   "N": "Caltex Surat",
+   "B": 2,
+   "P": "4417",
+   "G1": 182624964,
+   "G2": 178465038,
+   "G3": 1,
+   "G4": 0,
+   "G5": 0,
+   "Lat": -27.151797,
+   "Lng": 149.067802,
+   "M": "2019-07-19 13:00:20",
+   "GPI": "ChIJhbUB8XJVumsR1WCVwJFOxyz"
+  },
+  {
+   "S": 61477713,
+   "A": "1 Queen St",
+   "N": "",
+   "B": 2,
+   "P": "4000",
+   "Lat": -27.469,
+   "Lng": 153.025,
+   "M": "2020-01-01 00:00:00"
+  },
+  {
+   "S": 61000001,
+   "A": "Nowhere",
+   "N": "Ghost",
+   "B": 2,
+   "P": "4000",
+   "Lat": null,
+   "Lng": null
+  },
+  {
+   "S": 61000002,
+   "A": "Null Island",
+   "N": "Zero",
+   "B": 2,
+   "P": "4000",
+   "Lat": 0,
+   "Lng": 0
+  }
+ ]
+}

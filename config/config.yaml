@@ -405,3 +405,25 @@ fuel:
     # planning a stop means knowing what a place charges, not only what is
     # open right now. Set true to hide them.
     only_open: false
+
+  # Australia reports per state, not nationally, so location.subdivision picks
+  # the scheme: NSW (which also covers the ACT), QLD or WA.
+  fuelcheck:
+    # NSW & ACT. No key needed.
+    enabled: true
+    # Each grade is a separate request, so this is the set fetched on every
+    # lookup rather than all nine. A grade left out is still selectable — it is
+    # simply not pre-loaded as an alternative.
+    grades: ["E10", "U91", "P95", "P98", "DL", "PDL"]
+  fuelprices_qld:
+    enabled: true
+    # NO TOKEN HERE. This file is tracked in git. It goes in
+    # config/secrets.yaml under fuelprices_qld.token, or in the environment as
+    # ZMM_FUELPRICES_QLD_TOKEN. Apply at https://www.fuelpricesqld.com.au/
+  fuelwatch:
+    # Western Australia. No key needed. Under WA's 24-hour rule tomorrow's
+    # price is already fixed and published; today's is what is shown, because
+    # a cheapest-first list built from tomorrow's numbers would send someone
+    # to a station that is dearer when they arrive.
+    enabled: true
+    only_open: false

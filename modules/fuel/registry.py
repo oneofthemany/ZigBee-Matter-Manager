@@ -64,6 +64,21 @@ def _it(config: Dict[str, Any]) -> FuelProvider:
     return ItalyMimit((config.get("fuel") or {}).get("mimit") or {})
 
 
+def _au_nsw(config: Dict[str, Any]) -> FuelProvider:
+    from modules.fuel.providers.au_nsw import NewSouthWalesFuelCheck
+    return NewSouthWalesFuelCheck((config.get("fuel") or {}).get("fuelcheck") or {})
+
+
+def _au_qld(config: Dict[str, Any]) -> FuelProvider:
+    from modules.fuel.providers.au_qld import QueenslandFuelPrices
+    return QueenslandFuelPrices((config.get("fuel") or {}).get("fuelprices_qld") or {})
+
+
+def _au_wa(config: Dict[str, Any]) -> FuelProvider:
+    from modules.fuel.providers.au_wa import WesternAustraliaFuelWatch
+    return WesternAustraliaFuelWatch((config.get("fuel") or {}).get("fuelwatch") or {})
+
+
 #: region key -> how to describe and how to build it. `build` is a callable
 #: rather than a class so a region can be a chain (GB) or a single client
 #: without the caller caring which.
@@ -113,6 +128,39 @@ REGIONS: Dict[str, Dict[str, Any]] = {
         "note": ("Osservaprezzi Carburanti. No key needed. Published once a "
                  "day, and self-service prices are preferred where a station "
                  "reports both."),
+    },
+    "AU-NSW": {
+        "label": "Australia — NSW & ACT",
+        "country": "AU",
+        "subdivision": "NSW",
+        "build": _au_nsw,
+        "needs_credentials": False,
+        "station_level": True,
+        "note": ("FuelCheck, covering NSW and the ACT. No key needed. Each "
+                 "grade is a separate request, so they are fetched together "
+                 "and cached for ten minutes."),
+    },
+    "AU-QLD": {
+        "label": "Australia — Queensland",
+        "country": "AU",
+        "subdivision": "QLD",
+        "build": _au_qld,
+        "needs_credentials": True,
+        "station_level": True,
+        "note": ("Fuel Price Reporting. Needs a subscriber token from "
+                 "fuelpricesqld.com.au. Prices are published in tenths of a "
+                 "cent and converted here."),
+    },
+    "AU-WA": {
+        "label": "Australia — Western Australia",
+        "country": "AU",
+        "subdivision": "WA",
+        "build": _au_wa,
+        "needs_credentials": False,
+        "station_level": True,
+        "note": ("FuelWatch. No key needed. Under WA's 24-hour rule a price is "
+                 "fixed a day ahead, so today's price is what is shown and it "
+                 "will not move before tomorrow."),
     },
 }
 

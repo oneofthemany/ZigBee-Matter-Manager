@@ -1,0 +1,46 @@
+{
+ "SitePrices": [
+  {
+   "SiteId": 61477713,
+   "FuelId": 14,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-25T22:55:00",
+   "Price": 1679
+  },
+  {
+   "SiteId": 61477713,
+   "FuelId": 2,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-26T01:00:00",
+   "Price": 1759
+  },
+  {
+   "SiteId": 61290151,
+   "FuelId": 8,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-25T22:55:00",
+   "Price": 1899
+  },
+  {
+   "SiteId": 61290151,
+   "FuelId": 2,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-25T22:55:00",
+   "Price": 9999
+  },
+  {
+   "SiteId": 61290151,
+   "FuelId": 999,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-25T22:55:00",
+   "Price": 1500
+  },
+  {
+   "SiteId": 62000000,
+   "FuelId": 2,
+   "CollectionMethod": "Q",
+   "TransactionDateUtc": "2018-10-25T22:55:00",
+   "Price": 1600
+  }
+ ]
+}
