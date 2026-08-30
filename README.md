@@ -478,7 +478,7 @@ mqtt:
   port: 1883
   username: mqtt_user
   password: mqtt_pass
-  base_topic: zigbee2mqtt      # Base topic for HA discovery
+  base_topic: zmm              # Base topic for HA discovery
   discovery_prefix: homeassistant
 
 matter:
