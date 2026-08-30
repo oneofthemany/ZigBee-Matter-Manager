@@ -982,7 +982,7 @@ async def lifespan(app: FastAPI):
     if geocoder:
         await geocoder.stop()
     # Lazy singleton — only exists if someone searched for fuel this run.
-    from modules import fuel_history as _fuel_history
+    from modules.fuel import history as _fuel_history
     if _fuel_history._manager is not None:
         await _fuel_history._manager.stop()
     from modules.messages_store import get_message_store as _gms

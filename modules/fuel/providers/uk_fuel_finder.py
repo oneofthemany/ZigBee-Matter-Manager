@@ -7,10 +7,11 @@ Data) Regulations 2025 require prices to be published within 30 minutes of a
 change, which is both why this source is worth moving to and why the refresh
 interval below is 30 minutes rather than something guessed.
 
-Deliberately duck-types UKFuelPricesApi — `get_prices`, `stations`,
-`stationsWithinRadius` — so FuelPriceService can hold either without knowing
-which. That is what keeps the fallback path in fuel_prices.py to a few lines
-instead of two parallel implementations of every query.
+A [BulkSnapshotProvider]: the public endpoints publish the whole UK and
+document no geographic query parameter, so one national fetch per refresh
+window serves every query inside it and the radius is applied locally. All of
+that lives in the base class; this file is the UK's own auth, paging and grade
+mapping and nothing else.
 
 Auth is OAuth 2.0 client credentials (scope fuelfinder.read), tokens last an
 hour. See docs/journeys.md and config/config.yaml (fuel.finder).
@@ -18,9 +19,7 @@ hour. See docs/journeys.md and config/config.yaml (fuel.finder).
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import math
 import os
 import statistics
 import time
@@ -29,7 +28,9 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-logger = logging.getLogger("modules.fuel_finder")
+from modules.fuel.base import BulkSnapshotProvider
+
+logger = logging.getLogger("modules.fuel.providers.uk_fuel_finder")
 
 #: Credentials are read from here, in this order, and never from config.yaml —
 #: that file is tracked in git, so a secret pasted into it is a secret pushed
@@ -95,9 +96,17 @@ GRADE_MAP = {
     "B7_Standard": "B7",
     "B7_Premium": "SDV",
 }
-PASSTHROUGH_GRADES = ("B10", "HVO")
 
-EARTH_RADIUS_KM = 6371.0
+#: The UK's selectable grades. Shared with the retailer-feed fallback, which
+#: reports the same four codes — they are the region's dialect, not this
+#: source's, and GRADE_MAP's values are exactly these keys.
+FUEL_TYPES = {
+    "E10": "Petrol (E10)",
+    "E5": "Premium petrol (E5)",
+    "B7": "Diesel (B7)",
+    "SDV": "Super diesel (SDV)",
+}
+PASSTHROUGH_GRADES = ("B10", "HVO")
 
 #: Paths are fixed by the published spec, so only the host is configurable.
 TOKEN_PATH = "/api/v1/oauth/generate_access_token"
@@ -115,15 +124,6 @@ MAX_BATCHES = 200
 #: a 401 on a query the driver is waiting on, and the whole point of the car
 #: screen is that it answers at a glance.
 TOKEN_REFRESH_MARGIN_S = 300
-
-
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance. Same maths uk-fuel-prices-api did server-side."""
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return EARTH_RADIUS_KM * 2 * math.asin(math.sqrt(a))
 
 
 def looks_like_pence(prices: List[float]) -> bool:
@@ -216,10 +216,25 @@ def save_credentials(client_id: str, client_secret: str) -> None:
     logger.info("Fuel Finder credentials saved to %s", path)
 
 
-class FuelFinderClient:
+class FuelFinderClient(BulkSnapshotProvider):
     """OAuth2 client for the Fuel Finder public API."""
 
+    region = "GB"
+    label = "UK Fuel Finder"
+    grades = FUEL_TYPES
+    default_grade = "E10"
+    currency = "GBP"
+    currency_symbol = "\u00a3"
+    volume_unit = "L"
+    # UK pump prices are quoted in pence, and a Drive tab showing "\u00a31.399"
+    # would be read as a mistake even though it is the same number.
+    display_scale = "minor"
+    display_decimals = 3
+    needs_credentials = True
+    attribution = "Contains public sector information licensed under the Open Government Licence v3.0"
+
     def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
         self.enabled = bool(config.get("enabled", False))
         self.client_id, self.client_secret = _resolve_credentials(config)
         self.base_url = str(config.get("base_url") or "").strip().rstrip("/")
@@ -234,10 +249,6 @@ class FuelFinderClient:
         self._token: Optional[str] = None
         self._refresh_token: Optional[str] = None
         self._token_expires: float = 0.0
-        self._stations: List[Dict[str, Any]] = []
-        self._lock = asyncio.Lock()
-        self._last_error: Optional[str] = None
-        self._last_refresh: float = 0.0
 
     # ---------------------------------------------------------------- config
 
@@ -245,20 +256,15 @@ class FuelFinderClient:
         return self.token_url or f"{self.base_url}{TOKEN_PATH}"
 
     @property
+    def source(self) -> str:
+        return "fuel_finder"
+
+    @property
     def configured(self) -> bool:
         # token_url is not required: it defaults to base_url + the spec's path.
         return bool(
             self.enabled and self.client_id and self.client_secret and self.base_url
         )
-
-    @property
-    def stations(self) -> List[Dict[str, Any]]:
-        """Duck-types UKFuelPricesApi.stations."""
-        return self._stations
-
-    @property
-    def last_error(self) -> Optional[str]:
-        return self._last_error
 
     # ----------------------------------------------------------------- auth
 
@@ -396,49 +402,31 @@ class FuelFinderClient:
 
         return out
 
-    async def get_prices(self, force_refresh: bool = False) -> bool:
+    async def _fetch_all(self) -> List[Dict[str, Any]]:
         """
-        Refresh the station+price snapshot. Duck-types UKFuelPricesApi.
+        One national snapshot: both endpoints, joined on node_id.
 
-        Returns True when usable data is in hand — including data from a
-        previous refresh, because a feed blip must degrade to "slightly stale"
-        rather than to an empty car screen.
+        The TTL, the lock and the "stale data beats an empty car screen" rule
+        are all in BulkSnapshotProvider — this returns [] and lets the base
+        decide what that means for the cache it already holds.
         """
         if not self.configured:
             self._last_error = "Fuel Finder not configured (fuel.finder in config.yaml)"
-            return False
+            return []
 
-        async with self._lock:
-            fresh_enough = (time.time() - self._last_refresh) < self.refresh_s
-            if self._stations and fresh_enough and not force_refresh:
-                return True
+        timeout = aiohttp.ClientTimeout(total=90)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            token = await self._access_token(sess)
+            if not token:
+                return []
 
-            try:
-                timeout = aiohttp.ClientTimeout(total=90)
-                async with aiohttp.ClientSession(timeout=timeout) as sess:
-                    token = await self._access_token(sess)
-                    if not token:
-                        return bool(self._stations)
+            sites = await self._get_batched(sess, token, SITES_PATH)
+            prices = await self._get_batched(sess, token, PRICES_PATH)
 
-                    sites = await self._get_batched(sess, token, SITES_PATH)
-                    prices = await self._get_batched(sess, token, PRICES_PATH)
-
-                merged = self._merge(sites, prices)
-                if not merged:
-                    self._last_error = "Fuel Finder returned no usable stations"
-                    logger.warning(self._last_error)
-                    return bool(self._stations)
-
-                self._stations = merged
-                self._last_refresh = time.time()
-                self._last_error = None
-                logger.info("Fuel Finder: %d stations loaded", len(merged))
-                return True
-
-            except Exception as e:                        # noqa: BLE001
-                self._last_error = f"Fuel Finder refresh failed: {e}"
-                logger.warning(self._last_error)
-                return bool(self._stations)
+        merged = self._merge(sites, prices)
+        if not merged:
+            self._last_error = "Fuel Finder returned no usable stations"
+        return merged
 
     # ----------------------------------------------------------------- shape
 
@@ -527,24 +515,3 @@ class FuelFinderClient:
             if e.get("price_last_updated")
         ]
         return max(stamps) if stamps else None
-
-    # --------------------------------------------------------------- queries
-
-    def stationsWithinRadius(                             # noqa: N802
-        self, lat: float, lon: float, radius_km: float
-    ) -> List[Dict[str, Any]]:
-        """
-        Duck-types UKFuelPricesApi.stationsWithinRadius.
-
-        Filtered here rather than by the API: the public endpoints publish the
-        whole UK and document no geographic query parameter, so the snapshot is
-        national and the radius is applied locally. That is also why the
-        snapshot is cached — one national fetch per refresh window serves every
-        query in it.
-        """
-        out = []
-        for s in self._stations:
-            d = haversine_km(lat, lon, s["latitude"], s["longitude"])
-            if d <= radius_km:
-                out.append({**s, "dist": round(d, 2)})
-        return out

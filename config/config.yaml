@@ -2,8 +2,27 @@ database:
   url: sqlite:///zigbee.db
   path: ./data/zigbee.db
 
+# Where this hub is. Used to pick region-specific data sources — currently the
+# fuel price feed, which differs by country and, in Australia, by state.
+location:
+  # ISO-3166 alpha-2, e.g. GB, DE, FR, ES, IT, AU, US. Blank means the Settings
+  # page offers a suggestion reverse-geocoded from the coordinates below; it is
+  # never applied on its own, because a hub near a border would otherwise
+  # silently change country and quote prices in the wrong currency.
+  country: ""
+  # State or province, for countries that publish fuel prices per state rather
+  # than nationally. Australia is the case that matters: NSW, QLD and WA each
+  # run their own scheme. Blank everywhere else.
+  subdivision: ""
+  # Decimal degrees. Blank falls back to weather.latitude / weather.longitude,
+  # so an install that predates this block keeps working unedited.
+  latitude:
+  longitude:
+
 weather:
   enabled: false
+  # Prefer location.latitude / location.longitude above; these remain the
+  # fallback so nothing has to be moved.
   latitude:
   longitude:
   poll_interval_minutes: 60
@@ -368,3 +387,21 @@ fuel:
     # The regulations cap staleness at the source at 30 minutes, so polling
     # faster spends rate limit to learn nothing new.
     refresh_minutes: 30
+
+  # Which of these is used depends on location.country above. Only Germany
+  # needs a key; Spain, France and Italy publish openly. Every block here is
+  # optional — leave it out and the provider uses its published endpoint.
+  tankerkoenig:
+    enabled: true
+    # NO KEY HERE. This file is tracked in git. The key goes in
+    # config/secrets.yaml under tankerkoenig.api_key, or in the environment as
+    # ZMM_TANKERKOENIG_API_KEY. Request one free at
+    # https://creativecommons.tankerkoenig.de/
+    #
+    # Searches are capped at 25 km and one request per minute by the service,
+    # so answers are cached per neighbourhood for ten minutes.
+    #
+    # Closed stations are listed with their last price and shown by default:
+    # planning a stop means knowing what a place charges, not only what is
+    # open right now. Set true to hide them.
+    only_open: false

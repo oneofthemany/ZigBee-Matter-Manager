@@ -1,9 +1,13 @@
 """
 Fuel price API — cheapest fuel near a location, for the Drive tab.
 
-Centre resolves from an explicit postcode, then explicit coordinates, then the
-household home. Prices are public open data but the centre is not, so nothing
-about who asked is stored. See docs/journeys.md.
+Centre resolves from an explicit place (a postcode or a place name), then
+explicit coordinates, then the household home, then the hub's configured
+location. Prices are public open data but the centre is not, so nothing about
+who asked is stored.
+
+Which country's feed answers is settled by `location:` in config.yaml — see
+modules/fuel/registry.py and docs/plans/fuel_prices_region.md.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from typing import Optional
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 
 from modules.auth_middleware import require_authenticated, require_scope
-from modules.fuel_prices import FUEL_TYPES, get_fuel_service
+from modules.fuel.service import get_fuel_service
 
 logger = logging.getLogger("modules.fuel_routes")
 
@@ -22,23 +26,37 @@ logger = logging.getLogger("modules.fuel_routes")
 def register_fuel_routes(app: FastAPI):
 
     def _home_fallback() -> Optional[dict]:
-        """First configured home among presence users, if any."""
+        """
+        First configured home among presence users, else the hub's own location.
+
+        Presence comes first because it is the more specific answer: it is where
+        a person lives, whereas `location:` is where the hub is, and the two are
+        the same house only most of the time.
+        """
         try:
             from modules.presence_users import get_presence_manager
             pmgr = get_presence_manager()
-            if not pmgr:
-                return None
-            for dev in pmgr.devices.values():
-                cfg = dev.cfg
-                if cfg.enabled and cfg.home_lat is not None and cfg.home_lon is not None:
-                    return {"lat": cfg.home_lat, "lon": cfg.home_lon}
+            if pmgr:
+                for dev in pmgr.devices.values():
+                    cfg = dev.cfg
+                    if cfg.enabled and cfg.home_lat is not None and cfg.home_lon is not None:
+                        return {"lat": cfg.home_lat, "lon": cfg.home_lon}
         except Exception as e:                            # noqa: BLE001
             logger.debug(f"home fallback failed: {e}")
+
+        try:
+            from modules import location
+            coords = location.home_coords(_config())
+            if coords:
+                return {"lat": coords[0], "lon": coords[1]}
+        except Exception as e:                            # noqa: BLE001
+            logger.debug(f"location fallback failed: {e}")
         return None
 
     @app.get("/api/fuel/types")
     async def fuel_types(_=Depends(require_authenticated)):
-        return {"fuel_types": FUEL_TYPES}
+        svc = get_fuel_service()
+        return {"fuel_types": svc.status()["fuel_types"], "region": svc.region}
 
     @app.get("/api/fuel/status")
     async def fuel_status(_=Depends(require_authenticated)):
@@ -47,7 +65,11 @@ def register_fuel_routes(app: FastAPI):
     @app.get("/api/fuel/nearby")
     async def fuel_nearby(
             fuel: str = Query("E10"),
-            postcode: Optional[str] = Query(None, max_length=10),
+            q: Optional[str] = Query(None, max_length=120),
+            # The old name for `q`, kept because the Android client sends it.
+            # Longer than the UK's 10 now: a French or Italian place name is a
+            # legitimate query in a region with no postcode-shaped search.
+            postcode: Optional[str] = Query(None, max_length=120),
             lat: Optional[float] = Query(None, ge=-90.0, le=90.0),
             lon: Optional[float] = Query(None, ge=-180.0, le=180.0),
             radius_km: float = Query(8.0, gt=0.0, le=40.0),
@@ -55,14 +77,15 @@ def register_fuel_routes(app: FastAPI):
             _=Depends(require_authenticated),
     ):
         svc = get_fuel_service()
+        place = q or postcode
 
         centre = None
         centre_source = None
-        if postcode:
-            centre = await svc.resolve_postcode(postcode)
+        if place:
+            centre = await svc.resolve_place(place)
             if not centre:
-                raise HTTPException(400, f"Postcode '{postcode}' did not resolve")
-            centre_source = "postcode"
+                raise HTTPException(400, f"'{place}' did not resolve to a location")
+            centre_source = "place"
         elif lat is not None and lon is not None:
             centre = {"lat": lat, "lon": lon}
             centre_source = "coords"
@@ -72,8 +95,8 @@ def register_fuel_routes(app: FastAPI):
             if not centre:
                 raise HTTPException(
                     400,
-                    "No location: pass ?postcode= or ?lat=&lon=, or set a home "
-                    "location on a presence user."
+                    "No location: pass ?q= or ?lat=&lon=, set a home location "
+                    "on a presence user, or fill in location: in config.yaml."
                 )
 
         result = await svc.best_nearby(
@@ -93,7 +116,7 @@ def register_fuel_routes(app: FastAPI):
     async def fuel_refresh(_=Depends(require_scope("admin"))):
         return await get_fuel_service().refresh()
 
-    # History — snapshots recorded at query time (modules/fuel_history.py)
+    # History — snapshots recorded at query time (modules/fuel/history.py)
     @app.get("/api/fuel/history")
     async def fuel_history(
             fuel: str = Query("E10"),
@@ -101,11 +124,18 @@ def register_fuel_routes(app: FastAPI):
             site_id: Optional[str] = Query(None, max_length=64),
             _=Depends(require_authenticated),
     ):
+        svc = get_fuel_service()
         fuel = fuel.upper()
-        if fuel not in FUEL_TYPES:
-            raise HTTPException(400, f"Unknown fuel '{fuel}'")
-        from modules.fuel_history import get_fuel_history
-        return await get_fuel_history().daily_trend(fuel, days, site_id)
+        grades = svc.status()["fuel_types"]
+        if fuel not in grades:
+            raise HTTPException(400, f"Unknown fuel '{fuel}'. One of: {', '.join(grades)}")
+        from modules.fuel.history import get_fuel_history
+        trend = await get_fuel_history().daily_trend(
+            fuel, days, site_id, region=svc.region)
+        # The chart formats its own axis, so it needs the same units block the
+        # live prices carry — the stored numbers are in the same major unit.
+        trend["units"] = svc.status()["units"]
+        return trend
 
     @app.get("/api/fuel/history/station/{site_id}")
     async def fuel_station_history(
@@ -115,14 +145,18 @@ def register_fuel_routes(app: FastAPI):
     ):
         if not site_id or len(site_id) > 64:
             raise HTTPException(400, "Bad site_id")
-        from modules.fuel_history import get_fuel_history
+        from modules.fuel.history import get_fuel_history
+        svc = get_fuel_service()
         return {"site_id": site_id,
-                "history": await get_fuel_history().station_history(site_id, days)}
+                "region": svc.region,
+                "units": svc.status()["units"],
+                "history": await get_fuel_history().station_history(
+                    site_id, days, region=svc.region)}
 
     @app.get("/api/fuel/history/status")
     async def fuel_history_status(_=Depends(require_authenticated)):
-        from modules.fuel_history import get_fuel_history
-        return await get_fuel_history().status()
+        from modules.fuel.history import get_fuel_history
+        return await get_fuel_history().status(region=get_fuel_service().region)
 
     # ---- Fuel Finder credentials -------------------------------------------
     #
@@ -133,11 +167,11 @@ def register_fuel_routes(app: FastAPI):
 
     def _config() -> dict:
         from main import CONFIG
-        return CONFIG
+        return CONFIG or {}
 
     @app.get("/api/fuel/finder/config")
     async def fuel_finder_config(_=Depends(require_scope("admin"))):
-        from modules.fuel_finder import credentials_status
+        from modules.fuel.providers.uk_fuel_finder import credentials_status
         cfg = _config()
         finder = (cfg.get("fuel") or {}).get("finder") or {}
         return {
@@ -152,8 +186,8 @@ def register_fuel_routes(app: FastAPI):
             body: dict = Body(...),
             _=Depends(require_scope("admin")),
     ):
-        from modules.fuel_finder import credentials_status, save_credentials
-        from modules.fuel_prices import reset_fuel_service
+        from modules.fuel.providers.uk_fuel_finder import credentials_status, save_credentials
+        from modules.fuel.service import reset_fuel_service
 
         cfg = _config()
         finder = (cfg.get("fuel") or {}).get("finder") or {}
@@ -196,10 +230,66 @@ def register_fuel_routes(app: FastAPI):
         finder = (cfg.get("fuel") or {}).get("finder") or {}
         return {"success": True, **credentials_status(finder)}
 
+    @app.get("/api/fuel/regions")
+    async def fuel_regions(_=Depends(require_authenticated)):
+        """
+        Every region the hub can serve, plus the one it is set to.
+
+        `detected` is a suggestion reverse-geocoded from the hub's coordinates,
+        offered so the Settings page can pre-select something sensible. It is
+        never applied here — picking a country changes which currency prices
+        are quoted in, so it takes a deliberate save.
+        """
+        from modules import location
+        from modules.fuel.registry import known_regions
+
+        cfg = _config()
+        svc = get_fuel_service()
+        return {
+            "regions": known_regions(),
+            "active": svc.region,
+            "configured": {"country": location.country(cfg),
+                           "subdivision": location.subdivision(cfg)},
+            "detected": await location.detect_country(cfg),
+        }
+
+    @app.post("/api/fuel/region")
+    async def save_fuel_region(
+            body: dict = Body(...),
+            _=Depends(require_scope("admin")),
+    ):
+        """
+        Set the hub's country (and state, where that matters).
+
+        Written with the comment-preserving writer: config.yaml is roughly a
+        third comments, and a settings save that silently deleted them would be
+        noticed only long afterwards, by someone reading the file.
+        """
+        from modules import location
+        from modules.fuel.service import reset_fuel_service
+
+        values = {k: body[k] for k in ("country", "subdivision") if k in body}
+        if not values:
+            raise HTTPException(400, "Nothing to set: pass country and/or subdivision")
+        try:
+            written = location.persist(values)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except OSError as e:
+            raise HTTPException(500, f"Could not write config.yaml: {e}") from e
+
+        # Patch the live config too: the file is only re-read on boot, and a
+        # save that needs a restart to take effect reads as a save that failed.
+        _config().setdefault("location", {}).update(written)
+        reset_fuel_service()
+
+        svc = get_fuel_service()
+        return {"success": True, "active": svc.region, **svc.status()}
+
     @app.post("/api/fuel/finder/test")
     async def test_fuel_finder(_=Depends(require_scope("admin"))):
         """Prove the credentials by exchanging them for a token."""
-        from modules.fuel_finder import FuelFinderClient
+        from modules.fuel.providers.uk_fuel_finder import FuelFinderClient
         finder = (_config().get("fuel") or {}).get("finder") or {}
         return await FuelFinderClient(finder).verify()
 

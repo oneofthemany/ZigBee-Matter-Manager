@@ -30,6 +30,7 @@ logger = logging.getLogger("modules.geocode")
 DB_PATH = Path("./data/geocode.duckdb")
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
+NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 
 #: Additive rather than exclusive: GeoNames has town names but only district
 #: centroids for many countries, Open Postcode Geo has every UK unit postcode
@@ -281,13 +282,21 @@ class Geocoder:
 
     # Search
     async def search(self, query: str, limit: int = 5,
-                     country: Optional[str] = None) -> Dict[str, Any]:
+                     country: Optional[str] = None,
+                     allow_online: Optional[bool] = None) -> Dict[str, Any]:
         """
         Candidate places for a query, best first.
 
         Never raises for an upstream failure: a search that cannot reach the
         internet should leave the user clicking the map, which still works,
         rather than showing them an error about a service they did not ask for.
+
+        `allow_online` overrides the geocode.online_fallback setting for one
+        call. It exists for callers whose own feature already sends the query
+        off the hub, so honouring an opt-in meant for the map picker would
+        withhold a lookup the user is asking for and getting anyway — fuel
+        prices are the case: that tab sent postcodes to a third-party resolver
+        long before this setting existed. None means "use the setting".
         """
         q = " ".join(str(query or "").split())
         if not q or len(q) > 200:
@@ -295,8 +304,10 @@ class Geocoder:
         limit = max(1, min(int(limit), MAX_RESULTS))
         cc = country.upper() if country and _CC_RE.match(country) else None
 
+        online = self.online_fallback if allow_online is None else bool(allow_online)
+
         local, credits = await self._run(self._search_local_credited, q, limit, cc)
-        if local or not self.online_fallback:
+        if local or not online:
             return {"results": local, "source": "local",
                     "attribution": "; ".join(credits)}
 
@@ -359,7 +370,14 @@ class Geocoder:
             })
         return out
 
-    async def _nominatim(self, query: str, limit: int) -> List[Dict[str, Any]]:
+    async def _nominatim_get(self, url: str, params: Dict[str, str]) -> Any:
+        """
+        One rate-limited Nominatim call.
+
+        Shared by search and reverse because the limit is per client, not per
+        endpoint: two endpoints each politely pacing themselves would still
+        exceed one request per second between them.
+        """
         import aiohttp
 
         async with self._nominatim_lock:
@@ -371,16 +389,40 @@ class Geocoder:
                 headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
                 async with aiohttp.ClientSession(timeout=timeout,
                                                  headers=headers) as sess:
-                    async with sess.get(NOMINATIM, params={
-                            "q": query, "format": "jsonv2",
-                            "limit": str(limit), "addressdetails": "1"}) as resp:
-                        data = await resp.json(content_type=None) \
+                    async with sess.get(url, params=params) as resp:
+                        return await resp.json(content_type=None) \
                             if resp.status == 200 else None
             finally:
                 # Stamped even on failure: a failed request still consumed the
                 # allowance, and retrying immediately is what gets a client
                 # blocked rather than rate-limited.
                 self._last_nominatim = time.monotonic()
+
+    async def reverse_country(self, lat: float, lon: float) -> Optional[str]:
+        """
+        The ISO-3166 alpha-2 country at a coordinate, or None.
+
+        Used to suggest a region for things that are country-specific — fuel
+        prices most of all, where the whole feed differs per country. Only ever
+        a suggestion the user confirms: a hub near a border would otherwise
+        silently switch country on them, and zoom=3 keeps this a country-level
+        question rather than asking OSM for someone's street.
+        """
+        try:
+            data = await self._nominatim_get(NOMINATIM_REVERSE, {
+                "lat": str(float(lat)), "lon": str(float(lon)),
+                "format": "jsonv2", "zoom": "3", "addressdetails": "1"})
+        except Exception as e:                            # noqa: BLE001
+            logger.warning(f"reverse geocode failed for {lat},{lon}: {e}")
+            return None
+        cc = ((data or {}).get("address") or {}).get("country_code")
+        cc = str(cc or "").upper()
+        return cc if _CC_RE.match(cc) else None
+
+    async def _nominatim(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        data = await self._nominatim_get(NOMINATIM, {
+            "q": query, "format": "jsonv2",
+            "limit": str(limit), "addressdetails": "1"})
 
         out: List[Dict[str, Any]] = []
         for item in (data or [])[:limit]:

@@ -324,7 +324,7 @@ turned into names, and only the names are written back.
 
 `static/js/drive.js` renders three pieces on one page: journeys recorded by the
 companion app's drive mode, the cheapest fuel stations near home or a typed
-postcode, and a price-history chart drawn from the snapshots `fuel_history.py`
+postcode, and a price-history chart drawn from the snapshots `modules/fuel/history.py`
 records at every search (daily median line over a min–max band).
 
 It is an ES module — unlike `presence-settings.js` — because the chart goes
@@ -361,7 +361,7 @@ matching.**
 
 ## Fuel price history
 
-`modules/fuel_history.py` persists what the fuel-price feeds said, and when we
+`modules/fuel/history.py` persists what the fuel-price feeds said, and when we
 asked.
 
 The `uk-fuel-prices-api` package holds retailer data only in memory, and most
@@ -376,9 +376,31 @@ DuckDB is single-writer per file, so this must never share journeys' or
 telemetry's database.
 
 **Dedupe.** Retailer feeds update roughly daily, but users may search many times
-a day. One row per `(site_id, fuel, feed day)` — re-recording the same feed value
-is a no-op, so history growth is bounded by stations × fuels × days regardless of
-how often anyone searches.
+a day. One row per `(region, site_id, fuel, feed day)` — re-recording the same
+feed value is a no-op, so history growth is bounded by stations × fuels × days
+regardless of how often anyone searches.
+
+**Region.** `region` is part of the key rather than a label beside it, because
+site IDs are only unique within a feed: France, Spain, Italy and Germany all
+number their stations, and a German site 4711 would otherwise overwrite a French
+one. Each row also carries the `currency` it was recorded in, and every query is
+scoped to a single region — a median taken across two currencies is not a number
+that means anything. `/api/fuel/history/status` reports a per-region row count
+alongside the active region's, so a region change that empties the trend chart
+reads as a change of scope rather than as data loss.
+
+A database written before regions existed is migrated on first open. The
+project's usual convention is `ADD COLUMN IF NOT EXISTS` (see
+`modules/journeys.py`), but that cannot change a primary key, and the key is
+exactly what has to change — so this one rebuilds the table and copies the rows
+across in a single transaction, stamping every existing row `GB` / `GBP`. Those
+were the only sources this project ever had.
+
+**Units.** Prices are stored the way a provider hands them over: in the region's
+major currency unit, per litre or per US gallon. Whether that is how they are
+*shown* is `display_scale` in the units block the API returns — the UK quotes
+pence, so its rows are pounds and its display is `139.9p`. Nothing downstream
+converts on its own; the one place a scale is decided is the provider.
 
 **Privacy.** Rows describe petrol stations, not people. Where the user searched
 from is deliberately **not** stored — only which stations came back, and their
@@ -409,10 +431,10 @@ record it lands on, which is a claim about a person rather than a view of one.
 
 ## Fuel prices
 
-`modules/fuel_prices.py` finds the cheapest fuel near a location from two
+`modules/fuel/service.py` finds the cheapest fuel near a location from two
 sources, tried in order.
 
-**Fuel Finder** (`modules/fuel_finder.py`) is the government's statutory
+**Fuel Finder** (`modules/fuel/providers/uk_fuel_finder.py`) is the government's statutory
 service. The Motor Fuel Price (Open Data) Regulations 2025 require forecourts
 to publish a price change within 30 minutes, which is both why it is preferred
 and why the refresh interval is 30 minutes rather than a guess. It is an OAuth2
@@ -454,11 +476,20 @@ there.
 
 Both sources present the same station shape, so everything downstream is source
 agnostic. This module wraps whichever is live with a refresh guard (one
-refresh at a time, with callers sharing the result), postcode → coordinates via
-postcodes.io (free, no key, and no logging of who asked), and "best nearby"
-queries: stations within a radius selling the wanted fuel, sorted cheapest
-first, each with a Google Maps link built from its postcode so a phone can
-navigate to the winner in one tap.
+refresh at a time, with callers sharing the result), place → coordinates via
+the shared geocoder in `modules/geocode.py`, and "best nearby" queries: stations
+within a radius selling the wanted fuel, sorted cheapest first, each with a
+Google Maps link built from its postcode so a phone can navigate to the winner
+in one tap.
+
+The geocoder replaced postcodes.io, which was UK-only and validated its input
+as two to eight alphanumerics — a rule that rejects valid French and German
+postcodes. It searches whatever postal datasets are installed locally before
+falling back to OpenStreetMap, and is told the active region's country so a
+short code resolves in the right one. That fallback is forced on for fuel
+regardless of `geocode.online_fallback`: this lookup has always left the hub,
+so honouring an opt-in written for the map picker would withhold a lookup the
+user is explicitly asking for.
 
 Prices are re-fetched on demand, but each query's results are also snapshotted
 into [fuel price history](#fuel-price-history) — the feeds publish only today's
@@ -468,11 +499,72 @@ number with no archive, so anything not recorded at query time is gone tomorrow.
 
 Centre resolution, in order of preference:
 
-1. an explicit `?postcode=`, resolved via postcodes.io
+1. an explicit `?q=` — a postcode or a place name, resolved by the geocoder.
+   `?postcode=` is still accepted as an alias, because the Android client
+   sends it
 2. an explicit `?lat=` and `?lon=`
 3. the requesting household's home — the first presence user with one set
+4. the hub's own `location:` coordinates, falling back to `weather:`
+
+Presence comes before `location:` because it is the more specific answer: it is
+where a person lives, whereas `location:` is where the hub is, and those are the
+same house only most of the time.
 
 Prices themselves are public open data; the location the query centres on is
 not. That is why the fallback is the home location every household member
 already knows, and why any authenticated user may query while nothing about who
 asked is stored.
+
+### Region
+
+Which country's feed answers is `location.country` in config.yaml, with
+`location.subdivision` for countries that publish fuel prices per state rather
+than nationally. `modules/fuel/registry.py` maps a region key to a provider;
+`modules/fuel/base.py` defines what a provider has to supply, and carries the
+two shapes they come in — a national bulk download filtered locally, which is
+what the UK sources are, and a per-location query, which is what an API with a
+radius cap and a rate limit forces.
+
+`location:` is deliberately not inside `fuel:`. The hub has one place, and a
+second latitude in a second block is how two settings start disagreeing;
+`weather.latitude` / `weather.longitude` stay as the fallback so an install that
+predates the block keeps working unedited.
+
+### Regions available
+
+| Region | Source | Shape | Key | Notes |
+| --- | --- | --- | --- | --- |
+| GB | Fuel Finder, then the retailer feeds | national download | yes | the original pair, unchanged |
+| DE | Tankerkönig, over MTS-K | radius query | yes, free | 25 km cap, one request a minute |
+| ES | Ministerio price register | national download | no | comma decimals throughout |
+| FR | *flux instantané* | national download | no | no brand names in the dataset |
+| IT | Osservaprezzi Carburanti | national download | no | two CSVs joined on `idImpianto` |
+
+Each carries its own grade codes, currency and attribution, so nothing above the
+provider needs to know which country answered. The three keyless feeds work the
+moment the country is set.
+
+Three things the data forced, worth knowing before reading those adapters. Spain
+writes decimals with a comma, and `1,599` read as an English number is silently
+three orders of magnitude wrong — the kind of error that arrives looking like a
+plausible price. France publishes coordinates as integers scaled by 100000 and
+writes an absent price as the literal string `None`. Italy prices most fuels
+twice, self-service and served, for about half its stations; the self-service
+price is preferred, because showing the served one beside a competitor's
+self-service price makes a station look dearer than it is.
+
+France also demonstrated why `BulkSnapshotProvider` rejects a shrunken snapshot:
+one request during testing returned 930 stations instead of 9,677, with an HTTP
+200. "Stale beats empty" does not catch that — a truncated body is not an empty
+one — so a national feed that loses more than half its stations between polls
+keeps the previous snapshot and logs why. Half a country reads to a user as "no
+station near you", which is worse than data a few minutes old.
+
+`GET /api/fuel/regions` lists what is available, what is configured, and a
+`detected` country reverse-geocoded from the hub's coordinates. That last one is
+only ever a suggestion: picking a country changes which currency prices are
+quoted in, and a hub near a border would otherwise silently switch. Applying it
+takes a deliberate `POST /api/fuel/region`, which writes through the
+comment-preserving writer in `modules/config_yaml.py` and then resets the
+cached service, because credentials and the region are read when a provider is
+constructed.

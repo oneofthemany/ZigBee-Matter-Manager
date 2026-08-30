@@ -28,6 +28,19 @@ import { createChart } from './chart-utils.js';
                       B7: 'Diesel (B7)', SDV: 'Super diesel (SDV)' };
     var fuelPrefsKey = 'zbm-drive-fuel-prefs';
 
+    // How the active region quotes a price. Replaced by whatever the API
+    // reports; these defaults are the UK's, and only ever show before the
+    // first response lands. Prices on the wire are always in the major
+    // currency unit — display_scale decides whether that is how they are shown.
+    var fuelUnits = { currency: 'GBP', symbol: '\u00a3', volume: 'L',
+                      distance: 'km', display_scale: 'minor', decimals: 3 };
+    var fuelAttribution = '';
+    var fuelDefaultGrade = '';
+
+    // Suffix for a price quoted in a currency's minor unit. Only regions that
+    // price that way need an entry; anywhere else shows the major unit instead.
+    var MINOR_SUFFIX = { GBP: 'p' };
+
     function escape(s) {
         return String(s == null ? '' : s)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -104,12 +117,21 @@ import { createChart } from './chart-utils.js';
     }
 
     function getFuelPrefs() {
-        var base = { fuel: 'E10', postcode: '', radius: 8, historyDays: 30 };
+        var base = { fuel: fuelDefaultGrade || 'E10', postcode: '',
+                     radius: 8, historyDays: 30 };
+        var prefs = base;
         try {
             var raw = localStorage.getItem(fuelPrefsKey);
-            if (raw) return Object.assign(base, JSON.parse(raw));
+            if (raw) prefs = Object.assign({}, base, JSON.parse(raw));
         } catch (e) {}
-        return base;
+        // A grade saved under one region need not exist in another — B7 means
+        // nothing in Germany. Falling back to the region's default beats
+        // rendering a select with nothing selected.
+        if (!Object.prototype.hasOwnProperty.call(fuelTypes, prefs.fuel)) {
+            prefs.fuel = base.fuel in fuelTypes
+                ? base.fuel : (Object.keys(fuelTypes)[0] || base.fuel);
+        }
+        return prefs;
     }
 
     function saveFuelPrefs(p) {
@@ -175,10 +197,19 @@ import { createChart } from './chart-utils.js';
         return DRIVER_COLOURS[h % DRIVER_COLOURS.length];
     }
 
+    // Grades, units and attribution all belong to the region, so they are
+    // fetched together rather than assumed. /api/fuel/status carries the units;
+    // /api/fuel/types alone would leave the first render formatting in pence
+    // for a country that has never used them.
     async function fetchFuelTypes() {
         try {
-            var r = await fetch('/api/fuel/types', { credentials: 'same-origin' });
-            if (r.ok) fuelTypes = (await r.json()).fuel_types || fuelTypes;
+            var r = await fetch('/api/fuel/status', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            var st = await r.json();
+            fuelTypes = st.fuel_types || fuelTypes;
+            if (st.units) fuelUnits = st.units;
+            fuelAttribution = st.attribution || '';
+            fuelDefaultGrade = st.default_grade || '';
         } catch (e) { /* keep defaults */ }
     }
 
@@ -1150,21 +1181,24 @@ import { createChart } from './chart-utils.js';
           '</div>' +
           '<div class="card-body">' +
             // Stacks to full-width rows below 576 px; a three-across form at
-            // phone width leaves the postcode field about six characters wide.
+            // phone width leaves the place field about six characters wide.
             '<div class="row g-2 align-items-end">' +
               '<div class="col-12 col-sm-5">' +
                 '<label class="form-label small fw-bold mb-1">Fuel</label>' +
                 '<select class="form-select form-select-sm" id="fuel-type">' + opts + '</select>' +
               '</div>' +
               '<div class="col-6 col-sm-4">' +
-                '<label class="form-label small fw-bold mb-1">Postcode</label>' +
+                // Not "Postcode": outside the UK the useful search is often a
+                // town or street, and the geocoder takes either.
+                '<label class="form-label small fw-bold mb-1">Place</label>' +
                 '<input class="form-control form-control-sm" id="fuel-postcode" ' +
-                  'placeholder="home" value="' + escape(prefs.postcode) + '" maxlength="10" ' +
-                  'autocapitalize="characters" autocomplete="postal-code">' +
+                  'placeholder="home" value="' + escape(prefs.postcode) + '" maxlength="120" ' +
+                  'autocomplete="postal-code">' +
               '</div>' +
               '<div class="col-6 col-sm-3">' +
                 '<label class="form-label small fw-bold mb-1">' +
-                  'Within <span id="fuel-radius-label">' + prefs.radius + '</span> km</label>' +
+                  'Within <span id="fuel-radius-label">' +
+                    escape(fuelRadiusLabel(Number(prefs.radius))) + '</span></label>' +
                 '<input type="range" class="form-range" id="fuel-radius" ' +
                   'min="2" max="40" step="1" value="' + prefs.radius + '">' +
               '</div>' +
@@ -1174,8 +1208,8 @@ import { createChart } from './chart-utils.js';
                 '<i class="fas fa-magnifying-glass me-1"></i> Find cheapest</button>' +
             '</div>' +
             '<div class="small text-muted mt-1" id="fuel-note">' +
-              'Leave postcode blank to search around home. ' +
-              'Prices come from the UK retailer open-data scheme (most update daily).' +
+              'Leave blank to search around home. ' +
+              escape(fuelAttribution || 'Prices come from published open data.') +
             '</div>' +
             '<div class="mt-3" id="fuel-results"></div>' +
           '</div>' +
@@ -1186,7 +1220,9 @@ import { createChart } from './chart-utils.js';
         var radius = document.getElementById('fuel-radius');
         var radiusLabel = document.getElementById('fuel-radius-label');
         if (radius && radiusLabel) {
-            radius.oninput = function () { radiusLabel.textContent = radius.value; };
+            radius.oninput = function () {
+                radiusLabel.textContent = fuelRadiusLabel(Number(radius.value));
+            };
         }
         var btn = document.getElementById('fuel-search');
         if (btn) btn.onclick = searchFuel;
@@ -1212,7 +1248,7 @@ import { createChart } from './chart-utils.js';
 
         var qs = '?fuel=' + encodeURIComponent(fuel) +
                  '&radius_km=' + encodeURIComponent(radius) + '&limit=10' +
-                 (postcode ? '&postcode=' + encodeURIComponent(postcode) : '');
+                 (postcode ? '&q=' + encodeURIComponent(postcode) : '');
         try {
             var r = await fetch('/api/fuel/nearby' + qs, { credentials: 'same-origin' });
             var data = await r.json().catch(function () { return {}; });
@@ -1234,7 +1270,7 @@ import { createChart } from './chart-utils.js';
     // Price-history chart
     // The snapshots fuel_history.py records at every search, drawn as a
     // daily MEDIAN line over a shaded MIN–MAX band. One measure, one axis
-    // (pence/L over time); single series so the card title is the legend.
+    // (price per litre over time); single series so the card title is the legend.
     //
     // Colour: the same blue the Energy tab uses for its "cheap" pole,
     // validated (dataviz six-checks) against both card surfaces.
@@ -1245,12 +1281,87 @@ import { createChart } from './chart-utils.js';
     // conversion happens here rather than in the data: history rows already on
     // disk are in pounds and must keep meaning the same thing.
     //
-    // The decimal is not decoration. UK pump prices are set to a tenth of a
-    // penny and in practice always end in .9, so dropping it rounds 159.9 to
-    // 160 — dearer than the station charges, and identical for two stations a
-    // penny apart.
-    function pence(pounds) {
-        return (pounds * 100).toFixed(1) + 'p';
+    function minorSuffix(u) { return MINOR_SUFFIX[(u || fuelUnits).currency] || 'c'; }
+
+    function volumeLabel(u) {
+        return (u || fuelUnits).volume === 'gal_us' ? 'gal' : 'L';
+    }
+
+    var _priceFmt = null, _priceFmtKey = '';
+    function priceFormatter(u) {
+        var key = u.currency + '/' + u.decimals;
+        if (_priceFmtKey !== key) {
+            _priceFmtKey = key;
+            try {
+                _priceFmt = new Intl.NumberFormat(undefined, {
+                    style: 'currency', currency: u.currency,
+                    minimumFractionDigits: u.decimals,
+                    maximumFractionDigits: u.decimals });
+            } catch (e) {
+                // An unknown currency code throws rather than degrading, and a
+                // price is too important to drop over a formatting detail.
+                _priceFmt = null;
+            }
+        }
+        return _priceFmt;
+    }
+
+    // A price, in the region's own terms. `value` is always in the major
+    // currency unit.
+    //
+    // The decimal is not decoration. Pump prices are set to a tenth of the
+    // smallest unit and in practice always end in .9, so dropping it rounds
+    // 159.9 to 160 — dearer than the station charges, and identical for two
+    // stations a penny apart.
+    function fuelPrice(value, u) {
+        u = u || fuelUnits;
+        if (value == null || isNaN(value)) return '—';
+        if (u.display_scale === 'minor') {
+            return (value * 100).toFixed(1) + minorSuffix(u);
+        }
+        var f = priceFormatter(u);
+        return f ? f.format(value)
+                 : (u.symbol || '') + Number(value).toFixed(u.decimals);
+    }
+
+    // A gap between two prices. No currency symbol: it always sits beside a
+    // formatted price that already carries one.
+    function fuelDelta(value, u) {
+        u = u || fuelUnits;
+        return u.display_scale === 'minor'
+            ? (value * 100).toFixed(1) + minorSuffix(u)
+            : Number(value).toFixed(u.decimals);
+    }
+
+    // Bare numbers for a chart axis, in whichever scale is being displayed.
+    function fuelAxisLabel(value, u) {
+        u = u || fuelUnits;
+        return u.display_scale === 'minor'
+            ? (value * 100).toFixed(1)
+            : Number(value).toFixed(u.decimals);
+    }
+
+    function fuelPriceHeader(u) {
+        u = u || fuelUnits;
+        var unit = u.display_scale === 'minor' ? minorSuffix(u)
+                                               : (u.currency || '');
+        return 'Price/' + volumeLabel(u) + ' (' + unit + ')';
+    }
+
+    // Distances are kilometres on the wire everywhere; only the display varies.
+    function fuelDistance(km, u) {
+        u = u || fuelUnits;
+        if (km == null) return '—';
+        return u.distance === 'mi'
+            ? (km / 1.609344).toFixed(1) + ' mi'
+            : km.toFixed(1) + ' km';
+    }
+
+    function fuelRadiusLabel(km, u) {
+        u = u || fuelUnits;
+        return u.distance === 'mi'
+            ? Math.round(km / 1.609344) + ' mi'
+            : km + ' km';
     }
 
     function priceLineColour() {
@@ -1347,15 +1458,15 @@ import { createChart } from './chart-utils.js';
                     var i = params[0].dataIndex;
                     var s = h.series[i];
                     return '<strong>' + s.day + '</strong><br>' +
-                        'Median ' + pence(s.median) + '<br>' +
-                        'Range ' + pence(s.min) + ' – ' + pence(s.max) + '<br>' +
+                        'Median ' + fuelPrice(s.median) + '<br>' +
+                        'Range ' + fuelPrice(s.min) + ' – ' + fuelPrice(s.max) + '<br>' +
                         s.stations + ' station(s)';
                 },
             },
             xAxis: { type: 'category', data: daysAxis, boundaryGap: false },
             yAxis: {
                 type: 'value', scale: true,
-                axisLabel: { formatter: function (v) { return (v * 100).toFixed(1); } },
+                axisLabel: { formatter: function (v) { return fuelAxisLabel(v); } },
             },
             series: [
                 { name: 'min', type: 'line', data: minS, stack: 'band',
@@ -1399,7 +1510,7 @@ import { createChart } from './chart-utils.js';
             host.innerHTML =
                 '<div class="small text-muted border-top pt-2 mt-2">' +
                   arrow + ' Cheapest seen in ' + h.series.length + ' day(s) of history: ' +
-                  '<strong>' + pence(h.cheapest_seen.price) + '</strong> — ' +
+                  '<strong>' + fuelPrice(h.cheapest_seen.price, h.units) + '</strong> — ' +
                   escape(h.cheapest_seen.brand || '?') + ' ' +
                   escape(h.cheapest_seen.postcode || '') +
                   ' (' + escape(h.cheapest_seen.day) + ')' +
@@ -1408,6 +1519,10 @@ import { createChart } from './chart-utils.js';
     }
 
     function renderFuelResults(out, data) {
+        // The response is what the region actually answered with, so it wins
+        // over whatever was cached when the tab was first opened.
+        if (data.units) fuelUnits = data.units;
+        if (data.attribution) fuelAttribution = data.attribution;
         if (!data.stations || !data.stations.length) {
             out.innerHTML = '<div class="text-center text-muted py-3">' +
                 'No stations selling ' + escape(data.fuel_label || data.fuel) +
@@ -1422,14 +1537,12 @@ import { createChart } from './chart-utils.js';
                 '<strong>' + escape(s.brand || '?') + '</strong><br>' +
                 '<span class="text-muted">' + escape(s.address || '') + '</span>' +
               '</td>' +
-              '<td class="text-nowrap">' + pence(s.price) +
+              '<td class="text-nowrap">' + fuelPrice(s.price) +
                 (i > 0 && delta > 0.001
-                    ? '<br><span class="small text-muted">+' + (delta * 100).toFixed(1) + 'p</span>'
+                    ? '<br><span class="small text-muted">+' + fuelDelta(delta) + '</span>'
                     : '<br><span class="small text-success fw-bold">cheapest</span>') +
               '</td>' +
-              '<td class="small text-nowrap">' +
-                (s.distance_km != null ? s.distance_km.toFixed(1) + ' km' : '—') +
-              '</td>' +
+              '<td class="small text-nowrap">' + fuelDistance(s.distance_km) + '</td>' +
               '<td class="text-nowrap">' +
                 '<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" ' +
                    'href="' + escape(s.maps_url) + '" title="Open in Google Maps">' +
@@ -1440,18 +1553,20 @@ import { createChart } from './chart-utils.js';
         }).join('');
 
         var centre = data.centre || {};
+        // 'place' covers a postcode or a place name — outside the UK the
+        // search box is not postcode-shaped, so the wording cannot be either.
         var centreNote = centre.source === 'home' ? 'around home'
-                       : centre.source === 'postcode' ? 'around that postcode'
+                       : centre.source === 'place' ? 'around that location'
                        : 'around the given point';
         out.innerHTML =
           '<div class="small text-muted mb-1">' +
             data.count + ' station(s) with ' + escape(data.fuel_label || data.fuel) +
-            ' ' + centreNote + ' — cheapest first. Tap the postcode for directions.' +
+            ' ' + centreNote + ' — cheapest first. Tap a station for directions.' +
           '</div>' +
           '<div class="table-responsive">' +
             '<table class="table table-sm table-hover align-middle mb-0">' +
               '<thead class="table-light"><tr>' +
-                '<th>Station</th><th>Price/L (p)</th><th>Dist</th><th>Maps</th>' +
+                '<th>Station</th><th>' + escape(fuelPriceHeader()) + '</th><th>Dist</th><th>Maps</th>' +
               '</tr></thead><tbody>' + rows + '</tbody>' +
             '</table>' +
           '</div>' +

@@ -585,7 +585,7 @@ function renderApisTab(config) {
       <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
       <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
       <div class="tab-pane fade" id="apiPaneEnergy">${renderOctopusSection(config)}</div>
-      <div class="tab-pane fade" id="apiPaneFuel">${renderFuelFinderSection()}</div>
+      <div class="tab-pane fade" id="apiPaneFuel">${renderFuelRegionSection()}${renderFuelFinderSection()}</div>
       <div class="tab-pane fade" id="apiPaneSecurity">${renderSecuritySection(config)}</div>
     </div>
     `;
@@ -594,6 +594,7 @@ function renderApisTab(config) {
     loadTidalStatus();
     loadAcUnits();
     loadOctopusStatus();
+    loadFuelRegion();
     loadFuelFinderConfig();
     SECURITY_PROVIDERS.forEach(p => p.onShow?.());
 }
@@ -747,9 +748,117 @@ function renderOctopusSection(config) {
 // blank field means "keep what is stored" rather than "clear it" — the same
 // contract as the Octopus key above.
 
+function renderFuelRegionSection() {
+    return `
+    <h6 class="fw-semibold mb-2">Region</h6>
+    <p class="text-muted small mb-3">
+      Fuel prices come from a different source in every country, in that country's
+      currency and grade names. Pick where this hub is; the Drive tab and the
+      Android Auto screen follow.
+    </p>
+    <div id="fuelRegionStatus" class="mb-3"></div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold">Country</label>
+        <select class="form-select" id="cfg_fuel_region"></select>
+        <small class="text-muted" id="cfg_fuel_region_note"></small>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">State / province</label>
+        <input type="text" class="form-control" id="cfg_fuel_subdivision"
+               maxlength="3" autocomplete="off" placeholder="e.g. NSW">
+        <small class="text-muted">Only where prices are published per state.</small>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="window.saveFuelRegion()">
+      <i class="fas fa-save me-1"></i> Save region
+    </button>
+    <div id="fuelRegionResult" class="mt-2"></div>
+    <hr class="my-4">
+    `;
+}
+
+async function loadFuelRegion() {
+    const status = document.getElementById('fuelRegionStatus');
+    try {
+        const res = await fetch('/api/fuel/regions', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const c = await res.json();
+
+        const sel = document.getElementById('cfg_fuel_region');
+        const cfg = c.configured || {};
+        // The option value is the full region key, so a country published per
+        // state ("AU-NSW") stays distinguishable from its neighbours in the
+        // list. It is split back into country and subdivision on save.
+        const configuredKey = cfg.subdivision
+            ? `${cfg.country}-${cfg.subdivision}` : (cfg.country || '');
+        if (sel) {
+            // A blank option is offered so "not set" stays expressible: it is
+            // what makes the detected suggestion meaningful rather than
+            // something already overridden.
+            sel.innerHTML = '<option value="">— not set —</option>' +
+                (c.regions || []).map(r =>
+                    `<option value="${w_escape(r.region)}"` +
+                    (r.region === configuredKey ? ' selected' : '') +
+                    `>${w_escape(r.label)}</option>`).join('');
+        }
+        const sub = document.getElementById('cfg_fuel_subdivision');
+        if (sub) sub.value = cfg.subdivision || '';
+
+        const note = document.getElementById('cfg_fuel_region_note');
+        const active = (c.regions || []).find(r => r.region === c.active);
+        if (note) note.textContent = active ? (active.note || '') : '';
+
+        if (status) {
+            let html = '<div class="alert alert-info py-2 mb-0 small">Serving prices for ' +
+                '<strong>' + w_escape(active ? active.label : c.active) + '</strong>.';
+            // Detection is only ever a suggestion: changing country changes the
+            // currency prices are quoted in, so it takes a deliberate save.
+            if (c.detected && c.detected !== configured) {
+                html += ' This hub\'s coordinates look like <strong>' +
+                    w_escape(c.detected) + '</strong>' +
+                    (configured ? '' : ' — pick it above to use that feed') + '.';
+            }
+            status.innerHTML = html + '</div>';
+        }
+    } catch (e) {
+        if (status) status.innerHTML = '<div class="text-danger small">Could not load: ' +
+            w_escape(String(e)) + '</div>';
+    }
+}
+
+window.saveFuelRegion = async function () {
+    const out = document.getElementById('fuelRegionResult');
+    const el = id => document.getElementById(id);
+    // "AU-NSW" carries its own subdivision; the free-text box is for a country
+    // registered without one, and must not override a key that already has it.
+    const key = (el('cfg_fuel_region') || {}).value || '';
+    const [country, keySub] = key.split('-');
+    const body = {
+        country: country || '',
+        subdivision: keySub || ((el('cfg_fuel_subdivision') || {}).value || '').trim(),
+    };
+    try {
+        const res = await fetch('/api/fuel/region', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+        out.innerHTML = '<div class="text-success small">Saved — now serving ' +
+            w_escape(data.active) + '.</div>';
+        loadFuelRegion();
+    } catch (e) {
+        out.innerHTML = '<div class="text-danger small">' + w_escape(String(e)) + '</div>';
+    }
+};
+
 function renderFuelFinderSection() {
     return `
+    <h6 class="fw-semibold mb-2">United Kingdom — Fuel Finder</h6>
     <p class="text-muted small mb-3">
+      Only used when the region above is the United Kingdom.
       Fuel Finder is the UK government's statutory fuel price service — forecourts must
       publish price changes within 30 minutes by law. Used for cheapest-fuel lookups in the
       Drive tab and on the Android Auto screen, falling back to the retailer open-data feeds
