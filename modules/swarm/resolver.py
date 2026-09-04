@@ -232,20 +232,39 @@ def _declared_capabilities(dev: Any) -> List[str]:
 
 
 def _sniffed_capabilities(state: Dict[str, Any],
-                         commands: Dict[str, List[Dict[str, Any]]]) -> List[str]:
+                         commands: Dict[str, List[Dict[str, Any]]],
+                         infer_actuation: bool = True) -> List[str]:
     """Capabilities evidenced by what the device reports or can be told to do.
 
-    Sensing is inferred from attributes, but actuation is inferred from
-    commands: a `state` attribute is claimed by locks, switches and covers
-    alike, so reading one proves nothing about what the device can be asked to
-    do. A dispatchable `lock` command does.
+    Sensing is inferred from attributes: a device reporting occupancy is an
+    occupancy sensor whatever else it claims.
+
+    Actuation is inferred from commands, but only when nothing has described
+    the device already — see `infer_actuation`. The command list is built from
+    clusters without regard to their direction, so a sensor advertising OnOff
+    as an *output* cluster for binding gets an on/off command it will never
+    honour: a Hue motion sensor and an Aqara door contact both do. Zigbee
+    capability detection already applies quirks that discard exactly those
+    claims, and inferring them back from the command list walked straight past
+    that work — which is what made door sensors switches and motion sensors
+    lights.
     """
     found = []
     for cap_id, spec in CAPABILITIES.items():
         if spec.get("kind") == "actuator":
+            if not infer_actuation:
+                continue
             wanted = {a.get("command") for a in spec.get("actions", [])}
             if wanted & set(commands):
                 found.append(cap_id)
+            continue
+        # A capability whose readings are not exclusive to it must not be
+        # inferred from one. The weather device reports a temperature, and so
+        # does every thermostat and half the motion sensors — sniffing it made
+        # a bathroom sensor the weather, and being house-scoped, let it reach
+        # into every other room. Those three are always constructed with their
+        # capability declared, so nothing is lost by refusing to guess them.
+        if spec.get("sniffable") is False:
             continue
         attrs = spec.get("attrs") or []
         if attrs and _pick_attr(state, attrs):
@@ -293,9 +312,14 @@ def device_capabilities(ieee: str, dev: Any, state: Dict[str, Any],
     mismatch in this vocabulary, and only a person can tell which.
     """
     commands = commands if commands is not None else _command_index(dev)
-    raw = (_declared_capabilities(dev)
-           + _profile_capabilities(dev, ieee)
-           + _sniffed_capabilities(state, commands))
+
+    # A device that describes itself is believed about what it can be told to
+    # do. Guessing actuation from its command list is a fallback for devices
+    # nothing has described — an unprofiled Tuya socket — not a second opinion
+    # to hold against a stack that has already applied its quirks.
+    described_by = _declared_capabilities(dev) + _profile_capabilities(dev, ieee)
+    raw = described_by + _sniffed_capabilities(
+        state, commands, infer_actuation=not described_by)
     out: List[str] = []
     for name in raw:
         cap = canonical_capability(str(name))

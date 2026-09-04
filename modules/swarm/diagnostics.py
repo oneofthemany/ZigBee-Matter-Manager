@@ -323,8 +323,16 @@ def _check_devices(described: List[Dict[str, Any]],
 
     # A capability nothing on the network provides is not a fault, but knowing
     # which ones are missing explains a whole class of absent suggestions.
+    #
+    # Only capabilities that contribute something can be missed. A few exist to
+    # describe a device rather than to be used — `energy` and `power` together
+    # make a plug a plug — and offer no trigger, condition or action of their
+    # own. Listing those as blocking says patterns cannot match for want of
+    # something no pattern can ask for.
+    usable = {c for c, spec in CAPABILITIES.items()
+              if spec.get("triggers") or spec.get("conditions") or spec.get("actions")}
     present = {c for d in described for c in d["capabilities"]}
-    missing = sorted(set(CAPABILITIES) - present)
+    missing = sorted(usable - present)
     out.append(_finding(
         INFO, "capabilities_absent",
         f"{len(missing)} capability(s) in the vocabulary are not present on any "

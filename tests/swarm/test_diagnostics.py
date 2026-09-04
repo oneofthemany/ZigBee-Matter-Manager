@@ -210,6 +210,17 @@ def run() -> Checker:
     f = _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS))["capabilities_absent"]
     c.check("co2 is listed as absent", "co2" in f["capabilities"])
     c.check("presence is not", "presence" not in f["capabilities"])
+    # A capability offering no trigger, condition or action cannot block a
+    # pattern, so its absence is not worth reporting as one. `energy` and
+    # `power` together make a plug a plug; neither is asked for by name.
+    from modules.swarm.capabilities import CAPABILITIES
+    inert = [c for c, spec in CAPABILITIES.items()
+             if not (spec.get("triggers") or spec.get("conditions")
+                     or spec.get("actions"))]
+    c.check("there are such capabilities to exclude", inert, inert)
+    c.check("none of them is reported as blocking",
+            not (set(inert) & set(f["capabilities"])),
+            sorted(set(inert) & set(f["capabilities"])))
 
     c.section("broken existing rules are reported, not swallowed")
     report = dx.diagnose(described, rules=[{"id": "r1", "source_ieee": "0xgone",

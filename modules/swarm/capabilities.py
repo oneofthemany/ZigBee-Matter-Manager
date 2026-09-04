@@ -622,6 +622,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "kind": "virtual",
         "scope": SCOPE_HOUSE,
         "excludes": ["availability"],
+        "sniffable": False,
         "tags": ["climate", "environment", "outdoor"],
         "attrs": ["temperature"],
         "triggers": [
@@ -650,6 +651,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "kind": "virtual",
         "scope": SCOPE_HOUSE,
         "excludes": ["availability"],
+        "sniffable": False,
         "tags": ["climate", "heating"],
         "attrs": ["indoor_avg_temp"],
         # The computed flags are the point of this capability. The engine
@@ -685,6 +687,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "kind": "virtual",
         "scope": SCOPE_HOUSE,
         "excludes": ["availability"],
+        "sniffable": False,
         "tags": ["energy"],
         # Two ways a tariff is cheap. An agile tariff has a *cheapest window*,
         # which is relative and moves daily; a fixed or two-rate tariff has only
@@ -795,26 +798,42 @@ def canonical_capability(name: str) -> Optional[str]:
 # must be able to say so.
 
 DEVICE_CLASS_RULES: Sequence[Tuple[str, Callable[[set], bool]]] = (
-    ("lock",             lambda c: "lock" in c),
-    ("cover",            lambda c: "cover" in c),
-    ("thermostat",       lambda c: "thermostat" in c),
-    ("color_light",      lambda c: "color" in c and "on_off" in c),
-    ("light",            lambda c: "brightness" in c and "on_off" in c),
-    ("plug",             lambda c: "on_off" in c and ("power" in c or "energy" in c)),
-    ("switch",           lambda c: "on_off" in c),
-    ("button",           lambda c: "button" in c or "rotary" in c),
-    ("presence_sensor",  lambda c: "presence" in c),
-    ("contact_sensor",   lambda c: "contact" in c),
-    ("leak_sensor",      lambda c: "water_leak" in c),
-    ("smoke_sensor",     lambda c: "smoke" in c),
-    ("air_sensor",       lambda c: bool({"co2", "air_quality"} & c)),
-    ("climate_sensor",   lambda c: bool({"temperature", "humidity"} & c)),
-    ("light_sensor",     lambda c: "illuminance" in c),
+    # Identity first. These capabilities are exclusive and unambiguous — only a
+    # person has `person` — and they must outrank the readings they carry: the
+    # weather reports temperature and humidity, which would otherwise make it a
+    # climate sensor.
     ("person",           lambda c: "person" in c),
     ("household",        lambda c: "household" in c),
     ("weather",          lambda c: "weather" in c),
     ("house",            lambda c: "house" in c),
     ("tariff",           lambda c: "tariff" in c),
+
+    # Then what a device unambiguously *is*, by a capability nothing else has.
+    ("lock",             lambda c: "lock" in c),
+    ("cover",            lambda c: "cover" in c),
+    ("thermostat",       lambda c: "thermostat" in c),
+
+    # Sensing that cannot be faked, before any switchable class. A contact or
+    # occupancy reading is hard evidence; an on_off or brightness capability may
+    # be an artefact of a binding cluster the device never honours.
+    ("contact_sensor",   lambda c: "contact" in c),
+    ("leak_sensor",      lambda c: "water_leak" in c),
+    ("smoke_sensor",     lambda c: "smoke" in c),
+    ("presence_sensor",  lambda c: "presence" in c),
+    ("button",           lambda c: "button" in c or "rotary" in c),
+
+    # Switchable things. A plug outranks a light: a metering socket often
+    # advertises a level cluster it does not use, while a dimmable bulb almost
+    # never reports power.
+    ("plug",             lambda c: "on_off" in c and ("power" in c or "energy" in c)),
+    ("color_light",      lambda c: "color" in c and "on_off" in c),
+    ("light",            lambda c: "brightness" in c and "on_off" in c),
+    ("switch",           lambda c: "on_off" in c),
+
+    # Measurement, most specific first.
+    ("air_sensor",       lambda c: bool({"co2", "air_quality"} & c)),
+    ("climate_sensor",   lambda c: bool({"temperature", "humidity"} & c)),
+    ("light_sensor",     lambda c: "illuminance" in c),
 )
 
 

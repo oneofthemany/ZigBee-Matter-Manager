@@ -13,6 +13,7 @@ returning a `Checker`; `run_all.py` drives them and exits non-zero on failure.
 | `test_stigmergy.py` | Pattern schema and validation, plus a check that every shipped pattern references a real offer |
 | `test_suggestions.py` | Matching, condition-vs-prerequisite placement, parameter overrides, what varies, and wiring-based deduplication |
 | `test_offers.py` | The `offer` step: validation, the accept/decline lifecycle, expiry, the double-tap, and the cap |
+| `test_real_house.py` | Every device shape from a live household, including the binding-cluster artefacts that made door sensors switches and motion sensors lights |
 | `test_diagnostics.py` | Every finding the triage report can raise, and the per-pattern explain trace |
 | `test_api.py` | The HTTP surface, driven through Starlette's `TestClient`, including the applying path |
 | `js/test_sentence.js` | The shared humanizer — contact polarity, outlets, zones, commands, sequences, and a whole rule as one block |
