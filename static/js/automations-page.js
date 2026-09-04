@@ -302,7 +302,7 @@ function _renderPage(container, devices) {
         <!-- Create Rule Panel (hidden by default) -->
         <div id="ap-create-panel" class="card mb-3" style="display:none">
             <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
-                <strong><i class="fas fa-bolt"></i> New Automation</strong>
+                <strong><i class="fas fa-gears"></i> New Automation</strong>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._apCloseCreate()"><i class="fas fa-times"></i></button>
             </div>
             <div class="card-body">

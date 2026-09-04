@@ -254,7 +254,7 @@ export function createHumanizer(ctx = {}) {
         const prereqs = (rule.prerequisites || []).map(p => condPhrase(p).text);
         const when = [trig.text, ...extra].join(joiner);
 
-        let h = `<div class="ap-act"><i class="fas fa-bolt"></i><span><strong>When</strong> ${when}</span></div>`;
+        let h = `<div class="ap-act">${icon(trig.icon)}<span><strong>When</strong> ${when}</span></div>`;
         if (prereqs.length)
             h += `<div class="ap-act"><i class="fas fa-filter"></i><span><strong>only if</strong> ${prereqs.join(' and ')}</span></div>`;
         h += `<div class="ap-seq-head"><strong>then</strong></div>${renderSeq(rule.then_sequence)}`;

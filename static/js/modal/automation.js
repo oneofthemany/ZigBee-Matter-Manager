@@ -319,7 +319,7 @@ function _showForm(rule, forceNew = false) {
     const isE = !!rule; editingRuleId = (isE && !forceNew) ? rule.id : null;
     const el = document.getElementById('a-form'); if (!el) return;
     el.innerHTML = `
-    <div class="card-header bg-light d-flex justify-content-between"><strong><i class="fas fa-${isE?'edit':'bolt'}"></i> ${isE?'Edit':'New'} Automation</strong>
+    <div class="card-header bg-light d-flex justify-content-between"><strong><i class="fas fa-${isE?'edit':'gears'}"></i> ${isE?'Edit':'New'} Automation</strong>
         <button class="btn btn-sm btn-outline-secondary" onclick="window._aHideForm()"><i class="fas fa-times"></i></button></div>
     <div class="card-body">
         <!-- What the rule currently says, in the same words the rules list uses.
