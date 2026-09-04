@@ -175,3 +175,42 @@
     flex-direction: column;
     gap: 5px;
 }
+
+/* Rule editor — the plain-English preview and the optional sections.
+   The form shows the parts; the preview shows whether they still add up to
+   what was meant, in the same words the rules list uses. */
+#a-form .a-preview {
+    background: var(--bs-tertiary-bg, #f6f7f9);
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-left: 3px solid var(--bs-primary, #0d6efd);
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+#a-form .a-preview:empty { display: none; }
+#a-form .a-preview .ap-act { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#a-form .a-preview .ap-act > i { font-size: 11px; opacity: .65; flex-shrink: 0; width: 13px; text-align: center; }
+#a-form .a-preview .ap-seq-head { font-size: 12px; opacity: .7; margin-top: 2px; }
+#a-form .a-preview .dev { font-weight: 600; }
+#a-form .a-preview-hint { opacity: .6; font-style: italic; }
+
+/* Prerequisites and the ELSE branch are empty on most rules. Hidden until they
+   hold something, or until "More options" asks for them — the sections that
+   matter should not sit under two that do not. */
+#a-form .a-optional { display: none; }
+#a-form.a-has-optional .a-optional,
+#a-form.a-show-optional .a-optional { display: block; }
+
+/* Save sits with the preview at the foot rather than in a grid cell beside
+   Cooldown, which read as one more field. */
+#a-form .a-savebar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--bs-border-color, #dee2e6);
+}

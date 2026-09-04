@@ -12,6 +12,7 @@
 import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
+import { createHumanizer } from '../automation-sentence.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
@@ -321,6 +322,10 @@ function _showForm(rule, forceNew = false) {
     <div class="card-header bg-light d-flex justify-content-between"><strong><i class="fas fa-${isE?'edit':'bolt'}"></i> ${isE?'Edit':'New'} Automation</strong>
         <button class="btn btn-sm btn-outline-secondary" onclick="window._aHideForm()"><i class="fas fa-times"></i></button></div>
     <div class="card-body">
+        <!-- What the rule currently says, in the same words the rules list uses.
+             Kept at the top and refreshed on every edit: the form shows the
+             parts, and this shows whether they still add up to what was meant. -->
+        <div class="a-preview mb-3" id="a-preview"></div>
         <div class="mb-3"><label class="form-label small text-muted mb-0">Rule Name</label>
             <input type="text" class="form-control form-control-sm" id="a-name" value="${isE?(rule.name||''):''}"></div>
         <div class="mb-3"><div class="d-flex justify-content-between align-items-center mb-1"><label class="form-label fw-bold small mb-0">Trigger Conditions</label>
@@ -331,19 +336,31 @@ function _showForm(rule, forceNew = false) {
                 </select>
                 <button class="btn btn-sm btn-outline-primary" onclick="window._aAddCond()"><i class="fas fa-plus"></i></button>
             </div></div><div id="cb"></div></div>
-        <div class="mb-3"><div class="d-flex justify-content-between mb-1"><label class="form-label fw-bold small mb-0">Prerequisites <span class="text-muted fw-normal">(optional, supports NOT)</span></label>
+        <div class="mb-3 a-optional" id="a-prereq-sec"><div class="d-flex justify-content-between mb-1"><label class="form-label fw-bold small mb-0">Prerequisites <span class="text-muted fw-normal">(optional, supports NOT)</span></label>
             <button class="btn btn-sm btn-outline-info" onclick="window._aAddPrereq()"><i class="fas fa-plus"></i></button></div><div id="pb"></div></div>
         <div class="mb-3"><label class="form-label fw-bold small text-success">THEN sequence <span class="fw-normal text-muted">(conditions become true)</span></label>
             <div id="then-b"></div>${_addBtns('then')}</div>
-        <div class="mb-3"><label class="form-label fw-bold small text-danger">ELSE sequence <span class="fw-normal text-muted">(conditions become false)</span></label>
+        <div class="mb-3 a-optional" id="a-else-sec"><label class="form-label fw-bold small text-danger">ELSE sequence <span class="fw-normal text-muted">(conditions become false)</span></label>
             <div id="a-else-note" class="small text-warning mb-1" style="display:none"><i class="fas fa-info-circle"></i> A zone trigger fires on the crossing itself, so this rule only runs its THEN sequence. For the opposite crossing, add a second rule with <strong>Leaves</strong>.</div>
             <div id="else-b"></div>${_addBtns('else')}</div>
-        <div class="row g-2 mb-3">
-            <div class="col-md-4"><label class="form-label small text-muted mb-0">Cooldown (s)</label><input type="number" class="form-control form-control-sm" id="a-cd" value="${isE?(rule.cooldown||5):5}" min="0"></div>
-            <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary btn-sm w-100" onclick="window._aSave()"><i class="fas fa-save"></i> ${isE?'Update':'Save'}</button></div>
+        <div class="row g-2 mb-3 align-items-end">
+            <div class="col-6 col-md-3"><label class="form-label small text-muted mb-0">Cooldown (s)</label><input type="number" class="form-control form-control-sm" id="a-cd" value="${isE?(rule.cooldown||5):5}" min="0"></div>
+            <div class="col-6 col-md-4">
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="window._aToggleOptional()" id="a-opt-btn">
+                    <i class="fas fa-sliders"></i> More options</button></div>
+        </div>
+        <div class="a-savebar">
+            <button class="btn btn-outline-secondary btn-sm" onclick="window._aHideForm()">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="window._aSave()"><i class="fas fa-save"></i> ${isE?'Update':'Save'}</button>
         </div>
     </div>`;
     el.style.display = 'block';
+
+    // One delegated listener rather than a handler per control: the builder
+    // creates its widgets dynamically, so anything bound per-widget would miss
+    // the ones added later.
+    el.addEventListener('input', window._aPreview);
+    el.addEventListener('change', window._aPreview);
 
     // Conditions
     condRows=[]; condIdC=0;
@@ -369,6 +386,11 @@ function _showForm(rule, forceNew = false) {
     elseTree = isE ? _cloneSteps(rule.else_sequence||[]) : [];
     _renderStepTree('then');
     _renderStepTree('else');
+
+    _syncOptionalSections();
+    // The condition rows are populated on a 50ms timer above, so the first
+    // preview waits for them rather than rendering an empty rule and flicking.
+    setTimeout(_refreshPreview, 80);
 }
 
 function _cloneSteps(steps) {
@@ -377,6 +399,7 @@ function _cloneSteps(steps) {
         if(c.then_steps) c.then_steps = _cloneSteps(c.then_steps);
         if(c.else_steps) c.else_steps = _cloneSteps(c.else_steps);
         if(c.branches) c.branches = c.branches.map(b=>_cloneSteps(b));
+        if(c.accept_steps) c.accept_steps = _cloneSteps(c.accept_steps);
         if(c.inline_conditions) c.inline_conditions = c.inline_conditions.map(ic=>({...ic, _id:_uid()}));
         return c;
     });
@@ -1196,6 +1219,8 @@ window._aAddStep = (path, type) => {
     // Re-render sequences
     _renderStepTree('then');
     _renderStepTree('else');
+    _syncOptionalSections();
+    window._aPreview();
 };
 
 window._aRmStep=(sid,path)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');};
@@ -1216,6 +1241,8 @@ window._aAddIC = sid => {
 
     _renderStepTree('then');
     _renderStepTree('else');
+    _syncOptionalSections();
+    window._aPreview();
 };
 
 window._aRmIC=(sid,icId)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);const s=_findStepById(sid);if(!s||!s.inline_conditions)return;s.inline_conditions=s.inline_conditions.filter(c=>c._id!==icId);_renderStepTree('then');_renderStepTree('else');};
@@ -1231,6 +1258,8 @@ window._aAddBranch = sid => {
     s.branches.push([]);
     _renderStepTree('then');
     _renderStepTree('else');
+    _syncOptionalSections();
+    window._aPreview();
 };
 
 // Form
@@ -1269,7 +1298,18 @@ window._aDel=async id=>{if(!await window.zbmConfirm({title:'Delete automation',m
 
 // SAVE (recursive gather)
 
-window._aSave=async()=>{
+/**
+ * Read the form into a rule.
+ *
+ * Extracted from _aSave so the live preview and the save path build the same
+ * object from the same DOM. A preview assembled a second way would eventually
+ * disagree with what saving produces, which is worse than no preview.
+ *
+ * Returns {body, valid, error} — invalid means a field is incomplete, and the
+ * caller decides whether that is worth a toast (saving) or silence (previewing
+ * mid-edit).
+ */
+function _collectRule() {
     const conditions=[]; let valid=true;
     condRows.forEach(id=>{
         const row=document.getElementById(`c-${id}`);
@@ -1315,7 +1355,7 @@ window._aSave=async()=>{
             const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);conditions.push(c);
         }
     });
-    if(!valid||!conditions.length)return window.toast.warning('Fill all conditions.');
+    if(!valid||!conditions.length) return {valid:false, error:'Fill all conditions.'};
 
     const prerequisites = [];
     prereqRows.forEach(id => {
@@ -1356,11 +1396,93 @@ window._aSave=async()=>{
     _syncTreeFromDOM(elseTree);
     const then_sequence = _cleanTree(thenTree);
     const else_sequence = _cleanTree(elseTree);
-    if(!then_sequence.length&&!else_sequence.length)return window.toast.warning('Add at least one step.');
+    if(!then_sequence.length&&!else_sequence.length)
+        return {valid:false, error:'Add at least one step.'};
 
-    const body={name:document.getElementById('a-name')?.value||'',source_ieee:currentSourceIeee,
-        conditions,condition_logic:condLogic,prerequisites,then_sequence,else_sequence,
-        cooldown:parseInt(document.getElementById('a-cd')?.value)||5,enabled:true};
+    return {valid:true, body:{
+        name:document.getElementById('a-name')?.value||'', source_ieee:currentSourceIeee,
+        conditions, condition_logic:condLogic, prerequisites, then_sequence, else_sequence,
+        cooldown:parseInt(document.getElementById('a-cd')?.value)||5, enabled:true}};
+}
+
+/**
+ * Refresh the plain-English preview from whatever the form currently says.
+ *
+ * Cheap enough to run on every keystroke — it reads the DOM and formats a
+ * string. Mid-edit the rule is usually incomplete; that is shown as a hint
+ * rather than an error, because an unfinished rule is the normal state of a
+ * form somebody is filling in.
+ */
+function _refreshPreview() {
+    const el = document.getElementById('a-preview');
+    if (!el) return;
+
+    // Names come from the same lists the pickers are built from, so the preview
+    // reads with real device names rather than addresses.
+    const devMap = {};
+    (cachedAllDevices || []).forEach(d => { devMap[d.ieee] = d; });
+    (cachedActuators || []).forEach(d => { if (!devMap[d.ieee]) devMap[d.ieee] = d; });
+    const playerMap = {};
+    (cachedPlayers || []).forEach(p => { playerMap[p.player_id] = p.name; });
+    (cachedZones || []).forEach(z => { playerMap['zone:' + z.id] = `the ${z.name} zone`; });
+    const placeMap = {};
+    (cachedPlaces || []).forEach(p => { placeMap[p.id] = p.name; });
+
+    const H = createHumanizer({
+        device: ieee => devMap[ieee],
+        player: id => playerMap[id],
+        place: id => placeMap[id],
+    });
+
+    let collected;
+    try {
+        collected = _collectRule();
+    } catch (e) {
+        el.innerHTML = '';
+        return;
+    }
+    if (!collected.valid) {
+        el.innerHTML = `<div class="a-preview-hint"><i class="fas fa-pen-to-square"></i> ${collected.error}</div>`;
+        return;
+    }
+    el.innerHTML = H.rulePhrase(collected.body);
+}
+
+// Debounced, so typing a device name does not re-render the preview per letter.
+let _previewTimer = null;
+window._aPreview = () => {
+    clearTimeout(_previewTimer);
+    _previewTimer = setTimeout(_refreshPreview, 120);
+};
+
+/** Show the optional sections whether or not they currently hold anything. */
+window._aToggleOptional = () => {
+    const form = document.getElementById('a-form');
+    if (!form) return;
+    const on = form.classList.toggle('a-show-optional');
+    const btn = document.getElementById('a-opt-btn');
+    if (btn) btn.innerHTML = on
+        ? '<i class="fas fa-sliders"></i> Fewer options'
+        : '<i class="fas fa-sliders"></i> More options';
+};
+
+/**
+ * Reveal an optional section that has content.
+ *
+ * Prerequisites and the ELSE branch are empty on most rules, so they are hidden
+ * until they hold something — but a rule that uses them must show them without
+ * the user having to go looking.
+ */
+function _syncOptionalSections() {
+    const form = document.getElementById('a-form');
+    if (!form) return;
+    const used = (prereqRows.length > 0) || (elseTree.length > 0);
+    form.classList.toggle('a-has-optional', used);
+}
+
+window._aSave=async()=>{
+    const {valid, body, error} = _collectRule();
+    if(!valid) return window.toast.warning(error);
     try{
         const res = editingRuleId
             ? await fetch(`/api/automations/${editingRuleId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})

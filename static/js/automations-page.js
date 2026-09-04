@@ -11,6 +11,7 @@ import { state } from './state.js';
 import { initAutomationTab } from './modal/automation.js';
 import { initAIAutomations, renderAIChatPanel } from './ai-automations.js';
 import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
+import { createHumanizer, esc } from './automation-sentence.js';
 import { showToast, withBusy } from './utils.js';
 
 
@@ -29,210 +30,28 @@ const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', 
 // falls back to name/model/state-key heuristics when capabilities are absent.
 
 // DEVICE_ICON / DEVICE_LABEL / deviceType are imported from automation-humanize.js
-const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
-function _esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, c => (
-        { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
-}
+// Plain-English rendering lives in automation-sentence.js so the rules list
+// and the rule editor say the same thing the same way. The humanizer is bound
+// to this page's caches, which are populated per page load.
+let H = createHumanizer({ device: ieee => devMapCache[ieee] });
 
-// Resolve a device/group name + semantic type for an ieee (or group:N).
-function _resolve(ieee) {
-    if (ieee === '__time__') return { name:'Time / Alarm', type:'time' };
-    if (typeof ieee === 'string' && ieee.startsWith('group:')) {
-        const g = devMapCache[ieee];
-        const model = (g && g.model || '').toLowerCase();
-        const type = model.includes('cover') ? 'cover'
-                   : model.includes('lock') ? 'unknown'
-                   : 'light';   // most groups are lights/switches
-        return { name: g ? String(g.friendly_name || ieee).replace(/^🔗\s*/, '') : ieee, type };
-    }
-    const dev = devMapCache[ieee];
-    return { name: dev ? dev.friendly_name : ieee, type: deviceType(ieee, dev) };
-}
-
-const _icon = t => `<i class="fas ${DEVICE_ICON[t] || DEVICE_ICON.unknown}"></i>`;
-const _devSpan = ieee => `<span class="dev">${_esc(_resolve(ieee).name)}</span>`;
-
-function _daySpan(days) {
-    if (!days || days.length === 7) return 'every day';
-    const s = [...days].sort((a,b) => a-b).join(',');
-    if (s === '0,1,2,3,4') return 'on weekdays';
-    if (s === '5,6') return 'at weekends';
-    return 'on ' + days.map(d => DAY_NAMES[d]).join(', ');
-}
-const _timePhrase = (a,b) => `between <b>${_esc(a)}</b> and <b>${_esc(b)}</b>`;
-
-// Core semantic map: attribute (+ device type hint) → verb phrase.
-// Outlet suffixes are only surfaced for endpoint 2+ — "outlet 1" is the default
-// (or only) endpoint on nearly every device, so annotating it is just noise.
-function _attrVerb(type, attr, op, val) {
-    const base = (attr || '').replace(/_\d+$/, '');   // strip endpoint suffix (_1, _2)
-    const epM = (attr || '').match(/_(\d+)$/);
-    const epTxt = (epM && +epM[1] >= 2) ? ` (outlet ${epM[1]})` : '';
-    const truthy = v => v === true || v === 'true' || String(v).toUpperCase() === 'ON';
-    if (type === 'contact') {
-        if (base === 'is_open')   return truthy(val) ? 'opens'   : 'is shut';
-        if (base === 'is_closed') return truthy(val) ? 'closes'  : 'is open';
-        if (base === 'contact')   return truthy(val) ? 'closes'  : 'opens';
-    }
-    if (base === 'action') {
-        const m = { single:'is single-pressed', double:'is double-pressed', triple:'is triple-pressed',
-                    hold:'is held', release:'is released', long:'is long-pressed' };
-        return m[val] || `sends “${_esc(val)}”`;
-    }
-    if (/^(on|state)$/.test(base)) return (truthy(val) ? 'is on' : 'is off') + epTxt;
-    const OPW = { eq:'is', neq:'is not', gt:'is above', lt:'is below', gte:'is at least',
-                  lte:'is at most', in:'is one of', nin:'is not one of' };
-    const dispVal = Array.isArray(val) ? val.join(', ') : val;
-    return `${OPW[op] || op} ${_esc(dispVal)}${epTxt}`;
-}
-
-// "arrives at the Shops" / "leaves Home" — a zone condition as a verb phrase.
-// "home" is per-user rather than a configured place, so it isn't in the cache.
-function _zoneVerb(c) {
-    const one = p => p === 'any' ? 'any place'
-        : p === 'home' ? 'Home'
-        : (placeNameCache[p] || p);
-    // A zone of several places reads as one destination: "arrives at Slough or
-    // Osterley" — moving between them is movement inside the zone.
-    const name = Array.isArray(c.place) ? c.place.map(one).join(' or ') : one(c.place);
-    const verb = c.event === 'leave' ? 'leaves' : 'arrives at';
-    return `${verb} <b>${_esc(name)}</b>`;
-}
-
-// A trigger is the source device's first condition (or a schedule).
-// The text is a bare clause — the "When" label in the flow supplies the verb,
-// so we don't repeat it here ("When" + "Door opens", not "When When Door opens").
-function _triggerPhrase(rule) {
-    const src = _resolve(rule.source_ieee);
-    const c = (rule.conditions || [])[0];
-    if (!c) return { icon: src.type, text: `${_devSpan(rule.source_ieee)} changes`, raw:'' };
-    if (c.type === 'time_window')
-        return { icon:'time', text:`it's ${_timePhrase(c.time_from, c.time_to)}, ${_daySpan(c.days)}`,
-                 raw:`time_window ${c.time_from}–${c.time_to}` };
-    if (c.type === 'time')
-        return { icon:'time', text:`the time is <b>${_esc(c.at)}</b>, ${_daySpan(c.days)}`, raw:`time ${c.at}` };
-    if (c.type === 'sun')
-        return { icon:'time', text:`🌅 it's between ${_esc(c.from)} and ${_esc(c.to)}`, raw:`sun ${c.from}→${c.to}` };
-    if (c.type === 'zone')
-        return { icon: src.type,
-                 text:`${_devSpan(rule.source_ieee)} ${_zoneVerb(c)}`,
-                 raw:`zone ${c.event} ${c.place}` };
-    return { icon: src.type,
-             text: `${_devSpan(rule.source_ieee)} ${_attrVerb(src.type, c.attribute, c.operator, c.value)}`,
-             raw: `${_esc(c.attribute)} ${c.operator} ${_esc(c.value)}` };
-}
-
-// A prerequisite / extra condition → "ONLY IF …" phrase.
-// Prerequisites name their own device; a rule's 2nd+ trigger condition doesn't,
-// because it is implicitly about the rule's source — hence sourceIeee, which
-// callers pass for trigger conditions and omit for prerequisites.
-function _condPhrase(p, sourceIeee) {
-    const neg = p.negate ? '<span class="neg">NOT</span>' : '';
-    if (p.type === 'zone')
-        return { text:`${sourceIeee ? _devSpan(sourceIeee) + ' ' : ''}${_zoneVerb(p)}`,
-                 raw:`zone ${p.event} ${p.place}` };
-    if (p.type === 'time_window')
-        return { text:`${neg}${_timePhrase(p.time_from, p.time_to)}, ${_daySpan(p.days)}`,
-                 raw:`time_window ${p.time_from}–${p.time_to}` };
-    if (p.type === 'sun')
-        return { text:`${neg}🌅 between ${_esc(p.from)} and ${_esc(p.to)}`, raw:`sun ${p.from}→${p.to}` };
-    const ieee = p.ieee || sourceIeee;
-    const dev = _resolve(ieee);
-    return { text:`${neg}${_devSpan(ieee)} ${_attrVerb(dev.type, p.attribute, p.operator, p.value)}`,
-             raw:`${ieee && ieee.startsWith('group:') ? ieee + ' ' : ''}${_esc(p.attribute)} ${p.operator} ${_esc(p.value)}` };
-}
-
-const _CMD_VERB = {
-    on:'Turn on', off:'Turn off', toggle:'Toggle', open:'Open', close:'Close', stop:'Stop',
-    lock:'Lock', unlock:'Unlock', brightness:'Set brightness of', color_temp:'Set colour of',
-    position:'Set position of',
-};
-
-function _cmdPhrase(s) {
-    const verb = _CMD_VERB[s.command] || _esc(s.command);
-    let tail = _resolve(s.target_ieee).name;
-    // Only annotate outlet 2+ on real (non-group) devices — outlet 1 is noise.
-    if (s.endpoint_id >= 2 && !String(s.target_ieee).startsWith('group:'))
-        tail += ` (outlet ${s.endpoint_id})`;
-    if (s.command === 'brightness' && s.value != null) tail += ` to ${Math.round(s.value / 255 * 100)}%`;
-    if (s.command === 'position' && s.value != null) tail += ` to ${_esc(s.value)}%`;
-    return `${verb} <span class="dev">${_esc(tail)}</span>`;
-}
-
-// Render a then/else sequence into action lines, expanding parallel + if_then_else.
-function _renderSeq(seq) {
-    if (!seq || !seq.length) return '<span class="ap-raw">— nothing —</span>';
-    let h = '';
-    seq.forEach(s => {
-        if (s.type === 'command')
-            h += `<div class="ap-act"><i class="fas fa-bolt"></i><span>${_cmdPhrase(s)}</span></div>`;
-        else if (s.type === 'delay')
-            h += `<div class="ap-act"><i class="fas fa-clock"></i><span>wait <span class="ap-delay">${_esc(s.seconds)}s</span></span></div>`;
-        else if (s.type === 'parallel') {
-            const cmds = (s.branches || []).flat().filter(Boolean);
-            h += `<div class="ap-par"><span class="ap-par-tag"><i class="fas fa-bolt"></i> at the same time</span>`
-               + cmds.map(c => c.type === 'command'
-                    ? `<div class="ap-act"><i class="fas fa-bolt"></i><span>${_cmdPhrase(c)}</span></div>`
-                    : _renderSeq([c])).join('')
-               + `</div>`;
-        }
-        else if (s.type === 'if_then_else') {
-            const conds = (s.inline_conditions || []).map(c => {
-                const d = _resolve(c.ieee);
-                return `${_devSpan(c.ieee)} ${_attrVerb(d.type, c.attribute, c.operator, c.value)}`;
-            });
-            const logic = ` ${s.condition_logic || 'and'} `;
-            h += `<div class="ap-sub"><div class="ap-sub-head">Otherwise, if ${conds.join(logic) || '…'}:</div>${_renderSeq(s.then_steps)}`;
-            if ((s.else_steps || []).length)
-                h += `<div class="ap-sub-head" style="margin-top:6px">…else:</div>${_renderSeq(s.else_steps)}`;
-            h += `</div>`;
-        }
-        else if (s.type === 'wait_for') {
-            const d = _resolve(s.ieee);
-            h += `<div class="ap-act"><i class="fas fa-hourglass-half"></i><span>wait for ${_devSpan(s.ieee)} ${_attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
-        }
-        else if (s.type === 'condition') {
-            const d = _resolve(s.ieee);
-            h += `<div class="ap-act"><i class="fas fa-filter"></i><span>only continue if ${_devSpan(s.ieee)} ${_attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
-        }
-        else if (s.type === 'media')
-            h += `<div class="ap-act"><i class="fas fa-music"></i><span>${_esc(_mediaStepText(s))}</span></div>`;
-        else if (s.type === 'request')
-            h += `<div class="ap-act"><i class="fas fa-comment"></i><span>message ${_esc(s.to_user || '?')}: &ldquo;${_esc(s.message || '')}&rdquo;`
-               + (s.from_user ? ` (from ${_esc(s.from_user)})` : '') + `</span></div>`;
-        else if (s.type === 'offer') {
-            // The nested sequence is what makes an offer different from a
-            // message, so it is shown rather than summarised as a count.
-            h += `<div class="ap-act"><i class="fas fa-circle-question"></i><span>ask ${_esc(s.to_user || '?')}: &ldquo;${_esc(s.message || '')}&rdquo;</span></div>`;
-            if ((s.accept_steps || []).length) {
-                h += `<div class="ap-act-nested">${_renderSeq(s.accept_steps)}</div>`;
-            }
-        }
+function _rebindHumanizer() {
+    H = createHumanizer({
+        device: ieee => devMapCache[ieee],
+        player: id => playerNameCache[id],
+        place: id => placeNameCache[id],
     });
-    return h;
 }
 
-// Human phrasing for a media step in the rules list. Player names come from
-// /api/media/players; the raw player_id is the fallback when the media
-// service is off or the player has vanished.
-function _mediaStepText(s) {
-    const who = playerNameCache[s.player_id] || s.player_id || 'player';
-    const a = s.media_action || 'control';
-    if (a === 'volume') return `set ${who} volume to ${Math.round((s.volume ?? 0) * 100)}%`;
-    if (a === 'volume_adjust') {
-        const d = s.delta || 0;
-        return `turn ${who} volume ${d >= 0 ? 'up' : 'down'} ${Math.abs(Math.round(d * 100))}%`;
-    }
-    if (a === 'volume_fade') return `fade ${who} volume to ${Math.round((s.volume ?? 0) * 100)}% over ${s.fade_seconds || 300}s${s.stop_at_end ? ', then stop' : ''}`;
-    if (a === 'announce') return `announce on ${who}: “${String(s.text || '').slice(0, 40)}”`;
-    if (a === 'control') return `${s.control_action || 'control'} ${who}`;
-    if (a === 'play_zone') return `play ${who}`;
-    if (a === 'play_radio') return `play ${s.label || 'radio'} on ${who}`;
-    if (a === 'play_tidal') return `play ${s.label || s.tidal_kind || 'Tidal'} on ${who}`;
-    return `media: ${a}`;
-}
+const _esc = esc;
+const _resolve = ieee => H.resolve(ieee);
+const _devSpan = ieee => H.devSpan(ieee);
+const _attrVerb = (t, a, o, v) => H.attrVerb(t, a, o, v);
+const _triggerPhrase = rule => H.triggerPhrase(rule);
+const _condPhrase = (p, src) => H.condPhrase(p, src);
+const _renderSeq = seq => H.renderSeq(seq);
+const _icon = t => H.icon(t);
 
 let allRulesCache = [];
 let devMapCache = {};
@@ -315,6 +134,7 @@ export async function loadAutomationsPage() {
             locationConfigured = sun.success === true;
         } catch { locationConfigured = true; /* don't false-alarm on a fetch error */ }
 
+        _rebindHumanizer();
         _renderPage(container, devices);
     } catch (e) {
         container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> ${e.message}</div>`;
