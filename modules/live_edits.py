@@ -19,10 +19,11 @@ from pathlib import Path
 
 logger = logging.getLogger("modules.live_edits")
 
-# Short cache so the 5s status poll doesn't run `git status` every tick. The
-# explicit /live-edits endpoint (and the pre-swap confirm gate) bypass it for
-# an authoritative, up-to-the-moment result.
-_CACHE_TTL = 15.0
+# Cache so the status poll doesn't re-hash the tree every tick — longer than
+# the card's idle poll interval, or every poll is a miss. The explicit
+# /live-edits endpoint (and the pre-swap confirm gate) bypass it for an
+# authoritative, up-to-the-moment result.
+_CACHE_TTL = 60.0
 _cache = {"at": 0.0, "result": None}
 
 PROJECT_ROOT = Path("/app")
@@ -261,7 +262,7 @@ def detect_live_edits(use_cache: bool = False) -> dict:
     Enumerate live, uncommitted edits an upgrade would discard.
 
     Args:
-      use_cache: serve a recent (<15s) result if available. The status poll
+      use_cache: serve a recent (<60s) result if available. The status poll
                  sets this; the explicit endpoint / confirm gate leaves it
                  False for an authoritative result.
 

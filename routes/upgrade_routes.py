@@ -2,6 +2,7 @@
 Upgrade API — status, check, build, swap, rollback, cancel, GC, build log,
 settings and watcher install. See docs/upgrades.md.
 """
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -24,10 +25,13 @@ def register_upgrade_routes(app: FastAPI):
             state = um.load_state()
             host_status = um.read_status()
 
-            # Cheap count so the upgrade card can warn that an upgrade will
-            # discard live, in-container edits (full list via /live-edits).
+            # Count so the upgrade card can warn that an upgrade will discard
+            # live, in-container edits (full list via /live-edits). A cache miss
+            # hashes the whole tree, so it runs in a worker thread — the status
+            # poll must never stall the event loop.
             try:
-                live_edit_count = live_edits.detect_live_edits(use_cache=True).get("count", 0)
+                live_edit_count = (await asyncio.to_thread(
+                    live_edits.detect_live_edits, True)).get("count", 0)
             except Exception:
                 live_edit_count = 0
 

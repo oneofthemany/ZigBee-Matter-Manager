@@ -1110,6 +1110,13 @@ even if detection fails. Three strategies, in priority order:
    each backup name is resolved back to a real path and kept only where the file
    still diverges from the image (mtime newer than the image build).
 
+The manifest strategy hashes every shipped file — a few hundred MB on a full
+tree, which is seconds of CPU on slower hosts. `/api/upgrade/status` therefore
+runs detection in a worker thread and serves a cached result for 60 s (longer
+than the upgrade card's idle poll, so a poll is normally a cache hit). The
+`/api/upgrade/live-edits` endpoint and the pre-swap confirm gate bypass the
+cache, because a stale answer there could discard work.
+
 ## Manager watchdog
 
 `manager/watchdog.py` runs as an asyncio task inside the manager, started from

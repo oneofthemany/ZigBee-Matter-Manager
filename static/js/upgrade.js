@@ -30,14 +30,16 @@ export function initUpgrade() {
     // Render when the Settings tab is shown
     const tab = document.querySelector('button[data-bs-target="#settings"]');
     if (tab) {
-        tab.addEventListener('shown.bs.tab', () => {
-            renderUpgradeCard();
-            refreshUpgradeStatus();
-            startPolling();
-        });
+        tab.addEventListener('shown.bs.tab', showUpgradePane);
         // Stop polling when leaving the tab
         tab.addEventListener('hidden.bs.tab', stopPolling);
     }
+
+    // Settings stays "shown" while its sub-tabs change, so entering Upgrade
+    // from another Settings pane fires no event on the parent button. Bind the
+    // sub-tab as well, or the card only ever loads on the Settings entry.
+    const subTab = document.querySelector('button[data-bs-target="#settingsUpgrade"]');
+    if (subTab) subTab.addEventListener('shown.bs.tab', showUpgradePane);
 
     // Hook WebSocket messages if the global bus exists
     if (typeof window !== 'undefined') {
@@ -49,6 +51,12 @@ export function initUpgrade() {
             }
         });
     }
+}
+
+function showUpgradePane() {
+    renderUpgradeCard();
+    refreshUpgradeStatus();
+    startPolling();
 }
 
 function startPolling(ms = POLL_ACTIVE_MS) {
@@ -222,6 +230,9 @@ function renderUpgradeCard() {
     document.querySelector('button[data-bs-target="#upgradeRustPane"]')
         .addEventListener('shown.bs.tab', () => loadRustComponents());
 
+    // The shell's placeholder bodies are unpainted again, so the next status
+    // fetch must render even if the payload is byte-identical to the last one.
+    _lastPayload = null;
     mount.dataset.rendered = 'true';
 }
 
@@ -426,6 +437,13 @@ async function installDependencies(payload) {
 // REFRESH STATUS + RENDER
 
 async function refreshUpgradeStatus() {
+    // The card shell only exists once the Upgrade pane has been opened. WS
+    // 'upgrade_*' events fire regardless, and without this guard such a call
+    // would cache a payload that was never rendered — the equality check below
+    // then suppresses the pane's first paint, leaving it on the spinner.
+    const cardBody = document.getElementById('upgradeCardBody');
+    if (!cardBody) return;
+
     // Don't fetch while the page is in a background browser tab;
     // the next visible poll (or WS event) catches up.
     if (document.hidden) return;
@@ -434,17 +452,22 @@ async function refreshUpgradeStatus() {
 
         if (res.status === 401) {
             stopPolling();
+            showUpgradeError('Session expired — reload the page to sign in again.');
             return;
         }
 
         const data = await res.json();
-        if (!data || !data.success) return;
+        if (!data || !data.success) {
+            showUpgradeError('Upgrade status unavailable: ' + ((data && data.error) || 'unknown error'));
+            return;
+        }
 
         // Re-render (and re-resolve the manager token) only when the
         // payload actually changed — keeps user edits in the settings
-        // form alive between polls.
+        // form alive between polls. An unpainted body always renders, so a
+        // freshly built shell is never left on the placeholder spinner.
         const payload = JSON.stringify(data);
-        if (payload !== _lastPayload) {
+        if (payload !== _lastPayload || cardBody.dataset.painted !== 'true') {
             _lastPayload = payload;
             renderBody(data);
             renderSettings(data);
@@ -476,7 +499,25 @@ async function refreshUpgradeStatus() {
             startPolling(ACTIVE_STATES.includes(state) ? POLL_ACTIVE_MS : POLL_IDLE_MS);
         }
     } catch (e) {
-        // Silent — the tab may not be visible
+        showUpgradeError('Could not reach the upgrade service.');
+    }
+}
+
+/**
+ * Replace a placeholder spinner with a retryable error. Panes that already
+ * hold a rendered payload keep it — a blip between polls should not wipe the
+ * last known state off the screen.
+ */
+function showUpgradeError(msg) {
+    const html = `
+      <div class="alert alert-warning small mb-0">
+        <i class="fas fa-triangle-exclamation me-1"></i> ${escapeHtml(msg)}
+        <button class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                onclick="window.retryUpgradeStatus()">Retry</button>
+      </div>`;
+    for (const id of ['upgradeCardBody', 'upgradeSettingsBody']) {
+        const el = document.getElementById(id);
+        if (el && el.dataset.painted !== 'true') el.innerHTML = html;
     }
 }
 
@@ -640,6 +681,8 @@ function renderBody(data) {
       ${rollbackHtml}
     `;
 
+    body.dataset.painted = 'true';
+
     if (footer) {
         const lastCheckStr = last_check ? new Date(last_check).toLocaleString() : 'never';
         footer.innerHTML = `<i class="fas fa-clock me-1"></i> Last check: ${lastCheckStr}`;
@@ -727,6 +770,7 @@ function renderSettings(data) {
       </div>
       <div id="upgradeSettingsAlert" class="alert mt-3 small" style="display:none;"></div>
     `;
+    body.dataset.painted = 'true';
     loadManagerToken();
 }
 
@@ -1070,6 +1114,7 @@ if (typeof window !== 'undefined') {
     window.saveUpgradeSettings = saveUpgradeSettings;
     window.showUpgradeLog = showLog;
     window.dismissFailedUpgrade = dismissFailedUpgrade;
+    window.retryUpgradeStatus = refreshUpgradeStatus;
 }
 
 
