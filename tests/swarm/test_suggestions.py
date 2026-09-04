@@ -92,6 +92,37 @@ def run() -> Checker:
     lux2 = [x for x in tuned["conditions"] if x["attribute"] == "illuminance_lux"][0]
     c.check("a user override reaches it too", lux2["value"] == 40, lux2)
 
+    c.section("the sentence shown always matches the rule compiled")
+    # A pattern raising a threshold must not advertise the vocabulary default.
+    # Checked on an offer whose sentence carries the number: "Lounge drops
+    # below 18.0" must not still read 18.0 once the pattern says 9.
+    from modules.swarm.compiler import describe_candidate
+    heat = STORE.get("cold_room_heat")
+    raised = {**heat, "id": "raised", "params": {**heat["params"], "cold_c": 9.0}}
+    rfills = match_pattern(raised, described, SAMPLE_ROOMS)["candidates"][0]["fills"]
+    rrule = compile_rule(raised, rfills)
+    c.check("the rule uses the pattern's value",
+            rrule["conditions"][0]["value"] == 9.0, rrule["conditions"])
+    sentence = describe_candidate(raised, rfills)
+    c.check("and so does the sentence", "9.0" in sentence, sentence)
+    c.check("the default is not still advertised", "18.0" not in sentence, sentence)
+
+    c.section("a slot may override a threshold the pattern shares")
+    # cold_c means a cold snap outdoors and an unheated room indoors; one value
+    # cannot serve both, so a slot carries its own.
+    snap = STORE.get("cold_snap_heat")
+    c.check("the shipped pattern uses a slot override",
+            (snap["slots"]["in"].get("params") or {}).get("cold_c") == 18.0,
+            snap["slots"]["in"])
+    c.check("pattern level is the outdoor value",
+            effective_params(snap)["cold_c"] == 5.0)
+    c.check("slot level is the indoor value",
+            effective_params(snap, slot="in")["cold_c"] == 18.0)
+    c.check("an unrelated slot is unaffected",
+            effective_params(snap, slot="cold")["cold_c"] == 5.0)
+    c.check("a user override still wins",
+            effective_params(snap, {"cold_c": 1.0}, slot="in")["cold_c"] == 1.0)
+
     c.section("house-scoped patterns produce one suggestion per subject")
     built = _built()
     arrivals = _by_sentence(built, "unlock Front Door Lock")

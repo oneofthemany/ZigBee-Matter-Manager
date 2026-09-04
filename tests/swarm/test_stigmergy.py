@@ -85,6 +85,14 @@ def run() -> Checker:
     c.check("an unreferenced slot is rejected",
             any("never used" in e for e in validate(bad)), validate(bad))
 
+    bad = _minimal(); bad["slots"]["a"]["params"] = {"nope": 1}
+    c.check("an unknown slot parameter is caught",
+            any("unknown parameter" in e for e in validate(bad)), validate(bad))
+
+    good_slot = _minimal(); good_slot["slots"]["a"]["params"] = {"dark_lux": 30}
+    c.check("a known slot parameter is accepted",
+            validate(good_slot) == [], validate(good_slot))
+
     bad = _minimal(); bad["params"] = {"not_a_param": 1}
     c.check("unknown parameter caught",
             any("unknown parameter" in e for e in validate(bad)), validate(bad))

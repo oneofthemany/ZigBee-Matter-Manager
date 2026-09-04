@@ -123,6 +123,9 @@ def validate(bp: Dict[str, Any]) -> List[str]:
             # prefix of the keys the resolver emits.
             if not any(o["id"] == offer_id or o.get("expand") for o in pool):
                 err(f"{bid}.{name}: {cap_id} has no {role} {offer_id!r}")
+        for pid in (spec.get("params") or {}):
+            if pid not in PARAMS:
+                err(f"{bid}.{name}: unknown parameter {pid!r}")
         prefer_slot = spec.get("prefer_slot")
         if prefer_slot and prefer_slot not in slots:
             err(f"{bid}.{name}: prefer_slot {prefer_slot!r} is not a slot")

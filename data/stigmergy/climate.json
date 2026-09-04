@@ -1,0 +1,237 @@
+[
+  {
+    "id": "preheat_before_arrival",
+    "title": "Start heating before somebody gets home",
+    "description": "Fires when the time until someone is home drops below the time it takes to warm the house. Both numbers are computed live, so it follows the weather rather than a fixed head start.",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "due": {
+        "role": "trigger",
+        "offer": "house:preheat_due"
+      },
+      "cold": {
+        "role": "condition",
+        "offer": "house:cold_inside",
+        "optional": true
+      },
+      "trv": {
+        "role": "action",
+        "offer": "thermostat:set_setpoint",
+        "device_class": [
+          "thermostat"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Preheat for arrival",
+      "source": "due",
+      "conditions": [
+        "due",
+        "cold"
+      ],
+      "condition_logic": "and",
+      "then": [
+        "trv"
+      ],
+      "cooldown": 900
+    },
+    "params": {
+      "cold_c": 18.0,
+      "setpoint_c": 21.0
+    }
+  },
+  {
+    "id": "ac_offer_when_cooler_outside",
+    "title": "Suggest cooling when it is cooler outside than in",
+    "description": "Asks rather than acts: opening a window may be the better answer, and only a person in the room knows.",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "hot": {
+        "role": "trigger",
+        "offer": "house:got_warm_inside"
+      },
+      "cool": {
+        "role": "condition",
+        "offer": "house:cooler_outside"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "Cooling opportunity",
+      "source": "hot",
+      "conditions": [
+        "hot",
+        "cool"
+      ],
+      "condition_logic": "and",
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "It is warmer inside than out. Worth opening up or running the AC?"
+        }
+      ],
+      "cooldown": 3600
+    },
+    "params": {
+      "warm_c": 24.0
+    }
+  },
+  {
+    "id": "cold_snap_heat",
+    "title": "Warm the house when it turns cold outside",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "cold": {
+        "role": "trigger",
+        "offer": "weather:got_cold_out"
+      },
+      "in": {
+        "role": "condition",
+        "offer": "house:cold_inside",
+        "optional": true,
+        "params": {
+          "cold_c": 18.0
+        }
+      },
+      "trv": {
+        "role": "action",
+        "offer": "thermostat:set_setpoint",
+        "device_class": [
+          "thermostat"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Heating up on a cold snap",
+      "source": "cold",
+      "conditions": [
+        "cold",
+        "in"
+      ],
+      "condition_logic": "and",
+      "then": [
+        "trv"
+      ],
+      "cooldown": 1800
+    },
+    "params": {
+      "cold_c": 5.0,
+      "setpoint_c": 21.0
+    }
+  },
+  {
+    "id": "dusk_lights_on",
+    "title": "Lights on as daylight fades",
+    "description": "Uses the measured light level outdoors rather than a clock, so it tracks the seasons without a schedule.",
+    "category": "lighting",
+    "scope": "house",
+    "slots": {
+      "dusk": {
+        "role": "trigger",
+        "offer": "weather:got_dark_out"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Lights on at dusk",
+      "source": "dusk",
+      "conditions": [
+        "dusk"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 1800
+    }
+  },
+  {
+    "id": "off_peak_run_appliance",
+    "title": "Switch on at the cheap rate",
+    "description": "For anything that can wait \u2014 a dishwasher, an immersion heater, a car charger on a plug.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "cheap": {
+        "role": "trigger",
+        "offer": "tariff:off_peak_started"
+      },
+      "plug": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "plug",
+          "switch"
+        ]
+      },
+      "off": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "plug"
+      }
+    },
+    "emits": {
+      "name": "Run at the cheap rate",
+      "source": "cheap",
+      "conditions": [
+        "cheap"
+      ],
+      "then": [
+        "plug"
+      ],
+      "else": [
+        "off"
+      ],
+      "cooldown": 600
+    }
+  },
+  {
+    "id": "everyone_out_setback",
+    "title": "Turn the heating down when the house empties",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "empty": {
+        "role": "trigger",
+        "offer": "household:last_left"
+      },
+      "trv": {
+        "role": "action",
+        "offer": "thermostat:set_setpoint",
+        "device_class": [
+          "thermostat"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Setback when the house empties",
+      "source": "empty",
+      "conditions": [
+        "empty"
+      ],
+      "then": [
+        "trv"
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "setpoint_c": 16.0
+    }
+  }
+]

@@ -162,13 +162,30 @@ export async function renderChooser(ieee, container, onBlank) {
 
     const { suggestions, pairings } = data;
 
-    // Nothing to offer is a legitimate outcome — an unrecognised device, or one
-    // whose every suggestion is already built. Skip straight to the form rather
-    // than showing an empty step.
+    // With nothing to suggest and nothing to wire to, the chooser would be a
+    // describe box and a "start from scratch" button — one step too many. Go
+    // straight to the form.
     if (!suggestions.length && !pairings.length) {
         onBlank();
         return;
     }
+
+    const describeHtml = `
+        <div class="mb-3">
+            <div class="small text-muted mb-2">
+                <i class="fas fa-keyboard me-1"></i> Describe it in your own words
+            </div>
+            <div class="input-group input-group-sm">
+                <input type="text" class="form-control" id="swarm-describe"
+                       placeholder="e.g. turn on the hall light when motion is detected and it's dark"
+                       onkeydown="if(event.key==='Enter')window._swarmDescribe()">
+                <button class="btn btn-outline-primary" id="swarm-describe-btn"
+                        onclick="window._swarmDescribe()">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                </button>
+            </div>
+            <div id="swarm-describe-out" class="mt-2" style="display:none"></div>
+        </div>`;
 
     const suggestionsHtml = suggestions.length ? `
         <div class="mb-3">
@@ -200,6 +217,7 @@ export async function renderChooser(ieee, container, onBlank) {
                 <i class="fas fa-times"></i></button>
         </div>
         <div class="card-body">
+            ${describeHtml}
             ${suggestionsHtml}
             ${pairingsHtml}
             <div class="d-flex justify-content-between align-items-center border-top pt-3">
@@ -252,6 +270,86 @@ window._swarmPick = (kind, index) => {
     }
     window._aShowFormWith(rule);
     document.getElementById('a-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+
+/**
+ * Free-text rule building, folded into the chooser rather than living in a
+ * panel of its own.
+ *
+ * Same endpoint the AI panel used: nl_automations.py answers deterministically
+ * where it can, and the LLM is the fallback. The result lands in the same
+ * builder every other option in this chooser lands in.
+ */
+window._swarmDescribe = async () => {
+    const input = document.getElementById('swarm-describe');
+    const btn = document.getElementById('swarm-describe-btn');
+    const out = document.getElementById('swarm-describe-out');
+    const prompt = input?.value?.trim();
+    if (!prompt || !out) return;
+
+    const saved = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    out.style.display = 'block';
+    out.innerHTML = '<div class="small text-muted"><i class="fas fa-spinner fa-spin me-1"></i>Working it out...</div>';
+
+    try {
+        const res = await fetch('/api/ai/automation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt }),
+        });
+        const data = await res.json();
+        out.innerHTML = _describeResult(data, cache.ieee);
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger py-2 px-2 mb-0 small">${esc(e.message)}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = saved;
+    }
+};
+
+
+/**
+ * Render what the parser made of the sentence.
+ *
+ * A rule triggered by a device other than the one being edited cannot be opened
+ * here — the builder saves against the current source — so that case is named
+ * rather than silently mis-saved.
+ */
+export function _describeResult(data, ieee) {
+    if (!data || !data.success) {
+        const examples = (data?.examples || []).slice(0, 3).map(e =>
+            `<div><code class="small">${esc(e)}</code></div>`).join('');
+        return `<div class="alert alert-warning py-2 px-2 mb-0 small">
+                    ${esc(data?.error || "Couldn't turn that into a rule.")}
+                    ${examples ? `<div class="mt-2 fw-bold">Try:</div>${examples}` : ''}
+                </div>`;
+    }
+    const rule = data.rule || {};
+    if (rule.source_ieee && ieee && rule.source_ieee !== ieee) {
+        return `<div class="alert alert-info py-2 px-2 mb-0 small">
+                    That describes a rule triggered by a different device.
+                    Open that device's automations to build it there.
+                </div>`;
+    }
+    window._swarmDescribedRule = rule;
+    return `<div class="border rounded p-2 bg-light">
+                <div class="small">${esc(data.explanation || 'Rule ready.')}</div>
+                <button class="btn btn-sm btn-primary mt-2" onclick="window._swarmUseDescribed()">
+                    <i class="fas fa-arrow-right me-1"></i> Open in builder
+                </button>
+            </div>`;
+}
+
+
+window._swarmUseDescribed = () => {
+    const rule = window._swarmDescribedRule;
+    if (rule && typeof window._aShowFormWith === 'function') {
+        window._aShowFormWith(rule);
+        document.getElementById('a-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 };
 
 

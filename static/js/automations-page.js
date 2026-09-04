@@ -9,7 +9,7 @@
 
 import { state } from './state.js';
 import { initAutomationTab } from './modal/automation.js';
-import { initAIAutomations, renderAIPanel } from './ai-automations.js';
+import { initAIAutomations, renderAIChatPanel } from './ai-automations.js';
 import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
 
 
@@ -408,7 +408,7 @@ function _renderPage(container, devices) {
         ${locationBanner}
 
         <!-- AI Automation Builder -->
-        ${renderAIPanel()}
+        ${renderAIChatPanel()}
 
         <!-- Create Rule Panel (hidden by default) -->
         <div id="ap-create-panel" class="card mb-3" style="display:none">

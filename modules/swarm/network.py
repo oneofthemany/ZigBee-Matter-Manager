@@ -65,6 +65,9 @@ CAPABILITY_AFFINITY: Dict[str, Dict[str, int]] = {
     "thermostat":    {"climate": 2, "heating": 2},
     "person":        {"access": 3, "climate": 3, "lighting": 2, "switchable": 2, "messaging": 1},
     "household":     {"access": 3, "climate": 3, "lighting": 2, "switchable": 2, "messaging": 1},
+    "weather":       {"climate": 3, "heating": 3, "shading": 2, "lighting": 2},
+    "house":         {"climate": 3, "heating": 3, "switchable": 2, "messaging": 2},
+    "tariff":        {"switchable": 3, "climate": 2, "heating": 2, "messaging": 1},
 }
 
 # Affinity outweighs proximity: a leak sensor's best pairing is telling someone,
@@ -85,6 +88,9 @@ DEVICE_CLASS_TAGS: Dict[str, Tuple[str, ...]] = {
     "thermostat":      ("climate", "heating"),
     "person":          ("messaging",),
     "household":       ("messaging",),
+    "weather":         (),
+    "house":           (),
+    "tariff":          (),
 }
 
 SAME_ROOM_BONUS = 3

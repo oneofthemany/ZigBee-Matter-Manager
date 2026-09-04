@@ -32,10 +32,21 @@ class CompileError(Exception):
 
 
 def effective_params(pattern: Dict[str, Any],
-                     overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Parameter values for one compile: defaults, then the pattern, then the user."""
+                     overrides: Optional[Dict[str, Any]] = None,
+                     slot: Optional[str] = None) -> Dict[str, Any]:
+    """Parameter values for one compile: defaults, pattern, slot, then the user.
+
+    A slot may override a parameter the rest of the pattern shares. Some
+    thresholds mean different things in different places — `cold_c` is a cold
+    snap at 5 degrees outdoors and an unheated room at 18 indoors — and a
+    pattern comparing the two would otherwise have to pick one and be wrong
+    about the other.
+    """
     out = {pid: spec["default"] for pid, spec in PARAMS.items()}
     out.update(pattern.get("params") or {})
+    if slot:
+        spec = (pattern.get("slots") or {}).get(slot) or {}
+        out.update(spec.get("params") or {})
     out.update(overrides or {})
     return out
 
@@ -119,7 +130,8 @@ def compile_rule(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
         fill = fills.get(slot)
         if not fill:
             continue
-        cond = _apply_param(fill["offer"], params)
+        cond = _apply_param(fill["offer"],
+                            effective_params(pattern, overrides, slot))
         if not cond:
             continue
         if fill["ieee"] == source_ieee:
@@ -150,8 +162,9 @@ def compile_rule(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
                     continue
                 step = copy.deepcopy(fill["offer"]["step"])
                 pid = fill["offer"].get("param")
-                if pid and pid in params and "value" in step:
-                    step["value"] = params[pid]
+                slot_params = effective_params(pattern, overrides, entry)
+                if pid and pid in slot_params and "value" in step:
+                    step["value"] = slot_params[pid]
                 steps.append(step)
             else:
                 steps.append(_substitute(entry, fills, params,
@@ -193,8 +206,22 @@ def describe_candidate(pattern: Dict[str, Any],
     emits = pattern.get("emits") or {}
 
     def label(slot: str) -> Optional[str]:
+        """The offer's sentence, re-rendered at this pattern's thresholds.
+
+        Offers are built with the vocabulary defaults, so a pattern raising
+        `cold_c` to 5 would otherwise describe itself as firing at 18 while
+        compiling a rule that fires at 5.
+        """
         fill = fills.get(slot)
-        return fill["offer"]["label"] if fill else None
+        if not fill:
+            return None
+        offer = fill["offer"]
+        pid = offer.get("param")
+        template = offer.get("label_template")
+        params = effective_params(pattern, slot=slot)
+        if pid and template and pid in params:
+            return template.replace("{value}", str(params[pid]))
+        return offer["label"]
 
     source = emits.get("source")
     clauses = [label(source)]

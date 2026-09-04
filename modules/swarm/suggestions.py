@@ -184,7 +184,12 @@ def _validate(rule: Dict[str, Any], validator: Any) -> Optional[str]:
 
 
 def _exposed_params(pattern: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The parameters a suggestion card should offer as fields."""
+    """The parameters a suggestion card should offer as fields.
+
+    Only pattern-level ones: a slot override exists because that slot needs a
+    different value from the rest of the pattern, so exposing it as one shared
+    field would re-introduce the conflict it was added to resolve.
+    """
     from modules.swarm.capabilities import PARAMS
     values = effective_params(pattern)
     return [{"id": pid, **PARAMS[pid], "value": values[pid]}

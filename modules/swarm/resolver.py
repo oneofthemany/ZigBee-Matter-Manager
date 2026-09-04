@@ -345,6 +345,8 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
         built = _offer_base(cap_id, spec, offer, role)
         built.update({
             "label": _label(offer["label"], device_name, room_label, value),
+            "label_template": _label(offer["label"], device_name, room_label,
+                                     "{value}"),
             "attribute": attr,
             "condition": {"type": "attribute", "attribute": attr,
                           "operator": offer["operator"], "value": value},
@@ -389,13 +391,16 @@ def _build_action_offers(cap_id: str, spec: Dict[str, Any],
             eid = entry.get("endpoint_id")
             built = _offer_base(cap_id, spec, offer, ACTION)
             label = _label(offer["label"], device_name, room_label, value)
+            label_template = _label(offer["label"], device_name, room_label,
+                                    "{value}")
             if multi and eid is not None:
                 built["key"] = f"{cap_id}:{offer['id']}:ep{eid}"
                 label += f" (EP{eid})"
             step = {"type": "command", "target_ieee": ieee,
                     "command": offer["command"], "value": value,
                     "endpoint_id": eid}
-            built.update({"label": label, "step": step})
+            built.update({"label": label, "label_template": label_template,
+                          "step": step})
             if param_id:
                 built["param"] = param_id
             out.append(built)

@@ -81,7 +81,8 @@
 │    │   ├── network.py
 │    │   ├── resolver.py
 │    │   ├── stigmergy.py
-│    │   └── suggestions.py
+│    │   ├── suggestions.py
+│    │   └── virtual.py
 │    ├── touchlink.py
 │    ├── zigbee_debug.py
 │    ├── zone_device_config.py

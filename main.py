@@ -818,6 +818,25 @@ async def lifespan(app: FastAPI):
         zigbee_service.automation._get_names = _names_with_presence
         logger.info("Wired presence users into automation engine")
 
+        # Swarm virtual devices — the weather, the house's thermal state, the
+        # tariff — as device-likes, so a rule addresses them like anything else.
+        # Registered through add_device_getter, the hook the engine provides for
+        # exactly this, rather than by wrapping the registry getters again.
+        from modules.swarm.virtual import VirtualDeviceProvider, set_virtual_provider
+        virtual_provider = VirtualDeviceProvider(
+            weather_getter=lambda: weather_service,
+            advisor_getter=lambda: heating_advisor,
+            tariff_getter=lambda: octopus_service,
+            presence_getter=lambda: presence_manager,
+            evaluator=zigbee_service.automation.evaluate,
+        )
+        zigbee_service.automation.add_device_getter(
+            virtual_provider.automation_devices)
+        virtual_provider.start()
+        set_virtual_provider(virtual_provider)
+        app.state.virtual_provider = virtual_provider
+        logger.info("Wired swarm virtual devices into automation engine")
+
         # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.
         journey_manager = JourneyManager()
@@ -973,6 +992,9 @@ async def lifespan(app: FastAPI):
     heating_anomaly_watcher.stop()
     from modules.telemetry_db import close as close_telemetry_db
     close_telemetry_db()
+    virtual_provider = getattr(app.state, "virtual_provider", None)
+    if virtual_provider:
+        await virtual_provider.stop()
     presence_manager = getattr(app.state, "presence_manager", None)
     if presence_manager:
         await presence_manager.stop()

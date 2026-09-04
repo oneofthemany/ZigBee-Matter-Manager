@@ -555,7 +555,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "scope": SCOPE_HOUSE,
         "tags": ["presence", "people"],
         "implies": ["notify"],
-        "excludes": ["presence"],
+        "excludes": ["presence", "availability"],
         "attrs": ["place"],
         "triggers": [
             {"id": "arrived_home", "label": "{device} arrives home",
@@ -578,6 +578,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "label": "Household",
         "kind": "virtual",
         "scope": SCOPE_HOUSE,
+        "excludes": ["availability"],
         "tags": ["presence", "people"],
         "attrs": ["anyone_home"],
         "triggers": [
@@ -591,6 +592,92 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
             {"id": "nobody_home", "label": "nobody is home", "operator": "lt", "value": 1},
             {"id": "everyone_home", "label": "everybody is home",
              "attrs": ["everyone_home"], "operator": "gte", "value": 1},
+        ],
+        "actions": [],
+    },
+
+    "weather": {
+        "label": "Weather",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "excludes": ["availability"],
+        "tags": ["climate", "environment", "outdoor"],
+        "attrs": ["temperature"],
+        "triggers": [
+            {"id": "got_cold_out", "label": "it drops below {value} outside",
+             "operator": "lt", "value": param("cold_c"), "polarity": 1},
+            {"id": "got_warm_out", "label": "it rises above {value} outside",
+             "operator": "gt", "value": param("warm_c"), "polarity": -1},
+            {"id": "got_dark_out", "label": "daylight fades",
+             "attrs": ["is_daylight"], "operator": "eq", "value": 0, "polarity": 1},
+        ],
+        "conditions": [
+            {"id": "cold_out", "label": "it is below {value} outside",
+             "operator": "lt", "value": param("cold_c"), "polarity": 1},
+            {"id": "warm_out", "label": "it is above {value} outside",
+             "operator": "gt", "value": param("warm_c"), "polarity": -1},
+            {"id": "is_daylight", "label": "it is daylight",
+             "attrs": ["is_daylight"], "operator": "eq", "value": 1},
+            {"id": "is_dark_out", "label": "it is dark outside",
+             "attrs": ["is_daylight"], "operator": "eq", "value": 0},
+        ],
+        "actions": [],
+    },
+
+    "house": {
+        "label": "House",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "excludes": ["availability"],
+        "tags": ["climate", "heating"],
+        "attrs": ["indoor_avg_temp"],
+        # The computed flags are the point of this capability. The engine
+        # compares an attribute to a literal, so a comparison between two live
+        # readings — inside against outside, travel time against warm-up time —
+        # is made by the module that owns the model and published as a flag.
+        "triggers": [
+            {"id": "preheat_due", "label": "somebody is due home within the warm-up time",
+             "attrs": ["preheat_now_for_arrival"], "operator": "eq", "value": 1,
+             "weight": 2, "polarity": 1},
+            {"id": "cooler_outside", "label": "it becomes cooler outside than in",
+             "attrs": ["outdoor_cooler_than_indoor"], "operator": "eq", "value": 1,
+             "polarity": 1},
+            {"id": "got_cold_inside", "label": "the house drops below {value}",
+             "operator": "lt", "value": param("cold_c"), "polarity": 1},
+            {"id": "got_warm_inside", "label": "the house rises above {value}",
+             "operator": "gt", "value": param("warm_c"), "polarity": -1},
+        ],
+        "conditions": [
+            {"id": "cold_inside", "label": "the house is below {value}",
+             "operator": "lt", "value": param("cold_c"), "polarity": 1},
+            {"id": "warm_inside", "label": "the house is above {value}",
+             "operator": "gt", "value": param("warm_c"), "polarity": -1},
+            {"id": "cooler_outside", "label": "it is cooler outside than in",
+             "attrs": ["outdoor_cooler_than_indoor"], "operator": "eq", "value": 1},
+            {"id": "warmer_outside", "label": "it is warmer outside than in",
+             "attrs": ["outdoor_cooler_than_indoor"], "operator": "eq", "value": 0},
+        ],
+        "actions": [],
+    },
+
+    "tariff": {
+        "label": "Tariff",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "excludes": ["availability"],
+        "tags": ["energy"],
+        "attrs": ["is_off_peak"],
+        "triggers": [
+            {"id": "off_peak_started", "label": "cheap-rate electricity starts",
+             "operator": "eq", "value": 1, "weight": 2, "polarity": 1},
+            {"id": "off_peak_ended", "label": "cheap-rate electricity ends",
+             "operator": "eq", "value": 0, "polarity": -1},
+        ],
+        "conditions": [
+            {"id": "is_off_peak", "label": "electricity is at the cheap rate",
+             "operator": "eq", "value": 1, "polarity": 1},
+            {"id": "is_peak", "label": "electricity is at the expensive rate",
+             "operator": "eq", "value": 0, "polarity": -1},
         ],
         "actions": [],
     },
@@ -686,6 +773,9 @@ DEVICE_CLASS_RULES: Sequence[Tuple[str, Callable[[set], bool]]] = (
     ("light_sensor",     lambda c: "illuminance" in c),
     ("person",           lambda c: "person" in c),
     ("household",        lambda c: "household" in c),
+    ("weather",          lambda c: "weather" in c),
+    ("house",            lambda c: "house" in c),
+    ("tariff",           lambda c: "tariff" in c),
 )
 
 

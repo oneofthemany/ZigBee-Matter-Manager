@@ -25,9 +25,62 @@ export async function initAIAutomations() {
 
 export function isAIConfigured() { return _aiConfigured; }
 
-// RENDER — returns the AI panel HTML for injection into automations page
+// RENDER
+//
+// Rule *generation* moved into the rule builder's chooser (swarm-suggest.js),
+// so there is one place a rule is authored rather than a panel that competes
+// with the builder. What is left here is the part the chooser has no place
+// for: asking questions about the network.
 
+/** Chat only — the questioning half of the AI, for the automations page. */
+export function renderAIChatPanel() {
+    return `
+    <div id="ai-auto-panel" class="card mb-3 border-info">
+        <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center py-2">
+            <strong><i class="fas fa-comments me-1"></i> Ask about your devices &amp; automations</strong>
+            <div class="d-flex gap-2 align-items-center">
+                <span id="ai-status-badge" class="badge ${_aiConfigured ? 'bg-success' : 'bg-secondary'} small"
+                      title="Optional AI model for free-form questions">
+                    AI: ${_aiConfigured ? 'connected' : 'optional'}
+                </span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._aiToggleChat()"
+                        title="Show or hide the chat"><i class="fas fa-chevron-down"></i></button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._aiOpenSettingsTab()"
+                        title="AI provider &amp; host settings (Settings → AI)"><i class="fas fa-cog"></i></button>
+            </div>
+        </div>
+        <div class="card-body py-2">
+            <div class="small text-muted">
+                Building a rule? Use <strong>Add Rule</strong> — it suggests what each
+                device can do, and takes a plain-English description too.
+            </div>
+            <div id="ai-chat" class="mt-2 border-top pt-2" style="display:none">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="small fw-bold"><i class="fas fa-comments me-1"></i> Ask about your devices &amp; automations</span>
+                    <button class="btn btn-sm btn-outline-danger py-0" onclick="window._aiChatClear()" title="Clear history">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+                <div id="ai-chat-log" class="border rounded p-2 mb-2 bg-white"
+                     style="height:260px;overflow-y:auto;font-size:.85rem"></div>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control" id="ai-chat-input"
+                           placeholder="e.g. why didn't my hallway light come on? which sensors are low battery?"
+                           onkeydown="if(event.key==='Enter')window._aiChatSend()">
+                    <button class="btn btn-info text-white" id="ai-chat-send" onclick="window._aiChatSend()">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+// Retained for any caller still asking for the full builder panel. The
+// generation controls it renders are now a second way in, so prefer
+// renderAIChatPanel().
 export function renderAIPanel() {
+
     return `
     <div id="ai-auto-panel" class="card mb-3 border-info">
         <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center py-2">
