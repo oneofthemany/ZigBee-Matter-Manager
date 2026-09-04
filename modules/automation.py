@@ -69,7 +69,12 @@ VALID_COMMANDS = {
     # could not be used to say anything beyond on or off.
     "hs_color",
     "open", "close", "stop", "position", "temperature",
-    "lock", "unlock"
+    # A lock's full set. `unlatch` retracts the latch as well as the bolt —
+    # on a front door it is the difference between unlocking and actually
+    # letting somebody in — and the lock drivers have always dispatched it.
+    # Absent here it was dropped twice over: add_rule rejected the step, and
+    # the swarm resolver filtered it out before an offer could be built.
+    "lock", "unlock", "unlatch", "lock_n_go",
 }
 
 FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request",

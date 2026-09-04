@@ -132,9 +132,12 @@ COVER_COMMANDS = [
 LOCK_COMMANDS = [
     {"command": "lock", "label": "Lock", "endpoint_id": None},
     {"command": "unlock", "label": "Unlock", "endpoint_id": None},
-    # The engine has no dispatch for these, so they must not become offers.
     {"command": "unlatch", "label": "Unlatch", "endpoint_id": None},
+    # Dispatchable, and a valid step in a hand-built rule, but the swarm
+    # vocabulary declares no action for it — so it is never *suggested*.
     {"command": "lock_n_go", "label": "Lock 'n' Go", "endpoint_id": None},
+    # Nothing dispatches this. It exists to keep the gate honest.
+    {"command": "polish_handle", "label": "Polish Handle", "endpoint_id": None},
 ]
 
 THERMOSTAT_COMMANDS = [

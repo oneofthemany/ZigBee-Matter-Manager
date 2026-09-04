@@ -86,9 +86,15 @@ def run() -> Checker:
     c.section("commands the engine cannot dispatch are never offered")
     lock = describe_device("nuki_1", net["nuki_1"], "Front Door Lock")
     cmds = {a["step"]["command"] for a in lock["actions"] if "command" in a["step"]}
-    c.check("lock and unlock offered", {"lock", "unlock"} <= cmds, cmds)
-    c.check("unlatch and lock_n_go dropped",
-            not ({"unlatch", "lock_n_go"} & cmds), cmds)
+    c.check("lock, unlock and unlatch offered",
+            {"lock", "unlock", "unlatch"} <= cmds, cmds)
+    # Two separate gates, and they do not agree by accident. `lock_n_go` is
+    # dispatchable and legal in a hand-built rule, but the vocabulary names no
+    # action for it; `polish_handle` nothing can dispatch at all.
+    c.check("a dispatchable command the vocabulary omits is not suggested",
+            "lock_n_go" not in cmds, cmds)
+    c.check("an undispatchable command is dropped outright",
+            "polish_handle" not in cmds, cmds)
 
     c.section("contact polarity")
     c.check("bare `contact` True means closed",

@@ -15,6 +15,13 @@ import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
 import { createHumanizer } from '../automation-sentence.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
+// JSON destined for a single-quoted HTML attribute. An apostrophe anywhere in
+// the payload — the Nuki lock's "Lock 'n' Go" label — closes the attribute
+// early, and the JSON.parse that reads it back throws inside an onchange
+// handler, silently leaving the dropdown it feeds empty.
+const _jsonAttr = v => JSON.stringify(v)
+    .replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
+
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
 let cachedZones = [];     // OpenZone zones, targetable as zone:<id>
 let cachedPlaces = [];    // named places (geofences) for zone conditions
@@ -156,7 +163,7 @@ function _attrOptLabel(a, type) {
 // Build the <option> list for an attribute <select>, humanized for a device type.
 function _attrOptions(attrs, type) {
     return (attrs || []).map(a =>
-        `<option value="${a.attribute}" data-type="${a.type}" data-operators='${JSON.stringify(a.operators || ['eq','neq'])}' data-current="${a.current_value}" data-vo='${JSON.stringify(a.value_options || [])}'>${_attrOptLabel(a, type)}</option>`
+        `<option value="${a.attribute}" data-type="${a.type}" data-operators='${_jsonAttr(a.operators || ['eq','neq'])}' data-current="${a.current_value}" data-vo='${_jsonAttr(a.value_options || [])}'>${_attrOptLabel(a, type)}</option>`
     ).join('');
 }
 
@@ -700,8 +707,8 @@ function _renderStep(step, path, idx, total) {
     if(step.type==='command') {
             const _devActs=cachedActuators.filter(d=>!d._is_group);
             const _grpActs=cachedActuators.filter(d=>d._is_group);
-            let acts=_devActs.map(d=>`<option value="${d.ieee}" data-cmds='${JSON.stringify(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
-            if(_grpActs.length){acts+=`<optgroup label="── Groups ──">`+_grpActs.map(d=>`<option value="${d.ieee}" data-cmds='${JSON.stringify(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
+            let acts=_devActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('');
+            if(_grpActs.length){acts+=`<optgroup label="── Groups ──">`+_grpActs.map(d=>`<option value="${d.ieee}" data-cmds='${_jsonAttr(d.commands)}' ${step.target_ieee===d.ieee?'selected':''}>${d.friendly_name}</option>`).join('')+'</optgroup>';}
         body=`<div class="row g-1"><div class="col-md-5"><select class="form-select form-select-sm s-tgt" data-sid="${sid}" onchange="window._aSTC(${sid},this)"><option value="">Target...</option>${acts}</select></div>
             <div class="col-md-4"><select class="form-select form-select-sm s-cmd" data-sid="${sid}"><option value="">Cmd...</option></select></div>
             <div class="col-md-3"><input type="text" class="form-control form-control-sm s-val" data-sid="${sid}" placeholder="Value" value="${step.value!=null?step.value:''}"></div></div>

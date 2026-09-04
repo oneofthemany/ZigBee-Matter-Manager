@@ -602,6 +602,11 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "actions": [
             {"id": "lock", "label": "lock {device}", "command": "lock", "weight": 1, "polarity": -1},
             {"id": "unlock", "label": "unlock {device}", "command": "unlock", "weight": 1, "polarity": 1},
+            # Retracting the latch opens the door rather than merely permitting
+            # it, so it carries the weight of the stronger act. Only offered on
+            # a lock whose driver dispatches it — the resolver gates every
+            # action on an executable command.
+            {"id": "unlatch", "label": "open {device}", "command": "unlatch", "weight": 2, "polarity": 1},
         ],
     },
 
