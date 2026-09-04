@@ -132,5 +132,44 @@ const bare = S._suggestionCard({ title: 'T', sentence: 'S', confidence: 'low' },
 check('no room badge when there is no room', !bare.includes('bg-light text-dark border'));
 check('renders anyway', bare.includes('>T<') || bare.includes('T</div>'));
 
+section('the builder round-trips an offer without losing its action');
+// An offer nested inside a rule must survive edit-and-save. Losing accept_steps
+// would turn a rule that acts into a rule that only asks, silently.
+const bsrc = fs.readFileSync(path.join(REPO, 'static/js/modal/automation.js'), 'utf8');
+const cleanStart = bsrc.indexOf('function _cleanTree(steps) {');
+const cleanEnd = bsrc.indexOf('\n}', bsrc.indexOf('return false;', cleanStart)) + 2;
+if (cleanStart < 0 || cleanEnd < 2) { console.error('could not slice _cleanTree'); process.exit(2); }
+const bm = { exports: {} };
+new Function('module', 'isZoneId', 'zoneOf',
+  bsrc.slice(cleanStart, cleanEnd) + '\nmodule.exports = { _cleanTree };'
+)(bm, () => false, () => null);
+const clean = bm.exports._cleanTree;
+
+const OFFER = {
+  type: 'offer', to_user: 'sean', message: 'Cool the house down?',
+  expires_in: 1800,
+  accept_steps: [{ type: 'command', target_ieee: '0xplug', command: 'on' }],
+};
+const [out] = clean([OFFER]);
+check('the offer survives', out && out.type === 'offer', out);
+check('the recipient survives', out.to_user === 'sean');
+check('the question survives', out.message === 'Cool the house down?');
+check('the expiry survives', out.expires_in === 1800, out.expires_in);
+check('the action survives', out.accept_steps.length === 1, out.accept_steps);
+check('and is cleaned as a real step',
+      out.accept_steps[0].target_ieee === '0xplug' &&
+      out.accept_steps[0].command === 'on', out.accept_steps[0]);
+
+check('an offer with nothing to run is dropped',
+      clean([{ ...OFFER, accept_steps: [] }]).length === 0);
+check('an offer with no recipient is dropped',
+      clean([{ ...OFFER, to_user: '' }]).length === 0);
+check('an offer with no question is dropped',
+      clean([{ ...OFFER, message: '   ' }]).length === 0);
+check('a default expiry is applied',
+      clean([{ ...OFFER, expires_in: undefined }])[0].expires_in === 3600);
+check('an invalid nested step is dropped, not the whole offer',
+      clean([{ ...OFFER, accept_steps: [{ type: 'command' }] }]).length === 0);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

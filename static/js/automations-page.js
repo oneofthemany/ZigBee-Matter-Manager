@@ -11,12 +11,16 @@ import { state } from './state.js';
 import { initAutomationTab } from './modal/automation.js';
 import { initAIAutomations, renderAIChatPanel } from './ai-automations.js';
 import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
+import { showToast, withBusy } from './utils.js';
 
 
 const log = zmmLog('automations-page');
 
 // Swarm coverage for the header strip — null whenever the swarm is unavailable.
 let swarmCoverage = null, swarmSummary = null;
+// Offers awaiting an answer. An offer nobody can see is an offer nobody can
+// accept, so these sit at the top of the page rather than in a side panel.
+let pendingOffers = [];
 
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
@@ -198,6 +202,14 @@ function _renderSeq(seq) {
         else if (s.type === 'request')
             h += `<div class="ap-act"><i class="fas fa-comment"></i><span>message ${_esc(s.to_user || '?')}: &ldquo;${_esc(s.message || '')}&rdquo;`
                + (s.from_user ? ` (from ${_esc(s.from_user)})` : '') + `</span></div>`;
+        else if (s.type === 'offer') {
+            // The nested sequence is what makes an offer different from a
+            // message, so it is shown rather than summarised as a count.
+            h += `<div class="ap-act"><i class="fas fa-circle-question"></i><span>ask ${_esc(s.to_user || '?')}: &ldquo;${_esc(s.message || '')}&rdquo;</span></div>`;
+            if ((s.accept_steps || []).length) {
+                h += `<div class="ap-act-nested">${_renderSeq(s.accept_steps)}</div>`;
+            }
+        }
     });
     return h;
 }
@@ -282,6 +294,12 @@ export async function loadAutomationsPage() {
             (plj.places || []).forEach(p => { placeNameCache[p.id] = p.name; });
         } catch { /* fall back to raw place ids */ }
 
+        // Offers waiting on somebody. Optional like the rest of the swarm.
+        try {
+            const oj = await (await fetch('/api/automations/offers')).json();
+            pendingOffers = oj.offers || [];
+        } catch { pendingOffers = []; }
+
         // Swarm coverage — how much of the house takes part in a rule at all.
         // Optional: an unavailable swarm just hides the strip.
         try {
@@ -327,6 +345,56 @@ function _coverageStrip() {
     return `<span class="badge bg-${tone}" title="Devices taking part in at least one rule">
                 ${c.covered}/${c.devices} devices automated</span>${spare}${gaps}`;
 }
+
+/**
+ * Offers waiting on an answer.
+ *
+ * An offer is a rule that stopped to ask, so it belongs with the rules rather
+ * than in a notification tray — the question and the automation that raised it
+ * are the same thing.
+ */
+function _offersBanner() {
+    if (!pendingOffers.length) return '';
+    const rows = pendingOffers.map(o => `
+        <div class="d-flex justify-content-between align-items-center gap-2 py-1">
+            <div class="flex-grow-1">
+                <div class="small">${_esc(o.message)}</div>
+                <div class="text-muted" style="font-size:.75rem">
+                    ${_esc(o.rule_name)} · asked ${_esc(o.to_user)}
+                </div>
+            </div>
+            <div class="d-flex gap-1 flex-shrink-0">
+                <button class="btn btn-sm btn-success" onclick="window._apAnswerOffer('${_esc(o.token)}','accept',this)">
+                    <i class="fas fa-check"></i> Yes</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._apAnswerOffer('${_esc(o.token)}','decline',this)">
+                    <i class="fas fa-times"></i> No</button>
+            </div>
+        </div>`).join('<hr class="my-1">');
+    return `
+        <div class="card mb-3 border-warning" id="ap-offers">
+            <div class="card-header bg-warning bg-opacity-10 py-1">
+                <strong class="small"><i class="fas fa-circle-question me-1"></i>
+                    ${pendingOffers.length} automation${pendingOffers.length !== 1 ? 's are' : ' is'} waiting on you</strong>
+            </div>
+            <div class="card-body py-2">${rows}</div>
+        </div>`;
+}
+
+/** Answer an offer. The action lives in the engine; this only says yes or no. */
+window._apAnswerOffer = async (token, answer, btn) => {
+    await withBusy(btn, async () => {
+        try {
+            const res = await fetch(`/api/automations/offers/${encodeURIComponent(token)}/${answer}`,
+                                    { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'That offer is no longer available');
+            showToast(answer === 'accept' ? 'Done' : 'Dismissed', 'success');
+        } catch (e) {
+            showToast(e.message, 'danger');
+        }
+        await loadAutomationsPage();
+    });
+};
 
 /** List the devices no rule touches, so the gap is actionable rather than a number. */
 window._apShowGaps = () => {
@@ -377,6 +445,7 @@ function _renderPage(container, devices) {
         </div>` : '';
 
     container.innerHTML = `
+        ${_offersBanner()}
         <!-- Header -->
         <div class="d-flex justify-content-between align-items-center mb-3">
             <div class="d-flex align-items-center gap-3 flex-wrap">

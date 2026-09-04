@@ -25,6 +25,7 @@ from harness import (  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from modules.automation_api import register_automation_routes  # noqa: E402
 from modules.swarm.api import register_swarm_routes  # noqa: E402
 
 
@@ -108,6 +109,7 @@ def run() -> Checker:
     app = FastAPI()
     engine = RecordingEngine(sample_network(), SAMPLE_NAMES)
     register_swarm_routes(app, lambda: engine, lambda: FakeService(SAMPLE_SETTINGS))
+    register_automation_routes(app, lambda: engine)
     client = TestClient(app)
 
     c.section("vocabulary")
@@ -266,6 +268,42 @@ def run() -> Checker:
     c.check("unknown slot is 404",
             client.get("/api/swarm/explain/presence_light_when_dark/slot/zz")
             .status_code == 404)
+
+    c.section("offer routes")
+    # The engine here is a fake, so the routes are exercised against a stub that
+    # records rather than a live offer store.
+    engine._offers_stub = [{"token": "t1", "rule_id": "r1", "rule_name": "Cooling",
+                            "to_user": "sean", "message": "Cool down?",
+                            "created": 0, "expires_at": 9e9, "state": "pending"}]
+    engine.get_offers = lambda to_user=None: [
+        o for o in engine._offers_stub if not to_user or o["to_user"] == to_user]
+
+    async def _accept(token, as_user=None):
+        # Stateful, so the double-tap check means something: the real engine
+        # removes the offer before running it.
+        if not any(o["token"] == token for o in engine._offers_stub):
+            return {"success": False, "error": "That offer has expired or was already answered"}
+        engine._offers_stub = [o for o in engine._offers_stub if o["token"] != token]
+        return {"success": True, "rule_id": "r1", "steps": 1}
+
+    engine.accept_offer = _accept
+    engine.decline_offer = lambda token, as_user=None: (
+        {"success": True} if token == "t1" else {"success": False, "error": "gone"})
+
+    r = client.get("/api/automations/offers")
+    c.check("200", r.status_code == 200, r.status_code)
+    c.check("the offer is listed", len(r.json()["offers"]) == 1, r.json())
+    c.check("filtering by recipient works",
+            len(client.get("/api/automations/offers?to_user=sean").json()["offers"]) == 1)
+    c.check("and excludes others",
+            client.get("/api/automations/offers?to_user=nobody").json()["offers"] == [])
+    c.check("declining an unknown token is a 404",
+            client.post("/api/automations/offers/nope/decline").status_code == 404)
+    r = client.post("/api/automations/offers/t1/accept")
+    c.check("accepting works", r.status_code == 200, r.text[:150])
+    c.check("it reports what ran", r.json()["steps"] == 1, r.json())
+    c.check("accepting twice is a 404",
+            client.post("/api/automations/offers/t1/accept").status_code == 404)
 
     c.section("a missing engine is a 503, not a crash")
     app2 = FastAPI()

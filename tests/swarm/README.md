@@ -12,6 +12,7 @@ returning a `Checker`; `run_all.py` drives them and exits non-zero on failure.
 | `test_virtual.py` | The house-scope inputs that are not devices: the computed flags, and that a missing reading is dropped rather than published as zero |
 | `test_stigmergy.py` | Pattern schema and validation, plus a check that every shipped pattern references a real offer |
 | `test_suggestions.py` | Matching, condition-vs-prerequisite placement, parameter overrides, what varies, and wiring-based deduplication |
+| `test_offers.py` | The `offer` step: validation, the accept/decline lifecycle, expiry, the double-tap, and the cap |
 | `test_diagnostics.py` | Every finding the triage report can raise, and the per-pattern explain trace |
 | `test_api.py` | The HTTP surface, driven through Starlette's `TestClient`, including the applying path |
 | `js/test_swarm_suggest.js` | The chooser's browser code, sliced out of the shipped `.js`: pairing-to-rule conversion, escaping, and the source-device guard |

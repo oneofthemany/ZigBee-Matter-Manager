@@ -208,6 +208,36 @@ def register_automation_routes(app: FastAPI,
         if not result.get("success"): raise HTTPException(404, result.get("error"))
         return result
 
+    # Offers — a message that can act, awaiting an answer.
+
+    @app.get("/api/automations/offers", tags=["automations"])
+    async def list_offers(to_user: Optional[str] = None):
+        """Offers still awaiting an answer. Expired ones are dropped on read."""
+        e = ge()
+        return {"offers": e.get_offers(to_user) if e else []}
+
+    @app.post("/api/automations/offers/{token}/accept", tags=["automations"])
+    async def accept_offer(token: str, as_user: Optional[str] = None):
+        """Say yes: run the sequence the rule stored against this offer."""
+        e = ge()
+        if not e:
+            raise HTTPException(503)
+        result = await e.accept_offer(token, as_user=as_user)
+        if not result.get("success"):
+            raise HTTPException(404, result.get("error"))
+        return result
+
+    @app.post("/api/automations/offers/{token}/decline", tags=["automations"])
+    async def decline_offer(token: str, as_user: Optional[str] = None):
+        """Say no. Nothing runs and the offer goes away."""
+        e = ge()
+        if not e:
+            raise HTTPException(503)
+        result = e.decline_offer(token, as_user=as_user)
+        if not result.get("success"):
+            raise HTTPException(404, result.get("error"))
+        return result
+
     @app.get("/api/automations/device/{ieee}/attributes", tags=["automations"])
     async def attrs(ieee: str):
         e = ge(); return e.get_source_attributes(ieee) if e else []

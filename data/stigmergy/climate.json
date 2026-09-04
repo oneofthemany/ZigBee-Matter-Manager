@@ -44,7 +44,7 @@
   {
     "id": "ac_offer_when_cooler_outside",
     "title": "Suggest cooling when it is cooler outside than in",
-    "description": "Asks rather than acts: opening a window may be the better answer, and only a person in the room knows.",
+    "description": "Asks rather than acts: opening a window may be the better answer, and only a person in the room knows. Accepting runs the cooling; ignoring it does nothing.",
     "category": "climate",
     "scope": "house",
     "slots": {
@@ -59,6 +59,14 @@
       "who": {
         "role": "action",
         "offer": "notify:message"
+      },
+      "cool_it": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "switch",
+          "plug"
+        ]
       }
     },
     "emits": {
@@ -71,9 +79,15 @@
       "condition_logic": "and",
       "then": [
         {
-          "type": "request",
+          "type": "offer",
           "to_user": "$who",
-          "message": "It is warmer inside than out. Worth opening up or running the AC?"
+          "message": "It is warmer inside than out. Cool the house down?",
+          "expires_in": 3600,
+          "accept_steps": [
+            {
+              "slot": "cool_it"
+            }
+          ]
         }
       ],
       "cooldown": 3600

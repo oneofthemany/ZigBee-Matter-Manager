@@ -51,12 +51,17 @@ RESERVED_PLACEHOLDERS = ("$trigger_device", "$trigger_room", "$target_device")
 def literal_slot_refs(value: Any) -> List[str]:
     """Slot names referenced as `$slot` anywhere inside a literal step.
 
-    A message step names its recipient with `$who`, so a slot used only that way
-    is still used — without this the validator calls it dead weight and rejects
-    a blueprint that is perfectly correct.
+    A message step names its recipient with `$who` and an offer splices in an
+    action with `{"slot": "cool_it"}`, so a slot used only either way is still
+    used — without this the validator calls it dead weight and rejects a pattern
+    that is perfectly correct.
     """
     found: List[str] = []
     if isinstance(value, dict):
+        # {"slot": id} names a slot whose *step* is spliced in — an offer's
+        # accept branch. Distinct from "$slot", which names its address.
+        if set(value) == {"slot"} and isinstance(value["slot"], str):
+            return [value["slot"]]
         for v in value.values():
             found += literal_slot_refs(v)
     elif isinstance(value, list):

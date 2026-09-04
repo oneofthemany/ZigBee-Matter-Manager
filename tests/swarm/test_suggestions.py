@@ -148,6 +148,16 @@ def run() -> Checker:
                                    "otherwise turn off Light - Hallway",
             hall[0]["sentence"])
 
+    c.section("an offer splices its action into the accept branch")
+    ac = STORE.get("ac_offer_when_cooler_outside")
+    c.check("the shipped pattern uses the slot-step marker",
+            any(isinstance(e, dict) and e.get("type") == "offer"
+                for e in ac["emits"]["then"]), ac["emits"]["then"])
+    step = next(e for e in ac["emits"]["then"] if e.get("type") == "offer")
+    c.check("its accept branch names a slot rather than a device",
+            step["accept_steps"] == [{"slot": "cool_it"}], step["accept_steps"])
+    c.check("the recipient is a slot too", step["to_user"] == "$who")
+
     c.section("nothing is offered that would fail to compile")
     c.check("no candidate was rejected", built["rejected"] == [], built["rejected"])
     c.check("every suggestion carries a rule",

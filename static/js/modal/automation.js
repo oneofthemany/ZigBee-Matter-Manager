@@ -33,9 +33,9 @@ function _opOpts(sel) {
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
     ).join('');
 }
-const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment'};
+const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment',offer:'fa-circle-question'};
 
-const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message'};
+const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First'};
 
 // Media action picker options (label, value).
 const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
@@ -305,6 +305,8 @@ function _seqSummary(steps, label, color) {
         if (s.type==='if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
         if (s.type==='parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches||[]).length})</span>`;
         if (s.type==='media') return `<span class="badge" style="background:#0a9396">♪ ${_mediaDesc(s)}</span>`;
+        if (s.type==='request') return `<span class="badge" style="background:#9d4edd">✉ ${s.to_user||'?'}</span>`;
+        if (s.type==='offer') return `<span class="badge" style="background:#d4a017">? ask ${s.to_user||'?'} (${(s.accept_steps||[]).length} on yes)</span>`;
         return '';
     }).join(' <i class="fas fa-arrow-right text-muted small"></i> ');
     return `<div class="small mt-1"><strong class="text-${color}">${label}</strong> ${parts}</div>`;
@@ -388,6 +390,7 @@ function _addBtns(path) {
         <button class="btn btn-outline-dark" onclick="window._aAddStep('${path}','condition')"><i class="fas fa-filter"></i> Gate</button>
         <button class="btn" style="color:#0a9396;border-color:#0a9396" onclick="window._aAddStep('${path}','media')"><i class="fas fa-music"></i> Media</button>
         <button class="btn" style="color:#9d4edd;border-color:#9d4edd" onclick="window._aAddStep('${path}','request')"><i class="fas fa-comment"></i> Msg</button>
+        <button class="btn" style="color:#d4a017;border-color:#d4a017" onclick="window._aAddStep('${path}','offer')" title="Ask somebody, and only act if they say yes"><i class="fas fa-circle-question"></i> Ask</button>
         <button class="btn btn-outline-primary" onclick="window._aAddStep('${path}','if_then_else')"><i class="fas fa-code-branch"></i> If/Then/Else</button>
         <button class="btn btn-outline-info" onclick="window._aAddStep('${path}','parallel')"><i class="fas fa-columns"></i> Parallel</button>
     </div>`;
@@ -695,6 +698,29 @@ function _renderStep(step, path, idx, total) {
             <div class="col-md-6">${toSel}</div>
             <div class="col-md-6">${fromSel}</div></div>
             <input type="text" class="form-control form-control-sm s-rq-msg" data-sid="${sid}" placeholder="Message, e.g. At the shops — need anything?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">`;
+    } else if(step.type==='offer') {
+        // A message that can act. The recipient pickers are the message step's;
+        // what differs is the nested sequence, which runs only on Accept — so
+        // the rule decides what happens, not whatever comes back over the wire.
+        const userOpt = (u, sel) => {
+            const account = u.account || u.user_id;
+            return `<option value="${account}" ${sel===account?'selected':''}>${u.display_name||u.user_id}</option>`;
+        };
+        const toOpts = cachedPresenceUsers.map(u=>userOpt(u, step.to_user)).join('');
+        const toSel = cachedPresenceUsers.length
+            ? `<select class="form-select form-select-sm s-of-to" data-sid="${sid}"><option value="">Ask…</option>${toOpts}</select>`
+            : `<input type="text" class="form-control form-control-sm s-of-to" data-sid="${sid}" placeholder="Ask (username)" value="${step.to_user||''}">`;
+        const mins = Math.round((step.expires_in||3600)/60);
+        body=`<div class="row g-1 align-items-center mb-1">
+            <div class="col-md-7">${toSel}</div>
+            <div class="col-md-5"><div class="input-group input-group-sm">
+                <span class="input-group-text">Expires</span>
+                <input type="number" class="form-control s-of-exp" data-sid="${sid}" min="1" max="1440" value="${mins}" title="Minutes before the offer lapses unanswered">
+                <span class="input-group-text">min</span></div></div></div>
+            <input type="text" class="form-control form-control-sm s-of-msg mb-2" data-sid="${sid}" placeholder="Question, e.g. It's cooler outside — open up or run the AC?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">
+            <div class="border-start border-warning border-3 ps-2"><div class="small fw-bold text-warning mb-1">IF THEY ACCEPT</div>
+                <div id="ofa-${sid}">${(step.accept_steps||[]).map((s2,i)=>_renderStep(s2,`ofa-${sid}`,i,(step.accept_steps||[]).length)).join('')}</div>
+                ${_addBtns(`ofa-${sid}`)}</div>`;
     }
 
     return `<div class="card card-body bg-light p-2 mb-1" id="step-${sid}">
@@ -1018,13 +1044,21 @@ async function _loadICAttrs(icId,ieee,selAttr,selVal) {
 function _findStepList(path) {
     if(path==='then') return thenTree;
     if(path==='else') return elseTree;
-    // Nested paths: "ite-then-{sid}" or "ite-else-{sid}" or "par-{sid}-{bi}"
+    // Nested paths: "ite-then-{sid}", "ite-else-{sid}", "par-{sid}-{bi}",
+    // or "ofa-{sid}" for an offer's accept sequence.
     const iteM = path.match(/^ite-(then|else)-(\d+)$/);
     if(iteM) {
         const branch=iteM[1], parentId=parseInt(iteM[2]);
         const step = _findStepById(parentId);
         if(!step) return null;
         return branch==='then' ? (step.then_steps||(step.then_steps=[])) : (step.else_steps||(step.else_steps=[]));
+    }
+    // "ofa-{sid}" — the sequence an offer runs only if it is accepted.
+    const ofaM = path.match(/^ofa-(\d+)$/);
+    if(ofaM) {
+        const step = _findStepById(parseInt(ofaM[1]));
+        if(!step) return null;
+        return step.accept_steps||(step.accept_steps=[]);
     }
     const parM = path.match(/^par-(\d+)-(\d+)$/);
     if(parM) {
@@ -1049,6 +1083,7 @@ function _findInTree(steps, id) {
         if(s._id === id) return s;
         if(s.then_steps) { const r=_findInTree(s.then_steps,id); if(r) return r; }
         if(s.else_steps) { const r=_findInTree(s.else_steps,id); if(r) return r; }
+        if(s.accept_steps) { const r=_findInTree(s.accept_steps,id); if(r) return r; }
         if(s.branches) { for(const b of s.branches) { const r=_findInTree(b,id); if(r) return r; } }
     }
     return null;
@@ -1060,6 +1095,7 @@ function _removeFromTree(steps, id) {
     for(const s of steps) {
         if(s.then_steps && _removeFromTree(s.then_steps,id)) return true;
         if(s.else_steps && _removeFromTree(s.else_steps,id)) return true;
+        if(s.accept_steps && _removeFromTree(s.accept_steps,id)) return true;
         if(s.branches) { for(const b of s.branches) { if(_removeFromTree(b,id)) return true; } }
     }
     return false;
@@ -1153,6 +1189,7 @@ window._aAddStep = (path, type) => {
         s.else_steps = [];
     }
     if (type === 'parallel') s.branches = [[], []];
+    if (type === 'offer') { s.accept_steps = []; s.expires_in = 3600; }
 
     list.push(s);
 
@@ -1384,6 +1421,13 @@ function _syncTreeFromDOM(steps) {
             s.to_user=document.querySelector(`.s-rq-to[data-sid="${sid}"]`)?.value||'';
             s.from_user=document.querySelector(`.s-rq-from[data-sid="${sid}"]`)?.value||'';
             s.message=document.querySelector(`.s-rq-msg[data-sid="${sid}"]`)?.value||'';
+        } else if(s.type==='offer') {
+            s.to_user=document.querySelector(`.s-of-to[data-sid="${sid}"]`)?.value||'';
+            s.message=document.querySelector(`.s-of-msg[data-sid="${sid}"]`)?.value||'';
+            const mins=parseInt(document.querySelector(`.s-of-exp[data-sid="${sid}"]`)?.value,10);
+            // Minutes in the form, seconds on the wire — the engine's unit.
+            s.expires_in=(mins>0?mins:60)*60;
+            _syncTreeFromDOM(s.accept_steps||[]);
         } else if(s.type==='media') {
             s.player_id=document.querySelector(`.s-mplayer[data-sid="${sid}"]`)?.value||'';
             s.media_action=document.querySelector(`.s-maction[data-sid="${sid}"]`)?.value||'play_tidal';
@@ -1427,6 +1471,7 @@ function _cleanTree(steps) {
         else if(s.type==='if_then_else'){d.inline_conditions=(s.inline_conditions||[]).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.then_steps=_cleanTree(s.then_steps||[]);d.else_steps=_cleanTree(s.else_steps||[]);}
         else if(s.type==='parallel'){d.branches=(s.branches||[]).map(br=>_cleanTree(br));}
         else if(s.type==='request'){d.to_user=s.to_user;d.message=(s.message||'').trim();if(s.from_user)d.from_user=s.from_user;}
+        else if(s.type==='offer'){d.to_user=s.to_user;d.message=(s.message||'').trim();d.accept_steps=_cleanTree(s.accept_steps||[]);d.expires_in=s.expires_in||3600;if(s.from_user)d.from_user=s.from_user;}
         else if(s.type==='media'){
             d.player_id=s.player_id; d.media_action=s.media_action;
             // The zone's name, so the run trace names the room rather than an id.
@@ -1445,6 +1490,8 @@ function _cleanTree(steps) {
         if(d.type==='delay')return d.seconds>0;
         if(d.type==='wait_for'||d.type==='condition')return d.ieee&&d.attribute;
         if(d.type==='request')return !!(d.to_user&&d.message);
+        // An offer with nothing to run is a message, and the engine rejects it.
+        if(d.type==='offer')return !!(d.to_user&&d.message&&(d.accept_steps||[]).length);
         if(d.type==='if_then_else')return(d.inline_conditions||[]).length>0;
         if(d.type==='parallel')return(d.branches||[]).length>=2;
         if(d.type==='media'){

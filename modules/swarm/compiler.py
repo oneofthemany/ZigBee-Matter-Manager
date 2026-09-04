@@ -73,18 +73,36 @@ def _apply_param(offer: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any
 def _substitute(value: Any, fills: Dict[str, Dict[str, Any]],
                 params: Dict[str, Any], trigger_device: str,
                 trigger_room: Optional[str]) -> Any:
-    """Resolve `$slot`, reserved placeholders and {"param": id} inside a literal."""
+    """Resolve `$slot`, `{"slot": id}`, reserved placeholders and `{"param": id}`.
+
+    `$slot` inside a string resolves to that slot's device address — a message
+    step naming its recipient. `{"slot": id}` is the step itself, for a nested
+    sequence such as an offer's accept branch. Two markers rather than one,
+    because "the address of the thing" and "the action on the thing" are
+    different substitutions and conflating them reads ambiguously.
+    """
     if isinstance(value, dict):
         if set(value) == {"param"}:
             pid = value["param"]
             if pid not in params:
                 raise CompileError(f"unknown parameter {pid!r}")
             return params[pid]
+        if set(value) == {"slot"}:
+            fill = fills.get(value["slot"])
+            if not fill:
+                return None                 # dropped by the caller
+            step = copy.deepcopy(fill["offer"].get("step") or {})
+            pid = fill["offer"].get("param")
+            if pid and pid in params and "value" in step:
+                step["value"] = params[pid]
+            return step
         return {k: _substitute(v, fills, params, trigger_device, trigger_room)
                 for k, v in value.items()}
     if isinstance(value, list):
-        return [_substitute(v, fills, params, trigger_device, trigger_room)
-                for v in value]
+        # A slot marker that did not resolve leaves a hole, not a null step.
+        return [x for x in
+                (_substitute(v, fills, params, trigger_device, trigger_room)
+                 for v in value) if x is not None]
     if isinstance(value, str):
         out = (value
                .replace("$trigger_device", trigger_device)
@@ -245,6 +263,19 @@ def describe_candidate(pattern: Dict[str, Any],
             elif entry.get("type") == "request":
                 who = fills.get(_recipient_slot(entry))
                 out.append(f"message {who['device']['name']}" if who else "send a message")
+            elif entry.get("type") == "offer":
+                # What happens on acceptance is the whole point of an offer, so
+                # the sentence says it rather than stopping at "ask someone".
+                who = fills.get(_recipient_slot(entry))
+                asked = f"ask {who['device']['name']}" if who else "ask somebody"
+                accepts = []
+                for nested in entry.get("accept_steps") or []:
+                    if isinstance(nested, dict) and set(nested) == {"slot"}:
+                        lbl = label(nested["slot"])
+                        if lbl:
+                            accepts.append(lbl)
+                out.append(f"{asked} first, and only then {' and '.join(accepts)}"
+                           if accepts else asked)
         return out
 
     text = f"When {when}, " + ", then ".join(steps("then"))

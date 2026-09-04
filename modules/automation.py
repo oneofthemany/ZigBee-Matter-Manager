@@ -68,7 +68,17 @@ VALID_COMMANDS = {
     "lock", "unlock"
 }
 
-FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request"}
+FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request",
+                   "offer"}
+
+# An offer is a message that can act: it asks somebody, and runs a stored
+# sequence only if they say yes. Pending offers are held in memory and are
+# deliberately not persisted — an offer to turn the air conditioning on is a
+# question about right now, and one that survived a restart to fire hours later
+# would be worse than one that quietly lapsed.
+MAX_PENDING_OFFERS = 50
+DEFAULT_OFFER_EXPIRY = 3600
+MAX_OFFER_EXPIRY = 86400
 BRANCHING_STEP_TYPES = {"if_then_else", "parallel"}
 ALL_STEP_TYPES = FLAT_STEP_TYPES | BRANCHING_STEP_TYPES
 
@@ -104,6 +114,9 @@ class AutomationEngine:
         self._last_values: Dict[str, Dict[str, Any]] = {}
         self._running_sequences: Dict[str, asyncio.Task] = {}
         self._time_scheduler_task: Optional[asyncio.Task] = None
+
+        # token -> pending offer. See MAX_PENDING_OFFERS.
+        self._offers: Dict[str, Dict[str, Any]] = {}
 
         self._trace_log: List[Dict[str, Any]] = []
         self._max_trace_entries = 200
@@ -674,6 +687,25 @@ class AutomationEngine:
                     return f"{label}[{i+1}]: message needs to_user"
                 if not (step.get("message") or "").strip():
                     return f"{label}[{i+1}]: message needs text"
+            elif st == "offer":
+                if not step.get("to_user"):
+                    return f"{label}[{i+1}]: offer needs to_user"
+                if not (step.get("message") or "").strip():
+                    return f"{label}[{i+1}]: offer needs text"
+                accept = step.get("accept_steps") or []
+                if not accept:
+                    return (f"{label}[{i+1}]: offer needs accept_steps — an offer "
+                            f"with nothing to run is a message")
+                exp = step.get("expires_in", DEFAULT_OFFER_EXPIRY)
+                if not isinstance(exp, (int, float)) or not (0 < exp <= MAX_OFFER_EXPIRY):
+                    return (f"{label}[{i+1}]: offer expires_in must be 1-"
+                            f"{MAX_OFFER_EXPIRY} seconds")
+                # An offer inside an offer's accept branch could nest without
+                # limit, so the accept sequence is validated at the next depth.
+                err = self._validate_sequence(accept, f"{label}[{i+1}].accept",
+                                              depth + 1)
+                if err:
+                    return err
             elif st in ("wait_for", "condition"):
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
@@ -1488,6 +1520,8 @@ class AutomationEngine:
                     await self._step_media(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "request":
                     await self._step_request(rule_id, step, f"{prefix}[{path} {num}/{total}]")
+                elif st == "offer":
+                    await self._step_offer(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "delay":
                     secs = step.get("seconds", 0) or 0
                     if secs > 0:
@@ -1622,6 +1656,130 @@ class AutomationEngine:
         else:
             self._trace(rule_id, "step", "MESSAGE_FAIL",
                         f"{tag} Message failed: {result.get('error')}", level="WARNING")
+
+    async def _step_offer(self, rule_id, step, tag):
+        """Ask somebody, and remember what to run if they say yes.
+
+        The message goes out through the same store as a plain message, tagged
+        so a client can render it with an Accept control rather than as text.
+        The action itself is held here, not in the message, so what runs is
+        whatever the rule said — not whatever came back over the wire.
+        """
+        from modules.messages_store import get_message_store
+
+        store = get_message_store()
+        if not store:
+            self._trace(rule_id, "step", "OFFER_SKIP",
+                        f"{tag} Message store unavailable", level="WARNING")
+            return
+
+        to_user = step.get("to_user")
+        message = (step.get("message") or "").strip()
+        expires_in = step.get("expires_in", DEFAULT_OFFER_EXPIRY)
+
+        self._expire_offers()
+        # An offer nobody answers must not accumulate. The oldest goes first:
+        # a stale question is the one least worth keeping.
+        while len(self._offers) >= MAX_PENDING_OFFERS:
+            oldest = min(self._offers, key=lambda t: self._offers[t]["created"])
+            self._offers.pop(oldest, None)
+
+        # One live offer per rule and recipient. A rule re-firing should replace
+        # its own question, not queue a second copy of it.
+        for token, existing in list(self._offers.items()):
+            if existing["rule_id"] == rule_id and existing["to_user"] == to_user:
+                self._offers.pop(token, None)
+
+        token = uuid.uuid4().hex[:12]
+        rule = self._find_rule(rule_id) or {}
+        self._offers[token] = {
+            "token": token,
+            "rule_id": rule_id,
+            "rule_name": rule.get("name") or rule_id,
+            "to_user": to_user,
+            "message": message,
+            "accept_steps": step.get("accept_steps") or [],
+            "created": time.time(),
+            "expires_at": time.time() + float(expires_in),
+            "state": "pending",
+        }
+
+        result = await store.send(
+            from_user=step.get("from_user") or "zmm",
+            to_user=to_user,
+            body=message,
+            source="automation_offer",
+        )
+        if result.get("success"):
+            self._trace(rule_id, "step", "OFFER",
+                        f"{tag} \u2753 offered {to_user}: {message[:60]}",
+                        offer_token=token)
+        else:
+            # Nobody was told, so nothing can be accepted.
+            self._offers.pop(token, None)
+            self._trace(rule_id, "step", "OFFER_FAIL",
+                        f"{tag} Offer failed: {result.get('error')}", level="WARNING")
+
+    def _expire_offers(self) -> int:
+        """Drop offers nobody answered in time. Lazy — no sweeper task."""
+        now = time.time()
+        stale = [t for t, o in self._offers.items()
+                 if o["state"] == "pending" and o["expires_at"] <= now]
+        for token in stale:
+            offer = self._offers.pop(token)
+            self._trace(offer["rule_id"], "offer", "EXPIRED",
+                        f"Offer to {offer['to_user']} expired unanswered",
+                        level="DEBUG")
+        return len(stale)
+
+    def get_offers(self, to_user: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Offers still awaiting an answer, newest first."""
+        self._expire_offers()
+        out = [
+            {k: v for k, v in o.items() if k != "accept_steps"}
+            for o in self._offers.values()
+            if o["state"] == "pending" and (not to_user or o["to_user"] == to_user)
+        ]
+        return sorted(out, key=lambda o: o["created"], reverse=True)
+
+    async def accept_offer(self, token: str,
+                           as_user: Optional[str] = None) -> Dict[str, Any]:
+        """Run what the rule said to run if this offer were accepted.
+
+        Removed before the sequence starts, so a double tap cannot run the
+        action twice.
+        """
+        self._expire_offers()
+        offer = self._offers.get(token)
+        if not offer:
+            return {"success": False, "error": "That offer has expired or was already answered"}
+        if as_user and offer["to_user"] != as_user:
+            return {"success": False, "error": "That offer was not addressed to you"}
+
+        self._offers.pop(token, None)
+        self._trace(offer["rule_id"], "offer", "ACCEPTED",
+                    f"{offer['to_user']} accepted: {offer['message'][:60]}")
+
+        task = asyncio.create_task(self._run_sequence(
+            offer["rule_id"], offer["rule_name"], offer["accept_steps"], "ACCEPT"))
+        # Tracked like any other sequence so a shutdown does not orphan it.
+        self._running_sequences[f"offer:{token}"] = task
+        return {"success": True, "rule_id": offer["rule_id"],
+                "steps": len(offer["accept_steps"])}
+
+    def decline_offer(self, token: str,
+                      as_user: Optional[str] = None) -> Dict[str, Any]:
+        """Answer no. Nothing runs; the offer simply goes away."""
+        self._expire_offers()
+        offer = self._offers.get(token)
+        if not offer:
+            return {"success": False, "error": "That offer has expired or was already answered"}
+        if as_user and offer["to_user"] != as_user:
+            return {"success": False, "error": "That offer was not addressed to you"}
+        self._offers.pop(token, None)
+        self._trace(offer["rule_id"], "offer", "DECLINED",
+                    f"{offer['to_user']} declined: {offer['message'][:60]}")
+        return {"success": True}
 
     async def _step_media(self, rule_id, step, tag):
         """Play radio/Tidal or control a media player (Cast/WiiM)."""
@@ -2293,7 +2451,9 @@ class AutomationEngine:
         return "string"
 
     def get_stats(self):
+        self._expire_offers()
         return {**self._stats, "total_rules":len(self.rules),
+                "pending_offers":len(self._offers),
                 "enabled_rules":sum(1 for r in self.rules if r.get("enabled",True)),
                 "trace_entries":len(self._trace_log),
                 "active_sustains":len(self._sustain_tracker),

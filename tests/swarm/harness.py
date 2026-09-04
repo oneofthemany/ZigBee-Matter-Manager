@@ -14,12 +14,33 @@ runnable without zigpy, a Matter server or a Nuki bridge.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+
+
+def stub_duckdb() -> None:
+    """Stand in for duckdb so modules that import it can be exercised without it.
+
+    Only the name is needed: nothing in these tests opens a database, and the
+    message store is driven through a fake. Mirrors how tests/fuel stubs
+    aiohttp for the provider parsers.
+    """
+    if "duckdb" in sys.modules:
+        return
+    stub = types.ModuleType("duckdb")
+
+    class _Conn:
+        def execute(self, *a, **k):
+            raise RuntimeError("the tests must not open a database")
+
+    stub.DuckDBPyConnection = _Conn
+    stub.connect = lambda *a, **k: _Conn()
+    sys.modules["duckdb"] = stub
 
 
 class Checker:
