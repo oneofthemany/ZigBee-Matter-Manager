@@ -174,6 +174,35 @@ def _check_devices(described: List[Dict[str, Any]],
             devices=[{"ieee": d["ieee"], "name": d["name"],
                       "capabilities": d["capabilities"]} for d in inert[:25]]))
 
+    # A capability that resolved but produced nothing is the harder case: it
+    # counts as present, so it never appears in capabilities_absent, yet every
+    # pattern needing it is blocked. Nearly always a device that declares a
+    # cluster it has not reported an attribute for, or a service that is
+    # configured but has no data yet.
+    silent: List[Dict[str, Any]] = []
+    for d in described:
+        offered = {o["capability"] for o in d["triggers"] + d["conditions"] + d["actions"]}
+        for cap in d["capabilities"]:
+            spec = CAPABILITIES.get(cap) or {}
+            if cap in offered:
+                continue
+            # A capability with nothing to offer in the vocabulary is silent by
+            # design, not by fault.
+            if not (spec.get("triggers") or spec.get("conditions") or spec.get("actions")):
+                continue
+            silent.append({"ieee": d["ieee"], "name": d["name"], "capability": cap,
+                           "expected_attributes": list(spec.get("attrs") or [])})
+    if silent:
+        caps = sorted({e["capability"] for e in silent})
+        out.append(_finding(
+            WARNING, "capabilities_silent",
+            f"{len(silent)} capability(s) resolved on a device but produced no "
+            f"trigger, condition or action ({', '.join(caps)}). They count as "
+            f"present, so they do not show as absent, but every pattern needing "
+            f"them is blocked. Usually a declared cluster the device has never "
+            f"reported, or a service with no data yet.",
+            entries=silent[:25]))
+
     # A capability nothing on the network provides is not a fault, but knowing
     # which ones are missing explains a whole class of absent suggestions.
     present = {c for d in described for c in d["capabilities"]}

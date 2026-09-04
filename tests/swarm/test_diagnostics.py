@@ -20,7 +20,8 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import (  # noqa: E402
-    Checker, FakeDevice, SAMPLE_NAMES, SAMPLE_ROOMS, SAMPLE_SETTINGS, sample_network,
+    Checker, FakeCapabilities, FakeDevice, SAMPLE_NAMES, SAMPLE_ROOMS,
+    SAMPLE_SETTINGS, sample_network,
 )
 
 from modules.swarm import diagnostics as dx  # noqa: E402
@@ -85,6 +86,35 @@ def run() -> Checker:
             f["devices_without_capabilities"]["level"] == "info")
     c.check("and says why", "state cache" in
             f["devices_without_capabilities"]["message"])
+
+    c.section("a capability that resolved but says nothing is reported")
+    # A plug declaring the metering cluster that has never reported a reading:
+    # `power` counts as present, so it never shows as absent, yet every pattern
+    # needing it is blocked.
+    quiet = sample_network()
+    quiet["0xmute"] = FakeDevice(
+        "0xmute", "Quiet Plug", {"state": "ON"},
+        commands=[{"command": "on", "label": "On", "endpoint_id": 1},
+                  {"command": "off", "label": "Off", "endpoint_id": 1}],
+        capabilities=FakeCapabilities(["on_off", "power_monitoring"]))
+    f = _codes(dx.diagnose(_net(quiet), rooms=SAMPLE_ROOMS))
+    c.check("flagged", "capabilities_silent" in f, list(f))
+    entry = next((e for e in f["capabilities_silent"]["entries"]
+                  if e["ieee"] == "0xmute"), None)
+    c.check("it names the device and capability",
+            entry and entry["capability"] == "power", entry)
+    c.check("and what it expected to see",
+            "power" in (entry or {}).get("expected_attributes", []), entry)
+    c.check("power is not also reported as absent",
+            "power" not in f["capabilities_absent"]["capabilities"],
+            f["capabilities_absent"]["capabilities"])
+    c.check("a working capability on the same device is not flagged",
+            not any(e["ieee"] == "0xmute" and e["capability"] == "on_off"
+                    for e in f["capabilities_silent"]["entries"]))
+
+    c.check("a healthy network reports none",
+            "capabilities_silent" not in _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS)),
+            _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS)).get("capabilities_silent"))
 
     c.section("absent capabilities explain a class of missing suggestions")
     f = _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS))["capabilities_absent"]
