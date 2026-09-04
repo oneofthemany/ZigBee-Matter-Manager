@@ -51,8 +51,19 @@ export function deviceType(ieee, summary) {
     // button even if it also advertises a switch/on_off cluster.
     const looksButton = keys.includes('action') || /\b(button|remote)\b/.test(name);
 
-    // Locks first — a lock's state keys (locked/lock_state) are unambiguous
-    if (keys.includes('locked') || keys.includes('lock_state')) return 'lock';
+    // What a device *reports* outranks what its clusters claim, because the
+    // claim is often a guess and the reading never is. A lock's locked/
+    // lock_state and a contact sensor's contact/is_open are unambiguous, while
+    // `light` is added to the capability list for anything advertising a level
+    // or colour cluster — which some contact sensors do, and which was showing
+    // door sensors as lights.
+    //
+    // Endpoint suffixes are stripped: a multi-gang device spells its readings
+    // contact_1, state_2 and so on.
+    const bases = new Set(keys.map(k => String(k).replace(/_\d+$/, '')));
+    if (bases.has('locked') || bases.has('lock_state')) return 'lock';
+    if (bases.has('contact') || bases.has('is_open') || bases.has('is_closed')
+            || bases.has('opening')) return 'contact';
 
     const caps = _capList(ieee);
     if (caps) {
@@ -67,7 +78,7 @@ export function deviceType(ieee, summary) {
         if (caps.includes('switch') || caps.includes('on_off')) return looksButton ? 'button' : 'socket';
         if (caps.includes('temperature_sensor') || caps.includes('humidity_sensor')) return 'climate';
     }
-    if (model.includes('magnet') || keys.includes('is_open') || keys.includes('contact')) return 'contact';
+    if (model.includes('magnet')) return 'contact';
     if (looksButton) return 'button';
     if (name.includes('fan')) return 'fan';
     if (name.includes('blind') || name.includes('curtain') || name.includes('cover')) return 'cover';

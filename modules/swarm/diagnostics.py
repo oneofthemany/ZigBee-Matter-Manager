@@ -54,6 +54,15 @@ def _finding(level: str, code: str, message: str, **extra) -> Dict[str, Any]:
     return {"level": level, "code": code, "message": message, **extra}
 
 
+def _room_sources(rooms: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """Provenance for each chamber, when the registry can be read."""
+    try:
+        from modules.swarm.network import load_room_meta
+        return load_room_meta()
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
 def diagnose(described: List[Dict[str, Any]],
              built: Optional[Dict[str, Any]] = None,
              rules: Optional[Iterable[Dict[str, Any]]] = None,
@@ -204,10 +213,28 @@ def _check_network(described: List[Dict[str, Any]],
 
     empty_rooms = sorted(set(rooms) - {d.get("room") for d in described})
     if empty_rooms:
+        # Naming the subsystem that defined it is the difference between a
+        # finding and a question. The registry unions configured chambers with
+        # rooms adopted from heating and from the floor plan, so a room drawn on
+        # the plan but never given devices is expected rather than stale — and
+        # two subsystems naming one room differently produce two chambers, one
+        # of which is then always empty.
+        meta = _room_sources(rooms)
+        entries = [{"id": r, "name": rooms[r],
+                    "source": (meta.get(r) or {}).get("source") or "unknown",
+                    "level": (meta.get(r) or {}).get("level")}
+                   for r in empty_rooms[:25]]
+        by_source: Dict[str, int] = {}
+        for e in entries:
+            by_source[e["source"]] = by_source.get(e["source"], 0) + 1
+        where = ", ".join(f"{n} from {src}" for src, n in sorted(by_source.items()))
         out.append(_finding(
             INFO, "rooms_empty",
-            f"{len(empty_rooms)} room(s) hold no devices",
-            rooms=[rooms[r] for r in empty_rooms[:25]]))
+            f"{len(empty_rooms)} room(s) hold no devices ({where}). A room the "
+            f"floor plan or heating defines but no device sits in is expected, "
+            f"not stale — but two subsystems naming one room differently make "
+            f"two chambers, and room-scoped patterns cannot pair across them.",
+            rooms=entries))
     return out
 
 

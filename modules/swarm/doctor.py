@@ -114,6 +114,10 @@ def _print_report(report: Dict[str, Any]) -> None:
                 extra = ""
                 if isinstance(item, dict) and item.get("blocked_slots"):
                     extra = f"  {DIM}blocked at: {', '.join(item['blocked_slots'])}{RESET}"
+                elif isinstance(item, dict) and item.get("source"):
+                    extra = f"  {DIM}from {item['source']}{RESET}"
+                elif isinstance(item, dict) and item.get("capability"):
+                    extra = f"  {DIM}{item['capability']}{RESET}"
                 print(f"            - {text}{extra}")
             if len(items) > len(shown):
                 print(f"            {DIM}... and {len(items) - len(shown)} more{RESET}")

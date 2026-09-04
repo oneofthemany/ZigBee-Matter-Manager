@@ -118,7 +118,7 @@ CONFIDENCE_MEDIUM = 4
 
 # Room registry
 
-_rooms_cache: Dict[str, Any] = {"mtime": None, "rooms": {}}
+_rooms_cache: Dict[str, Any] = {"mtime": None, "rooms": {}, "meta": {}}
 _rooms_lock = threading.Lock()
 
 
@@ -136,19 +136,40 @@ def load_rooms(config_path: str = CONFIG_PATH) -> Dict[str, str]:
     with _rooms_lock:
         if _rooms_cache["mtime"] == mtime:
             return _rooms_cache["rooms"]
+    rooms, meta = {}, {}
     try:
         import yaml
         from modules.chambers import build_registry
         with open(config_path) as f:
             cfg = yaml.safe_load(f) or {}
-        rooms = {c["id"]: c.get("name") or c["id"] for c in build_registry(cfg)}
+        for c in build_registry(cfg):
+            rooms[c["id"]] = c.get("name") or c["id"]
+            # Which subsystem defined it. The registry unions configured
+            # chambers with rooms adopted from heating and from the floor plan,
+            # so two subsystems naming one room differently produce two
+            # chambers — and without the source, an empty one is a mystery.
+            meta[c["id"]] = {"id": c["id"], "name": rooms[c["id"]],
+                             "source": c.get("source"), "level": c.get("level"),
+                             "adopted": bool(c.get("adopted"))}
     except Exception as e:
         logger.debug(f"Room registry unavailable: {e}")
-        rooms = {}
+        rooms, meta = {}, {}
     with _rooms_lock:
         _rooms_cache["mtime"] = mtime
         _rooms_cache["rooms"] = rooms
+        _rooms_cache["meta"] = meta
     return rooms
+
+
+def load_room_meta(config_path: str = CONFIG_PATH) -> Dict[str, Dict[str, Any]]:
+    """Chamber id -> its registry entry, including which subsystem defined it.
+
+    Shares load_rooms()'s cache; the label map is what everything else needs,
+    and only diagnostics needs the provenance.
+    """
+    load_rooms(config_path)
+    with _rooms_lock:
+        return dict(_rooms_cache["meta"])
 
 
 def room_assignments(settings: Optional[Dict[str, Any]]) -> Dict[str, str]:

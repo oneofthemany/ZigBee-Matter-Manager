@@ -114,6 +114,23 @@ def run() -> Checker:
     c.check("counted", "1 device" in f["message"], f["message"])
     c.check("named", f["devices"][0]["name"] == "Front Door Lock", f["devices"])
 
+    c.section("an empty room says which subsystem defined it")
+    # The registry unions configured chambers with rooms adopted from heating
+    # and from the floor plan, so an empty one is expected rather than stale —
+    # and without the source that is a question, not a finding.
+    rooms = {**SAMPLE_ROOMS, "attic": "Attic"}
+    f = _codes(dx.diagnose(described, rooms=rooms))["rooms_empty"]
+    c.check("the empty room is named",
+            any(r["name"] == "Attic" for r in f["rooms"]), f["rooms"])
+    c.check("each entry carries a source",
+            all("source" in r for r in f["rooms"]), f["rooms"])
+    c.check("the message groups by source", "from" in f["message"], f["message"])
+    c.check("and explains why an empty room may be fine",
+            "expected" in f["message"], f["message"])
+    c.check("rooms that hold devices are not listed",
+            not any(r["name"] in ("Hallway", "Lounge") for r in f["rooms"]),
+            f["rooms"])
+
     c.section("a device the resolver cannot read is surfaced")
     devices = sample_network()
     devices["0xmystery"] = FakeDevice("0xmystery", "Mystery Thing", {"foo": 1})

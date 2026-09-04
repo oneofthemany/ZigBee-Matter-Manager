@@ -20,7 +20,7 @@ function strip(text) {
 const m = { exports: {} };
 const STATE = { devices: [] };
 new Function('module', 'state', strip(humanize) + '\n' + strip(src) +
-  '\nmodule.exports = { createHumanizer, esc };')(m, STATE);
+  '\nmodule.exports = { createHumanizer, esc, deviceType };')(m, STATE);
 const { createHumanizer, esc } = m.exports;
 
 const fails = [];
@@ -51,6 +51,39 @@ const H = createHumanizer({
   player: id => ({ p1: 'Kitchen Speaker' }[id]),
   place: id => ({ shops: 'The Shops' }[id]),
 });
+
+section('a door sensor is a door sensor, whatever its clusters claim');
+// `light` is added to the capability list for anything advertising a level or
+// colour cluster, which some contact sensors do — and that was showing door
+// sensors as lights. What a device reports outranks what it claims.
+const { deviceType } = m.exports;
+STATE.devices = [
+  { ieee: '0xdoor2', capability_list: ['light', 'level_control', 'ias_zone', 'battery'] },
+  { ieee: '0xdoor3', capability_list: ['motion_sensor', 'ias_zone'] },
+  { ieee: '0xreallight', capability_list: ['light', 'level_control', 'on_off'] },
+  { ieee: '0xlock2', capability_list: ['light', 'on_off'] },
+];
+check('a contact reading beats a claimed light',
+      deviceType('0xdoor2', { friendly_name: 'Back Door', model: 'TS0203',
+                              state_keys: ['contact', 'battery', 'voltage'] }) === 'contact',
+      deviceType('0xdoor2', { friendly_name: 'Back Door', model: 'TS0203',
+                              state_keys: ['contact', 'battery'] }));
+check('and beats a claimed motion sensor',
+      deviceType('0xdoor3', { friendly_name: 'Front Door',
+                              state_keys: ['contact', 'tamper', 'zone_status'] }) === 'contact');
+check('is_open works too',
+      deviceType('0xdoor2', { friendly_name: 'Window', state_keys: ['is_open'] }) === 'contact');
+check('an endpoint-suffixed reading works',
+      deviceType('0xdoor2', { friendly_name: 'Door', state_keys: ['contact_1'] }) === 'contact');
+check('a lock reading still wins first',
+      deviceType('0xlock2', { friendly_name: 'Door', state_keys: ['locked', 'contact'] }) === 'lock');
+check('a real light is still a light',
+      deviceType('0xreallight', { friendly_name: 'Hall Light',
+                                  state_keys: ['state', 'brightness'] }) === 'light');
+check('a device with no contact reading is unaffected',
+      deviceType('0xreallight', { friendly_name: 'Lamp',
+                                  state_keys: ['state'] }) === 'light');
+STATE.devices = Object.values(DEVICES);
 
 section('escaping');
 check('angle brackets are escaped', esc('<b>x</b>') === '&lt;b&gt;x&lt;/b&gt;');
