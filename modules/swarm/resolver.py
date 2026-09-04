@@ -92,13 +92,16 @@ def _pick_attrs(state: Dict[str, Any],
     make outlet 2 untriggerable while still being switchable, since the action
     side has always fanned out per endpoint.
 
-    An exact unsuffixed match short-circuits — a device that reports plain
-    `power` has one reading, not an endpoint.
-    """
-    for name in candidates:
-        if name in state and name not in DIAGNOSTIC_ATTRS:
-            return [(None, name)]
+    Per-endpoint keys win over a bare one. A dual-gang socket reports `state`
+    *and* `state_1` *and* `state_2`: the bare key is an aggregate or an alias
+    for the first outlet, and the numbered pair is what can actually be
+    addressed. Short-circuiting on the bare name — as this did — collapsed such
+    a device back to one outlet, which is the very case the fan-out exists for.
 
+    A single suffixed endpoint is not treated as a fan-out: `brightness` beside
+    `brightness_1` is one control named twice, so the bare form is preferred and
+    the offer key stays stable.
+    """
     by_base: Dict[str, List[Tuple[int, str]]] = {}
     for key in state:
         if key in DIAGNOSTIC_ATTRS:
@@ -106,7 +109,17 @@ def _pick_attrs(state: Dict[str, Any],
         m = _ENDPOINT_SUFFIX.match(key)
         if m:
             by_base.setdefault(m.group(1), []).append((int(m.group(2)), key))
+
+    # Genuinely multi-endpoint first, wherever it appears among the candidates.
     for name in candidates:
+        found = by_base.get(name) or []
+        if len(found) >= 2:
+            return sorted(found)
+
+    # Then a bare reading, then a lone suffixed one.
+    for name in candidates:
+        if name in state and name not in DIAGNOSTIC_ATTRS:
+            return [(None, name)]
         found = by_base.get(name)
         if found:
             return sorted(found)

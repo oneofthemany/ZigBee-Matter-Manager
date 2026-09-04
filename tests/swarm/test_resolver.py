@@ -255,16 +255,55 @@ def run() -> Checker:
     c.check("a bare attribute reports no endpoint",
             offer(ld["triggers"], "on_off:turned_on")["endpoint_id"] is None)
 
-    c.section("an exact bare name is not treated as an endpoint")
+    c.section("per-endpoint keys beat an aggregate")
     from modules.swarm.resolver import _pick_attrs
-    c.check("a plain attribute short-circuits the scan",
-            _pick_attrs({"power": 5, "power_2": 1}, ["power"]) == [(None, "power")],
-            _pick_attrs({"power": 5, "power_2": 1}, ["power"]))
+    # A real dual-gang socket reports `state` AND `state_1` AND `state_2`: the
+    # bare key is an aggregate, the numbered pair is what can be addressed.
+    # Short-circuiting on the bare name collapsed such a device to one outlet,
+    # which is the case the fan-out exists for.
+    c.check("two endpoints win over the bare form",
+            _pick_attrs({"state": "ON", "state_1": "ON", "state_2": "OFF"}, ["state"])
+            == [(1, "state_1"), (2, "state_2")],
+            _pick_attrs({"state": "ON", "state_1": "ON", "state_2": "OFF"}, ["state"]))
+    c.check("a lone endpoint does not — one control named twice",
+            _pick_attrs({"brightness": 254, "brightness_1": 254}, ["brightness"])
+            == [(None, "brightness")])
+    c.check("a bare reading alone is used as-is",
+            _pick_attrs({"power": 5}, ["power"]) == [(None, "power")])
+    c.check("a multi-endpoint later candidate beats an earlier bare one",
+            _pick_attrs({"state": "ON", "on_1": 1, "on_2": 0}, ["state", "on"])
+            == [(1, "on_1"), (2, "on_2")])
     c.check("suffixed forms come back in endpoint order",
             _pick_attrs({"power_3": 1, "power_1": 2}, ["power"])
             == [(1, "power_1"), (3, "power_3")])
     c.check("nothing matching returns empty",
             _pick_attrs({"humidity": 5}, ["power"]) == [])
+
+    c.section("a real dual-gang socket reporting both forms fans out fully")
+    media = FakeDevice(
+        "0xmedia", "Socket - Media",
+        {"available": True, "brightness": 254, "brightness_1": 254,
+         "current_1": 0.1, "current_2": 0.0, "level": 254, "level_1": 254,
+         "on": True, "on_1": True, "on_2": False,
+         "power_1": 43.2, "power_2": 0.4, "state": "ON", "state_1": "ON",
+         "state_2": "OFF", "voltage_1": 241, "voltage_2": 241},
+        commands=[{"command": "on", "endpoint_id": 1}, {"command": "off", "endpoint_id": 1},
+                  {"command": "on", "endpoint_id": 2}, {"command": "off", "endpoint_id": 2}],
+        capabilities=FakeCapabilities(["on_off", "metering", "power_monitoring",
+                                       "multi_switch"]))
+    md = describe_device("0xmedia", media, "Socket - Media")
+    mk = {t["key"]: t["attribute"] for t in md["triggers"]}
+    c.check("on/off fans out to both outlets",
+            mk.get("on_off:turned_on") == "state_1"
+            and mk.get("on_off:turned_on:ep2") == "state_2", mk)
+    c.check("power fans out to both outlets",
+            mk.get("power:started") == "power_1"
+            and mk.get("power:started:ep2") == "power_2", mk)
+    c.check("it is a plug, not a light — no brightness command to back the claim",
+            md["device_class"] == "plug", md["device_class"])
+    c.check("brightness is not offered without a command for it",
+            not any(t["capability"] == "brightness" for t in md["triggers"]),
+            [t["key"] for t in md["triggers"]])
 
     c.section("a device reports what it says, for diagnostics")
     c.check("state keys are exposed",
