@@ -52,13 +52,14 @@ Around that core the app has grown into the hub for the house:
 - it **blocks the ads** — a network-wide DNS sinkhole running as an always-on sidecar;
 - it **tracks the driving** — trips, driving style, driver attribution and cheapest-fuel lookups, with an Android companion app and an Android Auto screen;
 - it **knows who's home** — per-user presence from phones, shared geofenced places, and RSSI-based room occupancy from the mesh itself;
+- it **suggests its own automations** — every device describes what it can trigger on and be told to do in one shared vocabulary, so the hub can propose the rules the house is missing rather than leaving you to wire them by hand;
 - it **is its own admin surface** — users, groups, scoped tokens, TOTP MFA, Cloudflare-tunnel remote access, an in-app code editor with test-and-rollback, in-app upgrades, and a bundled wiki.
 
 Everything runs on one Python event loop, with a DuckDB time-series store underneath and a single-page web UI on top. The design target is a production household: automatic NCP failure recovery, exponential backoff, a fast-path pipeline for latency-critical sensor events, and a watchdog that would rather restart than wedge.
 
 The deployment is **two processes, deliberately**. The app serves the house on `:8000`. A second, much smaller **[ZMM Manager](#-zmm-manager-the-sidecar)** sidecar serves `:8001` and does nothing but watch, recover and upgrade the app — so the surface you need when the app is broken is never part of the app that broke.
 
-**Current release:** `v29.02.08.2026`
+**Current release:** `v04.09.09.2026`
 
 ---
 
@@ -227,6 +228,61 @@ A full state-machine automation system that executes directly at the gateway wit
 </p>
 
 For full documentation see **[docs/automations.md](docs/automations.md)**.
+
+### 🐜 Swarm Intelligence
+
+The engine above speaks in attribute names and operators. Nothing in it knows
+that `occupancy` is a thing that can *become true*, that a lux reading is what
+"dark" means, or that a radar and a bulb in the same room are an obvious pair.
+Swarm Intelligence is the layer that does.
+
+Every device — Zigbee, Matter, Nuki, a presence user, the weather — is reduced
+to the same shape: a list of **offers**. A **trigger** is an edge worth waking a
+rule on, a **condition** is a state worth testing, an **action** is a command
+worth sending. Because they all speak one vocabulary of **35 capabilities**, any
+device composes with any other: the wiring between two devices is *derived*, not
+enumerated, so a device nobody anticipated is usable the moment its capabilities
+resolve.
+
+- **Stigmergy patterns** — 33 named shapes shipped across lighting, climate,
+  security, safety, energy, presence, maintenance and convenience. Data, not
+  code: a new one is a JSON file, and yours override the shipped set by id
+- **Add Rule suggests** — pick a device and it offers what that device could
+  actually do, in plain English, one tap. Everything lands in the existing
+  builder, pre-filled, with delay / gate / branch / parallel still one click away
+- **Coverage, not just suggestions** — a suggestion whose wiring already exists
+  comes back marked *active* rather than offered again, so the list doubles as a
+  report of what the house is *not* doing yet
+- **Virtual devices** — the weather, the house's thermal state and the
+  electricity tariff appear as ordinary devices, so "start heating before
+  somebody gets home" and "it's cooler outside than in" are ordinary rules
+- **Colour as a notification** — a light that holds a colour says something a
+  light that only switches cannot. A door left open turns a lamp amber; a leak
+  turns it red
+- **Ask first** — the `offer` step sends a message that can *act*: it runs its
+  stored sequence only if somebody says yes
+- **Diagnostics that name the fix** — a pattern that failed to load, one that
+  matched nothing, and a suggestion withheld because the rule already exists all
+  look identical from outside. Each is reported separately, with the blocking
+  slot named, and marked *provisional* while the app is still warming up
+
+<p align="center">
+  <img src="docs/images/screenshot-swarm-suggestions.jpg" alt="Add Rule showing ready-made suggestions for the selected device" width="90%">
+  <br><em>Add Rule — what this device could do, in plain English. Every option opens the full builder, already filled in</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/screenshot-automation-editor.jpg" alt="Rule editor with a live plain-English preview above the form" width="90%">
+  <br><em>The editor reads a rule back in the same words the list uses, live as you change it</em>
+</p>
+
+```bash
+# Why isn't the suggestion I expected showing up?
+curl localhost:8000/api/swarm/diagnostics
+python3 -m modules.swarm.doctor --explain presence_light_when_dark
+```
+
+For full documentation see **[docs/swarm-intelligence.md](docs/swarm-intelligence.md)**.
 
 ---
 
@@ -482,6 +538,7 @@ See **[docs/upgrades.md](docs/upgrades.md)**.
 - **Spectrum Analysis** — live 2.4 GHz energy scan across channels 11–26, with a background scanner storing history in DuckDB for interference correlation
 - **MQTT Explorer** — subscribe to `#` with topic and payload filtering, plus a publish tool, to correlate packet capture → debug log → MQTT output
 - **API Explorer** — the FastAPI route table as HTML, JSON and an interactive explorer at `/api-docs`
+- **Swarm triage** — why a device is invisible to automations, or a suggestion missing: what a device claims versus what it reports, which slot blocked a pattern in which room, and whether the report is old enough to be trusted yet. Runs live over HTTP, or offline from disk with `python3 -m modules.swarm.doctor` when the app is down
 
 <p align="center">
   <img src="docs/images/screenshot-debug-log.jpg" alt="Live debug log with per-device attribute reports" width="90%">
