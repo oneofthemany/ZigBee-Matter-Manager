@@ -1175,8 +1175,8 @@ window._aPd=async(id,sel)=>{const ieee=sel.value;const aS=document.querySelector
 window._aPa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o)return;const vo=JSON.parse(o.dataset?.vo||'[]');const typ=o.dataset?.type;const cur=typ==='boolean'?String(o.dataset.current).toLowerCase():'';
     const ieee=document.querySelector(`#p-${id} .pd`)?.value;const ptype=_dtype(ieee);
     const w=document.getElementById(`pv-${id}`);if(w)w.innerHTML=_valueInput('pv',id,ptype,o.value,typ,cur,vo);};
-window._aAddPrereq=()=>{if(prereqRows.length>=8)return;const nid=prereqIdC++;prereqRows.push(nid);const el=document.getElementById('pb');if(el)el.insertAdjacentHTML('beforeend',_renderPrereq(nid));};
-window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);const row=document.getElementById(`p-${id}`);if(row)row.remove();};
+window._aAddPrereq=()=>{if(prereqRows.length>=8)return;const nid=prereqIdC++;prereqRows.push(nid);const el=document.getElementById('pb');if(el)el.insertAdjacentHTML('beforeend',_renderPrereq(nid));_syncOptionalSections();window._aPreview();};
+window._aRmP=id=>{prereqRows=prereqRows.filter(r=>r!==id);const row=document.getElementById(`p-${id}`);if(row)row.remove();_syncOptionalSections();window._aPreview();};
 
 window._aPType = (id, sel) => {
     const ptype = sel.value;
@@ -1223,7 +1223,7 @@ window._aAddStep = (path, type) => {
     window._aPreview();
 };
 
-window._aRmStep=(sid,path)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');};
+window._aRmStep=(sid,path)=>{_syncTreeFromDOM(thenTree);_syncTreeFromDOM(elseTree);_removeFromTree(thenTree,sid);_removeFromTree(elseTree,sid);_renderStepTree('then');_renderStepTree('else');_syncOptionalSections();window._aPreview();};
 window._aSTC=(sid,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;_popCmds(sid,JSON.parse(o.dataset.cmds||'[]'));};
 window._aSDC=(sid,sel)=>{if(sel.value)_loadAttrs(sid,sel.value);};
 window._aICDev=(icId,sel)=>{if(sel.value)_loadICAttrs(icId,sel.value);};

@@ -15,9 +15,12 @@ function strip(text) {
   return text.replace(/^import .*$/gm, '').replace(/^export /gm, '');
 }
 
+// deviceType() reads the shared device list off state.js for capability hints,
+// so it is stubbed with the same devices the humanizer is given.
 const m = { exports: {} };
-new Function('module', strip(humanize) + '\n' + strip(src) +
-  '\nmodule.exports = { createHumanizer, esc };')(m);
+const STATE = { devices: [] };
+new Function('module', 'state', strip(humanize) + '\n' + strip(src) +
+  '\nmodule.exports = { createHumanizer, esc };')(m, STATE);
 const { createHumanizer, esc } = m.exports;
 
 const fails = [];
@@ -39,6 +42,8 @@ const DEVICES = {
   'user::sean': { ieee: 'user::sean', friendly_name: 'Sean', model: 'Presence User',
                   state_keys: ['presence', 'place'] },
 };
+
+STATE.devices = Object.values(DEVICES);
 
 const H = createHumanizer({
   device: ieee => DEVICES[ieee],

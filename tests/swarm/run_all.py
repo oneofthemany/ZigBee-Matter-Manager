@@ -30,7 +30,7 @@ MODULES = ["test_resolver", "test_network", "test_virtual", "test_stigmergy",
 # The browser code is exercised by slicing the real functions out of the shipped
 # .js and running them, which is the only way to catch an undefined identifier
 # inside a function body.
-JS_TESTS = ["test_swarm_suggest.js"]
+JS_TESTS = ["test_sentence.js", "test_swarm_suggest.js"]
 
 
 def run_node() -> tuple[list[str], list[str]]:
