@@ -30,6 +30,8 @@ ALLOWED_DIRS = [
     "modules/media",
     "modules/media/players",
     "modules/media/sources",
+    "modules/swarm",
+    "modules/swarm/patterns",
     "routes",
     "static",
     "static/therapy",
