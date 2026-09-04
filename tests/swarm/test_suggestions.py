@@ -134,6 +134,32 @@ def run() -> Checker:
     c.check("every battery device gets its own alert",
             len(batteries) == 3, [b["sentence"] for b in batteries])
 
+    c.section("a dual-gang device suggests per outlet, not per device")
+    # Outlet 1 may be the washing machine and outlet 2 the dryer, so "tell me
+    # when it finishes" is two rules. A button's four press types share an
+    # endpoint and stay one suggestion.
+    from harness import FakeCapabilities, FakeDevice as _FD
+    devs = sample_network()
+    devs["0xdual"] = _FD(
+        "0xdual", "Socket - Media",
+        {"state_1": "ON", "state_2": "OFF", "power_1": 43.2, "power_2": 0.4},
+        commands=[{"command": "on", "label": "On", "endpoint_id": 1},
+                  {"command": "off", "label": "Off", "endpoint_id": 1},
+                  {"command": "on", "label": "On", "endpoint_id": 2},
+                  {"command": "off", "label": "Off", "endpoint_id": 2}],
+        capabilities=FakeCapabilities(["on_off", "power_monitoring", "multi_switch"]))
+    dn = dict(SAMPLE_NAMES); dn["0xdual"] = "Socket - Media"
+    ds = dict(SAMPLE_SETTINGS); ds["0xdual"] = {"chamber": "lounge"}
+    dbuilt = sg.build(describe_network(devs, dn, ds, SAMPLE_ROOMS)["devices"],
+                      rules=[], rooms=SAMPLE_ROOMS, patterns=STORE.all())
+    fin = [x for x in dbuilt["suggestions"]
+           if x["pattern_id"] == "appliance_finished" and "Socket - Media" in x["sentence"]]
+    c.check("both outlets are suggested", len(fin) == 2, [x["sentence"] for x in fin])
+    c.check("outlet 2 is named", any("(outlet 2)" in x["sentence"] for x in fin),
+            [x["sentence"] for x in fin])
+    c.check("they are separate suggestions", len({x["id"] for x in fin}) == 2)
+    c.check("nothing was rejected", dbuilt["rejected"] == [], dbuilt["rejected"])
+
     c.section("notify slots offer a recipient rather than multiplying")
     leaks = _by_sentence(built, "finishes")
     c.check("one appliance-finished suggestion, not one per person",
