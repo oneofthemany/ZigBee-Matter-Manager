@@ -69,6 +69,9 @@ import {
     frameSliderInput,
     frameGroupCommand,
     frameGroupColor,
+    frameSetHidden,
+    frameSetGroupMembersHidden,
+    frameToggleVisibilityEdit,
     framesHandleDeviceUpdate,
     openFrameBuilder,
     saveFrame,
@@ -292,6 +295,10 @@ window.frameColor = frameColor;
 window.frameSliderInput = frameSliderInput;
 window.frameGroupCommand = frameGroupCommand;
 window.frameGroupColor = frameGroupColor;
+// Visibility editing — hide a device's tile so a group tile can stand in for it.
+window.frameSetHidden = frameSetHidden;
+window.frameSetGroupMembersHidden = frameSetGroupMembersHidden;
+window.frameToggleVisibilityEdit = frameToggleVisibilityEdit;
 // Frame builder
 window.openFrameBuilder = openFrameBuilder;
 window.saveFrame = saveFrame;

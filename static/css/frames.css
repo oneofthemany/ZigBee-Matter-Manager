@@ -126,6 +126,14 @@
     pointer-events: none;
 }
 
+/* Only visible while editing visibility — everywhere else a hidden cell isn't
+   rendered at all. Faded and outlined rather than removed, so the mode reads as
+   "here is what you have hidden" instead of an empty screen. */
+.frame-cell.is-hidden {
+    opacity: .45;
+    border-style: dashed;
+}
+
 /* A group's own tile — same shape as a device cell, tinted to show it
    controls several devices at once rather than being one of them. */
 .frame-cell.is-group {
@@ -176,6 +184,42 @@
     gap: .2rem;
     color: var(--text-muted);
     font-size: .65rem;
+}
+
+.cell-eye {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 0;
+    padding: .1rem .25rem;
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: .75rem;
+    cursor: pointer;
+}
+
+.cell-eye:hover {
+    background: var(--bg-surface-sunken);
+    color: var(--text-primary);
+}
+
+/* Marked, because on a faded cell it is the only way back. It sits in the head
+   rather than the body, so the offline rule above never disables it. */
+.frame-cell.is-hidden .cell-eye {
+    color: var(--honey);
+}
+
+.frame-visibility-banner {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding: .5rem .75rem;
+    border: 1px dashed var(--honey);
+    border-radius: 8px;
+    background: var(--bg-surface-sunken);
+    color: var(--text-secondary);
+    font-size: .8rem;
 }
 
 .cell-body {

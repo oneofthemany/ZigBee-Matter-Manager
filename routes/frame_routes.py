@@ -19,6 +19,7 @@ from modules.chambers import build_registry, levels as chamber_levels
 from modules.frames import (
     CELL_LABELS,
     CELL_ORDER,
+    HIDDEN_KEY,
     VALID_SPLITS,
     build_auto_frame,
     clean_frames,
@@ -33,6 +34,12 @@ logger = logging.getLogger("routes.frames")
 
 CONFIG_PATH = "./config/config.yaml"
 FRAMES_PATH = "./data/frames.json"
+SETTINGS_PATH = "./data/device_settings.json"
+
+#: Cap on one visibility change. Same reasoning as the chamber bulk assign:
+#: large enough for "hide every member of this group" on a real hive, small
+#: enough that a malformed client cannot walk the whole device table.
+MAX_BULK = 500
 
 
 def _load_config() -> Dict[str, Any]:
@@ -96,12 +103,15 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
         split: str = "chamber",
         chambers: Optional[str] = None,
         kinds: Optional[str] = None,
+        hidden: bool = False,
     ):
         """
         A frame, laid out automatically.
 
         An unknown ``split`` falls back to chamber rather than erroring — a bad
         query param shouldn't leave the user staring at a blank dashboard.
+
+        ``hidden=true`` includes hidden devices, for the visibility editor.
         """
         try:
             cfg = _load_config()
@@ -113,6 +123,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 include_kinds=_csv(kinds),
                 levels=chamber_levels(cfg),
                 device_groups=_device_groups(),
+                include_hidden=hidden,
             )
             return {"success": True, **frame}
         except Exception as e:
@@ -143,6 +154,96 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             "splits": list(VALID_SPLITS),
             "kinds": [{"kind": k, "label": CELL_LABELS.get(k, k)} for k in CELL_ORDER],
         }
+
+    # visibility
+
+    def _set_hidden(svc, ieee: str, hidden: bool) -> None:
+        """
+        Write (or clear) one device's Frames visibility.
+
+        Merges into the existing settings dict so unrelated keys — chamber,
+        polling interval, reporting config — survive untouched, and drops the
+        key entirely when shown again rather than storing a false.
+        """
+        existing = dict(svc.device_settings.get(ieee) or {})
+        if hidden:
+            existing[HIDDEN_KEY] = True
+        else:
+            existing.pop(HIDDEN_KEY, None)
+        if existing:
+            svc.device_settings[ieee] = existing
+        else:
+            svc.device_settings.pop(ieee, None)
+
+    @app.get("/api/frames/hidden")
+    async def get_hidden():
+        """Every device hidden from Frames, as a list of ieees."""
+        try:
+            svc = get_zigbee_service()
+            if svc is None:
+                return {"success": True, "hidden": []}
+            return {
+                "success": True,
+                "hidden": [
+                    ieee for ieee, settings in (svc.device_settings or {}).items()
+                    if isinstance(settings, dict) and settings.get(HIDDEN_KEY)
+                ],
+            }
+        except Exception as e:
+            logger.error(f"Failed to read hidden devices: {e}")
+            return {"success": False, "error": str(e), "hidden": []}
+
+    @app.post("/api/frames/hidden")
+    async def set_hidden(req: Request):
+        """
+        Hide or show devices. Body: ``{ieee | ieees: [...], hidden: bool}``.
+
+        One route for one and many because hiding every member of a group is
+        the reason this exists — a per-device round trip for that would be a
+        worse API for the only case that motivated it.
+
+        Partial success is normal and reported: unknown ieees are skipped and
+        named rather than failing the whole batch, which matters when a group
+        still lists a device that has since left the hive.
+        """
+        try:
+            body = await req.json()
+        except Exception as e:
+            return {"success": False, "error": f"invalid JSON: {e}"}
+
+        raw_ieees = body.get("ieees")
+        if raw_ieees is None:
+            single = body.get("ieee")
+            raw_ieees = [single] if single else []
+        if not isinstance(raw_ieees, list) or not raw_ieees:
+            return {"success": False, "error": "ieee or ieees required"}
+        if len(raw_ieees) > MAX_BULK:
+            return {"success": False, "error": f"too many devices (max {MAX_BULK})"}
+
+        hidden = bool(body.get("hidden"))
+
+        try:
+            svc = get_zigbee_service()
+            if svc is None:
+                return {"success": False, "error": "zigbee service unavailable"}
+
+            changed: List[str] = []
+            skipped: List[str] = []
+            for raw_ieee in raw_ieees:
+                ieee = str(raw_ieee or "").strip().lower()
+                if not ieee or ieee not in svc.devices:
+                    skipped.append(str(raw_ieee))
+                    continue
+                _set_hidden(svc, ieee, hidden)
+                changed.append(ieee)
+
+            if changed:
+                svc._save_json(SETTINGS_PATH, svc.device_settings)
+
+            return {"success": True, "hidden": hidden, "changed": changed, "skipped": skipped}
+        except Exception as e:
+            logger.error(f"Failed to set Frames visibility: {e}")
+            return {"success": False, "error": str(e)}
 
     # saved frames
 
@@ -175,8 +276,8 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             return {"success": False, "error": str(e)}
 
     # NOTE: the two routes below take a path param and MUST stay declared after
-    # /auto, /cells and /kinds — FastAPI matches in declaration order, so moving
-    # them up would swallow those literals as frame ids.
+    # /auto, /cells, /kinds and /hidden — FastAPI matches in declaration order,
+    # so moving them up would swallow those literals as frame ids.
 
     @app.delete("/api/frames/{frame_id}")
     async def remove_frame(frame_id: str):
@@ -193,7 +294,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
             return {"success": False, "error": str(e)}
 
     @app.get("/api/frames/{frame_id}")
-    async def get_frame(frame_id: str):
+    async def get_frame(frame_id: str, hidden: bool = False):
         """Render a saved frame against the live hive."""
         try:
             frame = next((f for f in _load_frames() if f["id"] == (frame_id or "").strip().lower()), None)
@@ -201,7 +302,8 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 return {"success": False, "error": f"no frame '{frame_id}'", "groups": [], "total": 0}
             cfg = _load_config()
             rendered = render_saved_frame(
-                frame, _devices(), build_registry(cfg), chamber_levels(cfg), device_groups=_device_groups()
+                frame, _devices(), build_registry(cfg), chamber_levels(cfg),
+                device_groups=_device_groups(), include_hidden=hidden,
             )
             return {"success": True, **rendered, "frame": frame}
         except Exception as e:

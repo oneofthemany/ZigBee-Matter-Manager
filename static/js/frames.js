@@ -27,6 +27,17 @@ let draft = null;
 /** Active frame tab id, or null when the frame has no tabs. */
 let activeTab = null;
 
+/**
+ * Visibility editing.
+ *
+ * Hiding a device is what lets a group tile stand in for its members: once the
+ * lounge bulbs are a group, the four bulb tiles are noise. But a hidden device
+ * has no tile to tap, so unhiding needs a mode where hidden cells come back —
+ * dimmed, with an eye on every cell — rather than a settings screen listing
+ * devices out of the context you hid them in.
+ */
+let editVisibility = false;
+
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -511,6 +522,50 @@ function cellIcon(cell) {
     return KIND_ICONS[cell.kind] || KIND_ICONS.unknown;
 }
 
+/**
+ * The eye that hides or shows one device, drawn only while editing visibility.
+ *
+ * A permanent per-tile button would clutter every cell for something you do
+ * once, so it lives in the mode instead.
+ */
+function eyeHtml(cell) {
+    if (!editVisibility) return '';
+    const hidden = !!cell.hidden;
+    return `
+        <button class="cell-eye ${hidden ? 'is-hidden' : ''}" type="button"
+                onclick="window.frameSetHidden('${esc(cell.ieee)}', ${!hidden})"
+                aria-pressed="${hidden}"
+                title="${hidden ? 'Show in Frames' : 'Hide from Frames'}"
+                aria-label="${hidden ? 'Show' : 'Hide'} ${esc(cell.name)} in Frames">
+            <i class="fas ${hidden ? 'fa-eye-slash' : 'fa-eye'}"></i>
+        </button>`;
+}
+
+/** How many of a group's members are currently hidden, of those on this frame. */
+function groupMemberVisibility(cell) {
+    const members = new Set(cell.members || []);
+    const cells = (frame?.groups || []).flatMap(g => g.cells)
+        .filter(c => !c.is_group && members.has(c.ieee));
+    return { total: cells.length, hidden: cells.filter(c => c.hidden).length };
+}
+
+/**
+ * The one-tap version of the reason hiding exists: a group tile can retire its
+ * members' tiles, leaving the group as the only thing you tap.
+ */
+function groupMembersHtml(cell) {
+    if (!editVisibility) return '';
+    const { total, hidden } = groupMemberVisibility(cell);
+    if (!total) return '';
+    const hideAll = hidden < total;
+    return `
+        <button class="btn btn-sm btn-outline-secondary w-100"
+                onclick="window.frameSetGroupMembersHidden(${cell.group_id}, ${hideAll})">
+            <i class="fas ${hideAll ? 'fa-eye-slash' : 'fa-eye'}"></i>
+            ${hideAll ? `Hide ${total} member${total === 1 ? '' : 's'}` : `Show ${total} member${total === 1 ? '' : 's'}`}
+        </button>`;
+}
+
 function cellInnerHtml(cell) {
     if (cell.is_group) {
         const memberCount = (cell.members || []).length;
@@ -524,7 +579,7 @@ function cellInnerHtml(cell) {
                     <i class="fas fa-layer-group"></i>${memberCount}
                 </span>
             </div>
-            <div class="cell-body">${body}</div>
+            <div class="cell-body">${body}${groupMembersHtml(cell)}</div>
         `;
     }
 
@@ -555,6 +610,7 @@ function cellInnerHtml(cell) {
             <span class="cell-icon"><i class="fas ${cellIcon(cell)}"></i></span>
             <span class="cell-name" title="${esc(name)}">${esc(name)}</span>
             ${badges ? `<span class="cell-badges">${badges}</span>` : ''}
+            ${eyeHtml(cell)}
         </div>
         <div class="cell-body">${body}</div>
     `;
@@ -566,6 +622,7 @@ function cellHtml(cell) {
         'frame-cell',
         cell.is_group ? 'is-group' : '',
         cell.available ? '' : 'is-offline',
+        cell.hidden ? 'is-hidden' : '',
         active ? 'is-active' : '',
     ].filter(Boolean).join(' ');
 
@@ -582,9 +639,11 @@ export async function loadFrame() {
     if (loading) return;
     loading = true;
     try {
+        // Hidden cells are only fetched while editing visibility — the rest of
+        // the time the backend leaves them out entirely.
         const url = current.type === 'saved'
-            ? `/api/frames/${encodeURIComponent(current.id)}`
-            : `/api/frames/auto?split=${encodeURIComponent(current.split)}`;
+            ? `/api/frames/${encodeURIComponent(current.id)}${editVisibility ? '?hidden=1' : ''}`
+            : `/api/frames/auto?split=${encodeURIComponent(current.split)}${editVisibility ? '&hidden=1' : ''}`;
         const res = await fetch(url);
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'failed to build frame');
@@ -615,14 +674,19 @@ export function renderFrame() {
 
     if (!frame.groups?.length) {
         // A saved frame that filters everything out is a different problem from
-        // a hive with nothing assigned yet — say which one it is.
+        // a hive with nothing assigned yet — say which one it is. Hidden devices
+        // are a third: an empty frame you hid yourself looks identical to an
+        // empty one you never filled, so say so rather than let it read as a bug.
         const custom = current.type === 'saved';
-        grid.innerHTML = `<div class="frame-empty">
+        grid.innerHTML = visibilityBannerHtml() + `<div class="frame-empty">
             <i class="fas fa-border-none fa-2x mb-2"></i>
             <div>${custom ? 'This frame has nothing in it.' : 'No devices to show yet.'}</div>
             <div class="small mt-1">${custom
                 ? 'Edit the frame to widen what it includes.'
                 : 'Assign devices to chambers from the Devices tab.'}</div>
+            ${editVisibility ? '' : `<div class="small mt-1">
+                Everything here may be hidden — the eye in the toolbar brings hidden devices back.
+            </div>`}
         </div>`;
         return;
     }
@@ -648,7 +712,7 @@ export function renderFrame() {
             }).join('')}
         </div>` : '';
 
-    grid.innerHTML = tabBar + shown.map(g => `
+    grid.innerHTML = visibilityBannerHtml() + tabBar + shown.map(g => `
         <section class="frame-group" data-group="${esc(g.key)}">
             <div class="frame-group-head">
                 <h6 class="frame-group-title">${esc(g.label)}</h6>
@@ -659,6 +723,17 @@ export function renderFrame() {
             </div>
         </section>
     `).join('');
+}
+
+/** Says what the eyes on the cells are for, and how to leave the mode. */
+function visibilityBannerHtml() {
+    if (!editVisibility) return '';
+    return `
+        <div class="frame-visibility-banner">
+            <i class="fas fa-eye"></i>
+            <span>Tap a cell's eye to hide it from Frames. Hidden cells are shown faded.</span>
+            <button class="btn btn-sm btn-primary ms-auto" onclick="window.frameToggleVisibilityEdit()">Done</button>
+        </div>`;
 }
 
 export function setFrameTab(id) {
@@ -704,6 +779,7 @@ export function framesHandleDeviceUpdate(ieee) {
         for (const el of document.querySelectorAll(`.frame-cell[data-ieee="${CSS.escape(ieee)}"]`)) {
             if (sliderBeingDragged(el)) continue;
             el.classList.toggle('is-offline', !cell.available);
+            el.classList.toggle('is-hidden', !!cell.hidden);
             el.classList.toggle('is-active', cellIsActive(cell));
             el.innerHTML = cellInnerHtml(cell);
         }
@@ -1341,6 +1417,81 @@ export function frameGroupColor(groupId, hex) {
     return frameGroupCommand(groupId, 'hs_color', [h, s]);
 }
 
+// visibility
+
+/**
+ * Hide or show devices in Frames.
+ *
+ * The flag rides on device_settings, so it is one setting for the whole hive
+ * rather than per frame — "I never want a tile for this bulb" is a statement
+ * about the bulb, not about the dashboard you happened to be looking at.
+ */
+async function postHidden(ieees, hidden) {
+    const res = await fetch('/api/frames/hidden', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ieees, hidden }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'could not change visibility');
+    return data;
+}
+
+/** Every cell for these ieees, across the whole frame. */
+function cellsFor(ieees) {
+    const wanted = new Set(ieees);
+    return (frame?.groups || []).flatMap(g => g.cells).filter(c => !c.is_group && wanted.has(c.ieee));
+}
+
+export async function frameSetHidden(ieee, hidden) {
+    try {
+        const data = await postHidden([ieee], hidden);
+        if (!data.changed.length) throw new Error('device is no longer in the hive');
+        // No refetch: the cell is already on screen (visibility editing fetches
+        // hidden cells too), so flipping the flag locally is the whole update.
+        for (const cell of cellsFor([ieee])) cell.hidden = hidden;
+        framesHandleDeviceUpdate(ieee);
+    } catch (e) {
+        window.toast.error(e.message);
+    }
+}
+
+export async function frameSetGroupMembersHidden(groupId, hidden) {
+    const cell = (frame?.groups || []).flatMap(g => g.cells)
+        .find(c => c.is_group && c.group_id === groupId);
+    const members = cell?.members || [];
+    if (!members.length) return;
+
+    try {
+        // Every member is sent, not just the ones on this frame — a member in
+        // another chamber is exactly the tile you'd otherwise be left hunting.
+        const data = await postHidden(members, hidden);
+        for (const c of cellsFor(data.changed)) c.hidden = hidden;
+        renderFrame();
+        window.toast.success(
+            `${hidden ? 'Hid' : 'Restored'} ${data.changed.length} device${data.changed.length === 1 ? '' : 's'}`);
+    } catch (e) {
+        window.toast.error(e.message);
+    }
+}
+
+/** Enter or leave visibility editing. Both directions need a refetch. */
+export function frameToggleVisibilityEdit() {
+    editVisibility = !editVisibility;
+    syncVisibilityButton();
+    return loadFrame();
+}
+
+function syncVisibilityButton() {
+    const btn = document.getElementById('framesVisibility');
+    if (!btn) return;
+    btn.classList.toggle('active', editVisibility);
+    btn.setAttribute('aria-pressed', String(editVisibility));
+    btn.title = editVisibility ? 'Done hiding devices' : 'Hide or show devices';
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = `fas ${editVisibility ? 'fa-check' : 'fa-eye'}`;
+}
+
 
 export function initFrames() {
     // The dashboard renders Frames inside a tab and only loads it when shown.
@@ -1358,6 +1509,7 @@ export function initFrames() {
     });
     document.getElementById('framesDelete')?.addEventListener('click', () => deleteCurrentFrame());
     document.getElementById('framesRefresh')?.addEventListener('click', () => loadFrame());
+    document.getElementById('framesVisibility')?.addEventListener('click', () => frameToggleVisibilityEdit());
 
     // Delegated because cells are rebuilt on every state change; the listener
     // has to outlive the elements it guards.

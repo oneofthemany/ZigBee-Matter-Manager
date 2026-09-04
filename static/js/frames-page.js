@@ -12,6 +12,7 @@ import {
     initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate, setFrameTab,
     openFrameBuilder, saveFrame, deleteCurrentFrame, frameCommand, frameSetpoint,
     frameColor, frameSliderInput, frameGroupCommand, frameGroupColor,
+    frameSetHidden, frameSetGroupMembersHidden, frameToggleVisibilityEdit,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 } from './frames.js';
@@ -22,6 +23,7 @@ Object.assign(window, {
     setFrameTab, openFrameBuilder, saveFrame, deleteCurrentFrame,
     frameCommand, frameSetpoint, frameColor, frameSliderInput,
     frameGroupCommand, frameGroupColor,
+    frameSetHidden, frameSetGroupMembersHidden, frameToggleVisibilityEdit,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 });

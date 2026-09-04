@@ -140,6 +140,21 @@ def _state(device: Dict[str, Any]) -> Dict[str, Any]:
     return s if isinstance(s, dict) else {}
 
 
+#: Where a device's "don't show me a tile" flag lives.
+#:
+#: Namespaced because device_settings is shared with every other subsystem and a
+#: bare ``hidden`` would not say hidden from what — the device table, MQTT
+#: discovery and Frames are three different answers. Rides on device_settings
+#: for the same reasons ``chamber`` does: see docs/frames.md.
+HIDDEN_KEY = "frames_hidden"
+
+
+def is_hidden(device: Dict[str, Any]) -> bool:
+    """True when the user has hidden this device from Frames."""
+    settings = device.get("settings")
+    return bool(isinstance(settings, dict) and settings.get(HIDDEN_KEY))
+
+
 def control_kind(device: Dict[str, Any]) -> Optional[str]:
     """The device's most specific control surface, or None if it isn't controllable."""
     caps = _caps(device)
@@ -370,7 +385,7 @@ def resolve_cell(device: Dict[str, Any]) -> Dict[str, Any]:
 
     Returns::
 
-        {ieee, name, chamber, kind, features, endpoints, readouts, badges, available}
+        {ieee, name, chamber, hidden, kind, features, endpoints, readouts, badges, available}
 
     ``kind == "unknown"`` means no control surface and nothing readable — the
     renderer still shows name + last seen.
@@ -387,6 +402,7 @@ def resolve_cell(device: Dict[str, Any]) -> Dict[str, Any]:
         "ieee": device.get("ieee"),
         "name": device.get("friendly_name") or device.get("ieee"),
         "chamber": (device.get("settings") or {}).get("chamber"),
+        "hidden": is_hidden(device),
         "kind": kind,
         "features": features(device, kind),
         # Per-gang detail. One entry for an ordinary device, one per gang for a
@@ -462,6 +478,9 @@ def resolve_group_cell(group: Dict[str, Any]) -> Dict[str, Any]:
         "is_group": True,
         "name": group.get("name") or f"Group {group.get('id')}",
         "chamber": group.get("chamber"),
+        # A group tile is the thing hiding its members exists to leave behind,
+        # so it is never itself hidden — unassign its chamber to drop it.
+        "hidden": False,
         "kind": kind,
         "features": group_features(group, kind),
         "readouts": [],
@@ -496,6 +515,7 @@ def build_auto_frame(
     levels: Optional[List[dict]] = None,
     tabs: Optional[List[dict]] = None,
     device_groups: Optional[List[dict]] = None,
+    include_hidden: bool = False,
 ) -> Dict[str, Any]:
     """
     Group devices into a frame.
@@ -526,6 +546,10 @@ def build_auto_frame(
     used only for split="chamber": a group assigned a chamber gets its own
     controllable cell in that chamber's section, via ``resolve_group_cell``.
     Groups without a chamber don't appear in Frames at all.
+
+    ``include_hidden`` returns hidden devices anyway, still flagged. Only the
+    visibility editor asks for that — it is the one place you need to see a
+    device in order to unhide it.
     """
     if split not in VALID_SPLITS:
         split = SPLIT_CHAMBER
@@ -542,6 +566,11 @@ def build_auto_frame(
     # in a device-type section.
     if split == SPLIT_CHAMBER:
         cells.extend(resolve_group_cell(g) for g in (device_groups or []) if g.get("chamber"))
+
+    # Before every other filter: a hidden device is one the user has said they
+    # never want to see, not one this particular frame happens to exclude.
+    if not include_hidden:
+        cells = [c for c in cells if not c["hidden"]]
 
     if include_chambers:
         wanted = set(include_chambers)
@@ -801,6 +830,7 @@ def render_saved_frame(
     chambers: Optional[List[dict]] = None,
     levels: Optional[List[dict]] = None,
     device_groups: Optional[List[dict]] = None,
+    include_hidden: bool = False,
 ) -> Dict[str, Any]:
     """Build a saved frame's layout. Thin wrapper — a saved frame is just filters."""
     frame = build_auto_frame(
@@ -814,6 +844,7 @@ def render_saved_frame(
         levels=levels,
         tabs=saved.get("tabs"),
         device_groups=device_groups,
+        include_hidden=include_hidden,
     )
     frame["id"] = saved.get("id")
     frame["name"] = saved.get("name")
