@@ -53,6 +53,51 @@ def run() -> Checker:
     c.check("timing reported", isinstance(report["took_ms"], float))
     c.check("patterns_loaded is info", _codes(report)["patterns_loaded"]["level"] == "info")
 
+    c.section("a report says how far it can be trusted")
+    # A service that has not polled yet looks exactly like one that is
+    # misconfigured. Only the clock tells them apart, so the report carries it.
+    from modules.swarm.diagnostics import WARMUP_SECONDS, WARMUP_SENSITIVE
+    early = dx.diagnose(described, rooms=SAMPLE_ROOMS, uptime_s=12.0,
+                        provider_status={"refreshes": 0})
+    c.check("not settled during warm-up", early["settled"] is False, early["readiness"])
+    c.check("the warm-up is explained", "warming_up" in _codes(early))
+    c.check("and says how long it had been up",
+            "12s after start" in _codes(early)["warming_up"]["message"],
+            _codes(early)["warming_up"]["message"])
+    c.check("it names both reasons",
+            "warm-up" in _codes(early)["warming_up"]["message"]
+            and "refreshed" in _codes(early)["warming_up"]["message"],
+            _codes(early)["warming_up"]["message"])
+    c.check("findings that read what devices report are marked provisional",
+            all(f.get("provisional") for f in early["findings"]
+                if f["code"] in WARMUP_SENSITIVE),
+            [f["code"] for f in early["findings"] if f["code"] in WARMUP_SENSITIVE])
+    c.check("and counted", early["counts"]["provisional"] >= 1, early["counts"])
+    c.check("findings true immediately are not marked",
+            not any(f.get("provisional") for f in early["findings"]
+                    if f["code"] in ("patterns_loaded", "devices_unplaced",
+                                     "rooms_empty")),
+            [f["code"] for f in early["findings"] if f.get("provisional")])
+
+    late = dx.diagnose(described, rooms=SAMPLE_ROOMS,
+                       uptime_s=WARMUP_SECONDS + 10, provider_status={"refreshes": 4})
+    c.check("settled once warmed and fetched", late["settled"] is True, late["readiness"])
+    c.check("nothing provisional", late["counts"]["provisional"] == 0)
+    c.check("no warm-up notice", "warming_up" not in _codes(late))
+
+    # Warmed up but the services have never run: still not settled.
+    stalled = dx.diagnose(described, rooms=SAMPLE_ROOMS,
+                          uptime_s=WARMUP_SECONDS + 10, provider_status={"refreshes": 0})
+    c.check("an unfetched service alone keeps it unsettled",
+            stalled["settled"] is False, stalled["readiness"])
+
+    # The CLI cannot know uptime; withholding everything there would make the
+    # offline report useless.
+    offline = dx.diagnose(described, rooms=SAMPLE_ROOMS)
+    c.check("unknown uptime is treated as settled", offline["settled"] is True)
+    c.check("so nothing is withheld", offline["counts"]["provisional"] == 0)
+    c.check("readiness still reported", "readiness" in offline)
+
     c.section("an empty network is an error, not a silent pass")
     report = dx.diagnose([], rooms=SAMPLE_ROOMS)
     c.check("flagged", "no_devices" in _codes(report))
@@ -135,6 +180,13 @@ def run() -> Checker:
     f = _codes(dx.diagnose(described + [tariff], rooms=SAMPLE_ROOMS))
     c.check("reported as silent", "capabilities_silent" in f, list(f))
     c.check("and not as a bad declaration", "capabilities_unproven" not in f, list(f))
+    # There was a "condition only" finding here. Every capability that offers a
+    # condition also offers a trigger, so it could only ever fire for a device
+    # offering nothing at all — which capabilities_silent already reports, and
+    # more precisely. It said "can be read as a condition" about a device with
+    # no conditions.
+    c.check("no misleading condition-only finding",
+            "devices_without_offers" not in f, list(f))
 
 
     c.section("absent capabilities explain a class of missing suggestions")

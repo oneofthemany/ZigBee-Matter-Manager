@@ -253,7 +253,13 @@ def run() -> Checker:
     c.check("200", r.status_code == 200, r.status_code)
     report = r.json()
     c.check("findings returned", report["findings"], report)
-    c.check("counts present", set(report["counts"]) == {"error", "warning", "info"})
+    c.check("counts present",
+            {"error", "warning", "info", "provisional"} == set(report["counts"]),
+            report["counts"])
+    c.check("readiness reported", "readiness" in report, list(report))
+    c.check("uptime is measured from when the routes mounted",
+            isinstance(report["readiness"]["uptime_s"], (int, float)),
+            report["readiness"])
 
     c.section("explain")
     r = client.get("/api/swarm/explain/presence_light_when_dark")

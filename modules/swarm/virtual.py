@@ -146,6 +146,11 @@ class VirtualDeviceProvider:
                 TARIFF_IEEE, "Electricity Tariff", "Energy Pricing", ["tariff"]),
         }
         self._task: Optional[asyncio.Task] = None
+        # How many refreshes have completed, and when the last one did. A
+        # diagnostic cannot tell "this service is misconfigured" from "this
+        # service has not fetched yet" without knowing whether it has ever run.
+        self.refreshes = 0
+        self.last_refresh: Optional[float] = None
 
     # Lifecycle
 
@@ -166,6 +171,29 @@ class VirtualDeviceProvider:
     def automation_devices(self) -> Dict[str, VirtualDevice]:
         """The registry the automation engine merges in."""
         return dict(self.devices)
+
+    def status(self) -> Dict[str, Any]:
+        """Whether this has run, and which services actually produced anything.
+
+        A virtual device holding only `available` after several refreshes is a
+        service with no data to give; the same device before the first refresh
+        is simply not ready. Reporting the first as a fault and the second as
+        working would be exactly backwards.
+        """
+        return {
+            "refreshes": self.refreshes,
+            "last_refresh": self.last_refresh,
+            "running": bool(self._task and not self._task.done()),
+            "devices": {
+                ieee: {
+                    "name": dev.friendly_name,
+                    # `available` is set at construction, so it does not count
+                    # as having reported.
+                    "reported": sorted(k for k in dev.state if k != "available"),
+                }
+                for ieee, dev in self.devices.items()
+            },
+        }
 
     async def _loop(self) -> None:
         # Services come up around the same time this does; a first pass
@@ -195,6 +223,9 @@ class VirtualDeviceProvider:
             changed = self.devices[ieee].apply(values)
             if changed:
                 changes[ieee] = changed
+
+        self.refreshes += 1
+        self.last_refresh = time.time()
 
         if self._evaluator:
             for ieee, changed in changes.items():

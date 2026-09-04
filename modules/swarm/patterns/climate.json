@@ -182,7 +182,10 @@
     "slots": {
       "cheap": {
         "role": "trigger",
-        "offer": "tariff:off_peak_started"
+        "offer": [
+          "tariff:off_peak_started",
+          "tariff:got_cheap"
+        ]
       },
       "plug": {
         "role": "action",
@@ -213,6 +216,9 @@
         "off"
       ],
       "cooldown": 600
+    },
+    "params": {
+      "cheap_rate_p": 12.0
     }
   },
   {

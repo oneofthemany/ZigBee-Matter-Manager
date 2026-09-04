@@ -77,6 +77,8 @@ PARAMS: Dict[str, Dict[str, Any]] = {
     "clear_hold_s":   {"label": "Wait before off",   "type": "int",   "default": 120,        "unit": "s",   "min": 0,    "max": 3600},
     "open_hold_s":    {"label": "Open for",          "type": "int",   "default": 300,        "unit": "s",   "min": 0,    "max": 7200},
     "near_home_min":  {"label": "Minutes from home", "type": "int",   "default": 15,         "unit": "min", "min": 1,    "max": 120},
+    "dear_rate_p":    {"label": "Rate above",        "type": "float", "default": 25.0,       "unit": "p/kWh", "min": 0,  "max": 200},
+    "cheap_rate_p":   {"label": "Rate below",        "type": "float", "default": 12.0,       "unit": "p/kWh", "min": 0,  "max": 200},
 }
 
 
@@ -678,25 +680,43 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         ],
         "actions": [],
     },
-
     "tariff": {
         "label": "Tariff",
         "kind": "virtual",
         "scope": SCOPE_HOUSE,
         "excludes": ["availability"],
         "tags": ["energy"],
-        "attrs": ["is_off_peak"],
+        # Two ways a tariff is cheap. An agile tariff has a *cheapest window*,
+        # which is relative and moves daily; a fixed or two-rate tariff has only
+        # a price, and comparing it against a number is the only question
+        # available. Modelling just the window left a household with a working
+        # unit rate and no agile window unable to say anything about
+        # electricity at all.
+        "attrs": ["is_off_peak", "unit_rate"],
         "triggers": [
             {"id": "off_peak_started", "label": "cheap-rate electricity starts",
+             "attrs": ["is_off_peak"],
              "operator": "eq", "value": 1, "weight": 2, "polarity": 1},
             {"id": "off_peak_ended", "label": "cheap-rate electricity ends",
-             "operator": "eq", "value": 0, "polarity": -1},
+             "attrs": ["is_off_peak"], "operator": "eq", "value": 0, "polarity": -1},
+            {"id": "got_cheap", "label": "electricity drops below {value}",
+             "attrs": ["unit_rate"], "operator": "lt",
+             "value": param("cheap_rate_p"), "weight": 1, "polarity": 1},
+            {"id": "got_dear", "label": "electricity rises above {value}",
+             "attrs": ["unit_rate"], "operator": "gt",
+             "value": param("dear_rate_p"), "polarity": -1},
         ],
         "conditions": [
             {"id": "is_off_peak", "label": "electricity is at the cheap rate",
-             "operator": "eq", "value": 1, "polarity": 1},
+             "attrs": ["is_off_peak"], "operator": "eq", "value": 1, "polarity": 1},
             {"id": "is_peak", "label": "electricity is at the expensive rate",
-             "operator": "eq", "value": 0, "polarity": -1},
+             "attrs": ["is_off_peak"], "operator": "eq", "value": 0, "polarity": -1},
+            {"id": "is_cheap", "label": "electricity is below {value}",
+             "attrs": ["unit_rate"], "operator": "lt",
+             "value": param("cheap_rate_p"), "polarity": 1},
+            {"id": "is_dear", "label": "electricity is above {value}",
+             "attrs": ["unit_rate"], "operator": "gt",
+             "value": param("dear_rate_p"), "polarity": -1},
         ],
         "actions": [],
     },

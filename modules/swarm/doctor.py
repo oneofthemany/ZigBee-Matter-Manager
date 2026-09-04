@@ -86,13 +86,19 @@ def load_offline() -> Dict[str, Any]:
 def _print_report(report: Dict[str, Any]) -> None:
     status = f"{GREEN}OK{RESET}" if report["ok"] else f"{RED}PROBLEMS{RESET}"
     counts = report["counts"]
+    prov = counts.get("provisional") or 0
     print(f"\n{BOLD}Swarm Intelligence — diagnostics{RESET}   {status}"
           f"   ({counts['error']} error, {counts['warning']} warning, "
-          f"{counts['info']} info)  {DIM}{report['took_ms']}ms{RESET}\n")
+          f"{counts['info']} info)  {DIM}{report['took_ms']}ms{RESET}")
+    if prov:
+        print(f"  {YELLOW}{prov} finding(s) provisional — the app is still "
+              f"warming up.{RESET}")
+    print()
 
     for f in report["findings"]:
         colour = LEVEL_COLOUR.get(f["level"], "")
-        print(f"  {colour}{f['level'].upper():<7}{RESET} {BOLD}{f['code']}{RESET}")
+        tag = f"  {YELLOW}(provisional){RESET}" if f.get("provisional") else ""
+        print(f"  {colour}{f['level'].upper():<7}{RESET} {BOLD}{f['code']}{RESET}{tag}")
         print(f"          {f['message']}")
         if f.get("fix"):
             print(f"          {DIM}fix: {f['fix']}{RESET}")

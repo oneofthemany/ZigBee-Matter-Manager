@@ -213,6 +213,48 @@ def run() -> Checker:
             "unit_rate" not in p.devices[TARIFF_IEEE].state,
             p.devices[TARIFF_IEEE].state)
 
+    c.section("the provider reports whether it has ever run")
+    p = _provider(weather=FakeWeather(temperature_2m=8.0))
+    st = p.status()
+    c.check("no refreshes before it runs", st["refreshes"] == 0, st)
+    c.check("nothing reported yet",
+            all(not d["reported"] for d in st["devices"].values()), st["devices"])
+    asyncio.run(p.refresh())
+    st = p.status()
+    c.check("counted after a refresh", st["refreshes"] == 1, st)
+    c.check("and timestamped", st["last_refresh"] is not None)
+    c.check("what actually reported is listed",
+            "temperature" in st["devices"][WEATHER_IEEE]["reported"],
+            st["devices"][WEATHER_IEEE])
+    c.check("available alone does not count as having reported",
+            st["devices"][TARIFF_IEEE]["reported"] == [],
+            st["devices"][TARIFF_IEEE])
+
+    c.section("a fixed tariff is still usable without an agile window")
+    # A household with a unit rate and no cheapest window: modelling only the
+    # window left it unable to say anything about electricity at all.
+    from modules.swarm.resolver import describe_device
+    fixed = _provider(tariff=FakeTariff(rate=24.6, window=None))
+    asyncio.run(fixed.refresh())
+    ft = fixed.devices[TARIFF_IEEE]
+    c.check("the rate is published", ft.state.get("unit_rate") == 24.6, ft.state)
+    c.check("and no off-peak flag is invented",
+            "is_off_peak" not in ft.state, ft.state)
+    fd = describe_device(TARIFF_IEEE, ft, "Tariff")
+    keys = {o["key"] for o in fd["triggers"] + fd["conditions"]}
+    c.check("rate-based offers are available",
+            {"tariff:got_cheap", "tariff:is_dear"} <= keys, keys)
+    c.check("window offers are not, since there is no window",
+            not any(k.startswith("tariff:off_peak") for k in keys), keys)
+    c.check("so the device is no longer silent", bool(fd["triggers"]), fd["triggers"])
+
+    agile = _provider(tariff=FakeTariff(rate=7.5, off_peak=True))
+    asyncio.run(agile.refresh())
+    ad = describe_device(TARIFF_IEEE, agile.devices[TARIFF_IEEE], "Tariff")
+    akeys = {o["key"] for o in ad["triggers"]}
+    c.check("an agile tariff gets both shapes",
+            {"tariff:off_peak_started", "tariff:got_cheap"} <= akeys, akeys)
+
     c.section("a service that is absent or throwing does not break the rest")
     p = _provider()
     asyncio.run(p.refresh())

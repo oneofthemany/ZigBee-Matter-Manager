@@ -132,6 +132,12 @@ def run() -> Checker:
     c.check("an empty list is refused",
             any("must be" in e for e in validate(bad)), validate(bad))
 
+    cheap = store.get("off_peak_run_appliance")
+    c.check("the cheap-rate pattern accepts a window or a price",
+            cheap["slots"]["cheap"]["offer"]
+            == ["tariff:off_peak_started", "tariff:got_cheap"],
+            cheap["slots"]["cheap"]["offer"])
+
     battery = store.get("battery_low_alert")
     c.check("the shipped battery pattern accepts both shapes",
             battery["slots"]["low"]["offer"] == ["battery:low", "battery:low_flag"],

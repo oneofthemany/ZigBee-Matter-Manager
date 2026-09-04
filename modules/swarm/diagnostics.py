@@ -29,6 +29,26 @@ logger = logging.getLogger("modules.swarm.diagnostics")
 # swarm is working but is blind to part of the house; `info` is context.
 ERROR, WARNING, INFO = "error", "warning", "info"
 
+# How long after start a report cannot yet be trusted about what devices and
+# services report.
+#
+# Nothing is wrong during this window — a Zigbee sensor may not have woken, the
+# weather may not have been fetched, a tariff may not have polled — but the
+# findings that read a device's *reports* will describe a half-filled network as
+# a broken one. The virtual provider alone waits 5s and then refreshes on a
+# 60s cycle, so a report at 20s uptime is guaranteed to be premature about it.
+WARMUP_SECONDS = 150
+
+# Findings whose truth depends on devices and services having reported at least
+# once. Everything else — patterns loading, rooms, rules — is true immediately.
+WARMUP_SENSITIVE = frozenset({
+    "capabilities_unproven",
+    "capabilities_silent",
+    "capabilities_absent",
+    "devices_without_capabilities",
+    "patterns_unmatched",
+})
+
 
 def _finding(level: str, code: str, message: str, **extra) -> Dict[str, Any]:
     return {"level": level, "code": code, "message": message, **extra}
@@ -38,7 +58,9 @@ def diagnose(described: List[Dict[str, Any]],
              built: Optional[Dict[str, Any]] = None,
              rules: Optional[Iterable[Dict[str, Any]]] = None,
              rooms: Optional[Dict[str, str]] = None,
-             commands_available: bool = True) -> Dict[str, Any]:
+             commands_available: bool = True,
+             uptime_s: Optional[float] = None,
+             provider_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Full triage report for the swarm as it currently stands.
 
     `commands_available` is False when running against the state cache rather
@@ -46,6 +68,13 @@ def diagnose(described: List[Dict[str, Any]],
     which the cache does not hold, so every actuator would otherwise be reported
     as a device with no capabilities. A report must not raise an alarm about a
     limitation of its own input.
+
+    `uptime_s` and `provider_status` let the report say how far it can be
+    trusted. Within WARMUP_SECONDS of start, or before the virtual provider has
+    refreshed, the findings that read what a device *reports* are marked
+    provisional rather than presented as defects — a service that has not
+    polled yet looks identical to one that is misconfigured, and only the clock
+    tells them apart.
     """
     started = time.monotonic()
     rules = list(rules or [])
@@ -60,19 +89,62 @@ def diagnose(described: List[Dict[str, Any]],
     if built is not None:
         findings += _check_suggestions(built, store)
 
+    readiness = _readiness(uptime_s, provider_status)
+    if not readiness["settled"]:
+        for f in findings:
+            if f["code"] in WARMUP_SENSITIVE:
+                f["provisional"] = True
+        findings.append(_finding(
+            INFO, "warming_up",
+            f"This report was taken {readiness['uptime_s'] or 0:.0f}s after "
+            f"start{readiness['note']}. Findings marked provisional describe "
+            f"what devices and services have reported so far, which is not yet "
+            f"everything they will. Re-run once settled before treating any of "
+            f"them as a defect.",
+            **{k: v for k, v in readiness.items() if k != "note"}))
+
     order = {ERROR: 0, WARNING: 1, INFO: 2}
     findings.sort(key=lambda f: (order.get(f["level"], 3), f["code"]))
+    provisional = sum(1 for f in findings if f.get("provisional"))
 
     return {
         "generated": time.time(),
         "took_ms": round((time.monotonic() - started) * 1000, 1),
         "ok": not any(f["level"] == ERROR for f in findings),
+        "settled": readiness["settled"],
         "counts": {
             "error": sum(1 for f in findings if f["level"] == ERROR),
             "warning": sum(1 for f in findings if f["level"] == WARNING),
             "info": sum(1 for f in findings if f["level"] == INFO),
+            "provisional": provisional,
         },
+        "readiness": {k: v for k, v in readiness.items() if k != "note"},
         "findings": findings,
+    }
+
+
+def _readiness(uptime_s: Optional[float],
+               provider_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Whether the report can be trusted about what devices and services report.
+
+    Unknown uptime is treated as settled: the CLI has no idea how long the app
+    has been up, and withholding every finding there would make the offline
+    report useless.
+    """
+    warming = uptime_s is not None and uptime_s < WARMUP_SECONDS
+    refreshes = (provider_status or {}).get("refreshes")
+    unfetched = refreshes == 0
+    notes = []
+    if warming:
+        notes.append(f"within the {WARMUP_SECONDS}s warm-up")
+    if unfetched:
+        notes.append("before the virtual services first refreshed")
+    return {
+        "settled": not (warming or unfetched),
+        "uptime_s": round(uptime_s, 1) if uptime_s is not None else None,
+        "warmup_seconds": WARMUP_SECONDS,
+        "provider_refreshes": refreshes,
+        "note": (", " + " and ".join(notes)) if notes else "",
     }
 
 
@@ -163,16 +235,6 @@ def _check_devices(described: List[Dict[str, Any]],
             f"not hold. Use /api/swarm/diagnostics for a definitive read.",
             devices=[{"ieee": d["ieee"], "name": d["name"],
                       "model": d.get("model")} for d in mute[:25]]))
-
-    inert = [d for d in described
-             if d["capabilities"] and not d["triggers"] and not d["actions"]]
-    if inert and commands_available:
-        out.append(_finding(
-            INFO, "devices_without_offers",
-            f"{len(inert)} device(s) have capabilities but offer no trigger or "
-            f"action — they can be read as a condition only",
-            devices=[{"ieee": d["ieee"], "name": d["name"],
-                      "capabilities": d["capabilities"]} for d in inert[:25]]))
 
     # A capability the device declared and then contradicted. Dropped from its
     # capability list so it cannot mis-classify the device — an IAS Zone contact

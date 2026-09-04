@@ -9,6 +9,7 @@ creates a rule or sends a command. Rule creation stays on the existing
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, Optional, Union
 
 from fastapi import Body, FastAPI, HTTPException
@@ -34,6 +35,11 @@ def register_swarm_routes(app: FastAPI,
     reach automations through it, so describing that view describes everything
     an automation can actually address.
     """
+
+    # When the routes were mounted, which is app start. The report uses it to
+    # say how far it can be trusted: a service that has not polled yet looks
+    # exactly like one that is misconfigured.
+    started_at = time.monotonic()
 
     def engine():
         return automation_getter() if callable(automation_getter) else automation_getter
@@ -243,10 +249,23 @@ def register_swarm_routes(app: FastAPI,
         """Triage report: what is broken, what is blind, and why.
 
         Safe on a live system — it reads state and changes nothing.
+
+        Carries a `readiness` block and marks findings provisional while the
+        app is still warming up, because the findings that read what a device
+        reports describe a half-filled network as a broken one.
         """
         described, built = _build()
+        provider = None
+        try:
+            from modules.swarm.virtual import get_virtual_provider
+            vp = get_virtual_provider()
+            provider = vp.status() if vp else None
+        except Exception as exc:
+            logger.debug(f"Virtual provider status unavailable: {exc}")
         return dx.diagnose(described, built=built, rules=_rules(),
-                           rooms=load_rooms())
+                           rooms=load_rooms(),
+                           uptime_s=time.monotonic() - started_at,
+                           provider_status=provider)
 
     @app.get("/api/swarm/explain/{pattern_id}", tags=["swarm"])
     async def explain_pattern(pattern_id: str):
