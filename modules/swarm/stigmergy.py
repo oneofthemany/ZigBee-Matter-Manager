@@ -122,21 +122,26 @@ def validate(bp: Dict[str, Any]) -> List[str]:
         role = spec.get("role")
         if role not in ROLES:
             err(f"{bid}.{name}: role must be one of {ROLES}, got {role!r}")
-        key = spec.get("offer")
-        if not key or ":" not in str(key):
-            err(f"{bid}.{name}: 'offer' must be '<capability>:<offer_id>'")
+        # A slot may name one offer or several alternatives — the same intent
+        # reached two ways, such as a battery percentage or a bare low flag.
+        keys = spec.get("offer")
+        keys = keys if isinstance(keys, list) else [keys]
+        if not keys or any(not k or ":" not in str(k) for k in keys):
+            err(f"{bid}.{name}: 'offer' must be '<capability>:<offer_id>', "
+                f"or a list of them")
             continue
-        cap_id, offer_id = str(key).split(":", 1)
-        spec_cap = CAPABILITIES.get(cap_id)
-        if not spec_cap:
-            err(f"{bid}.{name}: unknown capability {cap_id!r}")
-            continue
-        if role in ROLES:
-            pool = spec_cap.get(role + "s", [])
-            # A button's press offers fan out per value, so the declared id is a
-            # prefix of the keys the resolver emits.
-            if not any(o["id"] == offer_id or o.get("expand") for o in pool):
-                err(f"{bid}.{name}: {cap_id} has no {role} {offer_id!r}")
+        for key in keys:
+            cap_id, offer_id = str(key).split(":", 1)
+            spec_cap = CAPABILITIES.get(cap_id)
+            if not spec_cap:
+                err(f"{bid}.{name}: unknown capability {cap_id!r}")
+                continue
+            if role in ROLES:
+                pool = spec_cap.get(role + "s", [])
+                # A button's press offers fan out per value, so the declared id
+                # is a prefix of the keys the resolver emits.
+                if not any(o["id"] == offer_id or o.get("expand") for o in pool):
+                    err(f"{bid}.{name}: {cap_id} has no {role} {offer_id!r}")
         for pid in (spec.get("params") or {}):
             if pid not in PARAMS:
                 err(f"{bid}.{name}: unknown parameter {pid!r}")

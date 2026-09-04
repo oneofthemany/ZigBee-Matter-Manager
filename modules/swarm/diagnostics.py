@@ -174,6 +174,30 @@ def _check_devices(described: List[Dict[str, Any]],
             devices=[{"ieee": d["ieee"], "name": d["name"],
                       "capabilities": d["capabilities"]} for d in inert[:25]]))
 
+    # A capability the device declared and then contradicted. Dropped from its
+    # capability list so it cannot mis-classify the device — an IAS Zone contact
+    # sensor arrives declaring motion, and would otherwise read as a presence
+    # sensor — but still reported, because the cause is sometimes a bad guess
+    # upstream and sometimes a name this vocabulary does not know yet. Reading
+    # "declares power, reports power_1" is how the endpoint-suffix gap was found.
+    unproven: List[Dict[str, Any]] = []
+    for d in described:
+        for cap in d.get("unproven_capabilities") or []:
+            spec = CAPABILITIES.get(cap) or {}
+            unproven.append({"ieee": d["ieee"], "name": d["name"], "capability": cap,
+                             "expected_attributes": list(spec.get("attrs") or []),
+                             "reports": sorted(d.get("state_keys") or [])})
+    if unproven:
+        caps = sorted({e["capability"] for e in unproven})
+        out.append(_finding(
+            WARNING, "capabilities_unproven",
+            f"{len(unproven)} capability(s) were declared by a device that "
+            f"reports nothing backing them ({', '.join(caps)}), so they are "
+            f"ignored rather than allowed to mis-describe the device. Either the "
+            f"declaration is a guess, or the device names the reading something "
+            f"this vocabulary does not recognise — compare the two lists.",
+            entries=unproven[:25]))
+
     # A capability that resolved but produced nothing is the harder case: it
     # counts as present, so it never appears in capabilities_absent, yet every
     # pattern needing it is blocked. Nearly always a device that declares a
@@ -335,12 +359,14 @@ def offers_for_slot(slot: Dict[str, Any],
     Answers "does anything on this network make this offer at all?", which is
     the first question when a slot will not fill.
     """
-    key = slot.get("offer", "")
+    keys = slot.get("offer", "")
+    keys = keys if isinstance(keys, list) else [keys]
     role = slot.get("role", "trigger")
     out = []
     for d in described:
         for offer in d.get(role + "s", []):
-            if offer["key"] == key or offer["key"].startswith(key + ":"):
+            if any(offer["key"] == k or offer["key"].startswith(str(k) + ":")
+                   for k in keys):
                 out.append({"ieee": d["ieee"], "name": d["name"],
                             "room_label": d.get("room_label"),
                             "device_class": d.get("device_class"),

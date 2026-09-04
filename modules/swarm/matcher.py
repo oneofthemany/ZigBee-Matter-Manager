@@ -38,14 +38,20 @@ def _offers_of(device: Dict[str, Any], role: str) -> List[Dict[str, Any]]:
     return device.get(role + "s", [])
 
 
-def _offer_matches(offer: Dict[str, Any], key: str) -> bool:
-    """A slot's offer key, allowing for offers that fan out per value.
+def _offer_matches(offer: Dict[str, Any], key: Any) -> bool:
+    """Whether an offer satisfies a slot's `offer` declaration.
 
-    A button's press offers are emitted as `button:pressed:single`,
-    `button:pressed:double` and so on, so a pattern asking for `button:pressed`
-    matches any of them.
+    A slot may name several alternatives, any of which will do — a battery
+    percentage or a bare low flag express the same intent, and a device has one
+    or the other rather than both.
+
+    Suffixes are matched as a prefix, because offers fan out: a button's press
+    types become `button:pressed:single`, and a dual-gang socket's second
+    outlet becomes `power:started:ep2`.
     """
-    return offer["key"] == key or offer["key"].startswith(key + ":")
+    keys = key if isinstance(key, list) else [key]
+    return any(offer["key"] == k or offer["key"].startswith(str(k) + ":")
+               for k in keys)
 
 
 def _candidates(devices: List[Dict[str, Any]], spec: Dict[str, Any]

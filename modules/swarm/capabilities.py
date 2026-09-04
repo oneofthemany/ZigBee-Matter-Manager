@@ -372,11 +372,26 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "label": "Battery",
         "kind": "sensor",
         "tags": ["diagnostic", "maintenance"],
-        "attrs": ["battery", "battery_percentage_remaining"],
-        "triggers": [{"id": "low", "label": "{device} battery falls below {value}",
-                      "operator": "lt", "value": param("battery_pct")}],
-        "conditions": [{"id": "is_low", "label": "{device} battery is low",
-                        "operator": "lt", "value": param("battery_pct")}],
+        # Two shapes in the wild: a percentage from the power-configuration
+        # cluster, and a bare low flag from the IAS Zone status bitfield. An
+        # IAS contact or motion sensor reports only the flag, so a
+        # percentage-only capability left the devices most in need of a
+        # low-battery warning without one.
+        "attrs": ["battery", "battery_percentage_remaining", "battery_low"],
+        "triggers": [
+            {"id": "low", "label": "{device} battery falls below {value}",
+             "attrs": ["battery", "battery_percentage_remaining"],
+             "operator": "lt", "value": param("battery_pct")},
+            {"id": "low_flag", "label": "{device} reports a low battery",
+             "attrs": ["battery_low"], "operator": "eq", "value": True},
+        ],
+        "conditions": [
+            {"id": "is_low", "label": "{device} battery is low",
+             "attrs": ["battery", "battery_percentage_remaining"],
+             "operator": "lt", "value": param("battery_pct")},
+            {"id": "is_low_flag", "label": "{device} battery is low",
+             "attrs": ["battery_low"], "operator": "eq", "value": True},
+        ],
         "actions": [],
     },
 

@@ -53,9 +53,14 @@ def run() -> Checker:
     c.section("every shipped pattern references a real offer")
     for p in store.all():
         for name, spec in p["slots"].items():
-            cap, offer_id = spec["offer"].split(":", 1)
-            pool = CAPABILITIES[cap][spec["role"] + "s"]
-            ok = any(o["id"] == offer_id or o.get("expand") for o in pool)
+            # A slot may name one offer or a list of alternatives.
+            keys = spec["offer"]
+            keys = keys if isinstance(keys, list) else [keys]
+            ok = True
+            for key in keys:
+                cap, offer_id = key.split(":", 1)
+                pool = CAPABILITIES[cap][spec["role"] + "s"]
+                ok = ok and any(o["id"] == offer_id or o.get("expand") for o in pool)
             if not c.check(f"{p['id']}.{name} -> {spec['offer']}", ok):
                 break
 
@@ -113,6 +118,24 @@ def run() -> Checker:
     c.check("scope is checked", any("scope must be" in e for e in validate(bad)))
 
     c.check("a valid pattern has no errors", validate(_minimal()) == [], validate(_minimal()))
+
+    c.section("a slot may accept any of several offers")
+    # A battery percentage and a bare low flag express the same intent, and a
+    # device has one or the other rather than both.
+    alt = _minimal()
+    alt["slots"]["a"]["offer"] = ["presence:detected", "contact:opened"]
+    c.check("a list of offers is accepted", validate(alt) == [], validate(alt))
+    bad = _minimal(); bad["slots"]["a"]["offer"] = ["presence:detected", "presence:nope"]
+    c.check("every alternative is checked",
+            any("no trigger 'nope'" in e for e in validate(bad)), validate(bad))
+    bad = _minimal(); bad["slots"]["a"]["offer"] = []
+    c.check("an empty list is refused",
+            any("must be" in e for e in validate(bad)), validate(bad))
+
+    battery = store.get("battery_low_alert")
+    c.check("the shipped battery pattern accepts both shapes",
+            battery["slots"]["low"]["offer"] == ["battery:low", "battery:low_flag"],
+            battery["slots"]["low"]["offer"])
 
     c.section("literal steps may reference slots")
     good = _minimal()

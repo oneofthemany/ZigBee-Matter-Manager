@@ -269,9 +269,16 @@ def _profile_capabilities(dev: Any, ieee: str) -> List[str]:
 
 
 def device_capabilities(ieee: str, dev: Any, state: Dict[str, Any],
-                        commands: Optional[Dict[str, List[Dict[str, Any]]]] = None
-                        ) -> List[str]:
-    """Canonical capability ids for one device, from every available source."""
+                        commands: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                        unproven: Optional[List[str]] = None) -> List[str]:
+    """Canonical capability ids for one device, from every available source.
+
+    `unproven`, when a list is passed, collects capabilities that were declared
+    and then dropped because the device reports none of their attributes. They
+    are excluded from the result but worth surfacing: a declaration a device
+    contradicts is sometimes a bad guess upstream and sometimes a naming
+    mismatch in this vocabulary, and only a person can tell which.
+    """
     commands = commands if commands is not None else _command_index(dev)
     raw = (_declared_capabilities(dev)
            + _profile_capabilities(dev, ieee)
@@ -293,7 +300,27 @@ def device_capabilities(ieee: str, dev: Any, state: Dict[str, Any],
     # so sniffing it as an occupancy flag makes the person a motion sensor.
     excluded = {e for cap in out
                 for e in CAPABILITIES.get(cap, {}).get("excludes", [])}
-    return [c for c in out if c not in excluded]
+    out = [c for c in out if c not in excluded]
+
+    # A declaration the device's own reports contradict is not proven. Zigbee
+    # capability detection guesses that any IAS Zone device which is not a known
+    # magnet contact is a motion sensor, so a contact sensor arrives declaring
+    # presence it never reports — and then classifies as a presence sensor,
+    # which is the wrong kind of device for a pattern to pick.
+    #
+    # Sensing only: actuation is already gated on an executable command, and a
+    # virtual device's silence is a service with no data rather than a bad
+    # guess, which is worth reporting rather than hiding.
+    proven = []
+    for cap in out:
+        spec = CAPABILITIES.get(cap) or {}
+        attrs = spec.get("attrs") or []
+        if spec.get("kind") == "sensor" and attrs and not _pick_attr(state, attrs):
+            if unproven is not None:
+                unproven.append(cap)
+            continue
+        proven.append(cap)
+    return proven
 
 
 # Command inspection
@@ -479,7 +506,8 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
     state = dict(getattr(dev, "state", None) or {})
     device_name = name or getattr(dev, "friendly_name", None) or ieee
     commands = _command_index(dev)
-    caps = device_capabilities(ieee, dev, state, commands)
+    unproven: List[str] = []
+    caps = device_capabilities(ieee, dev, state, commands, unproven)
 
     triggers: List[Dict[str, Any]] = []
     conditions: List[Dict[str, Any]] = []
@@ -506,6 +534,9 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
         "scope": scope,
         "device_class": classify(caps),
         "capabilities": caps,
+        # Declared and then dropped because nothing backs it — see
+        # device_capabilities().
+        "unproven_capabilities": sorted(set(unproven)),
         # What the device actually reports, for diagnostics: a capability that
         # resolved but offered nothing is nearly always a naming mismatch, and
         # the fix needs both halves visible.

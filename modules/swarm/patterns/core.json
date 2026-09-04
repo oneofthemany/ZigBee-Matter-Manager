@@ -683,7 +683,10 @@
     "slots": {
       "low": {
         "role": "trigger",
-        "offer": "battery:low"
+        "offer": [
+          "battery:low",
+          "battery:low_flag"
+        ]
       },
       "who": {
         "role": "action",

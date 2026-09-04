@@ -160,6 +160,47 @@ def run() -> Checker:
     c.check("and so does its on/off trigger",
             on and on["attribute"] == "state_1", on)
 
+    c.section("an IAS Zone sensor is read as what it reports, not what it claims")
+    # Zigbee detection guesses that any IAS Zone device which is not a known
+    # magnet contact is a motion sensor. A Thread contact sensor therefore
+    # arrives declaring presence it never reports, and would classify as a
+    # presence sensor — the wrong kind of device for a pattern to pick.
+    ias = FakeDevice("0xias", "Contact - Back Door",
+                     {"available": True, "battery_low": False, "contact": True,
+                      "tamper": False, "zone_status": 0},
+                     capabilities=FakeCapabilities(["ias_zone", "motion_sensor",
+                                                    "battery"]))
+    id_ = describe_device("0xias", ias, "Contact - Back Door")
+    c.check("the unreported presence claim is dropped",
+            "presence" not in id_["capabilities"], id_["capabilities"])
+    c.check("what it does report is kept",
+            {"contact", "tamper", "battery"} <= set(id_["capabilities"]),
+            id_["capabilities"])
+    c.check("so it classifies as a contact sensor",
+            id_["device_class"] == "contact_sensor", id_["device_class"])
+    c.check("and offers contact triggers",
+            offer(id_["triggers"], "contact:opened") is not None,
+            [t["key"] for t in id_["triggers"]])
+
+    c.section("a low-battery flag is as good as a percentage")
+    # IAS Zone reports a bare boolean from the status bitfield, not a level.
+    flag = offer(id_["triggers"], "battery:low_flag")
+    c.check("the flag trigger is offered", flag is not None,
+            [t["key"] for t in id_["triggers"]])
+    c.check("bound to battery_low", flag and flag["attribute"] == "battery_low", flag)
+    c.check("comparing against the flag being set",
+            flag and flag["condition"]["value"] is True, flag)
+    c.check("the percentage trigger is not offered — there is no percentage",
+            offer(id_["triggers"], "battery:low") is None)
+
+    pct = FakeDevice("0xpct", "Sensor", {"battery": 90, "temperature": 20.0},
+                     capabilities=FakeCapabilities(["battery", "temperature_sensor"]))
+    pd = describe_device("0xpct", pct, "Sensor")
+    c.check("a percentage device gets the numeric trigger",
+            offer(pd["triggers"], "battery:low") is not None,
+            [t["key"] for t in pd["triggers"]])
+    c.check("and not the flag", offer(pd["triggers"], "battery:low_flag") is None)
+
     c.section("a dual-gang device offers both outlets independently")
     # handlers/power.py spells a two-gang socket state_1/state_2, power_1/power_2.
     # Both outlets switch and draw power independently, so both are separately

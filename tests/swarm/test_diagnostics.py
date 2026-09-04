@@ -87,10 +87,11 @@ def run() -> Checker:
     c.check("and says why", "state cache" in
             f["devices_without_capabilities"]["message"])
 
-    c.section("a capability that resolved but says nothing is reported")
-    # A plug declaring the metering cluster that has never reported a reading:
-    # `power` counts as present, so it never shows as absent, yet every pattern
-    # needing it is blocked.
+    c.section("a declaration the device contradicts is reported, not silently dropped")
+    # A plug declaring the metering cluster that reports no power at all. The
+    # capability is dropped so it cannot mis-describe the device, but the
+    # contradiction is surfaced: reading "declares power, reports state" is how
+    # the endpoint-suffix gap was found in the first place.
     quiet = sample_network()
     quiet["0xmute"] = FakeDevice(
         "0xmute", "Quiet Plug", {"state": "ON"},
@@ -98,8 +99,8 @@ def run() -> Checker:
                   {"command": "off", "label": "Off", "endpoint_id": 1}],
         capabilities=FakeCapabilities(["on_off", "power_monitoring"]))
     f = _codes(dx.diagnose(_net(quiet), rooms=SAMPLE_ROOMS))
-    c.check("flagged", "capabilities_silent" in f, list(f))
-    entry = next((e for e in f["capabilities_silent"]["entries"]
+    c.check("flagged", "capabilities_unproven" in f, list(f))
+    entry = next((e for e in f["capabilities_unproven"]["entries"]
                   if e["ieee"] == "0xmute"), None)
     c.check("it names the device and capability",
             entry and entry["capability"] == "power", entry)
@@ -107,16 +108,34 @@ def run() -> Checker:
             "power" in (entry or {}).get("expected_attributes", []), entry)
     c.check("and what the device actually reports, so the mismatch is visible",
             (entry or {}).get("reports") == ["state"], entry)
-    c.check("power is not also reported as absent",
-            "power" not in f["capabilities_absent"]["capabilities"],
-            f["capabilities_absent"]["capabilities"])
     c.check("a working capability on the same device is not flagged",
             not any(e["ieee"] == "0xmute" and e["capability"] == "on_off"
-                    for e in f["capabilities_silent"]["entries"]))
-
+                    for e in f["capabilities_unproven"]["entries"]))
+    mute = next(d for d in _net(quiet) if d["ieee"] == "0xmute")
+    c.check("the capability is dropped from the device, not just reported",
+            "power" not in mute["capabilities"], mute["capabilities"])
+    c.check("so the device is not mis-classified as a metering plug",
+            mute["device_class"] == "switch", mute["device_class"])
     c.check("a healthy network reports none",
-            "capabilities_silent" not in _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS)),
-            _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS)).get("capabilities_silent"))
+            "capabilities_unproven" not in
+            _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS)))
+
+    c.section("a virtual service with no data is silent, not unproven")
+    # A configured service that has not fetched yet is a real condition worth
+    # reporting, not a bad guess about hardware — so it stays in the capability
+    # list and is reported as silent instead of dropped.
+    from modules.swarm.resolver import describe_device
+    from modules.swarm.virtual import VirtualDevice
+    tariff = describe_device("virtual::tariff",
+                             VirtualDevice("virtual::tariff", "Tariff", "Pricing",
+                                           ["tariff"]), "Tariff")
+    c.check("the capability is kept", tariff["capabilities"] == ["tariff"],
+            tariff["capabilities"])
+    c.check("and nothing is dropped", tariff["unproven_capabilities"] == [])
+    f = _codes(dx.diagnose(described + [tariff], rooms=SAMPLE_ROOMS))
+    c.check("reported as silent", "capabilities_silent" in f, list(f))
+    c.check("and not as a bad declaration", "capabilities_unproven" not in f, list(f))
+
 
     c.section("absent capabilities explain a class of missing suggestions")
     f = _codes(dx.diagnose(described, rooms=SAMPLE_ROOMS))["capabilities_absent"]
