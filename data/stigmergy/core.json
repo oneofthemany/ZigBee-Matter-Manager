@@ -1,0 +1,817 @@
+[
+  {
+    "id": "presence_light_when_dark",
+    "title": "Light on when the room is occupied after dark",
+    "description": "Turns the light on when someone is detected and the room is dark, then off again once it has been empty for a while.",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "trig": {
+        "role": "trigger",
+        "offer": "presence:detected"
+      },
+      "dark": {
+        "role": "condition",
+        "offer": "illuminance:is_dark",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "trig"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch",
+          "plug"
+        ]
+      },
+      "off": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "light"
+      }
+    },
+    "emits": {
+      "name": "{room} light on presence",
+      "source": "trig",
+      "conditions": [
+        "trig",
+        "dark"
+      ],
+      "condition_logic": "and",
+      "then": [
+        "light"
+      ],
+      "else": [
+        "off"
+      ],
+      "cooldown": 5
+    },
+    "params": {
+      "dark_lux": 11,
+      "clear_hold_s": 120
+    }
+  },
+  {
+    "id": "presence_light_off_when_empty",
+    "title": "Light off when the room empties",
+    "description": "For rooms where the light is switched on by hand but nobody remembers to switch it off.",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "clear": {
+        "role": "trigger",
+        "offer": "presence:cleared"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch",
+          "plug"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} light off when empty",
+      "source": "clear",
+      "conditions": [
+        "clear"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 30
+    },
+    "params": {
+      "clear_hold_s": 300
+    }
+  },
+  {
+    "id": "door_entry_light",
+    "title": "Light on when the door opens after dark",
+    "description": "The entry-hall pattern: coming through the door in the dark should not need a light switch.",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "door": {
+        "role": "trigger",
+        "offer": "contact:opened"
+      },
+      "dark": {
+        "role": "condition",
+        "offer": "illuminance:is_dark",
+        "optional": true
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} light on door open",
+      "source": "door",
+      "conditions": [
+        "door",
+        "dark"
+      ],
+      "condition_logic": "and",
+      "then": [
+        "light"
+      ],
+      "cooldown": 5
+    },
+    "params": {
+      "dark_lux": 11
+    }
+  },
+  {
+    "id": "dark_light_on",
+    "title": "Light on when it gets dark",
+    "description": "Tracks real light levels rather than the clock, so it follows the seasons on its own.",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "dark": {
+        "role": "trigger",
+        "offer": "illuminance:got_dark"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch"
+        ]
+      },
+      "off": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "light"
+      }
+    },
+    "emits": {
+      "name": "{room} light follows daylight",
+      "source": "dark",
+      "conditions": [
+        "dark"
+      ],
+      "then": [
+        "light"
+      ],
+      "else": [
+        "off"
+      ],
+      "cooldown": 300
+    },
+    "params": {
+      "dark_lux": 11
+    }
+  },
+  {
+    "id": "button_toggle_light",
+    "title": "Button toggles the light",
+    "category": "convenience",
+    "scope": "room",
+    "slots": {
+      "press": {
+        "role": "trigger",
+        "offer": "button:pressed"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:toggle",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch",
+          "plug"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} button toggles light",
+      "source": "press",
+      "conditions": [
+        "press"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 1
+    }
+  },
+  {
+    "id": "arrival_unlock",
+    "title": "Unlock the door when someone gets home",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "who": {
+        "role": "trigger",
+        "offer": "person:arrived_home"
+      },
+      "lock": {
+        "role": "action",
+        "offer": "lock:unlock",
+        "device_class": [
+          "lock"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Unlock when {device} arrives",
+      "source": "who",
+      "conditions": [
+        "who"
+      ],
+      "then": [
+        "lock"
+      ],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "everyone_out_lock",
+    "title": "Lock up when everybody has left",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "empty": {
+        "role": "trigger",
+        "offer": "household:last_left"
+      },
+      "lock": {
+        "role": "action",
+        "offer": "lock:lock",
+        "device_class": [
+          "lock"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Lock up when the house empties",
+      "source": "empty",
+      "conditions": [
+        "empty"
+      ],
+      "then": [
+        "lock"
+      ],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "everyone_out_lights_off",
+    "title": "Lights off when everybody has left",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "empty": {
+        "role": "trigger",
+        "offer": "household:last_left"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch",
+          "plug"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Lights off when the house empties",
+      "source": "empty",
+      "conditions": [
+        "empty"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "arrival_lights_when_dark",
+    "title": "Lights on when someone gets home in the dark",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "who": {
+        "role": "trigger",
+        "offer": "person:arrived_home"
+      },
+      "dark": {
+        "role": "condition",
+        "offer": "illuminance:is_dark",
+        "optional": true
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "light",
+          "color_light",
+          "switch"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Lights on when {device} arrives",
+      "source": "who",
+      "conditions": [
+        "who",
+        "dark"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 60
+    },
+    "params": {
+      "dark_lux": 11
+    }
+  },
+  {
+    "id": "cold_room_heat",
+    "title": "Heat the room when it drops below target",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "cold": {
+        "role": "trigger",
+        "offer": "temperature:got_cold"
+      },
+      "trv": {
+        "role": "action",
+        "offer": "thermostat:set_setpoint",
+        "device_class": [
+          "thermostat"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} heating on when cold",
+      "source": "cold",
+      "conditions": [
+        "cold"
+      ],
+      "then": [
+        "trv"
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "cold_c": 18.0,
+      "setpoint_c": 21.0
+    }
+  },
+  {
+    "id": "window_open_pause_heating",
+    "title": "Turn the radiator down when a window opens",
+    "description": "Stops the heating fighting an open window.",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "window": {
+        "role": "trigger",
+        "offer": "contact:opened"
+      },
+      "trv": {
+        "role": "action",
+        "offer": "thermostat:set_setpoint",
+        "device_class": [
+          "thermostat"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} heating down on open window",
+      "source": "window",
+      "conditions": [
+        "window"
+      ],
+      "then": [
+        "trv"
+      ],
+      "cooldown": 60
+    },
+    "params": {
+      "setpoint_c": 7.0
+    }
+  },
+  {
+    "id": "humid_room_extractor",
+    "title": "Run the extractor when the room gets humid",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "humid": {
+        "role": "trigger",
+        "offer": "humidity:got_humid"
+      },
+      "fan": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "switch",
+          "plug"
+        ]
+      },
+      "off": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "fan"
+      }
+    },
+    "emits": {
+      "name": "{room} extractor on when humid",
+      "source": "humid",
+      "conditions": [
+        "humid"
+      ],
+      "then": [
+        "fan"
+      ],
+      "else": [
+        "off"
+      ],
+      "cooldown": 120
+    },
+    "params": {
+      "humid_pct": 65,
+      "dry_pct": 55
+    }
+  },
+  {
+    "id": "co2_ventilate",
+    "title": "Ventilate when CO\u2082 climbs",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "co2": {
+        "role": "trigger",
+        "offer": "co2:high"
+      },
+      "fan": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "device_class": [
+          "switch",
+          "plug"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} ventilation on high CO2",
+      "source": "co2",
+      "conditions": [
+        "co2"
+      ],
+      "then": [
+        "fan"
+      ],
+      "cooldown": 300
+    },
+    "params": {
+      "co2_ppm": 1000
+    }
+  },
+  {
+    "id": "leak_alert",
+    "title": "Water leak \u2014 tell someone",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "leak": {
+        "role": "trigger",
+        "offer": "water_leak:detected"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "Water leak alert",
+      "source": "leak",
+      "conditions": [
+        "leak"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "Water detected by $trigger_device."
+        }
+      ],
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "leak_cut_power",
+    "title": "Water leak \u2014 cut power in the room",
+    "category": "safety",
+    "scope": "room",
+    "slots": {
+      "leak": {
+        "role": "trigger",
+        "offer": "water_leak:detected"
+      },
+      "plug": {
+        "role": "action",
+        "offer": "on_off:turn_off",
+        "device_class": [
+          "switch",
+          "plug"
+        ]
+      }
+    },
+    "emits": {
+      "name": "{room} power off on leak",
+      "source": "leak",
+      "conditions": [
+        "leak"
+      ],
+      "then": [
+        "plug"
+      ],
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "smoke_alert",
+    "title": "Smoke \u2014 tell someone and light the way",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "smoke": {
+        "role": "trigger",
+        "offer": "smoke:detected"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      },
+      "light": {
+        "role": "action",
+        "offer": "on_off:turn_on",
+        "optional": true,
+        "device_class": [
+          "light",
+          "color_light",
+          "switch"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Smoke alarm",
+      "source": "smoke",
+      "conditions": [
+        "smoke"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "Smoke detected by $trigger_device."
+        },
+        "light"
+      ],
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "door_left_open",
+    "title": "Tell someone when a door is left open",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "door": {
+        "role": "trigger",
+        "offer": "contact:opened"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "$trigger_device left open",
+      "source": "door",
+      "conditions": [
+        "door"
+      ],
+      "then": [
+        {
+          "type": "delay",
+          "seconds": {
+            "param": "open_hold_s"
+          }
+        },
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "$trigger_device has been open a while."
+        }
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "open_hold_s": 300
+    }
+  },
+  {
+    "id": "appliance_finished",
+    "title": "Tell someone when the appliance finishes",
+    "description": "Watches the plug's power draw drop and stay down.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "done": {
+        "role": "trigger",
+        "offer": "power:finished"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "$trigger_device finished",
+      "source": "done",
+      "conditions": [
+        "done"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "$trigger_device has finished."
+        }
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "power_idle_w": 2.0
+    }
+  },
+  {
+    "id": "battery_low_alert",
+    "title": "Tell someone when a battery runs low",
+    "category": "maintenance",
+    "scope": "house",
+    "slots": {
+      "low": {
+        "role": "trigger",
+        "offer": "battery:low"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "$trigger_device battery low",
+      "source": "low",
+      "conditions": [
+        "low"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "$trigger_device battery is low."
+        }
+      ],
+      "cooldown": 86400
+    },
+    "params": {
+      "battery_pct": 20
+    }
+  },
+  {
+    "id": "device_offline_alert",
+    "title": "Tell someone when a device drops off the network",
+    "category": "maintenance",
+    "scope": "house",
+    "slots": {
+      "off": {
+        "role": "trigger",
+        "offer": "availability:went_offline"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "$trigger_device offline",
+      "source": "off",
+      "conditions": [
+        "off"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "$trigger_device has gone offline."
+        }
+      ],
+      "cooldown": 3600
+    }
+  },
+  {
+    "id": "dark_close_blinds",
+    "title": "Close the blinds when it gets dark",
+    "category": "convenience",
+    "scope": "room",
+    "slots": {
+      "dark": {
+        "role": "trigger",
+        "offer": "illuminance:got_dark"
+      },
+      "blind": {
+        "role": "action",
+        "offer": "cover:close",
+        "device_class": [
+          "cover"
+        ]
+      },
+      "open": {
+        "role": "action",
+        "offer": "cover:open",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "blind"
+      }
+    },
+    "emits": {
+      "name": "{room} blinds follow daylight",
+      "source": "dark",
+      "conditions": [
+        "dark"
+      ],
+      "then": [
+        "blind"
+      ],
+      "else": [
+        "open"
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "dark_lux": 11
+    }
+  },
+  {
+    "id": "vibration_alert",
+    "title": "Tell someone when something is disturbed",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "shake": {
+        "role": "trigger",
+        "offer": "vibration:detected"
+      },
+      "who": {
+        "role": "action",
+        "offer": "notify:message"
+      }
+    },
+    "emits": {
+      "name": "$trigger_device disturbed",
+      "source": "shake",
+      "conditions": [
+        "shake"
+      ],
+      "then": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "$trigger_device was disturbed."
+        }
+      ],
+      "cooldown": 300
+    }
+  }
+]

@@ -119,6 +119,7 @@ try:
     from modules.mqtt_explorer import MQTTExplorer
     from modules.zones_api import register_zone_routes
     from modules.automation_api import register_automation_routes
+    from modules.swarm.api import register_swarm_routes
     from modules.network_init import ensure_network_credentials
     from modules.spectrum_monitor import SpectrumMonitor
     from modules.ai_assistant import AIAssistant
@@ -1150,6 +1151,10 @@ register_ota_routes(app,
 )
 register_automation_routes(app,
     lambda: zigbee_service.automation
+)
+register_swarm_routes(app,
+    lambda: zigbee_service.automation,
+    get_zigbee_service
 )
 register_backup_routes(app, get_zigbee_service)
 register_weather_routes(app, lambda: weather_service)

@@ -25,6 +25,7 @@
 │    ├── aqare_cluster_guide.md
 │    ├── automations.md
 │    ├── debugging.md
+│    ├── swarm-intelligence.md
 │    ├── mqtt-explorer.md
 │    └── onboarding.md
 │
@@ -68,6 +69,19 @@
 │    ├── mqtt_queue.py
 │    ├── packets_stats.py
 │    ├── reslience.py
+│    ├── swarm
+│    │   ├── __init__.py
+│    │   ├── api.py
+│    │   ├── capabilities.py
+│    │   ├── compiler.py
+│    │   ├── dedupe.py
+│    │   ├── diagnostics.py
+│    │   ├── doctor.py
+│    │   ├── matcher.py
+│    │   ├── network.py
+│    │   ├── resolver.py
+│    │   ├── stigmergy.py
+│    │   └── suggestions.py
 │    ├── touchlink.py
 │    ├── zigbee_debug.py
 │    ├── zone_device_config.py

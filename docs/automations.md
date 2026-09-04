@@ -6,6 +6,12 @@ The automation engine provides state-machine-based triggers with recursive actio
 
 ![Automation tab overview showing rule list with state badges and action buttons](./images/automation-tab-overview.png)
 
+
+> **Swarm Intelligence** describes every device in one vocabulary of triggers,
+> conditions and actions, so any device can be wired to any other without a rule
+> written by hand for each combination. It compiles to the rules documented
+> here — see `docs/swarm-intelligence.md`.
+
 ---
 
 ## Core Concepts

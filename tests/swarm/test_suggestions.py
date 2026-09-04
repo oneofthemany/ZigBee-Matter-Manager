@@ -1,0 +1,190 @@
+"""
+Suggestion tests — matching, compiling, deduplication and coverage.
+
+    python3 tests/swarm/test_suggestions.py
+
+The assertions are about outcomes a person would recognise: the hallway radar
+produces the hallway rule, both people get their own arrival rule, and a rule
+already built is not offered again even when its thresholds differ.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from harness import (  # noqa: E402
+    Checker, SAMPLE_NAMES, SAMPLE_ROOMS, SAMPLE_SETTINGS, sample_network,
+)
+
+from modules.swarm import suggestions as sg  # noqa: E402
+from modules.swarm.compiler import CompileError, compile_rule, effective_params  # noqa: E402
+from modules.swarm.dedupe import coverage, index_rules, signature, status_for  # noqa: E402
+from modules.swarm.matcher import match_pattern  # noqa: E402
+from modules.swarm.network import describe_network  # noqa: E402
+from modules.swarm.stigmergy import StigmergyStore  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[2]
+STORE = StigmergyStore(bundled_dir=str(REPO / "data" / "stigmergy"),
+                       user_dir="/nonexistent")
+
+
+def _net():
+    return describe_network(sample_network(), SAMPLE_NAMES, SAMPLE_SETTINGS,
+                            SAMPLE_ROOMS)["devices"]
+
+
+def _built(rules=None):
+    return sg.build(_net(), rules=rules or [], rooms=SAMPLE_ROOMS,
+                    patterns=STORE.all())
+
+
+def _by_sentence(built, needle):
+    return [s for s in built["suggestions"] if needle in s["sentence"]]
+
+
+def run() -> Checker:
+    c = Checker("test_suggestions")
+    described = _net()
+
+    c.section("the hallway pattern matches the hallway")
+    pattern = STORE.get("presence_light_when_dark")
+    result = match_pattern(pattern, described, SAMPLE_ROOMS)
+    c.check("one candidate", len(result["candidates"]) == 1, len(result["candidates"]))
+    fills = result["candidates"][0]["fills"]
+    c.check("trigger is the radar", fills["trig"]["ieee"] == "0xradar")
+    c.check("light is the hallway light", fills["light"]["ieee"] == "0xhalllight")
+    c.check("the lux check lands on the radar itself",
+            fills["dark"]["ieee"] == "0xradar", fills["dark"]["ieee"])
+    c.check("the lounge is traced as a non-match",
+            any(t["room"] == "lounge" and t["outcome"] == "no_match"
+                for t in result["trace"]))
+
+    c.section("same device means condition, another device means prerequisite")
+    rule = compile_rule(pattern, fills, room_label="Hallway")
+    attrs = {cond["attribute"] for cond in rule["conditions"]}
+    c.check("both checks are conditions on the source",
+            attrs == {"presence", "illuminance_lux"}, attrs)
+    c.check("nothing became a prerequisite", rule["prerequisites"] == [],
+            rule["prerequisites"])
+
+    door = STORE.get("door_entry_light")
+    dr = match_pattern(door, described, SAMPLE_ROOMS)
+    drule = compile_rule(door, dr["candidates"][0]["fills"], room_label="Hallway")
+    c.check("the door's own contact is the condition",
+            [x["attribute"] for x in drule["conditions"]] == ["contact"],
+            drule["conditions"])
+    c.check("the radar's lux became a prerequisite",
+            [p["ieee"] for p in drule["prerequisites"]] == ["0xradar"],
+            drule["prerequisites"])
+    c.check("the prerequisite names its attribute",
+            drule["prerequisites"][0]["attribute"] == "illuminance_lux")
+
+    c.section("parameters override the vocabulary default")
+    c.check("the pattern's dark_lux is used",
+            effective_params(pattern)["dark_lux"] == 11)
+    lux = [x for x in rule["conditions"] if x["attribute"] == "illuminance_lux"][0]
+    c.check("and reaches the compiled rule", lux["value"] == 11, lux)
+    tuned = compile_rule(pattern, fills, overrides={"dark_lux": 40})
+    lux2 = [x for x in tuned["conditions"] if x["attribute"] == "illuminance_lux"][0]
+    c.check("a user override reaches it too", lux2["value"] == 40, lux2)
+
+    c.section("house-scoped patterns produce one suggestion per subject")
+    built = _built()
+    arrivals = _by_sentence(built, "unlock Front Door Lock")
+    c.check("both people get an arrival rule", len(arrivals) == 2, len(arrivals))
+    c.check("named individually",
+            {a["sentence"].split()[1] for a in arrivals} == {"Sean", "Charlie"},
+            [a["sentence"] for a in arrivals])
+    batteries = _by_sentence(built, "battery falls below")
+    c.check("every battery device gets its own alert",
+            len(batteries) == 3, [b["sentence"] for b in batteries])
+
+    c.section("notify slots offer a recipient rather than multiplying")
+    leaks = _by_sentence(built, "finishes")
+    c.check("one appliance-finished suggestion, not one per person",
+            len(leaks) == 1, [x["sentence"] for x in leaks])
+
+    c.section("sentences read as English, not as attribute dumps")
+    hall = _by_sentence(built, "someone is detected in Hallway")
+    c.check("the hallway suggestion exists", hall, len(hall))
+    c.check("it reads correctly",
+            hall[0]["sentence"] == "When someone is detected in Hallway and "
+                                   "Hallway is dark, turn on Light - Hallway — "
+                                   "otherwise turn off Light - Hallway",
+            hall[0]["sentence"])
+
+    c.section("nothing is offered that would fail to compile")
+    c.check("no candidate was rejected", built["rejected"] == [], built["rejected"])
+    c.check("every suggestion carries a rule",
+            all(s.get("rule", {}).get("source_ieee") for s in built["suggestions"]))
+
+    c.section("deduplication is by wiring, not by text")
+    target = hall[0]
+    existing = dict(target["rule"])
+    existing["id"] = "auto_x"
+    existing["name"] = "totally different name"
+    existing["cooldown"] = 999
+    existing["conditions"] = [dict(x) for x in existing["conditions"]]
+    for cond in existing["conditions"]:
+        if cond["attribute"] == "illuminance_lux":
+            cond["value"] = 25
+    c.check("a differently-tuned rule has the same signature",
+            signature(existing) == signature(target["rule"]))
+
+    rebuilt = _built(rules=[existing])
+    again = sg.find(rebuilt, target["id"])
+    c.check("the suggestion comes back as active",
+            again["status"] == "active", again["status"])
+    c.check("and points at the rule", again["rule_id"] == "auto_x")
+    c.check("the summary counts it", rebuilt["summary"]["active"] == 1,
+            rebuilt["summary"])
+    c.check("an unrelated suggestion stays available",
+            sg.find(rebuilt, arrivals[0]["id"])["status"] == "available")
+
+    c.section("a disabled rule reads as disabled, not available")
+    off = dict(existing); off["enabled"] = False
+    c.check("status is disabled",
+            status_for(target["rule"], index_rules([off]))["status"] == "disabled")
+
+    c.section("suggestion ids are stable")
+    c.check("the same network yields the same ids",
+            {s["id"] for s in _built()["suggestions"]} ==
+            {s["id"] for s in built["suggestions"]})
+
+    c.section("coverage")
+    cov = coverage(described, [])
+    c.check("nothing covered with no rules", cov["covered"] == 0, cov)
+    c.check("gaps list every device", cov["uncovered"] == len(described))
+    cov2 = coverage(described, [existing])
+    c.check("the rule's source and target both count",
+            cov2["covered"] == 2, cov2["covered"])
+    c.check("percentage reported", cov2["percent"] == 25, cov2["percent"])
+
+    c.section("recompiling checks the network has not moved on")
+    err = None
+    try:
+        sg.recompile(pattern, {"id": "sg_bogus"}, described, rooms=SAMPLE_ROOMS)
+    except CompileError as e:
+        err = str(e)
+    c.check("a stale suggestion id is refused with a reason",
+            err and "no longer matches" in err, err)
+
+    c.section("an empty network suggests nothing and does not crash")
+    empty = sg.build([], rules=[], rooms={}, patterns=STORE.all())
+    c.check("no suggestions", empty["suggestions"] == [])
+    c.check("no rejections", empty["rejected"] == [], empty["rejected"])
+    c.check("coverage is zero", empty["coverage"]["percent"] == 0)
+    c.check("every pattern is traced as unmatched",
+            empty["summary"]["patterns_unmatched"] == len(STORE.all()))
+
+    return c
+
+
+if __name__ == "__main__":
+    checker = run()
+    print(f"\n{checker.passed} passed, {len(checker.failures)} failed")
+    sys.exit(1 if checker.failures else 0)
