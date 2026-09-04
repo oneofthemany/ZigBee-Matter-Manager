@@ -104,5 +104,22 @@ E.setTrees([], []);
 check('an unknown player does not suppress its own note',
       E._firstUseOfPlayer('zone:9', 99) === true);
 
+section('a colour command survives the builder');
+// hs_color carries [hue, saturation]; a serialiser that coerced it to a number
+// or dropped it would silently turn a colour rule into nothing.
+const bsrc2 = fs.readFileSync(path.join(REPO, 'static/js/modal/automation.js'), 'utf8');
+const cs = bsrc2.indexOf('function _cleanTree(steps) {');
+const ce = bsrc2.indexOf('\n}', bsrc2.indexOf('return false;', cs)) + 2;
+const cm = { exports: {} };
+new Function('module', 'isZoneId', 'zoneOf',
+  bsrc2.slice(cs, ce) + '\nmodule.exports = { _cleanTree };')(cm, () => false, () => null);
+const clean2 = cm.exports._cleanTree;
+const [colourStep] = clean2([{ type: 'command', target_ieee: '0xbulb',
+                               command: 'hs_color', value: [0, 100], endpoint_id: 1 }]);
+check('the command survives', colourStep && colourStep.command === 'hs_color', colourStep);
+check('the hue/saturation pair survives intact',
+      JSON.stringify(colourStep.value) === '[0,100]', colourStep.value);
+check('the endpoint survives', colourStep.endpoint_id === 1);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

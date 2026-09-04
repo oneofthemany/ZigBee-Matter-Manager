@@ -64,6 +64,10 @@ OPERATORS = {
 
 VALID_COMMANDS = {
     "on", "off", "toggle", "brightness", "color_temp",
+    # A colour as [hue 0-360, saturation 0-100]. The device layer has always
+    # dispatched it; without it here a rule could never carry one, so a light
+    # could not be used to say anything beyond on or off.
+    "hs_color",
     "open", "close", "stop", "position", "temperature",
     "lock", "unlock"
 }

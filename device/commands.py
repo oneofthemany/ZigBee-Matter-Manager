@@ -58,6 +58,10 @@ class DeviceCommandExecutorMixin:
                 commands.append({"command": "brightness", "label": "Brightness", "type": "slider", "min": 0, "max": 100, "endpoint_id": eid})
             elif h.CLUSTER_ID == 0x0300:
                 commands.append({"command": "color_temp", "label": "Color Temp", "type": "slider", "min": 2000, "max": 6500, "endpoint_id": eid})
+                # send_command already dispatches hs_color; it was never
+                # offered, so nothing upstream could ask for a colour.
+                # Hue 0-360, saturation 0-100, sent as [hue, sat].
+                commands.append({"command": "hs_color", "label": "Colour", "type": "colour", "endpoint_id": eid})
             elif h.CLUSTER_ID == 0x0201:
                 commands.append({"command": "temperature", "label": "Temp Setpoint", "type": "number", "unit": "C", "endpoint_id": eid})
             elif h.CLUSTER_ID == 0x0102:

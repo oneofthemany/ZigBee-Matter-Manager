@@ -33,6 +33,7 @@ from modules.swarm.capabilities import (
     TRIGGER,
     canonical_capability,
     classify,
+    param_display,
     resolve_param,
 )
 
@@ -518,7 +519,9 @@ def _build_action_offers(cap_id: str, spec: Dict[str, Any],
             eid = entry.get("endpoint_id")
             built = _offer_base(cap_id, spec, offer, ACTION)
             outlet = _outlet_suffix(eid) if multi else ""
-            label = _label(offer["label"], device_name, room_label, value) + outlet
+            # A colour reads as its name, not as the pair the device takes.
+            shown = param_display(param_id, value) if param_id else value
+            label = _label(offer["label"], device_name, room_label, shown) + outlet
             label_template = _label(offer["label"], device_name, room_label,
                                     "{value}") + outlet
             if multi:

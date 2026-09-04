@@ -79,12 +79,38 @@ PARAMS: Dict[str, Dict[str, Any]] = {
     "near_home_min":  {"label": "Minutes from home", "type": "int",   "default": 15,         "unit": "min", "min": 1,    "max": 120},
     "dear_rate_p":    {"label": "Rate above",        "type": "float", "default": 25.0,       "unit": "p/kWh", "min": 0,  "max": 200},
     "cheap_rate_p":   {"label": "Rate below",        "type": "float", "default": 12.0,       "unit": "p/kWh", "min": 0,  "max": 200},
+    # A colour is [hue 0-360, saturation 0-100], which is what the device layer
+    # takes. The named choices exist so a card can offer swatches and a
+    # sentence can say "set the lamp to red" rather than "to [0, 100]".
+    "alert_colour":   {"label": "Colour", "type": "colour", "default": [0, 100],
+                       "choices": {"red": [0, 100], "amber": [40, 100],
+                                   "green": [120, 100], "blue": [220, 100],
+                                   "purple": [280, 100], "warm white": [30, 25]}},
+    "calm_colour":    {"label": "Colour", "type": "colour", "default": [120, 100],
+                       "choices": {"red": [0, 100], "amber": [40, 100],
+                                   "green": [120, 100], "blue": [220, 100],
+                                   "purple": [280, 100], "warm white": [30, 25]}},
 }
 
 
 def param(pid: str) -> Dict[str, Any]:
     """Reference a tunable parameter from inside an offer's value."""
     return {"param": pid}
+
+
+def param_display(pid: Optional[str], value: Any) -> str:
+    """How a parameter's value should read in a sentence.
+
+    A colour is carried as [hue, saturation] because that is what the device
+    takes, but "set the lamp to [0, 100]" is not a sentence. Where the
+    parameter names its choices, the matching name is used.
+    """
+    spec = PARAMS.get(pid or "") or {}
+    for name, choice in (spec.get("choices") or {}).items():
+        if choice == value:
+            return name
+    unit = spec.get("unit") or ""
+    return f"{value}{unit}"
 
 
 def resolve_param(value: Any, overrides: Optional[Dict[str, Any]] = None) -> Any:
@@ -493,11 +519,22 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "color": {
         "label": "Colour",
         "kind": "actuator",
-        "tags": ["lighting"],
+        # Colour temperature lives in the same ColorControl cluster, and no
+        # legacy vocabulary names it separately — so without this a colour bulb
+        # could be given a hue but never a warmth. Declaring it is safe: the
+        # action is gated on the device actually having a color_temp command.
+        "implies": ["color_temp"],
+        "tags": ["lighting", "signalling"],
         "attrs": ["color_mode", "hue", "saturation"],
-        # No engine command sets hue/saturation, so this capability contributes
-        # identity to the device class without contributing an action.
-        "triggers": [], "conditions": [], "actions": [],
+        "triggers": [],
+        "conditions": [],
+        # A light that can hold a colour can say something a light that only
+        # switches cannot: a colour is a notification nobody has to read.
+        "actions": [
+            {"id": "set_color", "label": "turn {device} {value}",
+             "command": "hs_color", "value_from": "alert_colour", "weight": 1,
+             "polarity": 1},
+        ],
     },
 
     "cover": {

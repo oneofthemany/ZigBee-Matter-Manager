@@ -21,7 +21,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from modules.swarm.capabilities import PARAMS, resolve_param
+from modules.swarm.capabilities import PARAMS, param_display, resolve_param
 from modules.swarm.stigmergy import RESERVED_PLACEHOLDERS
 
 logger = logging.getLogger("modules.swarm.compiler")
@@ -238,7 +238,7 @@ def describe_candidate(pattern: Dict[str, Any],
         template = offer.get("label_template")
         params = effective_params(pattern, slot=slot)
         if pid and template and pid in params:
-            return template.replace("{value}", str(params[pid]))
+            return template.replace("{value}", param_display(pid, params[pid]))
         return offer["label"]
 
     source = emits.get("source")

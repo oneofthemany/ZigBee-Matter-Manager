@@ -1,0 +1,241 @@
+[
+  {
+    "id": "door_left_open_colour",
+    "title": "Turn a light amber while a door is left open",
+    "description": "A colour says it without a phone. The light goes back to normal as soon as the door is shut.",
+    "category": "security",
+    "scope": "room",
+    "slots": {
+      "door": {
+        "role": "trigger",
+        "offer": "contact:opened"
+      },
+      "light": {
+        "role": "action",
+        "offer": "color:set_color",
+        "device_class": [
+          "color_light"
+        ],
+        "params": {
+          "alert_colour": [
+            40,
+            100
+          ]
+        }
+      },
+      "calm": {
+        "role": "action",
+        "offer": "color:set_color",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "light",
+        "params": {
+          "alert_colour": [
+            30,
+            25
+          ]
+        }
+      }
+    },
+    "emits": {
+      "name": "{room} light warns while the door is open",
+      "source": "door",
+      "conditions": [
+        "door"
+      ],
+      "then": [
+        {
+          "type": "delay",
+          "seconds": {
+            "param": "open_hold_s"
+          }
+        },
+        "light"
+      ],
+      "else": [
+        "calm"
+      ],
+      "cooldown": 60
+    },
+    "params": {
+      "open_hold_s": 120
+    }
+  },
+  {
+    "id": "leak_light_red",
+    "title": "Water leak \u2014 turn the lights red",
+    "description": "The fastest notification in the house is a light you can see from the doorway.",
+    "category": "safety",
+    "scope": "room",
+    "slots": {
+      "leak": {
+        "role": "trigger",
+        "offer": "water_leak:detected"
+      },
+      "light": {
+        "role": "action",
+        "offer": "color:set_color",
+        "device_class": [
+          "color_light"
+        ],
+        "params": {
+          "alert_colour": [
+            0,
+            100
+          ]
+        }
+      }
+    },
+    "emits": {
+      "name": "{room} lights red on a leak",
+      "source": "leak",
+      "conditions": [
+        "leak"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "smoke_light_red",
+    "title": "Smoke \u2014 turn the lights red",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "smoke": {
+        "role": "trigger",
+        "offer": "smoke:detected"
+      },
+      "light": {
+        "role": "action",
+        "offer": "color:set_color",
+        "device_class": [
+          "color_light"
+        ],
+        "params": {
+          "alert_colour": [
+            0,
+            100
+          ]
+        }
+      }
+    },
+    "emits": {
+      "name": "Lights red on smoke",
+      "source": "smoke",
+      "conditions": [
+        "smoke"
+      ],
+      "then": [
+        "light"
+      ],
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "arrival_warm_light",
+    "title": "Warm the lights when someone gets home after dark",
+    "description": "Colour temperature rather than colour \u2014 a warmer light to come home to.",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "who": {
+        "role": "trigger",
+        "offer": "person:arrived_home"
+      },
+      "dark": {
+        "role": "condition",
+        "offer": "illuminance:is_dark",
+        "optional": true,
+        "prefer": "same_room",
+        "prefer_slot": "light"
+      },
+      "light": {
+        "role": "action",
+        "offer": "color_temp:set_color_temp",
+        "device_class": [
+          "light",
+          "color_light"
+        ]
+      }
+    },
+    "emits": {
+      "name": "Warm lights when {device} arrives",
+      "source": "who",
+      "conditions": [
+        "who",
+        "dark"
+      ],
+      "condition_logic": "and",
+      "then": [
+        "light"
+      ],
+      "cooldown": 300
+    },
+    "params": {
+      "color_temp_k": 2400,
+      "dark_lux": 11
+    }
+  },
+  {
+    "id": "cheap_rate_light_hint",
+    "title": "Tint a light green while electricity is cheap",
+    "description": "An ambient nudge that now is the moment to run something.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "cheap": {
+        "role": "trigger",
+        "offer": [
+          "tariff:off_peak_started",
+          "tariff:got_cheap"
+        ]
+      },
+      "light": {
+        "role": "action",
+        "offer": "color:set_color",
+        "device_class": [
+          "color_light"
+        ],
+        "params": {
+          "alert_colour": [
+            120,
+            100
+          ]
+        }
+      },
+      "back": {
+        "role": "action",
+        "offer": "color:set_color",
+        "optional": true,
+        "prefer": "same_device",
+        "prefer_slot": "light",
+        "params": {
+          "alert_colour": [
+            30,
+            25
+          ]
+        }
+      }
+    },
+    "emits": {
+      "name": "Light hints at the cheap rate",
+      "source": "cheap",
+      "conditions": [
+        "cheap"
+      ],
+      "then": [
+        "light"
+      ],
+      "else": [
+        "back"
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "cheap_rate_p": 12.0
+    }
+  }
+]

@@ -134,6 +134,42 @@ def run() -> Checker:
     c.check("every battery device gets its own alert",
             len(batteries) == 3, [b["sentence"] for b in batteries])
 
+    c.section("a local question is asked of the room it is about")
+    # A house-scoped pattern with an optional "is it dark" check must ask it of
+    # the room being lit. Any lux sensor is technically an answer; the bathroom
+    # deciding for the living room reads as a mistake.
+    arrival = STORE.get("arrival_lights_when_dark")
+    c.check("the shipped pattern anchors its dark check to the light",
+            arrival["slots"]["dark"].get("prefer") == "same_room"
+            and arrival["slots"]["dark"].get("prefer_slot") == "light",
+            arrival["slots"]["dark"])
+
+    ar = match_pattern(arrival, described, SAMPLE_ROOMS)
+    for cand in ar["candidates"]:
+        dark, light = cand["fills"].get("dark"), cand["fills"]["light"]
+        if not dark:
+            continue
+        if not c.check("the lux sensor is in the room being lit",
+                       dark["device"].get("room") == light["device"].get("room"),
+                       (dark["device"]["name"], light["device"]["name"])):
+            break
+
+    c.check("a room that cannot answer still gets a suggestion, without it",
+            any(c2["fills"].get("dark") is None for c2 in ar["candidates"])
+            or all(c2["fills"].get("dark") for c2 in ar["candidates"]),
+            [bool(c2["fills"].get("dark")) for c2 in ar["candidates"]])
+
+    from modules.swarm.matcher import _prefer_filter
+    a = {"ieee": "0xa", "room": "hall"}
+    pairs = [({"ieee": "0xa", "room": "hall"}, {}), ({"ieee": "0xb", "room": "hall"}, {}),
+             ({"ieee": "0xc", "room": "lounge"}, {})]
+    c.check("same_device narrows to the anchor",
+            [p[0]["ieee"] for p in _prefer_filter(pairs, "same_device", a)] == ["0xa"])
+    c.check("same_room narrows to its room",
+            [p[0]["ieee"] for p in _prefer_filter(pairs, "same_room", a)] == ["0xa", "0xb"])
+    c.check("an anchor with no room narrows to nothing",
+            _prefer_filter(pairs, "same_room", {"ieee": "0xz"}) == [])
+
     c.section("a dual-gang device suggests per outlet, not per device")
     # Outlet 1 may be the washing machine and outlet 2 the dryer, so "tell me
     # when it finishes" is two rules. A button's four press types share an

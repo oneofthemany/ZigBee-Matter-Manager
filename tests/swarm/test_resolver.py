@@ -366,6 +366,48 @@ def run() -> Checker:
             if not c.check(f"{ieee} {a['key']} step compiles", ok, step):
                 break
 
+    c.section("every actuator capability can actually be declared")
+    # Actuation is taken from what a device declares, not from its command list,
+    # so a capability no legacy vocabulary maps to can never resolve. That is
+    # how colour bulbs quietly lost colour temperature.
+    from modules.swarm.capabilities import LEGACY_CAPABILITY_ALIASES
+    reachable = set(CAPABILITIES) | {v for v in LEGACY_CAPABILITY_ALIASES.values() if v}
+    for cap in CAPABILITIES:
+        for implied in CAPABILITIES[cap].get("implies", []):
+            reachable.add(implied)
+    for cap, spec in CAPABILITIES.items():
+        if spec.get("kind") != "actuator":
+            continue
+        # Either a legacy name folds to it, or another capability implies it.
+        named = any(v == cap for v in LEGACY_CAPABILITY_ALIASES.values()) or cap in CAPABILITIES
+        implied = any(cap in CAPABILITIES[o].get("implies", []) for o in CAPABILITIES)
+        if not c.check(f"{cap} is reachable from a declaration", named or implied):
+            break
+
+    colour_bulb = FakeDevice(
+        "0xbulb", "Pendant", {"state": "OFF", "brightness": 254, "color_temp": 300},
+        commands=[{"command": "on", "endpoint_id": 1},
+                  {"command": "off", "endpoint_id": 1},
+                  {"command": "brightness", "endpoint_id": 1},
+                  {"command": "color_temp", "endpoint_id": 1}],
+        capabilities=FakeCapabilities(["light", "on_off", "level_control",
+                                       "color_control"]))
+    cb = describe_device("0xbulb", colour_bulb, "Pendant")
+    c.check("a colour bulb can still be given a colour temperature",
+            offer(cb["actions"], "color_temp:set_color_temp") is not None,
+            [a["key"] for a in cb["actions"]])
+    c.check("and classifies as a colour light",
+            cb["device_class"] == "color_light", cb["device_class"])
+
+    plain = FakeDevice("0xplain", "Lamp", {"state": "OFF", "brightness": 200},
+                       commands=[{"command": "on", "endpoint_id": 1},
+                                 {"command": "brightness", "endpoint_id": 1}],
+                       capabilities=FakeCapabilities(["light", "on_off", "level_control"]))
+    pb = describe_device("0xplain", plain, "Lamp")
+    c.check("a bulb with no colour command is not offered one",
+            offer(pb["actions"], "color_temp:set_color_temp") is None,
+            [a["key"] for a in pb["actions"]])
+
     c.section("vocabulary integrity")
     for cap_id, spec in CAPABILITIES.items():
         for role in ("triggers", "conditions", "actions"):

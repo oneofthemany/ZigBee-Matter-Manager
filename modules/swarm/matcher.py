@@ -88,6 +88,57 @@ def _endpoint_of(offer: Dict[str, Any]) -> Any:
     return step.get("endpoint_id")
 
 
+def _rank_anchored(pairs: List[Tuple[Dict, Dict]], name: str,
+                   slots: Dict[str, Dict[str, Any]],
+                   pool: List[Dict[str, Any]]) -> List[Tuple[Dict, Dict]]:
+    """Put candidates that let an anchored optional slot fill first.
+
+    A pattern like "lights on when someone gets home, if that room is dark"
+    reads far better where the room can actually answer the question. Without
+    this the variant cap can spend all its slots on rooms with no light sensor,
+    and every suggestion loses its condition.
+
+    Only reorders — a room that cannot answer is still offered, just later.
+    """
+    anchored = [n for n, sp in slots.items()
+                if sp.get("prefer_slot") == name and sp.get("prefer") == "same_room"]
+    if not anchored:
+        return pairs
+
+    def answers(dev: Dict[str, Any]) -> int:
+        room = dev.get("room")
+        if not room:
+            return 0
+        for other in anchored:
+            cands, _ = _candidates([d for d in pool if d.get("room") == room],
+                                   slots[other])
+            if cands:
+                return 1
+        return 0
+
+    return sorted(pairs, key=lambda p: -answers(p[0]))
+
+
+def _prefer_filter(pairs: List[Tuple[Dict, Dict]], mode: str,
+                   anchor: Dict[str, Any]) -> List[Tuple[Dict, Dict]]:
+    """Narrow a slot's candidates to those near the slot it is anchored to.
+
+    `same_device` is for a reading that belongs with its own trigger — a radar
+    reporting both presence and lux answers "is it dark here" about the room it
+    is watching.
+
+    `same_room` is for a house-scoped pattern whose condition should still be
+    local: "is it dark" asked of a bathroom sensor while switching a living-room
+    lamp is technically an answer and reads as a mistake.
+    """
+    if mode == "same_device":
+        return [p for p in pairs if p[0]["ieee"] == anchor["ieee"]]
+    if mode == "same_room":
+        room = anchor.get("room")
+        return [p for p in pairs if room and p[0].get("room") == room]
+    return []
+
+
 def _distinct_devices(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]:
     """One entry per independently addressable thing, keeping its best offer.
 
@@ -180,10 +231,10 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
         pairs, reason = _candidates(pool, spec)
 
         prefer_slot = spec.get("prefer_slot")
-        if pairs and prefer_slot and spec.get("prefer") == "same_device":
+        if pairs and prefer_slot and spec.get("prefer"):
             anchor = fills.get(prefer_slot)
             if anchor:
-                same = [p for p in pairs if p[0]["ieee"] == anchor["ieee"]]
+                same = _prefer_filter(pairs, spec.get("prefer"), anchor["device"])
                 if same:
                     pairs = same
                 elif spec.get("require_same_device"):
@@ -199,7 +250,8 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
 
         ranked = _rank_fills(pairs)
         if name in vary_slots:
-            vary_pairs[name] = _distinct_devices(ranked)[:MAX_VARIANTS_PER_SLOT]
+            vary_pairs[name] = _distinct_devices(
+                _rank_anchored(ranked, name, slots, pool))[:MAX_VARIANTS_PER_SLOT]
         dev, offer = ranked[0]
         fills[name] = {"ieee": dev["ieee"], "device": dev, "offer": offer}
         if len(ranked) > 1:
@@ -237,8 +289,8 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
             for other, spec in slots.items():
                 if spec.get("prefer_slot") != name or other not in these:
                     continue
-                repin = [p for p in _candidates(pool, spec)[0]
-                         if p[0]["ieee"] == dev["ieee"]]
+                repin = _prefer_filter(_candidates(pool, spec)[0],
+                                       spec.get("prefer") or "same_device", dev)
                 if repin:
                     these[other] = {"ieee": repin[0][0]["ieee"],
                                     "device": repin[0][0], "offer": repin[0][1]}

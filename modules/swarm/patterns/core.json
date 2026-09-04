@@ -321,7 +321,9 @@
       "dark": {
         "role": "condition",
         "offer": "illuminance:is_dark",
-        "optional": true
+        "optional": true,
+        "prefer": "same_room",
+        "prefer_slot": "light"
       },
       "light": {
         "role": "action",

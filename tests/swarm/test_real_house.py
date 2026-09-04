@@ -36,7 +36,10 @@ ONOFF = [{"command": "on", "label": "On", "endpoint_id": 1},
          {"command": "off", "label": "Off", "endpoint_id": 1},
          {"command": "toggle", "label": "Toggle", "endpoint_id": 1}]
 DIM = ONOFF + [{"command": "brightness", "label": "Brightness", "endpoint_id": 1}]
-COLOUR = DIM + [{"command": "color_temp", "label": "Colour", "endpoint_id": 1}]
+# A ColorControl endpoint offers both: a warmth and a colour.
+COLOUR = DIM + [{"command": "color_temp", "label": "Color Temp", "endpoint_id": 1},
+                {"command": "hs_color", "label": "Colour", "type": "colour",
+                 "endpoint_id": 1}]
 COVER = [{"command": "open", "endpoint_id": 1}, {"command": "close", "endpoint_id": 1},
          {"command": "stop", "endpoint_id": 1}, {"command": "position", "endpoint_id": 1}]
 TRV = [{"command": "temperature", "label": "Setpoint", "endpoint_id": 1}]
@@ -207,6 +210,35 @@ def run() -> Checker:
             {"on_off:turn_on", "on_off:turn_on:ep2"} <=
             {a["key"] for a in by_ieee["00:15:8d:00:02:56:f8:bf"]["actions"]},
             [a["key"] for a in by_ieee["00:15:8d:00:02:56:f8:bf"]["actions"]])
+
+    c.section("colour lights keep their colour controls")
+    for ieee in ("f0:82:c0:ff:fe:6f:0c:76", "54:ef:44:10:01:12:a9:2e"):
+        acts = {a["key"] for a in by_ieee[ieee]["actions"]}
+        if not c.check(f"{names[ieee]:<24} can be dimmed and warmed",
+                       {"on_off:turn_on", "brightness:set_brightness",
+                        "color_temp:set_color_temp"} <= acts, sorted(acts)):
+            break
+
+    c.section("a colour light can be used to say something")
+    # A light that holds a colour is a notification nobody has to read. The
+    # device layer always dispatched hs_color; nothing offered or allowed it.
+    for ieee in ("f0:82:c0:ff:fe:6f:0c:76", "54:ef:44:10:01:12:a9:2e"):
+        col = next((a for a in by_ieee[ieee]["actions"]
+                    if a["key"] == "color:set_color"), None)
+        if not c.check(f"{names[ieee]:<24} can be given a colour", col is not None,
+                       [a["key"] for a in by_ieee[ieee]["actions"]]):
+            break
+        c.check("it carries [hue, saturation]",
+                col["step"]["value"] == [0, 100], col["step"])
+        c.check("and reads as a colour name, not a pair",
+                col["label"].endswith("red"), col["label"])
+        c.check("through the engine's allowlist",
+                col["step"]["command"] == "hs_color", col["step"])
+
+    plain = by_ieee["60:b6:47:ff:fe:21:11:0c"]
+    c.check("a bulb with no colour cluster is not offered one",
+            not any(a["key"] == "color:set_color" for a in plain["actions"]),
+            [a["key"] for a in plain["actions"]])
 
     c.section("sensors still trigger")
     c.check("a door reports opening",
