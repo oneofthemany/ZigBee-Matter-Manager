@@ -74,17 +74,29 @@ def _rank_fills(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]:
     return sorted(pairs, key=lambda p: (-p[1].get("weight", 0), p[0]["name"]))
 
 
-def _distinct_devices(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]:
-    """One entry per device, keeping its best offer.
+def _endpoint_of(offer: Dict[str, Any]) -> Any:
+    """The endpoint an offer acts on, wherever it happens to be recorded."""
+    if offer.get("endpoint_id") is not None:
+        return offer["endpoint_id"]
+    step = offer.get("step") or {}
+    return step.get("endpoint_id")
 
-    A slot varies over *devices*; a device offering several matching values —
-    a button with four press types — is one variant, not four suggestions.
+
+def _distinct_devices(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]:
+    """One entry per independently addressable thing, keeping its best offer.
+
+    Keyed on device *and endpoint*, not device alone. A button offering four
+    press types is one variant, not four — those share an endpoint. But a
+    dual-gang socket's two outlets are two separate things: outlet 1 may be the
+    washing machine and outlet 2 the dryer, and "tell me when it finishes"
+    wants a rule for each.
     """
     seen, out = set(), []
     for dev, offer in pairs:
-        if dev["ieee"] in seen:
+        key = (dev["ieee"], _endpoint_of(offer))
+        if key in seen:
             continue
-        seen.add(dev["ieee"])
+        seen.add(key)
         out.append((dev, offer))
     return out
 

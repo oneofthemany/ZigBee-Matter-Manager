@@ -191,7 +191,12 @@ def _check_devices(described: List[Dict[str, Any]],
             if not (spec.get("triggers") or spec.get("conditions") or spec.get("actions")):
                 continue
             silent.append({"ieee": d["ieee"], "name": d["name"], "capability": cap,
-                           "expected_attributes": list(spec.get("attrs") or [])})
+                           "expected_attributes": list(spec.get("attrs") or []),
+                           # What it does report, so a naming mismatch is
+                           # visible rather than a guess. Finding that an Aqara
+                           # socket reports `power_1` took reading a handler;
+                           # it should have taken reading this line.
+                           "reports": sorted(d.get("state_keys") or [])})
     if silent:
         caps = sorted({e["capability"] for e in silent})
         out.append(_finding(

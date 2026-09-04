@@ -105,6 +105,8 @@ def run() -> Checker:
             entry and entry["capability"] == "power", entry)
     c.check("and what it expected to see",
             "power" in (entry or {}).get("expected_attributes", []), entry)
+    c.check("and what the device actually reports, so the mismatch is visible",
+            (entry or {}).get("reports") == ["state"], entry)
     c.check("power is not also reported as absent",
             "power" not in f["capabilities_absent"]["capabilities"],
             f["capabilities_absent"]["capabilities"])

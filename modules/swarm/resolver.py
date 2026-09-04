@@ -20,6 +20,7 @@ Nothing here mutates device state, sends a command, or touches a database.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from modules.automation import VALID_COMMANDS
@@ -74,12 +75,67 @@ def _value_options(value: Any) -> Optional[List[Any]]:
     return None
 
 
-def _pick_attr(state: Dict[str, Any], candidates: Sequence[str]) -> Optional[str]:
-    """First candidate attribute the device actually reports."""
+# A multi-endpoint device reports per-endpoint keys: `power_1`, `state_2`,
+# `power_demand_1`. Matching only the bare name misses every one of them, which
+# silently excluded a whole class of devices — an Aqara socket reporting
+# `power_1` resolved the `power` capability from its cluster and then offered
+# nothing.
+_ENDPOINT_SUFFIX = re.compile(r"^(.+)_(\d+)$")
+
+
+def _pick_attrs(state: Dict[str, Any],
+                candidates: Sequence[str]) -> List[Tuple[Optional[int], str]]:
+    """Every endpoint's backing attribute, as (endpoint, key), lowest first.
+
+    A dual-gang socket reports `power_1` *and* `power_2`, and both are real:
+    two outlets that draw power independently. Returning only the first would
+    make outlet 2 untriggerable while still being switchable, since the action
+    side has always fanned out per endpoint.
+
+    An exact unsuffixed match short-circuits — a device that reports plain
+    `power` has one reading, not an endpoint.
+    """
     for name in candidates:
         if name in state and name not in DIAGNOSTIC_ATTRS:
-            return name
-    return None
+            return [(None, name)]
+
+    by_base: Dict[str, List[Tuple[int, str]]] = {}
+    for key in state:
+        if key in DIAGNOSTIC_ATTRS:
+            continue
+        m = _ENDPOINT_SUFFIX.match(key)
+        if m:
+            by_base.setdefault(m.group(1), []).append((int(m.group(2)), key))
+    for name in candidates:
+        found = by_base.get(name)
+        if found:
+            return sorted(found)
+    return []
+
+
+def _pick_attr(state: Dict[str, Any], candidates: Sequence[str]) -> Optional[str]:
+    """The primary backing attribute — the first endpoint, or the bare name.
+
+    Used where one answer is wanted: capability sniffing, and the offers of a
+    capability that cannot meaningfully differ per endpoint.
+    """
+    found = _pick_attrs(state, candidates)
+    return found[0][1] if found else None
+
+
+def _outlet_suffix(endpoint: Optional[int]) -> str:
+    """Annotate outlet 2+ only.
+
+    Outlet 1 is the default (or only) endpoint on nearly every device, so
+    naming it is noise — the same convention the rules list already follows.
+    """
+    return f" (outlet {endpoint})" if endpoint and endpoint >= 2 else ""
+
+
+def _endpoint_key(base: str, endpoint: Optional[int]) -> str:
+    """Offer key for one endpoint. Endpoint 1 keeps the bare key so a key stays
+    stable whether or not the device turns out to have a second gang."""
+    return f"{base}:ep{endpoint}" if endpoint and endpoint >= 2 else base
 
 
 def _coerce_bool(truthy: bool, sample: Any) -> Any:
@@ -305,60 +361,67 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
             out.append(built)
             continue
 
-        attr = _pick_attr(state, offer.get("attrs") or spec.get("attrs") or [])
-        if not attr:
-            continue
-        sample = state.get(attr)
-        options = _value_options(sample)
+        # One offer per endpoint: a dual-gang socket's two outlets draw power
+        # and switch independently, so both are separately worth triggering on.
+        for endpoint, attr in _pick_attrs(state,
+                                          offer.get("attrs") or spec.get("attrs") or []):
+            sample = state.get(attr)
+            options = _value_options(sample)
+            outlet = _outlet_suffix(endpoint)
+            base_key = _endpoint_key(f"{cap_id}:{offer['id']}", endpoint)
 
-        # A button reports its press types as discrete values; each one is a
-        # separate edge worth triggering on, so the offer fans out.
-        if offer.get("expand") == "value_options":
-            for opt in (options or []):
-                built = _offer_base(cap_id, spec, offer, role)
-                built["key"] = f"{cap_id}:{offer['id']}:{opt}"
-                built.update({
-                    "label": _label(offer["label"], device_name, room_label) + f" ({opt})",
-                    "attribute": attr,
-                    "condition": {"type": "attribute", "attribute": attr,
-                                  "operator": offer["operator"], "value": opt},
-                })
-                out.append(built)
-            continue
-
-        value = offer.get("value")
-        param_id = value.get("param") if isinstance(value, dict) else None
-        value = resolve_param(value)
-
-        if value == "$open" or value == "$closed":
-            open_v, closed_v = _contact_values(attr, sample)
-            value = open_v if value == "$open" else closed_v
-        elif isinstance(value, bool):
-            if isinstance(sample, str) and \
-                    sample.strip().lower() not in TRUTHY_STRINGS | FALSY_STRINGS:
+            # A button reports its press types as discrete values; each one is a
+            # separate edge worth triggering on, so the offer fans out again.
+            if offer.get("expand") == "value_options":
+                for opt in (options or []):
+                    built = _offer_base(cap_id, spec, offer, role)
+                    built["key"] = f"{base_key}:{opt}"
+                    built.update({
+                        "label": _label(offer["label"], device_name, room_label)
+                                 + f" ({opt}){outlet}",
+                        "attribute": attr,
+                        "endpoint_id": endpoint,
+                        "condition": {"type": "attribute", "attribute": attr,
+                                      "operator": offer["operator"], "value": opt},
+                    })
+                    out.append(built)
                 continue
-            value = _coerce_bool(value, sample)
 
-        if value is None and offer["operator"] not in ("neq", "eq"):
-            continue
+            value = offer.get("value")
+            param_id = value.get("param") if isinstance(value, dict) else None
+            value = resolve_param(value)
 
-        built = _offer_base(cap_id, spec, offer, role)
-        built.update({
-            "label": _label(offer["label"], device_name, room_label, value),
-            "label_template": _label(offer["label"], device_name, room_label,
-                                     "{value}"),
-            "attribute": attr,
-            "condition": {"type": "attribute", "attribute": attr,
-                          "operator": offer["operator"], "value": value},
-        })
-        if param_id:
-            built["param"] = param_id
-        sustain = resolve_param(offer.get("sustain"))
-        if sustain:
-            built["condition"]["sustain"] = int(sustain)
-            built["sustain_param"] = offer["sustain"].get("param") \
-                if isinstance(offer.get("sustain"), dict) else None
-        out.append(built)
+            if value == "$open" or value == "$closed":
+                open_v, closed_v = _contact_values(attr, sample)
+                value = open_v if value == "$open" else closed_v
+            elif isinstance(value, bool):
+                if isinstance(sample, str) and \
+                        sample.strip().lower() not in TRUTHY_STRINGS | FALSY_STRINGS:
+                    continue
+                value = _coerce_bool(value, sample)
+
+            if value is None and offer["operator"] not in ("neq", "eq"):
+                continue
+
+            built = _offer_base(cap_id, spec, offer, role)
+            built["key"] = base_key
+            built.update({
+                "label": _label(offer["label"], device_name, room_label, value) + outlet,
+                "label_template": _label(offer["label"], device_name, room_label,
+                                         "{value}") + outlet,
+                "attribute": attr,
+                "endpoint_id": endpoint,
+                "condition": {"type": "attribute", "attribute": attr,
+                              "operator": offer["operator"], "value": value},
+            })
+            if param_id:
+                built["param"] = param_id
+            sustain = resolve_param(offer.get("sustain"))
+            if sustain:
+                built["condition"]["sustain"] = int(sustain)
+                built["sustain_param"] = offer["sustain"].get("param") \
+                    if isinstance(offer.get("sustain"), dict) else None
+            out.append(built)
     return out
 
 
@@ -390,12 +453,12 @@ def _build_action_offers(cap_id: str, spec: Dict[str, Any],
         for entry in entries:
             eid = entry.get("endpoint_id")
             built = _offer_base(cap_id, spec, offer, ACTION)
-            label = _label(offer["label"], device_name, room_label, value)
+            outlet = _outlet_suffix(eid) if multi else ""
+            label = _label(offer["label"], device_name, room_label, value) + outlet
             label_template = _label(offer["label"], device_name, room_label,
-                                    "{value}")
-            if multi and eid is not None:
-                built["key"] = f"{cap_id}:{offer['id']}:ep{eid}"
-                label += f" (EP{eid})"
+                                    "{value}") + outlet
+            if multi:
+                built["key"] = _endpoint_key(f"{cap_id}:{offer['id']}", eid)
             step = {"type": "command", "target_ieee": ieee,
                     "command": offer["command"], "value": value,
                     "endpoint_id": eid}
@@ -443,6 +506,12 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
         "scope": scope,
         "device_class": classify(caps),
         "capabilities": caps,
+        # What the device actually reports, for diagnostics: a capability that
+        # resolved but offered nothing is nearly always a naming mismatch, and
+        # the fix needs both halves visible.
+        "state_keys": [k for k in state
+                       if k not in DIAGNOSTIC_ATTRS
+                       and not k.endswith("_raw") and not k.startswith("attr_")],
         "triggers": triggers,
         "conditions": conditions,
         "actions": actions,

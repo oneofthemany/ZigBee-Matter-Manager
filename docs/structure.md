@@ -102,6 +102,7 @@
 │    │   └── styles.css
 │    └── js
 │        ├── actions.js
+│        ├── automation-sentence.js
 │        ├── automations-page.js
 │        ├── device-modal.js
 │        ├── devices.js

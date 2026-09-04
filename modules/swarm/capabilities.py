@@ -426,7 +426,11 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "label": "On / off",
         "kind": "actuator",
         "tags": ["switchable"],
-        "attrs": ["state", "state_1", "state_l1", "on", "on_off"],
+        # No `state_1` here: the resolver matches an endpoint-suffixed form of
+        # any candidate, and listing one explicitly would short-circuit that as
+        # an exact match — collapsing a dual-gang socket to a single outlet.
+        # `state_l1` stays: its suffix is not numeric, so nothing infers it.
+        "attrs": ["state", "state_l1", "on", "on_off"],
         "triggers": [
             {"id": "turned_on", "label": "{device} is turned on", "operator": "eq", "value": True, "polarity": 1},
             {"id": "turned_off", "label": "{device} is turned off", "operator": "eq", "value": False, "polarity": -1},
