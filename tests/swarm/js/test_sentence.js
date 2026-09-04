@@ -28,6 +28,7 @@ function check(name, cond, extra) {
   console.log((cond ? '    ok   ' : '    FAIL ') + name +
               (cond ? '' : '  <- ' + JSON.stringify(extra)));
   if (!cond) fails.push(name);
+  return !!cond;          // so `if (!check(...)) break;` works as it reads
 }
 function section(t) { console.log('\n  ' + t); }
 
@@ -176,6 +177,44 @@ section('a rule with no conditions does not throw');
 const bare = H.rulePhrase({ source_ieee: '0xradar', then_sequence: [] });
 check('it renders something', bare.length > 0);
 check('and says the source changes', bare.includes('changes'), bare);
+
+section('a real saved rule: alarm trigger, place prerequisites, media steps');
+// The Radio X Morning rule, as it is actually stored. This is the text the
+// editor preview shows, so it has to read as prose rather than as fields.
+DEVICES['__time__'] = { ieee: '__time__', friendly_name: 'Time / Alarm' };
+DEVICES['user::charlie'] = { ieee: 'user::charlie', friendly_name: 'Charlie',
+                             model: 'Presence User', state_keys: ['presence', 'place'] };
+STATE.devices = Object.values(DEVICES);
+const H2 = createHumanizer({
+  device: ieee => DEVICES[ieee],
+  player: id => ({ 'zone:1': 'the Home - Drone zone' }[id]),
+  place: id => ({}[id]),
+});
+const radio = {
+  source_ieee: '__time__',
+  conditions: [{ type: 'time', at: '09:00', days: [0, 1, 2, 3, 4] }],
+  condition_logic: 'and',
+  prerequisites: [
+    { ieee: 'user::sean', attribute: 'place', operator: 'eq', value: 'home' },
+    { ieee: 'user::charlie', attribute: 'place', operator: 'eq', value: 'home' },
+  ],
+  then_sequence: [
+    { type: 'media', player_id: 'zone:1', media_action: 'play_radio', label: 'Radio X' },
+    { type: 'media', player_id: 'zone:1', media_action: 'volume', volume: 0.25 },
+  ],
+  else_sequence: [],
+};
+const rt = H2.rulePhrase(radio);
+const plain = rt.replace(/<[^>]*>/g, '');
+console.log('    →  ' + plain.replace(/\s+/g, ' ').trim());
+check('the alarm time is named', plain.includes('09:00'), plain);
+check('weekdays are collapsed, not listed', plain.includes('on weekdays'), plain);
+check('both people are named as only-ifs',
+      plain.includes('only if') && plain.includes('Sean') && plain.includes('Charlie'), plain);
+check('the station is named', plain.includes('Radio X'), plain);
+check('the volume reads as a percentage', plain.includes('25%'), plain);
+check('the zone is named, not its id', !plain.includes('zone:1'), plain);
+check('no otherwise branch is invented', !plain.includes('otherwise'), plain);
 
 section('media steps');
 check('announce', H.mediaStepText({ media_action: 'announce', player_id: 'p1', text: 'hello' })

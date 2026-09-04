@@ -16,6 +16,7 @@ returning a `Checker`; `run_all.py` drives them and exits non-zero on failure.
 | `test_diagnostics.py` | Every finding the triage report can raise, and the per-pattern explain trace |
 | `test_api.py` | The HTTP surface, driven through Starlette's `TestClient`, including the applying path |
 | `js/test_sentence.js` | The shared humanizer — contact polarity, outlets, zones, commands, sequences, and a whole rule as one block |
+| `js/test_editor.js` | The rule editor's crowding fixes: attribute option labels, and the zone note landing on one step rather than every one |
 | `js/test_swarm_suggest.js` | The chooser's browser code, sliced out of the shipped `.js`: pairing-to-rule conversion, escaping, and the source-device guard |
 
 `test_api.py` is skipped where fastapi is not installed; the others need nothing

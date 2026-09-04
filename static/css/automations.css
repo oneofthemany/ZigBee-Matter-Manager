@@ -176,12 +176,13 @@
     gap: 5px;
 }
 
-/* Rule editor — the plain-English preview and the optional sections.
-   The form shows the parts; the preview shows whether they still add up to
-   what was meant, in the same words the rules list uses. */
+/* Rule editor — the plain-English preview, the optional sections, and the
+   step palette. Uses the project's own theme tokens (dark-mode.css) rather than
+   Bootstrap's: the Bootstrap variables are not themed here, so a preview built
+   on --bs-tertiary-bg rendered as a white box on the dark theme. */
 #a-form .a-preview {
-    background: var(--bs-tertiary-bg, #f6f7f9);
-    border: 1px solid var(--bs-border-color, #dee2e6);
+    background: var(--bg-surface-sunken);
+    border: 1px solid var(--border-color);
     border-left: 3px solid var(--bs-primary, #0d6efd);
     border-radius: 6px;
     padding: 10px 12px;
@@ -189,21 +190,35 @@
     flex-direction: column;
     gap: 5px;
     font-size: 13px;
-    line-height: 1.4;
+    line-height: 1.45;
+    color: var(--text-primary);
 }
 #a-form .a-preview:empty { display: none; }
 #a-form .a-preview .ap-act { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-#a-form .a-preview .ap-act > i { font-size: 11px; opacity: .65; flex-shrink: 0; width: 13px; text-align: center; }
-#a-form .a-preview .ap-seq-head { font-size: 12px; opacity: .7; margin-top: 2px; }
+#a-form .a-preview .ap-act > i { font-size: 11px; opacity: .6; flex-shrink: 0; width: 13px; text-align: center; }
+#a-form .a-preview .ap-seq-head { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+#a-form .a-preview .ap-act-nested {
+    margin-left: 21px; padding-left: 9px;
+    border-left: 2px solid var(--border-light);
+    display: flex; flex-direction: column; gap: 4px;
+}
 #a-form .a-preview .dev { font-weight: 600; }
-#a-form .a-preview-hint { opacity: .6; font-style: italic; }
+#a-form .a-preview .neg { color: var(--bs-danger, #dc3545); font-weight: 600; font-size: 11px; }
+#a-form .a-preview-hint { color: var(--text-muted); font-style: italic; }
 
-/* Prerequisites and the ELSE branch are empty on most rules. Hidden until they
-   hold something, or until "More options" asks for them — the sections that
-   matter should not sit under two that do not. */
+/* Prerequisites and the ELSE branch are empty on most rules, and are hidden
+   until they hold something. Tracked per section rather than by one shared
+   class, so a rule that uses prerequisites does not also unfold an empty ELSE. */
 #a-form .a-optional { display: none; }
-#a-form.a-has-optional .a-optional,
+#a-form .a-optional.a-used,
 #a-form.a-show-optional .a-optional { display: block; }
+
+/* The step palette is eight buttons, and it appeared once per sequence — 16
+   buttons of chrome around a rule with two steps. Collapsed behind one control
+   that opens the row it belongs to. */
+#a-form .a-palette { display: none; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+#a-form .a-palette.open { display: flex; }
+#a-form .a-addstep { font-size: 12px; }
 
 /* Save sits with the preview at the foot rather than in a grid cell beside
    Cooldown, which read as one more field. */
@@ -212,5 +227,30 @@
     justify-content: flex-end;
     gap: 8px;
     padding-top: 10px;
-    border-top: 1px solid var(--bs-border-color, #dee2e6);
+    border-top: 1px solid var(--border-color);
 }
+
+/* Condition and prerequisite rows are six or seven controls wide. Giving each
+   row its own surface makes it read as one statement rather than as a line of
+   a spreadsheet, without changing the markup the builder generates. */
+#a-form #cb > .row,
+#a-form #pb > .row {
+    background: var(--bg-surface-sunken);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 6px !important;
+}
+
+/* Section labels shouted in green and red at the same weight as the rule name.
+   With the preview carrying the summary, they only need to mark where a block
+   starts. */
+#a-form .form-label.fw-bold {
+    font-size: 12px;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+    opacity: .8;
+}
+
+/* Cooldown is a detail, not a peer of the sequences. */
+#a-form #a-cd { max-width: 120px; }

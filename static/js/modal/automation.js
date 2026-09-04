@@ -125,12 +125,32 @@ function _mergeTypeAttrs(attrs, type) {
     return [...(attrs || []), ...extra];
 }
 
-// Friendly <option> text for an attribute descriptor: "Open / Closed · is_open — now true".
+// Friendly <option> text for an attribute descriptor.
+//
+// The raw attribute name is shown only when it says something the friendly
+// label does not: "Place  ·  place" is the same word twice, and it was the
+// widest thing in an already crowded row. "Open / Closed  ·  is_open" earns
+// both halves.
+//
+// The live value stays — it is the one piece of context the row cannot show
+// elsewhere, since the value field beside it holds the target, not the current
+// reading — but it is truncated, because a long string pushes the operator and
+// value controls off the row.
+const _ATTR_CUR_MAX = 18;
+
 function _attrOptLabel(a, type) {
     const friendly = attrLabel(type, a.attribute);
-    const cur = (a.current_value !== undefined && a.current_value !== '—')
-        ? ` — now ${a.current_value}` : '';
-    return `${friendly}  ·  ${a.attribute}${cur}`;
+    const norm = x => String(x || '').toLowerCase().replace(/[\s_-]+/g, '');
+    const raw = norm(friendly) === norm(a.attribute) ? '' : `  \u00b7  ${a.attribute}`;
+
+    let cur = '';
+    if (a.current_value !== undefined && a.current_value !== '\u2014'
+            && a.current_value !== null && a.current_value !== '') {
+        let v = String(a.current_value);
+        if (v.length > _ATTR_CUR_MAX) v = v.slice(0, _ATTR_CUR_MAX - 1) + '\u2026';
+        cur = `  \u2014 now ${v}`;
+    }
+    return `${friendly}${raw}${cur}`;
 }
 
 // Build the <option> list for an attribute <select>, humanized for a device type.
@@ -405,19 +425,43 @@ function _cloneSteps(steps) {
     });
 }
 
+// The nine step types, as one palette. Rendered once per sequence and kept
+// shut: eighteen buttons framing a rule with two steps read as chrome, not as
+// choices, and the step being added is nearly always a command.
+const STEP_PALETTE = [
+    ['command',      'fa-bolt',             'Command',      'btn-outline-success'],
+    ['delay',        'fa-clock',            'Delay',        'btn-outline-warning'],
+    ['wait_for',     'fa-hourglass-half',   'Wait for',     'btn-outline-secondary'],
+    ['condition',    'fa-filter',           'Gate',         'btn-outline-dark'],
+    ['media',        'fa-music',            'Media',        'btn-outline-info'],
+    ['request',      'fa-comment',          'Message',      'btn-outline-secondary'],
+    ['offer',        'fa-circle-question',  'Ask first',    'btn-outline-warning'],
+    ['if_then_else', 'fa-code-branch',      'If / Else',    'btn-outline-primary'],
+    ['parallel',     'fa-columns',          'Together',     'btn-outline-info'],
+];
+
 function _addBtns(path) {
-    return `<div class="mt-1 btn-group btn-group-sm">
-        <button class="btn btn-outline-success" onclick="window._aAddStep('${path}','command')"><i class="fas fa-bolt"></i> Cmd</button>
-        <button class="btn btn-outline-warning" onclick="window._aAddStep('${path}','delay')"><i class="fas fa-clock"></i> Delay</button>
-        <button class="btn btn-outline-secondary" onclick="window._aAddStep('${path}','wait_for')"><i class="fas fa-hourglass-half"></i> Wait</button>
-        <button class="btn btn-outline-dark" onclick="window._aAddStep('${path}','condition')"><i class="fas fa-filter"></i> Gate</button>
-        <button class="btn" style="color:#0a9396;border-color:#0a9396" onclick="window._aAddStep('${path}','media')"><i class="fas fa-music"></i> Media</button>
-        <button class="btn" style="color:#9d4edd;border-color:#9d4edd" onclick="window._aAddStep('${path}','request')"><i class="fas fa-comment"></i> Msg</button>
-        <button class="btn" style="color:#d4a017;border-color:#d4a017" onclick="window._aAddStep('${path}','offer')" title="Ask somebody, and only act if they say yes"><i class="fas fa-circle-question"></i> Ask</button>
-        <button class="btn btn-outline-primary" onclick="window._aAddStep('${path}','if_then_else')"><i class="fas fa-code-branch"></i> If/Then/Else</button>
-        <button class="btn btn-outline-info" onclick="window._aAddStep('${path}','parallel')"><i class="fas fa-columns"></i> Parallel</button>
-    </div>`;
+    const id = `pal-${String(path).replace(/[^a-z0-9-]/gi, '')}`;
+    const buttons = STEP_PALETTE.map(([type, icon, label, cls]) =>
+        `<button class="btn btn-sm ${cls}" onclick="window._aAddStep('${path}','${type}')"`
+        + (type === 'offer' ? ' title="Ask somebody, and only act if they say yes"' : '')
+        + `><i class="fas ${icon} me-1"></i>${label}</button>`).join('');
+    return `<button class="btn btn-sm btn-outline-primary a-addstep mt-1"
+                    onclick="window._aTogglePalette('${id}', this)">
+                <i class="fas fa-plus me-1"></i>Add step
+            </button>
+            <div class="a-palette" id="${id}">${buttons}</div>`;
 }
+
+/** Open or shut one sequence's step palette. */
+window._aTogglePalette = (id, btn) => {
+    const pal = document.getElementById(id);
+    if (!pal) return;
+    const open = pal.classList.toggle('open');
+    btn.innerHTML = open
+        ? '<i class="fas fa-xmark me-1"></i>Close'
+        : '<i class="fas fa-plus me-1"></i>Add step';
+};
 
 // VALUE INPUT
 
@@ -782,7 +826,7 @@ function _mediaStepBody(step, sid) {
     const actSel = `<select class="form-select form-select-sm s-maction" data-sid="${sid}" onchange="window._aMAction(${sid},this)">${_mediaActionsFor(step.player_id).map(([v,l])=>`<option value="${v}" ${(step.media_action||'play_tidal')===v?'selected':''}>${l}</option>`).join('')}</select>`;
     const hint = cachedPlayers.length || cachedZones.length ? '' : `<div class="small text-warning mt-1">No media players found — is the media service enabled?</div>`;
     return `<div class="row g-1 mb-1"><div class="col-md-6">${playerSel}</div><div class="col-md-6">${actSel}</div></div>
-        <div id="media-sub-${sid}">${_mediaSubHtml(step, sid)}</div>${zone?_zoneNote(step.player_id):''}${hint}`;
+        <div id="media-sub-${sid}">${_mediaSubHtml(step, sid)}</div>${zone?_zoneNote(step.player_id, sid):''}${hint}`;
 }
 
 /** Play Zone is offered only for a zone; a zone has no infinite-radio queue,
@@ -794,9 +838,37 @@ function _mediaActionsFor(pid) {
 /** What the zone would do if played now — the saved source and window are the
  *  reason a rule can just say "play it", so they belong in front of whoever is
  *  writing the rule. */
-function _zoneNote(pid) {
+/** Every step in both sequences, in render order, descending into branches. */
+function _allSteps(steps, out = []) {
+    for (const st of steps || []) {
+        out.push(st);
+        _allSteps(st.then_steps, out);
+        _allSteps(st.else_steps, out);
+        _allSteps(st.accept_steps, out);
+        for (const b of st.branches || []) _allSteps(b, out);
+    }
+    return out;
+}
+
+/**
+ * Whether this is the first step in the rule to target this player.
+ *
+ * Derived from the step trees rather than tracked across renders, so it gives
+ * the same answer however many times the form redraws.
+ */
+function _firstUseOfPlayer(pid, sid) {
+    // THEN runs before ELSE, so it is read first.
+    const first = _allSteps(elseTree, _allSteps(thenTree))
+        .find(st => st.player_id === pid);
+    return !first || first._id === sid;
+}
+
+function _zoneNote(pid, sid) {
     const z = zoneOf(pid);
     if (!z) return '';
+    // Identical on every step that plays the same zone: informative once,
+    // noise twice.
+    if (sid !== undefined && !_firstUseOfPlayer(pid, sid)) return '';
     const p = z.play || {};
     const src = p.media
         ? String(p.media.title || p.media.url || p.media.station_uuid || 'a saved source').replace(/</g,'&lt;')
@@ -1216,7 +1288,7 @@ window._aAddStep = (path, type) => {
 
     list.push(s);
 
-    // Re-render sequences
+    // Re-render sequences (which rebuilds the palette shut)
     _renderStepTree('then');
     _renderStepTree('else');
     _syncOptionalSections();
@@ -1474,10 +1546,10 @@ window._aToggleOptional = () => {
  * the user having to go looking.
  */
 function _syncOptionalSections() {
-    const form = document.getElementById('a-form');
-    if (!form) return;
-    const used = (prereqRows.length > 0) || (elseTree.length > 0);
-    form.classList.toggle('a-has-optional', used);
+    document.getElementById('a-prereq-sec')?.classList
+        .toggle('a-used', prereqRows.length > 0);
+    document.getElementById('a-else-sec')?.classList
+        .toggle('a-used', elseTree.length > 0);
 }
 
 window._aSave=async()=>{

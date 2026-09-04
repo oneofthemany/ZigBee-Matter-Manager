@@ -37,6 +37,7 @@ function check(name, cond, extra) {
   console.log((cond ? '    ok   ' : '    FAIL ') + name +
               (cond ? '' : '  <- ' + JSON.stringify(extra)));
   if (!cond) fails.push(name);
+  return !!cond;          // so `if (!check(...)) break;` works as it reads
 }
 function section(t) { console.log('\n  ' + t); }
 
