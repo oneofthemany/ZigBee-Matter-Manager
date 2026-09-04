@@ -152,10 +152,19 @@ def register_swarm_routes(app: FastAPI,
     async def list_suggestions(room: Optional[str] = None,
                                category: Optional[str] = None,
                                status: Optional[str] = None,
+                               device: Optional[str] = None,
                                include_trace: bool = False):
-        """Suggestions grouped by room, with coverage and what was withheld."""
+        """Suggestions grouped by room, with coverage and what was withheld.
+
+        `device` narrows to suggestions this device takes part in, whether as
+        the trigger or as something driven — which is what the rule builder
+        asks for once a source device has been chosen.
+        """
         _, built = _build()
         items = built["suggestions"]
+        if device:
+            items = [s for s in items
+                     if any(d["ieee"] == device for d in s["devices"])]
         if room:
             items = [s for s in items if s.get("room") == room]
         if category:

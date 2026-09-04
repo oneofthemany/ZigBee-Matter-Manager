@@ -192,6 +192,14 @@ def run() -> Checker:
     c.check("filtering by room works",
             all(s["room"] == "hallway" for s in
                 client.get("/api/swarm/suggestions?room=hallway").json()["suggestions"]))
+    c.check("filtering by device works",
+            all(any(d["ieee"] == "0xradar" for d in s["devices"]) for s in
+                client.get("/api/swarm/suggestions?device=0xradar").json()["suggestions"]))
+    c.check("the device filter finds the radar's presence rule",
+            any("someone is detected" in s["sentence"] for s in
+                client.get("/api/swarm/suggestions?device=0xradar").json()["suggestions"]),
+            [s["sentence"] for s in
+             client.get("/api/swarm/suggestions?device=0xradar").json()["suggestions"]])
     c.check("filtering by category works",
             all(s["category"] == "safety" for s in
                 client.get("/api/swarm/suggestions?category=safety").json()["suggestions"]))

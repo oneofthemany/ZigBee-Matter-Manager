@@ -11,6 +11,7 @@
 
 import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
+import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 let cachedPlayers = [];   // media players (Cast/WiiM) for media steps
@@ -1196,7 +1197,22 @@ window._aAddBranch = sid => {
 };
 
 // Form
-window._aShowForm=()=>_showForm(null);
+//
+// "Add Rule" opens the swarm chooser rather than a blank form: starting from
+// what this device can actually do beats starting from an empty trigger row.
+// Every path through the chooser ends here anyway — it picks a shape, the
+// builder fills in, and the whole step palette (delay, gate, branch, parallel,
+// media) is unchanged underneath.
+window._aShowForm=()=>{
+    const el=document.getElementById('a-form');
+    if(!el){return;}
+    if(currentSourceIeee==='__time__'){_showForm(null);return;}  // clock rules have no device to suggest for
+    renderChooser(currentSourceIeee, el, ()=>_showForm(null))
+        .catch(()=>_showForm(null));  // the swarm is an enhancement, never a gate
+};
+// Skip the chooser — used by "Start from scratch" and by callers that already
+// know what they want.
+window._aShowBlankForm=()=>_showForm(null);
 // Populate the builder from a generated (unsaved) rule object, treated as new.
 window._aShowFormWith=(rule)=>_showForm(rule, true);
 window._aHideForm=()=>{document.getElementById('a-form').style.display='none';editingRuleId=null;};
@@ -1313,7 +1329,7 @@ window._aSave=async()=>{
             ? await fetch(`/api/automations/${editingRuleId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
             : await fetch('/api/automations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const d=await res.json();
-        if(res.ok&&d.success){window._aHideForm();await _ref();}
+        if(res.ok&&d.success){invalidateChooser();window._aHideForm();await _ref();}
         else window.toast.error('Failed: '+(d.detail||d.error||'Unknown'));
     }catch(e){window.toast.error(e.message);}
 };

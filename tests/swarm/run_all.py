@@ -16,6 +16,8 @@ fastapi installed.
 from __future__ import annotations
 
 import importlib
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +27,24 @@ if str(HERE) not in sys.path:
 
 MODULES = ["test_resolver", "test_network", "test_stigmergy",
            "test_suggestions", "test_diagnostics", "test_api"]
+# The browser code is exercised by slicing the real functions out of the shipped
+# .js and running them, which is the only way to catch an undefined identifier
+# inside a function body.
+JS_TESTS = ["test_swarm_suggest.js"]
+
+
+def run_node() -> tuple[list[str], list[str]]:
+    failures, skipped = [], []
+    if not shutil.which("node"):
+        return failures, ["the JS tests (node not installed)"]
+    for name in JS_TESTS:
+        print(f"\n{'=' * 62}\n{name}\n{'=' * 62}")
+        result = subprocess.run(["node", str(HERE / "js" / name)],
+                                capture_output=True, text=True)
+        print(result.stdout.rstrip() or result.stderr.rstrip())
+        if result.returncode != 0:
+            failures.append(name)
+    return failures, skipped
 
 
 def main() -> int:
@@ -39,6 +59,10 @@ def main() -> int:
         checker = module.run()
         passed += checker.passed
         failures.extend(checker.failures)
+
+    js_failures, js_skipped = run_node()
+    failures.extend(js_failures)
+    skipped.extend(js_skipped)
 
     print(f"\n{'=' * 62}")
     print(f"{passed} passed, {len(failures)} failed")

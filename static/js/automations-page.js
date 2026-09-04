@@ -15,6 +15,9 @@ import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js'
 
 const log = zmmLog('automations-page');
 
+// Swarm coverage for the header strip — null whenever the swarm is unavailable.
+let swarmCoverage = null, swarmSummary = null;
+
 const OP = { eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤', in:'∈', nin:'∉', changed:'Δ' };
 
 // HUMANIZATION — turn raw rule JSON into plain-English, device-aware phrasing.
@@ -279,6 +282,14 @@ export async function loadAutomationsPage() {
             (plj.places || []).forEach(p => { placeNameCache[p.id] = p.name; });
         } catch { /* fall back to raw place ids */ }
 
+        // Swarm coverage — how much of the house takes part in a rule at all.
+        // Optional: an unavailable swarm just hides the strip.
+        try {
+            const cj = await (await fetch('/api/swarm/coverage')).json();
+            swarmCoverage = cj.coverage || null;
+            swarmSummary = cj.summary || null;
+        } catch { swarmCoverage = null; swarmSummary = null; }
+
         // Is a location configured? Sun (sunrise/sunset) rules can't fire without
         // one. /api/sun/sunrise-sunset returns success:false when lat/lon are unset.
         try {
@@ -293,6 +304,55 @@ export async function loadAutomationsPage() {
 }
 
 // PAGE RENDER
+
+/**
+ * How much of the house is automated at all, and how much more the swarm
+ * reckons it could be.
+ *
+ * A device counts as covered whether it triggers a rule or is driven by one —
+ * a bulb nobody has automated is a gap even though it triggers nothing itself.
+ */
+function _coverageStrip() {
+    if (!swarmCoverage) return '';
+    const c = swarmCoverage;
+    const tone = c.percent >= 75 ? 'success' : c.percent >= 40 ? 'warning' : 'secondary';
+    const spare = swarmSummary && swarmSummary.available
+        ? `<span class="badge bg-light text-dark border" title="Suggestions not yet built">
+             <i class="fas fa-diagram-project text-primary me-1"></i>${swarmSummary.available} suggested</span>`
+        : '';
+    const gaps = c.uncovered
+        ? `<button class="btn btn-link btn-sm p-0 small text-decoration-none"
+                   onclick="window._apShowGaps()">${c.uncovered} not automated</button>`
+        : '';
+    return `<span class="badge bg-${tone}" title="Devices taking part in at least one rule">
+                ${c.covered}/${c.devices} devices automated</span>${spare}${gaps}`;
+}
+
+/** List the devices no rule touches, so the gap is actionable rather than a number. */
+window._apShowGaps = () => {
+    if (!swarmCoverage) return;
+    const host = document.getElementById('automations-content');
+    if (!host) return;
+    const existing = document.getElementById('ap-gaps');
+    if (existing) { existing.remove(); return; }   // second click closes it
+    const rows = (swarmCoverage.gaps || []).map(g =>
+        `<tr><td>${_esc(g.name)}</td>
+             <td class="text-muted small">${_esc(g.room_label || 'No room')}</td>
+             <td class="text-muted small">${_esc(g.device_class || '')}</td></tr>`).join('');
+    host.insertAdjacentHTML('afterbegin', `
+        <div class="card mb-3" id="ap-gaps">
+            <div class="card-header bg-light d-flex justify-content-between py-1">
+                <strong class="small"><i class="fas fa-circle-exclamation text-warning me-1"></i>
+                    Devices with no automation</strong>
+                <button class="btn btn-sm btn-outline-secondary py-0"
+                        onclick="document.getElementById('ap-gaps').remove()">
+                    <i class="fas fa-times"></i></button>
+            </div>
+            <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+                <table class="table table-sm mb-0"><tbody>${rows}</tbody></table>
+            </div>
+        </div>`);
+};
 
 function _renderPage(container, devices) {
     // Device lookup
@@ -319,9 +379,10 @@ function _renderPage(container, devices) {
     container.innerHTML = `
         <!-- Header -->
         <div class="d-flex justify-content-between align-items-center mb-3">
-            <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center gap-3 flex-wrap">
                 <span class="text-muted small">All automation rules across devices.</span>
                 <span class="badge bg-primary">${allRulesCache.length} rule${allRulesCache.length !== 1 ? 's' : ''}</span>
+                ${_coverageStrip()}
             </div>
             <div class="d-flex gap-2">
                 <select class="form-select form-select-sm" id="ap-filter-dev" style="width:auto;max-width:220px" onchange="window._apFilterDev(this.value)">

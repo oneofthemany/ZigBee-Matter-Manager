@@ -98,6 +98,7 @@
 │    │   └── styles.css
 │    └── js
 │        ├── actions.js
+│        ├── automations-page.js
 │        ├── device-modal.js
 │        ├── devices.js
 │        ├── groups.js
@@ -106,6 +107,7 @@
 │        ├── mesh.js
 │        ├── packet-analysis.js
 │        ├── state.js
+│        ├── swarm-suggest.js
 │        ├── system.js
 │        ├── table-sort.js
 │        ├── utils.js

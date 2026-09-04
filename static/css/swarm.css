@@ -1,0 +1,25 @@
+/* Swarm Intelligence — the suggestion step of the rule builder.
+   Only what the shared Bootstrap classes cannot express: the hover affordance
+   on a pickable option, and keeping long generated sentences readable. */
+
+.swarm-option {
+    border-left: 3px solid transparent;
+    transition: border-color .12s ease, background-color .12s ease;
+    cursor: pointer;
+}
+
+.swarm-option:hover,
+.swarm-option:focus-visible {
+    border-left-color: var(--bs-primary, #0d6efd);
+}
+
+/* Generated sentences name devices and rooms, so they run long. Wrapping keeps
+   the option readable instead of truncating the half that says what it does. */
+.swarm-option .small {
+    white-space: normal;
+    line-height: 1.35;
+}
+
+@media (max-width: 576px) {
+    .swarm-option .badge { font-size: .65rem; }
+}
