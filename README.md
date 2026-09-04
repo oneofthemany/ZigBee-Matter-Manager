@@ -236,7 +236,7 @@ that `occupancy` is a thing that can *become true*, that a lux reading is what
 "dark" means, or that a radar and a bulb in the same room are an obvious pair.
 Swarm Intelligence is the layer that does.
 
-Every device — Zigbee, Matter, Nuki, a presence user, the weather — is reduced
+Every device — Zigbee, Matter, Wi-Fi, a presence user, the weather — is reduced
 to the same shape: a list of **offers**. A **trigger** is an edge worth waking a
 rule on, a **condition** is a state worth testing, an **action** is a command
 worth sending. Because they all speak one vocabulary of **35 capabilities**, any
