@@ -54,11 +54,29 @@ class FakeAdvisor:
 
 
 class FakeTariff:
-    def __init__(self, rate=None, off_peak=None):
-        self._rate, self._off_peak = rate, off_peak
+    """Mirrors the two OctopusEnergyService accessors the provider reads."""
 
-    def get_status(self):
-        return {"current_rate_p": self._rate, "is_off_peak": self._off_peak}
+    def __init__(self, rate=None, off_peak=None, window=None, raise_on=None):
+        self._rate, self._off_peak, self._window = rate, off_peak, window
+        self._raise_on = raise_on
+
+    def current_unit_rate(self, fuel="electricity"):
+        if self._raise_on == "rate":
+            raise RuntimeError("no rates cached")
+        return self._rate
+
+    def _cheapest_window(self, fuel="electricity", slots=6):
+        if self._raise_on == "window":
+            raise RuntimeError("no agile rates")
+        if self._window is not None:
+            return self._window
+        if self._off_peak is None:
+            return None
+        # A window that either covers the whole day or none of it, so the
+        # boolean the test asked for is what comes out.
+        return ({"off_peak_start": "00:00", "off_peak_end": "23:59"}
+                if self._off_peak else
+                {"off_peak_start": "03:00", "off_peak_end": "03:01"})
 
 
 class FakePresence:
@@ -177,6 +195,23 @@ def run() -> Checker:
     asyncio.run(p.refresh())
     c.check("peak is zero, not absent",
             p.devices[TARIFF_IEEE].state["is_off_peak"] == 0)
+
+    # An agile window can run past midnight, which a naive start<=now<end reads
+    # as never inside.
+    from modules.swarm.virtual import VirtualDeviceProvider as _V
+    overnight = FakeTariff(window={"off_peak_start": "23:30", "off_peak_end": "05:30"})
+    c.check("an overnight window is handled",
+            _V._off_peak_now(overnight) in (0, 1), _V._off_peak_now(overnight))
+    c.check("no agile rates means unknown, not peak",
+            _V._off_peak_now(FakeTariff(window=None)) is None)
+    c.check("a throwing service means unknown",
+            _V._off_peak_now(FakeTariff(raise_on="window")) is None)
+
+    p = _provider(tariff=FakeTariff(rate=None, off_peak=None))
+    asyncio.run(p.refresh())
+    c.check("no rate is dropped rather than published as zero",
+            "unit_rate" not in p.devices[TARIFF_IEEE].state,
+            p.devices[TARIFF_IEEE].state)
 
     c.section("a service that is absent or throwing does not break the rest")
     p = _provider()

@@ -31,7 +31,16 @@ from modules.swarm.capabilities import CAPABILITIES, PARAMS
 logger = logging.getLogger("modules.swarm.stigmergy")
 
 DATA_DIR = os.environ.get("ZMM_DATA_DIR", "./data")
-BUNDLED_DIR = os.path.join(DATA_DIR, "stigmergy")
+
+# Bundled patterns ship with the code, not with the data. The container mounts
+# the host's persistent directory over /app/data, so anything the image placed
+# there is masked at runtime — a bundled file in a runtime volume is a file that
+# exists in the image and cannot be read. Resolved from this module's own
+# location so it works whatever the working directory is.
+BUNDLED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patterns")
+
+# User patterns are runtime data and belong in the volume, where they survive an
+# upgrade and override a bundled pattern of the same id.
 USER_DIR = os.path.join(DATA_DIR, "stigmergy_user")
 
 ROLES = ("trigger", "condition", "action")

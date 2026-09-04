@@ -281,19 +281,45 @@ class VirtualDeviceProvider:
         return 1 if soonest <= preheat_minutes else 0
 
     def _read_tariff(self) -> Dict[str, Any]:
+        """The live electricity rate, and whether now is the cheap window.
+
+        `current_unit_rate()` reads the cached half-hourly rates directly;
+        `_cheapest_window()` finds the cheapest contiguous block in the next
+        24 hours, which is what "off peak" means on an agile tariff — there is
+        no fixed night rate to compare against.
+        """
         svc = self._tariff() if self._tariff else None
         if not svc:
             return {}
         try:
-            status = svc.get_status() or {}
+            rate = _f(svc.current_unit_rate("electricity"))
         except Exception:
-            return {}
-        rate = _f(status.get("current_rate_p") or status.get("unit_rate_p"))
-        off_peak = status.get("is_off_peak")
+            rate = None
         return {
-            "unit_rate": rate,
-            "is_off_peak": None if off_peak is None else (1 if off_peak else 0),
+            "unit_rate": round(rate, 2) if rate is not None else None,
+            "is_off_peak": self._off_peak_now(svc),
         }
+
+    @staticmethod
+    def _off_peak_now(svc: Any) -> Optional[int]:
+        """Whether the clock is inside today's cheapest window.
+
+        The window is expressed as local HH:MM and may wrap past midnight, so
+        the comparison handles a window whose end is numerically before its
+        start rather than silently reading as never.
+        """
+        try:
+            window = svc._cheapest_window("electricity")
+        except Exception:
+            return None
+        if not window:
+            return None
+        start, end = window.get("off_peak_start"), window.get("off_peak_end")
+        if not start or not end:
+            return None
+        now = time.strftime("%H:%M")
+        inside = (start <= now < end) if start <= end else (now >= start or now < end)
+        return 1 if inside else 0
 
 
 def _eta_minutes(distance_m: Optional[float]) -> Optional[float]:

@@ -29,7 +29,7 @@ from modules.swarm.network import describe_network  # noqa: E402
 from modules.swarm.stigmergy import StigmergyStore  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-BUNDLED = str(REPO / "data" / "stigmergy")
+BUNDLED = str(REPO / "modules" / "swarm" / "patterns")
 
 
 def _net(devices=None, settings=None, rooms=None):

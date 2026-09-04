@@ -22,7 +22,7 @@ from modules.swarm.stigmergy import (  # noqa: E402
 )
 
 REPO = Path(__file__).resolve().parents[2]
-BUNDLED = REPO / "data" / "stigmergy"
+BUNDLED = REPO / "modules" / "swarm" / "patterns"
 
 
 def _minimal():

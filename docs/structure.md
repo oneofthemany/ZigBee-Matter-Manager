@@ -79,6 +79,9 @@
 │    │   ├── doctor.py
 │    │   ├── matcher.py
 │    │   ├── network.py
+│    │   ├── patterns
+│    │   │   ├── climate.json
+│    │   │   └── core.json
 │    │   ├── resolver.py
 │    │   ├── stigmergy.py
 │    │   ├── suggestions.py

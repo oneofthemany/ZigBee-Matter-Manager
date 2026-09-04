@@ -92,7 +92,8 @@ def _check_patterns_loaded(store) -> List[Dict[str, Any]]:
         out.append(_finding(
             ERROR, "no_patterns",
             "No stigmergy patterns loaded, so no suggestions can be made. "
-            "Check data/stigmergy/ exists and holds valid JSON."))
+            "Check modules/swarm/patterns/ shipped with the release and holds "
+            "valid JSON."))
     else:
         out.append(_finding(INFO, "patterns_loaded",
                             f"{len(patterns)} stigmergy pattern(s) loaded",

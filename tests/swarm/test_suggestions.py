@@ -28,7 +28,7 @@ from modules.swarm.network import describe_network  # noqa: E402
 from modules.swarm.stigmergy import StigmergyStore  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-STORE = StigmergyStore(bundled_dir=str(REPO / "data" / "stigmergy"),
+STORE = StigmergyStore(bundled_dir=str(REPO / "modules" / "swarm" / "patterns"),
                        user_dir="/nonexistent")
 
 
