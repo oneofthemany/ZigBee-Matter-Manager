@@ -60,8 +60,23 @@ const READOUT_ICONS = {
 
 // state helpers (match the conventions in modal/control.js)
 
+/**
+ * The live device behind a cell.
+ *
+ * deviceCache is the fast path, but on the dashboard it is filled as a side
+ * effect of rendering the device table — so a table filtered to one tab leaves
+ * every other device missing from it, and a frame full of cells with no state.
+ * Falling back to state.devices (and adopting what it finds) means a cell shows
+ * what the device is doing regardless of what the table happens to be showing.
+ */
 function devOf(cell) {
-    return state.deviceCache?.[cell.ieee] || null;
+    if (!cell?.ieee) return null;
+    const cached = state.deviceCache?.[cell.ieee];
+    if (cached) return cached;
+
+    const dev = (state.devices || []).find(d => d.ieee === cell.ieee);
+    if (dev && state.deviceCache) state.deviceCache[cell.ieee] = dev;
+    return dev || null;
 }
 
 function stateOf(cell) {
@@ -95,6 +110,58 @@ function setpointOf(cell) {
     return typeof v === 'number' ? v : null;
 }
 
+/**
+ * Colour temperature in kelvin, endpoint-aware.
+ *
+ * The device reports mireds (ZCL's unit), the slider and the `color_temp`
+ * command both speak kelvin, and the two are reciprocals — the same conversion
+ * modal/control.js does. 2700K is the fallback a warm-white bulb starts at.
+ */
+function colorTempKelvinOf(cell, ep = 1) {
+    const s = stateOf(cell);
+    const mireds = s[`color_temp_${ep}`] || (ep === 1 ? s.color_temp : null);
+    if (!mireds) return 2700;
+    return Math.min(CT_MAX_K, Math.max(CT_MIN_K, Math.round(1000000 / mireds)));
+}
+
+/** The swatch colour, from reported hue/saturation on the ZCL 0-254 scale. */
+function colorHexOf(cell, ep = 1) {
+    const s = stateOf(cell);
+    const hue = s[`hue_${ep}`] ?? s.hue ?? s.color_hue ?? 0;
+    const sat = s[`saturation_${ep}`] ?? s.saturation ?? s.color_saturation ?? 254;
+    return hsToHex(Math.round((hue / 254) * 360), Math.round((sat / 254) * 100));
+}
+
+// colour conversion — a local copy because utils.js is a dashboard module and
+// the standalone /frames page deliberately doesn't load it (frames-page.js).
+
+function hsToHex(h, s) {
+    const sat = s / 100;
+    const a = sat * 0.5;
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const v = 0.5 - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * v).toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function hexToHS(hex) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    const s = max === 0 ? 0 : d / max;
+    let h = 0;
+    if (d !== 0) {
+        if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h /= 6;
+    }
+    return { h: Math.round(h * 360), s: Math.round(s * 100) };
+}
+
 // ── group cells (a Zigbee group's own control tile, see resolve_group_cell) ─
 
 /**
@@ -113,6 +180,24 @@ function groupBrightnessPct(cell) {
 function groupPositionPct(cell) {
     const vals = (cell.members || []).map(ieee => positionOf({ ieee }));
     return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 50;
+}
+
+/** First member that reports a colour temperature — an average of kelvin is meaningless. */
+function groupColorTempKelvin(cell) {
+    for (const ieee of cell.members || []) {
+        const s = state.deviceCache?.[ieee]?.state || {};
+        if (s.color_temp) return colorTempKelvinOf({ ieee });
+    }
+    return 2700;
+}
+
+/** Likewise for colour: show a member's, not a blend of everyone's. */
+function groupColorHex(cell) {
+    for (const ieee of cell.members || []) {
+        const s = state.deviceCache?.[ieee]?.state || {};
+        if (s.hue !== undefined || s.color_hue !== undefined) return colorHexOf({ ieee });
+    }
+    return '#ffffff';
 }
 
 // readout formatting
@@ -188,83 +273,173 @@ function readoutHtml(cell, r) {
 
 // controls
 
-function controlsHtml(cell) {
-    const f = cell.features || [];
+/** Kelvin range offered for tunable white — the same span modal/control.js uses. */
+const CT_MIN_K = 2000;
+const CT_MAX_K = 6500;
+
+/**
+ * The endpoints to render a control row for.
+ *
+ * `cell.features` is the union across endpoints, so it can say "this thing
+ * switches" but never "it switches twice" — a two-gang socket and a one-gang
+ * socket have an identical list. `cell.endpoints` is what tells them apart.
+ * A payload from an older backend has none; treat the flat list as a single
+ * endpoint 1 so the cell still renders rather than going blank.
+ */
+function endpointsOf(cell) {
+    const eps = cell.endpoints;
+    if (Array.isArray(eps) && eps.length) return eps;
+    return [{ id: 1, type: cell.kind, features: cell.features || [] }];
+}
+
+function toggleHtml(cell, epId, showEp) {
+    const on = isOn(cell, epId);
+    // A tile is too narrow for "Switch (EP2)", so the gang shows as a number —
+    // with the modal's wording on hover, since a bare digit needs explaining.
+    return `
+        <button class="btn btn-sm ${on ? 'btn-warning' : 'btn-outline-secondary'} flex-grow-1"
+                onclick="window.frameCommand('${esc(cell.ieee)}', 'toggle', null, ${epId})"
+                ${showEp ? `title="Endpoint ${epId}"` : ''}
+                aria-label="${showEp ? `Endpoint ${epId}: ` : ''}${on ? 'On' : 'Off'}"
+                aria-pressed="${on}">
+            <i class="fas fa-power-off"></i> ${showEp ? `${epId} · ` : ''}${on ? 'On' : 'Off'}
+        </button>`;
+}
+
+function coverHtml(cell, epId) {
     const ieee = esc(cell.ieee);
-    let html = '';
+    return `
+        <div class="btn-group btn-group-sm flex-grow-1" role="group" aria-label="Cover controls">
+            <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'open', null, ${epId})" title="Open">
+                <i class="fas fa-arrow-up"></i>
+            </button>
+            <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'stop', null, ${epId})" title="Stop">
+                <i class="fas fa-stop"></i>
+            </button>
+            <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'close', null, ${epId})" title="Close">
+                <i class="fas fa-arrow-down"></i>
+            </button>
+        </div>`;
+}
 
-    if (f.includes('toggle')) {
-        const on = isOn(cell);
-        html += `
-            <button class="btn btn-sm ${on ? 'btn-warning' : 'btn-outline-secondary'} flex-grow-1"
-                    onclick="window.frameCommand('${ieee}', 'toggle')"
-                    aria-pressed="${on}">
-                <i class="fas fa-power-off"></i> ${on ? 'On' : 'Off'}
-            </button>`;
-    }
+function setpointHtml(cell, epId) {
+    const sp = setpointOf(cell);
+    const ieee = esc(cell.ieee);
+    return `
+        <div class="cell-setpoint flex-grow-1">
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.frameSetpoint('${ieee}', -0.5, ${epId})"
+                    aria-label="Decrease setpoint" ${sp === null ? 'disabled' : ''}>
+                <i class="fas fa-minus"></i>
+            </button>
+            <span class="cell-setpoint-value" data-setpoint>${sp === null ? '—' : sp + '°'}</span>
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.frameSetpoint('${ieee}', 0.5, ${epId})"
+                    aria-label="Increase setpoint" ${sp === null ? 'disabled' : ''}>
+                <i class="fas fa-plus"></i>
+            </button>
+        </div>`;
+}
 
-    if (f.includes('open') || f.includes('close')) {
-        html += `
-            <div class="btn-group btn-group-sm flex-grow-1" role="group" aria-label="Cover controls">
-                <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'open')" title="Open">
-                    <i class="fas fa-arrow-up"></i>
-                </button>
-                <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'stop')" title="Stop">
-                    <i class="fas fa-stop"></i>
-                </button>
-                <button class="btn btn-outline-secondary" onclick="window.frameCommand('${ieee}', 'close')" title="Close">
-                    <i class="fas fa-arrow-down"></i>
-                </button>
-            </div>`;
-    }
+/**
+ * A slider with its live value beside it.
+ *
+ * `oninput` moves the number while the finger is down and `onchange` sends on
+ * release — one command per gesture, not one per pixel, which is what keeps a
+ * drag from flooding the radio.
+ */
+function sliderHtml({ icon, min, max, value, unit, label, css, onInputTarget, onChange }) {
+    return `
+        <div class="cell-slider-row">
+            <i class="fas ${icon}" aria-hidden="true"></i>
+            <input type="range" class="cell-slider" min="${min}" max="${max}" value="${value}"
+                   aria-label="${esc(label)}" ${css ? `style="${css}"` : ''}
+                   oninput="window.frameSliderInput(this, '${onInputTarget}', '${unit}')"
+                   onchange="${onChange}">
+            <span class="cell-slider-value" data-slider-value="${onInputTarget}">${value}${unit}</span>
+        </div>`;
+}
 
-    if (f.includes('setpoint')) {
-        const sp = setpointOf(cell);
-        html += `
-            <div class="cell-setpoint flex-grow-1">
-                <button class="btn btn-sm btn-outline-secondary" onclick="window.frameSetpoint('${ieee}', -0.5)"
-                        aria-label="Decrease setpoint" ${sp === null ? 'disabled' : ''}>
-                    <i class="fas fa-minus"></i>
-                </button>
-                <span class="cell-setpoint-value" data-setpoint>${sp === null ? '—' : sp + '°'}</span>
-                <button class="btn btn-sm btn-outline-secondary" onclick="window.frameSetpoint('${ieee}', 0.5)"
-                        aria-label="Increase setpoint" ${sp === null ? 'disabled' : ''}>
-                    <i class="fas fa-plus"></i>
-                </button>
-            </div>`;
-    }
+/** Every control one endpoint offers, in the order the device modal shows them. */
+function endpointControlsHtml(cell, ep, showLabel) {
+    const f = ep.features || [];
+    const ieee = esc(cell.ieee);
+    const epId = ep.id;
+    const key = `${cell.ieee}-${epId}`;
+    let buttons = '';
+    let rows = '';
 
-    let sliders = '';
+    if (f.includes('toggle')) buttons += toggleHtml(cell, epId, showLabel);
+    if (f.includes('open') || f.includes('close')) buttons += coverHtml(cell, epId);
+    if (f.includes('setpoint')) buttons += setpointHtml(cell, epId);
+
     if (f.includes('brightness')) {
-        sliders += `
-            <input type="range" class="form-range cell-slider" min="0" max="100" value="${brightnessOf(cell)}"
-                   aria-label="Brightness"
-                   onchange="window.frameCommand('${ieee}', 'brightness', this.value)">`;
-    }
-    if (f.includes('position')) {
-        sliders += `
-            <input type="range" class="form-range cell-slider" min="0" max="100" value="${positionOf(cell)}"
-                   aria-label="Position"
-                   onchange="window.frameCommand('${ieee}', 'position', this.value)">`;
+        rows += sliderHtml({
+            icon: 'fa-sun', min: 0, max: 100, value: brightnessOf(cell, epId), unit: '%',
+            label: 'Brightness', onInputTarget: `bri-${key}`,
+            onChange: `window.frameCommand('${ieee}', 'brightness', this.value, ${epId})`,
+        });
     }
 
-    return (html ? `<div class="cell-controls">${html}</div>` : '') + sliders;
+    if (f.includes('color_temp')) {
+        rows += sliderHtml({
+            icon: 'fa-temperature-half', min: CT_MIN_K, max: CT_MAX_K, value: colorTempKelvinOf(cell, epId), unit: 'K',
+            label: 'Colour temperature', onInputTarget: `ct-${key}`,
+            css: 'background: linear-gradient(to right, #ffae00, #ffead1, #fff, #d1eaff, #99ccff);',
+            onChange: `window.frameCommand('${ieee}', 'color_temp', this.value, ${epId})`,
+        });
+    }
+
+    if (f.includes('position')) {
+        rows += sliderHtml({
+            icon: 'fa-arrows-up-down', min: 0, max: 100, value: positionOf(cell), unit: '%',
+            label: 'Position', onInputTarget: `pos-${key}`,
+            onChange: `window.frameCommand('${ieee}', 'position', this.value, ${epId})`,
+        });
+    }
+
+    if (f.includes('color')) {
+        rows += `
+            <div class="cell-slider-row">
+                <i class="fas fa-palette" aria-hidden="true"></i>
+                <input type="color" class="cell-swatch" value="${colorHexOf(cell, epId)}"
+                       aria-label="Colour"
+                       onchange="window.frameColor('${ieee}', this.value, ${epId})">
+            </div>`;
+    }
+
+    if (!buttons && !rows) return '';
+    return `<div class="cell-ep">${buttons ? `<div class="cell-controls">${buttons}</div>` : ''}${rows}</div>`;
+}
+
+function controlsHtml(cell) {
+    const eps = endpointsOf(cell);
+    // Label the toggles only when there is more than one gang to tell apart.
+    const showLabel = eps.filter(e => (e.features || []).includes('toggle')).length > 1;
+    return eps.map(ep => endpointControlsHtml(cell, ep, showLabel)).join('');
+}
+
+/** Lit if anything on the device is on — one gang of two still counts. */
+function cellIsActive(cell) {
+    if (cell.is_group) return (cell.features || []).includes('toggle') && groupIsOn(cell);
+    return endpointsOf(cell).some(ep => (ep.features || []).includes('toggle') && isOn(cell, ep.id));
 }
 
 /**
  * Controls for a group's own tile — same layout as controlsHtml, but every
  * action goes through frameGroupCommand (POST /api/groups/{id}/control)
  * instead of the single-device command path, and reads/writes are aggregated
- * across cell.members instead of one device's state.
+ * across cell.members instead of one device's state. A group is one control
+ * surface by definition, so there are no endpoint rows here.
  */
 function groupControlsHtml(cell) {
     const f = cell.features || [];
     const gid = cell.group_id;
-    let html = '';
+    const key = `g${gid}`;
+    let buttons = '';
+    let rows = '';
 
     if (f.includes('toggle')) {
         const on = groupIsOn(cell);
-        html += `
+        buttons += `
             <button class="btn btn-sm ${on ? 'btn-warning' : 'btn-outline-secondary'} flex-grow-1"
                     onclick="window.frameGroupCommand(${gid}, 'toggle', ${!on})"
                     aria-pressed="${on}">
@@ -273,7 +448,7 @@ function groupControlsHtml(cell) {
     }
 
     if (f.includes('open') || f.includes('close')) {
-        html += `
+        buttons += `
             <div class="btn-group btn-group-sm flex-grow-1" role="group" aria-label="Group cover controls">
                 <button class="btn btn-outline-secondary" onclick="window.frameGroupCommand(${gid}, 'open')" title="Open">
                     <i class="fas fa-arrow-up"></i>
@@ -287,22 +462,44 @@ function groupControlsHtml(cell) {
             </div>`;
     }
 
-    let sliders = '';
     if (f.includes('brightness')) {
-        sliders += `
-            <input type="range" class="form-range cell-slider" min="0" max="100" value="${groupBrightnessPct(cell)}"
-                   aria-label="Brightness"
-                   onchange="window.frameGroupCommand(${gid}, 'brightness', this.value)">`;
-    }
-    if (f.includes('position')) {
-        sliders += `
-            <input type="range" class="form-range cell-slider" min="0" max="100" value="${groupPositionPct(cell)}"
-                   aria-label="Position"
-                   onchange="window.frameGroupCommand(${gid}, 'position', this.value)">`;
+        rows += sliderHtml({
+            icon: 'fa-sun', min: 0, max: 100, value: groupBrightnessPct(cell), unit: '%',
+            label: 'Brightness', onInputTarget: `bri-${key}`,
+            onChange: `window.frameGroupCommand(${gid}, 'brightness', this.value)`,
+        });
     }
 
-    return (html ? `<div class="cell-controls">${html}</div>` : '') + sliders;
+    if (f.includes('color_temp')) {
+        rows += sliderHtml({
+            icon: 'fa-temperature-half', min: CT_MIN_K, max: CT_MAX_K, value: groupColorTempKelvin(cell), unit: 'K',
+            label: 'Colour temperature', onInputTarget: `ct-${key}`,
+            css: 'background: linear-gradient(to right, #ffae00, #ffead1, #fff, #d1eaff, #99ccff);',
+            onChange: `window.frameGroupCommand(${gid}, 'color_temp', this.value)`,
+        });
+    }
+
+    if (f.includes('position')) {
+        rows += sliderHtml({
+            icon: 'fa-arrows-up-down', min: 0, max: 100, value: groupPositionPct(cell), unit: '%',
+            label: 'Position', onInputTarget: `pos-${key}`,
+            onChange: `window.frameGroupCommand(${gid}, 'position', this.value)`,
+        });
+    }
+
+    if (f.includes('color')) {
+        rows += `
+            <div class="cell-slider-row">
+                <i class="fas fa-palette" aria-hidden="true"></i>
+                <input type="color" class="cell-swatch" value="${groupColorHex(cell)}"
+                       aria-label="Colour"
+                       onchange="window.frameGroupColor(${gid}, this.value)">
+            </div>`;
+    }
+
+    return (buttons ? `<div class="cell-controls">${buttons}</div>` : '') + rows;
 }
+
 
 // cells
 
@@ -334,7 +531,6 @@ function cellInnerHtml(cell) {
     const dev = devOf(cell);
     // Prefer the live name — a rename shouldn't need a frame refetch.
     const name = dev?.friendly_name || cell.name;
-    const active = (cell.features || []).includes('toggle') && isOn(cell);
 
     const badges = (cell.badges || []).map(b => {
         if (b === 'battery') {
@@ -365,7 +561,7 @@ function cellInnerHtml(cell) {
 }
 
 function cellHtml(cell) {
-    const active = (cell.features || []).includes('toggle') && (cell.is_group ? groupIsOn(cell) : isOn(cell));
+    const active = cellIsActive(cell);
     const cls = [
         'frame-cell',
         cell.is_group ? 'is-group' : '',
@@ -471,8 +667,27 @@ export function setFrameTab(id) {
     renderFrame();
 }
 
+/**
+ * The cell whose slider is currently under a finger, if any.
+ *
+ * A range input on a touch screen never takes focus, so focus alone can't tell
+ * us a drag is in progress — a websocket update arriving mid-drag would rebuild
+ * the cell and snatch the slider away. Tracking the pointer covers both.
+ */
+let draggingCell = null;
+
+function markDragging(el) {
+    draggingCell = el.closest('.frame-cell');
+}
+
+function endDragging() {
+    draggingCell = null;
+}
+
 /** Don't yank a slider out from under a finger mid-drag. */
 function sliderBeingDragged(el) {
+    if (draggingCell && el.contains(draggingCell)) return true;
+    if (el === draggingCell) return true;
     return el.contains(document.activeElement) &&
         document.activeElement.matches('input[type="range"]');
 }
@@ -489,7 +704,7 @@ export function framesHandleDeviceUpdate(ieee) {
         for (const el of document.querySelectorAll(`.frame-cell[data-ieee="${CSS.escape(ieee)}"]`)) {
             if (sliderBeingDragged(el)) continue;
             el.classList.toggle('is-offline', !cell.available);
-            el.classList.toggle('is-active', (cell.features || []).includes('toggle') && isOn(cell));
+            el.classList.toggle('is-active', cellIsActive(cell));
             el.innerHTML = cellInnerHtml(cell);
         }
     }
@@ -500,7 +715,7 @@ export function framesHandleDeviceUpdate(ieee) {
     for (const gc of allCells.filter(c => c.is_group && c.members?.includes(ieee))) {
         for (const el of document.querySelectorAll(`.frame-cell[data-group-id="${CSS.escape(String(gc.group_id))}"]`)) {
             if (sliderBeingDragged(el)) continue;
-            el.classList.toggle('is-active', (gc.features || []).includes('toggle') && groupIsOn(gc));
+            el.classList.toggle('is-active', cellIsActive(gc));
             el.innerHTML = cellInnerHtml(gc);
         }
     }
@@ -942,43 +1157,165 @@ export async function deleteCurrentFrame() {
 // quick actions
 
 /**
- * Route a cell action through the shared command path.
+ * The state keys a command is expected to produce.
  *
- * sendCommand already applies the optimistic update to state.devices; the
- * websocket echo then lands via framesHandleDeviceUpdate.
+ * Same keys as actions.js:optimisticDeltaFor, deliberately — the websocket echo
+ * then lands on top of the guess without the tile visibly flipping back and
+ * forth. Returns null for a command with no predictable effect.
  */
-export async function frameCommand(ieee, command, value = null) {
-    if (!window.sendCommand) return;
-    const v = value === null ? null : (isNaN(value) ? value : Number(value));
-    await window.sendCommand(ieee, command, v);
-    framesHandleDeviceUpdate(ieee);
+function optimisticDelta(command, value, ep) {
+    const suffix = `_${ep}`;
+    const d = {};
+
+    // Gang 2 turning on must not light gang 1's toggle, so the unsuffixed keys
+    // are only written for endpoint 1 — the same rule handlers/general.py
+    // applies when it reports the change back.
+    const setOn = on => {
+        d[`on${suffix}`] = on;
+        d[`state${suffix}`] = on ? 'ON' : 'OFF';
+        if (ep === 1) {
+            d.on = on;
+            d.state = on ? 'ON' : 'OFF';
+        }
+    };
+
+    switch (command) {
+        case 'on':
+        case 'off':
+            setOn(command === 'on');
+            return d;
+        case 'brightness': {
+            const pct = Number(value);
+            d.brightness = pct;
+            d[`brightness${suffix}`] = pct;
+            // A level command implies the light comes on — the modal's slider
+            // behaves the same way, so the toggle must not lag behind it.
+            setOn(pct > 0);
+            return d;
+        }
+        case 'color_temp':
+            // Kelvin in, mireds stored — the reciprocal, as everywhere else.
+            d.color_temp = Math.round(1000000 / Number(value));
+            d[`color_temp${suffix}`] = d.color_temp;
+            return d;
+        case 'hs_color': {
+            const [h, s] = value || [];
+            if (h === undefined) return null;
+            d.hue = Math.round((h / 360) * 254);
+            d.saturation = Math.round((s / 100) * 254);
+            return d;
+        }
+        case 'position':
+            d.position = Number(value);
+            return d;
+        case 'open':
+            d.position = 100;
+            return d;
+        case 'close':
+            d.position = 0;
+            return d;
+        case 'temperature':
+            d.occupied_heating_setpoint = Number(value);
+            d.heating_setpoint = Number(value);
+            d.target_temp = Number(value);
+            return d;
+        default:
+            return null;
+    }
 }
 
-export async function frameSetpoint(ieee, delta) {
+/**
+ * Show a command's expected result now, and hand back an undo.
+ *
+ * /api/device/command doesn't answer until the radio has, which on a retrying
+ * device is seconds — long enough that a tile updated only on the reply reads
+ * as a dropped tap. So the cache is written first and the reply only gets to
+ * correct it.
+ */
+function applyOptimistic(ieee, command, value, ep) {
+    const dev = state.deviceCache?.[ieee];
+    if (!dev) return () => {};
+
+    const cmd = command === 'toggle' ? (isOn({ ieee }, ep) ? 'off' : 'on') : command;
+    const delta = optimisticDelta(cmd, value, ep);
+    if (!delta) return () => {};
+
+    dev.state = dev.state || {};
+    const before = {};
+    for (const k of Object.keys(delta)) before[k] = dev.state[k];
+    Object.assign(dev.state, delta);
+    framesHandleDeviceUpdate(ieee);
+
+    return () => {
+        for (const [k, v] of Object.entries(before)) {
+            if (v === undefined) delete dev.state[k];
+            else dev.state[k] = v;
+        }
+        framesHandleDeviceUpdate(ieee);
+    };
+}
+
+/**
+ * Route a cell action through the shared command path.
+ *
+ * The optimistic update is applied before the request, not after it, and rolled
+ * back if the command is refused. sendCommand applies its own copy on success
+ * (writing the same keys), and the websocket echo lands on top of both.
+ */
+export async function frameCommand(ieee, command, value = null, endpoint = null) {
+    if (!window.sendCommand) return;
+    const ep = endpoint || 1;
+    const v = value === null ? null : (Array.isArray(value) || isNaN(value) ? value : Number(value));
+
+    const undo = applyOptimistic(ieee, command, v, ep);
+    const res = await window.sendCommand(ieee, command, v, endpoint);
+    // A transport that reports nothing can't be second-guessed; leave the
+    // optimistic value up and let the websocket correct it.
+    if (res && res.success === false) undo();
+    else framesHandleDeviceUpdate(ieee);
+}
+
+/** Send the picked colour as hue/saturation, the units the command path wants. */
+export function frameColor(ieee, hex, endpoint = null) {
+    const { h, s } = hexToHS(hex);
+    return frameCommand(ieee, 'hs_color', [h, s], endpoint);
+}
+
+export function frameSetpoint(ieee, delta, endpoint = null) {
     const cell = frame?.groups.flatMap(g => g.cells).find(c => c.ieee === ieee);
     if (!cell) return;
     const current = setpointOf(cell);
     if (current === null) return;
 
-    const next = Math.round((current + delta) * 2) / 2;
-    // Optimistic: the stepper should track the finger, not the round trip.
-    const el = document.querySelector(`.frame-cell[data-ieee="${CSS.escape(ieee)}"] [data-setpoint]`);
-    if (el) el.textContent = `${next}°`;
+    return frameCommand(ieee, 'temperature', Math.round((current + delta) * 2) / 2, endpoint);
+}
 
-    await window.sendCommand(ieee, 'temperature', next);
+/**
+ * Move a slider's value label while the finger is down.
+ *
+ * The command itself waits for `change` — one per gesture rather than one per
+ * pixel — so this is what makes the drag feel connected to anything.
+ */
+export function frameSliderInput(el, target, unit) {
+    markDragging(el);
+    const out = el.parentElement?.querySelector(`[data-slider-value="${target}"]`);
+    if (out) out.textContent = `${el.value}${unit}`;
 }
 
 /**
  * Route a group cell's quick action through POST /api/groups/{id}/control — a
  * different command surface from a device's, with its own unit conventions
- * (raw 0-254 brightness, un-inverted position). Members report their new state
- * over the websocket, so no optimistic update. See docs/frames.md.
+ * (raw 0-254 brightness, mired colour temperature, un-inverted position).
+ * Members report their new state over the websocket, so no optimistic update.
+ * See docs/frames.md.
  */
 export async function frameGroupCommand(groupId, action, value = null) {
     let body;
     switch (action) {
         case 'toggle': body = { state: value ? 'ON' : 'OFF' }; break;
         case 'brightness': body = { brightness: Math.round((Number(value) / 100) * 254) }; break;
+        case 'color_temp': body = { color_temp: Math.round(1000000 / Number(value)) }; break;
+        case 'hs_color': body = { hs_color: value }; break;
         case 'open': body = { cover_state: 'OPEN' }; break;
         case 'close': body = { cover_state: 'CLOSE' }; break;
         case 'stop': body = { cover_state: 'STOP' }; break;
@@ -999,6 +1336,11 @@ export async function frameGroupCommand(groupId, action, value = null) {
     }
 }
 
+export function frameGroupColor(groupId, hex) {
+    const { h, s } = hexToHS(hex);
+    return frameGroupCommand(groupId, 'hs_color', [h, s]);
+}
+
 
 export function initFrames() {
     // The dashboard renders Frames inside a tab and only loads it when shown.
@@ -1016,6 +1358,14 @@ export function initFrames() {
     });
     document.getElementById('framesDelete')?.addEventListener('click', () => deleteCurrentFrame());
     document.getElementById('framesRefresh')?.addEventListener('click', () => loadFrame());
+
+    // Delegated because cells are rebuilt on every state change; the listener
+    // has to outlive the elements it guards.
+    document.addEventListener('pointerdown', e => {
+        if (e.target.matches?.('.cell-slider')) markDragging(e.target);
+    });
+    document.addEventListener('pointerup', endDragging);
+    document.addEventListener('pointercancel', endDragging);
 
     syncSelect();
 }

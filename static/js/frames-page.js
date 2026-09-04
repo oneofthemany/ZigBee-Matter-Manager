@@ -11,7 +11,7 @@ import { state } from './state.js';
 import {
     initFrames, loadFrame, loadSavedFrames, framesHandleDeviceUpdate, setFrameTab,
     openFrameBuilder, saveFrame, deleteCurrentFrame, frameCommand, frameSetpoint,
-    frameGroupCommand,
+    frameColor, frameSliderInput, frameGroupCommand, frameGroupColor,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 } from './frames.js';
@@ -20,7 +20,8 @@ import {
 // here exactly as main.js does for the dashboard.
 Object.assign(window, {
     setFrameTab, openFrameBuilder, saveFrame, deleteCurrentFrame,
-    frameCommand, frameSetpoint, frameGroupCommand,
+    frameCommand, frameSetpoint, frameColor, frameSliderInput,
+    frameGroupCommand, frameGroupColor,
     frameToggleChamber, frameToggleKind, frameToggleDevice, frameMoveDevice,
     frameAddTab, frameRenameTab, frameRemoveTab, frameMoveTab, frameToggleTabGroup,
 });
@@ -47,8 +48,9 @@ async function loadDevices() {
  * Minimal sendCommand, matching actions.js's contract:
  *   sendCommand(ieee, command, value?, endpoint?)
  *
- * Applies the same optimistic toggle flip actions.js does, so a tap feels
- * instant instead of waiting for the websocket echo.
+ * Transport only. frames.js applies the optimistic update before the call and
+ * rolls it back on the failure this reports, so a tap shows its result now
+ * rather than after the radio round-trip.
  */
 window.sendCommand = async function sendCommand(ieee, command, value = null, endpoint = null) {
     const body = { ieee, command, value };
@@ -62,33 +64,9 @@ window.sendCommand = async function sendCommand(ieee, command, value = null, end
         });
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'command failed');
-
-        const dev = state.deviceCache[ieee];
-        if (dev) {
-            dev.state = dev.state || {};
-            const ep = endpoint || 1;
-            if (command === 'toggle') {
-                const key = dev.state[`on_${ep}`] !== undefined ? `on_${ep}` : 'on';
-                const now = dev.state[key] === true || dev.state[key] === 'ON' || dev.state[key] === 1;
-                dev.state[key] = !now;
-            } else if (command === 'on' || command === 'off') {
-                const key = dev.state[`on_${ep}`] !== undefined ? `on_${ep}` : 'on';
-                dev.state[key] = command === 'on';
-            } else if (command === 'brightness') {
-                dev.state[dev.state[`brightness_${ep}`] !== undefined ? `brightness_${ep}` : 'brightness'] = Number(value);
-            } else if (command === 'position') {
-                dev.state.position = Number(value);
-            } else if (command === 'temperature') {
-                dev.state.occupied_heating_setpoint = Number(value);
-            }
-            framesHandleDeviceUpdate(ieee);
-        }
         return data;
     } catch (e) {
         window.toast.error('Command failed: ' + e.message);
-        // Re-render from unchanged state so the control snaps back rather than
-        // showing a change that never happened.
-        framesHandleDeviceUpdate(ieee);
         return { success: false, error: e.message };
     }
 };

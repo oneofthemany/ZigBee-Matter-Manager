@@ -65,7 +65,10 @@ import {
     selectFrame,
     frameCommand,
     frameSetpoint,
+    frameColor,
+    frameSliderInput,
     frameGroupCommand,
+    frameGroupColor,
     framesHandleDeviceUpdate,
     openFrameBuilder,
     saveFrame,
@@ -285,7 +288,10 @@ window.setFramesSplit = setSplit;
 window.selectFrame = selectFrame;
 window.frameCommand = frameCommand;
 window.frameSetpoint = frameSetpoint;
+window.frameColor = frameColor;
+window.frameSliderInput = frameSliderInput;
 window.frameGroupCommand = frameGroupCommand;
+window.frameGroupColor = frameGroupColor;
 // Frame builder
 window.openFrameBuilder = openFrameBuilder;
 window.saveFrame = saveFrame;

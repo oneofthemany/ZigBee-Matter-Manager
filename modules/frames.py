@@ -103,6 +103,22 @@ _CAPABILITY_READOUTS: Tuple[Tuple[str, str], ...] = (
 #: Sensor kinds that are binary states, not numbers — the renderer shows a pill.
 BINARY_SENSOR_KINDS = frozenset({"contact", "motion", "leak", "smoke", "vibration"})
 
+# control surface
+
+#: ZCL clusters a control surface is built from — the same ids
+#: ``modal/control.js`` renders from.
+#:
+#: ``capability_list`` is a union over the whole device, so it can say "this
+#: thing switches" but never "it switches twice": a two-gang socket and a
+#: one-gang socket carry an identical list. The per-endpoint cluster lists in
+#: ``capabilities`` can tell them apart, and reading the same source the device
+#: modal reads is what keeps a cell and the modal offering the same controls.
+CLUSTER_ON_OFF = 0x0006
+CLUSTER_LEVEL_CONTROL = 0x0008
+CLUSTER_WINDOW_COVERING = 0x0102
+CLUSTER_THERMOSTAT = 0x0201
+CLUSTER_COLOR_CONTROL = 0x0300
+
 #: Motion capabilities that are trustworthy on their own: a real OccupancySensing
 #: cluster, or Tuya radar detection.
 _RELIABLE_MOTION_CAPS = frozenset({"occupancy_sensing", "presence_sensor", "radar_sensor"})
@@ -186,12 +202,94 @@ def sensor_readouts(device: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def features(device: Dict[str, Any], kind: str) -> List[str]:
-    """
-    Quick actions this cell can offer, from what the device actually supports.
+def _cluster_ids(endpoint: Dict[str, Any], *sides: str) -> set:
+    ids = set()
+    for side in sides:
+        for cluster in endpoint.get(side) or []:
+            cid = cluster.get("id") if isinstance(cluster, dict) else cluster
+            if isinstance(cid, int):
+                ids.add(cid)
+    return ids
 
-    This is the "quick action based on control availability" rule: a bulb with
-    LevelControl gets a brightness slider, one without gets only a toggle.
+
+def control_endpoints(device: Dict[str, Any], kind: str) -> List[Dict[str, Any]]:
+    """
+    One descriptor per controllable endpoint, as ``[{id, type, features}]``.
+
+    Two gangs are two endpoints carrying OnOff, so a cell that renders one row
+    per entry offers both switches instead of one. Everything a light can do
+    (level, colour temperature, colour) is decided the same way, from the
+    clusters actually present on that endpoint.
+
+    Non-control kinds get nothing at all, which is what keeps the "switch cell
+    matches ``switch``, never ``on_off``" rule intact: a Philips SML carries the
+    OnOff cluster on a controller endpoint, and returning it here would put a
+    toggle on a motion sensor.
+    """
+    if kind in (CELL_SENSOR, CELL_UNKNOWN):
+        return []
+
+    caps = _caps(device)
+    endpoints = device.get("capabilities")
+    if not isinstance(endpoints, list):
+        return []
+
+    # An actuator's cluster is a server cluster: OnOff on the *client* side is a
+    # remote asking someone else to switch, which is why control_group only ever
+    # looks at in_clusters. Reading both sides is the fallback, not the rule, so
+    # a device whose only OnOff is a client cluster still renders the toggle it
+    # renders today rather than losing its controls to a stricter reading.
+    for sides in (("inputs",), ("inputs", "outputs")):
+        found = _endpoints_from(endpoints, caps, sides)
+        if found:
+            return found
+    return []
+
+
+def _endpoints_from(endpoints: List[Any], caps: set, sides: Tuple[str, ...]) -> List[Dict[str, Any]]:
+    """One pass of ``control_endpoints`` over the given cluster sides."""
+    out: List[Dict[str, Any]] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict) or not isinstance(endpoint.get("id"), int):
+            continue
+
+        clusters = _cluster_ids(endpoint, *sides)
+        ep_features: List[str] = []
+
+        # Same precedence as the cell itself: the most specific surface wins, so
+        # a cover whose position rides LevelControl is a cover, not a dimmer.
+        if CLUSTER_WINDOW_COVERING in clusters:
+            ep_type = CELL_COVER
+            ep_features = ["open", "close", "stop", "position"]
+        elif CLUSTER_THERMOSTAT in clusters:
+            ep_type = CELL_CLIMATE
+            ep_features = ["setpoint", "mode"]
+            if "fan_control" in caps:
+                ep_features.append("fan")
+        else:
+            ep_type = CELL_LIGHT if clusters & {CLUSTER_LEVEL_CONTROL, CLUSTER_COLOR_CONTROL} else CELL_SWITCH
+            if CLUSTER_ON_OFF in clusters:
+                ep_features.append("toggle")
+            if CLUSTER_LEVEL_CONTROL in clusters:
+                ep_features.append("brightness")
+            if CLUSTER_COLOR_CONTROL in clusters:
+                # One cluster, two surfaces — the modal offers a white slider and
+                # a colour picker off the same 0x0300, so a cell offers both too.
+                ep_features.extend(["color_temp", "color"])
+
+        if ep_features:
+            out.append({"id": endpoint["id"], "type": ep_type, "features": ep_features})
+
+    return out
+
+
+def _capability_features(device: Dict[str, Any], kind: str) -> List[str]:
+    """
+    Quick actions from ``capability_list`` alone.
+
+    The fallback for a device that ships no endpoint descriptors — a Matter or
+    AC entry, or a Zigbee device still mid-interview. Endpoint-blind, so it can
+    only ever describe one gang.
     """
     caps = _caps(device)
     out: List[str] = []
@@ -202,11 +300,9 @@ def features(device: Dict[str, Any], kind: str) -> List[str]:
         if "level_control" in caps:
             out.append("brightness")
         if "color_control" in caps:
-            out.append("color")
+            out.extend(["color_temp", "color"])
     elif kind == CELL_SWITCH:
         out.append("toggle")
-        if "multi_switch" in caps:
-            out.append("multi_endpoint")
     elif kind == CELL_COVER:
         out.extend(["open", "close", "stop"])
         if "level_control" in caps or "window_covering" in caps:
@@ -217,6 +313,37 @@ def features(device: Dict[str, Any], kind: str) -> List[str]:
         if "fan_control" in caps:
             out.append("fan")
     elif kind == CELL_LOCK:
+        out.extend(["lock", "unlock"])
+
+    return out
+
+
+def features(device: Dict[str, Any], kind: str) -> List[str]:
+    """
+    Quick actions this cell can offer, flattened across its endpoints.
+
+    This is the "quick action based on control availability" rule: a bulb with
+    LevelControl gets a brightness slider, one without gets only a toggle.
+
+    The flat list is what decides whether a cell is "active" and what a
+    single-endpoint tile renders; ``endpoints`` carries the per-gang detail.
+    ``multi_endpoint`` says the two disagree — render per endpoint, not once.
+    """
+    endpoints = control_endpoints(device, kind)
+    if not endpoints:
+        return _capability_features(device, kind)
+
+    out: List[str] = []
+    for endpoint in endpoints:
+        for feature in endpoint["features"]:
+            if feature not in out:
+                out.append(feature)
+
+    if len(endpoints) > 1:
+        out.append("multi_endpoint")
+
+    # A lock has no cluster of its own in this path (see _CONTROL_PRECEDENCE).
+    if kind == CELL_LOCK:
         out.extend(["lock", "unlock"])
 
     return out
@@ -243,7 +370,7 @@ def resolve_cell(device: Dict[str, Any]) -> Dict[str, Any]:
 
     Returns::
 
-        {ieee, name, chamber, kind, features, readouts, badges, available}
+        {ieee, name, chamber, kind, features, endpoints, readouts, badges, available}
 
     ``kind == "unknown"`` means no control surface and nothing readable — the
     renderer still shows name + last seen.
@@ -262,6 +389,9 @@ def resolve_cell(device: Dict[str, Any]) -> Dict[str, Any]:
         "chamber": (device.get("settings") or {}).get("chamber"),
         "kind": kind,
         "features": features(device, kind),
+        # Per-gang detail. One entry for an ordinary device, one per gang for a
+        # multi-gang socket — the renderer walks this, not `features`.
+        "endpoints": control_endpoints(device, kind),
         "readouts": readouts,
         "badges": badges(device),
         "available": bool(device.get("available")),
@@ -291,7 +421,9 @@ def group_features(group: Dict[str, Any], kind: str) -> List[str]:
             out.append("toggle")
         if "brightness" in caps:
             out.append("brightness")
-        if caps & {"color_temp", "color_xy", "color_hs"}:
+        if "color_temp" in caps:
+            out.append("color_temp")
+        if caps & {"color_xy", "color_hs"}:
             out.append("color")
     elif kind == CELL_SWITCH:
         out.append("toggle")

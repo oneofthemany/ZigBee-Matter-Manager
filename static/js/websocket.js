@@ -4,7 +4,7 @@
  */
 
 import { state } from './state.js';
-import { fetchAllDevices, handleDeviceUpdate, removeDeviceRow, renderDeviceTable } from './devices.js';
+import { cacheDevices, fetchAllDevices, handleDeviceUpdate, removeDeviceRow, renderDeviceTable } from './devices.js';
 import { addLogEntry, updateDebugStatus, handleLivePacket, checkDebugStatus } from './logging.js';
 import { handlePacketFlow } from './packet-flow.js';
 import { updatePairingUI, checkPairingStatus } from './actions.js';
@@ -153,6 +153,10 @@ export function initWS() {
 
                 case "device_list":
                     state.devices = msg.data;
+                    // Same reason as in fetchAllDevices: the cache is what
+                    // Frames and the modal read, and it must not depend on
+                    // which rows the table's filter lets through.
+                    cacheDevices(msg.data);
                     renderDeviceTable();
                     if (window.updateMesh) window.updateMesh();
                     try { dismissKnownDevices(state.devices); } catch(e) {}

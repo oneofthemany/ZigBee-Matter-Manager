@@ -102,8 +102,8 @@ Zigbee-only for now; the backend excludes everything else.
 
 ### Quick actions
 
-Device cells go through `window.sendCommand` (`actions.js`), which already does
-the optimistic update. Group cells go through `frameGroupCommand`
+Device cells go through `window.sendCommand` (`actions.js`, or the cut-down copy
+in `frames-page.js`). Group cells go through `frameGroupCommand`
 (`POST /api/groups/{id}/control`) instead — a group has no single device to
 send an optimistic update for, so its tile relies on member devices' own
 websocket updates via `framesHandleDeviceUpdate`.
@@ -114,7 +114,62 @@ single-device path:
 | Field | Convention |
 | --- | --- |
 | `brightness` | The slider is 0–100 as for a device, but `control_group` calls the ZCL level-control cluster directly with no conversion, so it wants a raw 0–254 level. `handlers/general.py:set_brightness_pct` is what converts on the single-device path. |
+| `color_temp` | The slider is kelvin on both paths, but the single-device `color_temp` command converts and `control_group` writes the attribute raw — so `frameGroupCommand` sends mireds and `frameCommand` sends kelvin. |
 | `position` | The UI convention is 100 = open. `handlers/blinds.py` inverts this for a single device just before the cluster call; `control_group` has no such inversion, so `frameGroupCommand` does it instead. |
+
+### One row per endpoint
+
+A cell's controls come from `cell.endpoints`, not `cell.features`.
+
+`features` is the union across endpoints: it can say "this thing switches" but
+never "it switches twice", so a two-gang socket and a one-gang socket produce an
+identical list. `endpoints` (`modules/frames.py:control_endpoints`) is one
+descriptor per controllable endpoint — `{id, type, features}` — read from the
+per-endpoint cluster lists in `capabilities`, which is the same source
+`modal/control.js` renders the device modal from. Reading it is what keeps a
+cell and the modal offering the same controls; `features` survives as the flat
+summary that decides whether a cell reads as active.
+
+Clusters map to controls exactly as they do in the modal:
+
+| Cluster | Controls |
+| --- | --- |
+| `0x0006` OnOff | toggle |
+| `0x0008` LevelControl | brightness |
+| `0x0300` ColorControl | colour temperature *and* colour — one cluster, two surfaces |
+| `0x0102` WindowCovering | open / close / stop / position |
+| `0x0201` Thermostat | setpoint |
+
+Server clusters are read first and both sides only as a fallback, so a remote
+whose OnOff is a *client* cluster keeps the toggle it has today without every
+actuator being detected from the wrong side. Non-control kinds (`sensor`,
+`unknown`) get no endpoints at all, which is what keeps a Philips SML — OnOff on
+a controller endpoint — from rendering as a switch.
+
+### Latency
+
+The optimistic update is applied **before** the request, not after it.
+`/api/device/command` doesn't answer until the radio has, which on a retrying
+device is seconds — long enough that a tile updated only on the reply reads as a
+dropped tap. `frames.js:optimisticDelta` writes the same state keys
+`actions.js:optimisticDeltaFor` does, so the websocket echo lands on top of the
+guess without the tile flipping back and forth, and a refused command rolls the
+guess back.
+
+The unsuffixed `on` / `state` keys are only written for endpoint 1, matching
+`handlers/general.py:_update_state` — otherwise switching gang 2 would light up
+gang 1's toggle.
+
+Sliders send on `change`, not `input`: one command per gesture rather than one
+per pixel. The value beside the slider tracks the finger in the meantime. A
+range input never takes focus on a touch screen, so a drag is tracked by pointer
+(`draggingCell`) as well as by focus — without that, a websocket update arriving
+mid-drag rebuilds the cell and snatches the slider away.
+
+`state.deviceCache` is the state source for a cell. On the dashboard it is
+seeded from the `/api/devices` payload (`devices.js:cacheDevices`), *not* while
+rendering table rows: filling it during a render meant a table filtered to one
+tab left every other device out of it, and a frame full of cells with no state.
 
 ## API
 

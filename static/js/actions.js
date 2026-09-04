@@ -149,7 +149,10 @@ export async function checkPairingStatus() {
 }
 
 /**
- * Send command to device (now with endpoint support)
+ * Send command to device (now with endpoint support).
+ *
+ * Returns the API result, so a caller that showed the change before the round
+ * trip — Frames does — can roll it back when the device refuses.
  */
 export async function sendCommand(ieee, command, value = null, endpoint = null) {
     const epLabel = endpoint ? ` (EP${endpoint})` : '';
@@ -195,6 +198,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
                 level: 'INFO',
                 message: `Command ${command}${epLabel} succeeded`,
             });
+            return data;
         } else {
             // FAILURE: toast the user
             const errMsg = data.error || 'Device did not respond';
@@ -204,6 +208,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
                 level: 'ERROR',
                 message: `Command ${command}${epLabel} failed: ${errMsg}`,
             });
+            return data;
         }
     } catch (e) {
         const errMsg = e?.message || 'Network error';
@@ -213,6 +218,7 @@ export async function sendCommand(ieee, command, value = null, endpoint = null) 
             level: 'ERROR',
             message: `Command ${command}${epLabel} exception: ${errMsg}`,
         });
+        return { success: false, error: errMsg };
     }
 }
 

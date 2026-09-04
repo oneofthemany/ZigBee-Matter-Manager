@@ -15,6 +15,22 @@ import { confirmDialog } from './dialogs.js';
 const log = zmmLog('devices');
 
 /**
+ * Adopt a fresh /api/devices payload into the cache.
+ *
+ * Every device, not just the ones a filter lets through: the cache is the state
+ * source for Frames, the modal and the notification rules, none of which care
+ * what the table is currently filtered to. Existing state is merged under the
+ * new payload so transient keys the API doesn't carry survive a refresh.
+ */
+export function cacheDevices(devices) {
+    for (const d of devices) {
+        const known = state.deviceCache[d.ieee];
+        if (known) d.state = { ...known.state, ...d.state };
+        state.deviceCache[d.ieee] = d;
+    }
+}
+
+/**
  * Check if a device has OTA cluster (0x0019) support
  */
 function hasOTACluster(d) {
@@ -54,6 +70,11 @@ export async function fetchAllDevices(force = false) {
 
             log.log(`Received ${devices.length} devices.`);
             state.devices = devices; // Update state
+            // The cache used to be filled while rendering rows, which meant a
+            // filtered table left everything else out of it — and Frames, which
+            // reads state from the cache, showed those devices with no state at
+            // all. Seed it from the payload instead, before any filter applies.
+            cacheDevices(devices);
 
             const key = JSON.stringify(devices);
             if (force || key !== _lastDevicesKey) {
@@ -152,12 +173,6 @@ export function renderDeviceTable() {
     }
 
     otherDevices.forEach(d => {
-        // Merge with existing cache if present to keep transient state
-        if (state.deviceCache[d.ieee]) {
-            d.state = { ...state.deviceCache[d.ieee].state, ...d.state };
-        }
-        state.deviceCache[d.ieee] = d;
-
         if (!d.last_seen_ts) d.last_seen_ts = Date.now();
 
         const tr = document.createElement('tr');
