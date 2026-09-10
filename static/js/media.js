@@ -1948,9 +1948,13 @@ function _syncStatLine(st) {
     // step rung is looping, while a reload or a spell of silence says the
     // ladder escalated past it. Distinguishing the two is the whole diagnosis.
     const reloads = s.reloads > 0 ? ` · reloads ${s.reloads}` : '';
+    // A reload the device asked for by leaving playback — a call ringing on
+    // it, an assistant — rather than one the ladder had to infer. Shown apart
+    // from the total because it says the fault is the room, not the network.
+    const gaps = s.interrupts > 0 ? ` · interrupted ${s.interrupts}×` : '';
     const quiet = s.silent_s > 10 ? ` · quiet ${s.silent_s}s` : '';
     return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late}`
-        + ` · resyncs ${s.resyncs}${reloads}${quiet}`;
+        + ` · resyncs ${s.resyncs}${reloads}${gaps}${quiet}`;
 }
 
 // Deviation meter: a centered bar on the same ±500 ms scale as the trim
