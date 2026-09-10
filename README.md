@@ -217,7 +217,8 @@ A full state-machine automation system that executes directly at the gateway wit
 - **Multi-Condition Rules** — Up to 5 AND conditions with sustain timers per source device
 - **Prerequisites** — Check other device states before firing, with NOT negation and OR logic across time windows
 - **Recursive Action Sequences** — Command, Delay, Wait For, Gate, If/Then/Else branching, Parallel execution
-- **Group and user targets** — Command steps can target Zigbee groups; presence users are virtual devices, so "when Sean arrives at Office" is an ordinary rule
+- **Group, user and worker targets** — Command steps can target Zigbee groups; presence users and workers are virtual devices, so "when Sean arrives at Office" and "put the house into night mode" are both ordinary rules
+- **Value references** — a command value or a condition threshold can read another device's live attribute (`{"worker": "comfort_temp"}`) instead of carrying a literal, so one shared number drives many rules
 - **Day-of-Week Filtering** and a **30-second time-boundary scheduler** so rules fire on exact times, not only on device changes
 - **Trace Log** — Real-time colour-coded evaluation history
 - **JSON Export** — Download/import rules for backup or sharing
@@ -228,6 +229,39 @@ A full state-machine automation system that executes directly at the gateway wit
 </p>
 
 For full documentation see **[docs/automations.md](docs/automations.md)**.
+
+### 🦺 Workers
+
+The Automations tab has two sub-tabs: **Rules**, above, and **Workers**.
+
+A rule can only react to something a device did. A worker is the other half:
+household state a person or a rule sets deliberately, and that any rule can then
+test. Holiday mode is the canonical one — flip it before you go away and the
+morning-alarm rules stand down, without editing a single rule.
+
+Six types, each expressing something the others cannot:
+
+| Type | Holds | For |
+|:---|:---|:---|
+| **Boolean** | `on` / `off` | A flag — holiday mode, guest staying |
+| **Mode** | one of N labels | Mutually exclusive states — `home` / `away` / `night`. Four booleans can contradict each other; a mode cannot |
+| **Timer** | a flag that clears itself | "Do not disturb for two hours" — nobody has to remember to turn it off |
+| **Counter** | an integer, optionally resetting daily | "Times the door opened today" |
+| **Marker** | minutes since something happened | Memory, which an edge-triggered engine otherwise has none of |
+| **Number** | a bounded float | A shared setpoint fifteen rules read instead of copying |
+
+Each worker is an ordinary device-like (`worker::<id>`) merged into the engine
+through the same hook the swarm's virtual devices use, so it is a trigger source,
+a prerequisite and a command target with no new condition type and no new step
+type. Because a rule can both set a worker and trigger on one, the engine counts
+rules fired in a single causal chain and stops at four — a runaway loop surfaces
+as a `CHAIN_LIMIT` warning rather than a hang.
+
+The Workers sub-tab is also the manual control panel: the same card that shows a
+worker's value is where you set it, and it updates live when a rule or the phone
+sets it instead.
+
+For full documentation see **[docs/workers.md](docs/workers.md)**.
 
 ### 🐜 Swarm Intelligence
 
@@ -990,6 +1024,7 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/onboarding_unsupported_devices.md](docs/onboarding_unsupported_devices.md) | User guide — visual attribute mapping |
 | [docs/aqara_cluster_guide.md](docs/aqara_cluster_guide.md) | Aqara `0xFCC0` cluster implementation reference |
 | [docs/automations.md](docs/automations.md) | Automation engine — rule syntax, conditions, sequences, NL parser |
+| [docs/workers.md](docs/workers.md) | Workers — booleans, modes, timers, counters, markers and numbers rules can read and set |
 | [docs/heating.md](docs/heating.md) | Heating — advisor, controller, thermal profile, radiator sizing, solar gain |
 | [docs/energy.md](docs/energy.md) | Octopus integration — consumption, tariffs, Home Mini |
 | [docs/speaker_sync.md](docs/speaker_sync.md) | Media, OpenZone groups, EQ, TTS and the Sync Lab |

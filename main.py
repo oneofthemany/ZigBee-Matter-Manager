@@ -188,6 +188,7 @@ try:
         register_alert_routes,
         register_signal_routes,
         register_adblock_routes,
+        register_worker_routes,
         manager, broadcast_event,
     )
 
@@ -837,6 +838,22 @@ async def lifespan(app: FastAPI):
         app.state.virtual_provider = virtual_provider
         logger.info("Wired swarm virtual devices into automation engine")
 
+        # Workers — household state a person or a rule sets. Same hook as the
+        # virtual devices above, so a rule triggers on one and commands one
+        # with no engine special case. See docs/workers.md.
+        from modules.workers import WorkerManager, set_worker_manager
+        worker_manager = WorkerManager(
+            evaluator=zigbee_service.automation.evaluate,
+            event_emitter=broadcast_event,
+        )
+        zigbee_service.automation.add_device_getter(
+            worker_manager.automation_devices)
+        await worker_manager.start()
+        set_worker_manager(worker_manager)
+        app.state.worker_manager = worker_manager
+        logger.info("Wired %d worker(s) into automation engine",
+                    len(worker_manager.workers))
+
         # Journeys: its own DuckDB file and worker thread — DuckDB is
         # single-writer per file, so journeys never share a database.
         journey_manager = JourneyManager()
@@ -995,6 +1012,9 @@ async def lifespan(app: FastAPI):
     virtual_provider = getattr(app.state, "virtual_provider", None)
     if virtual_provider:
         await virtual_provider.stop()
+    worker_manager = getattr(app.state, "worker_manager", None)
+    if worker_manager:
+        await worker_manager.stop()
     presence_manager = getattr(app.state, "presence_manager", None)
     if presence_manager:
         await presence_manager.stop()
@@ -1193,6 +1213,7 @@ register_chamber_routes(app, get_zigbee_service)
 register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)
 register_adblock_routes(app)
+register_worker_routes(app, lambda: zigbee_service.automation)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)
 register_api_docs_routes(app)
 register_wiki_routes(app)

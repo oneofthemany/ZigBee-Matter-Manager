@@ -87,6 +87,7 @@
 │    │   ├── suggestions.py
 │    │   └── virtual.py
 │    ├── touchlink.py
+│    ├── workers.py
 │    ├── zigbee_debug.py
 │    ├── zone_device_config.py
 │    ├── zones_api.py
@@ -117,6 +118,7 @@
 │        ├── table-sort.js
 │        ├── utils.js
 │        ├── websocket.js
+│        ├── workers-page.js
 │        ├── zones.js
 │        └── modal
 │              ├── automation.js

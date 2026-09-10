@@ -254,3 +254,32 @@
 
 /* Cooldown is a detail, not a peer of the sequences. */
 #a-form #a-cd { max-width: 120px; }
+
+/* Workers sub-tab
+   A worker's value can change while somebody is looking at its card — a rule
+   sets it, or another browser does. The flash marks that it moved, so a
+   number that quietly differs from what you last read is never silent. */
+@keyframes worker-flash-kf {
+    from { background-color: rgba(255, 193, 7, 0.35); }
+    to   { background-color: transparent; }
+}
+
+.worker-flash {
+    animation: worker-flash-kf 1.2s ease-out;
+    border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .worker-flash { animation: none; }
+}
+
+/* The type picker reads as a row of choices rather than a radio list, so the
+   summary text that explains each type is part of the target you click. */
+.worker-type-option {
+    cursor: pointer;
+    transition: border-color .15s ease-in-out, background-color .15s ease-in-out;
+}
+
+.worker-type-option:hover {
+    background-color: rgba(0, 0, 0, .03);
+}

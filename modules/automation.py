@@ -18,6 +18,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.automation")
@@ -30,6 +31,18 @@ MAX_NESTING_DEPTH = 4
 DATA_FILE = "./data/automations.json"
 DEFAULT_COOLDOWN = 5
 WAIT_FOR_POLL_INTERVAL = 2
+
+# How many rules may fire in one causal chain. A worker (modules/workers.py) is
+# both a target a rule can command and a source another rule triggers on, so
+# setting one re-enters evaluation; two rules that set each other's workers
+# would recurse without end. Cooldowns cannot catch that — each hop is a
+# different rule firing once, which is exactly what a cooldown permits.
+MAX_CHAIN_DEPTH = 4
+# A ContextVar rather than an attribute because sequences run as tasks: a task
+# inherits a copy of the context it was created in, so the depth travels down
+# the chain without travelling sideways into unrelated rules firing at once.
+_chain_depth: ContextVar[int] = ContextVar("zmm_automation_chain_depth",
+                                           default=0)
 
 # Virtual source for clock-driven rules ("play radio at 07:00"), which fire from
 # the time-boundary scheduler rather than any device update.
@@ -75,6 +88,11 @@ VALID_COMMANDS = {
     # Absent here it was dropped twice over: add_rule rejected the step, and
     # the swarm resolver filtered it out before an offer could be built.
     "lock", "unlock", "unlatch", "lock_n_go",
+    # Worker commands — see modules/workers.py. A worker is an ordinary
+    # command-step target, so without these the step would be rejected at
+    # validation and a rule could never set one.
+    "set", "increment", "decrement", "reset", "start", "extend", "cancel",
+    "mark",
 }
 
 FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request",
@@ -138,6 +156,9 @@ class AutomationEngine:
             "evaluations": 0, "matches": 0, "transitions": 0,
             "executions": 0, "execution_successes": 0,
             "execution_failures": 0, "errors": 0,
+            # Chains cut at MAX_CHAIN_DEPTH. Present from the start so the
+            # stats shape does not change the first time a loop is stopped.
+            "chain_stops": 0,
         }
 
         self._load_rules()
@@ -923,6 +944,15 @@ class AutomationEngine:
         if not rule_ids:
             return
 
+        depth = _chain_depth.get()
+        if depth >= MAX_CHAIN_DEPTH:
+            self._stats["chain_stops"] += 1
+            self._trace("-", "entry", "CHAIN_LIMIT",
+                        f"Chain depth {depth} reached on {source_ieee} — "
+                        f"not evaluating further", level="WARNING",
+                        source_ieee=source_ieee)
+            return
+
         self._stats["evaluations"] += 1
         now = time.time()
         devices = self._get_all_devices()
@@ -1516,6 +1546,10 @@ class AutomationEngine:
     async def _run_sequence(self, rule_id: str, rule_name: str,
                             steps: List[Dict], path: str, depth: int = 0):
         """Execute steps in order. Recursive for if_then_else/parallel."""
+        # Only the outermost call opens a link in the causal chain: the nested
+        # calls for if_then_else and parallel are the same rule still firing,
+        # not a new one it caused.
+        token = _chain_depth.set(_chain_depth.get() + 1) if depth == 0 else None
         prefix = "  " * depth
         try:
             for i, step in enumerate(steps):
@@ -1570,14 +1604,21 @@ class AutomationEngine:
                         f"💥 {path} failed: {e}", level="ERROR",
                         traceback=traceback.format_exc())
         finally:
+            if token is not None:
+                _chain_depth.reset(token)
             if depth == 0:
                 self._running_sequences.pop(rule_id, None)
 
     async def _step_command(self, rule_id, step, tag):
         target_ieee = step["target_ieee"]
         command = step["command"]
-        value = step.get("value")
+        value = self._resolve_value(step.get("value"))
         endpoint_id = step.get("endpoint_id")
+        if isinstance(step.get("value"), dict) and value is None:
+            self._stats["execution_failures"] += 1
+            self._trace(rule_id, "step", "VALUE_ERROR",
+                        f"{tag} could not resolve {step['value']}", level="ERROR")
+            return
         devices = self._get_all_devices()
         names = self._get_all_names()
 
@@ -2101,7 +2142,42 @@ class AutomationEngine:
 
     # CONDITION HELPERS
 
+    def _resolve_value(self, value):
+        """
+        Resolve a value that points at another device's attribute.
+
+        A step or a threshold normally carries a literal. A dict of the form
+        {"ref": "<ieee>", "attribute": "value"} — or the {"worker": "<id>"}
+        shorthand — reads it live instead, which is what lets one shared
+        number drive many rules: change the worker, not the fifteen rules.
+
+        An unresolvable reference returns None rather than a stale or invented
+        number, so the comparison fails and the command is skipped instead of
+        acting on a guess.
+        """
+        if not isinstance(value, dict):
+            return value
+        ieee = value.get("ref")
+        if not ieee and value.get("worker"):
+            ieee = f"worker::{str(value['worker']).lower()}"
+        if not ieee:
+            return None
+        attribute = value.get("attribute") or "value"
+        _, state = self._resolve_state(ieee)
+        if not state:
+            logger.debug(f"Value reference {ieee} not found")
+            return None
+        return state.get(attribute)
+
     def _evaluate_condition(self, actual_value, operator, threshold_value) -> bool:
+        # Every comparison the engine makes — conditions, prerequisites, gates,
+        # wait_for, inline branches — funnels through here, so resolving the
+        # threshold at this one point makes references work everywhere at once.
+        if isinstance(threshold_value, dict):
+            threshold_value = self._resolve_value(threshold_value)
+            if threshold_value is None:
+                return False
+
         op_func = OPERATORS.get(operator)
         if not op_func:
             return False
@@ -2243,6 +2319,25 @@ class AutomationEngine:
             return opts
         return None
 
+    @staticmethod
+    def _declared_value_options(dev, attribute: str) -> Optional[List[str]]:
+        """
+        Options a device declares for one of its own attributes, or None.
+
+        Anything in the merged registry may offer `value_options(attribute)`.
+        Workers use it so a mode's choices reach the rule builder as a dropdown
+        instead of a free-text box the user has to spell an option into.
+        """
+        hook = getattr(dev, "value_options", None)
+        if not callable(hook):
+            return None
+        try:
+            opts = hook(attribute)
+        except Exception:                         # noqa: BLE001
+            # A provider with a broken hook loses its dropdown, nothing more.
+            return None
+        return [str(o) for o in opts] if opts else None
+
     def get_source_attributes(self, ieee: str) -> List[Dict[str, Any]]:
         # Merged view — matter/nuki/etc. devices trigger automations too
         devices = self._get_all_devices()
@@ -2255,9 +2350,10 @@ class AutomationEngine:
             if k in skip or k.endswith("_raw") or k.startswith("attr_"): continue
             if isinstance(v, (list, dict)): continue
             a = {"attribute":k,"current_value":v,"type":self._type(v)}
-            presence_opts = self._presence_value_options(k) if is_presence else None
-            if presence_opts:
-                a["operators"]=["eq","neq","in","nin"]; a["value_options"]=presence_opts
+            enum_opts = (self._presence_value_options(k) if is_presence
+                         else self._declared_value_options(devices[ieee], k))
+            if enum_opts:
+                a["operators"]=["eq","neq","in","nin"]; a["value_options"]=enum_opts
             elif isinstance(v, bool):
                 a["operators"]=["eq","neq"]; a["value_options"]=["true","false"]
             elif isinstance(v, str) and v.upper() in ("ON","OFF"):
@@ -2310,10 +2406,11 @@ class AutomationEngine:
                  "operators": ["eq", "neq", "in", "nin"] if isinstance(v, str) else
                  ["eq", "neq"] if isinstance(v, bool) else
                  ["eq", "neq", "gt", "lt", "gte", "lte"]}
-            presence_opts = self._presence_value_options(k) if is_presence else None
-            if presence_opts:
+            enum_opts = (self._presence_value_options(k) if is_presence
+                         else self._declared_value_options(devices[ieee], k))
+            if enum_opts:
                 a["operators"] = ["eq", "neq", "in", "nin"]
-                a["value_options"] = presence_opts
+                a["value_options"] = enum_opts
             elif isinstance(v, bool): a["value_options"] = ["true", "false"]
             elif isinstance(v, str) and v.upper() in ("ON", "OFF"): a["value_options"] = ["ON", "OFF"]
             attrs.append(a)
@@ -2332,9 +2429,12 @@ class AutomationEngine:
             if caps:
                 # Zigbee device — capabilities object with has_capability()
                 hc = getattr(caps, "has_capability", lambda x: False)
+                # "worker" is here so a rule can set one; it is deliberately
+                # not a real actuator capability, so nothing else treats a
+                # worker as hardware.
                 if not any(hc(c) for c in ["on_off", "light", "switch", "cover",
                                            "window_covering", "thermostat", "fan_control",
-                                           "lock"]):
+                                           "lock", "worker"]):
                     continue
             elif hasattr(dev, "_get_capabilities"):
                 # Matter device — capabilities as a list

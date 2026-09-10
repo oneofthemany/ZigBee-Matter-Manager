@@ -50,6 +50,7 @@ import {
     initAutomationsPage,
     loadAutomationsPage
 } from './automations-page.js';
+import { initWorkersPage } from './workers-page.js';
 
 import {
     initZones,
@@ -400,6 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initGroups();
         initMQTTExplorer();
         initAutomationsPage();
+        initWorkersPage();
         initZones();
         initHeating();
         initEnergy();

@@ -12,6 +12,11 @@ The automation engine provides state-machine-based triggers with recursive actio
 > written by hand for each combination. It compiles to the rules documented
 > here — see `docs/swarm-intelligence.md`.
 
+> **Workers** are the second sub-tab of the Automations tab. A rule can only
+> react to something a device did; a worker is state *you* set — holiday mode,
+> the mode the house is in, a countdown, a tally — that any rule can then test
+> and any rule can set. See `docs/workers.md`.
+
 ---
 
 ## Core Concepts
@@ -44,7 +49,10 @@ Every automation rule consists of four parts:
 
 ## Creating a Rule
 
-Click **Add Rule** on the Automation tab to open the rule builder.
+The Automations tab has two sub-tabs: **Rules** (this document) and **Workers**
+(`docs/workers.md`). Rules is the one selected on arrival.
+
+Click **Add Rule** on the Rules sub-tab to open the rule builder.
 
 ![Add Rule form showing empty condition, prerequisite, and sequence builders](./images/add-rule-form.png)
 
@@ -138,6 +146,22 @@ Action steps that execute when conditions transition from matched → unmatched.
 Sends a ZigBee command to a target device. Select the target, command, and optional value. Endpoint is auto-detected.
 
 ![Command step showing target device dropdown, command dropdown, and value input](./images/step-command.png)
+
+**Workers** are valid targets too, so a rule can set household state as well as
+act on hardware — increment a counter, mark that something happened, put the
+house into night mode. See `docs/workers.md`.
+
+**Value references.** Instead of a literal, a command's value (and any condition
+threshold) may point at a live attribute:
+
+```json
+{ "command": "temperature", "value": { "worker": "comfort_temp" } }
+{ "command": "temperature", "value": { "ref": "virtual::weather", "attribute": "temperature" } }
+```
+
+This is how one shared number drives many rules: change the worker, not the
+rules. An unresolvable reference fails the comparison and skips the command
+rather than acting on a stale or invented number.
 
 ### Delay
 
@@ -302,6 +326,65 @@ A more advanced example using inline branching — when motion is detected, chec
 
 ---
 
+## Example: Holiday Mode
+
+A boolean worker (`worker::holiday_mode`) gates the morning alarm, so going away
+is one switch rather than an edit to every alarm rule.
+
+**Worker**
+
+| Field | Value |
+|-------|-------|
+| Name | Holiday Mode |
+| Type | Boolean |
+| Survives a restart | yes |
+
+**Rule**
+
+| Field | Value |
+|-------|-------|
+| Source | (time) 07:00, weekdays |
+| Prerequisite | Holiday Mode · `value` = `off` |
+| THEN | Bedroom Speaker → announce "Good morning" |
+
+Flip the worker on from the Workers sub-tab and the alarm stops firing; flip it
+off and everything resumes. A rule can flip it too — an arrival at the airport
+place, say — so the switch does not have to be thrown by hand.
+
+---
+
+## Example: Ask Before Repeating Yourself
+
+A marker worker gives an edge-triggered engine a memory, which is what "have I
+already mentioned this today?" needs.
+
+| Field | Value |
+|-------|-------|
+| Source | Front Door · `contact` = `false` |
+| Prerequisite | Door Reminder (marker) · `age_minutes` > `360` |
+| THEN | 1. Message → "Front door is open" |
+| | 2. Door Reminder → `mark` |
+
+The marker's own step is what stops the second message: until six hours have
+passed, the prerequisite fails and the rule does nothing.
+
+---
+
+## Rule chains and the chain limit
+
+Because a worker is both a target and a trigger source, setting one from a rule
+re-enters evaluation. That is the point — it is what lets a door contact
+increment a counter and a second rule act on the count. It also means two rules
+that set each other's workers would recurse without end, and cooldowns cannot
+catch that: each hop is a *different* rule firing once.
+
+The engine counts how many rules have fired in one causal chain and stops at
+**4** (`MAX_CHAIN_DEPTH`). The stop appears in the trace log as `CHAIN_LIMIT` and
+in the engine stats as `chain_stops`, so a loop surfaces as a warning rather than
+as a hang.
+
+---
+
 ## Tips
 
 - **Cooldown** prevents rapid re-firing. Set it based on how quickly your sensor re-triggers (motion sensors: 5-10s, contact sensors: 1-2s).
@@ -311,6 +394,9 @@ A more advanced example using inline branching — when motion is detected, chec
 - **Gates** are useful mid-sequence to bail out if conditions have changed since the sequence started.
 - **Wait For** is ideal for confirming a command took effect before proceeding.
 - **Parallel** lets you command multiple devices simultaneously rather than sequentially.
+- **Workers** turn "one rule per case" into "one rule that reads the case" — a
+  mode worker replaces a stack of near-identical rules, and a number worker
+  replaces the same figure copied into several of them (`docs/workers.md`).
 - **JSON export** is your backup safety net — download rules before making major changes.
 ## Local natural-language parser
 

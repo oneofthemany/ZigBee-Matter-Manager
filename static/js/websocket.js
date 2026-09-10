@@ -142,6 +142,14 @@ export function initWS() {
                     if (window.handlePresenceUpdate) window.handlePresenceUpdate(msg.payload);
                     break;
 
+                // A worker set by a rule, the app or another browser. The
+                // workers page doubles as the control panel for them, so a
+                // stale switch position there would be worse than none.
+                case 'worker_updated':
+                    window.dispatchEvent(new CustomEvent('zmm-worker-updated',
+                                                         { detail: msg.payload }));
+                    break;
+
                 // Messages are pushed rather than waited for: the recipient
                 // sees them the moment they arrive, read receipts flow back.
                 case 'message_created':

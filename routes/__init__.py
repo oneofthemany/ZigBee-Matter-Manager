@@ -42,6 +42,7 @@ from routes.octopus_routes import register_octopus_routes
 from routes.journey_routes import register_journey_routes
 from routes.fuel_routes import register_fuel_routes
 from routes.adblock_routes import register_adblock_routes
+from routes.worker_routes import register_worker_routes
 
 
 
@@ -86,6 +87,7 @@ __all__ = [
     'register_chamber_routes',
     'register_frame_routes',
     'register_adblock_routes',
+    'register_worker_routes',
     'manager',
     'broadcast_event',
 ]
