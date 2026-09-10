@@ -2241,24 +2241,54 @@ class OpenZone:
         """Seat a reader whose device has already been playing this fetch.
 
         ``_seat_position`` assumes a fresh LOAD, where the reported media time
-        restarts at zero. After a pre-roll it does not: the device has been
-        consuming the same HTTP response since ``opened_at``, so its clock is
-        already ``preroll_frames`` past the first content sample. Every lag
-        reading is ``(start_pos + shift) / RATE + reported_time``, so the
-        silent lead has to come off the base or the whole session is wrong by
-        the length of the lead.
+        restarts at zero and the device's queue is empty. After a pre-roll
+        neither holds, and the two corrections are independent.
+
+        **The clock did not restart.** The device has been consuming the same
+        HTTP response since ``opened_at``, so its reported time is already
+        ``preroll_frames`` past the first content sample. Every lag reading is
+        ``(start_pos + shift) / RATE + reported_time``, so the lead has to come
+        off the base or the whole session is wrong by the length of it.
+
+        **The queue may not be empty.** ``latency_s`` is the *steady* part of
+        the pipeline — measured as ``(now - opened_at) - reported_time``, which
+        is flat because both terms advance at playback rate. It is not the
+        whole queue: the serve loop's pacing sawtooth is queue too, and a
+        device holding more of it reaches content later. The caller pays that
+        sawtooth down to zero before seating, which is free — the device plays
+        the queue either way — so what arrives here is only the residue of the
+        caller's sleep granularity, a few milliseconds. It is still corrected
+        rather than ignored, because the correction is exact and costs one
+        subtraction, and because seating against an uncompensated queue is the
+        one error this whole phase exists to eliminate.
+
+        ``precomp_s`` itself is restored afterwards: it is the
+        model-comparable quantity that ``_model_learn`` subtracts back out of
+        the first stable lag, and a queue residue is a property of this
+        changeover, not of the device.
         """
-        self._seat_position(st, source)
+        serve_ahead = max(0.0, st.preroll_frames / RATE
+                          - (time.monotonic() - (st.opened_at or 0.0)))
+        model_precomp = st.precomp_s
+        st.precomp_s = model_precomp - serve_ahead
+        try:
+            self._seat_position(st, source)
+        finally:
+            st.precomp_s = model_precomp
         st.start_pos -= st.preroll_frames
-        # Nothing may be read until the lead has drained. What is left of it
-        # at this moment is exactly ``latency_s`` — the part still inside the
-        # device — plus however far the serve loop had run ahead, which it
-        # bounds at ``STREAM_AHEAD_S``. A reading taken before that describes
-        # the silence, not the content, and the lag computed from it is wrong
-        # by whatever remained.
+        # Nothing may be read until the lead has drained, and what is left of
+        # it at this moment is exactly the queue above: the part inside the
+        # device plus the part the serve loop had run ahead. A reading taken
+        # before that describes the silence, not the content.
         st.cooldown_until = max(
             st.cooldown_until,
-            time.monotonic() + st.latency_s + STREAM_AHEAD_S + STREAM_POLL_S)
+            time.monotonic() + st.latency_s + serve_ahead + STREAM_POLL_S)
+        logger.info(
+            f"OpenZone {st.name} on content: latency "
+            f"{st.latency_s * 1000:.0f} ms, pre-comp "
+            f"{model_precomp * 1000:.0f} ms, lead "
+            f"{st.preroll_frames / RATE:.1f}s ({serve_ahead * 1000:.0f} ms "
+            f"of it still queued)")
 
     def _seat_position(self, st: _Stream, source) -> None:
         """Seat a reader for a device whose media clock starts at zero.
@@ -2610,6 +2640,24 @@ class OpenZone:
                         and st.gen == mine):
                     return       # superseded mid-lead: seating would describe
                                  # a fetch that is no longer being consumed
+                # Pay the serve-ahead down before seating. The serve loop runs
+                # a sawtooth up to STREAM_AHEAD_S ahead of real time, and where
+                # in it a generator happens to sit when the lead ends is
+                # arbitrary and independent per device — yet it is queue the
+                # device must play before it reaches content, so seating
+                # against it would leave neighbours as much as a whole block
+                # apart. Waiting it out costs nothing: the device is playing
+                # that queue either way, and it is playing silence.
+                while (self.running and self._streams.get(st.sid) is st
+                       and st.gen == mine):
+                    over = (st.preroll_frames / RATE
+                            - (time.monotonic() - st.opened_at))
+                    if over <= 0.0:
+                        break
+                    await asyncio.sleep(min(over, STREAM_BLOCK_S / 2))
+                if not (self.running and self._streams.get(st.sid) is st
+                        and st.gen == mine):
+                    return
                 self._seat_after_preroll(st, source)
             if st.pos is None:
                 self._seat_position(st, source)
