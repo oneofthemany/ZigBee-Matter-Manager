@@ -27,7 +27,9 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from modules.automation import RUN_MODES
-from modules.swarm.capabilities import CAPABILITIES, PARAMS
+from modules.swarm.capabilities import (
+    CAPABILITIES, PARAMS, WORKER_TEMPLATES, WORKER_TYPE_CAPABILITY, option_slug,
+)
 
 logger = logging.getLogger("modules.swarm.stigmergy")
 
@@ -44,7 +46,9 @@ BUNDLED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patterns
 # upgrade and override a bundled pattern of the same id.
 USER_DIR = os.path.join(DATA_DIR, "stigmergy_user")
 
-ROLES = ("trigger", "condition", "action")
+# `value` is a reading a command step carries in place of a literal — a number
+# worker every heating rule reads — named by an action slot's value_from_slot.
+ROLES = ("trigger", "condition", "action", "value")
 SCOPES = ("room", "house")
 CATEGORIES = ("lighting", "climate", "security", "safety", "energy",
               "presence", "maintenance", "convenience")
@@ -159,10 +163,37 @@ def validate(bp: Dict[str, Any]) -> List[str]:
                 continue
             if role in ROLES:
                 pool = spec_cap.get(role + "s", [])
-                # A button's press offers fan out per value, so the declared id
-                # is a prefix of the keys the resolver emits.
-                if not any(o["id"] == offer_id or o.get("expand") for o in pool):
+                # A button's press offers and a mode's options fan out per value,
+                # so the declared id may be the offer's, or it plus one value.
+                base = offer_id.split(":", 1)[0]
+                if not any(o["id"] == offer_id or (o.get("expand") and o["id"] == base)
+                           for o in pool):
                     err(f"{bid}.{name}: {cap_id} has no {role} {offer_id!r}")
+        template = spec.get("worker")
+        if template is not None:
+            tpl = WORKER_TEMPLATES.get(template)
+            if not tpl:
+                err(f"{bid}.{name}: unknown worker template {template!r}")
+            else:
+                want = WORKER_TYPE_CAPABILITY[tpl["type"]]
+                options = {option_slug(o) for o in tpl.get("options") or []}
+                for key in keys:
+                    parts = str(key).split(":")
+                    if parts[0] != want:
+                        err(f"{bid}.{name}: worker {template!r} is a {tpl['type']} "
+                            f"worker, so its offers are {want}:…, not {key!r}")
+                    elif len(parts) == 3 and options and parts[2] not in options:
+                        err(f"{bid}.{name}: worker {template!r} has no option {parts[2]!r}")
+        names = spec.get("name_match")
+        if names is not None and (not isinstance(names, list) or not names or not all(
+                isinstance(n, str) and n.strip() for n in names)):
+            err(f"{bid}.{name}: name_match must be a list of words")
+        value_slot = spec.get("value_from_slot")
+        if value_slot is not None:
+            if role != "action":
+                err(f"{bid}.{name}: value_from_slot only applies to an action slot")
+            elif (slots.get(value_slot) or {}).get("role") != "value":
+                err(f"{bid}.{name}: value_from_slot {value_slot!r} is not a value slot")
         for pid in (spec.get("params") or {}):
             if pid not in PARAMS:
                 err(f"{bid}.{name}: unknown parameter {pid!r}")
@@ -254,6 +285,9 @@ def validate(bp: Dict[str, Any]) -> List[str]:
             else:
                 referenced.update(literal_slot_refs(e))
     referenced.add(source)
+    # A value slot is used by the action that reads it.
+    referenced.update(spec["value_from_slot"] for spec in slots.values()
+                      if isinstance(spec, dict) and spec.get("value_from_slot"))
     for name in slots:
         if name not in referenced:
             err(f"{bid}.{name}: slot is never used by 'emits'")

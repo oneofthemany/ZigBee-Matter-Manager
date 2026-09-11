@@ -295,14 +295,16 @@ def _check_devices(described: List[Dict[str, Any]],
     # configured but has no data yet.
     silent: List[Dict[str, Any]] = []
     for d in described:
-        offered = {o["capability"] for o in d["triggers"] + d["conditions"] + d["actions"]}
+        offered = {o["capability"] for o in d["triggers"] + d["conditions"] + d["actions"]
+                   + (d.get("values") or [])}
         for cap in d["capabilities"]:
             spec = CAPABILITIES.get(cap) or {}
             if cap in offered:
                 continue
             # A capability with nothing to offer in the vocabulary is silent by
             # design, not by fault.
-            if not (spec.get("triggers") or spec.get("conditions") or spec.get("actions")):
+            if not (spec.get("triggers") or spec.get("conditions") or spec.get("actions")
+                    or spec.get("values")):
                 continue
             silent.append({"ieee": d["ieee"], "name": d["name"], "capability": cap,
                            "expected_attributes": list(spec.get("attrs") or []),
@@ -332,9 +334,10 @@ def _check_devices(described: List[Dict[str, Any]],
     # something no pattern can ask for.
     # A synthetic capability (the hub) belongs to no device in the registry by
     # design, so its absence here is not news.
+    # Nor is a worker type nobody has created: the swarm proposes those.
     usable = {c for c, spec in CAPABILITIES.items()
               if (spec.get("triggers") or spec.get("conditions") or spec.get("actions"))
-              and not spec.get("synthetic")}
+              and not spec.get("synthetic") and not spec.get("proposable")}
     present = {c for d in described for c in d["capabilities"]}
     missing = sorted(usable - present)
     out.append(_finding(
@@ -449,8 +452,8 @@ def explain(pattern_id: str, described: List[Dict[str, Any]],
         return {"error": f"unknown pattern {pattern_id!r}",
                 "known": [p["id"] for p in store.all()]}
 
-    from modules.swarm.suggestions import with_hub
-    result = match_pattern(pattern, with_hub(described), rooms or {})
+    from modules.swarm.suggestions import with_synthetic
+    result = match_pattern(pattern, with_synthetic(described, [pattern]), rooms or {})
     return {
         "pattern": pattern,
         "outcome": "matched" if result["candidates"] else "no_match",
@@ -470,8 +473,8 @@ def offers_for_slot(slot: Dict[str, Any],
     keys = keys if isinstance(keys, list) else [keys]
     role = slot.get("role", "trigger")
     out = []
-    from modules.swarm.suggestions import with_hub
-    for d in with_hub(described):
+    from modules.swarm.suggestions import with_synthetic
+    for d in with_synthetic(described):
         for offer in d.get(role + "s", []):
             if any(offer["key"] == k or offer["key"].startswith(str(k) + ":")
                    for k in keys):

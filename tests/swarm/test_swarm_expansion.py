@@ -237,6 +237,10 @@ async def _run(c: Checker) -> None:
     c.section("every suggestion saves through the engine")
     failed = []
     for s in built["suggestions"]:
+        # One that needs a worker the house lacks is saved after creating it,
+        # through a real worker manager, in test_swarm_workers.
+        if s["creates_workers"]:
+            continue
         engine = _engine(house())
         result = engine.add_rule(copy.deepcopy(s["rule"]))
         if not result.get("success"):
@@ -259,9 +263,18 @@ async def _run(c: Checker) -> None:
     lights_off = _for(built, "everyone_out_lights_off")
     c.check("every light off is one suggestion, not one per light", len(lights_off) == 1,
             [s["sentence"] for s in lights_off])
+    def flat(seq):
+        # Several lights run together, as one parallel step.
+        for st in seq:
+            if st.get("type") == "parallel":
+                for branch in st["branches"]:
+                    yield from flat(branch)
+            else:
+                yield st
+
     c.check("driving every light",
             {"0xhalllight", "0xlamp", "0xpendant"}
-            <= {st["target_ieee"] for st in lights_off[0]["rule"]["then_sequence"]},
+            <= {st["target_ieee"] for st in flat(lights_off[0]["rule"]["then_sequence"])},
             lights_off[0]["rule"]["then_sequence"])
 
     c.section("an alarm flashes every light, then restores them")

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from modules.swarm.capabilities import SCOPE_HOUSE
+from modules.swarm.capabilities import SCOPE_HOUSE, worker_satisfies
 
 logger = logging.getLogger("modules.swarm.matcher")
 
@@ -30,12 +30,18 @@ PREFERENCE_UNMET = "preference_unmet"     # required same-device pairing absent
 # A room with many lights would otherwise produce a suggestion per light, which
 # reads as noise. The cap keeps the obvious ones and drops the tail.
 MAX_VARIANTS_PER_SLOT = 4
+# House-wide, the trigger is the only partition there is: "tell me when a
+# battery runs low" is one automation per battery device, and capping that at
+# the room cap silently dropped two thirds of a real house's batteries.
+MAX_SOURCE_VARIANTS = 24
 # Two varying slots multiply, so the product is capped as well as each factor.
 MAX_CANDIDATES_PER_SCOPE = 8
-# A collected slot gathers every matching device into one rule — as a group of
-# conditions, or a step each. Capped at the engine's MAX_CONDITIONS_PER_GROUP,
-# since a group is where a collected condition slot compiles to.
+MAX_CANDIDATES_PER_HOUSE = 48
+# A collected slot gathers every matching device into one rule. A trigger or
+# condition compiles to a group, capped by the engine's MAX_CONDITIONS_PER_GROUP;
+# an action compiles to steps, which run together once there are several.
 MAX_COLLECT = 5
+MAX_COLLECT_STEPS = 12
 
 
 def _offers_of(device: Dict[str, Any], role: str) -> List[Dict[str, Any]]:
@@ -63,9 +69,22 @@ def _candidates(devices: List[Dict[str, Any]], spec: Dict[str, Any]
     """Every (device, offer) pair that could fill this slot, and why not if none."""
     role, key = spec["role"], spec["offer"]
     wanted_classes = spec.get("device_class")
+    template = spec.get("worker")
+    # A worker's name is the only thing that says what it is for.
+    names = [str(n).lower() for n in spec.get("name_match") or []]
 
     offered, class_rejected = [], False
     for dev in devices:
+        proposed = dev.get("proposed_template")
+        if template:
+            # The worker the slot asks for: one that exists and does the job,
+            # or — only where none does — the one the swarm proposes.
+            if proposed != template and (proposed or not worker_satisfies(dev, template)):
+                continue
+        elif proposed:
+            continue
+        if names and not any(n in str(dev.get("name") or "").lower() for n in names):
+            continue
         for offer in _offers_of(dev, role):
             if not _offer_matches(offer, key):
                 continue
@@ -124,7 +143,9 @@ def _rank_anchored(pairs: List[Tuple[Dict, Dict]], name: str,
 
 
 def _prefer_filter(pairs: List[Tuple[Dict, Dict]], mode: str,
-                   anchor: Dict[str, Any]) -> List[Tuple[Dict, Dict]]:
+                   anchor: Dict[str, Any],
+                   anchor_offer: Optional[Dict[str, Any]] = None
+                   ) -> List[Tuple[Dict, Dict]]:
     """Narrow a slot's candidates to those near the slot it is anchored to.
 
     `same_device` is for a reading that belongs with its own trigger — a radar
@@ -136,7 +157,13 @@ def _prefer_filter(pairs: List[Tuple[Dict, Dict]], mode: str,
     lamp is technically an answer and reads as a mistake.
     """
     if mode == "same_device":
-        return [p for p in pairs if p[0]["ieee"] == anchor["ieee"]]
+        same = [p for p in pairs if p[0]["ieee"] == anchor["ieee"]]
+        # On a dual-gang socket "the same device" means the same outlet: outlet
+        # 2's switch belongs with outlet 2's power reading, not outlet 1's.
+        if anchor_offer is not None and len(same) > 1:
+            outlet = _endpoint_of(anchor_offer)
+            same.sort(key=lambda p: _endpoint_of(p[1]) != outlet)
+        return same
     if mode == "same_room":
         room = anchor.get("room")
         return [p for p in pairs if room and p[0].get("room") == room]
@@ -230,6 +257,8 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
 
     vary_slots = _vary_slots(pattern)
     vary_pairs: Dict[str, List[Tuple[Dict, Dict]]] = {}
+    house = pattern.get("scope") == SCOPE_HOUSE
+    source_slot = emits.get("source")
 
     for name in _slot_order(slots):
         spec = slots[name]
@@ -239,7 +268,8 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
         if pairs and prefer_slot and spec.get("prefer"):
             anchor = fills.get(prefer_slot)
             if anchor:
-                same = _prefer_filter(pairs, spec.get("prefer"), anchor["device"])
+                same = _prefer_filter(pairs, spec.get("prefer"), anchor["device"],
+                                      anchor.get("offer"))
                 if same:
                     pairs = same
                 elif spec.get("require_same_device"):
@@ -265,7 +295,7 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
             # Every device in scope that makes the offer, as one fill: "any
             # window in this room", "every light in the house".
             gathered = _distinct_devices(ranked)
-            kept = gathered[:MAX_COLLECT]
+            kept = gathered[:MAX_COLLECT_STEPS if spec.get("role") == "action" else MAX_COLLECT]
             first_dev, first_offer = kept[0]
             fills[name] = {"ieee": first_dev["ieee"], "device": first_dev,
                            "offer": first_offer,
@@ -278,8 +308,9 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
                                 "alternatives": 0, "note": None}
             continue
         if name in vary_slots:
+            cap = MAX_SOURCE_VARIANTS if house and name == source_slot else MAX_VARIANTS_PER_SLOT
             vary_pairs[name] = _distinct_devices(
-                _rank_anchored(ranked, name, slots, pool))[:MAX_VARIANTS_PER_SLOT]
+                _rank_anchored(ranked, name, slots, pool))[:cap]
         dev, offer = ranked[0]
         fills[name] = {"ieee": dev["ieee"], "device": dev, "offer": offer}
         if len(ranked) > 1:
@@ -306,7 +337,7 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
     for name in active:
         combos = [{**combo, name: pair}
                   for combo in combos for pair in vary_pairs[name]]
-    combos = combos[:MAX_CANDIDATES_PER_SCOPE]
+    combos = combos[:MAX_CANDIDATES_PER_HOUSE if house else MAX_CANDIDATES_PER_SCOPE]
 
     candidates = []
     for combo in combos:
@@ -318,7 +349,7 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
                 if spec.get("prefer_slot") != name or other not in these:
                     continue
                 repin = _prefer_filter(_candidates(pool, spec)[0],
-                                       spec.get("prefer") or "same_device", dev)
+                                       spec.get("prefer") or "same_device", dev, offer)
                 if repin:
                     these[other] = {"ieee": repin[0][0]["ieee"],
                                     "device": repin[0][0], "offer": repin[0][1]}

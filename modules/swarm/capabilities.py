@@ -102,6 +102,23 @@ PARAMS: Dict[str, Dict[str, Any]] = {
     "season_to":        {"label": "Season until",      "type": "monthday", "default": "01-06"},
     "quiet_from":       {"label": "Quiet from",        "type": "time",     "default": "22:30"},
     "quiet_to":         {"label": "Quiet until",       "type": "time",     "default": "06:30"},
+    # The household's day. Morning and bedtime anchor schedules; a reminder lands
+    # when somebody is likely to read it.
+    "wake_time":        {"label": "Morning at",        "type": "time",     "default": "07:00"},
+    "bed_time":         {"label": "Bedtime at",        "type": "time",     "default": "23:00"},
+    "reminder_time":    {"label": "Remind at",         "type": "time",     "default": "18:00"},
+    "sun_offset_min":   {"label": "After sunset by",   "type": "int",   "default": 0,     "unit": "min", "min": -180, "max": 180},
+    # Heating levels. Comfort and setback also start the number workers a
+    # schedule proposes, after which the worker is what every rule reads.
+    "comfort_c":        {"label": "Comfort",           "type": "float", "default": 21.0,  "unit": "°C",  "min": 5,   "max": 30},
+    "setback_c":        {"label": "Setback",           "type": "float", "default": 16.0,  "unit": "°C",  "min": 5,   "max": 25},
+    "boost_c":          {"label": "Boost to",          "type": "float", "default": 23.0,  "unit": "°C",  "min": 15,  "max": 30},
+    "frost_c":          {"label": "Frost protection",  "type": "float", "default": 7.0,   "unit": "°C",  "min": 5,   "max": 15},
+    # Workers.
+    "timer_s":          {"label": "For",               "type": "int",   "default": 3600,  "unit": "s",   "min": 60,  "max": 604800},
+    "overdue_min":      {"label": "Not for",           "type": "int",   "default": 720,   "unit": "min", "min": 5,   "max": 43200},
+    "counter_limit":    {"label": "Reaches",           "type": "int",   "default": 20,    "unit": "",    "min": 1,   "max": 100000},
+    "idle_hold_min":    {"label": "Idle for",          "type": "int",   "default": 30,    "unit": "min", "min": 1,   "max": 1440},
     # A colour is [hue 0-360, saturation 0-100], which is what the device layer
     # takes. The named choices exist so a card can offer swatches and a
     # sentence can say "set the lamp to red" rather than "to [0, 100]".
@@ -135,6 +152,12 @@ def param_display(pid: Optional[str], value: Any) -> str:
     if spec.get("type") == "monthday":
         return monthday_display(value)
     unit = spec.get("unit") or ""
+    # "12 h" and "4 days" rather than "720 min" and "5760 min".
+    if unit in ("min", "s") and isinstance(value, (int, float)) \
+            and not isinstance(value, bool) and value > 0:
+        minutes = value if unit == "min" else value / 60
+        if float(minutes).is_integer() and minutes >= 60:
+            return minutes_display(int(minutes))
     # "15 min" and "11 lx", but "18.0°C" and "20%": a word-like unit reads with a space.
     gap = " " if unit[:1].isalpha() else ""
     return f"{value}{gap}{unit}"
@@ -142,6 +165,21 @@ def param_display(pid: Optional[str], value: Any) -> str:
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def minutes_display(minutes: int) -> str:
+    """A whole number of minutes the way a person says it."""
+    if minutes >= 1440 and minutes % 1440 == 0:
+        days = minutes // 1440
+        return f"{days} day" + ("" if days == 1 else "s")
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"{minutes // 60} h"
+    return f"{minutes} min"
+
+
+def option_slug(option: Any) -> str:
+    """A mode option as it appears in an offer key: "On holiday" → "on_holiday"."""
+    return re.sub(r"[^a-z0-9]+", "_", str(option).lower()).strip("_")
 
 
 def monthday_display(value: Any) -> str:
@@ -901,6 +939,31 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "attrs": [],
         "triggers": [
             {"id": "started", "label": "the hub starts", "type": "startup", "weight": 1},
+            # The sun as a window, which is how the engine reads it: THEN as the
+            # window opens and ELSE as it closes. "The sun sets" runs its THEN at
+            # sunset and its ELSE at sunrise — one rule, both halves.
+            {"id": "sun_sets", "label": "the sun sets", "type": "sun",
+             "from": "sunset", "to": "sunrise", "offset_from": param("sun_offset_min"),
+             "polarity": 1},
+            {"id": "sun_rises", "label": "the sun rises", "type": "sun",
+             "from": "sunrise", "to": "sunset", "polarity": -1},
+            {"id": "sunset_to_bedtime", "label": "the sun sets (until {to})", "type": "sun",
+             "from": "sunset", "to": param("bed_time"), "offset_from": param("sun_offset_min")},
+            {"id": "day_window", "label": "it's between {time_from} and {time_to}",
+             "type": "time_window", "time_from": param("wake_time"), "time_to": param("bed_time")},
+            {"id": "night_window", "label": "it's between {time_from} and {time_to}",
+             "type": "time_window", "time_from": param("bed_time"), "time_to": param("wake_time")},
+            # Moments. An alarm matches for its one minute, so a rule on one has
+            # no ELSE worth writing — it would run a minute later.
+            {"id": "morning", "label": "it's {at}", "type": "time", "at": param("wake_time")},
+            {"id": "bedtime", "label": "it's {at}", "type": "time", "at": param("bed_time")},
+            {"id": "reminder", "label": "it's {at}", "type": "time", "at": param("reminder_time")},
+            # Shortcuts: a phone calling a webhook. The ids are fixed so a phone
+            # shortcut set up once keeps working whichever rule answers it.
+            {"id": "goodnight_called", "label": "the Goodnight shortcut is run",
+             "type": "webhook", "hook": "goodnight-scene"},
+            {"id": "leaving_called", "label": "the Leaving shortcut is run",
+             "type": "webhook", "hook": "leaving-home"},
         ],
         "conditions": [
             {"id": "in_season", "label": "it's between {from} and {to}",
@@ -908,8 +971,180 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
             {"id": "quiet_hours", "label": "it's between {time_from} and {time_to}",
              "type": "time_window", "time_from": param("quiet_from"),
              "time_to": param("quiet_to")},
+            {"id": "after_dark", "label": "it's after sunset", "type": "sun",
+             "from": "sunset", "to": "sunrise"},
+            {"id": "daytime", "label": "it's daytime", "type": "sun",
+             "from": "sunrise", "to": "sunset"},
+            {"id": "night", "label": "it's between {time_from} and {time_to}",
+             "type": "time_window", "time_from": param("bed_time"), "time_to": param("wake_time")},
+            {"id": "weekday", "label": "it's a weekday", "type": "time_window",
+             "time_from": "00:00", "time_to": "23:59", "days": [0, 1, 2, 3, 4]},
+            {"id": "weekend", "label": "it's the weekend", "type": "time_window",
+             "time_from": "00:00", "time_to": "23:59", "days": [5, 6]},
         ],
         "actions": [],
+    },
+
+    # Workers — household state a person or a rule sets (modules/workers.py).
+    #
+    # A worker declares only `worker`; the resolver folds that onto one of these
+    # by the worker's type. None is sniffable: `value` is far too common a key
+    # to mean anything on a device that has not said it is a worker. They are
+    # `proposable` — a pattern may ask for a worker the house does not have yet
+    # (see WORKER_TEMPLATES), so their absence is not a gap in the network.
+    "worker_flag": {
+        "label": "Worker — on/off",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["value"],
+        "triggers": [
+            {"id": "turned_on", "label": "{device} is switched on",
+             "operator": "eq", "value": "on", "polarity": 1},
+            {"id": "turned_off", "label": "{device} is switched off",
+             "operator": "eq", "value": "off", "polarity": -1},
+        ],
+        "conditions": [
+            {"id": "is_on", "label": "{device} is on", "operator": "eq", "value": "on"},
+            {"id": "is_off", "label": "{device} is off", "operator": "eq", "value": "off"},
+        ],
+        "actions": [
+            {"id": "turn_on", "label": "switch {device} on", "command": "on", "polarity": 1},
+            {"id": "turn_off", "label": "switch {device} off", "command": "off", "polarity": -1},
+            {"id": "toggle", "label": "toggle {device}", "command": "toggle"},
+        ],
+    },
+
+    # One offer per option, keyed by it: `worker_mode:is:away` is any mode worker
+    # that has an "away", whatever else it offers.
+    "worker_mode": {
+        "label": "Worker — mode",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["value"],
+        "triggers": [
+            {"id": "became", "label": "{device} changes to {option}",
+             "operator": "eq", "expand": "options"},
+        ],
+        "conditions": [
+            {"id": "is", "label": "{device} is {option}", "operator": "eq", "expand": "options"},
+            {"id": "is_not", "label": "{device} is not {option}", "operator": "neq",
+             "expand": "options"},
+        ],
+        "actions": [
+            {"id": "set", "label": "set {device} to {option}", "command": "set",
+             "expand": "options"},
+        ],
+    },
+
+    "worker_timer": {
+        "label": "Worker — timer",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["value"],
+        # A timer running is a state with an end nobody has to remember: THEN
+        # while it runs, ELSE when it runs out or is cancelled.
+        "triggers": [
+            {"id": "started", "label": "{device} is running", "operator": "eq", "value": "on",
+             "polarity": 1},
+            {"id": "finished", "label": "{device} runs out", "operator": "eq", "value": "off",
+             "polarity": -1},
+        ],
+        "conditions": [
+            {"id": "running", "label": "{device} is running", "operator": "eq", "value": "on"},
+            {"id": "idle", "label": "{device} is not running", "operator": "eq", "value": "off"},
+        ],
+        "actions": [
+            {"id": "start", "label": "start {device} for {value}", "command": "start",
+             "value_from": "timer_s", "polarity": 1},
+            {"id": "extend", "label": "extend {device} by {value}", "command": "extend",
+             "value_from": "timer_s"},
+            {"id": "cancel", "label": "cancel {device}", "command": "cancel", "polarity": -1},
+        ],
+    },
+
+    "worker_counter": {
+        "label": "Worker — counter",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["value"],
+        "triggers": [
+            {"id": "reached", "label": "{device} reaches {value}",
+             "operator": "gte", "value": param("counter_limit")},
+        ],
+        "conditions": [
+            {"id": "at_least", "label": "{device} is at least {value}",
+             "operator": "gte", "value": param("counter_limit")},
+            {"id": "below", "label": "{device} is below {value}",
+             "operator": "lt", "value": param("counter_limit")},
+        ],
+        "actions": [
+            {"id": "increment", "label": "add one to {device}", "command": "increment"},
+            {"id": "reset", "label": "reset {device}", "command": "reset"},
+        ],
+    },
+
+    # A marker is the engine's memory: how long since something happened.
+    "worker_marker": {
+        "label": "Worker — marker",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["age_minutes"],
+        "triggers": [
+            {"id": "overdue", "label": "{device} has not been marked for {value}",
+             "operator": "gte", "value": param("overdue_min")},
+        ],
+        "conditions": [
+            {"id": "overdue", "label": "{device} has not been marked for {value}",
+             "operator": "gte", "value": param("overdue_min")},
+            {"id": "recent", "label": "{device} was marked within {value}",
+             "operator": "lt", "value": param("overdue_min")},
+            # Never marked reads as a year ago, which is true but would fire an
+            # "overdue" rule the moment it was created.
+            {"id": "ever_marked", "label": "{device} has been marked",
+             "attrs": ["marked"], "operator": "eq", "value": "on"},
+        ],
+        "actions": [
+            {"id": "mark", "label": "mark {device}", "command": "mark"},
+            {"id": "reset", "label": "clear {device}", "command": "reset"},
+        ],
+    },
+
+    # A number is read, not reacted to: one comfort temperature every heating
+    # rule uses, changed in one place. It offers a `value` — a live reference a
+    # command step carries instead of a literal — rather than triggers.
+    "worker_number": {
+        "label": "Worker — number",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "proposable": True,
+        "excludes": ["availability"],
+        "tags": ["worker"],
+        "attrs": ["value"],
+        "triggers": [], "conditions": [], "actions": [],
+        "values": [
+            {"id": "value", "label": "{device}"},
+        ],
     },
 
     "notify": {
@@ -963,6 +1198,8 @@ LEGACY_CAPABILITY_ALIASES: Dict[str, Optional[str]] = {
     "matter": None,
     "multi_endpoint": None,
     "multi_switch": None,
+    # Folded by the resolver onto worker_<type>, which only the worker knows.
+    "worker": None,
     # device_profiles.DEVICE_TYPES
     "motion": "presence",
     "door_lock": "lock",
@@ -991,6 +1228,7 @@ DEVICE_CLASS_RULES: Sequence[Tuple[str, Callable[[set], bool]]] = (
     # weather reports temperature and humidity, which would otherwise make it a
     # climate sensor.
     ("hub",              lambda c: "hub" in c),
+    ("worker",           lambda c: any(x.startswith("worker_") for x in c)),
     ("person",           lambda c: "person" in c),
     ("household",        lambda c: "household" in c),
     ("weather",          lambda c: "weather" in c),
@@ -1033,3 +1271,92 @@ def classify(capabilities: Iterable[str]) -> str:
         if test(caps):
             return label
     return "generic"
+
+
+# Workers
+#
+# A worker's type decides its capability. A pattern that needs household state
+# no hardware reports — the mode the house is in, a comfort temperature every
+# heating rule shares, when anybody last moved — names a template. An existing
+# worker of the right type satisfies it, by id or by a keyword in its name; if
+# none does, the swarm proposes the worker, and applying the suggestion creates
+# it on the Workers tab before the rule that needs it.
+
+WORKER_TYPE_CAPABILITY: Dict[str, str] = {
+    "boolean": "worker_flag",
+    "mode": "worker_mode",
+    "timer": "worker_timer",
+    "counter": "worker_counter",
+    "marker": "worker_marker",
+    "number": "worker_number",
+}
+
+WORKER_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "house_mode": {
+        "name": "House mode", "type": "mode",
+        "options": ["home", "away", "night", "holiday"], "initial": "home",
+        "description": "What the house is doing. Suggested rules set and read it; so can you.",
+        "keywords": ["house mode", "home mode", "house state", "household mode"],
+    },
+    "comfort_temp": {
+        "name": "Comfort temperature", "type": "number",
+        "min": 5, "max": 30, "step": 0.5, "unit": "°C", "initial_param": "comfort_c",
+        "description": "The temperature rooms are heated to when somebody wants them warm.",
+        "keywords": ["comfort"],
+    },
+    "setback_temp": {
+        "name": "Setback temperature", "type": "number",
+        "min": 5, "max": 25, "step": 0.5, "unit": "°C", "initial_param": "setback_c",
+        "description": "The temperature rooms drop to overnight and while the house is empty.",
+        "keywords": ["setback", "eco temp", "night temp"],
+    },
+    "heating_boost": {
+        "name": "Heating boost", "type": "timer", "default_seconds": 3600,
+        "description": "Start it for extra heat that switches itself off.",
+        "keywords": ["boost"],
+    },
+    "last_movement": {
+        "name": "Last movement", "type": "marker",
+        "description": "When any motion sensor last saw somebody.",
+        "keywords": ["last movement", "last motion"],
+    },
+    "door_opens_today": {
+        "name": "Door opens today", "type": "counter", "reset_at": "00:00",
+        "description": "How many times a door has been opened since midnight.",
+        "keywords": ["door opens", "door count", "opens today"],
+    },
+    "plants_watered": {
+        "name": "Plants watered", "type": "marker",
+        "description": "Mark it when you water the plants.",
+        "keywords": ["watered", "plants"],
+    },
+}
+
+# What a template carries into WorkerManager.create(); the rest is matching.
+WORKER_TEMPLATE_FIELDS = ("name", "type", "options", "initial", "default_seconds",
+                          "min", "max", "step", "unit", "reset_at", "description")
+
+
+def worker_satisfies(device: Dict[str, Any], template_id: str) -> bool:
+    """Does this described device already do the job a worker template names?"""
+    template = WORKER_TEMPLATES.get(template_id)
+    if not template or device.get("worker_type") != template["type"]:
+        return False
+    if device.get("worker_id") == template_id:
+        return True
+    name = str(device.get("name") or "").lower()
+    return any(k in name for k in template.get("keywords") or [])
+
+
+def worker_payload(template_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The WorkerManager.create() payload for a template, starting at `params`."""
+    template = WORKER_TEMPLATES[template_id]
+    out: Dict[str, Any] = {"id": template_id}
+    for field in WORKER_TEMPLATE_FIELDS:
+        if field in template:
+            value = template[field]
+            out[field] = list(value) if isinstance(value, list) else value
+    pid = template.get("initial_param")
+    if pid:
+        out["initial"] = (params or {}).get(pid, PARAMS[pid]["default"])
+    return out

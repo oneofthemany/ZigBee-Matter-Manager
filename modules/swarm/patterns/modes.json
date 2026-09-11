@@ -1,0 +1,303 @@
+[
+  {
+    "id": "house_mode_follows_household",
+    "title": "House mode follows who is home",
+    "description": "House mode turns to away as the last person leaves and back to home as the first returns — one state every other rule can read. Creates House mode on the Workers tab if you do not have one.",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "empty": {"role": "trigger", "offer": "household:last_left"},
+      "away": {"role": "action", "offer": "worker_mode:set:away", "worker": "house_mode"},
+      "home": {"role": "action", "offer": "worker_mode:set:home", "worker": "house_mode"}
+    },
+    "emits": {
+      "name": "House mode follows who is home",
+      "source": "empty",
+      "conditions": ["empty"],
+      "then": ["away"],
+      "else": ["home"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "night_mode_at_bedtime",
+    "title": "Switch House mode to night at bedtime",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "bed": {"role": "trigger", "offer": "hub:bedtime"},
+      "home": {"role": "condition", "offer": "worker_mode:is:home", "worker": "house_mode"},
+      "night": {"role": "action", "offer": "worker_mode:set:night", "worker": "house_mode"}
+    },
+    "emits": {
+      "name": "House mode to night at bedtime",
+      "source": "bed",
+      "conditions": ["bed", "home"],
+      "then": ["night"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "morning_mode",
+    "title": "Switch House mode back to home in the morning",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "wake": {"role": "trigger", "offer": "hub:morning"},
+      "night": {"role": "condition", "offer": "worker_mode:is:night", "worker": "house_mode"},
+      "home": {"role": "action", "offer": "worker_mode:set:home", "worker": "house_mode"}
+    },
+    "emits": {
+      "name": "House mode to home in the morning",
+      "source": "wake",
+      "conditions": ["wake", "night"],
+      "then": ["home"],
+      "cooldown": 60
+    },
+    "params": {"wake_time": "07:00"}
+  },
+  {
+    "id": "night_mode_routine",
+    "title": "Lock up, switch off and close the blinds when House mode turns to night",
+    "description": "However night mode is set — at bedtime, by hand, or from a shortcut — the house settles in one go.",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "mode": {"role": "trigger", "offer": "worker_mode:became:night", "worker": "house_mode"},
+      "locks": {"role": "action", "offer": "lock:lock", "collect": true, "optional": true},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true, "optional": true},
+      "blinds": {"role": "action", "offer": "cover:close", "collect": true, "optional": true}
+    },
+    "emits": {
+      "name": "Night: lock up and switch off",
+      "source": "mode",
+      "conditions": ["mode"],
+      "then": ["locks", "lights", "blinds"],
+      "run_mode": "single",
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "house_mode_heating",
+    "title": "Heat to comfort while House mode is home, setback otherwise",
+    "description": "Radiators follow the house: comfort while it is home, setback at night, while away and on holiday. Both temperatures are workers, so changing one changes every rule that reads it.",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "home": {"role": "trigger", "offer": "worker_mode:became:home", "worker": "house_mode"},
+      "warm": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "collect": true, "value_from_slot": "comfort"},
+      "cool": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "collect": true, "value_from_slot": "setback"},
+      "comfort": {"role": "value", "offer": "worker_number:value", "worker": "comfort_temp"},
+      "setback": {"role": "value", "offer": "worker_number:value", "worker": "setback_temp"}
+    },
+    "emits": {
+      "name": "Heating follows House mode",
+      "source": "home",
+      "conditions": ["home"],
+      "then": ["warm"],
+      "else": ["cool"],
+      "cooldown": 60
+    },
+    "params": {"comfort_c": 21.0, "setback_c": 16.0}
+  },
+  {
+    "id": "away_openings_alert",
+    "title": "Tell someone when a door or window opens while House mode is away",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "open": {"role": "trigger", "offer": "contact:opened"},
+      "away": {"role": "condition", "offer": "worker_mode:is:away", "worker": "house_mode"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device opened while away",
+      "source": "open",
+      "conditions": ["open", "away"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} was opened at {time} while the house is set to away."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "away_motion_alert",
+    "title": "Tell someone about movement while House mode is away",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "motion": {"role": "trigger", "offer": "presence:detected"},
+      "away": {"role": "condition", "offer": "worker_mode:is:away", "worker": "house_mode"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Movement at $trigger_device while away",
+      "source": "motion",
+      "conditions": ["motion", "away"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} saw movement at {time} while the house is set to away."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 600
+    }
+  },
+  {
+    "id": "holiday_evening_lights",
+    "title": "Make the house look lived-in on holiday",
+    "description": "While House mode is holiday, a light comes on as the sun sets and goes off at bedtime — or as soon as holiday mode ends.",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "evening": {"role": "trigger", "offer": "hub:sunset_to_bedtime"},
+      "holiday": {"role": "condition", "offer": "worker_mode:is:holiday", "worker": "house_mode",
+                  "reactive": true},
+      "light": {"role": "action", "offer": "on_off:turn_on", "device_class": ["light", "color_light"]},
+      "off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+              "prefer": "same_device", "prefer_slot": "light", "require_same_device": true}
+    },
+    "emits": {
+      "name": "Holiday: $light@name on in the evening",
+      "source": "evening",
+      "conditions": ["evening", "holiday"],
+      "then": ["light"],
+      "else": ["off"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "heating_boost",
+    "title": "Boost the heating while the Heating boost timer runs",
+    "description": "Start Heating boost on the Workers tab and every radiator goes up; when the timer runs out they return to the comfort temperature by themselves.",
+    "category": "climate",
+    "scope": "house",
+    "slots": {
+      "boost": {"role": "trigger", "offer": "worker_timer:started", "worker": "heating_boost"},
+      "up": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+             "collect": true},
+      "back": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "collect": true, "value_from_slot": "comfort"},
+      "comfort": {"role": "value", "offer": "worker_number:value", "worker": "comfort_temp"}
+    },
+    "emits": {
+      "name": "Heating boost",
+      "source": "boost",
+      "conditions": ["boost"],
+      "then": ["up"],
+      "else": ["back"],
+      "cooldown": 10
+    },
+    "params": {"setpoint_c": 23.0, "comfort_c": 21.0}
+  },
+  {
+    "id": "remember_last_movement",
+    "title": "Remember when anybody last moved",
+    "description": "Marks the Last movement worker whenever a motion sensor sees someone, so other rules can ask how long the house has been still.",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "motion": {"role": "trigger", "offer": "presence:detected", "collect": true, "collect_logic": "or"},
+      "mark": {"role": "action", "offer": "worker_marker:mark", "worker": "last_movement"}
+    },
+    "emits": {
+      "name": "Remember the last movement",
+      "source": "motion",
+      "conditions": ["motion"],
+      "then": ["mark"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "stillness_alert",
+    "title": "Tell someone if nobody has moved for hours",
+    "description": "A check on somebody at home alone — or on motion sensors that have stopped reporting. Pairs with 'Remember when anybody last moved'.",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "still": {"role": "trigger", "offer": "worker_marker:overdue", "worker": "last_movement"},
+      "marked": {"role": "condition", "offer": "worker_marker:ever_marked", "worker": "last_movement"},
+      "home": {"role": "condition", "offer": "household:anyone_home", "optional": true},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Nobody has moved for a while",
+      "source": "still",
+      "conditions": ["still", "marked", "home"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "No movement has been seen in the house for a while ({time}) — worth checking in."}
+      ],
+      "cooldown": 3600
+    },
+    "params": {"overdue_min": 720}
+  },
+  {
+    "id": "count_door_opens",
+    "title": "Count how often the doors are opened each day",
+    "description": "Adds one to Door opens today each time a door opens; the count clears itself at midnight.",
+    "category": "presence",
+    "scope": "house",
+    "slots": {
+      "door": {"role": "trigger", "offer": "contact:opened"},
+      "count": {"role": "action", "offer": "worker_counter:increment", "worker": "door_opens_today"}
+    },
+    "emits": {
+      "name": "Count $trigger_device opening",
+      "source": "door",
+      "conditions": ["door"],
+      "then": ["count"],
+      "cooldown": 2
+    }
+  },
+  {
+    "id": "busy_doors_reminder",
+    "title": "Remind someone to check the locks when the doors have been busy",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "count": {"role": "trigger", "offer": "worker_counter:reached", "worker": "door_opens_today"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Busy doors today",
+      "source": "count",
+      "conditions": ["count"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "The doors have been opened $count@value times today — worth checking they are locked."}
+      ],
+      "cooldown": 3600
+    },
+    "params": {"counter_limit": 20}
+  },
+  {
+    "id": "plants_watering_reminder",
+    "title": "Remind someone to water the plants",
+    "description": "Mark Plants watered on the Workers tab when you water them. If it has been a few days, a reminder arrives in the evening.",
+    "category": "maintenance",
+    "scope": "house",
+    "slots": {
+      "evening": {"role": "trigger", "offer": "hub:reminder"},
+      "due": {"role": "condition", "offer": "worker_marker:overdue", "worker": "plants_watered"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Water the plants",
+      "source": "evening",
+      "conditions": ["evening", "due"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "The plants have not been watered for a few days. Mark Plants watered on the Workers tab once they have."}
+      ],
+      "cooldown": 3600
+    },
+    "params": {"overdue_min": 5760, "reminder_time": "18:00"}
+  }
+]

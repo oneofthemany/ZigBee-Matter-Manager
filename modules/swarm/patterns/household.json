@@ -1,0 +1,135 @@
+[
+  {
+    "id": "door_opened_nobody_home",
+    "title": "Tell someone when a door opens while nobody is home",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "door": {"role": "trigger", "offer": "contact:opened"},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device opened with nobody home",
+      "source": "door",
+      "conditions": ["door", "nobody"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "{trigger} opened at {time} while nobody is home."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 300
+    }
+  },
+  {
+    "id": "motion_nobody_home",
+    "title": "Tell someone about movement while nobody is home",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "motion": {"role": "trigger", "offer": "presence:detected"},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Movement at $trigger_device with nobody home",
+      "source": "motion",
+      "conditions": ["motion", "nobody"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} saw movement at {time} while nobody is home."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 600
+    }
+  },
+  {
+    "id": "unlocked_nobody_home_alert",
+    "title": "Tell someone straight away when a lock opens while nobody is home",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "open": {"role": "trigger", "offer": "lock:unlocked"},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device unlocked with nobody home",
+      "source": "open",
+      "conditions": ["open", "nobody"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "{trigger} was unlocked at {time} while nobody is home."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 120
+    }
+  },
+  {
+    "id": "window_open_while_heating",
+    "title": "Tell someone when a window is left open with the heating on",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "open": {"role": "trigger", "offer": "contact:opened", "sustain": {"param": "open_hold_s"}},
+      "heat": {"role": "condition", "offer": "thermostat:calling_for_heat"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "{room}: $trigger_device open with the heating on",
+      "source": "open",
+      "conditions": ["open", "heat"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} has been open for a while and $trigger_room is calling for heat."}
+      ],
+      "cooldown": 1800
+    },
+    "params": {"open_hold_s": 600}
+  },
+  {
+    "id": "bright_room_lights_off",
+    "title": "Switch the lights off when daylight is enough",
+    "description": "In daytime only, so the lights' own glow cannot switch them off in the evening.",
+    "category": "energy",
+    "scope": "room",
+    "slots": {
+      "bright": {"role": "trigger", "offer": "illuminance:got_bright"},
+      "day": {"role": "condition", "offer": "hub:daytime"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true}
+    },
+    "emits": {
+      "name": "{room} lights off in daylight",
+      "source": "bright",
+      "conditions": ["bright", "day"],
+      "then": ["lights"],
+      "cooldown": 600
+    }
+  },
+  {
+    "id": "lights_left_on_offer",
+    "title": "Offer to switch the lights off when everyone has left",
+    "description": "Asks rather than acts — for a house where somebody might still be in and not carrying a phone.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "empty": {"role": "trigger", "offer": "household:last_left"},
+      "on": {"role": "condition", "offer": "on_off:is_on", "device_class": ["light", "color_light"],
+             "collect": true, "collect_logic": "or"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Offer to switch off lights left on",
+      "source": "empty",
+      "conditions": ["empty", "on"],
+      "then": [
+        {"type": "offer", "to_user": "$who",
+         "message": "Everyone has left and some lights are still on. Switch them all off?",
+         "accept_steps": [{"slot": "lights"}], "expires_in": 3600}
+      ],
+      "run_mode": "single",
+      "cooldown": 1800
+    }
+  }
+]

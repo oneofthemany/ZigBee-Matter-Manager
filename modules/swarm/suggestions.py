@@ -20,10 +20,11 @@ import logging
 from typing import Any, Dict, Iterable, List, Optional
 
 from modules.automation import RUN_MODES, TIME_SOURCE
+from modules.swarm.capabilities import WORKER_TEMPLATES, worker_payload, worker_satisfies
 from modules.swarm.compiler import (
     CompileError, compile_rule, describe_candidate, effective_params,
 )
-from modules.swarm.resolver import hub_device
+from modules.swarm.resolver import hub_device, proposed_worker_device
 from modules.swarm.dedupe import coverage, index_rules, status_for
 from modules.swarm.matcher import match_pattern
 from modules.swarm.stigmergy import get_stigmergy_store
@@ -65,6 +66,67 @@ def with_hub(described: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(described) + [hub_device()]
 
 
+def templates_used(patterns: Iterable[Dict[str, Any]]) -> List[str]:
+    """Every worker template a slot in these patterns asks for."""
+    return sorted({spec["worker"] for p in patterns
+                   for spec in (p.get("slots") or {}).values()
+                   if isinstance(spec, dict) and spec.get("worker") in WORKER_TEMPLATES})
+
+
+def with_synthetic(described: List[Dict[str, Any]],
+                   patterns: Optional[Iterable[Dict[str, Any]]] = None
+                   ) -> List[Dict[str, Any]]:
+    """The network plus the hub, plus every worker a pattern needs and the house
+    does not have yet.
+
+    A proposed worker is only ever added where nothing satisfies its template —
+    so an existing "House Mode" is used as it is — and never where a worker
+    already holds its id with a different type, which creating it would clash
+    with. Only a slot naming that template may fill from it.
+    """
+    pool = with_hub(described)
+    wanted = templates_used(patterns) if patterns is not None else sorted(WORKER_TEMPLATES)
+    for tid in wanted:
+        if any(d.get("worker_id") == tid or worker_satisfies(d, tid) for d in pool):
+            continue
+        try:
+            pool.append(proposed_worker_device(tid))
+        except Exception:                                       # noqa: BLE001
+            logger.exception(f"Could not propose worker {tid}")
+    return pool
+
+
+def _uses_the_network(fills: Dict[str, Dict[str, Any]]) -> bool:
+    """Whether a candidate involves something real: a device, a person, or a
+    worker that already exists — anything but the hub and a proposal."""
+    return any(member["ieee"] != TIME_SOURCE and not member["device"].get("proposed_template")
+               for fill in fills.values() for member in (fill.get("members") or [fill]))
+
+
+def _creates_workers(fills: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The proposed workers a candidate uses — what applying it will create."""
+    out: List[Dict[str, Any]] = []
+    for fill in fills.values():
+        for member in fill.get("members") or [fill]:
+            tid = member["device"].get("proposed_template")
+            if tid and all(w["id"] != tid for w in out):
+                template = WORKER_TEMPLATES[tid]
+                out.append({"id": tid, "ieee": member["ieee"], "name": template["name"],
+                            "type": template["type"],
+                            "options": list(template.get("options") or []),
+                            "description": template.get("description")})
+    return out
+
+
+def worker_payloads(pattern: Dict[str, Any], suggestion: Dict[str, Any],
+                    overrides: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """WorkerManager.create() payloads for the workers applying a suggestion
+    needs, each starting at the card's parameter values."""
+    params = effective_params(pattern, overrides)
+    return [worker_payload(w["id"], params)
+            for w in suggestion.get("creates_workers") or []]
+
+
 def _confidence(pattern: Dict[str, Any], candidate: Dict[str, Any]) -> str:
     """How strongly this fill is the pattern working as intended.
 
@@ -96,9 +158,10 @@ def build(described: List[Dict[str, Any]],
     """
     rules = list(rules or [])
     rooms = rooms or {}
-    described = with_hub(described)
-    names = names or {d["ieee"]: d["name"] for d in described}
     patterns = patterns if patterns is not None else get_stigmergy_store().all()
+    described = with_synthetic(described, patterns)
+    names = names or {d["ieee"]: d["name"] for d in described}
+    proposed = {d["ieee"] for d in described if d.get("proposed_template")}
 
     index = index_rules(rules)
     suggestions: List[Dict[str, Any]] = []
@@ -116,7 +179,19 @@ def build(described: List[Dict[str, Any]],
 
         traces.extend(result["trace"])
 
-        for candidate in result["candidates"]:
+        # The swarm suggests from the network. A candidate made only of the hub
+        # and workers it would itself create — "switch House mode to night at
+        # bedtime" in a house with nothing that reads House mode — is withheld,
+        # and its trace says why rather than claiming a match.
+        candidates = [c for c in result["candidates"] if _uses_the_network(c["fills"])]
+        if result["candidates"] and not candidates:
+            for t in result["trace"]:
+                if t.get("outcome") == "matched":
+                    t.update(outcome="no_match", candidates=0,
+                             reason="it would use only the hub and workers the swarm "
+                                    "proposes, and nothing on the network")
+
+        for candidate in candidates:
             try:
                 rule = compile_rule(pattern, candidate["fills"],
                                     room_label=candidate.get("room_label"))
@@ -132,7 +207,7 @@ def build(described: List[Dict[str, Any]],
                                  "error": f"{type(e).__name__}: {e}"})
                 continue
 
-            invalid = _validate(rule, validator)
+            invalid = _validate(rule, validator, proposed)
             if invalid:
                 rejected.append({"pattern": pattern["id"],
                                  "room": candidate.get("room"),
@@ -153,9 +228,11 @@ def build(described: List[Dict[str, Any]],
                 "sentence": describe_candidate(pattern, candidate["fills"]),
                 "devices": [{"slot": k, "ieee": m["ieee"],
                              "name": m["device"]["name"], "offer": m["offer"]["key"],
-                             "label": m["offer"]["label"]}
+                             "label": m["offer"]["label"],
+                             "proposed": bool(m["device"].get("proposed_template"))}
                             for k, v in candidate["fills"].items()
                             for m in (v.get("members") or [v])],
+                "creates_workers": _creates_workers(candidate["fills"]),
                 "params": _exposed_params(pattern),
                 "alternatives": candidate.get("alternatives") or {},
                 "rule": rule,
@@ -178,13 +255,19 @@ def build(described: List[Dict[str, Any]],
     }
 
 
-def _validate(rule: Dict[str, Any], validator: Any) -> Optional[str]:
+def _validate(rule: Dict[str, Any], validator: Any,
+              proposed: Iterable[str] = ()) -> Optional[str]:
     """Run a compiled rule through the engine's own validation, without saving.
 
     Reusing the engine's validators rather than re-implementing them is the
     point: a suggestion is only trustworthy if it passes the same checks the
     save path applies.
+
+    The one check a proposed worker cannot pass yet is that it exists — applying
+    creates it before the rule — so that complaint, about one of those, is not
+    a defect.
     """
+    proposed = tuple(proposed)
     if validator is None:
         return None
     try:
@@ -204,7 +287,7 @@ def _validate(rule: Dict[str, Any], validator: Any) -> Optional[str]:
             return f"run_mode {rule.get('run_mode')!r} is not one of {RUN_MODES}"
         err = validator._validate_zone_source(list(rule["conditions"]),
                                               rule["source_ieee"])
-        if err:
+        if err and not any(ieee in err for ieee in proposed):
             return err
     except Exception as e:                                      # noqa: BLE001
         return f"validator raised {type(e).__name__}: {e}"
@@ -261,7 +344,7 @@ def recompile(pattern: Dict[str, Any], suggestion: Dict[str, Any],
     from the client: the network may have changed since it was offered, and a
     client-supplied rule is a client-supplied rule.
     """
-    result = match_pattern(pattern, with_hub(described), rooms or {})
+    result = match_pattern(pattern, with_synthetic(described, [pattern]), rooms or {})
     for candidate in result["candidates"]:
         if suggestion_id(pattern["id"], candidate["fills"]) == suggestion["id"]:
             return compile_rule(pattern, candidate["fills"], overrides,

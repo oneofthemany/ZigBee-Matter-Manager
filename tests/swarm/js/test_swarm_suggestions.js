@@ -233,6 +233,16 @@ section('cardHtml states');
   const disabled = S.cardHtml({ ...BUILT, status: 'disabled' }, { editable: true });
   check('a disabled rule is distinguished from an enabled one',
         disabled.includes('Built, disabled'));
+
+  const needs = { ...HALL, creates_workers: [{ id: 'house_mode', name: 'House <mode>', type: 'mode',
+                                               options: ['home', 'away'] }] };
+  const withWorker = S.cardHtml(needs, { editable: true, dismissed: false });
+  check('a card says which worker it creates', withWorker.includes('Also creates') &&
+        withWorker.includes('home, away'), withWorker);
+  check('and escapes its name', withWorker.includes('House &lt;mode&gt;') &&
+        !withWorker.includes('House <mode>'));
+  check('a built card does not', !S.cardHtml({ ...BUILT, creates_workers: needs.creates_workers },
+        { editable: true }).includes('Also creates'));
 }
 
 section('summaryLine');

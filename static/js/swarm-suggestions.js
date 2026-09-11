@@ -219,8 +219,18 @@ export function cardHtml(s, opts) {
     const built = s.status !== 'available';
 
     const devices = (s.devices || []).map(d =>
-        `<span class="badge bg-light text-dark border fw-normal" title="${esc(d.label || d.offer)}">
+        `<span class="badge bg-light text-dark border fw-normal${d.proposed ? ' border-info' : ''}"
+               title="${esc(d.label || d.offer)}">${d.proposed ? '<i class="fas fa-plus me-1"></i>' : ''}
             ${esc(d.name)}</span>`).join(' ');
+
+    // A worker the rule needs and the house does not have is created with it,
+    // and saying so first is the difference between a suggestion and a surprise.
+    const creates = (s.creates_workers || []).length && !built
+        ? `<div class="small mt-2 text-info-emphasis"><i class="fas fa-user-gear me-1"></i>
+               Also creates ${s.creates_workers.map(w =>
+                   `<b>${esc(w.name)}</b> (${esc(w.type)}${(w.options || []).length
+                       ? `: ${esc(w.options.join(', '))}` : ''})`).join(', ')} on the Workers tab</div>`
+        : '';
 
     const params = (s.params || []).length && !built
         ? `<div class="row g-2 align-items-end mt-1">${s.params.map(paramField).join('')}</div>`
@@ -251,6 +261,7 @@ export function cardHtml(s, opts) {
           </div>
           <div class="small text-muted mt-1">${esc(s.sentence)}</div>
           <div class="mt-2 d-flex flex-wrap gap-1">${devices}</div>
+          ${creates}
           ${params}
           <div class="mt-auto pt-3 d-flex flex-wrap align-items-center gap-2">${actions}</div>
         </div>
@@ -437,7 +448,10 @@ async function create(id, btn) {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Could not build that suggestion');
-            showToast(`Created "${data.rule?.name || suggestion.title}"`, 'success');
+            const made = (data.workers_created || []).length
+                ? ` and ${data.workers_created.length} worker${data.workers_created.length > 1 ? 's' : ''}`
+                : '';
+            showToast(`Created "${data.rule?.name || suggestion.title}"${made}`, 'success');
             // The new rule changes what else is still available — a pattern that
             // overlaps it is now built too — so the whole list is re-read rather
             // than the one card patched.

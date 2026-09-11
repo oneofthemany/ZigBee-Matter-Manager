@@ -1,0 +1,249 @@
+[
+  {
+    "id": "heating_schedule",
+    "title": "Heat a room during the day and set it back overnight",
+    "description": "Comfort from morning until bedtime, setback overnight. The two temperatures are workers every schedule shares, so changing one changes them all.",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "day": {"role": "trigger", "offer": "hub:day_window"},
+      "warm": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "value_from_slot": "comfort"},
+      "cool": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "prefer": "same_device", "prefer_slot": "warm", "require_same_device": true,
+               "value_from_slot": "setback"},
+      "comfort": {"role": "value", "offer": "worker_number:value", "worker": "comfort_temp"},
+      "setback": {"role": "value", "offer": "worker_number:value", "worker": "setback_temp"}
+    },
+    "emits": {
+      "name": "{room}: $warm@name schedule",
+      "source": "day",
+      "conditions": ["day"],
+      "then": ["warm"],
+      "else": ["cool"],
+      "cooldown": 60
+    },
+    "params": {"wake_time": "07:00", "bed_time": "23:00", "comfort_c": 21.0, "setback_c": 16.0}
+  },
+  {
+    "id": "blinds_follow_the_sun",
+    "title": "Open the blinds at sunrise and close them at sunset",
+    "category": "convenience",
+    "scope": "room",
+    "slots": {
+      "day": {"role": "trigger", "offer": "hub:sun_rises"},
+      "open": {"role": "action", "offer": "cover:open"},
+      "close": {"role": "action", "offer": "cover:close", "prefer": "same_device", "prefer_slot": "open",
+                "require_same_device": true}
+    },
+    "emits": {
+      "name": "{room}: $open@name follows the sun",
+      "source": "day",
+      "conditions": ["day"],
+      "then": ["open"],
+      "else": ["close"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "room_lights_off_at_bedtime",
+    "title": "Switch a room's lights off at bedtime",
+    "category": "energy",
+    "scope": "room",
+    "slots": {
+      "bed": {"role": "trigger", "offer": "hub:bedtime"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true}
+    },
+    "emits": {
+      "name": "{room} lights off at bedtime",
+      "source": "bed",
+      "conditions": ["bed"],
+      "then": ["lights"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "evening_lights_until_bedtime",
+    "title": "A light on from sunset until bedtime",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "evening": {"role": "trigger", "offer": "hub:sunset_to_bedtime"},
+      "light": {"role": "action", "offer": "on_off:turn_on", "device_class": ["light", "color_light"]},
+      "off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+              "prefer": "same_device", "prefer_slot": "light", "require_same_device": true}
+    },
+    "emits": {
+      "name": "{room}: $light@name on for the evening",
+      "source": "evening",
+      "conditions": ["evening"],
+      "then": ["light"],
+      "else": ["off"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00", "sun_offset_min": 0}
+  },
+  {
+    "id": "lock_at_bedtime",
+    "title": "Lock the door at bedtime",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "bed": {"role": "trigger", "offer": "hub:bedtime"},
+      "lock": {"role": "action", "offer": "lock:lock"}
+    },
+    "emits": {
+      "name": "Lock $lock@name at bedtime",
+      "source": "bed",
+      "conditions": ["bed"],
+      "then": ["lock"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "unlocked_at_bedtime_alert",
+    "title": "Tell someone if a door is still unlocked at bedtime",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "bed": {"role": "trigger", "offer": "hub:bedtime"},
+      "open": {"role": "condition", "offer": "lock:is_unlocked", "collect": true, "collect_logic": "or"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Unlocked at bedtime",
+      "source": "bed",
+      "conditions": ["bed", "open"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "A door is still unlocked at bedtime ({time})."}
+      ],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "openings_at_bedtime",
+    "title": "Tell someone if a door or window is still open at bedtime",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "bed": {"role": "trigger", "offer": "hub:bedtime"},
+      "open": {"role": "condition", "offer": "contact:is_open", "collect": true, "collect_logic": "or"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Open at bedtime",
+      "source": "bed",
+      "conditions": ["bed", "open"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "Something is still open at bedtime ({time}) — check the doors and windows."}
+      ],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00"}
+  },
+  {
+    "id": "standby_off_overnight",
+    "title": "Offer to switch a socket off overnight while it is only on standby",
+    "description": "At bedtime, a socket drawing only standby power prompts a question — never switched off without asking, since a fridge on a socket looks idle too. It comes back on in the morning.",
+    "category": "energy",
+    "scope": "room",
+    "slots": {
+      "night": {"role": "trigger", "offer": "hub:night_window"},
+      "plug": {"role": "action", "offer": "on_off:turn_off", "device_class": ["plug"]},
+      "idle": {"role": "condition", "offer": "power:is_idle", "prefer": "same_device", "prefer_slot": "plug",
+               "require_same_device": true, "params": {"power_idle_w": 10.0}},
+      "back": {"role": "action", "offer": "on_off:turn_on", "prefer": "same_device", "prefer_slot": "plug",
+               "require_same_device": true},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "{room}: $plug@name off overnight",
+      "source": "night",
+      "conditions": ["night", "idle"],
+      "then": [
+        {"type": "offer", "to_user": "$who",
+         "message": "$plug@name is only on standby. Switch it off until the morning?",
+         "accept_steps": [{"slot": "plug"}], "expires_in": 3600}
+      ],
+      "else": ["back"],
+      "cooldown": 60
+    },
+    "params": {"bed_time": "23:00", "wake_time": "07:00"}
+  },
+  {
+    "id": "idle_appliance_offer",
+    "title": "Offer to switch off something that has sat idle",
+    "description": "When a socket has drawn next to nothing for a while, someone is asked whether to switch it off.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "idle": {"role": "trigger", "offer": "power:finished", "sustain": {"param": "idle_hold_min", "scale": 60}},
+      "off": {"role": "action", "offer": "on_off:turn_off", "prefer": "same_device", "prefer_slot": "idle",
+              "require_same_device": true},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Offer to switch off $trigger_device",
+      "source": "idle",
+      "conditions": ["idle"],
+      "then": [
+        {"type": "offer", "to_user": "$who",
+         "message": "{trigger} has been idle for a while. Switch it off?",
+         "accept_steps": [{"slot": "off"}], "expires_in": 3600}
+      ],
+      "cooldown": 21600
+    },
+    "params": {"idle_hold_min": 30, "power_idle_w": 5.0}
+  },
+  {
+    "id": "goodnight_shortcut",
+    "title": "A Goodnight shortcut: lights off, doors locked, blinds closed",
+    "description": "Point a phone shortcut at the webhook goodnight-scene and the house settles for the night in one tap.",
+    "category": "convenience",
+    "scope": "house",
+    "slots": {
+      "call": {"role": "trigger", "offer": "hub:goodnight_called"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true, "optional": true},
+      "locks": {"role": "action", "offer": "lock:lock", "collect": true, "optional": true},
+      "blinds": {"role": "action", "offer": "cover:close", "collect": true, "optional": true}
+    },
+    "emits": {
+      "name": "Goodnight",
+      "source": "call",
+      "conditions": ["call"],
+      "then": ["lights", "locks", "blinds"],
+      "run_mode": "single",
+      "cooldown": 10
+    }
+  },
+  {
+    "id": "leaving_shortcut",
+    "title": "A Leaving shortcut: lights off, doors locked, heating down",
+    "description": "Point a phone shortcut at the webhook leaving-home for when you go out before the house notices.",
+    "category": "convenience",
+    "scope": "house",
+    "slots": {
+      "call": {"role": "trigger", "offer": "hub:leaving_called"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true, "optional": true},
+      "locks": {"role": "action", "offer": "lock:lock", "collect": true, "optional": true},
+      "heating": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+                  "collect": true, "optional": true}
+    },
+    "emits": {
+      "name": "Leaving",
+      "source": "call",
+      "conditions": ["call"],
+      "then": ["lights", "locks", "heating"],
+      "run_mode": "single",
+      "cooldown": 10
+    },
+    "params": {"setpoint_c": 16.0}
+  }
+]

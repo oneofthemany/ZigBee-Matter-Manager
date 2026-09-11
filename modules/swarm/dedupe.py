@@ -54,7 +54,13 @@ def _targets(rule: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
         for step in _walk_steps(rule.get(field) or []):
             kind = step.get("type")
             if kind == "command" and step.get("target_ieee"):
-                out.add((str(step["target_ieee"]), str(step.get("command", ""))))
+                command = str(step.get("command", ""))
+                # A word is part of the wiring where a number is not: setting
+                # House mode to "away" and to "home" are two automations, while
+                # a setpoint of 21 and one of 21.5 are the same one.
+                if isinstance(step.get("value"), str) and step["value"]:
+                    command = f"{command}:{step['value'].lower()}"
+                out.add((str(step["target_ieee"]), command))
             elif kind == "request" and step.get("to_user"):
                 out.add((str(step["to_user"]), "message"))
             elif kind == "media" and step.get("player_id"):
@@ -81,7 +87,16 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
             out.add(f"{prefix}zone:{c.get('event')}:{c.get('place')}")
         elif ctype == "offline":
             out.add(f"{prefix}{'online' if c.get('negate') else 'offline'}")
-        elif ctype in ("time_window", "time", "sun", "date", "startup", "webhook"):
+        elif ctype == "time":
+            out.add(f"time:{_part_of_day(c.get('at'))}")
+        elif ctype == "time_window":
+            out.add(f"time_window:{_part_of_day(c.get('time_from'))}-"
+                    f"{_part_of_day(c.get('time_to'))}{_days(c)}")
+        elif ctype == "sun":
+            out.add(f"sun:{_sun_end(c.get('from'))}-{_sun_end(c.get('to'))}{_days(c)}")
+        elif ctype == "webhook":
+            out.add(f"webhook:{c.get('hook')}")
+        elif ctype in ("date", "startup"):
             out.add(ctype)
         elif c.get("attribute"):
             # The operator is part of the wiring: "starts drawing power" and
@@ -89,6 +104,37 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
             # threshold is not, so a rule at 11 lux still matches one at 10.
             out.add(f"{prefix}{c['attribute']}:{c.get('operator')}")
     return tuple(sorted(out))
+
+
+def _part_of_day(hhmm: Any) -> str:
+    """Morning, afternoon, evening or night, for a clock time.
+
+    When a schedule runs is part of what it is — heating up in the morning and
+    down at bedtime are two automations on the same radiators — but the minute
+    is a threshold: a rule at 07:05 is the suggestion at 07:00.
+    """
+    try:
+        hour = int(str(hhmm).split(":")[0])
+    except (TypeError, ValueError):
+        return "any"
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
+
+
+def _sun_end(end: Any) -> str:
+    return str(end) if end in ("sunrise", "sunset") else _part_of_day(end)
+
+
+def _days(cond: Dict[str, Any]) -> str:
+    days = cond.get("days")
+    if days is None or sorted(days) == list(range(7)):
+        return ""
+    return ":" + "".join(str(d) for d in sorted(days))
 
 
 def _shape(rule: Dict[str, Any]) -> Tuple[str, ...]:
@@ -147,7 +193,9 @@ def coverage(described: List[Dict[str, Any]],
     """
     rules = list(rules or [])
     # The hub is not a device anyone owns or places; it is never a coverage gap.
-    described = [d for d in described if d.get("ieee") != TIME_SOURCE]
+    # Nor is a worker the swarm has only proposed.
+    described = [d for d in described
+                 if d.get("ieee") != TIME_SOURCE and not d.get("proposed_template")]
     sources = {str(r.get("source_ieee")) for r in rules}
     # A device a trigger condition names takes part as much as the source does.
     sources |= {str(c["ieee"]) for r in rules

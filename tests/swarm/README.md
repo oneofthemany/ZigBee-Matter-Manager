@@ -20,6 +20,7 @@ returning a `Checker`; `run_all.py` drives them and exits non-zero on failure.
 | `test_templates_and_repeat.py` | Live values in message text, and the repeat step |
 | `test_final_gaps.py` | Run now, webhooks, startup, snapshot/restore, dates, persisted rule state, single-rule import |
 | `test_swarm_expansion.py` | The swarm using the whole engine: trend, silence and hub offers; collect, exclude, sustain, run modes and literal markers; every shipped pattern built, validated and saved through a real engine against a larger house; several run end to end |
+| `test_swarm_workers.py` | Workers as offers, templates and proposals, the hub's clock and sun, the uncapped house-wide trigger, parallel collected actions; suggestions applied through a real engine and worker manager, and through the API with rollback |
 | `test_real_house.py` | Every device shape from a live household, including the binding-cluster artefacts that made door sensors switches and motion sensors lights |
 | `test_diagnostics.py` | Every finding the triage report can raise, and the per-pattern explain trace |
 | `test_api.py` | The HTTP surface, driven through Starlette's `TestClient`, including the applying path |

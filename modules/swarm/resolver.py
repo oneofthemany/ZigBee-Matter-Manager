@@ -31,8 +31,10 @@ from modules.swarm.capabilities import (
     SCOPE_HOUSE,
     SCOPE_ROOM,
     TRIGGER,
+    WORKER_TYPE_CAPABILITY,
     canonical_capability,
     classify,
+    option_slug,
     param_display,
     resolve_param,
 )
@@ -331,6 +333,11 @@ def device_capabilities(ieee: str, dev: Any, state: Dict[str, Any],
     # nothing has described — an unprofiled Tuya socket — not a second opinion
     # to hold against a stack that has already applied its quirks.
     described_by = _declared_capabilities(dev) + _profile_capabilities(dev, ieee)
+    # A worker says only that it is one; what it offers depends on its type.
+    if "worker" in described_by:
+        folded = WORKER_TYPE_CAPABILITY.get(str(getattr(dev, "type", "") or ""))
+        if folded:
+            described_by = described_by + [folded]
     raw = described_by + _sniffed_capabilities(
         state, commands, infer_actuation=not described_by)
     out: List[str] = []
@@ -412,8 +419,9 @@ def _label(template: str, device_name: str, room_label: Optional[str],
 # attribute: silence (offline), the hub starting (startup), a date range, a time
 # window. Their fields may carry parameters, recorded so a compile at other
 # values re-resolves them.
-TYPED_OFFER_TYPES = ("offline", "startup", "date", "time_window")
-TYPED_OFFER_FIELDS = ("minutes", "negate", "from", "to", "time_from", "time_to", "days")
+TYPED_OFFER_TYPES = ("offline", "startup", "date", "time_window", "sun", "time", "webhook")
+TYPED_OFFER_FIELDS = ("minutes", "negate", "from", "to", "time_from", "time_to", "days",
+                      "at", "offset_from", "offset_to", "hook")
 # What makes a device's silence judgeable: a last report time, or an
 # availability flag. A device with neither cannot be asked whether it is offline.
 OFFLINE_EVIDENCE = ("last_seen", "available")
@@ -434,6 +442,8 @@ def _typed_offer(cap_id: str, spec: Dict[str, Any], offer: Dict[str, Any],
         raw = offer[field]
         pid = raw.get("param") if isinstance(raw, dict) else None
         cond[field] = resolve_param(raw)
+        if isinstance(cond[field], list):
+            cond[field] = list(cond[field])       # never share the vocabulary's list
         if pid:
             params[field] = pid
         shown[field] = param_display(pid, cond[field])
@@ -470,8 +480,13 @@ def _offer_base(cap_id: str, spec: Dict[str, Any], offer: Dict[str, Any],
 
 def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
                         state: Dict[str, Any], device_name: str,
-                        room_label: Optional[str]) -> List[Dict[str, Any]]:
-    """Trigger or condition offers for one capability on one device."""
+                        room_label: Optional[str],
+                        choices: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Trigger or condition offers for one capability on one device.
+
+    `choices` are the values the device declares it takes — a mode worker's
+    options — which an offer with `"expand": "options"` fans out over.
+    """
     out: List[Dict[str, Any]] = []
     for offer in spec.get(role + "s", []):
         if offer.get("type") in TYPED_OFFER_TYPES:
@@ -512,6 +527,24 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
                                  + f" ({opt}){outlet}",
                         "attribute": attr,
                         "endpoint_id": endpoint,
+                        "condition": {"type": "attribute", "attribute": attr,
+                                      "operator": offer["operator"], "value": opt},
+                    })
+                    out.append(built)
+                continue
+
+            # A mode's options are its own vocabulary, one offer each, keyed by
+            # the option so a pattern can ask for "away" by name.
+            if offer.get("expand") == "options":
+                for opt in choices or []:
+                    built = _offer_base(cap_id, spec, offer, role)
+                    built["key"] = f"{base_key}:{option_slug(opt)}"
+                    built.update({
+                        "label": _label(offer["label"], device_name, room_label,
+                                        extra={"option": opt}) + outlet,
+                        "attribute": attr,
+                        "endpoint_id": endpoint,
+                        "option": opt,
                         "condition": {"type": "attribute", "attribute": attr,
                                       "operator": offer["operator"], "value": opt},
                     })
@@ -569,7 +602,8 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
 def _build_action_offers(cap_id: str, spec: Dict[str, Any],
                          commands: Dict[str, List[Dict[str, Any]]],
                          device_name: str, room_label: Optional[str],
-                         ieee: str) -> List[Dict[str, Any]]:
+                         ieee: str,
+                         choices: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Action offers for one capability, one per executable endpoint."""
     out: List[Dict[str, Any]] = []
     for offer in spec.get("actions", []):
@@ -585,6 +619,22 @@ def _build_action_offers(cap_id: str, spec: Dict[str, Any],
 
         entries = commands.get(offer["command"])
         if not entries:
+            continue
+
+        if offer.get("expand") == "options":
+            for opt in choices or []:
+                for entry in entries:
+                    built = _offer_base(cap_id, spec, offer, ACTION)
+                    built["key"] = f"{cap_id}:{offer['id']}:{option_slug(opt)}"
+                    built.update({
+                        "label": _label(offer["label"], device_name, room_label,
+                                        extra={"option": opt}),
+                        "option": opt,
+                        "step": {"type": "command", "target_ieee": ieee,
+                                 "command": offer["command"], "value": opt,
+                                 "endpoint_id": entry.get("endpoint_id")},
+                    })
+                    out.append(built)
             continue
 
         param_id = offer.get("value_from")
@@ -613,6 +663,37 @@ def _build_action_offers(cap_id: str, spec: Dict[str, Any],
     return out
 
 
+def _build_value_offers(cap_id: str, spec: Dict[str, Any], state: Dict[str, Any],
+                        device_name: str, room_label: Optional[str],
+                        ieee: str) -> List[Dict[str, Any]]:
+    """Readings a command step may carry instead of a literal — a number worker's
+    value, read live when the step runs."""
+    out: List[Dict[str, Any]] = []
+    for offer in spec.get("values", []):
+        attr = _pick_attr(state, offer.get("attrs") or spec.get("attrs") or [])
+        if not attr:
+            continue
+        built = _offer_base(cap_id, spec, offer, "value")
+        built.update({
+            "label": _label(offer["label"], device_name, room_label),
+            "attribute": attr,
+            "ref": {"ref": ieee, "attribute": attr},
+        })
+        out.append(built)
+    return out
+
+
+def _declared_choices(dev: Any) -> List[str]:
+    """The values a device says its `value` takes — a mode worker's options."""
+    fn = getattr(dev, "value_options", None)
+    if not callable(fn):
+        return []
+    try:
+        return [str(o) for o in (fn("value") or [])]
+    except Exception:
+        return []
+
+
 # Public API
 
 def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
@@ -628,14 +709,21 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
     triggers: List[Dict[str, Any]] = []
     conditions: List[Dict[str, Any]] = []
     actions: List[Dict[str, Any]] = []
+    values: List[Dict[str, Any]] = []
+    choices = _declared_choices(dev)
+    worker = any(c.startswith("worker_") for c in caps)
 
     for cap_id in caps:
         spec = CAPABILITIES.get(cap_id)
         if not spec:
             continue
-        triggers += _build_state_offers(cap_id, spec, TRIGGER, state, device_name, room_label)
-        conditions += _build_state_offers(cap_id, spec, CONDITION, state, device_name, room_label)
-        actions += _build_action_offers(cap_id, spec, commands, device_name, room_label, ieee)
+        triggers += _build_state_offers(cap_id, spec, TRIGGER, state, device_name,
+                                        room_label, choices)
+        conditions += _build_state_offers(cap_id, spec, CONDITION, state, device_name,
+                                          room_label, choices)
+        actions += _build_action_offers(cap_id, spec, commands, device_name, room_label,
+                                        ieee, choices)
+        values += _build_value_offers(cap_id, spec, state, device_name, room_label, ieee)
 
     scope = SCOPE_HOUSE if any(
         CAPABILITIES.get(c, {}).get("scope") == SCOPE_HOUSE for c in caps
@@ -662,6 +750,10 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
         "triggers": triggers,
         "conditions": conditions,
         "actions": actions,
+        "values": values,
+        # A worker's id and type, which is what a worker template is matched on.
+        "worker_id": getattr(dev, "id", None) if worker else None,
+        "worker_type": getattr(dev, "type", None) if worker else None,
         "is_trigger_source": bool(triggers),
         "is_actuator": bool(actions),
         # Distinct from is_actuator: a person accepts a message but cannot be
@@ -690,3 +782,22 @@ class _Hub:
 def hub_device() -> Dict[str, Any]:
     """The hub, described like any device, for patterns to fill slots from."""
     return describe_device(TIME_SOURCE, _Hub(), name="The hub")
+
+
+def proposed_worker_device(template_id: str) -> Dict[str, Any]:
+    """A worker the house does not have yet, described as if it did.
+
+    Built from a real WorkerDevice normalised exactly as WorkerManager.create()
+    would, so its offers are the ones the created worker will make — and its
+    address is the one it will have, so a rule compiled against it still points
+    at the right thing once it exists.
+    """
+    from modules.swarm.capabilities import worker_payload
+    from modules.workers import WorkerDevice, WorkerManager, worker_ieee
+
+    cfg = WorkerManager._normalise(WorkerManager.__new__(WorkerManager),
+                                   worker_payload(template_id))
+    described = describe_device(worker_ieee(template_id), WorkerDevice(cfg),
+                                name=cfg["name"])
+    described["proposed_template"] = template_id
+    return described

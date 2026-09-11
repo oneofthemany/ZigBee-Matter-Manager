@@ -98,6 +98,7 @@ What the vocabulary covers beyond plain thresholds:
   is the offline rule's ELSE, not a trigger of its own.
 - **`water_leak:is_dry`** — what a leak reminder waits for.
 - **The hub** — see below.
+- **Workers** — household state no hardware reports; see below.
 
 Capability-level fields beyond the offers:
 
@@ -120,6 +121,56 @@ against — build, recompile, explain, and a slot's offers in diagnostics — an
 keeps it out of the network view and coverage, where a device nobody can see or
 place would only confuse. A rule whose trigger slot is the hub is sourced on
 `__time__`, exactly like a hand-built clock or startup rule.
+
+The hub also carries the household's day, so a schedule needs no sensor at all:
+
+| Offer | Engine condition | Reads as |
+|---|---|---|
+| `hub:sun_sets` / `hub:sun_rises` | `sun` window, sunset→sunrise / sunrise→sunset | THEN as it opens, ELSE as it closes — one rule for both halves |
+| `hub:sunset_to_bedtime` | `sun` window, sunset→`bed_time` | evening lights |
+| `hub:day_window` / `hub:night_window` | `time_window`, `wake_time`↔`bed_time` | a heating schedule |
+| `hub:morning` / `hub:bedtime` / `hub:reminder` | `time` alarm | a moment — no ELSE, since an alarm unmatches a minute later |
+| `hub:goodnight_called` / `hub:leaving_called` | `webhook`, fixed ids `goodnight-scene` / `leaving-home` | a phone shortcut |
+| conditions `after_dark`, `daytime`, `night`, `weekday`, `weekend` | `sun` / `time_window` | gates |
+
+Every clock rule shares the `__time__` source, and the engine's ten-rules-per-
+device cap exists to bound what one device *update* costs to evaluate — none
+arrives on `__time__` — so that source is exempt. Before this, a household's
+schedules ran out at ten.
+
+### Workers
+
+A worker (`docs/workers.md`) declares only `worker`; the resolver folds that
+onto a capability by the worker's type:
+
+| Type | Capability | Offers |
+|---|---|---|
+| boolean | `worker_flag` | `turned_on`/`turned_off`, `is_on`/`is_off`, `turn_on`/`turn_off`/`toggle` |
+| mode | `worker_mode` | one offer per option, keyed by it: `worker_mode:became:night`, `worker_mode:is:away`, `worker_mode:is_not:home`, `worker_mode:set:home` |
+| timer | `worker_timer` | `started` (THEN while it runs, ELSE when it runs out), `running`/`idle`, `start`/`extend` (`timer_s`)/`cancel` |
+| counter | `worker_counter` | `reached` (`counter_limit`), `at_least`/`below`, `increment`/`reset` |
+| marker | `worker_marker` | `overdue` (`overdue_min`), `recent`, `ever_marked`, `mark`/`reset` |
+| number | `worker_number` | a **value**: a live `{"ref": …}` a command step carries instead of a literal |
+
+None is sniffable — `value` is far too common a key to mean anything on a
+device that has not said it is a worker — and none can go offline.
+
+**Templates.** A pattern that needs state the house may not have yet names a
+template in `WORKER_TEMPLATES`: `house_mode` (home/away/night/holiday),
+`comfort_temp` and `setback_temp` (numbers starting at `comfort_c` /
+`setback_c`), `heating_boost` (timer), `last_movement` and `plants_watered`
+(markers), `door_opens_today` (counter, reset at midnight). An existing worker of
+the right type satisfies a template, by id or by a keyword in its name — so
+your own "House Mode" is used as it is. Where none does, `with_synthetic()` adds
+a **proposed** worker to the pool: a real `WorkerDevice` normalised exactly as
+`WorkerManager.create()` would, at the address it will have. Only a slot naming
+that template may fill from it, and none is proposed where a worker already
+holds the id with a different type.
+
+A suggestion using one lists it in `creates_workers`, the card says so, and
+applying creates it before the rule (and deletes it again if the engine refuses
+the rule). A candidate made *only* of the hub and proposed workers is withheld —
+the swarm suggests from the network, not from its own proposals.
 
 Two capability-level relations exist:
 
@@ -489,6 +540,9 @@ presence, maintenance and convenience, in files by theme:
 | `whole_house.json` | Patterns that gather many devices into one rule — every window in a room, every alarm, every light |
 | `reactive.json` | Trends, holds and reminders — a shower starting, a room cooling fast, something running for hours, a leak until it is dry |
 | `routines.json` | The hub — a restart, seasons, quiet hours |
+| `schedules.json` | The clock and the sun — heating schedules, blinds, bedtime checks, standby, phone shortcuts |
+| `modes.json` | Workers — House mode and what follows it, heating that reads shared temperatures, a boost timer, movement and door counts, reminders |
+| `household.json` | Nobody home, windows open with the heating on, daylight, lights left on |
 
 A pattern with `"enabled": false` still loads and validates but is never
 matched; `window_open_pause_heating` is retired that way in favour of
@@ -561,7 +615,10 @@ Slot keys:
 
 | Key | Effect |
 |---|---|
-| `collect` | Every device in scope making the offer, as one fill (at most `MAX_COLLECT`, 5). A collected trigger or condition compiles to a condition **group** of one leaf per device, each naming its device; a collected action becomes one step per device. Collected slots never vary, so "every light off" is one card, not one per light. The trace records how many were left out. |
+| `collect` | Every device in scope making the offer, as one fill. A collected trigger or condition compiles to a condition **group** of one leaf per device, each naming its device (at most `MAX_COLLECT`, 5 — the engine's group limit); a collected action becomes one step per device (at most `MAX_COLLECT_STEPS`, 12), run together as one `parallel` step once there are more than three, so twelve lights never exhaust a sequence's fifteen steps. Collected slots never vary, so "every light off" is one card, not one per light. The trace records how many were left out. |
+| `worker` | Fill from a worker satisfying this template, or the one the swarm proposes — see Workers. |
+| `name_match` | Only devices whose name contains one of these words. |
+| `value_from_slot` | On an action: its command carries the named `value` slot's live reading instead of a literal — "set the TRV to Comfort temperature". |
 | `collect_logic` | `"or"` (default) — any of them; `"and"` — all of them. |
 | `exclude_slot` | Never the device another slot took: a light that follows another light is never that light. |
 | `reactive` | Compile this condition as a live condition naming its device, even when it is not on the source — a change on that device re-evaluates the rule. Otherwise a check on another device is a prerequisite, read only when something else fires. |
@@ -632,6 +689,12 @@ slot varies is a judgement about what a person would want twice:
 - **collected** slots never vary — they already hold every device. A new
   device joining one changes the suggestion's id, since it is a different rule.
 
+A varying action is capped at four per scope (`MAX_VARIANTS_PER_SLOT`): a room
+with many lamps gets the obvious ones. A varying *trigger* in a house-scoped
+pattern is capped at 24 (`MAX_SOURCE_VARIANTS`) and a house scope at 48
+candidates, because there the trigger is the only partition — capping battery
+alerts at four silently dropped two thirds of a real house's batteries.
+
 ---
 
 ## Suggestions
@@ -669,7 +732,13 @@ not useful. What *is* included:
 - **The shape**: which of `repeat`, `offer`, `snapshot`, `restore` and
   `wait_for` the sequences use. A reminder repeating until a door shuts and a
   single message about the same door are different automations with the same
-  trigger and recipient; a delay added to a hand-built rule is not. That one property is what turns the list into a to-do: what the
+  trigger and recipient; a delay added to a hand-built rule is not.
+- **A word a command carries.** Setting House mode to "away" and to "home" are
+  two automations; a setpoint of 21 and one of 21.5 are one.
+- **When a schedule runs, to the part of the day.** `time` and `time_window`
+  sign as morning / afternoon / evening / night, and `sun` by its ends, so heating
+  up in the morning and down at bedtime differ while 07:00 and 07:05 do not. A
+  webhook signs by its hook. That one property is what turns the list into a to-do: what the
 swarm could do, minus what it already does.
 
 `coverage` then reports which devices take part in at least one rule — as a
@@ -683,6 +752,11 @@ network rather than trusting a rule posted back by the client — the network ma
 have moved on since the suggestion was offered, and a client-supplied rule is a
 client-supplied rule. A suggestion that no longer matches is refused with a
 reason rather than compiled from stale data.
+
+Workers the suggestion needs (`creates_workers`) are created through the
+worker manager first, starting at the card's parameters, so the rule's source
+and targets exist when the engine checks them; any made for a rule the engine
+then refuses are deleted again. The response lists them in `workers_created`.
 
 ---
 

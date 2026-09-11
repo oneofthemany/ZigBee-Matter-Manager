@@ -197,7 +197,8 @@ def run() -> Checker:
     c.check("nothing was rejected", dbuilt["rejected"] == [], dbuilt["rejected"])
 
     c.section("notify slots offer a recipient rather than multiplying")
-    leaks = _by_sentence(built, "finishes")
+    leaks = [s for s in _by_sentence(built, "finishes")
+             if s["pattern_id"] == "appliance_finished"]
     c.check("one appliance-finished suggestion, not one per person",
             len(leaks) == 1, [x["sentence"] for x in leaks])
 

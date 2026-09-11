@@ -47,6 +47,11 @@ EVENT_TYPES = ("startup", "webhook")
 # checked at a moment that cannot contain them.
 ALWAYS_REACTIVE_TYPES = ("zone", "offline")
 
+# A collected action with more devices than this runs as one parallel step. The
+# engine allows 15 steps in a sequence, which twelve lights and a lock would
+# otherwise exhaust, and switching them together is what anyone would expect.
+PARALLEL_AFTER = 3
+
 _SLOT_PART = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)@(value|name)")
 _SLOT_ALL = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)@all")
 _SLOT_TOKEN = re.compile(r"\$[a-zA-Z_][a-zA-Z0-9_]*")
@@ -152,19 +157,36 @@ class _Context:
         return effective_params(self.pattern, self.overrides, slot)
 
     def steps(self, slot: str) -> List[Dict[str, Any]]:
-        """The action step of a slot — one per device for a collected slot."""
+        """The action step of a slot — one per device for a collected slot, run
+        together as one parallel step once there are more than PARALLEL_AFTER."""
         fill = self.fills.get(slot)
         if not fill:
             return []
         params = self.slot_params(slot)
+        ref = self.value_ref((self.slots.get(slot) or {}).get("value_from_slot"))
         out = []
         for member in _members(fill):
             step = copy.deepcopy(member["offer"].get("step") or {})
             pid = member["offer"].get("param")
             if pid and pid in params and "value" in step:
                 step["value"] = params[pid]
+            # A shared number read live, rather than a literal baked in.
+            if ref is not None and step.get("type") == "command":
+                step["value"] = dict(ref)
             out.append(step)
+        if len(out) > PARALLEL_AFTER:
+            return [{"type": "parallel", "branches": [[step] for step in out]}]
         return out
+
+    def value_ref(self, slot: Optional[str]) -> Optional[Dict[str, Any]]:
+        """A value slot's live reference, for a command step to carry."""
+        fill = self.fills.get(slot) if slot else None
+        if not fill:
+            return None
+        member = _members(fill)[0]
+        return dict(member["offer"].get("ref")
+                    or {"ref": member["ieee"],
+                        "attribute": member["offer"].get("attribute") or "value"})
 
     def condition(self, slot: str, member: Dict[str, Any]) -> Dict[str, Any]:
         """One device's condition for a slot, at this compile's parameters."""
@@ -379,17 +401,23 @@ def compile_rule(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
 
 # Sentences
 
-def _render_label(offer: Dict[str, Any], params: Dict[str, Any]) -> str:
+def _render_label(offer: Dict[str, Any], params: Dict[str, Any],
+                  value_text: Optional[str] = None) -> str:
     """An offer's sentence, re-rendered at this pattern's parameters.
 
     Offers are built with the vocabulary defaults, so a pattern raising `cold_c`
     to 5 would otherwise describe itself as firing at 18 while compiling a rule
     that fires at 5 — and the same for a trend's window or a date range.
+
+    `value_text` names where a value is read from instead — "set Lounge TRV to
+    Comfort temperature" — for a step carrying a live reference.
     """
     template = offer.get("label_template")
     if not template:
         return offer["label"]
     text = template
+    if value_text is not None:
+        text = text.replace("{value}", value_text)
     pid = offer.get("param")
     if pid and pid in params:
         text = text.replace("{value}", param_display(pid, params[pid]))
@@ -435,12 +463,17 @@ def describe_candidate(pattern: Dict[str, Any],
         spec = slots.get(slot) or {}
         params = effective_params(pattern, slot=slot)
         members = _members(fill)
-        texts = [_render_label(m["offer"], params) for m in members]
+        source = fills.get(spec.get("value_from_slot") or "")
+        shown = _members(source)[0]["device"]["name"] if source else None
+        texts = [_render_label(m["offer"], params, shown) for m in members]
         if joiner is None and spec.get("collect") and len(texts) > 1:
             # A group reads in brackets, as the builder's humanizer shows one:
             # "leaves and (A is open, B is open or C is open)" is not ambiguous.
             logic = spec.get("collect_logic", "or")
             text = f"({', '.join(texts[:-1])} {logic} {texts[-1]})"
+        elif spec.get("collect") and len(texts) > PARALLEL_AFTER:
+            # Twelve "turn off …" clauses is a list, not a sentence.
+            text = f"{', '.join(texts[:2])} and {len(texts) - 2} more"
         else:
             text = (joiner or ", ").join(texts)
         if spec.get("sustain") is not None:

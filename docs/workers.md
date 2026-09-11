@@ -198,6 +198,28 @@ acting on a stale or invented number.
 
 ---
 
+## Suggested by the swarm
+
+The Suggested sub-tab (`docs/swarm-intelligence.md`) reads workers like any
+device, and can propose the ones a household tends to want:
+
+| Worker | Type | What the suggestions do with it |
+|---|---|---|
+| House mode | mode: home, away, night, holiday | follows who is home; night at bedtime, home in the morning; night locks up and switches off; heating follows it; alerts while away; lights on holiday |
+| Comfort / Setback temperature | number | every heating schedule and mode rule reads them live |
+| Heating boost | timer | radiators up while it runs, back to comfort when it runs out |
+| Last movement | marker | marked by every motion sensor; an alert if nobody has moved for hours |
+| Door opens today | counter | counted per door, reset at midnight; a reminder when the doors have been busy |
+| Plants watered | marker | an evening reminder when it has not been marked for days |
+
+A worker you already have is used rather than duplicated: same type, and either
+the same id or a matching word in its name ("House Mode", "Comfort temp").
+Otherwise the card says **Also creates …**, and Create makes the worker first,
+then the rule. A suggestion made only of the hub and proposed workers — with
+nothing on the network in it — is never offered.
+
+---
+
 ## The chain limit
 
 A worker is both something a rule can set and something another rule triggers on,

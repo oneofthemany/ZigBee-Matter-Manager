@@ -863,6 +863,12 @@ class AutomationEngine:
         """MAX_RULES_PER_DEVICE, counted on every device a rule triggers on —
         each is evaluated on every update of that device, source or not."""
         for src in sources:
+            # Clock, startup and webhook rules all hang off TIME_SOURCE, which no
+            # device update ever arrives on. The cap bounds what one update costs
+            # to evaluate, so it does not apply there — and a household's
+            # schedules would otherwise run out at ten.
+            if src == TIME_SOURCE:
+                continue
             ids = [r for r in self._source_index.get(src, []) if r != exclude_rule_id]
             if len(ids) >= MAX_RULES_PER_DEVICE:
                 name = self._get_all_names().get(src, src)

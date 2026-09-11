@@ -226,15 +226,40 @@ def register_swarm_routes(app: FastAPI,
         if body.get("name"):
             rule["name"] = str(body["name"])[:100]
 
+        # Workers the rule needs and the house does not have are created first,
+        # so the rule's source and targets exist when the engine checks them.
+        # A worker that appeared since the list was built is simply used.
+        manager, created = None, []
+        payloads = sg.worker_payloads(pattern, found, body.get("params"))
+        if payloads:
+            from modules.workers import get_worker_manager
+            manager = get_worker_manager()
+            if not manager:
+                raise HTTPException(503, "This suggestion needs a new worker, and "
+                                         "workers are unavailable")
+            for payload in payloads:
+                if manager.get(payload["id"]):
+                    continue
+                made = manager.create(payload)
+                if not made.get("success"):
+                    for wid in created:
+                        manager.delete(wid)
+                    raise HTTPException(409, f"Could not create the worker "
+                                             f"{payload['name']}: {made.get('error')}")
+                created.append(payload["id"])
+
         result = e.add_rule(rule)
         if not result.get("success"):
+            # A worker made only for this rule should not outlive its refusal.
+            for wid in created:
+                manager.delete(wid)
             # The engine rejected a rule this layer validated, which means the
             # two disagree — worth surfacing loudly rather than as a bare 400.
             logger.error(f"Suggestion {suggestion_id} passed swarm validation but "
                          f"the engine rejected it: {result.get('error')}")
             raise HTTPException(400, result.get("error"))
         return {"success": True, "rule": result["rule"],
-                "suggestion_id": suggestion_id}
+                "suggestion_id": suggestion_id, "workers_created": created}
 
     @app.get("/api/swarm/coverage", tags=["swarm"])
     async def coverage_report():
