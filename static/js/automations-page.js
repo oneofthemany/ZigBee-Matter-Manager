@@ -302,6 +302,8 @@ function _renderPage(container, devices) {
                 </select>
                 <button class="btn btn-sm btn-outline-secondary" id="ap-expand-btn" onclick="window._apExpandAll()" title="Expand all"><i class="fas fa-angles-down"></i></button>
                 <button class="btn btn-sm btn-outline-secondary" onclick="window._apRefresh()"><i class="fas fa-sync-alt"></i></button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('ap-import-file').click()" title="Add rules from a downloaded JSON file"><i class="fas fa-file-import"></i> Import</button>
+                <input type="file" id="ap-import-file" accept="application/json,.json" hidden onchange="window._apImport(this)">
                 <button class="btn btn-sm btn-success" onclick="window._apCreate()"><i class="fas fa-plus"></i> New Rule</button>
             </div>
         </div>
@@ -323,7 +325,7 @@ function _renderPage(container, devices) {
                     <div class="form-text mt-0 mb-1">The device the rule starts from. Each trigger condition can read a different device, combined with <strong>Match ALL</strong> or <strong>Match ANY</strong>.</div>
                     <select class="form-select form-select-sm" id="ap-source-select" onchange="window._apSourceSelected(this.value)">
                         <option value="">Select a trigger…</option>
-                        <option value="__time__">⏰ Time / Alarm (no device)</option>
+                        <option value="__time__">⏰ Time / event — no device (alarm, date, webhook, startup)</option>
                         ${devices.map(d => `<option value="${d.ieee}">${d.friendly_name}</option>`).join('')}
                     </select>
                 </div>
@@ -474,6 +476,7 @@ function _ruleCard(rule, src) {
             <span class="ap-csum">When ${csumTrig} → ${nActs} action${nActs === 1 ? '' : 's'}</span>
             ${stateChip}
             <span class="ap-crow-btns" onclick="event.stopPropagation()">
+                <button class="btn btn-sm btn-outline-success py-0" onclick="window._apRun('${rule.id}', this)" title="Run its THEN steps now"><i class="fas fa-circle-play"></i></button>
                 <button class="btn btn-sm btn-outline-secondary py-0" onclick="window._apTrace('${rule.id}')" title="Trace"><i class="fas fa-search"></i></button>
                 <button class="btn btn-sm btn-outline-primary py-0" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'} py-0" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
@@ -496,6 +499,8 @@ function _ruleCard(rule, src) {
         <div class="ap-foot">
             <button class="btn btn-sm btn-outline-secondary" onclick="window._apToggleExpand('${rule.id}')" title="Collapse"><i class="fas fa-chevron-up"></i></button>
             <span class="spacer"></span>
+            <button class="btn btn-sm btn-outline-success" onclick="window._apRun('${rule.id}', this)" title="Run its THEN steps now"><i class="fas fa-circle-play"></i> Run now</button>
+            <button class="btn btn-sm btn-outline-info" onclick="window._aDownloadJson('${rule.id}')" title="Download as JSON, to import elsewhere"><i class="fas fa-download"></i></button>
             <button class="btn btn-sm btn-outline-secondary" onclick="window._apTrace('${rule.id}')" title="Trace"><i class="fas fa-search"></i> Trace</button>
             <button class="btn btn-sm btn-outline-primary" onclick="window._apEdit('${rule.id}')" title="Edit"><i class="fas fa-edit"></i> Edit</button>
             <button class="btn btn-sm btn-outline-${en ? 'warning' : 'success'}" onclick="window._apToggle('${rule.id}')" title="${en ? 'Disable' : 'Enable'}"><i class="fas fa-${en ? 'pause' : 'play'}"></i></button>
@@ -744,3 +749,43 @@ window._apEdit = _apEdit;
 window._apCloseEdit = _apCloseEdit;
 window._apToggle = _apToggle;
 window._apDelete = _apDelete;
+
+/** Run a rule's THEN steps now, as a test. Its matched state is left alone. */
+window._apRun = async (ruleId, btn) => {
+    await withBusy(btn, async () => {
+        try {
+            const res = await fetch(`/api/automations/${encodeURIComponent(ruleId)}/run`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || 'Could not run it');
+            showToast('Running its steps now', 'success');
+        } catch (e) {
+            showToast(e.message, 'danger');
+        }
+    });
+};
+
+/**
+ * Import rules from a JSON file as Download produces it — one rule, a list, or
+ * {"rules": [...]}. Each becomes a new rule; ones naming a device this hub
+ * doesn't have are reported rather than half-imported.
+ */
+window._apImport = async (input) => {
+    const file = input.files && input.files[0];
+    input.value = '';                       // choosing the same file again still fires
+    if (!file) return;
+    try {
+        const payload = JSON.parse(await file.text());
+        const res = await fetch('/api/automations/import', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Nothing could be imported');
+        const skipped = (data.results || []).filter(r => !r.success);
+        showToast(`Imported ${data.imported} rule${data.imported === 1 ? '' : 's'}`
+                  + (skipped.length ? ` — ${skipped.length} skipped: ${skipped[0].error}` : ''),
+                  skipped.length ? 'warning' : 'success');
+        await loadAutomationsPage();
+    } catch (e) {
+        showToast(`Import failed: ${e.message}`, 'danger');
+    }
+};

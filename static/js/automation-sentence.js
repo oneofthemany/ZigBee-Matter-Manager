@@ -144,6 +144,20 @@ export function createHumanizer(ctx = {}) {
         return `${m} min`;
     }
 
+    const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    // "1 Dec" for a yearly MM-DD, "1 Dec 2026" for a YYYY-MM-DD.
+    function dateText(v) {
+        const p = String(v || '').split('-').map(Number);
+        return p.length === 2 ? `${p[1]} ${MONTH[p[0] - 1] || '?'}`
+                              : `${p[2]} ${MONTH[p[1] - 1] || '?'} ${p[0]}`;
+    }
+    function datePhrase(c) {
+        const yearly = String(c.from || '').length === 5;
+        return `between <b>${esc(dateText(c.from))}</b> and <b>${esc(dateText(c.to))}</b>${yearly ? ', every year' : ''}`;
+    }
+    // The end of a webhook id — enough to tell two apart, not the whole secret-looking string.
+    const hookTail = c => esc(String(c.hook || '').slice(-6));
+
     function offlineVerb(c) {
         return c.minutes ? `has not reported for <b>${fmtMin(c.minutes)}</b>` : 'goes offline';
     }
@@ -171,6 +185,14 @@ export function createHumanizer(ctx = {}) {
         if (c.type === 'time')
             return { icon: 'time', text: `the time is <b>${esc(c.at)}</b>, ${daySpan(c.days)}`,
                      raw: `time ${c.at}` };
+        if (c.type === 'date')
+            return { icon: 'time', text: `${c.negate ? "it isn't " : "it's "}${datePhrase(c)}`,
+                     raw: `date ${c.from}–${c.to}` };
+        if (c.type === 'webhook')
+            return { icon: 'unknown', text: `its webhook is called <span class="ap-raw">…${hookTail(c)}</span>`,
+                     raw: `webhook ${c.hook}` };
+        if (c.type === 'startup')
+            return { icon: 'unknown', text: 'the hub starts', raw: 'startup' };
         if (c.type === 'sun')
             return { icon: 'time', text: `🌅 it's between ${esc(c.from)} and ${esc(c.to)}`,
                      raw: `sun ${c.from}→${c.to}` };
@@ -207,6 +229,12 @@ export function createHumanizer(ctx = {}) {
         if (p.type === 'time_window')
             return { text: `${neg}${timePhrase(p.time_from, p.time_to)}, ${daySpan(p.days)}`,
                      raw: `time_window ${p.time_from}–${p.time_to}` };
+        if (p.type === 'date')
+            return { text: `${neg}${datePhrase(p)}`, raw: `date ${p.from}–${p.to}` };
+        if (p.type === 'webhook')
+            return { text: `its webhook is called (…${hookTail(p)})`, raw: `webhook ${p.hook}` };
+        if (p.type === 'startup')
+            return { text: 'the hub starts', raw: 'startup' };
         if (p.type === 'sun')
             return { text: `${neg}🌅 between ${esc(p.from)} and ${esc(p.to)}`,
                      raw: `sun ${p.from}→${p.to}` };
@@ -231,6 +259,8 @@ export function createHumanizer(ctx = {}) {
             const dot = tok.lastIndexOf('.');
             if (dot <= 0) return whole;
             const dev = tok.slice(0, dot), attr = tok.slice(dot + 1);
+            if (dev === 'webhook')
+                return mark(`the webhook's ${esc(attr)}`);
             if (dev === 'trigger')
                 return mark(`the triggering device's ${esc(attrLabel('unknown', attr).toLowerCase())}`);
             const r = resolve(dev);
@@ -297,6 +327,10 @@ export function createHumanizer(ctx = {}) {
                     h += `<div class="ap-sub-head" style="margin-top:6px">…else:</div>${renderSeq(s.else_steps)}`;
                 h += `</div>`;
             }
+            else if (s.type === 'snapshot')
+                h += `<div class="ap-act"><i class="fas fa-camera"></i><span>remember how ${(s.targets || []).map(t => devSpan(t)).join(', ') || '…'} are, as “${esc(s.name || 'before')}”</span></div>`;
+            else if (s.type === 'restore')
+                h += `<div class="ap-act"><i class="fas fa-rotate-left"></i><span>put back what was remembered as “${esc(s.name || 'before')}”</span></div>`;
             else if (s.type === 'repeat') {
                 const conds = (s.inline_conditions || []).map(c =>
                     `${devSpan(c.ieee)} ${attrVerb(resolve(c.ieee).type, c.attribute, c.operator, c.value)}`)

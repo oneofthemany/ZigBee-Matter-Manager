@@ -350,5 +350,26 @@ check('placeholders read as what fills them',
       && filled.includes('‹the time›'), filled);
 check('braces that name nothing stay as written', filled.includes('{not a token}'), filled);
 
+section('dates, webhooks, startup, snapshot and restore');
+const xmasText = plainText(H.condPhrase({ type: 'date', from: '12-01', to: '01-06' }).text);
+check('a yearly date range reads as days of the year',
+      xmasText.includes('between 1 Dec and 6 Jan, every year'), xmasText);
+const datedText = plainText(H.triggerPhrase({ source_ieee: '__time__',
+  conditions: [{ type: 'date', from: '2026-09-01', to: '2026-09-30' }] }).text);
+check('a range of particular dates keeps its years',
+      datedText.includes('1 Sep 2026') && !datedText.includes('every year'), datedText);
+const hookText = plainText(H.triggerPhrase({ source_ieee: '__time__',
+  conditions: [{ type: 'webhook', hook: 'abcdef0123456789' }] }).text);
+check('a webhook trigger says so, with the end of its id',
+      hookText.includes('webhook') && hookText.includes('456789'), hookText);
+const bootText = plainText(H.triggerPhrase({ source_ieee: '__time__', conditions: [{ type: 'startup' }] }).text);
+check('a startup trigger reads plainly', bootText === 'the hub starts', bootText);
+const snapText = plainText(H.renderSeq([{ type: 'snapshot', targets: ['0xlight'], name: 'before' },
+                                        { type: 'restore', name: 'before' }]));
+check('snapshot names what it remembers', snapText.includes('remember how Light - Hallway are, as “before”'), snapText);
+check('restore names what it puts back', snapText.includes('put back what was remembered as “before”'), snapText);
+const whoText = plainText(H.renderSeq([{ type: 'request', to_user: 'sean', message: 'from {webhook.who}' }]));
+check('a webhook value reads as one', whoText.includes("‹the webhook's who›"), whoText);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

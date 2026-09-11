@@ -40,6 +40,12 @@ Rules track **matched/unmatched** state and only fire on transitions — not on 
 
 ![State machine diagram showing transitions between init, matched, and unmatched states](./images/state-machine-diagram.png)
 
+Each rule's matched/unmatched state is saved (to `data/automation_state.json`, a
+couple of seconds after it changes) and restored when the hub starts. A rule that
+was already true before a restart therefore does **not** run THEN again; one
+whose conditions stopped holding while the hub was down runs ELSE on its first
+evaluation, catching up. Only brand-new rules start at `init`.
+
 ### Rule Structure
 
 Every automation rule consists of four parts:
@@ -105,6 +111,9 @@ not from when it got dark. Changing or disabling the rule resets its clocks.
 | **Sun**       | Being between two sun/clock boundaries (tracks the seasons)        |
 | **Zone**      | A person entering or leaving a place — offered for presence users  |
 | **Offline**   | A device that has stopped reporting                                |
+| **Date**      | Being inside a range of days — every year, or on particular dates  |
+| **Webhook**   | An authenticated call to the rule's webhook URL                    |
+| **Startup**   | The hub starting                                                   |
 
 #### Zone: arriving and leaving
 
@@ -131,6 +140,36 @@ Leaving somewhere for "away" counts as a departure from that place; "away" and
 
 After a hub restart the engine restores where each person was, so the first
 crossing after a restart is still reported correctly.
+
+#### Date: seasons, holidays, particular days
+
+**Date** is a range of days, checked at midnight. With **every year** ticked it
+stores just the month and day, so *1 Dec → 6 Jan* is the festive season every
+year (a range may wrap over new year). Unticked, it is those particular dates.
+It supports NOT, and works as a prerequisite too — where, unlike Time/Day and
+Sun prerequisites, every date prerequisite must hold ("in December **and** after
+sunset", not "or").
+
+On the wire: `{"type": "date", "from": "12-01", "to": "01-06"}` or
+`{"type": "date", "from": "2026-12-20", "to": "2026-12-31"}`.
+
+#### Webhook and startup triggers
+
+- **Webhook** — the row shows a URL, `…/api/automations/webhook/<id>`; a `POST`
+  to it fires every enabled rule listening on that id. Copy it with the button.
+  It is authenticated like every other API call — send an API token as
+  `Authorization: Bearer <token>` — because a webhook can unlock a door; it is
+  never a public URL. A JSON object in the body is readable in message text as
+  `{webhook.key}`: posting `{"who": "Charlie"}` to a rule that messages
+  "{webhook.who} is at the gate" says "Charlie is at the gate".
+- **Startup** — fires once as the hub starts, a couple of seconds after devices
+  load: after a restart, an update, or a power cut. Good for "tell me the hub
+  restarted" or re-applying a state that a power cut may have lost.
+
+Both are moments, like a zone crossing: THEN runs, there is no ELSE, and they
+re-arm. Neither needs a device, so they suit the **Time / event** source in the
+New Rule panel; they can also sit alongside device conditions (a webhook **or**
+the button). A device's own updates never fire them.
 
 #### Change triggers: changes, rises, falls
 
@@ -264,6 +303,9 @@ Prerequisites check the current state of **other devices** before the rule fires
 
 Example: Only fire if the hallway light is currently OFF.
 
+Prerequisites can also be **Time/Day**, **Sun** or **Date**. Time/Day and Sun
+prerequisites are alternatives (any one will do); Date prerequisites must all hold.
+
 ### Step 3: THEN Sequence
 
 Action steps that execute when conditions transition from unmatched → matched.
@@ -385,6 +427,20 @@ Disabling, deleting or restarting the rule stops a repeat mid-pass. (Cancelling
 a rule used not to reach steps nested inside If / Else or Together at all: the
 sequence carried on with its next step. It now stops everything.)
 
+### Snapshot and Restore
+
+**Snapshot** remembers how devices are right now — on or off, brightness, colour
+temperature, and a cover's position — under a name (default *before*). A later
+**Restore** step in the same rule with that name puts them back: a light that
+was on comes back on at its brightness and colour; one that was off goes off.
+A group is remembered as the devices in it.
+
+*Flash the hall lights for the doorbell, then put them back*: Snapshot hall
+lights → Repeat 3 times (off, wait 1 s, on, wait 1 s) → Restore.
+
+Snapshots are kept in memory per rule, so a restart forgets them, and a Restore
+with nothing remembered under its name does nothing but say so in the trace.
+
 ### Live values in messages
 
 **Message**, **Ask First** and **Announce** text can include placeholders, filled
@@ -396,6 +452,7 @@ in when the step runs. The **＋ value** picker beside the text inserts them:
 | `{trigger}` | the name of the device whose update fired the rule |
 | `{trigger.temperature}` | that device's `temperature`, read as the step runs |
 | `{<device id>.humidity}` | any device's value — `{0x00158d0001a2b3c4.humidity}`, `{group:3.state}`, `{worker::comfort_temp.value}` |
+| `{webhook.key}` | a value from the JSON body posted to the rule's webhook |
 
 `{trigger}` is what makes one rule with several trigger devices speak precisely:
 *{trigger} was left open* names whichever door it was. A clock-fired rule, or a
@@ -433,6 +490,7 @@ Each saved rule displays as a card showing conditions, prerequisites, sequence s
 | ⏻      | Enable / disable                     |
 | 🗑️    | Delete the rule                      |
 | ⬇️     | Download rule as JSON                |
+| ▶      | Run its THEN steps now (a test)      |
 
 ---
 
@@ -443,6 +501,24 @@ Each rule can be downloaded as a JSON file via the download button on the rule c
 ![Download button on rule card and example JSON file](./images/json-download.png)
 
 ---
+
+## Import
+
+**Import** on the Automations tab takes a JSON file as **Download** produces it —
+one rule, a list of rules, or `{"rules": [...]}` — so a rule can move between
+hubs or come back from a copy. Each becomes a **new** rule with a new id
+(importing a file twice makes two copies), validated exactly as if it had been
+built by hand. A rule naming a device this hub doesn't have is skipped and
+reported, not half-imported. The API is `POST /api/automations/import`, up to
+100 rules at a time.
+
+## Run now
+
+**▶ Run now** on a rule card runs its THEN steps immediately, as a test — the
+conditions are not checked and the rule's matched/unmatched state is left
+alone, so it doesn't change what the rule does next. It works on a disabled rule
+too, and follows the rule's run mode. The API is
+`POST /api/automations/<rule id>/run` (add `?path=else` for the ELSE steps).
 
 ## Trace Log
 

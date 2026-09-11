@@ -7,7 +7,7 @@ delegate validation to the engine.
 import logging
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ class ConditionItem(BaseModel):
     within: Optional[float] = None
     # offline condition: minutes without a report (absent = the hub's verdict)
     minutes: Optional[float] = None
+    # webhook condition: the id in /api/automations/webhook/<hook> (made if absent)
+    hook: Optional[str] = None
     negate: bool = False
     time_from: Optional[str] = None
     time_to: Optional[str] = None
@@ -124,6 +126,12 @@ def _conds_to_dicts(items):
             r.append(d)
         elif c.type == "sun":
             r.append(_sun_dict(c))
+        elif c.type == "date":
+            r.append({"type": "date", "from": c.sun_from, "to": c.sun_to, "negate": c.negate})
+        elif c.type == "webhook":
+            r.append({"type": "webhook", "hook": c.hook})
+        elif c.type == "startup":
+            r.append({"type": "startup"})
         elif c.type == "offline":
             d = {"type": "offline"}
             if c.minutes: d["minutes"] = c.minutes
@@ -149,6 +157,9 @@ def _prereqs_to_dicts(items):
                 "days": p.days if p.days is not None else list(range(7)),
                 "negate": p.negate,
             })
+        elif p.type == "date":
+            result.append({"type": "date", "from": p.sun_from, "to": p.sun_to,
+                           "negate": p.negate})
         elif p.type == "sun":
             result.append(_sun_dict(p))
         else:
@@ -235,6 +246,55 @@ def register_automation_routes(app: FastAPI,
         if not e: raise HTTPException(503)
         result = e.delete_rule(rule_id)
         if not result.get("success"): raise HTTPException(404, result.get("error"))
+        return result
+
+    # Import, webhooks, run by hand
+
+    @app.post("/api/automations/import", tags=["automations"])
+    async def import_rules(payload: Any = Body(...)):
+        """Add rules from JSON as Download produces it — one rule, a list, or
+        {"rules": [...]}. Each gets a new id; any that fail validation are
+        reported and skipped."""
+        e = ge()
+        if not e:
+            raise HTTPException(503)
+        result = e.import_rules(payload)
+        if not result.get("imported"):
+            errors = [r.get("error") for r in result.get("results", []) if r.get("error")]
+            raise HTTPException(400, result.get("error") or "; ".join(errors) or "Nothing to import")
+        return result
+
+    @app.post("/api/automations/webhook/{hook}", tags=["automations"])
+    async def webhook(hook: str, request: Request):
+        """Fire every enabled rule with a webhook condition on this id.
+
+        Authenticated like every other /api call (an API token as
+        Authorization: Bearer …) — a webhook can unlock a door, so it is not
+        public. A JSON object body is readable in message text as {webhook.key}.
+        """
+        e = ge()
+        if not e:
+            raise HTTPException(503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        result = e.fire_webhook(hook, payload if isinstance(payload, dict) else {})
+        if not result.get("success"):
+            raise HTTPException(404, result.get("error"))
+        return result
+
+    @app.post("/api/automations/{rule_id}/run", tags=["automations"])
+    async def run_now(rule_id: str, path: str = "then"):
+        """Run a rule's THEN (or ELSE, ?path=else) steps now, as a test. The
+        rule's matched state is left alone."""
+        e = ge()
+        if not e:
+            raise HTTPException(503)
+        result = e.run_now(rule_id, path)
+        if not result.get("success"):
+            err = result.get("error", "")
+            raise HTTPException(404 if "not found" in err.lower() else 409, err)
         return result
 
     # Offers — a message that can act, awaiting an answer.

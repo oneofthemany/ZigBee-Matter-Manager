@@ -50,12 +50,17 @@ _chain_depth: ContextVar[int] = ContextVar("zmm_automation_chain_depth",
 # inherits it from the evaluation that started it, queued runs included.
 _trigger_ieee: ContextVar[Optional[str]] = ContextVar("zmm_automation_trigger",
                                                       default=None)
+# The moment being evaluated when it is not a device update: {"kind": "webhook",
+# "hook": ..., "payload": {...}} or {"kind": "startup"}. Webhook and startup
+# conditions pass only inside it, and message text reads {webhook.key} from it.
+_event: ContextVar[Optional[Dict[str, Any]]] = ContextVar("zmm_automation_event",
+                                                          default=None)
 
 # Virtual source for clock-driven rules ("play radio at 07:00"), which fire from
 # the time-boundary scheduler rather than any device update.
 TIME_SOURCE = "__time__"
 # Condition types that are time/astronomy based (no device attribute to watch).
-TEMPORAL_TYPES = ("time_window", "sun", "time")
+TEMPORAL_TYPES = ("time_window", "sun", "time", "date")
 
 # A presence user's location lives in one attribute: "home", "away", "unknown",
 # or a place id. Zone conditions are edge-triggered, so they need the value moved
@@ -128,6 +133,27 @@ REPEAT_MODES = ("count", "while", "until")
 MAX_REPEAT_COUNT = 500
 DEFAULT_REPEAT_MAX = 20
 
+# Event conditions: a moment that is not a device update. webhook — an API call
+# to /api/automations/webhook/<hook>; startup — the hub starting. Both are
+# edge-triggered, like a zone crossing.
+EVENT_TYPES = ("webhook", "startup")
+EDGE_TYPES = ("zone",) + EVENT_TYPES
+WEBHOOK_HOOK = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+# Snapshot / restore: what is remembered of each device, and for how many.
+SNAPSHOT_KEYS = ("state", "on", "brightness", "color_temp", "position")
+MAX_SNAPSHOT_TARGETS = 32
+
+# Rule matched/unmatched state is saved beside the rules, a moment after it
+# changes, so a restart does not re-run THEN for rules that were already true.
+STATE_SAVE_DELAY = 2.0
+
+# Import: how many rules one file may add, and the top-level keys a downloaded
+# rule carries that describe its old identity or the listing rather than the rule.
+MAX_IMPORT_RULES = 100
+IMPORT_DROP_KEYS = frozenset({"id", "created", "updated", "disabled_reason",
+                              "source_name", "sources"})
+
 
 def iter_leaf_conditions(conditions):
     """Every plain condition in a condition list, looking inside groups.
@@ -175,7 +201,7 @@ VALID_COMMANDS = {
 }
 
 FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "request",
-                   "offer"}
+                   "offer", "snapshot", "restore"}
 
 # An offer is a message that can act: it asks somebody, and runs a stored
 # sequence only if they say yes. Pending offers are held in memory and are
@@ -223,6 +249,9 @@ class AutomationEngine:
         # (rule_id, leaf index) -> last offline verdict, so the minute-by-minute
         # pass only evaluates a rule when a device's status actually moved.
         self._offline_verdicts: Dict[tuple, bool] = {}
+        # (rule_id, name) -> {ieee: remembered state}, for snapshot / restore.
+        self._snapshots: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+        self._state_save_pending = False
         self._rule_states: Dict[str, Optional[str]] = {}
         # Per source device, its state as of the previous evaluation: by the time
         # evaluate() runs device.state already holds the new value, so zone
@@ -255,6 +284,7 @@ class AutomationEngine:
         }
 
         self._load_rules()
+        self._load_rule_states()
         logger.info(f"Automation engine initialised with {len(self.rules)} rule(s)")
 
     def set_media_service_getter(self, getter: Callable) -> None:
@@ -301,6 +331,8 @@ class AutomationEngine:
 
     async def stop(self):
         """Stop background tasks."""
+        if self._state_save_pending:
+            self._save_rule_states()
         for task in list(self._sustain_timers.values()):
             task.cancel()
         self._sustain_timers.clear()
@@ -328,6 +360,8 @@ class AutomationEngine:
         # day's "leaves work".
         self._seed_last_values()
         await self._evaluate_timed_rules()
+        # Once per start, after devices have loaded.
+        self._evaluate_startup_rules()
 
         while True:
             try:
@@ -407,7 +441,7 @@ class AutomationEngine:
         changing — rather than on a state? Such a rule runs THEN on the moment,
         never reads "nothing happened right now" as the opposite (so no ELSE),
         and re-arms after firing."""
-        return any(c.get("type") == "zone" or c.get("operator") in CHANGE_OPERATORS
+        return any(c.get("type") in EDGE_TYPES or c.get("operator") in CHANGE_OPERATORS
                    for c in iter_leaf_conditions(conditions))
 
     @staticmethod
@@ -423,7 +457,8 @@ class AutomationEngine:
         A condition may name its own device in `ieee`; without one it reads the
         rule's source, which is how every rule saved before multi-source reads.
         """
-        if cond.get("type", "attribute") in TEMPORAL_TYPES:
+        ctype = cond.get("type", "attribute")
+        if ctype in TEMPORAL_TYPES or ctype in EVENT_TYPES:
             return None
         return cond.get("ieee") or rule.get("source_ieee")
 
@@ -458,6 +493,8 @@ class AutomationEngine:
                     b.add(self._plus_one_minute(at))
             elif ct == "sun":
                 b.update(self._sun_boundary_hhmm(c))
+            elif ct == "date":
+                b.add("00:00")                  # a date range changes at midnight
         b.discard(None)
         return b
 
@@ -679,7 +716,7 @@ class AutomationEngine:
             # A clock condition reads no device, so an ieee on one is dropped.
             if "ieee" in c:
                 src = str(c.get("ieee") or "").strip()
-                if ctype in TEMPORAL_TYPES or not src:
+                if ctype in TEMPORAL_TYPES or ctype in EVENT_TYPES or not src:
                     c.pop("ieee", None)
                 elif src.startswith("group:"):
                     return (f"Condition {i+1}: a group can't trigger a rule — it "
@@ -726,6 +763,18 @@ class AutomationEngine:
                 # One place stays a plain string — a list is only meaningful
                 # when it groups several into a single zone.
                 c["place"] = places[0] if len(places) == 1 else places
+            elif ctype == "date":
+                err = self._validate_date(c, f"Condition {i+1}")
+                if err:
+                    return err
+            elif ctype == "webhook":
+                hook = str(c.get("hook") or "").strip() or uuid.uuid4().hex
+                if not WEBHOOK_HOOK.match(hook):
+                    return (f"Condition {i+1} (webhook): the id must be 8-64 letters, "
+                            f"digits, '-' or '_'")
+                c["hook"] = hook
+            elif ctype == "startup":
+                pass
             elif ctype == "offline":
                 m = c.get("minutes")
                 if m in (None, "", 0):
@@ -788,7 +837,7 @@ class AutomationEngine:
         devices = self._get_all_devices()
         for i, c in enumerate(iter_leaf_conditions(conds)):
             ctype = c.get("type", "attribute")
-            if ctype in TEMPORAL_TYPES:
+            if ctype in TEMPORAL_TYPES or ctype in EVENT_TYPES:
                 continue
             src = c.get("ieee") or source_ieee
             if src == TIME_SOURCE:
@@ -830,6 +879,10 @@ class AutomationEngine:
                         return f"Prerequisite {i+1} (time_window) missing '{f}'"
                     if not re.match(r"^\d{2}:\d{2}$", str(p[f])):
                         return f"Prerequisite {i+1} '{f}' must be HH:MM"
+            elif ptype == "date":
+                err = self._validate_date(p, f"Prerequisite {i+1}")
+                if err:
+                    return err
             elif ptype == "sun":
                 err = self._validate_sun(p, f"Prerequisite {i+1}")
                 if err:
@@ -855,6 +908,35 @@ class AutomationEngine:
         for f in ("offset_from", "offset_to"):
             if f in c and not isinstance(c[f], (int, float)):
                 return f"{label} sun '{f}' must be a number of minutes"
+        return None
+
+    @staticmethod
+    def _validate_date(c: Dict, label: str) -> Optional[str]:
+        """A date range: both ends MM-DD (the same days every year, wrapping
+        over new year) or both YYYY-MM-DD (particular dates)."""
+        import datetime
+
+        def kind(v: str) -> Optional[str]:
+            try:
+                if re.fullmatch(r"\d{2}-\d{2}", v):
+                    datetime.date.fromisoformat(f"2024-{v}")    # a leap year: 02-29 is fine
+                    return "yearly"
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                    datetime.date.fromisoformat(v)
+                    return "dated"
+            except ValueError:
+                return None
+            return None
+
+        f, t = str(c.get("from") or ""), str(c.get("to") or "")
+        kf, kt = kind(f), kind(t)
+        if not kf or not kt:
+            return (f"{label} date 'from' and 'to' must be MM-DD (every year) "
+                    f"or YYYY-MM-DD")
+        if kf != kt:
+            return f"{label} date: 'from' and 'to' must both be MM-DD or both YYYY-MM-DD"
+        if kf == "dated" and t < f:
+            return f"{label} date: 'to' is before 'from'"
         return None
 
     def _validate_sequence(self, steps: List[Dict], label: str, depth: int = 0) -> Optional[str]:
@@ -945,6 +1027,12 @@ class AutomationEngine:
                 if err: return err
                 err = self._validate_sequence(step.get("else_steps", []), f"{label}[{i+1}].else", depth + 1)
                 if err: return err
+            elif st == "snapshot":
+                targets = step.get("targets")
+                if not isinstance(targets, list) or not [t for t in targets if t]:
+                    return f"{label}[{i+1}]: snapshot needs devices to remember"
+                if len(targets) > MAX_SNAPSHOT_TARGETS:
+                    return f"{label}[{i+1}]: snapshot: max {MAX_SNAPSHOT_TARGETS} devices"
             elif st == "repeat":
                 mode = step.get("mode", "count")
                 if mode not in REPEAT_MODES:
@@ -1029,11 +1117,12 @@ class AutomationEngine:
             # Clock-triggered rule: it has no physical source device, so it must
             # carry a temporal condition or a condition on a device whose
             # updates can move it.
-            if not any(c.get("type") in TEMPORAL_TYPES or c.get("ieee")
-                       for c in iter_leaf_conditions(conditions)):
+            if not any(c.get("type") in TEMPORAL_TYPES or c.get("type") in EVENT_TYPES
+                       or c.get("ieee") for c in iter_leaf_conditions(conditions)):
                 return {"success": False,
-                        "error": "Time/alarm rule needs a time, alarm, or sun "
-                                 "condition, or a condition on a device"}
+                        "error": "A rule with no source device needs a time, alarm, "
+                                 "sun, date, webhook or startup condition, or a "
+                                 "condition on a device"}
         elif source not in self._get_all_devices():
             return {"success": False, "error": f"Source not found: {source}"}
 
@@ -1116,6 +1205,7 @@ class AutomationEngine:
                 self._cancel_sequence(rule_id)
                 self._rule_states.pop(rule_id, None)
                 self._clear_sustains(rule_id)
+                self._persist_states_soon()
         if "cooldown" in updates:
             rule["cooldown"] = max(0, int(updates["cooldown"]))
 
@@ -1133,6 +1223,8 @@ class AutomationEngine:
         self.rules.remove(rule)
         self._cooldowns.pop(rule_id, None)
         self._rule_states.pop(rule_id, None)
+        self._persist_states_soon()
+        self._snapshots = {k: v for k, v in self._snapshots.items() if k[0] != rule_id}
         self._clear_sustains(rule_id)
         self._rebuild_index()
         self._save_rules()
@@ -1253,6 +1345,10 @@ class AutomationEngine:
                     continue
             elif any(self._cond_source(rule, c) for c in leaves):
                 continue
+            elif leaves and all(c.get("type") in EVENT_TYPES for c in leaves):
+                # Webhooks and startup fire from their own entry points; no
+                # device update is ever one of them.
+                continue
 
             view = self._condition_view(rule, devices, source_ieee, changed_data,
                                         full_state, prev_values)
@@ -1315,6 +1411,8 @@ class AutomationEngine:
 
         # TRANSITION
         self._rule_states[rule_id] = new_state
+        if prev_state != new_state:
+            self._persist_states_soon()
 
         # A zone or change rule triggers on a moment, not on a state. "No
         # crossing (or no change) right now" is not the opposite moment, so an
@@ -1376,6 +1474,305 @@ class AutomationEngine:
         if edge or any(c.get("attribute") in EVENT_ATTRS
                            for c in iter_leaf_conditions(conditions)):
             self._rule_states[rule_id] = "unmatched"
+            self._persist_states_soon()
+
+    # RUN BY HAND, WEBHOOKS, STARTUP
+
+    def run_now(self, rule_id: str, path: str = "then") -> Dict[str, Any]:
+        """Run a rule's THEN (or ELSE) steps now, as a test.
+
+        The rule's matched/unmatched state is left alone — this is a run, not
+        a transition — and its run mode still applies. Works on a disabled rule
+        too, which is when a test is most often wanted.
+        """
+        rule = self._find_rule(rule_id)
+        if not rule:
+            return {"success": False, "error": f"Not found: {rule_id}"}
+        path = str(path or "then").upper()
+        if path not in ("THEN", "ELSE"):
+            return {"success": False, "error": "path must be 'then' or 'else'"}
+        seq = rule.get("then_sequence" if path == "THEN" else "else_sequence") or []
+        if not seq:
+            return {"success": False, "error": f"The rule has no {path} steps"}
+        name = rule.get("name") or rule_id
+        self._trace(rule_id, "manual", "MANUAL_RUN", f"▶ {path} run by hand — {name}")
+        ctx = _trigger_ieee.set(self._default_trigger(rule))
+        try:
+            started = self._start_sequence(rule, seq, path)
+        finally:
+            _trigger_ieee.reset(ctx)
+        if not started:
+            return {"success": False,
+                    "error": "Not started: the rule is still running and its run mode drops repeats"}
+        return {"success": True, "rule_id": rule_id, "path": path}
+
+    def fire_webhook(self, hook: str,
+                     payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """A call to /api/automations/webhook/<hook>: evaluate every enabled rule
+        with a webhook condition on that id. The JSON body is readable in
+        message text as {webhook.key}."""
+        hook = str(hook or "")
+        rules = [r for r in self.rules if r.get("enabled", True) and any(
+            c.get("type") == "webhook" and str(c.get("hook")) == hook
+            for c in iter_leaf_conditions(r.get("conditions")))]
+        if not rules:
+            return {"success": False, "error": "No enabled rule listens on that webhook"}
+        for rule in rules:
+            self._trace(rule["id"], "entry", "WEBHOOK", f"Webhook …{hook[-6:]} called",
+                        level="DEBUG")
+        self._fire_event_rules(rules, {"kind": "webhook", "hook": hook,
+                                       "payload": payload if isinstance(payload, dict) else {}})
+        return {"success": True, "rules": [r["id"] for r in rules]}
+
+    def _evaluate_startup_rules(self) -> None:
+        """Evaluate rules with a startup condition, once, as the hub comes up."""
+        rules = [r for r in self.rules if r.get("enabled", True) and any(
+            c.get("type") == "startup" for c in iter_leaf_conditions(r.get("conditions")))]
+        if rules:
+            self._fire_event_rules(rules, {"kind": "startup"})
+
+    def _fire_event_rules(self, rules, event) -> None:
+        now = time.time()
+        devices = self._get_all_devices()
+        names = self._get_all_names()
+        # Set around the evaluation, so the sequences it starts inherit it.
+        ctx = _event.set(event)
+        try:
+            for rule in rules:
+                self._evaluate_rule(rule, devices, names, now,
+                                    self._condition_view(rule, devices))
+        finally:
+            _event.reset(ctx)
+
+    def _eval_event(self, cond, i):
+        """webhook / startup: true only inside the evaluation their own entry
+        point runs (fire_webhook, _evaluate_startup_rules)."""
+        event = _event.get() or {}
+        ctype = cond.get("type")
+        if ctype == "webhook":
+            matched = event.get("kind") == "webhook" and event.get("hook") == cond.get("hook")
+        else:
+            matched = event.get("kind") == "startup"
+        result = {"index": i + 1, "type": ctype, "result": "PASS" if matched else "FAIL"}
+        if ctype == "webhook":
+            result["hook"] = cond.get("hook")
+        if not matched:
+            result["reason"] = "not what started this evaluation"
+        return matched, result, False
+
+    @staticmethod
+    def _date_matches(cond, today) -> bool:
+        """Is `today` inside the condition's date range (then NOT, if asked)?
+        MM-DD ends are every year and may wrap over new year."""
+        import datetime
+        f, t = str(cond.get("from") or ""), str(cond.get("to") or "")
+        if len(f) == 10:
+            try:
+                matched = (datetime.date.fromisoformat(f) <= today
+                           <= datetime.date.fromisoformat(t))
+            except ValueError:
+                matched = False
+        else:
+            key = today.strftime("%m-%d")
+            matched = (f <= key <= t) if f <= t else (key >= f or key <= t)
+        return (not matched) if cond.get("negate") else matched
+
+    # SNAPSHOT / RESTORE
+
+    def _expand_target(self, target: str) -> List[str]:
+        """A device id as itself; a group as the devices in it."""
+        if not target.startswith("group:"):
+            return [target]
+        gm = self._get_group_manager() if self._get_group_manager else None
+        try:
+            gid = int(target.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return []
+        if not gm or gid not in gm.groups:
+            return []
+        return [str(m) for m in gm.groups[gid].get("members", [])]
+
+    def _step_snapshot(self, rule_id, step, tag) -> None:
+        """Remember how devices are now — on/off, brightness, colour, position —
+        so a later restore step in this rule can put them back."""
+        name = str(step.get("name") or "default")[:40]
+        taken: Dict[str, Dict[str, Any]] = {}
+        for target in step.get("targets") or []:
+            for ieee in self._expand_target(str(target)):
+                _, state = self._resolve_state(ieee)
+                kept = {k: state[k] for k in SNAPSHOT_KEYS if state and k in state}
+                if kept:
+                    taken[ieee] = kept
+        self._snapshots[(rule_id, name)] = taken
+        self._trace(rule_id, "step", "SNAPSHOT",
+                    f"{tag} 📸 remembered {len(taken)} device(s) as '{name}'")
+
+    async def _step_restore(self, rule_id, step, tag) -> None:
+        """Put devices back the way a snapshot in this rule remembered them."""
+        name = str(step.get("name") or "default")[:40]
+        snap = self._snapshots.get((rule_id, name))
+        if snap is None:
+            self._trace(rule_id, "step", "RESTORE_SKIP",
+                        f"{tag} nothing remembered as '{name}' yet", level="WARNING")
+            return
+        devices = self._get_all_devices()
+        names = self._get_all_names()
+        restored = 0
+        for ieee, saved in snap.items():
+            dev = devices.get(ieee)
+            if not dev or not hasattr(dev, "send_command"):
+                continue
+            ok = True
+            for command, value in self._restore_commands(saved):
+                try:
+                    res = await dev.send_command(command, value)
+                    if res is False or (isinstance(res, dict) and not res.get("success", True)):
+                        ok = False
+                except Exception as e:                  # noqa: BLE001
+                    ok = False
+                    self._trace(rule_id, "step", "CMD_FAIL",
+                                f"{tag} ↩ {names.get(ieee, ieee)} {command}: {e}", level="ERROR")
+            restored += 1 if ok else 0
+        self._trace(rule_id, "step", "RESTORE",
+                    f"{tag} ↩ put {restored}/{len(snap)} device(s) back from '{name}'")
+
+    @staticmethod
+    def _restore_commands(saved: Dict[str, Any]) -> List[tuple]:
+        """The commands that return a device to a remembered state. State keeps
+        brightness 0-254 and colour temperature in mireds; the commands take a
+        percentage and kelvin."""
+        def number(v):
+            return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        cmds: List[tuple] = []
+        if number(saved.get("position")) is not None:
+            cmds.append(("position", saved["position"]))
+        on = saved.get("on")
+        if not isinstance(on, bool) and isinstance(saved.get("state"), str):
+            on = saved["state"].upper() == "ON"
+        if on is False:
+            cmds.append(("off", None))
+        elif on is True:
+            cmds.append(("on", None))
+            b = number(saved.get("brightness"))
+            if b and b > 0:
+                cmds.append(("brightness", max(1, min(100, round(b / 2.54)))))
+            ct = number(saved.get("color_temp"))
+            if ct and ct > 0:
+                cmds.append(("color_temp", int(ct) if ct > 1000 else int(round(1_000_000 / ct))))
+        return cmds
+
+    # RULE STATE ACROSS RESTARTS
+
+    @staticmethod
+    def _state_file() -> str:
+        return os.path.join(os.path.dirname(DATA_FILE) or ".", "automation_state.json")
+
+    def _load_rule_states(self) -> None:
+        """Pick up each rule's matched/unmatched state from before a restart.
+
+        Without it every rule began at "init", so a rule already true at
+        shutdown ran its THEN again on its first evaluation after the restart.
+        Only rules that still exist are restored.
+        """
+        try:
+            with open(self._state_file(), "r") as f:
+                saved = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:                          # noqa: BLE001
+            logger.warning(f"Could not read saved automation states: {e}")
+            return
+        known = {r.get("id") for r in self.rules}
+        for rule_id, state in (saved.get("states") or {}).items():
+            if rule_id in known and state in ("matched", "unmatched"):
+                self._rule_states[rule_id] = state
+
+    def _persist_states_soon(self) -> None:
+        """Save rule states shortly — one write for a burst of transitions."""
+        if self._state_save_pending:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._save_rule_states()
+            return
+        self._state_save_pending = True
+        loop.call_later(STATE_SAVE_DELAY, self._save_rule_states)
+
+    def _save_rule_states(self) -> None:
+        self._state_save_pending = False
+        known = {r.get("id") for r in self.rules}
+        states = {rid: st for rid, st in self._rule_states.items()
+                  if rid in known and st in ("matched", "unmatched")}
+        path = self._state_file()
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w") as f:
+                json.dump({"states": states, "saved": time.time()}, f)
+            os.replace(tmp, path)
+        except Exception as e:                          # noqa: BLE001
+            logger.warning(f"Could not save automation states: {e}")
+
+    # IMPORT
+
+    @classmethod
+    def _strip_for_import(cls, obj, top: bool = False):
+        """A downloaded rule minus what belongs to its old home: its id and
+        timestamps, the listing's "_state"-style fields, and display names."""
+        if isinstance(obj, dict):
+            return {k: cls._strip_for_import(v) for k, v in obj.items()
+                    if not str(k).startswith("_")
+                    and k not in ("device_name", "target_name")
+                    and not (top and k in IMPORT_DROP_KEYS)}
+        if isinstance(obj, list):
+            return [cls._strip_for_import(v) for v in obj]
+        return obj
+
+    def import_rules(self, payload) -> Dict[str, Any]:
+        """Add rules from JSON as Download produces it: one rule, a list of rules,
+        or {"rules": [...]}.
+
+        Each is validated as a new rule and given a new id, so importing a file
+        twice makes two copies rather than overwriting, and a rule naming a
+        device this hub doesn't have is reported rather than half-imported.
+        """
+        if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
+            items = payload["rules"]
+        elif isinstance(payload, dict):
+            items = [payload]
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            return {"success": False, "imported": 0, "results": [],
+                    "error": 'Expected a rule, a list of rules, or {"rules": [...]}'}
+        if not items:
+            return {"success": False, "imported": 0, "results": [],
+                    "error": "There were no rules to import"}
+        if len(items) > MAX_IMPORT_RULES:
+            return {"success": False, "imported": 0, "results": [],
+                    "error": f"At most {MAX_IMPORT_RULES} rules per import"}
+
+        results = []
+        for n, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                results.append({"index": n, "success": False, "error": "not a rule object"})
+                continue
+            data = self._strip_for_import(json.loads(json.dumps(raw)), top=True)
+            try:
+                res = self.add_rule(data)
+            except Exception as e:                      # noqa: BLE001
+                # A shape the validators never anticipated must not abort the batch.
+                res = {"success": False, "error": f"{type(e).__name__}: {e}"}
+            entry = {"index": n, "name": raw.get("name", ""), "success": bool(res.get("success"))}
+            if res.get("success"):
+                entry["rule_id"] = res["rule"]["id"]
+            else:
+                entry["error"] = res.get("error")
+            results.append(entry)
+        imported = sum(1 for r in results if r["success"])
+        return {"success": imported > 0, "imported": imported, "results": results}
 
     # LIVE VALUES IN TEXT
 
@@ -1413,6 +1810,9 @@ class AutomationEngine:
             device, dot, attribute = token.rpartition(".")
             if not dot or not device or not attribute:
                 return match.group(0)
+            if device == "webhook":
+                payload = (_event.get() or {}).get("payload") or {}
+                return self._format_value(payload.get(attribute))
             ieee = trigger if device == "trigger" else device
             if not ieee:
                 return "?"
@@ -1604,6 +2004,18 @@ class AutomationEngine:
         matched is False in that case, the caller decides what to do with it.
         """
         ctype = cond.get("type", "attribute")
+
+        if ctype in EVENT_TYPES:
+            return self._eval_event(cond, i)
+
+        if ctype == "date":
+            import datetime
+            today = datetime.date.today()
+            matched = self._date_matches(cond, today)
+            return matched, {"index": i + 1, "type": "date", "from": cond.get("from"),
+                             "to": cond.get("to"), "negate": bool(cond.get("negate")),
+                             "today": today.isoformat(),
+                             "result": "PASS" if matched else "FAIL"}, False
 
         if ctype == "offline":
             return self._eval_offline(cond, i, full_state, device)
@@ -1988,10 +2400,25 @@ class AutomationEngine:
         results = []
         all_met = True
 
+        # Dates first, and every one must hold: "in December" is not an
+        # alternative to "after sunset" the way two time windows are.
+        for j, p in enumerate(prereqs):
+            if p.get("type") != "date":
+                continue
+            today = datetime.date.today()
+            matched = self._date_matches(p, today)
+            results.append({"index": j + 1, "type": "date", "from": p.get("from"),
+                            "to": p.get("to"), "negate": bool(p.get("negate")),
+                            "today": today.isoformat(),
+                            "result": "PASS" if matched else "FAIL"})
+            if not matched:
+                return False, results
+
         # Partition
         _TEMPORAL = ("time_window", "sun")
         tw_prereqs  = [(j, p) for j, p in enumerate(prereqs) if p.get("type") in _TEMPORAL]
-        dev_prereqs = [(j, p) for j, p in enumerate(prereqs) if p.get("type", "device") not in _TEMPORAL]
+        dev_prereqs = [(j, p) for j, p in enumerate(prereqs)
+                       if p.get("type", "device") not in _TEMPORAL + ("date",)]
 
         # temporal: OR logic
         if tw_prereqs:
@@ -2339,6 +2766,10 @@ class AutomationEngine:
                 elif st == "parallel":
                     await self._step_parallel(rule_id, rule_name, step,
                                               f"{prefix}[{path} {num}/{total}]", depth)
+                elif st == "snapshot":
+                    self._step_snapshot(rule_id, step, f"{prefix}[{path} {num}/{total}]")
+                elif st == "restore":
+                    await self._step_restore(rule_id, step, f"{prefix}[{path} {num}/{total}]")
                 elif st == "repeat":
                     await self._step_repeat(rule_id, rule_name, step,
                                             f"{prefix}[{path} {num}/{total}]", depth)

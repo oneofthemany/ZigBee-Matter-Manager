@@ -31,6 +31,9 @@ let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
 // means the rule's own source; anything else makes the rule multi-source, with
 // the rows joined by condLogic (Match ALL / Match ANY) across devices.
 let condSrc = {};
+// Webhook id per condition row, made when a Webhook row first appears so its URL
+// can be copied before the rule is saved.
+let condHook = {};
 // Trigger attributes per device, fetched once per open form. The rule's own
 // source is seeded from cachedAttributes; other devices load on first pick.
 let attrCache = {};
@@ -59,9 +62,9 @@ function _opOpts(sel) {
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
     ).join('');
 }
-const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment',offer:'fa-circle-question',repeat:'fa-repeat'};
+const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment',offer:'fa-circle-question',repeat:'fa-repeat',snapshot:'fa-camera',restore:'fa-rotate-left'};
 
-const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First',repeat:'Repeat'};
+const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First',repeat:'Repeat',snapshot:'Snapshot',restore:'Restore'};
 
 // Media action picker options (label, value).
 const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
@@ -303,6 +306,9 @@ function _renderRules(rules) {
             }
             if (c.type === 'zone')
                 return `${c.ieee?`${esc(c.device_name||c.ieee)} `:''}${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
+            if (c.type === 'date') return `${c.negate?'<span class="badge bg-danger ms-1">NOT</span> ':''}📅 <code>${c.from} → ${c.to}</code>`;
+            if (c.type === 'webhook') return `🔗 Webhook <code>…${String(c.hook||'').slice(-6)}</code>`;
+            if (c.type === 'startup') return '🔌 Hub starts';
             if (c.type === 'sun') return _sunDesc(c);
             // A condition on another device says which — the rule card sits
             // under its source, so an unnamed one reads as the source's.
@@ -326,6 +332,8 @@ function _renderRules(rules) {
                 const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 const dayStr = (!p.days || p.days.length === 7) ? 'Every day' : p.days.map(d => DAY_NAMES[d]).join(', ');
                 pDesc = `<code>${p.time_from} → ${p.time_to}</code> <span class="text-muted">${dayStr}</span>`;
+            } else if (p.type === 'date') {
+                pDesc = `📅 <code>${p.from} → ${p.to}</code>`;
             } else if (p.type === 'sun') {
                 pDesc = _sunDesc(p);
             } else {
@@ -342,6 +350,7 @@ function _renderRules(rules) {
                 <div class="d-flex gap-1 ms-2">
                     <span class="badge bg-secondary">${rule.cooldown||5}s</span>
                     ${RUN_MODE_LABEL[rule.run_mode] ? `<span class="badge bg-light text-dark border" title="If it fires again while running">${RUN_MODE_LABEL[rule.run_mode]}</span>` : ''}
+                    <button class="btn btn-sm btn-outline-success" onclick="window._aRunNow('${rule.id}')" title="Run its THEN steps now"><i class="fas fa-circle-play"></i></button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="window._aTraceR('${rule.id}')"><i class="fas fa-search"></i></button>
                     <button class="btn btn-sm btn-outline-primary" onclick="window._aEdit('${rule.id}')"><i class="fas fa-edit"></i></button>
                     <button class="btn btn-sm ${en?'btn-outline-success':'btn-outline-secondary'}" onclick="window._aToggle('${rule.id}')"><i class="fas fa-${en?'toggle-on':'toggle-off'}"></i></button>
@@ -363,6 +372,8 @@ function _seqSummary(steps, label, color) {
         if (s.type==='condition') return `<span class="badge bg-dark">🔒 ${s.device_name||s.ieee||'?'} ${s.attribute}</span>`;
         if (s.type==='if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
         if (s.type==='parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches||[]).length})</span>`;
+        if (s.type==='snapshot') return `<span class="badge bg-secondary">📸 ${esc(s.name||'before')} (${(s.targets||[]).length})</span>`;
+        if (s.type==='restore') return `<span class="badge bg-secondary">↩ ${esc(s.name||'before')}</span>`;
         if (s.type==='repeat') return `<span class="badge bg-primary">🔁 ${s.mode==='count'||!s.mode ? '×'+(s.count||1) : s.mode.toUpperCase()}</span>`;
         if (s.type==='media') return `<span class="badge" style="background:#0a9396">♪ ${_mediaDesc(s)}</span>`;
         if (s.type==='request') return `<span class="badge" style="background:#9d4edd">✉ ${s.to_user||'?'}</span>`;
@@ -436,7 +447,7 @@ function _showForm(rule, forceNew = false) {
     el.addEventListener('change', window._aPreview);
 
     // Conditions
-    condRows=[]; condIdC=0; condGroupC=0; condSrc={};
+    condRows=[]; condIdC=0; condGroupC=0; condSrc={}; condHook={};
     condLogic = (isE && rule.condition_logic === 'or') ? 'or' : 'and';
     const clSel = document.getElementById('a-clogic'); if(clSel) clSel.value = condLogic;
     // A saved group becomes a group of rows. `fill` pairs every row with the
@@ -507,6 +518,8 @@ const STEP_PALETTE = [
     ['if_then_else', 'fa-code-branch',      'If / Else',    'btn-outline-primary'],
     ['parallel',     'fa-columns',          'Together',     'btn-outline-info'],
     ['repeat',       'fa-repeat',           'Repeat',       'btn-outline-primary'],
+    ['snapshot',     'fa-camera',           'Snapshot',     'btn-outline-secondary'],
+    ['restore',      'fa-rotate-left',      'Restore',      'btn-outline-secondary'],
 ];
 
 function _addBtns(path) {
@@ -609,6 +622,42 @@ function _srcPicker(id) {
     return `<div class="col-auto"><select class="form-select form-select-sm csrc" data-id="${id}" style="max-width:170px" title="Which device this condition reads" onchange="window._aCSrc(${id},this)"><option value="">${blank}</option>${devs}</select></div>`;
 }
 
+// Date range inputs, shared by condition rows ('cdt') and prerequisites ('pdt').
+// "every year" stores MM-DD; otherwise the full dates.
+const _dateInputs = (p, id) => `
+    <div class="col-auto"><label class="small text-muted mb-0 me-1">From</label><input type="date" class="form-control form-control-sm ${p}-from" data-id="${id}" style="width:145px"></div>
+    <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label><input type="date" class="form-control form-control-sm ${p}-to" data-id="${id}" style="width:145px"></div>
+    <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input ${p}-yearly" type="checkbox" data-id="${id}" checked title="Ignore the year: the same days every year"><label class="form-check-label small">every year</label></div></div>`;
+
+function _readDate(row, p) {
+    const f = row.querySelector(`.${p}-from`)?.value, t = row.querySelector(`.${p}-to`)?.value;
+    if (!f || !t) return null;
+    return row.querySelector(`.${p}-yearly`)?.checked ? { from: f.slice(5), to: t.slice(5) } : { from: f, to: t };
+}
+
+function _writeDate(row, p, c) {
+    const year = new Date().getFullYear();
+    const full = v => String(v || '').length === 5 ? `${year}-${v}` : String(v || '');
+    const f = row.querySelector(`.${p}-from`); if (f) f.value = full(c.from);
+    const t = row.querySelector(`.${p}-to`); if (t) t.value = full(c.to);
+    const y = row.querySelector(`.${p}-yearly`); if (y) y.checked = String(c.from || '').length === 5;
+}
+
+// Webhook ids: random, hex, from getRandomValues — crypto.randomUUID needs a
+// secure context, and the hub is often reached over plain LAN http.
+const _newHook = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+const _hookUrl = hook => `${location.origin}/api/automations/webhook/${hook}`;
+
+window._aCopyHook = id => {
+    const input = document.querySelector(`.cw-hook[data-id="${id}"]`);
+    if (!input) return;
+    input.select();
+    const done = () => window.toast.success('Webhook URL copied — call it with an API token');
+    const legacy = () => { document.execCommand('copy'); done(); };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(input.value).then(done, legacy);
+    else legacy();
+};
+
 function _renderCond(id, ctype) {
     // Default new conditions on the virtual time source to an alarm (no attrs exist).
     ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
@@ -652,13 +701,26 @@ function _renderCond(id, ctype) {
             <span class="input-group-text">silent for</span>
             <input type="number" class="form-control co-min" data-id="${id}" min="1" placeholder="hub's call" title="Minutes without a report. Blank: when the hub marks it unavailable (25 h or more)">
             <span class="input-group-text">min</span></div></div>`;
+    // Date: a range of days, every year or on particular dates.
+    const dateRow = `
+        <div class="col-auto"><div class="form-check form-check-inline mb-0"><input class="form-check-input cn" type="checkbox" data-id="${id}" title="NOT (negate)"><label class="form-check-label small text-danger">NOT</label></div></div>
+        ${_dateInputs('cdt', id)}`;
+    // Webhook: a POST to this URL, with an API token, fires the rule.
+    const hookRow = ctype !== 'webhook' ? '' : `
+        <div class="col"><div class="input-group input-group-sm">
+            <span class="input-group-text">POST</span>
+            <input type="text" class="form-control cw-hook" data-id="${id}" readonly value="${_hookUrl(condHook[id] || (condHook[id] = _newHook()))}" title="Call it with an API token: Authorization: Bearer …">
+            <button class="btn btn-outline-secondary" type="button" title="Copy the URL" onclick="window._aCopyHook(${id})"><i class="fas fa-copy"></i></button>
+        </div></div>`;
+    const startupRow = `<div class="col"><span class="small text-muted">when the hub starts — after a restart or an update</span></div>`;
     const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow
-        : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : ctype==='offline' ? offlineRow : attrRow;
+        : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : ctype==='offline' ? offlineRow
+        : ctype==='date' ? dateRow : ctype==='webhook' ? hookRow : ctype==='startup' ? startupRow : attrRow;
     const zoneOpt = _isPerson(src)
         ? `<option value="zone" ${ctype==='zone'?'selected':''}>Zone</option>` : '';
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
-        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option><option value="offline" ${ctype==='offline'?'selected':''}>Offline</option>${zoneOpt}</select></div>
+        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option><option value="date" ${ctype==='date'?'selected':''}>Date</option><option value="offline" ${ctype==='offline'?'selected':''}>Offline</option><option value="webhook" ${ctype==='webhook'?'selected':''}>Webhook</option><option value="startup" ${ctype==='startup'?'selected':''}>Startup</option>${zoneOpt}</select></div>
         <div style="display:contents">${body}</div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
@@ -718,6 +780,7 @@ function _setC(id,c){
     // places and Zone option all come from it. _showForm has already fetched
     // the attributes of every device the rule's conditions name.
     condSrc[id] = (c.ieee && c.ieee !== currentSourceIeee) ? c.ieee : '';
+    if (c.hook) condHook[id] = c.hook;    // keep the saved URL, don't mint a new one
     const row = document.getElementById(`c-${id}`);
     if (!row) return;
     row.outerHTML = _renderCond(id, ctype);
@@ -747,6 +810,9 @@ function _setC(id,c){
         });
     } else if (ctype === 'offline') {
         const m = r2.querySelector('.co-min'); if (m && c.minutes) m.value = c.minutes;
+    } else if (ctype === 'date') {
+        const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
+        _writeDate(r2, 'cdt', c);
     } else if (ctype === 'sun') {
         const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
         const sf = r2.querySelector('.cs-from'); if (sf) sf.value = c.from || 'sunset';
@@ -790,7 +856,8 @@ function _renderPrereq(id, ptype) {
         <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm ps-off-from" data-id="${id}" placeholder="±min"></div>
         <div class="col-auto"><label class="small text-muted mb-0 me-1">To</label>${sunSel('ps-to','sunrise')}</div>
         <div class="col-auto" style="width:78px"><input type="number" class="form-control form-control-sm ps-off-to" data-id="${id}" placeholder="±min"></div>`;
-    const body = ptype === 'time_window' ? timeRow : ptype === 'sun' ? sunRow : deviceRow;
+    const body = ptype === 'time_window' ? timeRow : ptype === 'sun' ? sunRow
+        : ptype === 'date' ? _dateInputs('pdt', id) : deviceRow;
 
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="p-${id}">
         <div class="col-auto"><span class="badge bg-info text-dark small">CHECK</span></div>
@@ -800,6 +867,7 @@ function _renderPrereq(id, ptype) {
                 <option value="device" ${ptype==='device'?'selected':''}>Device</option>
                 <option value="time_window" ${ptype==='time_window'?'selected':''}>Time/Day</option>
                 <option value="sun" ${ptype==='sun'?'selected':''}>Sun</option>
+                <option value="date" ${ptype==='date'?'selected':''}>Date</option>
             </select>
         </div>
         <div class="prereq-body-${id}" style="display:contents">${body}</div>
@@ -830,6 +898,8 @@ function _setP(id, p) {
         r2.querySelectorAll('.ptd').forEach(cb => {
             cb.checked = days.includes(parseInt(cb.dataset.day));
         });
+    } else if (ptype === 'date') {
+        _writeDate(r2, 'pdt', p);
     } else if (ptype === 'sun') {
         const sf = r2.querySelector('.ps-from'); if (sf) sf.value = p.from || 'sunset';
         const st = r2.querySelector('.ps-to');   if (st) st.value = p.to   || 'sunrise';
@@ -905,6 +975,19 @@ function _renderStep(step, path, idx, total) {
             <div id="par-${sid}-${bi}">${br.map((s,i)=>_renderStep(s,`par-${sid}-${bi}`,i,br.length)).join('')}</div>
             ${_addBtns(`par-${sid}-${bi}`)}</div>`).join('');
         body += `<button class="btn btn-sm btn-outline-info" onclick="window._aAddBranch(${sid})"><i class="fas fa-plus"></i> Branch</button>`;
+    } else if(step.type==='snapshot') {
+        // Remember how these devices are now, to be put back by a Restore step.
+        const chosen = new Set(step.targets||[]);
+        const opts = cachedActuators.map(d=>`<option value="${d.ieee}" ${chosen.has(d.ieee)?'selected':''}>${esc(d.friendly_name)}</option>`).join('');
+        body=`<div class="row g-1 align-items-start">
+            <div class="col-md-7"><select multiple class="form-select form-select-sm s-snap-tgt" data-sid="${sid}" size="4" title="Ctrl/Cmd-click to pick several">${opts}</select></div>
+            <div class="col-md-5"><div class="input-group input-group-sm"><span class="input-group-text">as</span>
+                <input type="text" class="form-control s-snap-name" data-sid="${sid}" value="${esc(step.name||'before')}" maxlength="40"></div>
+                <div class="small text-muted mt-1">On/off, brightness, colour and position. Put back with a <strong>Restore</strong> step in this rule.</div></div></div>`;
+    } else if(step.type==='restore') {
+        body=`<div class="d-flex flex-wrap gap-2 align-items-center"><div class="input-group input-group-sm" style="max-width:260px"><span class="input-group-text">put back</span>
+            <input type="text" class="form-control s-snap-name" data-sid="${sid}" value="${esc(step.name||'before')}" maxlength="40"></div>
+            <span class="small text-muted">what a Snapshot step in this rule remembered under that name</span></div>`;
     } else if(step.type==='repeat') {
         // Times, or While / Until conditions (the If / Else rows), around a
         // nested sequence that runs on each pass.
@@ -1542,7 +1625,7 @@ window._aCType = (id, sel) => {
     row.outerHTML = _renderCond(id, ctype);
     const newRow = document.getElementById(`c-${id}`);
     // Carry the NOT flag across to the temporal rows that have it.
-    if (newRow && (ctype === 'time_window' || ctype === 'sun')) {
+    if (newRow && (ctype === 'time_window' || ctype === 'sun' || ctype === 'date')) {
         const n = newRow.querySelector('.cn'); if (n) n.checked = neg;
     }
     _refCondChrome();
@@ -1597,6 +1680,8 @@ window._aAddStep = (path, type) => {
     }
     if (type === 'parallel') s.branches = [[], []];
     if (type === 'offer') { s.accept_steps = []; s.expires_in = 3600; }
+    if (type === 'snapshot') { s.targets = []; s.name = 'before'; }
+    if (type === 'restore') { s.name = 'before'; }
     if (type === 'repeat') { s.mode = 'count'; s.count = 3; s.max_iterations = 20; s.steps = []; s.inline_conditions = []; s.condition_logic = 'and'; }
 
     list.push(s);
@@ -1677,6 +1762,16 @@ window._aTrace=async()=>{document.getElementById('a-trace').style.display='block
 window._aRefTrace=_loadTr;
 window._aTraceR=async id=>{await window._aTrace();const f=document.getElementById('tf');if(f)f.value=id;_loadTr();};
 
+// Run by hand — the THEN steps now, as a test. The rule's state is untouched.
+window._aRunNow = async id => {
+    try {
+        const res = await fetch(`/api/automations/${encodeURIComponent(id)}/run`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Could not run it');
+        window.toast.success('Running its steps now');
+    } catch (e) { window.toast.error(e.message); }
+};
+
 // Toggle/Delete
 window._aToggle=async id=>{try{await fetch(`/api/automations/${id}/toggle`,{method:'PATCH'});await _ref();}catch(e){}};
 window._aDel=async id=>{if(!await window.zbmConfirm({title:'Delete automation',message:'Delete this automation?',confirmText:'Delete',variant:'danger'}))return;try{await fetch(`/api/automations/${id}`,{method:'DELETE'});await _ref();}catch(e){}};
@@ -1722,6 +1817,13 @@ function _collectRule() {
             const place=picked.includes('any')?'any':(picked.length===1?picked[0]:picked);
             return {type:'zone',event:ev,place,...(condSrc[id]?{ieee:condSrc[id]}:{})};
         }
+        if(ctype==='date'){
+            const d=_readDate(row,'cdt');
+            if(!d)return null;
+            return {type:'date',...d,negate:row.querySelector('.cn')?.checked||false};
+        }
+        if(ctype==='webhook')return {type:'webhook',hook:condHook[id]||(condHook[id]=_newHook())};
+        if(ctype==='startup')return {type:'startup'};
         if(ctype==='offline'){
             // Blank minutes: the hub's own availability verdict.
             const m=parseInt(row.querySelector('.co-min')?.value);
@@ -1783,6 +1885,10 @@ function _collectRule() {
             const days = [];
             row.querySelectorAll('.ptd').forEach(cb => { if (cb.checked) days.push(parseInt(cb.dataset.day)); });
             prerequisites.push({ type: 'time_window', time_from: tf, time_to: tt, days, negate: neg });
+        } else if (ptype === 'date') {
+            const d = _readDate(row, 'pdt');
+            if (!d) return;
+            prerequisites.push({ type: 'date', ...d, negate: neg });
         } else if (ptype === 'sun') {
             const c = { type: 'sun', from: row.querySelector('.ps-from')?.value || 'sunset',
                         to: row.querySelector('.ps-to')?.value || 'sunrise', negate: neg };
@@ -1934,6 +2040,12 @@ function _syncTreeFromDOM(steps) {
             _syncInlineConds(s);
             _syncTreeFromDOM(s.then_steps||[]);
             _syncTreeFromDOM(s.else_steps||[]);
+        } else if(s.type==='snapshot') {
+            const sel=document.querySelector(`.s-snap-tgt[data-sid="${sid}"]`);
+            if(sel)s.targets=[...sel.selectedOptions].map(o=>o.value);
+            s.name=document.querySelector(`.s-snap-name[data-sid="${sid}"]`)?.value?.trim()||'before';
+        } else if(s.type==='restore') {
+            s.name=document.querySelector(`.s-snap-name[data-sid="${sid}"]`)?.value?.trim()||'before';
         } else if(s.type==='repeat') {
             s.mode=document.querySelector(`.s-rp-mode[data-sid="${sid}"]`)?.value||s.mode||'count';
             const n=parseInt(document.querySelector(`.s-rp-count[data-sid="${sid}"]`)?.value);if(n>0)s.count=n;
@@ -2016,6 +2128,8 @@ function _cleanTree(steps) {
         else if(s.type==='wait_for'||s.type==='condition'){d.ieee=s.ieee;d.attribute=s.attribute;d.operator=s.operator;d.value=s.value;if(s.negate)d.negate=true;if(s.type==='wait_for')d.timeout=s.timeout;}
         else if(s.type==='if_then_else'){d.inline_conditions=(s.inline_conditions||[]).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.then_steps=_cleanTree(s.then_steps||[]);d.else_steps=_cleanTree(s.else_steps||[]);}
         else if(s.type==='parallel'){d.branches=(s.branches||[]).map(br=>_cleanTree(br));}
+        else if(s.type==='snapshot'){d.targets=(s.targets||[]).filter(Boolean);d.name=s.name||'before';}
+        else if(s.type==='restore'){d.name=s.name||'before';}
         else if(s.type==='repeat'){d.mode=s.mode||'count';d.steps=_cleanTree(s.steps||[]);
             if(d.mode==='count'){d.count=s.count||3;}
             else{d.inline_conditions=(s.inline_conditions||[]).filter(ic=>ic.ieee&&ic.attribute).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.max_iterations=s.max_iterations||20;}}
@@ -2043,6 +2157,8 @@ function _cleanTree(steps) {
         if(d.type==='offer')return !!(d.to_user&&d.message&&(d.accept_steps||[]).length);
         if(d.type==='if_then_else')return(d.inline_conditions||[]).length>0;
         if(d.type==='parallel')return(d.branches||[]).length>=2;
+        if(d.type==='snapshot')return d.targets.length>0;
+        if(d.type==='restore')return true;
         if(d.type==='repeat')return d.steps.length>0&&(d.mode==='count'||(d.inline_conditions||[]).length>0);
         if(d.type==='media'){
             if(!d.player_id)return false;
@@ -2091,6 +2207,10 @@ async function _loadTr() {
                 const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 if(c.type==='group'){
                     cLine=`#${c.index} group — ${c.condition_logic==='or'?'any':'all'} of:`;
+                }else if(c.type==='date'){
+                    cLine=`#${c.index} Date${c.negate?' NOT':''} ${c.from}→${c.to} today=${c.today||''}`;
+                }else if(c.type==='webhook'||c.type==='startup'){
+                    cLine=`#${c.index} ${c.type==='webhook'?'Webhook …'+String(c.hook||'').slice(-6):'Hub start'}`;
                 }else if(c.type==='offline'){
                     cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}Offline${c.minutes?` ≥${c.minutes} min`:' (hub)'}${c.silent_minutes!=null?` — silent ${c.silent_minutes} min`:''}`;
                 }else if(c.type==='time_window'){
@@ -2119,6 +2239,8 @@ async function _loadTr() {
                 if(p.type==='time_window'){
                     const dayStr=(!p.days||p.days.length===7)?'Every day':p.days.map(d=>DAY_NAMES[d]).join(',');
                     pLine=`CHECK${p.negate?' NOT':''} Time ${p.time_from}→${p.time_to} [${dayStr}] now=${p.now_time} weekday=${p.now_weekday}`;
+                }else if(p.type==='date'){
+                    pLine=`CHECK${p.negate?' NOT':''} Date ${p.from}→${p.to} today=${p.today||''}`;
                 }else if(p.type==='sun'){
                     pLine=`CHECK Sun ${p.from}→${p.to}${p.resolved?` (${p.resolved})`:''} now=${p.now_time||''}`;
                 }else{
