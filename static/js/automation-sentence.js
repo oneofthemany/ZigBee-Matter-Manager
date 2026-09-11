@@ -13,7 +13,7 @@
  * Everything returns HTML with values escaped. Callers insert it directly.
  */
 
-import { DEVICE_ICON, deviceType } from './automation-humanize.js';
+import { DEVICE_ICON, deviceType, attrLabel, valueLabel } from './automation-humanize.js';
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -21,6 +21,10 @@ const OPW = {
     eq: 'is', neq: 'is not', gt: 'is above', lt: 'is below',
     gte: 'is at least', lte: 'is at most', in: 'is one of', nin: 'is not one of',
 };
+
+// Trigger-only operators that compare with an earlier value (TRIGGER_OPERATORS
+// in modules/automation.py).
+const CHANGE_OPS = ['changed', 'changed_to', 'changed_from', 'rose_by', 'fell_by'];
 
 const CMD_VERB = {
     on: 'Turn on', off: 'Turn off', toggle: 'Toggle', open: 'Open', close: 'Close',
@@ -87,10 +91,21 @@ export function createHumanizer(ctx = {}) {
     // Outlet suffixes are only surfaced for endpoint 2+ — "outlet 1" is the
     // default (or only) endpoint on nearly every device, so annotating it is
     // just noise.
-    function attrVerb(type, attr, op, val) {
+    function attrVerb(type, attr, op, val, within) {
         const base = (attr || '').replace(/_\d+$/, '');
         const epM = (attr || '').match(/_(\d+)$/);
         const epTxt = (epM && +epM[1] >= 2) ? ` (outlet ${epM[1]})` : '';
+        // A change trigger names the attribute, since "changes" alone does not
+        // say what: "light level rises by 200 within 30 min".
+        if (CHANGE_OPS.includes(op)) {
+            const lbl = esc(attrLabel(type, attr).toLowerCase());
+            const disp = esc(valueLabel(type, attr, val));
+            if (op === 'changed') return `${lbl} changes`;
+            if (op === 'changed_to') return `${lbl} changes to ${disp}`;
+            if (op === 'changed_from') return `${lbl} changes from ${disp}`;
+            const span = within ? ` within ${fmtMin(within / 60)}` : '';
+            return `${lbl} ${op === 'rose_by' ? 'rises' : 'falls'} by ${esc(val)}${span}`;
+        }
         const truthy = v => v === true || v === 'true' || String(v).toUpperCase() === 'ON';
         if (type === 'contact') {
             if (base === 'is_open') return truthy(val) ? 'opens' : 'is shut';
@@ -119,6 +134,18 @@ export function createHumanizer(ctx = {}) {
         const name = Array.isArray(c.place) ? c.place.map(one).join(' or ') : one(c.place);
         const verb = c.event === 'leave' ? 'leaves' : 'arrives at';
         return `${verb} <b>${esc(name)}</b>`;
+    }
+
+    // "90 min", "2 h", "1 day" — offline and rise/fall windows are minutes.
+    function fmtMin(m) {
+        m = Math.max(1, Math.round(m));
+        if (m % 1440 === 0) return `${m / 1440} day${m === 1440 ? '' : 's'}`;
+        if (m % 60 === 0) return `${m / 60} h`;
+        return `${m} min`;
+    }
+
+    function offlineVerb(c) {
+        return c.minutes ? `has not reported for <b>${fmtMin(c.minutes)}</b>` : 'goes offline';
     }
 
     // A trigger is the source device's first condition (or a schedule). The
@@ -150,8 +177,11 @@ export function createHumanizer(ctx = {}) {
         if (c.type === 'zone')
             return { icon: src.type, text: `${devSpan(who)} ${zoneVerb(c)}`,
                      raw: `zone ${c.event} ${c.place}` };
+        if (c.type === 'offline')
+            return { icon: src.type, text: `${devSpan(who)} ${offlineVerb(c)}`,
+                     raw: `offline ${c.minutes ? c.minutes + ' min' : '(hub)'}` };
         return { icon: src.type,
-                 text: `${devSpan(who)} ${attrVerb(src.type, c.attribute, c.operator, c.value)}`,
+                 text: `${devSpan(who)} ${attrVerb(src.type, c.attribute, c.operator, c.value, c.within)}`,
                  raw: `${esc(c.attribute)} ${c.operator} ${esc(c.value)}` };
     }
 
@@ -182,7 +212,10 @@ export function createHumanizer(ctx = {}) {
                      raw: `sun ${p.from}→${p.to}` };
         const ieee = p.ieee || sourceIeee;
         const dev = resolve(ieee);
-        return { text: `${neg}${devSpan(ieee)} ${attrVerb(dev.type, p.attribute, p.operator, p.value)}`,
+        if (p.type === 'offline')
+            return { text: `${devSpan(ieee)} ${offlineVerb(p)}`,
+                     raw: `offline ${p.minutes ? p.minutes + ' min' : '(hub)'}` };
+        return { text: `${neg}${devSpan(ieee)} ${attrVerb(dev.type, p.attribute, p.operator, p.value, p.within)}`,
                  raw: `${ieee && String(ieee).startsWith('group:') ? ieee + ' ' : ''}${esc(p.attribute)} ${p.operator} ${esc(p.value)}` };
     }
 

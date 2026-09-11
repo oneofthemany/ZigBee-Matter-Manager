@@ -314,5 +314,24 @@ check('a restarting rule says nothing about it', !mt.includes('fires again'), mt
 check('an old rule with no run mode says nothing either',
       !H.rulePhrase({ ...multi, run_mode: undefined }).includes('fires again'));
 
+section('change triggers and offline conditions');
+const plainText = t => t.replace(/<[^>]*>/g, '');
+const rise = plainText(H.condPhrase({ type: 'attribute', attribute: 'illuminance_lux',
+  operator: 'rose_by', value: 200, within: 1800 }, '0xradar').text);
+check('rises by names the attribute, amount and window',
+      /light level rises by 200 within 30 min/i.test(rise), rise);
+const becomes = plainText(H.condPhrase({ type: 'attribute', ieee: '0xradar', attribute: 'presence',
+  operator: 'changed_to', value: true }, '0xradar').text);
+check('changes to names the new value', /changes to/.test(becomes), becomes);
+const anyChange = plainText(H.condPhrase({ type: 'attribute', attribute: 'brightness',
+  operator: 'changed', value: null }, '0xlight').text);
+check('changes alone reads as a change, not "is null"', /brightness changes$/.test(anyChange), anyChange);
+const quiet = plainText(H.triggerPhrase({ source_ieee: '0xradar',
+  conditions: [{ type: 'offline', minutes: 120 }] }).text);
+check('offline for minutes names the device and the time',
+      quiet.includes('Radar - Hallway') && quiet.includes('2 h'), quiet);
+const hubOff = plainText(H.condPhrase({ type: 'offline', ieee: '0xdoor' }, '0xradar').text);
+check("offline without minutes is the hub's call", hubOff.includes('Front Door goes offline'), hubOff);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

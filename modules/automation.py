@@ -91,6 +91,25 @@ DEFAULT_RUN_MODE = "restart"
 # pile up sequences without end.
 MAX_RULE_RUNS = 10
 
+# Trigger-only operators. They compare a value with an earlier one, which only a
+# trigger condition has — a prerequisite or a gate reads a single moment.
+#   changed / changed_to / changed_from — the moment a value changes (to / from
+#     a given value). Edge-triggered like a zone crossing: THEN only, re-arms.
+#   rose_by / fell_by — moved by at least `value` within `within` seconds, read
+#     from a short history of readings. True for as long as that holds.
+CHANGE_OPERATORS = frozenset({"changed", "changed_to", "changed_from"})
+TREND_OPERATORS = frozenset({"rose_by", "fell_by"})
+TRIGGER_OPERATORS = CHANGE_OPERATORS | TREND_OPERATORS
+DEFAULT_TREND_WINDOW = 3600
+MAX_TREND_WINDOW = 86400
+MAX_TREND_POINTS = 2000          # readings kept per device attribute
+
+# An offline condition: the device has not reported for `minutes`, or — with no
+# minutes — the hub counts it unavailable. A device going quiet sends nothing,
+# so these are also read once a minute (_evaluate_offline_rules).
+MAX_OFFLINE_MINUTES = 7 * 24 * 60
+OFFLINE_WATCH = ("last_seen", "available")
+
 
 def iter_leaf_conditions(conditions):
     """Every plain condition in a condition list, looking inside groups.
@@ -179,6 +198,13 @@ class AutomationEngine:
         # rule_id -> the task that re-evaluates the rule when its soonest
         # pending sustain runs out. See _schedule_sustain_recheck.
         self._sustain_timers: Dict[str, asyncio.Task] = {}
+        # (device, attribute) -> recent (time, value) readings, kept only for
+        # attributes a rises/falls condition watches, as far back as its window.
+        self._history: Dict[tuple, deque] = {}
+        self._trend_windows: Dict[tuple, float] = {}
+        # (rule_id, leaf index) -> last offline verdict, so the minute-by-minute
+        # pass only evaluates a rule when a device's status actually moved.
+        self._offline_verdicts: Dict[tuple, bool] = {}
         self._rule_states: Dict[str, Optional[str]] = {}
         # Per source device, its state as of the previous evaluation: by the time
         # evaluate() runs device.state already holds the new value, so zone
@@ -295,6 +321,10 @@ class AutomationEngine:
                     continue
                 last_minute_checked = now_hhmm
 
+                # A device that goes quiet sends nothing, so offline conditions
+                # are read on the clock as well.
+                self._evaluate_offline_rules()
+
                 # Collect all boundary times across all enabled rules
                 boundaries: set = set()
                 for rule in self.rules:
@@ -342,6 +372,9 @@ class AutomationEngine:
                 continue
             if ctype == "zone":
                 watched.add(ZONE_ATTR)
+            elif ctype == "offline":
+                # Any report from the device moves its last_seen.
+                watched.update(OFFLINE_WATCH)
             elif c.get("attribute"):
                 watched.add(c["attribute"])
         return watched
@@ -349,6 +382,15 @@ class AutomationEngine:
     @staticmethod
     def _has_zone(conditions) -> bool:
         return any(c.get("type") == "zone" for c in iter_leaf_conditions(conditions))
+
+    @staticmethod
+    def _is_edge_rule(conditions) -> bool:
+        """Does the rule trigger on a moment — a zone crossing or a value
+        changing — rather than on a state? Such a rule runs THEN on the moment,
+        never reads "nothing happened right now" as the opposite (so no ELSE),
+        and re-arms after firing."""
+        return any(c.get("type") == "zone" or c.get("operator") in CHANGE_OPERATORS
+                   for c in iter_leaf_conditions(conditions))
 
     @staticmethod
     def _condition_logic(rule) -> str:
@@ -433,11 +475,10 @@ class AutomationEngine:
             if boundary_hhmm and boundary_hhmm not in self._rule_temporal_boundaries(rule):
                 continue
 
-            # A clock tick carries no place change, so a zone condition can only
-            # read FAIL here — and firing this rule's ELSE off that would invent
-            # a departure nobody made. Zone rules run from device updates only.
-            if self._has_zone(rule.get("conditions", [])):
-                continue
+            # A clock tick carries no place or attribute change, so a zone or
+            # change condition reads FAIL here. _evaluate_rule never turns that
+            # into an ELSE (see _is_edge_rule), so the rule is evaluated rather
+            # than skipped — "arrives home OR it's 18:00" must still fire at 18:00.
 
             # No device updated: every device condition reads its device as it
             # stands, with nothing marked as changed — a clock tick is not a
@@ -510,6 +551,18 @@ class AutomationEngine:
             # re-evaluates the rule — that is what makes AND/OR span devices.
             for src in self.rule_sources(rule):
                 self._source_index.setdefault(src, []).append(rule["id"])
+        # Readings kept for rises/falls: per (device, attribute), as far back as
+        # the longest window any rule asks about. Unwatched history is dropped.
+        windows: Dict[tuple, float] = {}
+        for rule in self.rules:
+            for c in iter_leaf_conditions(rule.get("conditions")):
+                if c.get("operator") in TREND_OPERATORS and c.get("attribute"):
+                    key = (self._cond_source(rule, c), c["attribute"])
+                    within = self._as_number(c.get("within")) or DEFAULT_TREND_WINDOW
+                    windows[key] = max(windows.get(key, 0.0), within)
+        self._trend_windows = windows
+        for key in [k for k in self._history if k not in windows]:
+            del self._history[key]
 
     def _disable_broken_rule(self, rule_id: str, reason: str):
         """
@@ -655,12 +708,45 @@ class AutomationEngine:
                 # One place stays a plain string — a list is only meaningful
                 # when it groups several into a single zone.
                 c["place"] = places[0] if len(places) == 1 else places
+            elif ctype == "offline":
+                m = c.get("minutes")
+                if m in (None, "", 0):
+                    c.pop("minutes", None)          # the hub's own verdict
+                else:
+                    m = self._as_number(m)
+                    if m is None or not 0 < m <= MAX_OFFLINE_MINUTES:
+                        return (f"Condition {i+1} (offline): minutes must be between "
+                                f"1 and {MAX_OFFLINE_MINUTES}")
+                    c["minutes"] = int(m) if m == int(m) else m
             else:
+                op = c.get("operator")
+                if op == "changed":
+                    c.setdefault("value", None)     # any new value is the trigger
                 for f in ("attribute", "operator", "value"):
                     if f not in c:
                         return f"Condition {i+1} missing '{f}'"
-                if c["operator"] not in OPERATORS:
+                if op not in OPERATORS and op not in TRIGGER_OPERATORS:
                     return f"Condition {i+1} invalid operator"
+                if op in TRIGGER_OPERATORS:
+                    # A change is a moment and a trend has its own window, so
+                    # neither is held for a sustain.
+                    c.pop("sustain", None)
+                    if op in ("changed_to", "changed_from") and c.get("value") in (None, ""):
+                        return f"Condition {i+1}: '{op}' needs a value"
+                    if op in TREND_OPERATORS:
+                        amount = self._as_number(c.get("value"))
+                        if amount is None or amount <= 0:
+                            return f"Condition {i+1}: '{op}' needs a positive amount"
+                        c["value"] = amount
+                        within = self._as_number(c.get("within")) or DEFAULT_TREND_WINDOW
+                        if not 1 <= within <= MAX_TREND_WINDOW:
+                            return (f"Condition {i+1}: 'within' must be 1-"
+                                    f"{MAX_TREND_WINDOW} seconds")
+                        c["within"] = int(within)
+                    else:
+                        c.pop("within", None)
+                    continue
+                c.pop("within", None)
                 s = c.get("sustain")
                 if s:
                     try:
@@ -734,6 +820,9 @@ class AutomationEngine:
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in p:
                         return f"Prerequisite {i+1} missing '{f}'"
+                if p["operator"] in TRIGGER_OPERATORS:
+                    return (f"Prerequisite {i+1}: '{p['operator']}' compares with an "
+                            f"earlier value, so it only works as a trigger condition")
                 if p["operator"] not in OPERATORS:
                     return f"Prerequisite {i+1} invalid operator"
         return None
@@ -820,6 +909,9 @@ class AutomationEngine:
                 for f in ("ieee", "attribute", "operator", "value"):
                     if f not in step:
                         return f"{label}[{i+1}]: {st} needs '{f}'"
+                if step.get("operator") in TRIGGER_OPERATORS:
+                    return (f"{label}[{i+1}]: '{step['operator']}' only works as a "
+                            f"trigger condition")
             elif st == "if_then_else":
                 inline = step.get("inline_conditions", [])
                 if not inline:
@@ -828,6 +920,9 @@ class AutomationEngine:
                     for f in ("ieee", "attribute", "operator", "value"):
                         if f not in ic:
                             return f"{label}[{i+1}] condition {j+1} missing '{f}'"
+                    if ic.get("operator") in TRIGGER_OPERATORS:
+                        return (f"{label}[{i+1}] condition {j+1}: '{ic['operator']}' "
+                                f"only works as a trigger condition")
                 err = self._validate_sequence(step.get("then_steps", []), f"{label}[{i+1}].then", depth + 1)
                 if err: return err
                 err = self._validate_sequence(step.get("else_steps", []), f"{label}[{i+1}].else", depth + 1)
@@ -914,6 +1009,7 @@ class AutomationEngine:
         }
         self.rules.append(rule)
         self._rebuild_index()
+        self._seed_missing_last_values()
         self._save_rules()
         logger.info(f"Rule added: {rule['id']} '{rule['name']}'")
         return {"success": True, "rule": rule}
@@ -975,6 +1071,7 @@ class AutomationEngine:
 
         rule["updated"] = time.time()
         self._rebuild_index()
+        self._seed_missing_last_values()
         self._save_rules()
         return {"success": True, "rule": rule}
 
@@ -1080,6 +1177,8 @@ class AutomationEngine:
         if prev_values is None:
             prev_values = {k: v for k, v in full_state.items() if k not in changed_data}
 
+        self._record_trend_readings(source_ieee, changed_data, prev_values, now)
+
         self._trace("-", "entry", "EVALUATING",
                     f"State change on {source_name}: {list(changed_data.keys())} — {len(rule_ids)} rule(s)",
                     level="DEBUG", source_ieee=source_ieee)
@@ -1126,7 +1225,8 @@ class AutomationEngine:
 
         # CONDITIONS
         logic = self._condition_logic(rule)
-        has_zone = self._has_zone(conditions)
+        # Zone crossings and change triggers fire on a moment (see _is_edge_rule).
+        edge = self._is_edge_rule(conditions)
         all_matched, cond_results, has_sustain = self._eval_conditions_block(
             conditions, rule_id, {}, {}, now, logic, view=view, names=names)
 
@@ -1166,10 +1266,11 @@ class AutomationEngine:
         # TRANSITION
         self._rule_states[rule_id] = new_state
 
-        # A zone rule triggers on a crossing, not on a state. "No crossing
-        # right now" is not the opposite crossing, so an unmatched pass must
-        # not run the ELSE path — leaving is its own rule with its own THEN.
-        if has_zone and new_state == "unmatched":
+        # A zone or change rule triggers on a moment, not on a state. "No
+        # crossing (or no change) right now" is not the opposite moment, so an
+        # unmatched pass must not run the ELSE path — leaving is its own rule
+        # with its own THEN.
+        if edge and new_state == "unmatched":
             return
 
         if prev_state == new_state:
@@ -1216,7 +1317,7 @@ class AutomationEngine:
         # Momentary triggers (a button press, a boundary crossing) have to
         # re-arm: they are never "still true", so without this the second
         # press — or the second arrival — would look like no transition.
-        if has_zone or any(c.get("attribute") in EVENT_ATTRS
+        if edge or any(c.get("attribute") in EVENT_ATTRS
                            for c in iter_leaf_conditions(conditions)):
             self._rule_states[rule_id] = "unmatched"
 
@@ -1287,7 +1388,8 @@ class AutomationEngine:
 
     def _condition_view(self, rule, devices, updating=None, changed_data=None,
                         full_state=None, prev_values=None):
-        """Return view(cond) -> (changed_data, full_state, prev_values) for a rule.
+        """Return view(cond) -> (changed_data, full_state, prev_values, ieee,
+        device) for a rule.
 
         A condition on the device that just updated reads the update. A condition
         on any other device reads that device as it stands, with nothing marked
@@ -1301,13 +1403,14 @@ class AutomationEngine:
         def view(cond):
             src = cond.get("ieee") or default
             if updating is not None and src == updating:
-                return changed_data or {}, full_state or {}, prev_values or {}
+                return (changed_data or {}, full_state or {}, prev_values or {},
+                        src, devices.get(src))
             if src not in snapshots:
                 dev = devices.get(src)
                 state = (getattr(dev, "state", None) or {}) if dev else {}
-                snapshots[src] = (state, self._last_values.get(src, state))
-            state, prev = snapshots[src]
-            return {}, state, prev
+                snapshots[src] = (state, self._last_values.get(src, state), dev)
+            state, prev, dev = snapshots[src]
+            return {}, state, prev, src, dev
         return view
 
     def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
@@ -1352,11 +1455,13 @@ class AutomationEngine:
                           "result": "PASS" if matched
                           else "SUSTAIN_WAIT" if sustain_pending else "FAIL"}
             else:
-                cd, fs, pv = (view(cond) if view
-                              else (changed_data, full_state, prev_values or {}))
+                cd, fs, pv, src, dev = (
+                    view(cond) if view
+                    else (changed_data, full_state, prev_values or {}, None, None))
                 # Top-level keys stay "<rule>_<i>", as they always were.
                 matched, result, sustain_pending = self._eval_one_condition(
-                    cond, i, rule_id, cd, fs, now, pv, skey=f"{rule_id}_{key}")
+                    cond, i, rule_id, cd, fs, now, pv, skey=f"{rule_id}_{key}",
+                    src=src, device=dev)
                 if cond.get("ieee"):
                     # Name the device in the trace — otherwise a FAIL on another
                     # device's attribute reads as though it were the source's.
@@ -1378,7 +1483,7 @@ class AutomationEngine:
         return all_passed, results, (not all_passed and not hard_fail)
 
     def _eval_one_condition(self, cond, i, rule_id, changed_data, full_state, now,
-                            prev_values=None, skey=None):
+                            prev_values=None, skey=None, src=None, device=None):
         """Evaluate a single trigger condition.
 
         Returns (matched, result_dict, sustain_pending). sustain_pending is True when
@@ -1386,6 +1491,9 @@ class AutomationEngine:
         matched is False in that case, the caller decides what to do with it.
         """
         ctype = cond.get("type", "attribute")
+
+        if ctype == "offline":
+            return self._eval_offline(cond, i, full_state, device)
 
         if ctype == "zone":
             return self._eval_zone(cond, i, changed_data, prev_values or {})
@@ -1448,6 +1556,13 @@ class AutomationEngine:
         sustain = cond.get("sustain", 0) or 0
         skey = skey or f"{rule_id}_{i}"
 
+        if op in CHANGE_OPERATORS:
+            self._sustain_tracker.pop(skey, None)
+            return self._eval_change(cond, i, changed_data, prev_values or {})
+        if op in TREND_OPERATORS:
+            self._sustain_tracker.pop(skey, None)
+            return self._eval_trend(cond, i, src)
+
         # A momentary attribute is true only on the update that carries it (see
         # EVENT_ATTRS): its last value lingering in state is not a new press.
         if attr in EVENT_ATTRS and attr not in changed_data:
@@ -1494,6 +1609,204 @@ class AutomationEngine:
                          "value_source": src,
                          "result": "PASS" if matched else "FAIL"}, False
 
+
+    # CHANGE, TREND AND OFFLINE CONDITIONS
+
+    def _eval_change(self, cond, i, changed_data, prev_values):
+        """changed / changed_to / changed_from. Passes only on the update that
+        carries a different value: a report of the same value is not a change,
+        and a device that did not update has not changed at all."""
+        attr, op, target = cond["attribute"], cond["operator"], cond.get("value")
+        result = {"index": i + 1, "attribute": attr, "operator": op,
+                  "threshold_raw": repr(target)}
+        if attr not in changed_data:
+            result.update(result="FAIL", reason=f"'{attr}' did not change in this update")
+            return False, result, False
+        new = changed_data[attr]
+        result["actual_raw"] = repr(new)
+        if attr not in prev_values:
+            result.update(result="FAIL",
+                          reason=f"no earlier value of '{attr}' to compare with yet")
+            return False, result, False
+        old = prev_values[attr]
+        result["from_raw"] = repr(old)
+        if self._evaluate_condition(new, "eq", old):
+            result.update(result="FAIL", reason=f"'{attr}' reported again, unchanged")
+            return False, result, False
+        if op == "changed_to":
+            matched = self._evaluate_condition(new, "eq", target)
+        elif op == "changed_from":
+            matched = self._evaluate_condition(old, "eq", target)
+        else:
+            matched = True
+        result["result"] = "PASS" if matched else "FAIL"
+        if not matched:
+            direction = "to" if op == "changed_to" else "from"
+            result["reason"] = f"{old!r} → {new!r} is not a change {direction} {target!r}"
+        return matched, result, False
+
+    def _eval_trend(self, cond, i, src):
+        """rose_by / fell_by: has the value moved by at least `value` within the
+        last `within` seconds? The newest reading from before the window counts
+        as the value at its start, so a slow sensor still has a baseline."""
+        attr, op = cond["attribute"], cond["operator"]
+        amount = self._as_number(cond.get("value")) or 0.0
+        within = self._as_number(cond.get("within")) or DEFAULT_TREND_WINDOW
+        result = {"index": i + 1, "attribute": attr, "operator": op,
+                  "threshold_raw": repr(cond.get("value")), "within": within}
+        hist = self._history.get((src, attr)) if src else None
+        if not hist:
+            result.update(result="FAIL", reason=f"no readings of '{attr}' recorded yet")
+            return False, result, False
+        now = time.time()
+        points = [v for t, v in hist if now - t <= within]
+        older = [v for t, v in hist if now - t > within]
+        if older:
+            points.append(older[-1])
+        current = hist[-1][1]
+        delta = (current - min(points)) if op == "rose_by" else (max(points) - current)
+        matched = delta >= amount
+        result.update(actual_raw=repr(current), delta=round(delta, 3),
+                      result="PASS" if matched else "FAIL")
+        if not matched:
+            result["reason"] = (f"moved {delta:g} of {amount:g} within "
+                                f"{within / 60:g} min")
+        return matched, result, False
+
+    def _eval_offline(self, cond, i, state, device):
+        """Is the device offline? With `minutes`: it has not reported for that
+        long. Without: the hub itself counts it unavailable."""
+        minutes = cond.get("minutes")
+        result = {"index": i + 1, "type": "offline", "minutes": minutes}
+        if minutes:
+            seen = self._last_seen_seconds(device, state)
+            if seen is None:
+                result.update(result="FAIL", reason="the device reports no last-seen time")
+                return False, result, False
+            silent = max(0.0, time.time() - seen) / 60
+            matched = silent >= float(minutes)
+            result.update(silent_minutes=round(silent, 1),
+                          result="PASS" if matched else "FAIL")
+            if not matched:
+                result["reason"] = f"last reported {silent:.1f} min ago"
+            return matched, result, False
+        verdict = self._hub_says_offline(device, state)
+        if verdict is None:
+            result.update(result="FAIL", reason="the device has no availability to "
+                                                "read — give it a number of minutes")
+            return False, result, False
+        result["result"] = "PASS" if verdict else "FAIL"
+        return verdict, result, False
+
+    @staticmethod
+    def _last_seen_seconds(device, state) -> Optional[float]:
+        """A device's last report as epoch seconds (Zigbee keeps milliseconds)."""
+        raw = getattr(device, "last_seen", None) or (state or {}).get("last_seen")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        return value / 1000.0 if value > 1e11 else value
+
+    @staticmethod
+    def _hub_says_offline(device, state) -> Optional[bool]:
+        """The hub's own availability verdict, or None when it has none."""
+        if device is not None:
+            if getattr(device, "_available", None) is False:
+                return True
+            probe = getattr(device, "is_available", None)
+            if callable(probe):
+                try:
+                    return not bool(probe())
+                except Exception:                       # noqa: BLE001
+                    pass
+            elif isinstance(probe, bool):               # Matter exposes a property
+                return not probe
+        available = (state or {}).get("available")
+        return (not available) if isinstance(available, bool) else None
+
+    def _evaluate_offline_rules(self) -> None:
+        """Re-read rules with an offline condition whose verdict has moved.
+
+        A device that stops reporting sends nothing, so nothing else would
+        notice. Only a rule whose verdict actually changed since the last pass
+        is evaluated, which keeps a once-a-minute check out of every trace.
+        """
+        rules = [r for r in self.rules if r.get("enabled", True) and any(
+            c.get("type") == "offline" for c in iter_leaf_conditions(r.get("conditions")))]
+        if not rules:
+            self._offline_verdicts.clear()
+            return
+        now = time.time()
+        devices = self._get_all_devices()
+        names = None
+        seen = set()
+        for rule in rules:
+            moved = False
+            for n, c in enumerate(iter_leaf_conditions(rule.get("conditions"))):
+                if c.get("type") != "offline":
+                    continue
+                dev = devices.get(self._cond_source(rule, c))
+                verdict = self._eval_offline(c, n, getattr(dev, "state", None) or {}, dev)[0]
+                key = (rule["id"], n)
+                seen.add(key)
+                if self._offline_verdicts.get(key) != verdict:
+                    self._offline_verdicts[key] = verdict
+                    moved = True
+            if moved:
+                names = names if names is not None else self._get_all_names()
+                self._evaluate_rule(rule, devices, names, now,
+                                    self._condition_view(rule, devices))
+        for key in [k for k in self._offline_verdicts if k not in seen]:
+            del self._offline_verdicts[key]
+
+    def _record_trend_readings(self, ieee, changed_data, prev_values, now) -> None:
+        """Keep the readings a rises/falls condition needs, and no others."""
+        for attr, raw in changed_data.items():
+            window = self._trend_windows.get((ieee, attr))
+            if not window:
+                continue
+            value = self._as_number(raw)
+            if value is None:
+                continue
+            hist = self._history.setdefault((ieee, attr), deque())
+            if not hist:
+                # First reading: what it was just before is where the rise starts.
+                before = self._as_number(prev_values.get(attr))
+                if before is not None:
+                    hist.append((now, before))
+            hist.append((now, value))
+            # Keep the window, plus the newest reading from before it.
+            while len(hist) > 1 and now - hist[1][0] > window:
+                hist.popleft()
+            while len(hist) > MAX_TREND_POINTS:
+                hist.popleft()
+
+    @staticmethod
+    def _as_number(value) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _seed_missing_last_values(self) -> None:
+        """Baseline trigger devices the engine has no earlier state for, so a
+        rule added while the hub runs catches the very first change."""
+        try:
+            devices = self._get_all_devices()
+        except Exception:                               # noqa: BLE001
+            return
+        for src in self._source_index:
+            if src in self._last_values:
+                continue
+            dev = devices.get(src)
+            state = getattr(dev, "state", None) if dev else None
+            if state:
+                self._last_values[src] = dict(state)
 
     @staticmethod
     def _is_somewhere(value) -> bool:

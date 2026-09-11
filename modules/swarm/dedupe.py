@@ -73,6 +73,8 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
         prefix = f"{other}:" if other else ""
         if ctype == "zone":
             out.add(f"{prefix}zone:{c.get('event')}:{c.get('place')}")
+        elif ctype == "offline":
+            out.add(f"{prefix}offline")
         elif ctype in ("time_window", "time", "sun"):
             out.add(ctype)
         elif c.get("attribute"):

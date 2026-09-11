@@ -43,6 +43,17 @@ const OP = {'eq':'=','neq':'≠','gt':'>','lt':'<','gte':'>=','lte':'<=','in':'�
 
 const OPT = {'eq':'equals','neq':'not equal','gt':'greater than','lt':'less than','gte':'greater or equal','lte':'less or equal','in':'in list','nin':'not in list'};
 
+// Trigger-only operators (TRIGGER_OPERATORS in modules/automation.py). Kept out
+// of OP, which also feeds the prerequisite and gate pickers, where there is no
+// earlier value to compare with. [symbol, words].
+const TRIG_OP = {changed:['Δ','changes'], changed_to:['→','changes to'], changed_from:['←','changes from'], rose_by:['↑','rises by'], fell_by:['↓','falls by']};
+// Amount and window for rises / falls. Minutes here, seconds on the wire.
+const _trendInput = id => `<div class="input-group input-group-sm">
+    <input type="number" class="form-control cv" data-id="${id}" placeholder="by…" min="0" step="any" title="How far it must move">
+    <span class="input-group-text">within</span>
+    <input type="number" class="form-control cw" data-id="${id}" value="60" min="1" max="1440" title="Minutes">
+    <span class="input-group-text">min</span></div>`;
+
 function _opOpts(sel) {
     return Object.entries(OP).map(([k,v]) =>
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
@@ -293,12 +304,16 @@ function _renderRules(rules) {
             if (c.type === 'zone')
                 return `${c.ieee?`${esc(c.device_name||c.ieee)} `:''}${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
             if (c.type === 'sun') return _sunDesc(c);
-            const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
-            const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
             // A condition on another device says which — the rule card sits
             // under its source, so an unnamed one reads as the source's.
             const who = c.ieee ? `${esc(c.device_name||c.ieee)} ` : '';
-            return `${who}<code>${c.attribute}</code> ${OP[c.operator]||c.operator} <code>${dispVal}</code>${sus}`;
+            if (c.type === 'offline')
+                return `${who}📴 Offline${c.minutes ? ` <code>≥ ${c.minutes} min</code>` : ''}`;
+            const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
+            const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
+            if (c.operator === 'changed') return `${who}<code>${c.attribute}</code> Δ changes`;
+            const span = c.within ? ` <span class="text-muted">within ${Math.round(c.within/60)} min</span>` : '';
+            return `${who}<code>${c.attribute}</code> ${OP[c.operator]||TRIG_OP[c.operator]?.join(' ')||c.operator} <code>${dispVal}</code>${span}${sus}`;
         };
         (rule.conditions||[]).forEach((c,i) => {
             const p = i===0 ? '<strong class="text-primary">IF</strong>' : joinWord(isOr ? 'or' : 'and');
@@ -626,13 +641,21 @@ function _renderCond(id, ctype) {
         <div class="col-auto"><select class="form-select form-select-sm cz-ev" data-id="${id}" style="width:110px">
             <option value="enter">Enters</option><option value="leave">Leaves</option></select></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${_placeBoxes(id)}</div></div>`;
+    // Offline: the device has not reported for N minutes, or — left blank — the
+    // hub counts it unavailable (after a day or more).
+    const offlineRow = `
+        ${_srcPicker(id)}
+        <div class="col-auto"><div class="input-group input-group-sm" style="width:220px">
+            <span class="input-group-text">silent for</span>
+            <input type="number" class="form-control co-min" data-id="${id}" min="1" placeholder="hub's call" title="Minutes without a report. Blank: when the hub marks it unavailable (25 h or more)">
+            <span class="input-group-text">min</span></div></div>`;
     const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow
-        : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : attrRow;
+        : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : ctype==='offline' ? offlineRow : attrRow;
     const zoneOpt = _isPerson(src)
         ? `<option value="zone" ${ctype==='zone'?'selected':''}>Zone</option>` : '';
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
-        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option>${zoneOpt}</select></div>
+        <div class="col-auto"><select class="form-select form-select-sm ctype" data-id="${id}" style="width:90px" onchange="window._aCType(${id},this)"><option value="attribute" ${ctype==='attribute'?'selected':''}>Attr</option><option value="time" ${ctype==='time'?'selected':''}>Alarm</option><option value="time_window" ${ctype==='time_window'?'selected':''}>Time/Day</option><option value="sun" ${ctype==='sun'?'selected':''}>Sun</option><option value="offline" ${ctype==='offline'?'selected':''}>Offline</option>${zoneOpt}</select></div>
         <div style="display:contents">${body}</div>
         <div class="col-auto">${rmBtn}</div>
     </div>`;
@@ -719,6 +742,8 @@ function _setC(id,c){
             box?.insertAdjacentHTML('beforeend',
                 `<label class="me-2 small text-nowrap text-danger"><input type="checkbox" class="czp" data-id="${id}" data-place="${p}" checked onchange="window._aCZP(${id},this)"> ${p} (deleted)</label>`);
         });
+    } else if (ctype === 'offline') {
+        const m = r2.querySelector('.co-min'); if (m && c.minutes) m.value = c.minutes;
     } else if (ctype === 'sun') {
         const neg = r2.querySelector('.cn'); if (neg) neg.checked = !!c.negate;
         const sf = r2.querySelector('.cs-from'); if (sf) sf.value = c.from || 'sunset';
@@ -729,7 +754,8 @@ function _setC(id,c){
         const s=r2.querySelector('.ca');if(!s)return;s.value=c.attribute;window._aCa(id,s);
         setTimeout(()=>{const o=r2.querySelector('.co');if(o){o.value=c.operator;if(o.onchange)o.onchange();}
             const v=r2.querySelector(`#cv-${id} .cv`);
-            if(v){const dv=Array.isArray(c.value)?c.value.join(', '):String(c.value);v.value=dv;}
+            if(v&&c.value!=null){const dv=Array.isArray(c.value)?c.value.join(', '):String(c.value);v.value=dv;}
+            const cw=r2.querySelector('.cw');if(cw&&c.within)cw.value=Math.round(c.within/60);
             const ss=r2.querySelector('.cs');if(ss&&c.sustain)ss.value=c.sustain;},20);
     }
 }
@@ -1356,10 +1382,18 @@ window._aCSrc = async (id, sel) => {
 window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;const ops=JSON.parse(o.dataset.operators||'["eq","neq"]'),vo=JSON.parse(o.dataset.vo||'[]'),cur=o.dataset.current,typ=o.dataset.type,attr=o.value;
     const srcType=_dtype(_rowSrc(id));
     const dflt=typ==='boolean'?String(cur).toLowerCase():'';
-    const os=document.querySelector(`#c-${id} .co`);if(os){os.innerHTML=ops.map(op=>`<option value="${op}">${OP[op]} ${OPT[op]}</option>`).join('');
+    // Change triggers are offered on every attribute; rises / falls only where
+    // the value is a number.
+    const trig=['changed','changed_to','changed_from',...((typ==='integer'||typ==='float')?['rose_by','fell_by']:[])];
+    const os=document.querySelector(`#c-${id} .co`);if(os){os.innerHTML=ops.map(op=>`<option value="${op}">${OP[op]} ${OPT[op]}</option>`).join('')
+        +`<optgroup label="── when it changes ──">${trig.map(op=>`<option value="${op}">${TRIG_OP[op][0]} ${TRIG_OP[op][1]}</option>`).join('')}</optgroup>`;
         os.onchange=()=>{const opV=os.value;const w=document.getElementById(`cv-${id}`);if(w){
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
-            else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}};}
+            else if(opV==='changed'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="any new value" disabled>`;}
+            else if(opV==='rose_by'||opV==='fell_by'){w.innerHTML=_trendInput(id);}
+            else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}
+            // A change is a moment and a trend has its own window: nothing to sustain.
+            const ss=document.querySelector(`#c-${id} .cs`);if(ss){ss.disabled=opV in TRIG_OP;if(ss.disabled)ss.value='';}};}
     const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);};
 // Add a condition row — at the top level, or inside the group gid names.
 window._aAddCond = gid => {
@@ -1603,6 +1637,11 @@ function _collectRule() {
             const place=picked.includes('any')?'any':(picked.length===1?picked[0]:picked);
             return {type:'zone',event:ev,place,...(condSrc[id]?{ieee:condSrc[id]}:{})};
         }
+        if(ctype==='offline'){
+            // Blank minutes: the hub's own availability verdict.
+            const m=parseInt(row.querySelector('.co-min')?.value);
+            return {type:'offline',...(m>0?{minutes:m}:{}),...(condSrc[id]?{ieee:condSrc[id]}:{})};
+        }
         if(ctype==='sun'){
             const frm=row.querySelector('.cs-from')?.value||'sunset';
             const to=row.querySelector('.cs-to')?.value||'sunrise';
@@ -1616,12 +1655,18 @@ function _collectRule() {
         }
         const a=row.querySelector('.ca')?.value,o=row.querySelector('.co')?.value;
         const vE=row.querySelector(`#cv-${id} .cv`),r=vE?.value,s=row.querySelector('.cs')?.value;
-        if(!a||!o||r===undefined||r==='')return null;
+        // "changes" takes no value: any new value is the trigger.
+        if(!a||!o||(o!=='changed'&&(r===undefined||r==='')))return null;
         const ai=_rowAttrs(id).find(x=>x.attribute===a);
+        const trend=o==='rose_by'||o==='fell_by';
         let value;
-        if(o==='in'||o==='nin'){value=String(r).split(',').map(v=>_ct(v.trim(),ai?.type));}
+        if(o==='changed'){value=null;}
+        else if(trend){value=parseFloat(r);if(!(value>0))return null;}
+        else if(o==='in'||o==='nin'){value=String(r).split(',').map(v=>_ct(v.trim(),ai?.type));}
         else{value=_ct(r,ai?.type);}
-        const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);
+        const c={type:'attribute',attribute:a,operator:o,value};
+        if(s&&parseInt(s)>0&&!(o in TRIG_OP))c.sustain=parseInt(s);
+        if(trend){const m=parseInt(row.querySelector('.cw')?.value);c.within=(m>0?m:60)*60;}
         // Only a row reading another device names one, so a rule that never
         // picks one saves exactly as it always did.
         if(condSrc[id])c.ieee=condSrc[id];
@@ -1946,6 +1991,8 @@ async function _loadTr() {
                 const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 if(c.type==='group'){
                     cLine=`#${c.index} group — ${c.condition_logic==='or'?'any':'all'} of:`;
+                }else if(c.type==='offline'){
+                    cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}Offline${c.minutes?` ≥${c.minutes} min`:' (hub)'}${c.silent_minutes!=null?` — silent ${c.silent_minutes} min`:''}`;
                 }else if(c.type==='time_window'){
                     const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
                     cLine=`#${c.index} Time${c.negate?' NOT':''} ${c.time_from}→${c.time_to} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
@@ -1960,6 +2007,7 @@ async function _loadTr() {
                 }else{
                     cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → ${c.actual_raw||'?'} (${c.actual_type||''})`;
                     if(c.sustain_elapsed!=null)cLine+=` ⏱${c.sustain_elapsed}s`;if(c.value_source)cLine+=` ${c.value_source}`;
+                    if(c.from_raw!=null)cLine+=` (was ${c.from_raw})`;if(c.delta!=null)cLine+=` moved ${c.delta}`;
                 }
                 let out=`<div class="${cc}" style="margin-left:${depth}rem">${cLine} [${c.result}]`;if(c.reason)out+=` — ${c.reason}`;out+='</div>';
                 (c.type==='group'?c.conditions||[]:[]).forEach(k=>{out+=condLine(k,depth+1);});

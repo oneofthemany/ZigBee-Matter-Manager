@@ -133,6 +133,9 @@ class AIChat:
                 return "(" + joiner.join(one(k) for k in c.get("conditions") or []) + ")"
             if c.get("type") == "time_window":
                 return f"time {c.get('time_from')}-{c.get('time_to')}"
+            if c.get("type") == "offline":
+                mins = c.get("minutes")
+                return f"offline for {mins} min" if mins else "offline"
             return f"{c.get('attribute')} {c.get('operator')} {c.get('value')}"
         return " and ".join(one(c) for c in conds) or "(none)"
 

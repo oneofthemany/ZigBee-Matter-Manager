@@ -83,6 +83,11 @@ The joiner badge on each row (`AND` amber / `OR` purple) reflects the current ch
 | `>` `<` `>=` `<=` | numeric comparisons       |
 | `∈`               | in list (comma-separated) |
 | `∉`               | not in list               |
+| `Δ` changes       | takes any new value — see *Change triggers* |
+| `→` changes to    | the moment it becomes a value |
+| `←` changes from  | the moment it stops being a value |
+| `↑` rises by      | has moved up by at least N within a window |
+| `↓` falls by      | has moved down by at least N within a window |
 
 **Sustain** — optional hold timer (seconds). The condition must remain true for the specified duration before triggering.
 When the time is up the engine re-checks the rule by itself, so it fires even if the device reports nothing further — a door
@@ -99,6 +104,7 @@ not from when it got dark. Changing or disabling the rule resets its clocks.
 | **Time/Day**  | Being inside a time window on chosen days                          |
 | **Sun**       | Being between two sun/clock boundaries (tracks the seasons)        |
 | **Zone**      | A person entering or leaving a place — offered for presence users  |
+| **Offline**   | A device that has stopped reporting                                |
 
 #### Zone: arriving and leaving
 
@@ -125,6 +131,53 @@ Leaving somewhere for "away" counts as a departure from that place; "away" and
 
 After a hub restart the engine restores where each person was, so the first
 crossing after a restart is still reported correctly.
+
+#### Change triggers: changes, rises, falls
+
+The operator picker on an **Attr** row has a *when it changes* section. These
+compare the value with an earlier one, so they only exist on trigger conditions
+— not prerequisites, gates or If/Else steps.
+
+- **changes** — any new value. A device reporting the same value again is not a
+  change.
+- **changes to** / **changes from** — the moment it becomes, or stops being, a
+  value. For *from X to Y*, add both to one rule with **Match ALL**: they are
+  judged on the same update.
+- **rises by** / **falls by** — has moved by at least N within a window you set
+  in minutes (default 60), measured from the lowest (or highest) reading in that
+  window. Offered for numeric attributes. "Humidity rises by 15 within 10 min"
+  is a shower starting, whatever the humidity was before.
+
+*changes*, *changes to* and *changes from* are **moments**, like a zone crossing:
+the rule runs THEN when the change happens, never runs ELSE ("no change right
+now" is not the opposite of a change), and re-arms for the next change. *Rises
+by* / *falls by* are **states**: true while the movement holds, so THEN runs
+when it starts and ELSE when the window slides past it. None of them take a
+sustain.
+
+A change on another device (see *Several trigger devices*) counts only on that
+device's own update, and the first change after a rule is added is caught — the
+rule starts from each device's current value.
+
+#### Offline: a device that stops reporting
+
+A device whose battery dies or that drops off the mesh sends nothing, so no
+attribute can trigger on it. The **Offline** condition type reads its silence:
+
+- **silent for N min** — the device has not reported for N minutes. Right for
+  most devices; pick N comfortably above how often it normally reports (a
+  temperature sensor every few minutes, a door contact maybe only when used plus
+  a periodic check-in).
+- **blank** — when the hub itself marks it unavailable, which for Zigbee is after
+  25 hours (72 for sensors that only report events).
+
+Offline is checked once a minute, and any report from the device clears it, so
+**THEN** is "it went offline" and **ELSE** is "it came back". A device that
+reports no last-seen time can only use the hub's verdict, and the trace says so
+when neither is available.
+
+Battery level needs no special type: `battery` (a percentage) and `battery_low`
+are ordinary attributes wherever a device reports them — **Battery is below 15**.
 
 #### Several trigger devices (AND / OR across devices)
 

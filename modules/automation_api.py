@@ -27,6 +27,10 @@ class ConditionItem(BaseModel):
     operator: Optional[str] = None
     value: Optional[Any] = None
     sustain: Optional[int] = None
+    # rose_by / fell_by window, seconds
+    within: Optional[float] = None
+    # offline condition: minutes without a report (absent = the hub's verdict)
+    minutes: Optional[float] = None
     negate: bool = False
     time_from: Optional[str] = None
     time_to: Optional[str] = None
@@ -120,10 +124,16 @@ def _conds_to_dicts(items):
             r.append(d)
         elif c.type == "sun":
             r.append(_sun_dict(c))
+        elif c.type == "offline":
+            d = {"type": "offline"}
+            if c.minutes: d["minutes"] = c.minutes
+            if c.ieee: d["ieee"] = c.ieee
+            r.append(d)
         else:
             d = {"type": "attribute", "attribute": c.attribute, "operator": c.operator, "value": c.value}
             if c.ieee: d["ieee"] = c.ieee
             if c.sustain and c.sustain > 0: d["sustain"] = c.sustain
+            if c.within: d["within"] = c.within
             r.append(d)
     return r
 

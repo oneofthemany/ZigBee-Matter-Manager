@@ -105,6 +105,8 @@ const ATTR_LABEL = {
     tamper:'Tamper', running_state:'Running',
     locked:'Locked / Unlocked', lock_state:'Lock state',
     door_state:'Door sensor', battery_critical:'Battery critical',
+    battery_low:'Battery low', battery_pct:'Battery', battery_percentage_remaining:'Battery',
+    battery_voltage:'Battery voltage', last_seen:'Last seen',
 };
 
 function _splitEndpoint(attr) {
@@ -158,6 +160,7 @@ export function attrEnum(type, attribute, valType) {
     if (base === 'locked') return _BOOL(['Locked', 'Unlocked']);
     if (base === 'lock_state') return LOCK_STATE_ENUM;
     if (base === 'battery_critical') return _BOOL(['Critical', 'OK']);
+    if (base === 'battery_low') return _BOOL(['Low', 'OK']);
     if (base === 'on') return _BOOL(['On', 'Off']);
     if (base === 'state') return _ONOFF;
     if (valType === 'boolean') return _BOOL(['Yes', 'No']);

@@ -27,7 +27,8 @@ if str(HERE) not in sys.path:
 
 MODULES = ["test_resolver", "test_network", "test_virtual", "test_stigmergy",
            "test_suggestions", "test_offers", "test_multi_source",
-           "test_sustain_and_groups", "test_run_modes", "test_real_house",
+           "test_sustain_and_groups", "test_run_modes",
+           "test_change_and_offline", "test_real_house",
            "test_diagnostics", "test_api"]
 # The browser code is exercised by slicing the real functions out of the shipped
 # .js and running them, which is the only way to catch an undefined identifier
