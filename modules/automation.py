@@ -81,6 +81,16 @@ MAX_CONDITIONS_PER_GROUP = 5
 # exact; the slack only has to cover a timer firing a hair early.
 SUSTAIN_RECHECK_SLACK = 0.25
 
+# What a rule does when it fires while its last sequence is still running.
+# restart — cancel it and start again (the default, and what every rule did
+#           before run modes existed); single — let it finish, ignore the new
+#           one; queued — run the new one after it; parallel — run both.
+RUN_MODES = ("restart", "single", "queued", "parallel")
+DEFAULT_RUN_MODE = "restart"
+# Live runs one rule may hold under queued/parallel, so a chatty trigger cannot
+# pile up sequences without end.
+MAX_RULE_RUNS = 10
+
 
 def iter_leaf_conditions(conditions):
     """Every plain condition in a condition list, looking inside groups.
@@ -174,7 +184,11 @@ class AutomationEngine:
         # evaluate() runs device.state already holds the new value, so zone
         # conditions need the old one remembered here.
         self._last_values: Dict[str, Dict[str, Any]] = {}
+        # Accepted offers' sequences, keyed "offer:<token>".
         self._running_sequences: Dict[str, asyncio.Task] = {}
+        # rule_id -> its live runs, oldest first: the running one plus any
+        # queued behind it (or several at once under parallel).
+        self._rule_runs: Dict[str, List[asyncio.Task]] = {}
         self._time_scheduler_task: Optional[asyncio.Task] = None
 
         # token -> pending offer. See MAX_PENDING_OFFERS.
@@ -844,6 +858,11 @@ class AutomationEngine:
         if cond_logic not in ("and", "or"):
             return {"success": False, "error": "condition_logic must be 'and' or 'or'"}
 
+        run_mode = str(data.get("run_mode") or DEFAULT_RUN_MODE).lower()
+        if run_mode not in RUN_MODES:
+            return {"success": False,
+                    "error": f"run_mode must be one of {', '.join(RUN_MODES)}"}
+
         prereqs = data.get("prerequisites", [])
         if prereqs:
             err = self._validate_prerequisites(prereqs)
@@ -886,6 +905,7 @@ class AutomationEngine:
             "source_ieee": source,
             "conditions": conditions,
             "condition_logic": cond_logic,
+            "run_mode": run_mode,
             "prerequisites": prereqs,
             "then_sequence": then_seq,
             "else_sequence": else_seq,
@@ -924,6 +944,12 @@ class AutomationEngine:
             if cl not in ("and", "or"):
                 return {"success": False, "error": "condition_logic must be 'and' or 'or'"}
             rule["condition_logic"] = cl
+        if "run_mode" in updates:
+            mode = str(updates["run_mode"] or DEFAULT_RUN_MODE).lower()
+            if mode not in RUN_MODES:
+                return {"success": False,
+                        "error": f"run_mode must be one of {', '.join(RUN_MODES)}"}
+            rule["run_mode"] = mode
         if "prerequisites" in updates:
             p = updates["prerequisites"] or []
             if p:
@@ -979,8 +1005,9 @@ class AutomationEngine:
             self._enrich_names(list(iter_leaf_conditions(r.get("conditions"))),
                                names, "ieee", "device_name")
             r["_state"] = self._rule_states.get(rule["id"], "unknown")
-            r["_running"] = (rule["id"] in self._running_sequences and
-                             not self._running_sequences[rule["id"]].done())
+            live = self._live_runs(rule["id"])
+            r["_running"] = bool(live)
+            r["_runs"] = len(live)          # >1 only under queued / parallel
             self._enrich_names(r.get("prerequisites", []), names, "ieee", "device_name")
             self._enrich_steps(r.get("then_sequence", []), names)
             self._enrich_steps(r.get("else_sequence", []), names)
@@ -1183,9 +1210,7 @@ class AutomationEngine:
                     conditions=cond_results, prerequisites=prereq_results,
                     condition_logic=logic)
 
-        self._cancel_sequence(rule_id)
-        task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
-        self._running_sequences[rule_id] = task
+        self._start_sequence(rule, seq, path)
 
         # EVENT ATTRIBUTE RESET
         # Momentary triggers (a button press, a boundary crossing) have to
@@ -1769,11 +1794,77 @@ class AutomationEngine:
 
     # SEQUENCE EXECUTOR (recursive)
 
+    def _run_mode(self, rule) -> str:
+        """How a rule treats firing while it is still running. Rules saved
+        before run modes carry no key, so they keep restarting."""
+        mode = str(rule.get("run_mode") or DEFAULT_RUN_MODE).lower()
+        return mode if mode in RUN_MODES else DEFAULT_RUN_MODE
+
+    def _live_runs(self, rule_id: str) -> List[asyncio.Task]:
+        return [t for t in self._rule_runs.get(rule_id, []) if not t.done()]
+
     def _cancel_sequence(self, rule_id: str):
-        task = self._running_sequences.pop(rule_id, None)
-        if task and not task.done():
+        """Cancel every run of a rule: the running one and any queued behind it."""
+        live = self._live_runs(rule_id)
+        self._rule_runs.pop(rule_id, None)
+        for task in live:
             task.cancel()
-            self._trace(rule_id, "sequence", "CANCELLED", "Previous sequence cancelled")
+        if live:
+            self._trace(rule_id, "sequence", "CANCELLED",
+                        "Previous sequence cancelled" if len(live) == 1
+                        else f"{len(live)} running/queued sequences cancelled")
+
+    def _start_sequence(self, rule, seq, path) -> bool:
+        """Start a fired sequence the way the rule's run mode says (RUN_MODES).
+
+        Returns False when the mode drops it. Runs are tracked per task and
+        removed by their own done callback, so a run finishing — or being
+        cancelled — can never untrack the run that replaced it.
+        """
+        rule_id = rule["id"]
+        rule_name = rule.get("name") or rule_id
+        mode = self._run_mode(rule)
+        live = self._live_runs(rule_id)
+
+        if live and mode == "restart":
+            self._cancel_sequence(rule_id)
+            live = []
+        elif live and mode == "single":
+            self._trace(rule_id, "sequence", "RUN_SKIPPED",
+                        f"{path} not run: still running, and the run mode is "
+                        f"single — {rule_name}")
+            return False
+        elif len(live) >= MAX_RULE_RUNS:
+            self._trace(rule_id, "sequence", "QUEUE_FULL",
+                        f"{path} not run: {len(live)} {mode} runs already live "
+                        f"— {rule_name}", level="WARNING")
+            return False
+
+        if live and mode == "queued":
+            self._trace(rule_id, "sequence", "QUEUED",
+                        f"{path} queued behind {len(live)} run(s) — {rule_name}")
+            coro = self._run_after(live[-1], rule_id, rule_name, seq, path)
+        else:
+            coro = self._run_sequence(rule_id, rule_name, seq, path)
+        task = asyncio.create_task(coro)
+        self._rule_runs[rule_id] = live + [task]
+        task.add_done_callback(lambda t, rid=rule_id: self._forget_run(rid, t))
+        return True
+
+    async def _run_after(self, previous, rule_id, rule_name, seq, path):
+        """A queued run: wait for the run ahead — which waits for the one ahead
+        of it — then run. A predecessor that was cancelled frees the slot too."""
+        await asyncio.wait({previous})
+        self._trace(rule_id, "sequence", "DEQUEUED",
+                    f"{path} starting, its turn in the queue — {rule_name}")
+        await self._run_sequence(rule_id, rule_name, seq, path)
+
+    def _forget_run(self, rule_id: str, task: asyncio.Task) -> None:
+        runs = self._rule_runs.get(rule_id)
+        if runs and task in runs:
+            runs.remove(task)
+            if not runs:
+                del self._rule_runs[rule_id]
 
     async def _run_sequence(self, rule_id: str, rule_name: str,
                             steps: List[Dict], path: str, depth: int = 0):
@@ -1838,8 +1929,10 @@ class AutomationEngine:
         finally:
             if token is not None:
                 _chain_depth.reset(token)
-            if depth == 0:
-                self._running_sequences.pop(rule_id, None)
+            # Rule runs are untracked by _start_sequence's done callback, which
+            # removes exactly this task. Popping by rule id here used to drop the
+            # newer run that had just replaced a cancelled one, so the next
+            # restart could not cancel it and two sequences ran at once.
 
     async def _step_command(self, rule_id, step, tag):
         target_ieee = step["target_ieee"]
@@ -2044,8 +2137,13 @@ class AutomationEngine:
 
         task = asyncio.create_task(self._run_sequence(
             offer["rule_id"], offer["rule_name"], offer["accept_steps"], "ACCEPT"))
-        # Tracked like any other sequence so a shutdown does not orphan it.
-        self._running_sequences[f"offer:{token}"] = task
+        # Tracked like any other sequence so a shutdown does not orphan it, and
+        # untracked by its own task once finished rather than by rule id.
+        key = f"offer:{token}"
+        self._running_sequences[key] = task
+        task.add_done_callback(
+            lambda t, k=key: self._running_sequences.pop(k, None)
+            if self._running_sequences.get(k) is t else None)
         return {"success": True, "rule_id": offer["rule_id"],
                 "steps": len(offer["accept_steps"])}
 
@@ -2798,4 +2896,5 @@ class AutomationEngine:
                 "enabled_rules":sum(1 for r in self.rules if r.get("enabled",True)),
                 "trace_entries":len(self._trace_log),
                 "active_sustains":len(self._sustain_tracker),
-                "running_sequences":sum(1 for t in self._running_sequences.values() if not t.done())}
+                "running_sequences":sum(1 for t in self._running_sequences.values() if not t.done())
+                                    + sum(len(self._live_runs(r)) for r in list(self._rule_runs))}

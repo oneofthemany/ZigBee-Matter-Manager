@@ -71,6 +71,8 @@ class AutomationCreateRequest(BaseModel):
     conditions: Optional[List[ConditionItem]] = None
     # How the trigger conditions are joined: "and" (all) or "or" (any).
     condition_logic: str = "and"
+    # What firing again while still running does: restart | single | queued | parallel.
+    run_mode: str = "restart"
     attribute: Optional[str] = None
     operator: Optional[str] = None
     value: Optional[Any] = None
@@ -84,6 +86,7 @@ class AutomationUpdateRequest(BaseModel):
     name: Optional[str] = None
     conditions: Optional[List[ConditionItem]] = None
     condition_logic: Optional[str] = None
+    run_mode: Optional[str] = None
     prerequisites: Optional[List[PrerequisiteItem]] = None
     then_sequence: Optional[List[Dict[str, Any]]] = None
     else_sequence: Optional[List[Dict[str, Any]]] = None

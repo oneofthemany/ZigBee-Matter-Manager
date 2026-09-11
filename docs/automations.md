@@ -223,6 +223,29 @@ Action steps that execute when conditions transition from matched → unmatched.
 
 ![ELSE sequence builder with a delay step followed by a command step](./images/else-sequence-builder.png)
 
+### Run mode: firing again while still running
+
+A sequence can still be running when the rule fires again — the ELSE of a
+motion light whose "wait 60 s, then off" is under way when motion returns, or a
+doorbell announcement when the door opens again. **Fires again while running**
+(beside Cooldown) decides what happens:
+
+| Mode | Label | What happens |
+|------|-------|--------------|
+| `restart` | Restart it | The running sequence is cancelled and the new one starts. **The default**, and what every rule did before run modes existed — right for a motion light, where new motion should cancel the pending "off". |
+| `queued` | Queue it | The running sequence finishes, then the new one runs. Right for announcements and anything that must not be cut off halfway. |
+| `single` | Ignore it | The running sequence finishes and the new one is dropped. Right for a routine that should not stack, like a wake-up fade. |
+| `parallel` | Run both | The new sequence starts alongside the running one. |
+
+The run mode governs only whether a sequence *runs*: the rule's matched /
+unmatched state still follows its conditions. Under **Ignore it** a THEN dropped
+because the ELSE was still running is not replayed later, so pick it only for
+rules where that is what you want. Queued and parallel rules hold at most 10
+live runs (`MAX_RULE_RUNS`); a trigger beyond that is dropped and logged as
+`QUEUE_FULL`. Disabling or deleting a rule cancels its running and queued runs.
+
+On the wire it is `"run_mode": "queued"`; a rule without the key restarts.
+
 ---
 
 ## Step Types
@@ -334,8 +357,8 @@ The trace log shows real-time evaluation history for debugging automation behavi
 |---------|--------------------------------------------------------------------------|
 | Green   | SUCCESS, FIRING, COMPLETE, WAIT_MET, GATE_PASS, IF_TRUE, PARALLEL_DONE   |
 | Red     | FAIL, ERROR, EXCEPTION, MISSING, CMD_FAIL                                |
-| Yellow  | BLOCKED, SUSTAIN_WAIT, DELAY, WAITING                                    |
-| Blue    | CANCELLED, WAIT_TIMEOUT, IF_FALSE                                        |
+| Yellow  | BLOCKED, SUSTAIN_WAIT, DELAY, WAITING, RUN_SKIPPED, QUEUE_FULL           |
+| Blue    | CANCELLED, WAIT_TIMEOUT, IF_FALSE, QUEUED, DEQUEUED                      |
 
 Filter by a specific rule using the dropdown, or select **System** to see engine-level events.
 

@@ -11,7 +11,7 @@ import { state } from './state.js';
 import { initAutomationTab } from './modal/automation.js';
 import { initAIAutomations, renderAIChatPanel } from './ai-automations.js';
 import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
-import { createHumanizer, esc } from './automation-sentence.js';
+import { createHumanizer, esc, RUN_MODE_LABEL } from './automation-sentence.js';
 import { showToast, withBusy } from './utils.js';
 import { showSuggestionsTab, syncSuggestionsBadge } from './swarm-suggestions.js';
 
@@ -489,6 +489,7 @@ function _ruleCard(rule, src) {
                 ${_multiSourceChip(rule)}
                 ${stateChip}
                 ${rule.cooldown ? `<span class="ap-chip mut"><span class="num">⏱ ${rule.cooldown}s</span></span>` : ''}
+                ${RUN_MODE_LABEL[rule.run_mode] ? `<span class="ap-chip mut" title="What it does if it fires again while still running"><i class="fas fa-rotate"></i>${RUN_MODE_LABEL[rule.run_mode]}</span>` : ''}
             </div>
         </div>
         <div class="ap-flow">${flow}</div>

@@ -307,5 +307,12 @@ check('the rule joins the group to the rest with and', gt.includes(') and '), gt
 const leadGroup = H.triggerPhrase({ ...grouped, conditions: [grouped.conditions[0]] });
 check('a rule led by a group opens with the bracket', leadGroup.text.startsWith('('), leadGroup.text);
 
+section('the run mode is said only when it is not the default');
+const queuedText = H.rulePhrase({ ...multi, run_mode: 'queued' }).replace(/<[^>]*>/g, '');
+check('a queued rule says the repeat waits its turn', queuedText.includes('waits its turn'), queuedText);
+check('a restarting rule says nothing about it', !mt.includes('fires again'), mt);
+check('an old rule with no run mode says nothing either',
+      !H.rulePhrase({ ...multi, run_mode: undefined }).includes('fires again'));
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

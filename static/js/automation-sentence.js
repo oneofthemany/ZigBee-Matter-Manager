@@ -28,6 +28,15 @@ const CMD_VERB = {
     color_temp: 'Set colour of', position: 'Set position of',
 };
 
+// A rule's run mode, for rules that do not simply restart (the default).
+// Short labels for chips; phrases for the full sentence.
+export const RUN_MODE_LABEL = { single: 'ignores repeats', queued: 'queues repeats', parallel: 'runs repeats together' };
+const RUN_MODE_PHRASE = {
+    single: 'if it fires again while running, the new run is ignored',
+    queued: 'if it fires again while running, the new run waits its turn',
+    parallel: 'if it fires again while running, both run at once',
+};
+
 export function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -280,6 +289,8 @@ export function createHumanizer(ctx = {}) {
         h += `<div class="ap-seq-head"><strong>then</strong></div>${renderSeq(rule.then_sequence)}`;
         if ((rule.else_sequence || []).length)
             h += `<div class="ap-seq-head"><strong>otherwise</strong></div>${renderSeq(rule.else_sequence)}`;
+        if (RUN_MODE_PHRASE[rule.run_mode])
+            h += `<div class="ap-act"><i class="fas fa-rotate"></i><span>${RUN_MODE_PHRASE[rule.run_mode]}</span></div>`;
         return h;
     }
 

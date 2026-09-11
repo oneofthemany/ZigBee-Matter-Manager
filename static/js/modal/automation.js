@@ -12,7 +12,7 @@
 import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
-import { createHumanizer, esc } from '../automation-sentence.js';
+import { createHumanizer, esc, RUN_MODE_LABEL } from '../automation-sentence.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 // JSON destined for a single-quoted HTML attribute. An apostrophe anywhere in
@@ -326,6 +326,7 @@ function _renderRules(rules) {
                 <div class="flex-grow-1"><div class="mb-1">${nm}<code class="text-muted small">${rule.id}</code>${stB}${run}</div>${cH}${tH}${eH}</div>
                 <div class="d-flex gap-1 ms-2">
                     <span class="badge bg-secondary">${rule.cooldown||5}s</span>
+                    ${RUN_MODE_LABEL[rule.run_mode] ? `<span class="badge bg-light text-dark border" title="If it fires again while running">${RUN_MODE_LABEL[rule.run_mode]}</span>` : ''}
                     <button class="btn btn-sm btn-outline-secondary" onclick="window._aTraceR('${rule.id}')"><i class="fas fa-search"></i></button>
                     <button class="btn btn-sm btn-outline-primary" onclick="window._aEdit('${rule.id}')"><i class="fas fa-edit"></i></button>
                     <button class="btn btn-sm ${en?'btn-outline-success':'btn-outline-secondary'}" onclick="window._aToggle('${rule.id}')"><i class="fas fa-${en?'toggle-on':'toggle-off'}"></i></button>
@@ -356,6 +357,15 @@ function _seqSummary(steps, label, color) {
 }
 
 // FORM
+
+// Run modes (RUN_MODES in modules/automation.py): what a rule does if it fires
+// again while its sequence is still running. [value, label, explanation].
+const RUN_MODE_OPTS = [
+    ['restart',  'Restart it', 'Stop the running sequence and start the new one (default)'],
+    ['queued',   'Queue it',   'Let the running sequence finish, then run the new one'],
+    ['single',   'Ignore it',  'Let the running sequence finish and drop the new one'],
+    ['parallel', 'Run both',   'Start the new one alongside the running one'],
+];
 
 function _showForm(rule, forceNew = false) {
     const isE = !!rule; editingRuleId = (isE && !forceNew) ? rule.id : null;
@@ -388,6 +398,10 @@ function _showForm(rule, forceNew = false) {
             <div id="else-b"></div>${_addBtns('else')}</div>
         <div class="row g-2 mb-3 align-items-end">
             <div class="col-6 col-md-3"><label class="form-label small text-muted mb-0">Cooldown (s)</label><input type="number" class="form-control form-control-sm" id="a-cd" value="${isE?(rule.cooldown||5):5}" min="0"></div>
+            <div class="col-6 col-md-4"><label class="form-label small text-muted mb-0" for="a-mode">Fires again while running</label>
+                <select class="form-select form-select-sm" id="a-mode" title="What happens if the rule fires again before its sequence has finished">
+                    ${RUN_MODE_OPTS.map(([v,l,t]) => `<option value="${v}" title="${t}" ${((isE && rule.run_mode) || 'restart')===v?'selected':''}>${l}</option>`).join('')}
+                </select></div>
             <div class="col-6 col-md-4">
                 <button class="btn btn-sm btn-outline-secondary w-100" onclick="window._aToggleOptional()" id="a-opt-btn">
                     <i class="fas fa-sliders"></i> More options</button></div>
@@ -1670,7 +1684,8 @@ function _collectRule() {
     return {valid:true, body:{
         name:document.getElementById('a-name')?.value||'', source_ieee:currentSourceIeee,
         conditions, condition_logic:condLogic, prerequisites, then_sequence, else_sequence,
-        cooldown:parseInt(document.getElementById('a-cd')?.value)||5, enabled:true}};
+        cooldown:parseInt(document.getElementById('a-cd')?.value)||5,
+        run_mode:document.getElementById('a-mode')?.value||'restart', enabled:true}};
 }
 
 /**
@@ -1915,8 +1930,8 @@ async function _loadTr() {
             let cl='text-muted';
             if(r==='SUCCESS'||r.includes('FIRING')||r==='COMPLETE'||r==='WAIT_MET'||r==='GATE_PASS'||r==='IF_TRUE'||r==='PARALLEL_DONE')cl='text-success';
             else if(r.includes('FAIL')||r.includes('ERROR')||r==='EXCEPTION'||r.includes('MISSING')||r==='CMD_FAIL')cl='text-danger';
-            else if(r==='BLOCKED'||r==='SUSTAIN_WAIT'||r==='DELAY'||r==='WAITING')cl='text-warning';
-            else if(r==='CANCELLED'||r==='WAIT_TIMEOUT'||r==='IF_FALSE')cl='text-info';
+            else if(r==='BLOCKED'||r==='SUSTAIN_WAIT'||r==='DELAY'||r==='WAITING'||r==='RUN_SKIPPED'||r==='QUEUE_FULL')cl='text-warning';
+            else if(r==='CANCELLED'||r==='WAIT_TIMEOUT'||r==='IF_FALSE'||r==='QUEUED'||r==='DEQUEUED')cl='text-info';
             h+=`<div class="border-bottom py-1 ${cl}"><span class="text-muted">${ts}</span> <span class="badge bg-dark">${e.phase||''}</span> <span class="badge bg-secondary">${r}</span> `;
             if(e.rule_id&&e.rule_id!=='-')h+=`<code>${e.rule_id}</code> `;
             h+=e.message||'';
