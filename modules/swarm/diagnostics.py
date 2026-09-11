@@ -19,6 +19,7 @@ import logging
 import time
 from typing import Any, Dict, Iterable, List, Optional
 
+from modules.automation import iter_leaf_conditions
 from modules.swarm.capabilities import CAPABILITIES
 from modules.swarm.dedupe import signature
 from modules.swarm.stigmergy import get_stigmergy_store
@@ -356,7 +357,8 @@ def _check_rules(rules: List[Dict[str, Any]],
             continue
         # Every trigger device counts: a condition may name its own device.
         srcs = [rule.get("source_ieee")] + [
-            c.get("ieee") for c in rule.get("conditions") or [] if c.get("ieee")]
+            c.get("ieee") for c in iter_leaf_conditions(rule.get("conditions"))
+            if c.get("ieee")]
         missing = [s for s in dict.fromkeys(srcs)
                    if s and s != "__time__" and s not in known]
         if missing:

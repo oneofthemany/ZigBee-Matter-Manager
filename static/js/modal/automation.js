@@ -273,33 +273,36 @@ function _renderRules(rules) {
 
         let cH = '';
         const isOr = rule.condition_logic === 'or';
-        (rule.conditions||[]).forEach((c,i) => {
-            const p = i===0 ? '<strong class="text-primary">IF</strong>'
-                : (isOr ? '<strong style="color:#6f42c1">OR</strong>'
-                        : '<strong class="text-warning">AND</strong>');
-            let cDesc;
+        const joinWord = logic => logic === 'or'
+            ? '<strong style="color:#6f42c1">OR</strong>' : '<strong class="text-warning">AND</strong>';
+        const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+        // One condition as text. A group is its members in brackets, joined by
+        // its own logic, so "(A or B) and C" reads the way it evaluates.
+        const desc = c => {
+            if (c.type === 'group')
+                return `( ${(c.conditions||[]).map(desc).join(` ${joinWord(c.condition_logic)} `)} )`;
             if (c.type === 'time_window') {
-                const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                 const neg = c.negate ? '<span class="badge bg-danger ms-1">NOT</span>' : '';
-                cDesc = `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
-            } else if (c.type === 'time') {
-                const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-                const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
-                cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
-            } else if (c.type === 'zone') {
-                cDesc = `${c.ieee?`${esc(c.device_name||c.ieee)} `:''}${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
-            } else if (c.type === 'sun') {
-                cDesc = _sunDesc(c);
-            } else {
-                const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
-                const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
-                // A condition on another device says which — the rule card sits
-                // under its source, so an unnamed one reads as the source's.
-                const who = c.ieee ? `${esc(c.device_name||c.ieee)} ` : '';
-                cDesc = `${who}<code>${c.attribute}</code> ${OP[c.operator]||c.operator} <code>${dispVal}</code>${sus}`;
+                return `${neg} Time <code>${c.time_from} → ${c.time_to}</code> <span class="text-muted">${dayStr}</span>`;
             }
-            cH += `<div class="small">${p} ${cDesc}</div>`;
+            if (c.type === 'time') {
+                const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
+                return `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
+            }
+            if (c.type === 'zone')
+                return `${c.ieee?`${esc(c.device_name||c.ieee)} `:''}${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
+            if (c.type === 'sun') return _sunDesc(c);
+            const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
+            const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
+            // A condition on another device says which — the rule card sits
+            // under its source, so an unnamed one reads as the source's.
+            const who = c.ieee ? `${esc(c.device_name||c.ieee)} ` : '';
+            return `${who}<code>${c.attribute}</code> ${OP[c.operator]||c.operator} <code>${dispVal}</code>${sus}`;
+        };
+        (rule.conditions||[]).forEach((c,i) => {
+            const p = i===0 ? '<strong class="text-primary">IF</strong>' : joinWord(isOr ? 'or' : 'and');
+            cH += `<div class="small">${p} ${desc(c)}</div>`;
         });
         (rule.prerequisites||[]).forEach(p => {
             const neg = p.negate?'<span class="badge bg-danger ms-1">NOT</span>':'';
@@ -373,7 +376,8 @@ function _showForm(rule, forceNew = false) {
                     <option value="and">Match ALL (AND)</option>
                     <option value="or">Match ANY (OR)</option>
                 </select>
-                <button class="btn btn-sm btn-outline-primary" onclick="window._aAddCond()"><i class="fas fa-plus"></i></button>
+                <button class="btn btn-sm btn-outline-primary" onclick="window._aAddCond()" title="Add a condition"><i class="fas fa-plus"></i></button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="window._aAddGroup()" title="Add a group of conditions with its own All / Any — e.g. (A or B) and C"><i class="fas fa-layer-group me-1"></i>Group</button>
             </div></div><div id="cb"></div></div>
         <div class="mb-3 a-optional" id="a-prereq-sec"><div class="d-flex justify-content-between mb-1"><label class="form-label fw-bold small mb-0">Prerequisites <span class="text-muted fw-normal">(optional, supports NOT)</span></label>
             <button class="btn btn-sm btn-outline-info" onclick="window._aAddPrereq()"><i class="fas fa-plus"></i></button></div><div id="pb"></div></div>
@@ -402,17 +406,27 @@ function _showForm(rule, forceNew = false) {
     el.addEventListener('change', window._aPreview);
 
     // Conditions
-    condRows=[]; condIdC=0; condSrc={};
+    condRows=[]; condIdC=0; condGroupC=0; condSrc={};
     condLogic = (isE && rule.condition_logic === 'or') ? 'or' : 'and';
     const clSel = document.getElementById('a-clogic'); if(clSel) clSel.value = condLogic;
-    if(isE && rule.conditions?.length) rule.conditions.forEach(()=>condRows.push(condIdC++));
-    else condRows.push(condIdC++);
+    // A saved group becomes a group of rows. `fill` pairs every row with the
+    // saved condition it shows, groups flattened.
+    const fill = [];
+    if(isE && rule.conditions?.length) {
+        rule.conditions.forEach(c => {
+            if (c.type === 'group') {
+                const g = {gid:`g${condGroupC++}`, logic: c.condition_logic==='or'?'or':'and', rows:[]};
+                (c.conditions||[]).forEach(cc => { const id=condIdC++; g.rows.push(id); fill.push([id, cc]); });
+                condRows.push(g);
+            } else { const id=condIdC++; condRows.push(id); fill.push([id, c]); }
+        });
+    } else condRows.push(condIdC++);
     _refConds();
-    if(isE && rule.conditions) setTimeout(async()=>{
+    if(fill.length) setTimeout(async()=>{
         // Every other device the conditions read is loaded before the rows are
         // filled, so each row renders with its own device's attributes.
-        await Promise.all(rule.conditions.map(c => _ensureAttrs(c.ieee)));
-        rule.conditions.forEach((c,i)=>{if(condRows[i]!==undefined)_setC(condRows[i],c);});
+        await Promise.all(fill.map(([, c]) => _ensureAttrs(c.ieee)));
+        fill.forEach(([id, c]) => _setC(id, c));
         _refCondChrome();
         window._aPreview();
     },50);
@@ -503,11 +517,38 @@ function _vI(cls, id, opts, cur, idAttr = 'data-id') {
 
 // CONDITIONS + PREREQUISITES (same pattern as before)
 
-// Joiner badge shown on the 2nd+ condition row — OR gets its own colour so a
-// glance at the rows tells you which way the rule combines.
-const _joinBadge = () => condLogic === 'or'
-    ? `<span class="badge small" style="background:#6f42c1">OR</span>`
-    : `<span class="badge bg-warning text-dark small">AND</span>`;
+// Trigger layout: condRows holds row ids (one condition each) and groups,
+// {gid, logic, rows:[row ids]}. A group's rows combine by its own logic and the
+// group joins its siblings by condLogic — "(A or B) and C". One level deep, as
+// the engine allows.
+let condGroupC = 0;
+const _isGroup = x => typeof x === 'object' && x !== null;
+const _groupOf = id => condRows.find(x => _isGroup(x) && x.rows.includes(id)) || null;
+const _findGroup = gid => condRows.find(x => _isGroup(x) && x.gid === gid) || null;
+const _leafIds = () => condRows.flatMap(x => _isGroup(x) ? x.rows : [x]);
+// MAX_CONDITIONS_PER_RULE and MAX_CONDITIONS_PER_GROUP in modules/automation.py.
+const MAX_TOP_CONDS = 5, MAX_GROUP_CONDS = 5;
+
+// Joiner badge — OR gets its own colour so a glance at the rows tells you which
+// way they combine. c-join marks it for swapping in place.
+const _joinBadge = (logic = condLogic) => logic === 'or'
+    ? `<span class="badge small c-join" style="background:#6f42c1">OR</span>`
+    : `<span class="badge bg-warning text-dark small c-join">AND</span>`;
+const _ifBadge = () => `<span class="badge bg-primary small c-join">IF</span>`;
+// A group's first row joins nothing inside the group; a quiet mark keeps the
+// rows lined up.
+const _groupLeadBadge = () => `<span class="badge bg-light text-muted border small c-join">•</span>`;
+
+/** The badge a row shows for where it sits: first, or joined by its level's logic. */
+function _rowBadge(id) {
+    const g = _groupOf(id);
+    if (g) return g.rows.indexOf(id) === 0 ? _groupLeadBadge() : _joinBadge(g.logic);
+    return condRows.indexOf(id) === 0 ? _ifBadge() : _joinBadge(condLogic);
+}
+// Any row may go while another remains — a rule needs at least one condition.
+const _rmBtn = id => _leafIds().length > 1
+    ? `<button class="btn btn-sm btn-outline-danger c-rm" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>`
+    : '<div class="c-rm" style="width:31px"></div>';
 
 // The device a condition row reads: its own pick, else the rule's source.
 const _rowSrc = id => condSrc[id] || currentSourceIeee;
@@ -541,9 +582,8 @@ function _renderCond(id, ctype) {
     ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
     const src = _rowSrc(id);
     const opts = _attrOptions(_rowAttrs(id), _dtype(src));
-    const idx=condRows.indexOf(id);
-    const badge = idx===0 ? `<span class="badge bg-primary small">IF</span>` : _joinBadge();
-    const rmBtn = idx>0 ? `<button class="btn btn-sm btn-outline-danger" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>` : '<div style="width:31px"></div>';
+    const badge = _rowBadge(id);
+    const rmBtn = _rmBtn(id);
     const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     const dayBoxes = DAYS.map((d,i) => `<label class="me-1 small"><input type="checkbox" class="ctd" data-id="${id}" data-day="${i}" checked> ${d}</label>`).join('');
     const attrRow = `
@@ -583,28 +623,53 @@ function _renderCond(id, ctype) {
         <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
-function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(id=>_renderCond(id)).join('');_refCondChrome();}
+// A group box: its own All/Any, its rows, and a header badge joining it to the
+// rule's other conditions.
+function _renderGroup(g) {
+    const lead = condRows.indexOf(g) === 0 ? _ifBadge() : _joinBadge(condLogic);
+    return `<div class="border rounded px-2 pt-2 pb-1 mb-1 a-cgroup" id="cg-${g.gid}">
+        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+            <span class="cg-join">${lead}</span>
+            <select class="form-select form-select-sm cg-logic" style="width:auto" title="How the conditions in this group combine" onchange="window._aGLogic('${g.gid}',this.value)">
+                <option value="and" ${g.logic==='and'?'selected':''}>All of these</option>
+                <option value="or" ${g.logic==='or'?'selected':''}>Any of these</option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary py-0" title="Add a condition to this group" onclick="window._aAddCond('${g.gid}')"><i class="fas fa-plus"></i></button>
+            <button class="btn btn-sm btn-outline-danger py-0 ms-auto" title="Remove this group" onclick="window._aRmG('${g.gid}')"><i class="fas fa-times"></i></button>
+        </div>
+        <div id="cg-rows-${g.gid}">${g.rows.map(id => _renderCond(id)).join('')}</div>
+    </div>`;
+}
+function _refConds(){const el=document.getElementById('cb');if(el)el.innerHTML=condRows.map(x=>_isGroup(x)?_renderGroup(x):_renderCond(x)).join('');_refCondChrome();}
 
 // Bits of the form that depend on which condition rows exist right now.
 function _refCondChrome(){
-    // The AND/OR picker only means something with 2+ conditions.
+    // The AND/OR picker only means something with 2+ top-level items.
     const sel=document.getElementById('a-clogic');
     if(sel)sel.style.display=condRows.length>1?'':'none';
+    _refJoinBadges();
     // Zone rules never run their ELSE — say so where the ELSE steps are added.
     const note=document.getElementById('a-else-note');
     if(note){
-        const hasZone=condRows.some(id=>document.querySelector(`.ctype[data-id="${id}"]`)?.value==='zone');
+        const hasZone=_leafIds().some(id=>document.querySelector(`.ctype[data-id="${id}"]`)?.value==='zone');
         note.style.display=hasZone?'':'none';
     }
 }
 
-// Swap the joiner badges in place — re-rendering the rows would wipe values.
+// Swap badges and remove buttons in place — re-rendering the rows would wipe
+// whatever has been typed into them.
 function _refJoinBadges(){
-    condRows.forEach((id,idx)=>{
-        if(idx===0)return;
-        const row=document.getElementById(`c-${id}`);
-        const b=row?.querySelector('.badge');
-        if(b)b.outerHTML=_joinBadge();
+    const swap = (el, sel, html) => { const n = el?.querySelector(sel); if (n) n.outerHTML = html; };
+    condRows.forEach((item, idx) => {
+        if (_isGroup(item)) {
+            const head = document.querySelector(`#cg-${item.gid} .cg-join`);
+            if (head) head.innerHTML = idx === 0 ? _ifBadge() : _joinBadge(condLogic);
+        }
+        (_isGroup(item) ? item.rows : [item]).forEach(id => {
+            const row = document.getElementById(`c-${id}`);
+            swap(row, '.c-join', _rowBadge(id));
+            swap(row, '.c-rm', _rmBtn(id));
+        });
     });
 }
 function _setC(id,c){
@@ -1282,13 +1347,53 @@ window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)retur
             if(opV==='in'||opV==='nin'){w.innerHTML=`<input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="val1, val2, ...">`;}
             else{w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);}}};}
     const w=document.getElementById(`cv-${id}`);if(w)w.innerHTML=_valueInput('cv',id,srcType,attr,typ,dflt,vo);};
-window._aAddCond=()=>{if(condRows.length>=5)return;const nid=condIdC++;condRows.push(nid);const el=document.getElementById('cb');if(el)el.insertAdjacentHTML('beforeend',_renderCond(nid));_refCondChrome();};
-window._aRmC=id=>{condRows=condRows.filter(r=>r!==id);const row=document.getElementById(`c-${id}`);if(row)row.remove();
-    if(condRows.length>0){const first=document.getElementById(`c-${condRows[0]}`);if(first){const b=first.querySelector('.badge');if(b){b.outerHTML='<span class="badge bg-primary small">IF</span>';}
-        const rm=first.querySelector('.btn-outline-danger');if(rm)rm.closest('.col-auto').innerHTML='<div style="width:31px"></div>';}}
-    _refCondChrome();};
+// Add a condition row — at the top level, or inside the group gid names.
+window._aAddCond = gid => {
+    const g = gid ? _findGroup(gid) : null;
+    const sibs = g ? g.rows : condRows;
+    if (sibs.length >= (g ? MAX_GROUP_CONDS : MAX_TOP_CONDS)) return;
+    const nid = condIdC++;
+    sibs.push(nid);
+    document.getElementById(g ? `cg-rows-${gid}` : 'cb')?.insertAdjacentHTML('beforeend', _renderCond(nid));
+    _refCondChrome();
+    window._aPreview();
+};
+// A group starts with two rows — one would be pointless — and the opposite
+// logic to the rule's, since that is usually the reason to group.
+window._aAddGroup = () => {
+    if (condRows.length >= MAX_TOP_CONDS) return;
+    const g = {gid: `g${condGroupC++}`, logic: condLogic === 'or' ? 'and' : 'or', rows: [condIdC++, condIdC++]};
+    condRows.push(g);
+    document.getElementById('cb')?.insertAdjacentHTML('beforeend', _renderGroup(g));
+    _refCondChrome();
+    window._aPreview();
+};
+window._aRmC = id => {
+    if (_leafIds().length <= 1) return;
+    const g = _groupOf(id);
+    if (g) {
+        g.rows = g.rows.filter(r => r !== id);
+        // An emptied group has nothing left to say.
+        if (!g.rows.length) { condRows = condRows.filter(x => x !== g); document.getElementById(`cg-${g.gid}`)?.remove(); }
+    } else condRows = condRows.filter(r => r !== id);
+    document.getElementById(`c-${id}`)?.remove();
+    delete condSrc[id];
+    _refCondChrome();
+    window._aPreview();
+};
+window._aRmG = gid => {
+    const g = _findGroup(gid);
+    if (!g) return;
+    if (_leafIds().length - g.rows.length < 1) return window.toast.warning('A rule needs at least one condition.');
+    condRows = condRows.filter(x => x !== g);
+    g.rows.forEach(id => delete condSrc[id]);
+    document.getElementById(`cg-${gid}`)?.remove();
+    _refCondChrome();
+    window._aPreview();
+};
 // AND = every condition must hold. OR = any one of them firing is enough.
 window._aCLogic=v=>{condLogic=(v==='or')?'or':'and';_refJoinBadges();};
+window._aGLogic=(gid,v)=>{const g=_findGroup(gid);if(!g)return;g.logic=(v==='or')?'or':'and';_refJoinBadges();};
 // "Any place" already covers everything, so it and a specific pick are mutually
 // exclusive rather than additive.
 window._aCZP=(id,cb)=>{
@@ -1457,31 +1562,34 @@ window._aDel=async id=>{if(!await window.zbmConfirm({title:'Delete automation',m
  * mid-edit).
  */
 function _collectRule() {
-    const conditions=[]; let valid=true;
-    condRows.forEach(id=>{
+    // One condition row as a condition, or null while it is incomplete.
+    const collectOne = id => {
         const row=document.getElementById(`c-${id}`);
-        if(!row)return;
+        if(!row)return null;
         const ctype=row.querySelector('.ctype')?.value||'attribute';
         if(ctype==='time_window'){
             const tf=row.querySelector('.ct-from')?.value;
             const tt=row.querySelector('.ct-to')?.value;
-            if(!tf||!tt){valid=false;return;}
+            if(!tf||!tt)return null;
             const neg=row.querySelector('.cn')?.checked||false;
             const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
-            conditions.push({type:'time_window',time_from:tf,time_to:tt,days,negate:neg});
-        } else if(ctype==='time'){
+            return {type:'time_window',time_from:tf,time_to:tt,days,negate:neg};
+        }
+        if(ctype==='time'){
             const at=row.querySelector('.ct-at')?.value;
-            if(!at){valid=false;return;}
+            if(!at)return null;
             const days=[];row.querySelectorAll('.ctd').forEach(cb=>{if(cb.checked)days.push(parseInt(cb.dataset.day));});
-            conditions.push({type:'time',at,days});
-        } else if(ctype==='zone'){
+            return {type:'time',at,days};
+        }
+        if(ctype==='zone'){
             const ev=row.querySelector('.cz-ev')?.value||'enter';
             const picked=[];row.querySelectorAll('.czp').forEach(cb=>{if(cb.checked)picked.push(cb.dataset.place);});
-            if(!picked.length){valid=false;return;}
+            if(!picked.length)return null;
             // One place stays a plain string; several become a single zone.
             const place=picked.includes('any')?'any':(picked.length===1?picked[0]:picked);
-            conditions.push({type:'zone',event:ev,place,...(condSrc[id]?{ieee:condSrc[id]}:{})});
-        } else if(ctype==='sun'){
+            return {type:'zone',event:ev,place,...(condSrc[id]?{ieee:condSrc[id]}:{})};
+        }
+        if(ctype==='sun'){
             const frm=row.querySelector('.cs-from')?.value||'sunset';
             const to=row.querySelector('.cs-to')?.value||'sunrise';
             const neg=row.querySelector('.cn')?.checked||false;
@@ -1490,22 +1598,31 @@ function _collectRule() {
             const c={type:'sun',from:frm,to:to,negate:neg};
             if(!isNaN(offF))c.offset_from=offF;
             if(!isNaN(offT))c.offset_to=offT;
-            conditions.push(c);
-        } else {
-            const a=row.querySelector('.ca')?.value,o=row.querySelector('.co')?.value;
-            const vE=row.querySelector(`#cv-${id} .cv`),r=vE?.value,s=row.querySelector('.cs')?.value;
-            if(!a||!o||r===undefined||r===''){valid=false;return;}
-            const ai=_rowAttrs(id).find(x=>x.attribute===a);
-            let value;
-            if(o==='in'||o==='nin'){value=String(r).split(',').map(v=>_ct(v.trim(),ai?.type));}
-            else{value=_ct(r,ai?.type);}
-            const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);
-            // Only a row reading another device names one, so a rule that never
-            // picks one saves exactly as it always did.
-            if(condSrc[id])c.ieee=condSrc[id];
-            conditions.push(c);
+            return c;
         }
-    });
+        const a=row.querySelector('.ca')?.value,o=row.querySelector('.co')?.value;
+        const vE=row.querySelector(`#cv-${id} .cv`),r=vE?.value,s=row.querySelector('.cs')?.value;
+        if(!a||!o||r===undefined||r==='')return null;
+        const ai=_rowAttrs(id).find(x=>x.attribute===a);
+        let value;
+        if(o==='in'||o==='nin'){value=String(r).split(',').map(v=>_ct(v.trim(),ai?.type));}
+        else{value=_ct(r,ai?.type);}
+        const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);
+        // Only a row reading another device names one, so a rule that never
+        // picks one saves exactly as it always did.
+        if(condSrc[id])c.ieee=condSrc[id];
+        return c;
+    };
+    // Groups keep their shape. A row still being filled in leaves the whole
+    // rule incomplete, wherever it sits.
+    const conditions=[]; let valid=true;
+    for(const item of condRows){
+        const c=_isGroup(item)
+            ? {type:'group',condition_logic:item.logic,conditions:item.rows.map(collectOne)}
+            : collectOne(item);
+        if(!c||(c.type==='group'&&(!c.conditions.length||c.conditions.some(x=>!x)))){valid=false;break;}
+        conditions.push(c);
+    }
     if(!valid||!conditions.length) return {valid:false, error:'Fill all conditions.'};
 
     const prerequisites = [];
@@ -1807,10 +1924,14 @@ async function _loadTr() {
                 // OR rules log every condition they checked, so say which way they
                 // combine — otherwise a FAIL line looks like the rule should be dead.
                 if(e.condition_logic==='or')h+='<div class="small" style="color:#6f42c1">any one of (OR):</div>';
-                e.conditions.forEach(c=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
+                // A group result holds its members' results; they are shown
+                // beneath it, indented, so the brackets read as they evaluated.
+                const condLine=(c,depth)=>{const cc=c.result==='PASS'?'text-success':c.result==='SUSTAIN_WAIT'?'text-warning':'text-danger';
                 let cLine;
                 const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-                if(c.type==='time_window'){
+                if(c.type==='group'){
+                    cLine=`#${c.index} group — ${c.condition_logic==='or'?'any':'all'} of:`;
+                }else if(c.type==='time_window'){
                     const dayStr=(!c.days||c.days.length===7)?'Every day':c.days.map(d=>DAY_NAMES[d]).join(',');
                     cLine=`#${c.index} Time${c.negate?' NOT':''} ${c.time_from}→${c.time_to} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
                 }else if(c.type==='time'){
@@ -1825,7 +1946,10 @@ async function _loadTr() {
                     cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → ${c.actual_raw||'?'} (${c.actual_type||''})`;
                     if(c.sustain_elapsed!=null)cLine+=` ⏱${c.sustain_elapsed}s`;if(c.value_source)cLine+=` ${c.value_source}`;
                 }
-                h+=`<div class="${cc}">${cLine} [${c.result}]`;if(c.reason)h+=` — ${c.reason}`;h+='</div>';});h+='</div>';}
+                let out=`<div class="${cc}" style="margin-left:${depth}rem">${cLine} [${c.result}]`;if(c.reason)out+=` — ${c.reason}`;out+='</div>';
+                (c.type==='group'?c.conditions||[]:[]).forEach(k=>{out+=condLine(k,depth+1);});
+                return out;};
+                e.conditions.forEach(c=>{h+=condLine(c,0);});h+='</div>';}
             if(e.prerequisites?.length){h+='<div class="ms-3">';e.prerequisites.forEach(p=>{const pc=p.result==='PASS'?'text-success':'text-danger';
                 const DAY_NAMES=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
                 let pLine;

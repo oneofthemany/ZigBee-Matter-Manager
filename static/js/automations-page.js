@@ -67,7 +67,9 @@ let locationConfigured = true;   // false → sun/sunrise-sunset can't resolve
 
 // A rule "uses sun" if any condition OR prerequisite is a dynamic sun window.
 function _ruleUsesSun(r) {
-    const has = arr => Array.isArray(arr) && arr.some(c => c && c.type === 'sun');
+    // Condition groups hold conditions too, so they are looked inside.
+    const has = arr => Array.isArray(arr) && arr.some(c => c
+        && (c.type === 'sun' || (c.type === 'group' && has(c.conditions))));
     return has(r.conditions) || has(r.prerequisites);
 }
 

@@ -19,6 +19,10 @@ class ConditionItem(BaseModel):
     # The device this condition reads. Absent means the rule's source_ieee, so
     # one rule can trigger on several devices joined by condition_logic.
     ieee: Optional[str] = None
+    # group fields — a nested block with its own AND/OR, joined to its siblings
+    # by the rule's condition_logic ("(A and B) or C"). One level deep.
+    condition_logic: Optional[str] = None
+    conditions: Optional[List["ConditionItem"]] = None
     attribute: Optional[str] = None
     operator: Optional[str] = None
     value: Optional[Any] = None
@@ -38,6 +42,9 @@ class ConditionItem(BaseModel):
     sun_to: Optional[str] = Field(default=None, alias="to")
     offset_from: Optional[float] = None
     offset_to: Optional[float] = None
+
+
+ConditionItem.model_rebuild()          # resolve the self-reference for groups
 
 class PrerequisiteItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -95,7 +102,10 @@ def _conds_to_dicts(items):
     if not items: return []
     r = []
     for c in items:
-        if c.type == "time_window":
+        if c.type == "group":
+            r.append({"type": "group", "condition_logic": c.condition_logic or "and",
+                      "conditions": _conds_to_dicts(c.conditions)})
+        elif c.type == "time_window":
             r.append({"type": "time_window", "time_from": c.time_from, "time_to": c.time_to,
                       "days": c.days if c.days is not None else list(range(7)), "negate": c.negate})
         elif c.type == "time":

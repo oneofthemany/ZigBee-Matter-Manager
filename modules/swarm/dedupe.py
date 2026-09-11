@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
+from modules.automation import iter_leaf_conditions
+
 logger = logging.getLogger("modules.swarm.dedupe")
 
 Signature = Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...]]
@@ -63,7 +65,7 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
     """
     out: Set[str] = set()
     source = rule.get("source_ieee")
-    for c in rule.get("conditions") or []:
+    for c in iter_leaf_conditions(rule.get("conditions")):
         ctype = c.get("type", "attribute")
         # A condition reading another device is qualified by it, so a rule on
         # A that watches B's occupancy does not sign the same as A's own.
@@ -122,7 +124,7 @@ def coverage(described: List[Dict[str, Any]],
     sources = {str(r.get("source_ieee")) for r in rules}
     # A device a trigger condition names takes part as much as the source does.
     sources |= {str(c["ieee"]) for r in rules
-                for c in r.get("conditions") or [] if c.get("ieee")}
+                for c in iter_leaf_conditions(r.get("conditions")) if c.get("ieee")}
     targets = {t for r in rules for t, _ in _targets(r)}
     involved = sources | targets
 

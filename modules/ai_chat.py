@@ -127,13 +127,14 @@ class AIChat:
 
     @staticmethod
     def _fmt_conditions(conds: List[Dict]) -> str:
-        out = []
-        for c in conds:
+        def one(c: Dict) -> str:
+            if c.get("type") == "group":
+                joiner = " or " if c.get("condition_logic") == "or" else " and "
+                return "(" + joiner.join(one(k) for k in c.get("conditions") or []) + ")"
             if c.get("type") == "time_window":
-                out.append(f"time {c.get('time_from')}-{c.get('time_to')}")
-            else:
-                out.append(f"{c.get('attribute')} {c.get('operator')} {c.get('value')}")
-        return " and ".join(out) or "(none)"
+                return f"time {c.get('time_from')}-{c.get('time_to')}"
+            return f"{c.get('attribute')} {c.get('operator')} {c.get('value')}"
+        return " and ".join(one(c) for c in conds) or "(none)"
 
     @staticmethod
     def _fmt_prereqs(prereqs: List[Dict]) -> str:

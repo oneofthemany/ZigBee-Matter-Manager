@@ -957,8 +957,10 @@ class WorkerManager:
             worker = self.by_ieee(rule.get("source_ieee", ""))
             if worker:
                 found[worker.id]["triggers"].append(rule["id"])
-            # A trigger condition may read a worker other than the source.
-            for cond in rule.get("conditions") or []:
+            # A trigger condition may read a worker other than the source, and
+            # may sit inside a condition group.
+            from modules.automation import iter_leaf_conditions
+            for cond in iter_leaf_conditions(rule.get("conditions")):
                 cw = self.by_ieee(cond.get("ieee", "") or "")
                 if cw and rule["id"] not in found[cw.id]["triggers"]:
                     found[cw.id]["triggers"].append(rule["id"])

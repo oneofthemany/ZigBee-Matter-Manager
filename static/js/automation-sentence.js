@@ -121,6 +121,14 @@ export function createHumanizer(ctx = {}) {
         const who = (c && c.ieee) || rule.source_ieee;
         const src = resolve(who);
         if (!c) return { icon: src.type, text: `${devSpan(rule.source_ieee)} changes`, raw: '' };
+        // A group leads with its members in brackets, under its first member's icon.
+        if (c.type === 'group') {
+            const g = condPhrase(c, rule.source_ieee);
+            const first = (c.conditions || [])[0] || {};
+            const type = ['time_window', 'time', 'sun'].includes(first.type)
+                ? 'time' : resolve(first.ieee || rule.source_ieee).type;
+            return { icon: type, text: g.text, raw: g.raw };
+        }
         if (c.type === 'time_window')
             return { icon: 'time', text: `it's ${timePhrase(c.time_from, c.time_to)}, ${daySpan(c.days)}`,
                      raw: `time_window ${c.time_from}–${c.time_to}` };
@@ -144,6 +152,14 @@ export function createHumanizer(ctx = {}) {
     // which callers pass for trigger conditions and omit for prerequisites.
     function condPhrase(p, sourceIeee) {
         const neg = p.negate ? '<span class="neg">NOT</span>' : '';
+        // A group reads as its members in brackets, joined by its own logic —
+        // "(Front Door opens or Back Door opens)" — the way it evaluates.
+        if (p.type === 'group') {
+            const or = p.condition_logic === 'or';
+            const parts = (p.conditions || []).map(c => condPhrase(c, sourceIeee));
+            return { text: `(${parts.map(x => x.text).join(or ? ' or ' : ' and ')})`,
+                     raw: parts.map(x => x.raw).join(or ? ' | ' : ' & ') };
+        }
         if (p.type === 'zone') {
             const who = p.ieee || sourceIeee;
             return { text: `${who ? devSpan(who) + ' ' : ''}${zoneVerb(p)}`,

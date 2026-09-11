@@ -286,5 +286,26 @@ const zp = H.condPhrase({ type: 'zone', ieee: 'user::charlie', event: 'leave', p
 check('a zone condition on another person names that person',
       zp.text.includes('Charlie') && !zp.text.includes('Sean'), zp.text);
 
+section('a condition group reads in brackets, joined by its own logic');
+const grouped = {
+  source_ieee: '0xradar',
+  condition_logic: 'and',
+  conditions: [
+    { type: 'group', condition_logic: 'or', conditions: [
+      { type: 'attribute', ieee: '0xdoor', attribute: 'contact', operator: 'eq', value: false },
+      { type: 'attribute', attribute: 'presence', operator: 'eq', value: true },
+    ] },
+    { type: 'time_window', time_from: '18:00', time_to: '23:00' },
+  ],
+  then_sequence: [{ type: 'command', target_ieee: '0xlight', command: 'on' }],
+};
+const gt = H.rulePhrase(grouped).replace(/<[^>]*>/g, '');
+console.log('    →  ' + gt.replace(/\s+/g, ' ').trim());
+check('the group is bracketed with its members joined by or',
+      /\(Front Door .* or Radar - Hallway .*\)/.test(gt), gt);
+check('the rule joins the group to the rest with and', gt.includes(') and '), gt);
+const leadGroup = H.triggerPhrase({ ...grouped, conditions: [grouped.conditions[0]] });
+check('a rule led by a group opens with the bracket', leadGroup.text.startsWith('('), leadGroup.text);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

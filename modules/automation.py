@@ -72,6 +72,30 @@ MAX_PLACES_PER_ZONE = 16
 EVENT_ATTRS = frozenset({"action", "click", "button_action", "event", "scene",
                          "command"})
 
+# A condition may be a group — {"type": "group", "condition_logic": "and"|"or",
+# "conditions": [...]} — which its siblings see as one condition: that is what
+# "(A and B) or C" needs. One level deep: a group holds plain conditions.
+MAX_CONDITIONS_PER_GROUP = 5
+
+# How long after a sustain's deadline its re-check runs. The deadline itself is
+# exact; the slack only has to cover a timer firing a hair early.
+SUSTAIN_RECHECK_SLACK = 0.25
+
+
+def iter_leaf_conditions(conditions):
+    """Every plain condition in a condition list, looking inside groups.
+
+    Anything asking which devices, attributes or clock times a rule reads must
+    ask the leaves: a group reads nothing itself.
+    """
+    for c in conditions or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "group":
+            yield from iter_leaf_conditions(c.get("conditions"))
+        else:
+            yield c
+
 OPERATORS = {
     "eq":  lambda a, b: a == b,
     "neq": lambda a, b: a != b,
@@ -142,6 +166,9 @@ class AutomationEngine:
         self._source_index: Dict[str, List[str]] = {}
         self._cooldowns: Dict[str, float] = {}
         self._sustain_tracker: Dict[str, float] = {}
+        # rule_id -> the task that re-evaluates the rule when its soonest
+        # pending sustain runs out. See _schedule_sustain_recheck.
+        self._sustain_timers: Dict[str, asyncio.Task] = {}
         self._rule_states: Dict[str, Optional[str]] = {}
         # Per source device, its state as of the previous evaluation: by the time
         # evaluate() runs device.state already holds the new value, so zone
@@ -216,6 +243,9 @@ class AutomationEngine:
 
     async def stop(self):
         """Stop background tasks."""
+        for task in list(self._sustain_timers.values()):
+            task.cancel()
+        self._sustain_timers.clear()
         if self._time_scheduler_task:
             self._time_scheduler_task.cancel()
             try:
@@ -292,7 +322,7 @@ class AutomationEngine:
         conditions watch the one attribute a person's location lives in.
         """
         watched = set()
-        for c in conditions:
+        for c in iter_leaf_conditions(conditions):
             ctype = c.get("type", "attribute")
             if ctype in TEMPORAL_TYPES:
                 continue
@@ -304,7 +334,7 @@ class AutomationEngine:
 
     @staticmethod
     def _has_zone(conditions) -> bool:
-        return any(c.get("type") == "zone" for c in conditions)
+        return any(c.get("type") == "zone" for c in iter_leaf_conditions(conditions))
 
     @staticmethod
     def _condition_logic(rule) -> str:
@@ -329,7 +359,8 @@ class AutomationEngine:
         then each other device a trigger condition names."""
         out: List[str] = []
         candidates = [rule.get("source_ieee")] + [
-            cls._cond_source(rule, c) for c in rule.get("conditions") or []]
+            cls._cond_source(rule, c)
+            for c in iter_leaf_conditions(rule.get("conditions"))]
         for src in candidates:
             if src and src not in out:
                 out.append(src)
@@ -338,7 +369,8 @@ class AutomationEngine:
     def _rule_temporal_boundaries(self, rule) -> set:
         """HH:MM strings at which this rule's temporal conditions can change state."""
         b: set = set()
-        for c in rule.get("conditions", []) + rule.get("prerequisites", []):
+        for c in [*iter_leaf_conditions(rule.get("conditions")),
+                  *rule.get("prerequisites", [])]:
             ct = c.get("type")
             if ct == "time_window":
                 b.add(c.get("time_from"))
@@ -374,12 +406,12 @@ class AutomationEngine:
             if not rule.get("enabled", True):
                 continue
 
-            _TEMPORAL = TEMPORAL_TYPES
             has_tw_cond = any(
-                c.get("type") in _TEMPORAL for c in rule.get("conditions", [])
+                c.get("type") in TEMPORAL_TYPES
+                for c in iter_leaf_conditions(rule.get("conditions"))
             )
             has_tw_prereq = any(
-                p.get("type") in _TEMPORAL for p in rule.get("prerequisites", [])
+                p.get("type") in TEMPORAL_TYPES for p in rule.get("prerequisites", [])
             )
             if not (has_tw_cond or has_tw_prereq):
                 continue
@@ -393,74 +425,11 @@ class AutomationEngine:
             if self._has_zone(rule.get("conditions", [])):
                 continue
 
-            rule_id = rule["id"]
-            rule_name = rule.get("name") or rule_id
-
             # No device updated: every device condition reads its device as it
             # stands, with nothing marked as changed — a clock tick is not a
             # button press, whichever device the condition names.
-            logic = self._condition_logic(rule)
-            all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                rule.get("conditions", []), rule_id, {}, {}, now, logic,
-                view=self._condition_view(rule, devices), names=names)
-
-            if has_sustain:
-                continue
-
-            prereq_results = []
-            prereqs_met = True
-            if all_matched:
-                prereqs = rule.get("prerequisites", [])
-                prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
-
-            conditions_met = all_matched and prereqs_met
-            new_state = "matched" if conditions_met else "unmatched"
-            prev_state = self._rule_states.get(rule_id)
-
-            if not all_matched:
-                self._trace(rule_id, "evaluate", "NO_MATCH",
-                            f"Conditions ({logic.upper()}) not met: {rule_name}",
-                            level="DEBUG", conditions=cond_results,
-                            condition_logic=logic)
-            elif not prereqs_met:
-                self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
-                            f"Prerequisites not met: {rule_name}",
-                            conditions=cond_results, prerequisites=prereq_results,
-                            condition_logic=logic)
-
-            self._rule_states[rule_id] = new_state
-
-            if prev_state == new_state:
-                continue
-            if prev_state is None and new_state == "unmatched":
-                continue
-
-            # Cooldown check
-            cooldown = rule.get("cooldown", DEFAULT_COOLDOWN)
-            elapsed = now - self._cooldowns.get(rule_id, 0)
-            if elapsed < cooldown:
-                self._trace(rule_id, "cooldown", "BLOCKED",
-                            f"Cooldown {elapsed:.1f}s < {cooldown}s")
-                continue
-
-            self._cooldowns[rule_id] = now
-            self._stats["transitions"] += 1
-
-            path = "THEN" if new_state == "matched" else "ELSE"
-            seq = rule.get("then_sequence" if path == "THEN" else "else_sequence", [])
-            if not seq:
-                self._trace(rule_id, "transition", "NO_SEQUENCE",
-                            f"Transition → {new_state}, no {path} sequence: {rule_name}")
-                continue
-
-            self._trace(rule_id, "transition", f"{path}_FIRING",
-                        f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
-                        conditions=cond_results, prerequisites=prereq_results,
-                        condition_logic=logic)
-
-            self._cancel_sequence(rule_id)
-            task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
-            self._running_sequences[rule_id] = task
+            self._evaluate_rule(rule, devices, names, now,
+                                self._condition_view(rule, devices))
 
     # PERSISTENCE
 
@@ -593,14 +562,34 @@ class AutomationEngine:
 
     # VALIDATION (recursive)
 
-    def _validate_conditions(self, conds: List[Dict]) -> Optional[str]:
+    def _validate_conditions(self, conds: List[Dict], depth: int = 0) -> Optional[str]:
         import re
         if not isinstance(conds, list) or not conds:
-            return "conditions must be a non-empty list"
-        if len(conds) > MAX_CONDITIONS_PER_RULE:
+            return ("conditions must be a non-empty list" if depth == 0
+                    else "a group needs at least one condition")
+        if depth == 0 and len(conds) > MAX_CONDITIONS_PER_RULE:
             return f"Max {MAX_CONDITIONS_PER_RULE} conditions"
+        if depth > 0 and len(conds) > MAX_CONDITIONS_PER_GROUP:
+            return f"Max {MAX_CONDITIONS_PER_GROUP} conditions in a group"
         for i, c in enumerate(conds):
+            if not isinstance(c, dict):
+                return f"Condition {i+1} must be an object"
             ctype = c.get("type", "attribute")
+            if ctype == "group":
+                # One level: "(A and B) or C" covers what a household writes,
+                # and a tree of trees is harder to read than two rules.
+                if depth > 0:
+                    return f"Condition {i+1}: a group can't contain another group"
+                logic = str(c.get("condition_logic", "and") or "and").lower()
+                if logic not in ("and", "or"):
+                    return (f"Condition {i+1} (group): condition_logic must be "
+                            f"'and' or 'or'")
+                c["condition_logic"] = logic
+                c.pop("ieee", None)            # a group reads no device itself
+                err = self._validate_conditions(c.get("conditions"), depth + 1)
+                if err:
+                    return f"Group {i+1}: {err}"
+                continue
             # The device this condition reads, when it is not the rule's source.
             # A clock condition reads no device, so an ieee on one is dropped.
             if "ieee" in c:
@@ -679,7 +668,7 @@ class AutomationEngine:
         name a device.
         """
         devices = self._get_all_devices()
-        for i, c in enumerate(conds):
+        for i, c in enumerate(iter_leaf_conditions(conds)):
             ctype = c.get("type", "attribute")
             if ctype in TEMPORAL_TYPES:
                 continue
@@ -877,7 +866,7 @@ class AutomationEngine:
             # carry a temporal condition or a condition on a device whose
             # updates can move it.
             if not any(c.get("type") in TEMPORAL_TYPES or c.get("ieee")
-                       for c in conditions):
+                       for c in iter_leaf_conditions(conditions)):
                 return {"success": False,
                         "error": "Time/alarm rule needs a time, alarm, or sun "
                                  "condition, or a condition on a device"}
@@ -928,6 +917,8 @@ class AutomationEngine:
                 exclude_rule_id=rule_id)
             if err: return {"success": False, "error": err}
             rule["conditions"] = updates["conditions"]
+            # Sustain clocks are keyed by position, which a new shape invalidates.
+            self._clear_sustains(rule_id)
         if "condition_logic" in updates:
             cl = str(updates["condition_logic"] or "and").lower()
             if cl not in ("and", "or"):
@@ -952,6 +943,7 @@ class AutomationEngine:
             if not rule["enabled"]:
                 self._cancel_sequence(rule_id)
                 self._rule_states.pop(rule_id, None)
+                self._clear_sustains(rule_id)
         if "cooldown" in updates:
             rule["cooldown"] = max(0, int(updates["cooldown"]))
 
@@ -968,8 +960,7 @@ class AutomationEngine:
         self.rules.remove(rule)
         self._cooldowns.pop(rule_id, None)
         self._rule_states.pop(rule_id, None)
-        for k in [k for k in self._sustain_tracker if k.startswith(rule_id)]:
-            del self._sustain_tracker[k]
+        self._clear_sustains(rule_id)
         self._rebuild_index()
         self._save_rules()
         return {"success": True}
@@ -985,7 +976,8 @@ class AutomationEngine:
             r = json.loads(json.dumps(rule))  # deep copy
             r["source_name"] = names.get(rule["source_ieee"], rule["source_ieee"])
             r["sources"] = self.rule_sources(rule)
-            self._enrich_names(r.get("conditions", []), names, "ieee", "device_name")
+            self._enrich_names(list(iter_leaf_conditions(r.get("conditions"))),
+                               names, "ieee", "device_name")
             r["_state"] = self._rule_states.get(rule["id"], "unknown")
             r["_running"] = (rule["id"] in self._running_sequences and
                              not self._running_sequences[rule["id"]].done())
@@ -1074,118 +1066,197 @@ class AutomationEngine:
             if not conditions:
                 continue
 
-            rule_name = rule.get("name") or rule_id
-
-            # Relevance — judged on the conditions that read this device. A rule
-            # indexed here only as its source, whose device conditions all read
-            # other devices, has nothing this update can move.
-            own = [c for c in conditions if self._cond_source(rule, c) == source_ieee]
+            # Relevance — judged on the conditions that read this device, inside
+            # groups too. A rule indexed here only as its source, whose device
+            # conditions all read other devices, has nothing this update can move.
+            leaves = list(iter_leaf_conditions(conditions))
+            own = [c for c in leaves if self._cond_source(rule, c) == source_ieee]
             if own:
                 watched = self._watched_attributes(own)
                 if watched and not watched.intersection(changed_data.keys()):
                     continue
-            elif any(self._cond_source(rule, c) for c in conditions):
+            elif any(self._cond_source(rule, c) for c in leaves):
                 continue
 
-            # CONDITIONS
-            logic = self._condition_logic(rule)
-            has_zone = self._has_zone(conditions)
             view = self._condition_view(rule, devices, source_ieee, changed_data,
                                         full_state, prev_values)
-            all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                conditions, rule_id, changed_data, full_state, now, logic,
-                prev_values, view=view, names=names)
-
-            if has_sustain:
-                self._trace(rule_id, "evaluate", "SUSTAIN_WAIT",
-                            f"Sustain pending: {rule_name}",
-                            conditions=cond_results, condition_logic=logic)
-                continue
-
-            # PREREQUISITES
-            prereq_results = []
-            prereqs_met = True
-            if all_matched:
-                prereqs = rule.get("prerequisites", [])
-                prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
-
-            # DETERMINE STATE
-            conditions_met = all_matched and prereqs_met
-            new_state = "matched" if conditions_met else "unmatched"
-            prev_state = self._rule_states.get(rule_id)
-
-            if not all_matched:
-                self._trace(rule_id, "evaluate", "NO_MATCH",
-                            f"Conditions ({logic.upper()}) not met: {rule_name}",
-                            level="DEBUG", conditions=cond_results,
-                            condition_logic=logic)
-            elif not prereqs_met:
-                self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
-                            f"Prerequisites not met: {rule_name}",
-                            conditions=cond_results, prerequisites=prereq_results,
-                            condition_logic=logic)
-
-            # TRANSITION
-            self._rule_states[rule_id] = new_state
-
-            # A zone rule triggers on a crossing, not on a state. "No crossing
-            # right now" is not the opposite crossing, so an unmatched pass must
-            # not run the ELSE path — leaving is its own rule with its own THEN.
-            if has_zone and new_state == "unmatched":
-                continue
-
-            if prev_state == new_state:
-                if new_state == "matched":
-                    self._trace(rule_id, "transition", "STILL_MATCHED",
-                                f"No transition: {rule_name}", level="DEBUG")
-                continue
-
-            if prev_state is None and new_state == "unmatched":
-                self._trace(rule_id, "transition", "INIT_UNMATCHED",
-                            f"Initial: unmatched — {rule_name}", level="DEBUG")
-                continue
-
-            # Cooldown
-            cooldown = rule.get("cooldown", DEFAULT_COOLDOWN)
-            last = self._cooldowns.get(rule_id, 0)
-            elapsed = now - last
-            if elapsed < cooldown:
-                self._trace(rule_id, "cooldown", "BLOCKED",
-                            f"Cooldown {elapsed:.1f}s < {cooldown}s")
-                continue
-
-            self._cooldowns[rule_id] = now
-            self._stats["transitions"] += 1
-            for ci in range(len(conditions)):
-                self._sustain_tracker.pop(f"{rule_id}_{ci}", None)
-
-            # Fire sequence
-            path = "THEN" if new_state == "matched" else "ELSE"
-            seq = rule.get("then_sequence" if path == "THEN" else "else_sequence", [])
-            if not seq:
-                self._trace(rule_id, "transition", "NO_SEQUENCE",
-                            f"Transition → {new_state}, no {path} sequence: {rule_name}")
-                continue
-
-            self._trace(rule_id, "transition", f"{path}_FIRING",
-                        f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
-                        conditions=cond_results, prerequisites=prereq_results,
-                        condition_logic=logic)
-
-            self._cancel_sequence(rule_id)
-            task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
-            self._running_sequences[rule_id] = task
-
-            # EVENT ATTRIBUTE RESET
-            # Momentary triggers (a button press, a boundary crossing) have to
-            # re-arm: they are never "still true", so without this the second
-            # press — or the second arrival — would look like no transition.
-            if has_zone or any(c.get("attribute") in EVENT_ATTRS for c in conditions):
-                self._rule_states[rule_id] = "unmatched"
+            self._evaluate_rule(rule, devices, names, now, view)
 
         # Baseline for the next update. full_state is already the new state, so
         # this is the "before" that the next evaluation compares against.
         self._last_values[source_ieee] = {**full_state, **changed_data}
+
+    def _evaluate_rule(self, rule, devices, names, now, view) -> None:
+        """Run one rule through the state machine — conditions, prerequisites,
+        the transition, and the sequence that transition fires.
+
+        Device updates, clock boundaries and sustain re-checks all come through
+        here; they differ only in what `view` reads (see _condition_view).
+        """
+        rule_id = rule["id"]
+        rule_name = rule.get("name") or rule_id
+        conditions = rule.get("conditions", [])
+
+        # CONDITIONS
+        logic = self._condition_logic(rule)
+        has_zone = self._has_zone(conditions)
+        all_matched, cond_results, has_sustain = self._eval_conditions_block(
+            conditions, rule_id, {}, {}, now, logic, view=view, names=names)
+
+        if has_sustain:
+            wait = self._schedule_sustain_recheck(rule_id, cond_results)
+            self._trace(rule_id, "evaluate", "SUSTAIN_WAIT",
+                        f"Sustain pending: {rule_name} — re-checking in {wait:.1f}s",
+                        conditions=cond_results, condition_logic=logic)
+            return
+        # Decided either way, so a re-check left from an earlier pass would only
+        # re-read a settled answer.
+        self._cancel_sustain_recheck(rule_id)
+
+        # PREREQUISITES
+        prereq_results = []
+        prereqs_met = True
+        if all_matched:
+            prereqs = rule.get("prerequisites", [])
+            prereqs_met, prereq_results = self._eval_prerequisites(prereqs, devices, names)
+
+        # DETERMINE STATE
+        conditions_met = all_matched and prereqs_met
+        new_state = "matched" if conditions_met else "unmatched"
+        prev_state = self._rule_states.get(rule_id)
+
+        if not all_matched:
+            self._trace(rule_id, "evaluate", "NO_MATCH",
+                        f"Conditions ({logic.upper()}) not met: {rule_name}",
+                        level="DEBUG", conditions=cond_results,
+                        condition_logic=logic)
+        elif not prereqs_met:
+            self._trace(rule_id, "prerequisite", "PREREQ_FAIL",
+                        f"Prerequisites not met: {rule_name}",
+                        conditions=cond_results, prerequisites=prereq_results,
+                        condition_logic=logic)
+
+        # TRANSITION
+        self._rule_states[rule_id] = new_state
+
+        # A zone rule triggers on a crossing, not on a state. "No crossing
+        # right now" is not the opposite crossing, so an unmatched pass must
+        # not run the ELSE path — leaving is its own rule with its own THEN.
+        if has_zone and new_state == "unmatched":
+            return
+
+        if prev_state == new_state:
+            if new_state == "matched":
+                self._trace(rule_id, "transition", "STILL_MATCHED",
+                            f"No transition: {rule_name}", level="DEBUG")
+            return
+
+        if prev_state is None and new_state == "unmatched":
+            self._trace(rule_id, "transition", "INIT_UNMATCHED",
+                        f"Initial: unmatched — {rule_name}", level="DEBUG")
+            return
+
+        # Cooldown
+        cooldown = rule.get("cooldown", DEFAULT_COOLDOWN)
+        elapsed = now - self._cooldowns.get(rule_id, 0)
+        if elapsed < cooldown:
+            self._trace(rule_id, "cooldown", "BLOCKED",
+                        f"Cooldown {elapsed:.1f}s < {cooldown}s")
+            return
+
+        self._cooldowns[rule_id] = now
+        self._stats["transitions"] += 1
+        # Having fired, the rule needs each sustain's full time again.
+        for k in [k for k in self._sustain_tracker if k.startswith(f"{rule_id}_")]:
+            del self._sustain_tracker[k]
+
+        # Fire sequence
+        path = "THEN" if new_state == "matched" else "ELSE"
+        seq = rule.get("then_sequence" if path == "THEN" else "else_sequence", [])
+        if not seq:
+            self._trace(rule_id, "transition", "NO_SEQUENCE",
+                        f"Transition → {new_state}, no {path} sequence: {rule_name}")
+            return
+
+        self._trace(rule_id, "transition", f"{path}_FIRING",
+                    f"⚡ {prev_state or 'init'}→{new_state}: {path} ({len(seq)} steps) — {rule_name}",
+                    conditions=cond_results, prerequisites=prereq_results,
+                    condition_logic=logic)
+
+        self._cancel_sequence(rule_id)
+        task = asyncio.create_task(self._run_sequence(rule_id, rule_name, seq, path))
+        self._running_sequences[rule_id] = task
+
+        # EVENT ATTRIBUTE RESET
+        # Momentary triggers (a button press, a boundary crossing) have to
+        # re-arm: they are never "still true", so without this the second
+        # press — or the second arrival — would look like no transition.
+        if has_zone or any(c.get("attribute") in EVENT_ATTRS
+                           for c in iter_leaf_conditions(conditions)):
+            self._rule_states[rule_id] = "unmatched"
+
+    # SUSTAIN RE-CHECKS
+
+    def _schedule_sustain_recheck(self, rule_id, cond_results) -> float:
+        """Re-evaluate the rule when its soonest pending sustain runs out.
+
+        A sustain used to be re-read only on its device's next update, and a
+        sensor that has settled may send none: a door left open reports once,
+        so "open for 10 minutes" never fired. One timer per rule — the latest
+        evaluation knows the soonest deadline. Returns the delay.
+        """
+        waits = [r.get("sustain_remaining", 0) for r in self._leaf_results(cond_results)
+                 if r.get("result") == "SUSTAIN_WAIT"]
+        delay = max(0.0, min(waits) if waits else 0.0) + SUSTAIN_RECHECK_SLACK
+        self._cancel_sustain_recheck(rule_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return delay                    # no loop to wait on (a sync caller)
+        self._sustain_timers[rule_id] = loop.create_task(
+            self._sustain_recheck(rule_id, delay))
+        return delay
+
+    def _cancel_sustain_recheck(self, rule_id) -> None:
+        task = self._sustain_timers.pop(rule_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _clear_sustains(self, rule_id) -> None:
+        """Forget a rule's sustain clocks and any pending re-check."""
+        prefix = f"{rule_id}_"
+        for k in [k for k in self._sustain_tracker if k.startswith(prefix)]:
+            del self._sustain_tracker[k]
+        self._cancel_sustain_recheck(rule_id)
+
+    async def _sustain_recheck(self, rule_id, delay) -> None:
+        await asyncio.sleep(delay)
+        # Off the books before evaluating, since the evaluation may schedule
+        # the next re-check and must not cancel this one to do it.
+        if self._sustain_timers.get(rule_id) is asyncio.current_task():
+            del self._sustain_timers[rule_id]
+        rule = self._find_rule(rule_id)
+        if not rule or not rule.get("enabled", True):
+            return
+        try:
+            devices = self._get_all_devices()
+            # No device updated: everything is read as it stands.
+            self._evaluate_rule(rule, devices, self._get_all_names(), time.time(),
+                                self._condition_view(rule, devices))
+        except Exception as e:                          # noqa: BLE001
+            self._stats["errors"] += 1
+            self._trace(rule_id, "evaluate", "EXCEPTION",
+                        f"Sustain re-check failed: {e}", level="ERROR",
+                        traceback=traceback.format_exc())
+
+    @classmethod
+    def _leaf_results(cls, results):
+        """Condition results, looking inside group results."""
+        for r in results or []:
+            if r.get("type") == "group":
+                yield from cls._leaf_results(r.get("conditions"))
+            else:
+                yield r
 
     # CONDITION / PREREQUISITE EVALUATION
 
@@ -1216,15 +1287,24 @@ class AutomationEngine:
 
     def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
                                now, logic="and", prev_values=None, view=None,
-                               names=None):
+                               names=None, key_prefix=""):
         """Evaluate trigger conditions. Returns (matched, results, has_sustain).
 
-        logic 'and' (default): every condition must pass; stops at the first failure.
-        logic 'or':            any one condition passing is enough; stops at the first
-                               pass, so the results list shows what was checked.
+        logic 'and' (default): every condition must pass.
+        logic 'or':            any one condition passing is enough.
 
-        has_sustain means "a condition is mid-sustain, don't decide yet" — under OR
-        that only holds the rule back while nothing else has already passed.
+        Every condition is evaluated even once the answer is known, because
+        evaluating one is what starts its sustain clock: "dark AND door open
+        for 10 minutes" has to time the door from when it opened, not from when
+        it got dark. The trace shows every condition as a result.
+
+        has_sustain means "nothing is settled yet; only a sustain clock is
+        holding the answer" — under AND, every unmet condition is mid-sustain;
+        under OR, none has passed and one is mid-sustain. The caller holds the
+        rule and schedules a re-check instead of deciding.
+
+        A {"type": "group"} item is a block of its own with its own
+        condition_logic, which its siblings see as a single condition.
 
         view, when given (see _condition_view), supplies each condition's own
         device reading, which is what lets AND/OR span several devices. Without
@@ -1232,39 +1312,48 @@ class AutomationEngine:
         """
         or_mode = str(logic).lower() == "or"
         results = []
-        block_ok = not or_mode          # AND starts true, OR starts false
-        has_sustain = False
+        any_passed, all_passed = False, True
+        any_pending, hard_fail = False, False
 
         for i, cond in enumerate(conditions):
-            cd, fs, pv = (view(cond) if view
-                          else (changed_data, full_state, prev_values or {}))
-            matched, result, sustain_pending = self._eval_one_condition(
-                cond, i, rule_id, cd, fs, now, pv)
-            if cond.get("ieee"):
-                # Name the device in the trace — otherwise a FAIL on another
-                # device's attribute reads as though it were the source's.
-                result["ieee"] = cond["ieee"]
-                result["device_name"] = (names or {}).get(cond["ieee"], cond["ieee"])
+            key = f"{key_prefix}{i}"
+            if cond.get("type") == "group":
+                g_logic = self._condition_logic(cond)
+                matched, inner, sustain_pending = self._eval_conditions_block(
+                    cond.get("conditions") or [], rule_id, changed_data, full_state,
+                    now, g_logic, prev_values, view, names, key_prefix=f"{key}.")
+                result = {"index": i + 1, "type": "group",
+                          "condition_logic": g_logic, "conditions": inner,
+                          "result": "PASS" if matched
+                          else "SUSTAIN_WAIT" if sustain_pending else "FAIL"}
+            else:
+                cd, fs, pv = (view(cond) if view
+                              else (changed_data, full_state, prev_values or {}))
+                # Top-level keys stay "<rule>_<i>", as they always were.
+                matched, result, sustain_pending = self._eval_one_condition(
+                    cond, i, rule_id, cd, fs, now, pv, skey=f"{rule_id}_{key}")
+                if cond.get("ieee"):
+                    # Name the device in the trace — otherwise a FAIL on another
+                    # device's attribute reads as though it were the source's.
+                    result["ieee"] = cond["ieee"]
+                    result["device_name"] = (names or {}).get(cond["ieee"], cond["ieee"])
             results.append(result)
 
-            if or_mode:
-                if sustain_pending:
-                    has_sustain = True
-                if matched:
-                    block_ok = True
-                    has_sustain = False
-                    break
+            if matched:
+                any_passed = True
             else:
+                all_passed = False
                 if sustain_pending:
-                    has_sustain = True
-                if not matched:
-                    block_ok = False
-                    break
+                    any_pending = True
+                else:
+                    hard_fail = True
 
-        return block_ok, results, has_sustain
+        if or_mode:
+            return any_passed, results, (not any_passed and any_pending)
+        return all_passed, results, (not all_passed and not hard_fail)
 
     def _eval_one_condition(self, cond, i, rule_id, changed_data, full_state, now,
-                            prev_values=None):
+                            prev_values=None, skey=None):
         """Evaluate a single trigger condition.
 
         Returns (matched, result_dict, sustain_pending). sustain_pending is True when
@@ -1332,7 +1421,7 @@ class AutomationEngine:
         op = cond["operator"]
         threshold = cond["value"]
         sustain = cond.get("sustain", 0) or 0
-        skey = f"{rule_id}_{i}"
+        skey = skey or f"{rule_id}_{i}"
 
         # A momentary attribute is true only on the update that carries it (see
         # EVENT_ATTRS): its last value lingering in state is not a new press.
@@ -1368,6 +1457,7 @@ class AutomationEngine:
                                "actual_type": type(val).__name__, "value_source": src,
                                "result": "SUSTAIN_WAIT", "sustain_required": sustain,
                                "sustain_elapsed": round(el, 1),
+                               "sustain_remaining": round(sustain - el, 3),
                                "reason": f"Sustained {el:.1f}s / {sustain}s"}, True
 
         self._sustain_tracker.pop(skey, None)

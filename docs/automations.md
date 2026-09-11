@@ -85,6 +85,10 @@ The joiner badge on each row (`AND` amber / `OR` purple) reflects the current ch
 | `∉`               | not in list               |
 
 **Sustain** — optional hold timer (seconds). The condition must remain true for the specified duration before triggering.
+When the time is up the engine re-checks the rule by itself, so it fires even if the device reports nothing further — a door
+sensor that reports "open" once still fires "open for 10 minutes". The clock starts when *that* condition became true,
+whatever the other conditions were doing: "dark **and** door open for 10 minutes" times the door from when it opened,
+not from when it got dark. Changing or disabling the rule resets its clocks.
 
 #### Condition types
 
@@ -170,6 +174,34 @@ On the wire a condition names its device with `ieee`; without one it reads
   ]
 }
 ```
+
+#### Condition groups: (A and B) or C
+
+**Group** adds a box of conditions with its own **All of these / Any of these**.
+The rest of the rule sees the box as one condition, joined by the rule's
+**Match ALL / Match ANY**:
+
+- Match ALL, group set to *Any of these* — **(front door opens or back door opens) and it's dark**
+- Match ANY, group set to *All of these* — **(motion and it's dark) or the button is pressed**
+
+A new group starts with two rows and the opposite logic to the rule's, since
+that is usually why you are grouping. Rows inside a group work like any other:
+their own device, type and sustain. Groups go one level deep (a group can't hold
+a group), with up to 5 conditions each. A **Zone** anywhere in the rule, grouped
+or not, makes it a crossing rule that only runs THEN.
+
+```json
+"condition_logic": "and",
+"conditions": [
+  { "type": "group", "condition_logic": "or", "conditions": [
+      { "type": "attribute", "ieee": "0x00124b0011aa0001", "attribute": "contact", "operator": "eq", "value": false },
+      { "type": "attribute", "ieee": "0x00124b0011aa0002", "attribute": "contact", "operator": "eq", "value": false }
+  ]},
+  { "type": "attribute", "attribute": "illuminance_lux", "operator": "lt", "value": 20 }
+]
+```
+
+The trace log shows a group as one line with its members indented beneath it.
 
 ### Step 2: Prerequisites (Optional)
 
