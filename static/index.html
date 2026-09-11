@@ -1192,6 +1192,7 @@
                 <ul class="nav nav-tabs mb-3" id="automationsSubNav">
                     <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#automationRules"><i class="fas fa-gears"></i> Rules</button></li>
                     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automationWorkers"><i class="fas fa-helmet-safety"></i> Workers</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#automationSuggestions"><i class="fas fa-diagram-project"></i> Suggested <span class="badge bg-primary ms-1 d-none" id="suggestions-count">0</span></button></li>
                 </ul>
                 <div class="tab-content">
 
@@ -1211,6 +1212,16 @@
                             <div class="text-center text-muted py-4">
                                 <i class="fas fa-helmet-safety fa-2x mb-2 d-block opacity-50"></i>
                                 Loading workers...
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SUGGESTED SUB-TAB -->
+                    <div class="tab-pane fade" id="automationSuggestions">
+                        <div id="suggestions-content">
+                            <div class="text-center text-muted py-4">
+                                <i class="fas fa-diagram-project fa-2x mb-2 d-block opacity-50"></i>
+                                Click the tab to see what your devices could do.
                             </div>
                         </div>
                     </div>

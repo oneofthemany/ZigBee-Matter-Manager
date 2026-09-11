@@ -1952,9 +1952,13 @@ function _syncStatLine(st) {
     // it, an assistant — rather than one the ladder had to infer. Shown apart
     // from the total because it says the fault is the room, not the network.
     const gaps = s.interrupts > 0 ? ` · interrupted ${s.interrupts}×` : '';
+    // Dropped off the network entirely, as opposed to interrupted (present
+    // but not playing) or reloaded (present and misaligned). Three different
+    // faults with three different fixes, so they are counted apart.
+    const parks = s.parks > 0 ? ` · dropped ${s.parks}×` : '';
     const quiet = s.silent_s > 10 ? ` · quiet ${s.silent_s}s` : '';
     return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late}`
-        + ` · resyncs ${s.resyncs}${reloads}${gaps}${quiet}`;
+        + ` · resyncs ${s.resyncs}${reloads}${gaps}${parks}${quiet}`;
 }
 
 // Deviation meter: a centered bar on the same ±500 ms scale as the trim
@@ -1990,13 +1994,24 @@ function _syncMeterPaint(pid, st) {
         : Math.abs(o) <= 150 ? 'var(--bs-warning)' : 'var(--bs-danger)';
 }
 
+// Three states, not two. "Parked" is a device the hub cannot resolve at all —
+// off the network rather than slow to start — and it reads differently to the
+// listener: the zone is deliberately playing on without it, and it will rejoin
+// by itself. Showing it as "launching…" indefinitely hid exactly that.
+function _syncPill(d) {
+    if (d && d.parked)
+        return '<span class="badge bg-warning text-dark ms-1"'
+            + ' title="Off the network — the zone is playing without it and'
+            + ' will let it back in when it answers">parked</span>';
+    if (d && d.connected)
+        return '<span class="badge bg-success ms-1">connected</span>';
+    return '<span class="badge bg-secondary ms-1">launching…</span>';
+}
+
 function _syncMemberRow(m, groupActive) {
     const pidE = esc(m.player_id);
     const st = groupActive ? _syncDeviceInfo(m.player_id) : null;
-    const pill = !groupActive ? ''
-        : (st && st.connected
-            ? '<span class="badge bg-success ms-1">connected</span>'
-            : '<span class="badge bg-secondary ms-1">launching…</span>');
+    const pill = !groupActive ? '' : _syncPill(st);
     const open = _syncTrimOpen.has(m.player_id);
     return `
       <div class="border-top pt-2 mt-2">
@@ -2253,9 +2268,7 @@ async function refreshSyncStats() {
         if (remain) remain.textContent = _fmtRemain(_syncStatus.remaining_s);
         for (const d of (_syncStatus.devices || [])) {
             const pill = document.getElementById('syncpill-' + d.player_id);
-            if (pill) pill.innerHTML = d.connected
-                ? '<span class="badge bg-success ms-1">connected</span>'
-                : '<span class="badge bg-secondary ms-1">launching…</span>';
+            if (pill) pill.innerHTML = _syncPill(d);
             const stat = document.getElementById('syncstat-' + d.player_id);
             if (stat) stat.textContent = _syncStatLine(d);
             _syncMeterPaint(d.player_id, d);

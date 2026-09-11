@@ -51,6 +51,7 @@ import {
     loadAutomationsPage
 } from './automations-page.js';
 import { initWorkersPage } from './workers-page.js';
+import { initSuggestionsPage } from './swarm-suggestions.js';
 
 import {
     initZones,
@@ -402,6 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initMQTTExplorer();
         initAutomationsPage();
         initWorkersPage();
+        initSuggestionsPage();
         initZones();
         initHeating();
         initEnergy();

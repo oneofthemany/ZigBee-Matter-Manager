@@ -23,3 +23,19 @@
 @media (max-width: 576px) {
     .swarm-option .badge { font-size: .65rem; }
 }
+
+/* The suggestion count in the Automations coverage strip is the way into the
+   Suggested tab, not a statistic — so it is a button wearing a badge, and needs
+   the browser's own button chrome taken off it. */
+.swarm-count {
+    /* The border is set here rather than with Bootstrap's .border utility so the
+       hover state can change its colour — that utility is !important. */
+    border: var(--bs-border-width, 1px) solid var(--bs-border-color, #dee2e6);
+    cursor: pointer;
+    line-height: 1;
+}
+
+.swarm-count:hover,
+.swarm-count:focus-visible {
+    border-color: var(--bs-primary, #0d6efd);
+}

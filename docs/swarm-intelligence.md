@@ -569,8 +569,10 @@ reason rather than compiled from stale data.
 
 ## In the UI
 
-The swarm does not get a tab of its own. It enhances the one creation flow that
-already exists, because two ways to build a rule is one too many.
+The swarm gets no top-level tab. It enhances the one creation flow that already
+exists — because two ways to build a rule is one too many — and adds a browse
+surface for the suggestions that flow cannot reach, as a third sub-tab of
+Automations alongside Rules and Workers.
 
 **Add Rule** no longer opens a blank form. It opens the chooser:
 
@@ -595,10 +597,45 @@ there.
 | File | Role |
 |---|---|
 | `static/js/swarm-suggest.js` | The chooser. Fetches suggestions and pairings, renders the options, hands the chosen shape to the builder |
+| `static/js/swarm-suggestions.js` | The Suggested sub-tab. The whole suggestion list, grouped by room, built through the apply endpoint |
 | `static/js/modal/automation.js` | Unchanged except that `_aShowForm` opens the chooser first, and a save invalidates its cache |
 | `static/js/automations-page.js` | Coverage strip in the header, and the click-through list of devices no rule touches |
 | `static/js/automation-sentence.js` | The one plain-English voice. The rules list and the editor both import it, so a rule reads the same wherever it appears |
 | `static/css/swarm.css` | Only the hover affordance and sentence wrapping — everything else is shared Bootstrap |
+
+### The Suggested sub-tab
+
+The chooser only ever shows what the *currently chosen device* triggers, which is
+the right filter for building one rule and the wrong one for answering "what else
+could this house do". Most of the suggestion list was therefore computed on every
+call and never seen. **Automations → Suggested** is that list.
+
+Each card is one suggestion: its sentence, the devices that fill its slots, and
+its tunable parameters as live fields. Cards are grouped by the room the pattern
+matched in, with house-scoped patterns (`room: null`) under *Whole house* rather
+than lumped in with the unassigned.
+
+**Create** posts to `/api/swarm/suggestions/{id}/apply` with the parameter values
+from the card. It does not post a rule. The server re-matches the pattern against
+the network as it stands and compiles from that, so a suggestion that went stale
+while the page sat open is refused with a reason instead of built against devices
+that have since moved room. A successful create re-reads the whole list, because
+a new rule can mark other suggestions as already built.
+
+Three things are hidden by default, each with a toggle:
+
+- **Built** suggestions, for the same reason the chooser drops them — a to-do
+  list should only carry things still to do. The toggle matters because seeing
+  that the swarm already knows about a rule you wrote by hand is the answer to
+  "why isn't it suggesting X".
+- **Dismissed** suggestions. Dismissal is browser-local (`localStorage`), not
+  server state: a suggestion id is a stable hash of pattern plus devices, so the
+  same list still hides the same cards after a restart, and the toggle keeps them
+  recoverable rather than gone.
+- Everything outside the current **room / kind / confidence / search** filters.
+
+The `N suggested` badge on the Rules coverage strip is the way in, and the
+sub-tab carries the same count.
 
 The swarm is an **enhancement, never a gate**. Every fetch is best-effort: if
 `/api/swarm/*` is unavailable, slow, or returns nothing worth offering, the

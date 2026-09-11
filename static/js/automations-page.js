@@ -13,6 +13,7 @@ import { initAIAutomations, renderAIChatPanel } from './ai-automations.js';
 import { DEVICE_ICON, DEVICE_LABEL, deviceType } from './automation-humanize.js';
 import { createHumanizer, esc } from './automation-sentence.js';
 import { showToast, withBusy } from './utils.js';
+import { showSuggestionsTab, syncSuggestionsBadge } from './swarm-suggestions.js';
 
 
 const log = zmmLog('automations-page');
@@ -126,6 +127,7 @@ export async function loadAutomationsPage() {
             swarmCoverage = cj.coverage || null;
             swarmSummary = cj.summary || null;
         } catch { swarmCoverage = null; swarmSummary = null; }
+        syncSuggestionsBadge(swarmSummary ? swarmSummary.available : 0);
 
         // Is a location configured? Sun (sunrise/sunset) rules can't fire without
         // one. /api/sun/sunrise-sunset returns success:false when lat/lon are unset.
@@ -154,9 +156,14 @@ function _coverageStrip() {
     if (!swarmCoverage) return '';
     const c = swarmCoverage;
     const tone = c.percent >= 75 ? 'success' : c.percent >= 40 ? 'warning' : 'secondary';
+    // The count is the way into the Suggested sub-tab, not just a statistic —
+    // a number of things you could build is only useful if it is one click from
+    // the list of them.
     const spare = swarmSummary && swarmSummary.available
-        ? `<span class="badge bg-light text-dark border" title="Suggestions not yet built">
-             <i class="fas fa-diagram-project text-primary me-1"></i>${swarmSummary.available} suggested</span>`
+        ? `<button type="button" class="badge bg-light text-dark swarm-count"
+                   title="Suggestions not yet built — open the Suggested tab"
+                   onclick="window._apShowSuggestions()">
+             <i class="fas fa-diagram-project text-primary me-1"></i>${swarmSummary.available} suggested</button>`
         : '';
     const gaps = c.uncovered
         ? `<button class="btn btn-link btn-sm p-0 small text-decoration-none"
@@ -215,6 +222,8 @@ window._apAnswerOffer = async (token, answer, btn) => {
         await loadAutomationsPage();
     });
 };
+
+window._apShowSuggestions = () => showSuggestionsTab();
 
 /** List the devices no rule touches, so the gap is actionable rather than a number. */
 window._apShowGaps = () => {

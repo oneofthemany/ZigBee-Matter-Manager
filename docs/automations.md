@@ -12,6 +12,10 @@ The automation engine provides state-machine-based triggers with recursive actio
 > written by hand for each combination. It compiles to the rules documented
 > here — see `docs/swarm-intelligence.md`.
 
+> **Suggested** is the third sub-tab: every rule the swarm reckons your devices
+> could support, grouped by room, each one built with a single click. See
+> `docs/swarm-intelligence.md`.
+
 > **Workers** are the second sub-tab of the Automations tab. A rule can only
 > react to something a device did; a worker is state *you* set — holiday mode,
 > the mode the house is in, a countdown, a tally — that any rule can then test
@@ -49,8 +53,9 @@ Every automation rule consists of four parts:
 
 ## Creating a Rule
 
-The Automations tab has two sub-tabs: **Rules** (this document) and **Workers**
-(`docs/workers.md`). Rules is the one selected on arrival.
+The Automations tab has three sub-tabs: **Rules** (this document), **Workers**
+(`docs/workers.md`) and **Suggested** (`docs/swarm-intelligence.md`). Rules is
+the one selected on arrival.
 
 Click **Add Rule** on the Rules sub-tab to open the rule builder.
 
