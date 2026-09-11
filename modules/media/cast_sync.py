@@ -123,6 +123,14 @@ STREAM_INTERRUPT_MIN_S = 1.0
 # Floor between interruption-driven reloads of one device: a receiver held
 # down longer than one attempt is retried steadily rather than hammered.
 STREAM_INTERRUPT_RELOAD_MIN_S = 10.0
+# How often a parked device is probed for its return. A device the cast
+# provider cannot resolve is absent, not misaligned, and every rung of the
+# ladder is unreachable for it — including the one that re-LOADs the whole
+# zone on its behalf (_park_stream). Observed outages of the speaker that
+# prompted this were 1 m 47 s and 2 m 48 s, so the probe has to be frequent
+# enough to catch the return inside the gap, and cheap enough to run for as
+# long as the device is away: resolution is one mDNS lookup.
+STREAM_PARK_RETRY_S = 30.0
 
 # --- Pre-roll latency probe (open-zone.md 4.1) -----------------------------
 # Every device is LOADed onto a silent lead the moment the source opens, and
@@ -291,6 +299,15 @@ class _Stream:
         # cleared into ``interrupt_held`` when it comes back, so the sweep can
         # act on an interruption that is still running *and* on one that ended
         # between two polls (_sweep_interrupted).
+        # Parked: the cast provider cannot resolve this device at all, so it
+        # is out of the group until it comes back (_park_stream). Distinct
+        # from `connected`, which only says whether a fetch is open, and from
+        # `interrupted_since`, which describes a device that is present and
+        # answering but not playing.
+        self.parked_since: Optional[float] = None
+        self.park_probe_at: float = 0.0    # next resolution attempt
+        self.park_probing: bool = False    # one probe in flight at a time
+        self.parks: int = 0
         self.state: str = ""
         self.interrupted_since: Optional[float] = None
         self.interrupt_held: float = 0.0
@@ -1112,7 +1129,9 @@ class OpenZone:
                 "sid": sid,
                 "player_id": info["player_id"],
                 "name": info["name"],
-                "connected": (r is not None) or (s is not None and s.connected),
+                "connected": (r is not None) or (s is not None and s.connected
+                                                 and s.parked_since is None),
+                "parked": bool(s is not None and s.parked_since is not None),
                 "trim_ms": (s.trim_ms if s is not None
                             else self.trim_ms(info["player_id"])),
                 "stats": (r.stats if r else (s.stats if s else {})),
@@ -1196,7 +1215,8 @@ class OpenZone:
             return {"success": False,
                     "error": "Devices still acquiring — try again in a few seconds"}
         streams = [s for s in self._streams.values()
-                   if s.connected and s.pos is not None]
+                   if s.connected and s.pos is not None
+                   and s.parked_since is None]
         if len(streams) < 2:
             return {"success": False,
                     "error": "Need at least two connected speakers"}
@@ -1441,7 +1461,16 @@ class OpenZone:
         uuid_str = player_id.split(":", 1)[1]
         cast = await self.cast._get_cast(uuid_str)
         if not cast:
-            logger.warning(f"Sync stream launch: {player_id} unreachable")
+            # Resolution failed: the device is not on the network. This is the
+            # only signal that separates absence from misalignment, and it is
+            # the one every rung above needs, so it parks the device rather
+            # than returning quietly and leaving the silence sweep to escalate
+            # a fault no reload or re-align can fix (_park_stream).
+            st = self._streams.get(sid)
+            if st is not None:
+                self._park_stream(st, "the cast provider cannot resolve it")
+            else:
+                logger.warning(f"Sync stream launch: {player_id} unreachable")
             return
         self._watch_connection(cast, uuid_str, self._streams.get(sid))
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
@@ -1541,7 +1570,8 @@ class OpenZone:
                     asyncio.create_task(self.stop_session())
                     return
                 items = [(sid, st) for sid, st in list(self._streams.items())
-                         if st.connected and st.pos is not None]
+                         if st.connected and st.pos is not None
+                         and st.parked_since is None]
                 results = []
                 if items:
                     results = await asyncio.gather(
@@ -1557,6 +1587,7 @@ class OpenZone:
                     st = self._streams.get(sid)
                     if st is not None:
                         st.last_lag_at = time.monotonic()
+                self._sweep_parked()
                 self._sweep_interrupted()
                 self._sweep_silent()
                 if not lags:
@@ -1571,7 +1602,8 @@ class OpenZone:
                     if time.monotonic() < self._target_wait_until:
                         continue
                     n_connected = len([s for s in self._streams.values()
-                                       if s.connected])
+                                       if s.connected
+                                       and s.parked_since is None])
                     if (len(lags) < n_connected
                             and time.monotonic() < self._acquire_deadline):
                         continue     # wait until every connected device reports
@@ -1598,6 +1630,7 @@ class OpenZone:
                                 "reconnects": st.reconnects,
                                 "reloads": st.reloads,
                                 "interrupts": st.interrupts,
+                                "parks": st.parks,
                                 "latency_ms": round(st.latency_s * 1000),
                                 "drift_ppm": round(st.rate_ppm)}
                     batch.append(self._sample_row(st, "poll", lag=lag,
@@ -2077,8 +2110,12 @@ class OpenZone:
         return self._median(reads)
 
     def _group_locked(self) -> bool:
-        """Every connected device has been measured and pulled into place."""
-        live = [s for s in self._streams.values() if s.connected]
+        """Every connected device has been measured and pulled into place.
+        A parked device is not one the zone is waiting for: it is absent, and
+        holding the fade-in for it would keep the group silent for as long as
+        it stays off the network."""
+        live = [s for s in self._streams.values()
+                if s.connected and s.parked_since is None]
         return bool(live) and all(s.acquired for s in live)
 
     def _acquire_gain(self, frames: int):
@@ -2136,13 +2173,15 @@ class OpenZone:
                         "whatever the probe has")
                     break
                 live = [st for st in self._streams.values()
-                        if st.connected and st.opened_at is not None]
+                        if st.connected and st.opened_at is not None
+                        and st.parked_since is None]
                 if not live:
                     continue
                 await asyncio.gather(*(self._probe_once(st) for st in live),
                                      return_exceptions=True)
-                if (len(live) < len(self._streams)
-                        and time.monotonic() < quorum_until):
+                expected = len([st for st in self._streams.values()
+                                if st.parked_since is None])
+                if len(live) < expected and time.monotonic() < quorum_until:
                     continue          # a device is still coming up
                 if not all(self._probe_settled(st) for st in live):
                     continue
@@ -2209,7 +2248,8 @@ class OpenZone:
             # which is exactly what _group_locked waits to observe. Holding the
             # zone silent for another two polls to re-derive it from content
             # would put the pre-roll's saving straight back.
-            live = [st for st in self._streams.values() if st.connected]
+            live = [st for st in self._streams.values()
+                    if st.connected and st.parked_since is None]
             if live and all(st.sid in lats and self._probe_settled(st)
                             for st in live):
                 self._fade_start = time.monotonic()
@@ -2323,6 +2363,108 @@ class OpenZone:
         # is escalated rather than left in the zone unwatched.
         st.last_lag_at = time.monotonic()
 
+    def _park_stream(self, st: _Stream, reason: str) -> None:
+        """Take an absent device out of the group until it answers again.
+
+        The ladder's rungs all assume a device that is *present and wrong*:
+        a step moves its reader, a reload drops its buffer, a re-align
+        re-derives the whole group's target. None of them describes a device
+        that is not on the network, and the last one is actively harmful —
+        it re-LOADs every other speaker in the zone, several seconds of
+        disturbance each, on behalf of one that cannot receive the LOAD.
+        Observed on 2026-09-10: one speaker dropped off WiFi for 2 m 48 s and
+        the ladder walked silence → reload → reload → re-align, taking all
+        five speakers down twice for a device that answered none of it.
+
+        Absence is therefore its own state rather than the bottom of the
+        ladder. A parked device is excluded from measurement, from the target
+        derivation, from the acquisition lock and from re-alignment — so the
+        zone plays on undisturbed — and is probed for its return on its own
+        backoff instead (`_sweep_parked`). The signal is precise: the cast
+        provider failing to *resolve* the device, which is the one condition
+        that distinguishes absence from every kind of misbehaviour.
+
+        Its pre-compensation and trim are deliberately left alone. They are
+        properties of the device and the room, they did not change while it
+        was away, and they are what let it rejoin against the group's existing
+        target instead of forcing the re-derivation this exists to avoid.
+        """
+        now = time.monotonic()
+        if st.parked_since is not None:
+            st.park_probe_at = now + STREAM_PARK_RETRY_S
+            return
+        st.parked_since = now
+        st.parks += 1
+        st.park_probe_at = now + STREAM_PARK_RETRY_S
+        st.acquired = False
+        st.err_hist = []
+        st.lag_hist = []
+        st.slew_s = 0.0
+        st.futile_steps = 0
+        st.last_step_error = None
+        st.interrupted_since = None
+        st.interrupt_held = 0.0
+        # An absence must not push the group toward a re-align. The count asks
+        # whether reloading works against the current target, and a device
+        # that was not on the network never answered that question.
+        st.reloads_since_align = 0
+        st.stats = {**st.stats, "parked": True, "parks": st.parks}
+        logger.warning(
+            f"Sync stream parking {st.name} — {reason}. Out of the group "
+            f"until it answers; the zone is not re-aligned for a device that "
+            f"is not on the network (park #{st.parks})")
+
+    async def _rejoin_stream(self, st: _Stream) -> None:
+        """Probe a parked device and put it back if it answers.
+
+        The rejoin is a per-device reload, not a group event: the target is
+        already established and this device's pre-compensation still describes
+        it, so it re-seats against what the zone is already doing and the
+        ladder converges whatever residue is left. Nothing the other speakers
+        are doing changes.
+        """
+        try:
+            if not self.running or self._streams.get(st.sid) is not st:
+                return
+            uuid_str = st.player_id.split(":", 1)[1]
+            try:
+                cast = await self.cast._get_cast(uuid_str)
+            except Exception as e:
+                logger.debug(f"Sync rejoin probe failed for {st.name}: {e}")
+                cast = None
+            if not cast:
+                st.park_probe_at = time.monotonic() + STREAM_PARK_RETRY_S
+                return
+            away = time.monotonic() - (st.parked_since or time.monotonic())
+            st.parked_since = None
+            st.stats = {**st.stats, "parked": False}
+            logger.info(
+                f"Sync stream {st.name} answered again after {away:.0f}s away "
+                f"— rejoining against the group's existing target")
+            # If it drops again between this probe and the LOAD, _launch_stream
+            # parks it once more and the backoff simply resumes.
+            await self._reload_stream(st)
+        finally:
+            st.park_probing = False
+
+    def _sweep_parked(self) -> None:
+        """Probe each parked device for its return, on its own backoff.
+
+        Off the poll: resolution can block for as long as the provider's own
+        timeout, and the poll pass owns every other speaker in the zone.
+        """
+        if self._realigning:
+            return
+        now = time.monotonic()
+        for st in list(self._streams.values()):
+            if st.parked_since is None or st.park_probing:
+                continue
+            if now < st.park_probe_at:
+                continue
+            st.park_probing = True
+            st.park_probe_at = now + STREAM_PARK_RETRY_S
+            asyncio.create_task(self._rejoin_stream(st))
+
     def _sweep_interrupted(self) -> None:
         """Reload any receiver that has been taken out of playback.
 
@@ -2362,6 +2504,8 @@ class OpenZone:
         for st in list(self._streams.values()):
             if st.pos is None or st.natural_lag is None:
                 continue
+            if st.parked_since is not None:
+                continue     # absent, not interrupted (_park_stream)
             held = (now - st.interrupted_since
                     if st.interrupted_since is not None else st.interrupt_held)
             if held < STREAM_INTERRUPT_MIN_S or now < st.cooldown_until:
@@ -2406,6 +2550,9 @@ class OpenZone:
         for st in list(self._streams.values()):
             if st.pos is None or st.last_lag_at is None:
                 continue
+            if st.parked_since is not None:
+                continue     # its silence is already accounted for, and the
+                             # rungs this would reach cannot touch it
             silent = now - st.last_lag_at
             if silent < STREAM_SILENT_MAX_S:
                 continue
@@ -2429,6 +2576,9 @@ class OpenZone:
         the reload is therefore not a slow rescue but one that keeps
         re-creating the fault, and only re-deriving the group's target can
         converge (open-zone.md §7.1)."""
+        if st.parked_since is not None:
+            return       # absent: no rung applies, and the one above would
+                         # re-LOAD the zone for it (_park_stream)
         now = time.monotonic()
         if st.reloads_since_align >= STREAM_RELOADS_BEFORE_REALIGN:
             # Past this point a reload is not a slower rescue but one that
@@ -2482,7 +2632,11 @@ class OpenZone:
         """
         if not self.running or self.app_id:
             return
-        streams = [st for st in self._streams.values() if st.pos is not None]
+        # A parked device is not re-LOADed with the group: it cannot receive
+        # the LOAD, and including it would re-derive the target from a set the
+        # zone is not actually playing on. It rejoins on its own probe.
+        streams = [st for st in self._streams.values()
+                   if st.pos is not None and st.parked_since is None]
         if not streams:
             return
         self._realigning = True
