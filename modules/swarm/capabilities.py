@@ -28,7 +28,9 @@ Read-only. Nothing here mutates device or rule state.
 
 from __future__ import annotations
 
+import datetime
 import logging
+import re
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 logger = logging.getLogger("modules.swarm.capabilities")
@@ -79,6 +81,27 @@ PARAMS: Dict[str, Dict[str, Any]] = {
     "near_home_min":  {"label": "Minutes from home", "type": "int",   "default": 15,         "unit": "min", "min": 1,    "max": 120},
     "dear_rate_p":    {"label": "Rate above",        "type": "float", "default": 25.0,       "unit": "p/kWh", "min": 0,  "max": 200},
     "cheap_rate_p":   {"label": "Rate below",        "type": "float", "default": 12.0,       "unit": "p/kWh", "min": 0,  "max": 200},
+    # Trends: how far a reading moves, and within how long. A window is minutes
+    # on a card and seconds in the engine — see the `within` offer field.
+    "temp_jump_c":      {"label": "Warms by",          "type": "float", "default": 3.0,   "unit": "°C",  "min": 0.5, "max": 20},
+    "temp_drop_c":      {"label": "Cools by",          "type": "float", "default": 2.0,   "unit": "°C",  "min": 0.5, "max": 20},
+    "humid_jump_pct":   {"label": "Humidity jumps by", "type": "int",   "default": 10,    "unit": "%",   "min": 2,   "max": 60},
+    "co2_jump_ppm":     {"label": "CO₂ jumps by",      "type": "int",   "default": 300,   "unit": "ppm", "min": 50,  "max": 3000},
+    "power_jump_w":     {"label": "Draw jumps by",     "type": "float", "default": 500.0, "unit": "W",   "min": 10,  "max": 4000},
+    "trend_window_min": {"label": "Within",            "type": "int",   "default": 15,    "unit": "min", "min": 1,   "max": 1440},
+    # Silence, reminders and holds.
+    "offline_min":      {"label": "Silent for",        "type": "int",   "default": 120,   "unit": "min", "min": 5,   "max": 10080},
+    "remind_min":       {"label": "Remind every",      "type": "int",   "default": 10,    "unit": "min", "min": 1,   "max": 1440},
+    "remind_max":       {"label": "At most",           "type": "int",   "default": 6,     "unit": "times", "min": 1, "max": 100},
+    "flash_count":      {"label": "Flashes",           "type": "int",   "default": 3,     "unit": "",    "min": 1,   "max": 20},
+    "long_run_min":     {"label": "Running for",       "type": "int",   "default": 180,   "unit": "min", "min": 5,   "max": 1440},
+    "unlock_hold_s":    {"label": "Unlocked for",      "type": "int",   "default": 600,   "unit": "s",   "min": 30,  "max": 7200},
+    # Calendar. A season runs month-day to month-day and may wrap over new year;
+    # quiet hours run clock time to clock time and may wrap over midnight.
+    "season_from":      {"label": "Season from",       "type": "monthday", "default": "12-01"},
+    "season_to":        {"label": "Season until",      "type": "monthday", "default": "01-06"},
+    "quiet_from":       {"label": "Quiet from",        "type": "time",     "default": "22:30"},
+    "quiet_to":         {"label": "Quiet until",       "type": "time",     "default": "06:30"},
     # A colour is [hue 0-360, saturation 0-100], which is what the device layer
     # takes. The named choices exist so a card can offer swatches and a
     # sentence can say "set the lamp to red" rather than "to [0, 100]".
@@ -109,8 +132,25 @@ def param_display(pid: Optional[str], value: Any) -> str:
     for name, choice in (spec.get("choices") or {}).items():
         if choice == value:
             return name
+    if spec.get("type") == "monthday":
+        return monthday_display(value)
     unit = spec.get("unit") or ""
-    return f"{value}{unit}"
+    # "15 min" and "11 lx", but "18.0°C" and "20%": a word-like unit reads with a space.
+    gap = " " if unit[:1].isalpha() else ""
+    return f"{value}{gap}{unit}"
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def monthday_display(value: Any) -> str:
+    """'12-01' as '1 Dec' — how a season boundary reads in a sentence."""
+    try:
+        month, day = (int(part) for part in str(value).split("-"))
+        return f"{day} {_MONTHS[month - 1]}"
+    except (ValueError, IndexError):
+        return str(value)
 
 
 def resolve_param(value: Any, overrides: Optional[Dict[str, Any]] = None) -> Any:
@@ -126,6 +166,46 @@ def resolve_param(value: Any, overrides: Optional[Dict[str, Any]] = None) -> Any
         return overrides[pid]
     spec = PARAMS.get(pid)
     return spec.get("default") if spec else None
+
+
+_TIME_SHAPE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def coerce_param(pid: str, raw: Any) -> Any:
+    """A user-supplied value for a parameter, in its declared type and bounds.
+
+    Returns None when it cannot be one, and the caller keeps the pattern's own
+    value: a card posting "6" for a repeat count, or "13-45" for a date, would
+    otherwise compile to a rule the engine refuses.
+    """
+    spec = PARAMS.get(pid)
+    if not spec:
+        return None
+    kind = spec.get("type")
+    try:
+        if kind == "colour":
+            if isinstance(raw, str):
+                return (spec.get("choices") or {}).get(raw)
+            if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                return [int(raw[0]), int(raw[1])]
+            return None
+        if kind == "time":
+            text = str(raw).strip()
+            return text if _TIME_SHAPE.match(text) else None
+        if kind == "monthday":
+            text = str(raw).strip()
+            if not re.fullmatch(r"\d{2}-\d{2}", text):
+                return None
+            datetime.date.fromisoformat(f"2024-{text}")    # a leap year: 02-29 is a day
+            return text
+        value = float(raw) if kind == "float" else int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+    if spec.get("min") is not None:
+        value = max(value, spec["min"])
+    if spec.get("max") is not None:
+        value = min(value, spec["max"])
+    return value
 
 
 # Capability vocabulary
@@ -151,6 +231,14 @@ def resolve_param(value: Any, overrides: Optional[Dict[str, Any]] = None) -> Any
 #   command    engine command (actions)
 #   value_from param id supplying the command's argument (actions)
 #   step       non-command step type, for media/notify offers
+#   within     a trend's window, in minutes (rose_by / fell_by offers)
+#   type       a condition type of its own rather than an attribute comparison:
+#              offline, startup, date, time_window — its other fields (minutes,
+#              from, to, time_from, time_to, negate) may carry param() markers
+#
+# A capability may also list `evidence`: state keys whose mere presence proves
+# it, even where they are too diagnostic to back an offer — a last-seen time is
+# what makes a device's silence measurable.
 #   sustain    suggested hold in seconds before the edge counts
 #   attrs      overrides the capability-level attrs for this offer alone
 #   weight     tiebreak only: which offer leads when two pairings score equally.
@@ -250,6 +338,14 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "triggers": [
             {"id": "got_cold", "label": "{room} drops below {value}", "operator": "lt", "value": param("cold_c"), "polarity": 1},
             {"id": "got_warm", "label": "{room} rises above {value}", "operator": "gt", "value": param("warm_c"), "polarity": -1},
+            # How fast, not how high: a room cooling sharply is a window opening,
+            # and one warming sharply is worth a look whatever it started at.
+            {"id": "rising_fast", "label": "{room} warms by {value} within {window}",
+             "operator": "rose_by", "value": param("temp_jump_c"),
+             "within": param("trend_window_min"), "polarity": -1},
+            {"id": "falling_fast", "label": "{room} cools by {value} within {window}",
+             "operator": "fell_by", "value": param("temp_drop_c"),
+             "within": param("trend_window_min"), "polarity": 1},
         ],
         "conditions": [
             {"id": "is_cold", "label": "{room} is below {value}", "operator": "lt", "value": param("cold_c")},
@@ -266,6 +362,10 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "triggers": [
             {"id": "got_humid", "label": "{room} humidity rises above {value}", "operator": "gt", "value": param("humid_pct")},
             {"id": "got_dry", "label": "{room} humidity drops below {value}", "operator": "lt", "value": param("dry_pct")},
+            # A shower starting: humidity jumps, from whatever level it was at.
+            {"id": "spiking", "label": "{room} humidity jumps by {value} within {window}",
+             "operator": "rose_by", "value": param("humid_jump_pct"),
+             "within": param("trend_window_min")},
         ],
         "conditions": [
             {"id": "is_humid", "label": "{room} is humid", "operator": "gt", "value": param("humid_pct")},
@@ -288,7 +388,10 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "tags": ["air", "environment"],
         "attrs": ["co2"],
         "triggers": [{"id": "high", "label": "{room} CO₂ rises above {value}",
-                      "operator": "gt", "value": param("co2_ppm")}],
+                      "operator": "gt", "value": param("co2_ppm")},
+                     {"id": "rising_fast", "label": "{room} CO₂ jumps by {value} within {window}",
+                      "operator": "rose_by", "value": param("co2_jump_ppm"),
+                      "within": param("trend_window_min")}],
         "conditions": [{"id": "is_high", "label": "{room} CO₂ is above {value}",
                         "operator": "gt", "value": param("co2_ppm")}],
         "actions": [],
@@ -328,7 +431,10 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "triggers": [{"id": "detected", "label": "{device} detects water",
                       "operator": "eq", "value": True}],
         "conditions": [{"id": "is_wet", "label": "{device} is wet",
-                        "operator": "eq", "value": True}],
+                        "operator": "eq", "value": True},
+                       # What a leak reminder waits for.
+                       {"id": "is_dry", "label": "{device} is dry",
+                        "operator": "eq", "value": False}],
         "actions": [],
     },
 
@@ -378,6 +484,9 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
              "operator": "gt", "value": param("power_on_w"), "polarity": 1},
             {"id": "finished", "label": "{device} finishes",
              "operator": "lt", "value": param("power_idle_w"), "sustain": 120, "polarity": -1},
+            {"id": "spiked", "label": "{device} draw jumps by {value} within {window}",
+             "operator": "rose_by", "value": param("power_jump_w"),
+             "within": param("trend_window_min"), "polarity": 1},
         ],
         "conditions": [
             {"id": "is_running", "label": "{device} is drawing power",
@@ -427,13 +536,24 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "label": "Availability",
         "kind": "sensor",
         "tags": ["diagnostic", "maintenance"],
+        # A device that goes quiet sends nothing — Zigbee reports `available`
+        # only when a device formally leaves — so comparing that attribute
+        # compiled rules that never fired. Offline is judged from silence
+        # instead, by the engine's offline condition, which it reads on the
+        # clock. Any device reporting a last-seen time or an availability flag
+        # can be asked about. Coming back is the offline rule's ELSE, rather than
+        # a trigger of its own that would fire for every device the moment a
+        # rule was created.
         "attrs": ["available"],
+        "evidence": ["last_seen", "available"],
         "triggers": [
-            {"id": "went_offline", "label": "{device} goes offline", "operator": "eq", "value": False},
-            {"id": "came_online", "label": "{device} comes back online", "operator": "eq", "value": True},
+            {"id": "went_offline", "label": "{device} has not reported for {minutes}",
+             "type": "offline", "minutes": param("offline_min")},
         ],
-        "conditions": [{"id": "is_online", "label": "{device} is online",
-                        "operator": "eq", "value": True}],
+        "conditions": [
+            {"id": "is_online", "label": "{device} has reported within {minutes}",
+             "type": "offline", "minutes": param("offline_min"), "negate": True},
+        ],
         "actions": [],
     },
 
@@ -766,6 +886,32 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "actions": [],
     },
 
+    # The hub itself. No device in the registry has this: resolver.hub_device()
+    # builds the one that does, whose address is the engine's `__time__` source.
+    # It contributes the moments and calendar conditions no hardware can — the
+    # hub starting, a season, quiet hours — so a pattern fills a slot from it
+    # like any other device.
+    "hub": {
+        "label": "Hub",
+        "kind": "virtual",
+        "scope": SCOPE_HOUSE,
+        "sniffable": False,
+        "synthetic": True,
+        "tags": ["system", "calendar"],
+        "attrs": [],
+        "triggers": [
+            {"id": "started", "label": "the hub starts", "type": "startup", "weight": 1},
+        ],
+        "conditions": [
+            {"id": "in_season", "label": "it's between {from} and {to}",
+             "type": "date", "from": param("season_from"), "to": param("season_to")},
+            {"id": "quiet_hours", "label": "it's between {time_from} and {time_to}",
+             "type": "time_window", "time_from": param("quiet_from"),
+             "time_to": param("quiet_to")},
+        ],
+        "actions": [],
+    },
+
     "notify": {
         "label": "Notify",
         "kind": "virtual",
@@ -844,6 +990,7 @@ DEVICE_CLASS_RULES: Sequence[Tuple[str, Callable[[set], bool]]] = (
     # person has `person` — and they must outrank the readings they carry: the
     # weather reports temperature and humidity, which would otherwise make it a
     # climate sensor.
+    ("hub",              lambda c: "hub" in c),
     ("person",           lambda c: "person" in c),
     ("household",        lambda c: "household" in c),
     ("weather",          lambda c: "weather" in c),

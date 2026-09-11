@@ -200,6 +200,34 @@ async def _run(c: Checker) -> None:
     await _settle()
     c.check("two minutes silent is not five", devices["0xlight"].sent == [], devices["0xlight"].sent)
 
+    c.section("offline, negated: has reported within N minutes")
+    devices = _house()
+    e = _engine(devices)
+    pir = devices["0xpir"]
+    pir.last_seen = int((time.time() - 600) * 1000)
+    stored = e.add_rule(_rule("0xpir", [{"type": "offline", "minutes": 5, "negate": "yes"}]))
+    c.check("negate is stored as a plain true", stored["rule"]["conditions"][0].get("negate") is True,
+            stored["rule"]["conditions"])
+    plain = e.add_rule(_rule("0xpir", [{"type": "offline", "minutes": 5, "negate": False}],
+                             then="toggle"))
+    c.check("and dropped when false", "negate" not in plain["rule"]["conditions"][0],
+            plain["rule"]["conditions"])
+    e.delete_rule(plain["rule"]["id"])
+    e._evaluate_offline_rules()
+    await _settle()
+    c.check("ten minutes silent is not 'has reported'", devices["0xlight"].sent == [],
+            devices["0xlight"].sent)
+    pir.last_seen = int(time.time() * 1000)
+    await _update(e, devices, "0xpir", occupancy=True, last_seen=pir.last_seen)
+    c.check("reporting again passes", devices["0xlight"].sent == ["on"], devices["0xlight"].sent)
+    blind = e.add_rule(_rule("0xlux", [{"type": "offline", "negate": True}], then="stop"))["rule"]["id"]
+    e._evaluate_offline_rules()
+    await _settle()
+    verdicts = [cr for t in e.get_trace_log(blind) for cr in t.get("conditions") or []]
+    c.check("a device whose availability is unknown is not 'online' either",
+            verdicts and all(cr.get("result") == "FAIL" for cr in verdicts)
+            and any("no availability" in cr.get("reason", "") for cr in verdicts), verdicts)
+
     c.section("offline: the hub's own verdict")
     devices = _house()
     e = _engine(devices)
@@ -230,12 +258,13 @@ async def _run(c: Checker) -> None:
         c.check("automation_api importable (skipped)", True)
     else:
         req = AutomationCreateRequest(source_ieee="0xpir", conditions=[
-            {"type": "offline", "minutes": 30, "ieee": "0xfront"},
+            {"type": "offline", "minutes": 30, "ieee": "0xfront", "negate": True},
             {"type": "attribute", "attribute": "temperature", "operator": "rose_by",
              "value": 2, "within": 1800}])
         d = _conds_to_dicts(req.conditions)
-        c.check("an offline condition keeps its minutes and device",
-                d[0]["type"] == "offline" and d[0]["minutes"] == 30 and d[0]["ieee"] == "0xfront", d)
+        c.check("an offline condition keeps its minutes, device and negation",
+                d[0]["type"] == "offline" and d[0]["minutes"] == 30 and d[0]["ieee"] == "0xfront"
+                and d[0].get("negate") is True, d)
         c.check("a trend keeps its window", d[1]["within"] == 1800 and d[1]["operator"] == "rose_by", d)
 
 

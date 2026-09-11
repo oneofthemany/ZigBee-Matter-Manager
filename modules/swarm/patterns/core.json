@@ -288,11 +288,11 @@
       "light": {
         "role": "action",
         "offer": "on_off:turn_off",
+        "collect": true,
         "device_class": [
           "light",
           "color_light",
-          "switch",
-          "plug"
+          "switch"
         ]
       }
     },
@@ -387,6 +387,7 @@
   },
   {
     "id": "window_open_pause_heating",
+    "enabled": false,
     "title": "Turn the radiator down when a window opens",
     "description": "Stops the heating fighting an open window.",
     "category": "climate",
@@ -523,9 +524,10 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "Water detected by $trigger_device."
+          "message": "Water detected by {trigger} at {time}."
         }
       ],
+      "run_mode": "queued",
       "cooldown": 300
     }
   },
@@ -595,22 +597,33 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "Smoke detected by $trigger_device."
+          "message": "Smoke detected by {trigger} at {time}."
         },
         "light"
       ],
+      "run_mode": "queued",
       "cooldown": 300
     }
   },
   {
     "id": "door_left_open",
-    "title": "Tell someone when a door is left open",
+    "title": "Keep reminding while a door is left open",
+    "description": "Once a door has been open a while it messages, then again every few minutes until it is shut. Shutting it before the first reminder sends nothing.",
     "category": "security",
     "scope": "house",
     "slots": {
       "door": {
         "role": "trigger",
-        "offer": "contact:opened"
+        "offer": "contact:opened",
+        "sustain": {
+          "param": "open_hold_s"
+        }
+      },
+      "shut": {
+        "role": "condition",
+        "offer": "contact:is_closed",
+        "prefer": "same_device",
+        "prefer_slot": "door"
       },
       "who": {
         "role": "action",
@@ -625,21 +638,40 @@
       ],
       "then": [
         {
-          "type": "delay",
-          "seconds": {
-            "param": "open_hold_s"
-          }
-        },
-        {
-          "type": "request",
-          "to_user": "$who",
-          "message": "$trigger_device has been open a while."
+          "type": "repeat",
+          "mode": "until",
+          "max_iterations": {
+            "param": "remind_max"
+          },
+          "inline_conditions": [
+            {
+              "$cond": "shut"
+            }
+          ],
+          "steps": [
+            {
+              "type": "request",
+              "to_user": "$who",
+              "message": "{trigger} is still open ({time})."
+            },
+            {
+              "type": "wait_for",
+              "$cond": "shut",
+              "timeout": {
+                "param": "remind_min",
+                "scale": 60
+              }
+            }
+          ]
         }
       ],
+      "run_mode": "single",
       "cooldown": 600
     },
     "params": {
-      "open_hold_s": 300
+      "open_hold_s": 300,
+      "remind_min": 10,
+      "remind_max": 6
     }
   },
   {
@@ -668,7 +700,7 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "$trigger_device has finished."
+          "message": "{trigger} has finished ({time})."
         }
       ],
       "cooldown": 600
@@ -705,7 +737,7 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "$trigger_device battery is low."
+          "message": "{trigger} battery is low (reading $low@value)."
         }
       ],
       "cooldown": 86400
@@ -739,10 +771,20 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "$trigger_device has gone offline."
+          "message": "{trigger} has not reported for a while."
         }
       ],
-      "cooldown": 3600
+      "else": [
+        {
+          "type": "request",
+          "to_user": "$who",
+          "message": "{trigger} is reporting again."
+        }
+      ],
+      "cooldown": 600
+    },
+    "params": {
+      "offline_min": 120
     }
   },
   {
@@ -813,7 +855,7 @@
         {
           "type": "request",
           "to_user": "$who",
-          "message": "$trigger_device was disturbed."
+          "message": "{trigger} was disturbed at {time}."
         }
       ],
       "cooldown": 300

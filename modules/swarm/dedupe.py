@@ -18,11 +18,17 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
-from modules.automation import iter_leaf_conditions
+from modules.automation import TIME_SOURCE, TRIGGER_OPERATORS, iter_leaf_conditions
 
 logger = logging.getLogger("modules.swarm.dedupe")
 
-Signature = Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...]]
+Signature = Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]]
+
+# Step types that change what an automation *is*, not just how it is tuned. A
+# reminder repeating until a door shuts and a single message about the same door
+# are different automations with the same trigger and recipient; a delay or a
+# gate added to a hand-built rule is not.
+SHAPE_STEP_TYPES = ("repeat", "offer", "snapshot", "restore", "wait_for")
 
 
 def _walk_steps(steps: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
@@ -74,17 +80,34 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
         if ctype == "zone":
             out.add(f"{prefix}zone:{c.get('event')}:{c.get('place')}")
         elif ctype == "offline":
-            out.add(f"{prefix}offline")
-        elif ctype in ("time_window", "time", "sun"):
+            out.add(f"{prefix}{'online' if c.get('negate') else 'offline'}")
+        elif ctype in ("time_window", "time", "sun", "date", "startup", "webhook"):
             out.add(ctype)
         elif c.get("attribute"):
-            out.add(f"{prefix}{c['attribute']}")
+            # The operator is part of the wiring: "starts drawing power" and
+            # "finishes" watch one attribute and are two automations. The
+            # threshold is not, so a rule at 11 lux still matches one at 10.
+            out.add(f"{prefix}{c['attribute']}:{c.get('operator')}")
     return tuple(sorted(out))
+
+
+def _shape(rule: Dict[str, Any]) -> Tuple[str, ...]:
+    """Which SHAPE_STEP_TYPES a rule's sequences use, anywhere in them."""
+    found: Set[str] = set()
+    for field in ("then_sequence", "else_sequence"):
+        for step in _walk_steps(rule.get(field) or []):
+            if step.get("type") in SHAPE_STEP_TYPES:
+                found.add(step["type"])
+            for nested in step.get("accept_steps") or []:
+                if isinstance(nested, dict) and nested.get("type") in SHAPE_STEP_TYPES:
+                    found.add(nested["type"])
+    return tuple(sorted(found))
 
 
 def signature(rule: Dict[str, Any]) -> Signature:
     """The wiring a rule represents. Thresholds and names are deliberately out."""
-    return (str(rule.get("source_ieee", "")), _watched(rule), _targets(rule))
+    return (str(rule.get("source_ieee", "")), _watched(rule), _targets(rule),
+            _shape(rule))
 
 
 def index_rules(rules: Iterable[Dict[str, Any]]) -> Dict[Signature, List[Dict[str, Any]]]:
@@ -123,6 +146,8 @@ def coverage(described: List[Dict[str, Any]],
     interesting on its own.
     """
     rules = list(rules or [])
+    # The hub is not a device anyone owns or places; it is never a coverage gap.
+    described = [d for d in described if d.get("ieee") != TIME_SOURCE]
     sources = {str(r.get("source_ieee")) for r in rules}
     # A device a trigger condition names takes part as much as the source does.
     sources |= {str(c["ieee"]) for r in rules

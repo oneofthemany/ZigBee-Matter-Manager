@@ -32,6 +32,10 @@ PREFERENCE_UNMET = "preference_unmet"     # required same-device pairing absent
 MAX_VARIANTS_PER_SLOT = 4
 # Two varying slots multiply, so the product is capped as well as each factor.
 MAX_CANDIDATES_PER_SCOPE = 8
+# A collected slot gathers every matching device into one rule — as a group of
+# conditions, or a step each. Capped at the engine's MAX_CONDITIONS_PER_GROUP,
+# since a group is where a collected condition slot compiles to.
+MAX_COLLECT = 5
 
 
 def _offers_of(device: Dict[str, Any], role: str) -> List[Dict[str, Any]]:
@@ -173,8 +177,9 @@ def _scope_pool(described: List[Dict[str, Any]], room: Optional[str]
 def _slot_order(slots: Dict[str, Dict[str, Any]]) -> List[str]:
     """Slots without a preference first, so the slots that depend on them can see
     what was chosen."""
-    independent = [n for n, s in slots.items() if not s.get("prefer_slot")]
-    dependent = [n for n, s in slots.items() if s.get("prefer_slot")]
+    depends = lambda s: s.get("prefer_slot") or s.get("exclude_slot")  # noqa: E731
+    independent = [n for n, s in slots.items() if not depends(s)]
+    dependent = [n for n, s in slots.items() if depends(s)]
     return independent + dependent
 
 
@@ -240,6 +245,13 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
                 elif spec.get("require_same_device"):
                     pairs, reason = [], PREFERENCE_UNMET
 
+        exclude = spec.get("exclude_slot")
+        if pairs and exclude and fills.get(exclude):
+            # "Another light than the one switched" — never that light itself.
+            pairs = [p for p in pairs if p[0]["ieee"] != fills[exclude]["ieee"]]
+            if not pairs:
+                reason = PREFERENCE_UNMET
+
         if not pairs:
             slot_trace[name] = {"status": "unfilled", "reason": reason,
                                 "optional": bool(spec.get("optional"))}
@@ -249,6 +261,22 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
             continue
 
         ranked = _rank_fills(pairs)
+        if spec.get("collect"):
+            # Every device in scope that makes the offer, as one fill: "any
+            # window in this room", "every light in the house".
+            gathered = _distinct_devices(ranked)
+            kept = gathered[:MAX_COLLECT]
+            first_dev, first_offer = kept[0]
+            fills[name] = {"ieee": first_dev["ieee"], "device": first_dev,
+                           "offer": first_offer,
+                           "members": [{"ieee": d["ieee"], "device": d, "offer": o}
+                                       for d, o in kept]}
+            slot_trace[name] = {"status": "filled", "ieee": first_dev["ieee"],
+                                "device": first_dev["name"], "offer": first_offer["key"],
+                                "collected": len(kept),
+                                "left_out": len(gathered) - len(kept),
+                                "alternatives": 0, "note": None}
+            continue
         if name in vary_slots:
             vary_pairs[name] = _distinct_devices(
                 _rank_anchored(ranked, name, slots, pool))[:MAX_VARIANTS_PER_SLOT]
@@ -296,6 +324,8 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
                                     "device": repin[0][0], "offer": repin[0][1]}
                 elif spec.get("optional"):
                     these.pop(other, None)
+        if not _resolve_exclusions(these, slots, pool):
+            continue
         candidates.append({
             "pattern_id": pattern["id"],
             "room": room,
@@ -308,6 +338,32 @@ def _match_one(pattern: Dict[str, Any], pool: List[Dict[str, Any]],
         "pattern": pattern["id"], "room": room, "room_label": room_label,
         "outcome": "matched", "candidates": len(candidates), "slots": slot_trace,
     }}
+
+
+def _resolve_exclusions(these: Dict[str, Dict[str, Any]],
+                        slots: Dict[str, Dict[str, Any]],
+                        pool: List[Dict[str, Any]]) -> bool:
+    """Re-pick any slot that landed on the device it must differ from.
+
+    A varying slot can move onto the very device an `exclude_slot` rules out.
+    Returns False when a required slot has nothing else to take, so the
+    combination is dropped rather than compiled into a light following itself.
+    """
+    for name, spec in slots.items():
+        other = spec.get("exclude_slot")
+        if not other or name not in these or other not in these:
+            continue
+        if these[name]["ieee"] != these[other]["ieee"]:
+            continue
+        alt = [p for p in _rank_fills(_candidates(pool, spec)[0])
+               if p[0]["ieee"] != these[other]["ieee"]]
+        if alt:
+            these[name] = {"ieee": alt[0][0]["ieee"], "device": alt[0][0], "offer": alt[0][1]}
+        elif spec.get("optional"):
+            these.pop(name, None)
+        else:
+            return False
+    return True
 
 
 def _vary_slots(pattern: Dict[str, Any]) -> List[str]:
@@ -331,14 +387,15 @@ def _vary_slots(pattern: Dict[str, Any]) -> List[str]:
         if not isinstance(entry, str):
             continue
         spec = slots.get(entry) or {}
-        if spec.get("role") == "action" and \
+        # A collected slot is already every device, so it never varies.
+        if spec.get("role") == "action" and not spec.get("collect") and \
                 not str(spec.get("offer", "")).startswith("notify:"):
             out.append(entry)
             break
 
     if pattern.get("scope") == SCOPE_HOUSE:
         source = emits.get("source")
-        if source and source not in out:
+        if source and source not in out and not (slots.get(source) or {}).get("collect"):
             out.append(source)
 
     return out

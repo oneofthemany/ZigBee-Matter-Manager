@@ -203,7 +203,7 @@ async def _run(c: Checker) -> None:
         grouped = {"source_ieee": "0xpir", "then_sequence": [], "conditions": [
             _group("or", _attr("occupancy", "eq", True), _attr("contact", "eq", False, "0xback"))]}
         c.check("a signature sees attributes inside a group",
-                "0xback:contact" in signature(grouped)[1], signature(grouped))
+                "0xback:contact:eq" in signature(grouped)[1], signature(grouped))
         cov = coverage([{"ieee": "0xback", "name": "Back Door"}], [grouped])
         c.check("a device inside a group counts as automated", cov["covered"] == 1, cov)
     try:

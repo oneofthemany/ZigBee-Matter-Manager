@@ -19,9 +19,11 @@ import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
+from modules.automation import RUN_MODES, TIME_SOURCE
 from modules.swarm.compiler import (
     CompileError, compile_rule, describe_candidate, effective_params,
 )
+from modules.swarm.resolver import hub_device
 from modules.swarm.dedupe import coverage, index_rules, status_for
 from modules.swarm.matcher import match_pattern
 from modules.swarm.stigmergy import get_stigmergy_store
@@ -36,9 +38,31 @@ def suggestion_id(pattern_id: str, fills: Dict[str, Dict[str, Any]]) -> str:
     suggestion, so a dismissal sticks and a preview URL keeps working."""
     payload = json.dumps(
         {"p": pattern_id,
-         "f": {k: [v["ieee"], v["offer"]["key"]] for k, v in sorted(fills.items())}},
+         "f": {k: _fill_key(v) for k, v in sorted(fills.items())}},
         sort_keys=True)
     return "sg_" + hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+
+def _fill_key(fill: Dict[str, Any]) -> List[Any]:
+    key: List[Any] = [fill["ieee"], fill["offer"]["key"]]
+    if fill.get("members"):
+        # A collected slot is every device it gathered: one more window in the
+        # room is a different rule. Only added here, so existing ids are stable.
+        key.append(sorted(m["ieee"] for m in fill["members"]))
+    return key
+
+
+def with_hub(described: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The network plus the hub itself.
+
+    No registry lists the hub, but patterns fill slots from it — the hub
+    starting, a season, quiet hours — so every pool a pattern matches against
+    includes it. Kept out of the network view and coverage, where a device the
+    user cannot see or place would only confuse.
+    """
+    if any(d.get("ieee") == TIME_SOURCE for d in described):
+        return list(described)
+    return list(described) + [hub_device()]
 
 
 def _confidence(pattern: Dict[str, Any], candidate: Dict[str, Any]) -> str:
@@ -72,6 +96,7 @@ def build(described: List[Dict[str, Any]],
     """
     rules = list(rules or [])
     rooms = rooms or {}
+    described = with_hub(described)
     names = names or {d["ieee"]: d["name"] for d in described}
     patterns = patterns if patterns is not None else get_stigmergy_store().all()
 
@@ -126,10 +151,11 @@ def build(described: List[Dict[str, Any]],
                 "room_label": candidate.get("room_label"),
                 "confidence": _confidence(pattern, candidate),
                 "sentence": describe_candidate(pattern, candidate["fills"]),
-                "devices": [{"slot": k, "ieee": v["ieee"],
-                             "name": v["device"]["name"], "offer": v["offer"]["key"],
-                             "label": v["offer"]["label"]}
-                            for k, v in candidate["fills"].items()],
+                "devices": [{"slot": k, "ieee": m["ieee"],
+                             "name": m["device"]["name"], "offer": m["offer"]["key"],
+                             "label": m["offer"]["label"]}
+                            for k, v in candidate["fills"].items()
+                            for m in (v.get("members") or [v])],
                 "params": _exposed_params(pattern),
                 "alternatives": candidate.get("alternatives") or {},
                 "rule": rule,
@@ -174,6 +200,8 @@ def _validate(rule: Dict[str, Any], validator: Any) -> Optional[str]:
         err = validator._validate_sequence(list(rule["else_sequence"]), "ELSE")
         if err:
             return err
+        if rule.get("run_mode", "restart") not in RUN_MODES:
+            return f"run_mode {rule.get('run_mode')!r} is not one of {RUN_MODES}"
         err = validator._validate_zone_source(list(rule["conditions"]),
                                               rule["source_ieee"])
         if err:
@@ -233,7 +261,7 @@ def recompile(pattern: Dict[str, Any], suggestion: Dict[str, Any],
     from the client: the network may have changed since it was offered, and a
     client-supplied rule is a client-supplied rule.
     """
-    result = match_pattern(pattern, described, rooms or {})
+    result = match_pattern(pattern, with_hub(described), rooms or {})
     for candidate in result["candidates"]:
         if suggestion_id(pattern["id"], candidate["fills"]) == suggestion["id"]:
             return compile_rule(pattern, candidate["fills"], overrides,

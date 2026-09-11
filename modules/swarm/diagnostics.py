@@ -330,8 +330,11 @@ def _check_devices(described: List[Dict[str, Any]],
     # make a plug a plug — and offer no trigger, condition or action of their
     # own. Listing those as blocking says patterns cannot match for want of
     # something no pattern can ask for.
+    # A synthetic capability (the hub) belongs to no device in the registry by
+    # design, so its absence here is not news.
     usable = {c for c, spec in CAPABILITIES.items()
-              if spec.get("triggers") or spec.get("conditions") or spec.get("actions")}
+              if (spec.get("triggers") or spec.get("conditions") or spec.get("actions"))
+              and not spec.get("synthetic")}
     present = {c for d in described for c in d["capabilities"]}
     missing = sorted(usable - present)
     out.append(_finding(
@@ -446,7 +449,8 @@ def explain(pattern_id: str, described: List[Dict[str, Any]],
         return {"error": f"unknown pattern {pattern_id!r}",
                 "known": [p["id"] for p in store.all()]}
 
-    result = match_pattern(pattern, described, rooms or {})
+    from modules.swarm.suggestions import with_hub
+    result = match_pattern(pattern, with_hub(described), rooms or {})
     return {
         "pattern": pattern,
         "outcome": "matched" if result["candidates"] else "no_match",
@@ -466,7 +470,8 @@ def offers_for_slot(slot: Dict[str, Any],
     keys = keys if isinstance(keys, list) else [keys]
     role = slot.get("role", "trigger")
     out = []
-    for d in described:
+    from modules.swarm.suggestions import with_hub
+    for d in with_hub(described):
         for offer in d.get(role + "s", []):
             if any(offer["key"] == k or offer["key"].startswith(str(k) + ":")
                    for k in keys):

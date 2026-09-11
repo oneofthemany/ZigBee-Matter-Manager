@@ -13,19 +13,29 @@ returning a `Checker`; `run_all.py` drives them and exits non-zero on failure.
 | `test_stigmergy.py` | Pattern schema and validation, plus a check that every shipped pattern references a real offer |
 | `test_suggestions.py` | Matching, condition-vs-prerequisite placement, parameter overrides, what varies, and wiring-based deduplication |
 | `test_offers.py` | The `offer` step: validation, the accept/decline lifecycle, expiry, the double-tap, and the cap |
+| `test_multi_source.py` | Conditions naming their own device, joined by Match ALL/ANY — validation, evaluation, zones, and the swarm code that walks them |
+| `test_sustain_and_groups.py` | Sustain re-check timers, and one-level condition groups |
+| `test_run_modes.py` | restart / single / queued / parallel, including the restart race |
+| `test_change_and_offline.py` | Change and trend operators, and the offline condition — minutes, the hub's verdict, and negation |
+| `test_templates_and_repeat.py` | Live values in message text, and the repeat step |
+| `test_final_gaps.py` | Run now, webhooks, startup, snapshot/restore, dates, persisted rule state, single-rule import |
+| `test_swarm_expansion.py` | The swarm using the whole engine: trend, silence and hub offers; collect, exclude, sustain, run modes and literal markers; every shipped pattern built, validated and saved through a real engine against a larger house; several run end to end |
 | `test_real_house.py` | Every device shape from a live household, including the binding-cluster artefacts that made door sensors switches and motion sensors lights |
 | `test_diagnostics.py` | Every finding the triage report can raise, and the per-pattern explain trace |
 | `test_api.py` | The HTTP surface, driven through Starlette's `TestClient`, including the applying path |
 | `js/test_sentence.js` | The shared humanizer — contact polarity, outlets, zones, commands, sequences, and a whole rule as one block |
 | `js/test_editor.js` | The rule editor's crowding fixes: attribute option labels, and the zone note landing on one step rather than every one |
 | `js/test_swarm_suggest.js` | The chooser's browser code, sliced out of the shipped `.js`: pairing-to-rule conversion, escaping, and the source-device guard |
+| `js/test_swarm_suggestions.js` | The Suggested sub-tab: filters, grouping, parameter coercion and fields (numbers, colours, times, month-days), card escaping |
 
 `test_api.py` is skipped where fastapi is not installed; the others need nothing
 beyond the standard library. `test_api.py` covers the one mutating route, so it
 is worth installing fastapi into a scratch venv rather than leaving it skipped:
 
     python3 -m venv /tmp/venv && /tmp/venv/bin/pip install fastapi httpx
-    /tmp/venv/bin/python tests/swarm/run_all.py No test touches the network, a database,
+    /tmp/venv/bin/python tests/swarm/run_all.py
+
+No test touches the network, a database,
 or a real radio — `harness.py` builds fake devices in the four shapes the
 resolver has to cope with (Zigbee capabilities object, Matter list accessor,
 duck-typed provider, presence user).

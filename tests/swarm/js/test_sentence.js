@@ -332,6 +332,8 @@ check('offline for minutes names the device and the time',
       quiet.includes('Radar - Hallway') && quiet.includes('2 h'), quiet);
 const hubOff = plainText(H.condPhrase({ type: 'offline', ieee: '0xdoor' }, '0xradar').text);
 check("offline without minutes is the hub's call", hubOff.includes('Front Door goes offline'), hubOff);
+const backOn = plainText(H.condPhrase({ type: 'offline', ieee: '0xdoor', minutes: 30, negate: true }, '0xradar').text);
+check('NOT offline reads as having reported', backOn.includes('Front Door has reported within 30 min'), backOn);
 
 section('repeat steps and live values read as words');
 const until = plainText(H.renderSeq([{ type: 'repeat', mode: 'until', max_iterations: 10,

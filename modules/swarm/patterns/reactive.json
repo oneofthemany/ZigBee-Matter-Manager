@@ -1,0 +1,188 @@
+[
+  {
+    "id": "shower_extractor",
+    "title": "Run the extractor when a shower starts",
+    "description": "Reacts to humidity jumping quickly rather than crossing a fixed level, so it starts with the shower whatever the room was at, and runs until the room has dried out again.",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "jump": {"role": "trigger", "offer": "humidity:spiking"},
+      "dry": {"role": "condition", "offer": "humidity:is_dry", "prefer": "same_device", "prefer_slot": "jump",
+              "params": {"dry_pct": 60}},
+      "fan": {"role": "action", "offer": "on_off:turn_on", "device_class": ["switch", "plug"]},
+      "fan_off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+                  "prefer": "same_device", "prefer_slot": "fan"}
+    },
+    "emits": {
+      "name": "{room} extractor for a shower",
+      "source": "jump",
+      "conditions": ["jump"],
+      "then": ["fan", {"type": "wait_for", "$cond": "dry", "timeout": 3600}, "fan_off"],
+      "cooldown": 60
+    },
+    "params": {"humid_jump_pct": 10, "trend_window_min": 15}
+  },
+  {
+    "id": "window_opened_cooling",
+    "title": "Heating down when a room suddenly cools",
+    "description": "For rooms without a window sensor: a sharp drop in temperature is an open window, so the radiator drops until the room stops cooling.",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "drop": {"role": "trigger", "offer": "temperature:falling_fast"},
+      "trv": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+              "params": {"setpoint_c": 7.0}},
+      "back": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "prefer": "same_device", "prefer_slot": "trv", "params": {"setpoint_c": 21.0}}
+    },
+    "emits": {
+      "name": "{room} heating down when it cools fast",
+      "source": "drop",
+      "conditions": ["drop"],
+      "then": ["trv"],
+      "else": ["back"],
+      "cooldown": 300
+    },
+    "params": {"temp_drop_c": 2.0, "trend_window_min": 10}
+  },
+  {
+    "id": "rapid_warming_alert",
+    "title": "Tell someone when a room heats up unusually fast",
+    "description": "A sharp rise is worth a look — a heater left on, sun on the sensor, or worse. The message carries the reading.",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "rise": {"role": "trigger", "offer": "temperature:rising_fast"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device heating up fast",
+      "source": "rise",
+      "conditions": ["rise"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "{trigger} is warming fast — now $rise@value°."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 1800
+    },
+    "params": {"temp_jump_c": 5.0, "trend_window_min": 10}
+  },
+  {
+    "id": "power_surge_alert",
+    "title": "Tell someone when a device's power draw jumps",
+    "description": "Something switched on that draws a lot — a heater, an iron — whatever it drew before.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "jump": {"role": "trigger", "offer": "power:spiked"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device power jump",
+      "source": "jump",
+      "conditions": ["jump"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "{trigger} jumped to $jump@value W."}
+      ],
+      "run_mode": "queued",
+      "cooldown": 900
+    },
+    "params": {"power_jump_w": 1000.0, "trend_window_min": 5}
+  },
+  {
+    "id": "appliance_left_running",
+    "title": "Tell someone when something has been running for hours",
+    "description": "Anything on a metering plug that has been drawing power for longer than it should.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "run": {"role": "trigger", "offer": "power:started", "sustain": {"param": "long_run_min", "scale": 60}},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device left running",
+      "source": "run",
+      "conditions": ["run"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} has been running for a while (drawing $run@value W)."}
+      ],
+      "cooldown": 3600
+    },
+    "params": {"power_on_w": 5.0, "long_run_min": 180}
+  },
+  {
+    "id": "leak_remind_until_dry",
+    "title": "Keep reminding about a leak until it is dry",
+    "description": "One message about a leak is easy to miss. This repeats every few minutes until the sensor reads dry.",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "leak": {"role": "trigger", "offer": "water_leak:detected"},
+      "dry": {"role": "condition", "offer": "water_leak:is_dry", "prefer": "same_device", "prefer_slot": "leak"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device leak reminders",
+      "source": "leak",
+      "conditions": ["leak"],
+      "then": [
+        {"type": "repeat", "mode": "until", "max_iterations": {"param": "remind_max"},
+         "inline_conditions": [{"$cond": "dry"}],
+         "steps": [
+           {"type": "request", "to_user": "$who", "message": "{trigger} still detects water ({time})."},
+           {"type": "wait_for", "$cond": "dry", "timeout": {"param": "remind_min", "scale": 60}}
+         ]}
+      ],
+      "run_mode": "single",
+      "cooldown": 300
+    },
+    "params": {"remind_min": 10, "remind_max": 6}
+  },
+  {
+    "id": "soil_dry_message",
+    "title": "Tell someone when a plant needs water",
+    "category": "maintenance",
+    "scope": "house",
+    "slots": {
+      "dry": {"role": "trigger", "offer": "soil_moisture:dry"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "$trigger_device needs water",
+      "source": "dry",
+      "conditions": ["dry"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "{trigger} needs watering — soil at $dry@value%."}
+      ],
+      "cooldown": 43200
+    },
+    "params": {"soil_dry_pct": 30}
+  },
+  {
+    "id": "relock_when_nobody_home",
+    "title": "Lock a door left unlocked while nobody is home",
+    "description": "If a lock stays unlocked for a while with nobody home, it is locked and someone is told.",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "open": {"role": "trigger", "offer": "lock:unlocked", "sustain": {"param": "unlock_hold_s"}},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "relock": {"role": "action", "offer": "lock:lock", "prefer": "same_device", "prefer_slot": "open",
+                 "require_same_device": true},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Relock $trigger_device with nobody home",
+      "source": "open",
+      "conditions": ["open", "nobody"],
+      "then": [
+        "relock",
+        {"type": "request", "to_user": "$who",
+         "message": "{trigger} was left unlocked with nobody home, so it has been locked."}
+      ],
+      "cooldown": 600
+    },
+    "params": {"unlock_hold_s": 600}
+  }
+]

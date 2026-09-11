@@ -1,0 +1,106 @@
+[
+  {
+    "id": "hub_restarted_notice",
+    "title": "Tell someone when the hub restarts",
+    "description": "After an update, a crash or a power cut — so an unexpected restart gets noticed.",
+    "category": "maintenance",
+    "scope": "house",
+    "slots": {
+      "boot": {"role": "trigger", "offer": "hub:started"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Hub restarted",
+      "source": "boot",
+      "conditions": ["boot"],
+      "then": [
+        {"type": "request", "to_user": "$who", "message": "The hub restarted at {time} on {date}."}
+      ],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "restart_lights_off_when_empty",
+    "title": "Switch the lights off after a power cut when nobody is home",
+    "description": "Most bulbs come back on when the power returns. If the hub restarts with nobody home, every light is switched off again.",
+    "category": "energy",
+    "scope": "house",
+    "slots": {
+      "boot": {"role": "trigger", "offer": "hub:started"},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "lights": {"role": "action", "offer": "on_off:turn_off", "device_class": ["light", "color_light"],
+                 "collect": true}
+    },
+    "emits": {
+      "name": "Lights off after a restart with nobody home",
+      "source": "boot",
+      "conditions": ["boot", "nobody"],
+      "then": ["lights"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "restart_relock",
+    "title": "Lock up after a restart when nobody is home",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "boot": {"role": "trigger", "offer": "hub:started"},
+      "nobody": {"role": "condition", "offer": "household:nobody_home"},
+      "locks": {"role": "action", "offer": "lock:lock", "device_class": ["lock"], "collect": true}
+    },
+    "emits": {
+      "name": "Lock up after a restart with nobody home",
+      "source": "boot",
+      "conditions": ["boot", "nobody"],
+      "then": ["locks"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "seasonal_lights_at_dusk",
+    "title": "Seasonal lights on at dusk",
+    "description": "A plug running festive lights: on as daylight fades during the season, off at daybreak and once the season is over.",
+    "category": "lighting",
+    "scope": "house",
+    "slots": {
+      "dusk": {"role": "trigger", "offer": "weather:got_dark_out"},
+      "season": {"role": "condition", "offer": "hub:in_season"},
+      "plug": {"role": "action", "offer": "on_off:turn_on", "device_class": ["plug", "switch"]},
+      "off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+              "prefer": "same_device", "prefer_slot": "plug"}
+    },
+    "emits": {
+      "name": "Seasonal lights on at dusk",
+      "source": "dusk",
+      "conditions": ["dusk", "season"],
+      "then": ["plug"],
+      "else": ["off"],
+      "cooldown": 600
+    },
+    "params": {"season_from": "12-01", "season_to": "01-06"}
+  },
+  {
+    "id": "night_path_light",
+    "title": "Dim path light at night",
+    "description": "Movement during quiet hours brings the light up low rather than full, and it goes off once the room is empty. Use it instead of the full-brightness presence light in the same room.",
+    "category": "lighting",
+    "scope": "room",
+    "slots": {
+      "trig": {"role": "trigger", "offer": "presence:detected"},
+      "quiet": {"role": "condition", "offer": "hub:quiet_hours"},
+      "dim": {"role": "action", "offer": "brightness:set_brightness", "device_class": ["light", "color_light"]},
+      "off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+              "prefer": "same_device", "prefer_slot": "dim"}
+    },
+    "emits": {
+      "name": "{room} dim light at night",
+      "source": "trig",
+      "conditions": ["trig", "quiet"],
+      "then": ["dim"],
+      "else": ["off"],
+      "cooldown": 5
+    },
+    "params": {"brightness_pct": 15, "quiet_from": "22:30", "quiet_to": "06:30"}
+  }
+]

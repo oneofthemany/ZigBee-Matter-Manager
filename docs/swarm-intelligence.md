@@ -76,13 +76,50 @@ Offer fields:
 | Field                    | Meaning                                                               |
 |--------------------------|-----------------------------------------------------------------------|
 | `id`                     | stable within the capability; `"<cap>:<id>"` is globally stable       |
-| `label`                  | sentence fragment; `{device}`, `{room}` and `{value}` are substituted |
-| `operator` / `value`     | the comparison it compiles to                                         |
+| `label`                  | sentence fragment; `{device}`, `{room}` and `{value}` are substituted, plus `{window}` for a trend and a typed offer's own fields (`{minutes}`, `{from}`, `{time_from}`…) |
+| `operator` / `value`     | the comparison it compiles to — any engine trigger operator, including `changed`, `rose_by` and `fell_by` |
+| `within`                 | a trend's window, in minutes (a parameter marker, usually `trend_window_min`); compiled to seconds |
+| `type`                   | a condition type of its own instead of a comparison: `offline`, `startup`, `date`, `time_window`. Its other fields (`minutes`, `negate`, `from`, `to`, `time_from`, `time_to`) may be parameter markers |
 | `command` / `value_from` | the command it compiles to, and the parameter supplying its argument  |
 | `step`                   | a non-command step type, for the message action                       |
 | `sustain`                | suggested hold before the edge counts                                 |
 | `weight`                 | tiebreak only — orders equally-scored pairs, never changes confidence |
 | `polarity`               | `+1` activating, `-1` deactivating, absent where ambiguous            |
+
+What the vocabulary covers beyond plain thresholds:
+
+- **Trends** — temperature `rising_fast` / `falling_fast`, humidity `spiking`,
+  CO₂ `rising_fast`, power `spiked`. How fast a reading moves, whatever it
+  started at: a shower is humidity jumping 10% in 15 minutes, not crossing 70%.
+- **Silence** — `availability:went_offline` is the engine's `offline`
+  condition (not reported for `offline_min`), and `availability:is_online` the
+  same condition negated. Comparing the `available` attribute compiled rules that
+  never fired, since a Zigbee device that goes quiet sends nothing. Coming back
+  is the offline rule's ELSE, not a trigger of its own.
+- **`water_leak:is_dry`** — what a leak reminder waits for.
+- **The hub** — see below.
+
+Capability-level fields beyond the offers:
+
+- **`evidence`** — state keys whose presence alone proves the capability, even
+  where they are too diagnostic to back an offer. A last-seen time is what
+  makes silence measurable, so it proves `availability` without being offered as
+  something to compare.
+- **`synthetic`** — no device in the registry has it (the hub). Diagnostics
+  never reports it absent.
+
+### The hub
+
+`resolver.hub_device()` describes the hub itself as a device with the `hub`
+capability, at the engine's `__time__` address. It offers what no hardware can:
+`hub:started` (the startup condition), `hub:in_season` (a date range, from
+`season_from` to `season_to`, which may wrap over new year) and
+`hub:quiet_hours` (a time window from `quiet_from` to `quiet_to`, which may wrap
+over midnight). `suggestions.with_hub()` adds it to every pool a pattern matches
+against — build, recompile, explain, and a slot's offers in diagnostics — and
+keeps it out of the network view and coverage, where a device nobody can see or
+place would only confuse. A rule whose trigger slot is the hub is sourced on
+`__time__`, exactly like a hand-built clock or startup rule.
 
 Two capability-level relations exist:
 
@@ -99,6 +136,13 @@ Thresholds are not baked into offers. `PARAMS` holds the tunable ones —
 default, a unit and bounds, so a suggestion card can expose the number as a
 field. `dark_lux` shares its default with the NL parser, so "dark" means the
 same value however a rule is authored.
+
+A parameter is `int`, `float`, `colour` (a named `[hue, saturation]`), `time`
+(`HH:MM`) or `monthday` (`MM-DD`, shown as "1 Dec"). The card coerces what is
+typed, and `capabilities.coerce_param()` does it again on the server: a value
+that cannot be the declared type — "13-45" for a season, "25:00" for quiet
+hours, "lots" for a repeat count — is ignored and the pattern's own value kept,
+and numbers are clamped to their bounds. Recompiling never trusts the card.
 
 ---
 
@@ -434,8 +478,21 @@ patterns are shipped content and belong with the code; user patterns are runtime
 data and belong in the volume. `BUNDLED_DIR` resolves from the module's own
 location, so it works whatever the working directory is.
 
-28 patterns ship by default across lighting, climate, security, safety, energy,
-presence, maintenance and convenience.
+The bundled patterns cover lighting, climate, security, safety, energy,
+presence, maintenance and convenience, in files by theme:
+
+| File | What it holds |
+|---|---|
+| `core.json` | The originals: presence lights, leak and smoke alerts, door reminders, battery and offline alerts |
+| `climate.json` | Heating, cooling and air quality |
+| `signalling.json` | Coloured-light notifications and offers |
+| `whole_house.json` | Patterns that gather many devices into one rule — every window in a room, every alarm, every light |
+| `reactive.json` | Trends, holds and reminders — a shower starting, a room cooling fast, something running for hours, a leak until it is dry |
+| `routines.json` | The hub — a restart, seasons, quiet hours |
+
+A pattern with `"enabled": false` still loads and validates but is never
+matched; `window_open_pause_heating` is retired that way in favour of
+`room_windows_heating_down`, which watches every window rather than one.
 
 ```json
 {
@@ -496,6 +553,46 @@ Sentences are re-rendered at the pattern's own thresholds rather than the
 vocabulary defaults the offers were built with — a card advertising "drops below
 18.0" while compiling a rule that fires at 5.0 is worse than no card.
 
+### Using the whole engine
+
+A pattern can ask for everything a hand-built rule can have.
+
+Slot keys:
+
+| Key | Effect |
+|---|---|
+| `collect` | Every device in scope making the offer, as one fill (at most `MAX_COLLECT`, 5). A collected trigger or condition compiles to a condition **group** of one leaf per device, each naming its device; a collected action becomes one step per device. Collected slots never vary, so "every light off" is one card, not one per light. The trace records how many were left out. |
+| `collect_logic` | `"or"` (default) — any of them; `"and"` — all of them. |
+| `exclude_slot` | Never the device another slot took: a light that follows another light is never that light. |
+| `reactive` | Compile this condition as a live condition naming its device, even when it is not on the source — a change on that device re-evaluates the rule. Otherwise a check on another device is a prerequisite, read only when something else fires. |
+| `sustain` | Hold before the trigger or condition counts — seconds, or `{"param": id, "scale": n}` (so a card can offer "3 hours" as `long_run_min` × 60). The engine re-checks on its own timer; it does not wait for another report. |
+
+`emits` gains `run_mode` — `restart` (default), `single`, `queued` or
+`parallel`. A reminder that must not stack is `single`; alerts that must all be
+sent are `queued`.
+
+Literal steps in `then` / `else` may use:
+
+| Marker | Becomes |
+|---|---|
+| `{"param": id}` / `{"param": id, "scale": n}` | the parameter's value (times `n`) — anywhere a number goes: a delay, a repeat count, a wait timeout |
+| `{"slot": id}` | that slot's action steps, spliced in (one per member for a collected slot) — inside a repeat or an offer's accept branch too |
+| `{"$cond": id, ...}` | that slot's *reading* merged into the object — a `wait_for`, or a repeat's `inline_conditions` entry — with `ieee`, `attribute`, `operator` and `value` |
+| `"$id@all"` in a list | every device the slot holds — a snapshot's `targets` |
+| `$id@name` / `$id@value` in text | the device's name; a live `{ieee.attribute}` placeholder the engine fills when the message is sent |
+| `{trigger}`, `{time}`, `{date}` | left alone for the engine to fill at run time |
+
+So "keep reminding while a door is open" is a held trigger, then a repeat until
+that door's `$cond` reading is shut, each round a message naming `{trigger}` and
+a `wait_for` the door with a `remind_min` timeout — rather than a delay that
+messages after the door was closed. "Flash the lights on an alarm" is a snapshot
+of `$lights@all`, a repeat of toggles `flash_count` times, and a restore.
+
+Validation covers all of it: an unknown `collect_logic`, an `exclude_slot` that
+is not another slot, `reactive` or `sustain` on an action, a `run_mode` the
+engine lacks, a literal naming an unknown parameter, and a `$cond` naming an
+undeclared slot are load errors.
+
 ### Condition or prerequisite
 
 The engine evaluates `conditions` against the **source** device's state and
@@ -510,6 +607,16 @@ the identical check compiles to a *prerequisite*. Writing it into the pattern by
 hand would get it wrong for one of the two layouts, and the wrong choice
 produces a rule that validates and never fires.
 
+Some checks are never prerequisites, whatever supplies them:
+
+- **Clock, calendar and event** conditions — `time`, `time_window`, `sun`,
+  `date`, `startup`, `webhook` — read no device, so they are conditions without
+  one.
+- **Changes and trends** (`changed`, `rose_by`, `fell_by`) need a history only a
+  live condition keeps, and **zone** and **offline** conditions are read on
+  events and the clock — so these are conditions naming their device.
+- A slot marked `reactive`, likewise.
+
 ### What varies
 
 A pattern matched in one scope can still yield several suggestions, and which
@@ -522,6 +629,8 @@ slot varies is a judgement about what a person would want twice:
 - **notify** slots never vary. Messaging a different person is the same
   automation with a different recipient, so the alternatives are offered as a
   choice rather than as extra cards.
+- **collected** slots never vary — they already hold every device. A new
+  device joining one changes the suggestion's id, since it is a different rule.
 
 ---
 
@@ -545,12 +654,22 @@ A candidate whose wiring is already live comes back marked `active`, pointing at
 the rule, instead of being offered again. Matching is by **wiring**, not text:
 
 ```
-signature = (source_ieee, watched attributes, {(target, command)})
+signature = (source_ieee, watched attribute:operator tokens, {(target, command)}, shape)
 ```
 
 Names, thresholds and cooldowns are deliberately excluded. A rule firing at 11
 lux and a suggestion at 10 are the same automation, and offering the second is
-not useful. That one property is what turns the list into a to-do: what the
+not useful. What *is* included:
+
+- **The operator.** "Starts drawing power" and "finishes" watch the same
+  attribute and are two automations; so are a humidity threshold and a humidity
+  jump.
+- **Condition types** — `offline` / `online`, `date`, `startup`, `webhook` and
+  the clock types — as tokens of their own, walked inside groups.
+- **The shape**: which of `repeat`, `offer`, `snapshot`, `restore` and
+  `wait_for` the sequences use. A reminder repeating until a door shuts and a
+  single message about the same door are different automations with the same
+  trigger and recipient; a delay added to a hand-built rule is not. That one property is what turns the list into a to-do: what the
 swarm could do, minus what it already does.
 
 `coverage` then reports which devices take part in at least one rule — as a

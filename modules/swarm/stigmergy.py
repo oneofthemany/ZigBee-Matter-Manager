@@ -26,6 +26,7 @@ import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from modules.automation import RUN_MODES
 from modules.swarm.capabilities import CAPABILITIES, PARAMS
 
 logger = logging.getLogger("modules.swarm.stigmergy")
@@ -71,8 +72,13 @@ def literal_slot_refs(value: Any) -> List[str]:
         # accept branch. Distinct from "$slot", which names its address.
         if set(value) == {"slot"} and isinstance(value["slot"], str):
             return [value["slot"]]
-        for v in value.values():
-            found += literal_slot_refs(v)
+        # {"$cond": id} merges that slot's *reading* into a wait or a repeat's
+        # inline condition — a third way a literal uses a slot.
+        if isinstance(value.get("$cond"), str):
+            found.append(value["$cond"])
+        for key, v in value.items():
+            if key != "$cond":
+                found += literal_slot_refs(v)
     elif isinstance(value, list):
         for v in value:
             found += literal_slot_refs(v)
@@ -80,6 +86,21 @@ def literal_slot_refs(value: Any) -> List[str]:
         for token in re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", value):
             if token not in RESERVED_PLACEHOLDERS:
                 found.append(token[1:])
+    return found
+
+
+def literal_param_refs(value: Any) -> List[str]:
+    """Parameter ids referenced as {"param": id} (optionally with a "scale")
+    anywhere inside a literal step."""
+    found: List[str] = []
+    if isinstance(value, dict):
+        if "param" in value and set(value) <= {"param", "scale"}:
+            return [str(value["param"])]
+        for v in value.values():
+            found += literal_param_refs(v)
+    elif isinstance(value, list):
+        for v in value:
+            found += literal_param_refs(v)
     return found
 
 
@@ -151,6 +172,27 @@ def validate(bp: Dict[str, Any]) -> List[str]:
         if spec.get("prefer") and not prefer_slot:
             err(f"{bid}.{name}: 'prefer' needs 'prefer_slot'")
 
+        # What a slot may ask of the engine beyond one device's one offer.
+        exclude = spec.get("exclude_slot")
+        if exclude is not None and (exclude not in slots or exclude == name):
+            err(f"{bid}.{name}: exclude_slot {exclude!r} is not another slot")
+        if "collect" in spec and not isinstance(spec["collect"], bool):
+            err(f"{bid}.{name}: 'collect' must be true or false")
+        if spec.get("collect_logic", "or") not in ("and", "or"):
+            err(f"{bid}.{name}: collect_logic must be 'and' or 'or'")
+        if spec.get("reactive") and role not in ("trigger", "condition"):
+            err(f"{bid}.{name}: 'reactive' only applies to a trigger or condition slot")
+        if "sustain" in spec:
+            hold = spec["sustain"]
+            if role not in ("trigger", "condition"):
+                err(f"{bid}.{name}: 'sustain' only applies to a trigger or condition slot")
+            if isinstance(hold, dict):
+                if hold.get("param") not in PARAMS or not set(hold) <= {"param", "scale"}:
+                    err(f"{bid}.{name}: sustain must be seconds or "
+                        f"{{\"param\": id[, \"scale\": n]}} naming a known parameter")
+            elif isinstance(hold, bool) or not isinstance(hold, int) or hold < 0:
+                err(f"{bid}.{name}: sustain must be a whole number of seconds")
+
     emits = bp.get("emits")
     if not isinstance(emits, dict):
         err(f"{bid}: needs an 'emits' object")
@@ -188,6 +230,15 @@ def validate(bp: Dict[str, Any]) -> List[str]:
     logic = emits.get("condition_logic", "and")
     if logic not in ("and", "or"):
         err(f"{bid}.emits: condition_logic must be 'and' or 'or'")
+
+    if emits.get("run_mode", "restart") not in RUN_MODES:
+        err(f"{bid}.emits: run_mode must be one of {RUN_MODES}")
+
+    for field in ("then", "else"):
+        for entry in emits.get(field) or []:
+            for pid in literal_param_refs(entry):
+                if pid not in PARAMS:
+                    err(f"{bid}.emits.{field}: unknown parameter {pid!r}")
 
     for pid in (bp.get("params") or {}):
         if pid not in PARAMS:

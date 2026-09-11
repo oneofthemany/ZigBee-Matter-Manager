@@ -136,6 +136,15 @@ export function coerceParam(spec, raw) {
         const choice = (spec.choices || {})[raw];
         return choice || spec.value;
     }
+    if (spec.type === 'time' || spec.type === 'monthday') {
+        // Shaped strings — 22:30, 12-01. Anything else keeps the pattern's value;
+        // the server checks the day is real.
+        const shape = spec.type === 'time'
+            ? /^([01]\d|2[0-3]):[0-5]\d$/
+            : /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+        const text = String(raw == null ? '' : raw).trim();
+        return shape.test(text) ? text : spec.value;
+    }
     const n = spec.type === 'float' ? parseFloat(raw) : parseInt(raw, 10);
     if (!Number.isFinite(n)) return spec.value;
     const lo = (spec.min === null || spec.min === undefined) ? n : spec.min;
@@ -162,6 +171,17 @@ export function paramField(p) {
             <label class="form-label text-muted mb-0" style="font-size:.7rem">${esc(p.label)}</label>
             <select class="form-select form-select-sm" data-param="${id}"
                     aria-label="${esc(p.label)}">${opts}</select>
+        </div>`;
+    }
+    if (p.type === 'time' || p.type === 'monthday') {
+        const input = p.type === 'time'
+            ? 'type="time"'
+            : 'type="text" inputmode="numeric" pattern="\\d{2}-\\d{2}" placeholder="MM-DD" maxlength="5"';
+        return `
+        <div class="col-auto">
+            <label class="form-label text-muted mb-0" style="font-size:.7rem">${esc(p.label)}</label>
+            <input ${input} class="form-control form-control-sm" data-param="${id}"
+                   value="${esc(p.value)}" aria-label="${esc(p.label)}" style="max-width:7rem">
         </div>`;
     }
     const step = p.type === 'float' ? '0.5' : '1';

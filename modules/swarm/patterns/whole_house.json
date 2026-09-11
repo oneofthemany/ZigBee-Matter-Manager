@@ -1,0 +1,98 @@
+[
+  {
+    "id": "room_windows_heating_down",
+    "title": "Heating down while any window in the room is open",
+    "description": "Every door and window contact in the room is watched as one: the radiator drops while any of them is open and comes back once they are all shut, however many there are. Replaces the one-window version.",
+    "category": "climate",
+    "scope": "room",
+    "slots": {
+      "open": {"role": "trigger", "offer": "contact:opened", "collect": true, "collect_logic": "or"},
+      "trv": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+              "params": {"setpoint_c": 7.0}},
+      "back": {"role": "action", "offer": "thermostat:set_setpoint", "device_class": ["thermostat"],
+               "prefer": "same_device", "prefer_slot": "trv", "params": {"setpoint_c": 21.0}}
+    },
+    "emits": {
+      "name": "{room} heating down while a window is open",
+      "source": "open",
+      "conditions": ["open"],
+      "then": ["trv"],
+      "else": ["back"],
+      "cooldown": 60
+    }
+  },
+  {
+    "id": "last_out_openings_check",
+    "title": "Warn when nobody is home and a door or window is open",
+    "description": "Every contact in the house is watched as one. It says so as the last person leaves with something open, and again if something is opened while nobody is home.",
+    "category": "security",
+    "scope": "house",
+    "slots": {
+      "empty": {"role": "trigger", "offer": "household:last_left"},
+      "open": {"role": "condition", "offer": "contact:is_open", "collect": true, "collect_logic": "or"},
+      "who": {"role": "action", "offer": "notify:message"}
+    },
+    "emits": {
+      "name": "Something open with nobody home",
+      "source": "empty",
+      "conditions": ["empty", "open"],
+      "then": [
+        {"type": "request", "to_user": "$who",
+         "message": "Nobody is home and a door or window is open ({time})."}
+      ],
+      "run_mode": "single",
+      "cooldown": 600
+    }
+  },
+  {
+    "id": "alarm_flash_lights",
+    "title": "Flash the lights on an alarm, then put them back",
+    "description": "Smoke, a leak, gas or carbon monoxide anywhere flashes every light in the house, then returns each one to exactly how it was.",
+    "category": "safety",
+    "scope": "house",
+    "slots": {
+      "alarm": {"role": "trigger",
+                "offer": ["smoke:detected", "water_leak:detected", "gas:detected", "co_detector:detected"],
+                "collect": true, "collect_logic": "or"},
+      "lights": {"role": "action", "offer": "on_off:toggle", "device_class": ["light", "color_light"],
+                 "collect": true}
+    },
+    "emits": {
+      "name": "Flash the lights on an alarm",
+      "source": "alarm",
+      "conditions": ["alarm"],
+      "then": [
+        {"type": "snapshot", "targets": ["$lights@all"], "name": "before_alarm"},
+        {"type": "repeat", "mode": "count", "count": {"param": "flash_count"},
+         "steps": [{"slot": "lights"}, {"type": "delay", "seconds": 1},
+                   {"slot": "lights"}, {"type": "delay", "seconds": 1}]},
+        {"type": "restore", "name": "before_alarm"}
+      ],
+      "run_mode": "single",
+      "cooldown": 120
+    },
+    "params": {"flash_count": 3}
+  },
+  {
+    "id": "mirror_lights",
+    "title": "Keep two lights in step",
+    "description": "When one light is switched on or off, the other follows — for a pair on separate switches.",
+    "category": "convenience",
+    "scope": "room",
+    "slots": {
+      "lead": {"role": "trigger", "offer": "on_off:turned_on", "device_class": ["light", "color_light"]},
+      "follow": {"role": "action", "offer": "on_off:turn_on", "device_class": ["light", "color_light"],
+                 "exclude_slot": "lead"},
+      "follow_off": {"role": "action", "offer": "on_off:turn_off", "optional": true,
+                     "prefer": "same_device", "prefer_slot": "follow"}
+    },
+    "emits": {
+      "name": "{room}: $follow@name follows $lead@name",
+      "source": "lead",
+      "conditions": ["lead"],
+      "then": ["follow"],
+      "else": ["follow_off"],
+      "cooldown": 2
+    }
+  }
+]

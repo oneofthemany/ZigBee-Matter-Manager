@@ -135,6 +135,7 @@ def _conds_to_dicts(items):
         elif c.type == "offline":
             d = {"type": "offline"}
             if c.minutes: d["minutes"] = c.minutes
+            if c.negate: d["negate"] = True
             if c.ieee: d["ieee"] = c.ieee
             r.append(d)
         else:

@@ -159,6 +159,7 @@ export function createHumanizer(ctx = {}) {
     const hookTail = c => esc(String(c.hook || '').slice(-6));
 
     function offlineVerb(c) {
+        if (c.negate) return c.minutes ? `has reported within <b>${fmtMin(c.minutes)}</b>` : 'is online';
         return c.minutes ? `has not reported for <b>${fmtMin(c.minutes)}</b>` : 'goes offline';
     }
 

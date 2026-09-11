@@ -23,7 +23,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from modules.automation import VALID_COMMANDS
+from modules.automation import TIME_SOURCE, VALID_COMMANDS
 from modules.swarm.capabilities import (
     ACTION,
     CAPABILITIES,
@@ -232,6 +232,19 @@ def _declared_capabilities(dev: Any) -> List[str]:
     return []
 
 
+def _evidenced(spec: Dict[str, Any], state: Dict[str, Any]) -> bool:
+    """Does this device's state prove the capability?
+
+    By a backing attribute, normally; or by an `evidence` key whose presence
+    alone proves it — a last-seen time is diagnostic, so it never backs an
+    offer, yet it is exactly what makes a device's silence measurable.
+    """
+    attrs = spec.get("attrs") or []
+    if attrs and _pick_attr(state, attrs):
+        return True
+    return any(key in state for key in spec.get("evidence") or [])
+
+
 def _sniffed_capabilities(state: Dict[str, Any],
                          commands: Dict[str, List[Dict[str, Any]]],
                          infer_actuation: bool = True) -> List[str]:
@@ -267,8 +280,7 @@ def _sniffed_capabilities(state: Dict[str, Any],
         # capability declared, so nothing is lost by refusing to guess them.
         if spec.get("sniffable") is False:
             continue
-        attrs = spec.get("attrs") or []
-        if attrs and _pick_attr(state, attrs):
+        if _evidenced(spec, state):
             found.append(cap_id)
     return found
 
@@ -352,8 +364,8 @@ def device_capabilities(ieee: str, dev: Any, state: Dict[str, Any],
     proven = []
     for cap in out:
         spec = CAPABILITIES.get(cap) or {}
-        attrs = spec.get("attrs") or []
-        if spec.get("kind") == "sensor" and attrs and not _pick_attr(state, attrs):
+        provable = (spec.get("attrs") or []) + (spec.get("evidence") or [])
+        if spec.get("kind") == "sensor" and provable and not _evidenced(spec, state):
             if unproven is not None:
                 unproven.append(cap)
             continue
@@ -385,12 +397,61 @@ def _command_index(dev: Any) -> Dict[str, List[Dict[str, Any]]]:
 # Offer construction
 
 def _label(template: str, device_name: str, room_label: Optional[str],
-           value: Any = None) -> str:
+           value: Any = None, extra: Optional[Dict[str, Any]] = None) -> str:
     """Fill a sentence fragment. An unplaced device stands in for its own room."""
-    return (template
+    text = (template
             .replace("{device}", device_name)
             .replace("{room}", room_label or device_name)
             .replace("{value}", "" if value is None else str(value)))
+    for key, shown in (extra or {}).items():
+        text = text.replace("{%s}" % key, str(shown))
+    return text
+
+
+# Offers that are a condition type of their own rather than a comparison on an
+# attribute: silence (offline), the hub starting (startup), a date range, a time
+# window. Their fields may carry parameters, recorded so a compile at other
+# values re-resolves them.
+TYPED_OFFER_TYPES = ("offline", "startup", "date", "time_window")
+TYPED_OFFER_FIELDS = ("minutes", "negate", "from", "to", "time_from", "time_to", "days")
+# What makes a device's silence judgeable: a last report time, or an
+# availability flag. A device with neither cannot be asked whether it is offline.
+OFFLINE_EVIDENCE = ("last_seen", "available")
+
+
+def _typed_offer(cap_id: str, spec: Dict[str, Any], offer: Dict[str, Any],
+                 role: str, state: Dict[str, Any], device_name: str,
+                 room_label: Optional[str]) -> Optional[Dict[str, Any]]:
+    """One typed offer — see TYPED_OFFER_TYPES — or None if the device cannot make it."""
+    if offer["type"] == "offline" and not any(k in state for k in OFFLINE_EVIDENCE):
+        return None
+    cond: Dict[str, Any] = {"type": offer["type"]}
+    params: Dict[str, str] = {}
+    shown: Dict[str, str] = {}
+    for field in TYPED_OFFER_FIELDS:
+        if field not in offer:
+            continue
+        raw = offer[field]
+        pid = raw.get("param") if isinstance(raw, dict) else None
+        cond[field] = resolve_param(raw)
+        if pid:
+            params[field] = pid
+        shown[field] = param_display(pid, cond[field])
+    built = _offer_base(cap_id, spec, offer, role)
+    built.update({
+        # The same shape as an attribute offer, with nothing to read.
+        "attribute": None,
+        "endpoint_id": None,
+        "label": _label(offer["label"], device_name, room_label, extra=shown),
+        # Parameterised fields stay as placeholders, so a sentence can be
+        # re-rendered at a pattern's own values.
+        "label_template": _label(offer["label"], device_name, room_label,
+                                 extra={**shown, **{f: "{%s}" % f for f in params}}),
+        "condition": cond,
+    })
+    if params:
+        built["condition_params"] = params
+    return built
 
 
 def _offer_base(cap_id: str, spec: Dict[str, Any], offer: Dict[str, Any],
@@ -413,6 +474,11 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
     """Trigger or condition offers for one capability on one device."""
     out: List[Dict[str, Any]] = []
     for offer in spec.get(role + "s", []):
+        if offer.get("type") in TYPED_OFFER_TYPES:
+            typed = _typed_offer(cap_id, spec, offer, role, state, device_name, room_label)
+            if typed:
+                out.append(typed)
+            continue
         # Zone offers read `place` and carry no comparison of their own.
         if offer.get("type") == "zone":
             if "place" not in state:
@@ -465,7 +531,7 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
                     continue
                 value = _coerce_bool(value, sample)
 
-            if value is None and offer["operator"] not in ("neq", "eq"):
+            if value is None and offer["operator"] not in ("neq", "eq", "changed"):
                 continue
 
             built = _offer_base(cap_id, spec, offer, role)
@@ -486,6 +552,16 @@ def _build_state_offers(cap_id: str, spec: Dict[str, Any], role: str,
                 built["condition"]["sustain"] = int(sustain)
                 built["sustain_param"] = offer["sustain"].get("param") \
                     if isinstance(offer.get("sustain"), dict) else None
+            # A trend's window: minutes on a card, seconds in the engine.
+            within = offer.get("within")
+            if within is not None:
+                minutes = resolve_param(within)
+                wpid = within.get("param") if isinstance(within, dict) else None
+                built["condition"]["within"] = int(float(minutes) * 60)
+                built["label"] = built["label"].replace(
+                    "{window}", param_display(wpid, minutes) if wpid else f"{minutes} min")
+                if wpid:
+                    built["within_param"] = wpid
             out.append(built)
     return out
 
@@ -592,3 +668,25 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
         # commanded, and coverage counts mean something different for each.
         "is_controllable": any(a["step"].get("type") == "command" for a in actions),
     }
+
+
+class _Hub:
+    """The hub as a device-like, for describe_device().
+
+    No registry holds it: it has no state and takes no commands. Its address is
+    the engine's `__time__` source, so a rule a pattern builds from its offers —
+    the hub starting, a season, quiet hours — hangs off the source clock and
+    event rules already use.
+    """
+    friendly_name = "The hub"
+    model = "Hub"
+    manufacturer = None
+
+    def __init__(self) -> None:
+        self.state: Dict[str, Any] = {}
+        self.capabilities = ["hub"]
+
+
+def hub_device() -> Dict[str, Any]:
+    """The hub, described like any device, for patterns to fill slots from."""
+    return describe_device(TIME_SOURCE, _Hub(), name="The hub")

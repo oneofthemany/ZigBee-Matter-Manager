@@ -202,7 +202,9 @@ def run() -> Checker:
             len(leaks) == 1, [x["sentence"] for x in leaks])
 
     c.section("sentences read as English, not as attribute dumps")
-    hall = _by_sentence(built, "someone is detected in Hallway")
+    # The dim night path light starts with the same words; this is the full one.
+    hall = [s for s in _by_sentence(built, "someone is detected in Hallway")
+            if s["pattern_id"] == "presence_light_when_dark"]
     c.check("the hallway suggestion exists", hall, len(hall))
     c.check("it reads correctly",
             hall[0]["sentence"] == "When someone is detected in Hallway and "

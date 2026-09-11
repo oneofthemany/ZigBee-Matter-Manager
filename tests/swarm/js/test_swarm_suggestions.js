@@ -156,6 +156,16 @@ section('coerceParam');
   check('colourName falls back to the first choice',
         S.colourName(colour, [7, 7]) === 'red');
   check('a missing spec coerces to null', S.coerceParam(undefined, '3') === null);
+
+  // Quiet hours and seasons: shaped strings, never numbers.
+  const quiet = { id: 'quiet_from', type: 'time', value: '22:30' };
+  check('a clock time is kept', S.coerceParam(quiet, '23:15') === '23:15');
+  check('an impossible hour falls back', S.coerceParam(quiet, '25:00') === '22:30');
+  check('a time is not parsed as a number', S.coerceParam(quiet, '7') === '22:30');
+  const season = { id: 'season_from', type: 'monthday', value: '12-01' };
+  check('a month-day is kept', S.coerceParam(season, ' 11-15 ') === '11-15');
+  check('month 13 falls back', S.coerceParam(season, '13-01') === '12-01');
+  check('a full date falls back', S.coerceParam(season, '2026-11-15') === '12-01');
 }
 
 section('paramField');
@@ -172,6 +182,13 @@ section('paramField');
                                 choices: { red: [0, 100], amber: [40, 100] } });
   check('a colour renders a named select', colour.includes('<select') &&
         colour.includes('value="amber" selected'), colour);
+
+  const time = S.paramField({ id: 'quiet_from', label: 'Quiet from', type: 'time', value: '22:30' });
+  check('a time renders a time input', time.includes('type="time"') &&
+        time.includes('data-param="quiet_from"') && time.includes('value="22:30"'), time);
+  const day = S.paramField({ id: 'season_from', label: 'Season from', type: 'monthday', value: '12-01' });
+  check('a month-day renders a text input with its shape', day.includes('type="text"') &&
+        day.includes('placeholder="MM-DD"') && day.includes('value="12-01"'), day);
 }
 
 section('cardHtml escaping');

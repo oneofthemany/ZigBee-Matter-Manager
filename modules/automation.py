@@ -776,6 +776,11 @@ class AutomationEngine:
             elif ctype == "startup":
                 pass
             elif ctype == "offline":
+                # NOT: the device *is* reporting — "back online" as a state.
+                if c.get("negate"):
+                    c["negate"] = True
+                else:
+                    c.pop("negate", None)
                 m = c.get("minutes")
                 if m in (None, "", 0):
                     c.pop("minutes", None)          # the hub's own verdict
@@ -2202,26 +2207,30 @@ class AutomationEngine:
         """Is the device offline? With `minutes`: it has not reported for that
         long. Without: the hub itself counts it unavailable."""
         minutes = cond.get("minutes")
-        result = {"index": i + 1, "type": "offline", "minutes": minutes}
+        negate = bool(cond.get("negate"))
+        result = {"index": i + 1, "type": "offline", "minutes": minutes, "negate": negate}
         if minutes:
             seen = self._last_seen_seconds(device, state)
             if seen is None:
                 result.update(result="FAIL", reason="the device reports no last-seen time")
                 return False, result, False
             silent = max(0.0, time.time() - seen) / 60
-            matched = silent >= float(minutes)
-            result.update(silent_minutes=round(silent, 1),
-                          result="PASS" if matched else "FAIL")
-            if not matched:
-                result["reason"] = f"last reported {silent:.1f} min ago"
-            return matched, result, False
-        verdict = self._hub_says_offline(device, state)
-        if verdict is None:
-            result.update(result="FAIL", reason="the device has no availability to "
-                                                "read — give it a number of minutes")
-            return False, result, False
-        result["result"] = "PASS" if verdict else "FAIL"
-        return verdict, result, False
+            offline = silent >= float(minutes)
+            result["silent_minutes"] = round(silent, 1)
+            reason = f"last reported {silent:.1f} min ago"
+        else:
+            offline = self._hub_says_offline(device, state)
+            if offline is None:
+                result.update(result="FAIL", reason="the device has no availability to "
+                                                    "read — give it a number of minutes")
+                return False, result, False
+            reason = "the hub counts it " + ("offline" if offline else "online")
+        # Unknown never passes either way round: "cannot tell" is not "online".
+        matched = offline != negate
+        result["result"] = "PASS" if matched else "FAIL"
+        if not matched:
+            result["reason"] = reason
+        return matched, result, False
 
     @staticmethod
     def _last_seen_seconds(device, state) -> Optional[float]:
