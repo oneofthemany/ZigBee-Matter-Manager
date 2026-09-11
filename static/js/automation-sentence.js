@@ -116,8 +116,10 @@ export function createHumanizer(ctx = {}) {
     // text is a bare clause — the "When" label supplies the verb, so it is not
     // repeated here ("When" + "Door opens", not "When When Door opens").
     function triggerPhrase(rule) {
-        const src = resolve(rule.source_ieee);
         const c = (rule.conditions || [])[0];
+        // A condition may name its own device; otherwise it is the rule's source.
+        const who = (c && c.ieee) || rule.source_ieee;
+        const src = resolve(who);
         if (!c) return { icon: src.type, text: `${devSpan(rule.source_ieee)} changes`, raw: '' };
         if (c.type === 'time_window')
             return { icon: 'time', text: `it's ${timePhrase(c.time_from, c.time_to)}, ${daySpan(c.days)}`,
@@ -129,22 +131,24 @@ export function createHumanizer(ctx = {}) {
             return { icon: 'time', text: `🌅 it's between ${esc(c.from)} and ${esc(c.to)}`,
                      raw: `sun ${c.from}→${c.to}` };
         if (c.type === 'zone')
-            return { icon: src.type, text: `${devSpan(rule.source_ieee)} ${zoneVerb(c)}`,
+            return { icon: src.type, text: `${devSpan(who)} ${zoneVerb(c)}`,
                      raw: `zone ${c.event} ${c.place}` };
         return { icon: src.type,
-                 text: `${devSpan(rule.source_ieee)} ${attrVerb(src.type, c.attribute, c.operator, c.value)}`,
+                 text: `${devSpan(who)} ${attrVerb(src.type, c.attribute, c.operator, c.value)}`,
                  raw: `${esc(c.attribute)} ${c.operator} ${esc(c.value)}` };
     }
 
     // A prerequisite / extra condition -> "ONLY IF …" phrase. Prerequisites
-    // name their own device; a rule's 2nd+ trigger condition does not, because
-    // it is implicitly about the rule's source — hence sourceIeee, which
-    // callers pass for trigger conditions and omit for prerequisites.
+    // name their own device; a rule's 2nd+ trigger condition names one only
+    // when it reads a device other than the rule's source — hence sourceIeee,
+    // which callers pass for trigger conditions and omit for prerequisites.
     function condPhrase(p, sourceIeee) {
         const neg = p.negate ? '<span class="neg">NOT</span>' : '';
-        if (p.type === 'zone')
-            return { text: `${sourceIeee ? devSpan(sourceIeee) + ' ' : ''}${zoneVerb(p)}`,
+        if (p.type === 'zone') {
+            const who = p.ieee || sourceIeee;
+            return { text: `${who ? devSpan(who) + ' ' : ''}${zoneVerb(p)}`,
                      raw: `zone ${p.event} ${p.place}` };
+        }
         if (p.type === 'time_window')
             return { text: `${neg}${timePhrase(p.time_from, p.time_to)}, ${daySpan(p.days)}`,
                      raw: `time_window ${p.time_from}–${p.time_to}` };

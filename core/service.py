@@ -1362,6 +1362,12 @@ class ZigbeeService(
                 for rule in list(self.automation.rules):
                     if rule.get("source_ieee") == ieee or rule.get("target_ieee") == ieee:
                         self.automation.delete_rule(rule["id"])
+                    elif ieee in self.automation.rule_sources(rule):
+                        # One of several trigger devices: the rest of the rule
+                        # is still the user's work, so park it rather than
+                        # delete it, and say why.
+                        self.automation._disable_broken_rule(
+                            rule["id"], f"its trigger device {ieee} was removed")
 
             # 8. Polling config
             if ieee in self.polling_config:

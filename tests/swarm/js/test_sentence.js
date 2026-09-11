@@ -256,5 +256,35 @@ check('an unknown player falls back to its id',
       H.mediaStepText({ media_action: 'control', player_id: 'zz', control_action: 'pause' })
       .includes('zz'));
 
+section('several trigger devices: a condition on another device names it');
+const multi = {
+  source_ieee: '0xradar',
+  condition_logic: 'and',
+  conditions: [
+    { type: 'attribute', attribute: 'presence', operator: 'eq', value: true },
+    { type: 'attribute', ieee: '0xdoor', attribute: 'contact', operator: 'eq', value: false },
+  ],
+  then_sequence: [{ type: 'command', target_ieee: '0xlight', command: 'on' }],
+};
+const mt = H.rulePhrase(multi).replace(/<[^>]*>/g, '');
+console.log('    →  ' + mt.replace(/\s+/g, ' ').trim());
+check('the source is named', mt.includes('Radar - Hallway'), mt);
+check('the second device is named, not the source again', mt.includes('Front Door'), mt);
+check('the devices join with and', mt.includes(' and '), mt);
+const multiOr = H.rulePhrase({ ...multi, condition_logic: 'or' }).replace(/<[^>]*>/g, '');
+check('or across devices reads as or', multiOr.includes(' or '), multiOr);
+
+const timeFirst = H.triggerPhrase({
+  source_ieee: '__time__',
+  conditions: [{ type: 'attribute', ieee: '0xdoor', attribute: 'contact', operator: 'eq', value: false }],
+});
+check('a time rule led by a device condition names the device, not the clock',
+      timeFirst.text.includes('Front Door') && !timeFirst.text.includes('Time / Alarm'), timeFirst.text);
+
+const zp = H.condPhrase({ type: 'zone', ieee: 'user::charlie', event: 'leave', place: 'home' },
+                        'user::sean');
+check('a zone condition on another person names that person',
+      zp.text.includes('Charlie') && !zp.text.includes('Sean'), zp.text);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

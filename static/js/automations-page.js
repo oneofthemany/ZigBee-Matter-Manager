@@ -257,8 +257,9 @@ function _renderPage(container, devices) {
     devices.forEach(d => { devMap[d.ieee] = d; });
     devMapCache = devMap;
 
-    // Get unique source devices that have rules
-    const sourcesWithRules = [...new Set(allRulesCache.map(r => r.source_ieee))];
+    // Every device that triggers at least one rule, including devices a rule's
+    // extra conditions read — filtering by one shows every rule it can move.
+    const sourcesWithRules = [...new Set(allRulesCache.flatMap(_ruleSources))];
 
     // Warn when sun-based rules exist but no location is set — they can never
     // fire because sunrise/sunset can't be computed without latitude/longitude.
@@ -317,6 +318,7 @@ function _renderPage(container, devices) {
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label small fw-bold">Source Device (trigger)</label>
+                    <div class="form-text mt-0 mb-1">The device the rule starts from. Each trigger condition can read a different device, combined with <strong>Match ALL</strong> or <strong>Match ANY</strong>.</div>
                     <select class="form-select form-select-sm" id="ap-source-select" onchange="window._apSourceSelected(this.value)">
                         <option value="">Select a trigger…</option>
                         <option value="__time__">⏰ Time / Alarm (no device)</option>
@@ -358,9 +360,22 @@ function _renderPage(container, devices) {
 
 // RULES LIST
 
+// Every device a rule triggers on: its source plus any a condition names. The
+// server sends this as `sources`; the fallback covers a rule it did not enrich.
+const _ruleSources = r => r.sources || [r.source_ieee];
+
+// "3 trigger devices" on a rule that triggers on more than its source. The
+// clock is not a device, so it is not counted.
+function _multiSourceChip(rule) {
+    const devs = _ruleSources(rule).filter(s => s !== '__time__');
+    if (devs.length < 2) return '';
+    const names = devs.map(s => _resolve(s).name).join(', ');
+    return `<span class="ap-chip" title="${_esc(names)}"><i class="fas fa-diagram-project"></i>${devs.length} trigger devices</span>`;
+}
+
 function _visibleRules() {
     let rules = allRulesCache;
-    if (filterDevice) rules = rules.filter(r => r.source_ieee === filterDevice);
+    if (filterDevice) rules = rules.filter(r => _ruleSources(r).includes(filterDevice));
     if (filterState === 'disabled') rules = rules.filter(r => r.enabled === false);
     else if (filterState === 'matched') rules = rules.filter(r => r._state === 'matched' && r.enabled !== false);
     else if (filterState === 'unmatched') rules = rules.filter(r => r._state !== 'matched' && r.enabled !== false);
@@ -469,6 +484,7 @@ function _ruleCard(rule, src) {
             <div>${nameHtml}</div>
             <div class="ap-rmeta">
                 <span class="ap-chip"><i class="fas ${DEVICE_ICON[src.type]}"></i>${DEVICE_LABEL[src.type]}</span>
+                ${_multiSourceChip(rule)}
                 ${stateChip}
                 ${rule.cooldown ? `<span class="ap-chip mut"><span class="num">⏱ ${rule.cooldown}s</span></span>` : ''}
             </div>

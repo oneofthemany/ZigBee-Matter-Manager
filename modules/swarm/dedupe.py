@@ -62,14 +62,19 @@ def _watched(rule: Dict[str, Any]) -> Tuple[str, ...]:
     collapses to the same signature.
     """
     out: Set[str] = set()
+    source = rule.get("source_ieee")
     for c in rule.get("conditions") or []:
         ctype = c.get("type", "attribute")
+        # A condition reading another device is qualified by it, so a rule on
+        # A that watches B's occupancy does not sign the same as A's own.
+        other = c.get("ieee") if c.get("ieee") not in (None, "", source) else None
+        prefix = f"{other}:" if other else ""
         if ctype == "zone":
-            out.add(f"zone:{c.get('event')}:{c.get('place')}")
+            out.add(f"{prefix}zone:{c.get('event')}:{c.get('place')}")
         elif ctype in ("time_window", "time", "sun"):
             out.add(ctype)
         elif c.get("attribute"):
-            out.add(str(c["attribute"]))
+            out.add(f"{prefix}{c['attribute']}")
     return tuple(sorted(out))
 
 
@@ -115,6 +120,9 @@ def coverage(described: List[Dict[str, Any]],
     """
     rules = list(rules or [])
     sources = {str(r.get("source_ieee")) for r in rules}
+    # A device a trigger condition names takes part as much as the source does.
+    sources |= {str(c["ieee"]) for r in rules
+                for c in r.get("conditions") or [] if c.get("ieee")}
     targets = {t for r in rules for t, _ in _targets(r)}
     involved = sources | targets
 

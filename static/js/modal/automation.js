@@ -12,7 +12,7 @@
 import { state } from '../state.js';
 import { deviceType, attrLabel, attrEnum, typeTriggerAttrs } from '../automation-humanize.js';
 import { renderChooser, invalidateChooser } from '../swarm-suggest.js';
-import { createHumanizer } from '../automation-sentence.js';
+import { createHumanizer, esc } from '../automation-sentence.js';
 
 let cachedActuators = [], cachedAttributes = [], cachedAllDevices = [], cachedPresenceUsers = [];
 // JSON destined for a single-quoted HTML attribute. An apostrophe anywhere in
@@ -27,6 +27,13 @@ let cachedZones = [];     // OpenZone zones, targetable as zone:<id>
 let cachedPlaces = [];    // named places (geofences) for zone conditions
 let currentSourceIeee = null, editingRuleId = null;
 let condRows = [], condIdC = 0, prereqRows = [], prereqIdC = 0;
+// Which device each trigger condition row reads, by row id. '' (or absent)
+// means the rule's own source; anything else makes the rule multi-source, with
+// the rows joined by condLogic (Match ALL / Match ANY) across devices.
+let condSrc = {};
+// Trigger attributes per device, fetched once per open form. The rule's own
+// source is seeded from cachedAttributes; other devices load on first pick.
+let attrCache = {};
 // How the trigger conditions combine: 'and' (all must hold) or 'or' (any one).
 let condLogic = 'and';
 // Step trees stored in memory — rendered to DOM
@@ -88,14 +95,15 @@ const _placeLabel = p => Array.isArray(p) ? p.map(_placeName).join(' or ') : _pl
 // Places a crossing can be about: any real location, home, or a named place.
 // "away"/"unknown" are the absence of a place and are deliberately excluded —
 // you leave the shops *for* away, you don't arrive at it.
-function _placeIds() {
-    const attr = cachedAttributes.find(a => a.attribute === 'place');
+function _placeIds(attrs = cachedAttributes) {
+    const attr = (attrs || []).find(a => a.attribute === 'place');
     const ids = (attr?.value_options || []).filter(v => v !== 'away' && v !== 'unknown');
     if (!ids.includes('home')) ids.unshift('home');
     return ids;
 }
+// The places come from whichever person this row reads, not the rule's source.
 function _placeBoxes(id) {
-    return [['any','Any place'], ..._placeIds().map(i => [i, _placeName(i)])]
+    return [['any','Any place'], ..._placeIds(_rowAttrs(id)).map(i => [i, _placeName(i)])]
         .map(([v,l]) => `<label class="me-2 small text-nowrap"><input type="checkbox" class="czp" data-id="${id}" data-place="${v}" ${v==='any'?'checked':''} onchange="window._aCZP(${id},this)"> ${l}</label>`)
         .join('');
 }
@@ -225,6 +233,7 @@ export async function initAutomationTab(ieee) {
         // offered (e.g. a button's transient `action`), even if the current state
         // snapshot doesn't include them right now.
         if (!isTime) cachedAttributes = _mergeTypeAttrs(cachedAttributes, _dtype(ieee));
+        attrCache = isTime ? {} : { [ieee]: cachedAttributes };
         _renderRules(await rR.json());
     } catch(e) { const el=document.getElementById('a-rules'); if(el)el.innerHTML=`<div class="alert alert-danger">${e.message}</div>`; }
     // Media players are optional — a failure here must not break the tab.
@@ -279,13 +288,16 @@ function _renderRules(rules) {
                 const dayStr = (!c.days || c.days.length === 7) ? 'Every day' : c.days.map(d => DAY_NAMES[d]).join(', ');
                 cDesc = `⏰ Alarm <code>${c.at}</code> <span class="text-muted">${dayStr}</span>`;
             } else if (c.type === 'zone') {
-                cDesc = `${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
+                cDesc = `${c.ieee?`${esc(c.device_name||c.ieee)} `:''}${c.event==='leave'?'🚶 Leaves':'📍 Enters'} <code>${_placeLabel(c.place)}</code>`;
             } else if (c.type === 'sun') {
                 cDesc = _sunDesc(c);
             } else {
                 const sus = c.sustain?`<span class="badge bg-info text-dark ms-1">⏱${c.sustain}s</span>`:'';
                 const dispVal = Array.isArray(c.value) ? c.value.join(', ') : c.value;
-                cDesc = `<code>${c.attribute}</code> ${OP[c.operator]||c.operator} <code>${dispVal}</code>${sus}`;
+                // A condition on another device says which — the rule card sits
+                // under its source, so an unnamed one reads as the source's.
+                const who = c.ieee ? `${esc(c.device_name||c.ieee)} ` : '';
+                cDesc = `${who}<code>${c.attribute}</code> ${OP[c.operator]||c.operator} <code>${dispVal}</code>${sus}`;
             }
             cH += `<div class="small">${p} ${cDesc}</div>`;
         });
@@ -390,15 +402,19 @@ function _showForm(rule, forceNew = false) {
     el.addEventListener('change', window._aPreview);
 
     // Conditions
-    condRows=[]; condIdC=0;
+    condRows=[]; condIdC=0; condSrc={};
     condLogic = (isE && rule.condition_logic === 'or') ? 'or' : 'and';
     const clSel = document.getElementById('a-clogic'); if(clSel) clSel.value = condLogic;
     if(isE && rule.conditions?.length) rule.conditions.forEach(()=>condRows.push(condIdC++));
     else condRows.push(condIdC++);
     _refConds();
-    if(isE && rule.conditions) setTimeout(()=>{
+    if(isE && rule.conditions) setTimeout(async()=>{
+        // Every other device the conditions read is loaded before the rows are
+        // filled, so each row renders with its own device's attributes.
+        await Promise.all(rule.conditions.map(c => _ensureAttrs(c.ieee)));
         rule.conditions.forEach((c,i)=>{if(condRows[i]!==undefined)_setC(condRows[i],c);});
         _refCondChrome();
+        window._aPreview();
     },50);
 
     // Prerequisites
@@ -493,16 +509,45 @@ const _joinBadge = () => condLogic === 'or'
     ? `<span class="badge small" style="background:#6f42c1">OR</span>`
     : `<span class="badge bg-warning text-dark small">AND</span>`;
 
+// The device a condition row reads: its own pick, else the rule's source.
+const _rowSrc = id => condSrc[id] || currentSourceIeee;
+const _rowAttrs = id => attrCache[_rowSrc(id)] || [];
+
+/** Fetch — once per form — the trigger attributes of a device a row reads. */
+async function _ensureAttrs(ieee) {
+    if (!ieee || ieee === '__time__' || attrCache[ieee]) return;
+    let attrs = [];
+    try { attrs = await (await fetch(`/api/automations/device/${encodeURIComponent(ieee)}/attributes`)).json(); }
+    catch (e) { /* an unreadable device still gets its canonical triggers */ }
+    attrCache[ieee] = _mergeTypeAttrs(Array.isArray(attrs) ? attrs : [], _dtype(ieee));
+}
+
+// Device picker for one condition row. The rule's own source is the blank
+// choice, so a rule that never picks another device saves exactly as before.
+// Groups are left out: a group never reports a change of its own, so it could
+// not trigger anything — checking one is what a prerequisite is for.
+function _srcPicker(id) {
+    const cur = condSrc[id] || '';
+    const blank = currentSourceIeee === '__time__' ? 'Device…' : 'This device';
+    const devs = (cachedAllDevices || [])
+        .filter(d => !d._is_group && d.ieee !== currentSourceIeee)
+        .map(d => `<option value="${d.ieee}" ${cur === d.ieee ? 'selected' : ''}>${esc(d.friendly_name)}</option>`)
+        .join('');
+    return `<div class="col-auto"><select class="form-select form-select-sm csrc" data-id="${id}" style="max-width:170px" title="Which device this condition reads" onchange="window._aCSrc(${id},this)"><option value="">${blank}</option>${devs}</select></div>`;
+}
+
 function _renderCond(id, ctype) {
     // Default new conditions on the virtual time source to an alarm (no attrs exist).
     ctype = ctype || (currentSourceIeee === '__time__' ? 'time' : 'attribute');
-    const opts = _attrOptions(cachedAttributes, _dtype(currentSourceIeee));
+    const src = _rowSrc(id);
+    const opts = _attrOptions(_rowAttrs(id), _dtype(src));
     const idx=condRows.indexOf(id);
     const badge = idx===0 ? `<span class="badge bg-primary small">IF</span>` : _joinBadge();
     const rmBtn = idx>0 ? `<button class="btn btn-sm btn-outline-danger" onclick="window._aRmC(${id})"><i class="fas fa-times"></i></button>` : '<div style="width:31px"></div>';
     const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     const dayBoxes = DAYS.map((d,i) => `<label class="me-1 small"><input type="checkbox" class="ctd" data-id="${id}" data-day="${i}" checked> ${d}</label>`).join('');
     const attrRow = `
+        ${_srcPicker(id)}
         <div class="col"><select class="form-select form-select-sm ca" data-id="${id}" onchange="window._aCa(${id},this)"><option value="">Attr...</option>${opts}</select></div>
         <div class="col-auto"><select class="form-select form-select-sm co" data-id="${id}" style="width:120px"><option value="">Op...</option></select></div>
         <div class="col" id="cv-${id}"><input type="text" class="form-control form-control-sm cv" data-id="${id}" placeholder="Value"></div>
@@ -523,12 +568,13 @@ function _renderCond(id, ctype) {
         <div class="col-auto"><label class="small text-muted mb-0 me-1">At</label><input type="time" class="form-control form-control-sm ct-at" data-id="${id}" style="width:120px" value="07:00"></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${dayBoxes}</div></div>`;
     const zoneRow = `
+        ${_srcPicker(id)}
         <div class="col-auto"><select class="form-select form-select-sm cz-ev" data-id="${id}" style="width:110px">
             <option value="enter">Enters</option><option value="leave">Leaves</option></select></div>
         <div class="col"><div class="d-flex flex-wrap gap-1 align-items-center pt-1">${_placeBoxes(id)}</div></div>`;
     const body = ctype==='time_window' ? timeRow : ctype==='time' ? alarmRow
         : ctype==='sun' ? sunRow : ctype==='zone' ? zoneRow : attrRow;
-    const zoneOpt = _isPerson(currentSourceIeee)
+    const zoneOpt = _isPerson(src)
         ? `<option value="zone" ${ctype==='zone'?'selected':''}>Zone</option>` : '';
     return `<div class="row g-1 mb-1 align-items-center flex-wrap" id="c-${id}">
         <div class="col-auto">${badge}</div>
@@ -563,6 +609,10 @@ function _refJoinBadges(){
 }
 function _setC(id,c){
     const ctype = c.type || 'attribute';
+    // The row's device has to be known before it renders — its attributes,
+    // places and Zone option all come from it. _showForm has already fetched
+    // the attributes of every device the rule's conditions name.
+    condSrc[id] = (c.ieee && c.ieee !== currentSourceIeee) ? c.ieee : '';
     const row = document.getElementById(`c-${id}`);
     if (!row) return;
     row.outerHTML = _renderCond(id, ctype);
@@ -1206,8 +1256,26 @@ function _removeFromTree(steps, id) {
 // WINDOW HANDLERS
 
 // Conditions
+
+// A condition row switching device. The attribute list is the new device's, so
+// the row is rebuilt; its type survives unless the new device can't have it —
+// only a person has a place to enter or leave.
+window._aCSrc = async (id, sel) => {
+    condSrc[id] = sel.value === currentSourceIeee ? '' : sel.value;
+    const row = document.getElementById(`c-${id}`);
+    if (!row) return;
+    let ctype = row.querySelector('.ctype')?.value || 'attribute';
+    await _ensureAttrs(_rowSrc(id));
+    if (ctype === 'zone' && !_isPerson(_rowSrc(id))) ctype = 'attribute';
+    const live = document.getElementById(`c-${id}`);   // removed while loading?
+    if (!live) return;
+    live.outerHTML = _renderCond(id, ctype);
+    _refCondChrome();
+    window._aPreview();
+};
+
 window._aCa=(id,sel)=>{const o=sel.options[sel.selectedIndex];if(!o?.value)return;const ops=JSON.parse(o.dataset.operators||'["eq","neq"]'),vo=JSON.parse(o.dataset.vo||'[]'),cur=o.dataset.current,typ=o.dataset.type,attr=o.value;
-    const srcType=_dtype(currentSourceIeee);
+    const srcType=_dtype(_rowSrc(id));
     const dflt=typ==='boolean'?String(cur).toLowerCase():'';
     const os=document.querySelector(`#c-${id} .co`);if(os){os.innerHTML=ops.map(op=>`<option value="${op}">${OP[op]} ${OPT[op]}</option>`).join('');
         os.onchange=()=>{const opV=os.value;const w=document.getElementById(`cv-${id}`);if(w){
@@ -1412,7 +1480,7 @@ function _collectRule() {
             if(!picked.length){valid=false;return;}
             // One place stays a plain string; several become a single zone.
             const place=picked.includes('any')?'any':(picked.length===1?picked[0]:picked);
-            conditions.push({type:'zone',event:ev,place});
+            conditions.push({type:'zone',event:ev,place,...(condSrc[id]?{ieee:condSrc[id]}:{})});
         } else if(ctype==='sun'){
             const frm=row.querySelector('.cs-from')?.value||'sunset';
             const to=row.querySelector('.cs-to')?.value||'sunrise';
@@ -1427,11 +1495,15 @@ function _collectRule() {
             const a=row.querySelector('.ca')?.value,o=row.querySelector('.co')?.value;
             const vE=row.querySelector(`#cv-${id} .cv`),r=vE?.value,s=row.querySelector('.cs')?.value;
             if(!a||!o||r===undefined||r===''){valid=false;return;}
-            const ai=cachedAttributes.find(x=>x.attribute===a);
+            const ai=_rowAttrs(id).find(x=>x.attribute===a);
             let value;
             if(o==='in'||o==='nin'){value=String(r).split(',').map(v=>_ct(v.trim(),ai?.type));}
             else{value=_ct(r,ai?.type);}
-            const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);conditions.push(c);
+            const c={type:'attribute',attribute:a,operator:o,value};if(s&&parseInt(s)>0)c.sustain=parseInt(s);
+            // Only a row reading another device names one, so a rule that never
+            // picks one saves exactly as it always did.
+            if(condSrc[id])c.ieee=condSrc[id];
+            conditions.push(c);
         }
     });
     if(!valid||!conditions.length) return {valid:false, error:'Fill all conditions.'};
@@ -1746,11 +1818,11 @@ async function _loadTr() {
                     cLine=`#${c.index} Alarm${c.negate?' NOT':''} ${c.at} [${dayStr}] now=${c.now_time} weekday=${c.now_weekday}`;
                 }else if(c.type==='zone'){
                     const move=c.from_place!==undefined?` ${c.from_place??'?'} → ${c.to_place??'?'}`:'';
-                    cLine=`#${c.index} ${c.event==='leave'?'Leaves':'Enters'} ${_placeLabel(c.place)}${move}`;
+                    cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}${c.event==='leave'?'Leaves':'Enters'} ${_placeLabel(c.place)}${move}`;
                 }else if(c.type==='sun'){
                     cLine=`#${c.index} Sun ${c.from}→${c.to}${c.resolved?` (${c.resolved})`:''} now=${c.now_time||''}`;
                 }else{
-                    cLine=`#${c.index} ${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → ${c.actual_raw||'?'} (${c.actual_type||''})`;
+                    cLine=`#${c.index} ${c.device_name?esc(c.device_name)+' · ':''}${c.attribute} ${c.operator||''} ${c.threshold_raw||c.threshold||'?'} → ${c.actual_raw||'?'} (${c.actual_type||''})`;
                     if(c.sustain_elapsed!=null)cLine+=` ⏱${c.sustain_elapsed}s`;if(c.value_source)cLine+=` ${c.value_source}`;
                 }
                 h+=`<div class="${cc}">${cLine} [${c.result}]`;if(c.reason)h+=` — ${c.reason}`;h+='</div>';});h+='</div>';}

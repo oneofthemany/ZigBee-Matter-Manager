@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 class ConditionItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     type: str = "attribute"
+    # The device this condition reads. Absent means the rule's source_ieee, so
+    # one rule can trigger on several devices joined by condition_logic.
+    ieee: Optional[str] = None
     attribute: Optional[str] = None
     operator: Optional[str] = None
     value: Optional[Any] = None
@@ -99,11 +102,14 @@ def _conds_to_dicts(items):
             r.append({"type": "time", "at": c.at,
                       "days": c.days if c.days is not None else list(range(7))})
         elif c.type == "zone":
-            r.append({"type": "zone", "event": c.event, "place": c.place})
+            d = {"type": "zone", "event": c.event, "place": c.place}
+            if c.ieee: d["ieee"] = c.ieee
+            r.append(d)
         elif c.type == "sun":
             r.append(_sun_dict(c))
         else:
             d = {"type": "attribute", "attribute": c.attribute, "operator": c.operator, "value": c.value}
+            if c.ieee: d["ieee"] = c.ieee
             if c.sustain and c.sustain > 0: d["sustain"] = c.sustain
             r.append(d)
     return r

@@ -957,6 +957,11 @@ class WorkerManager:
             worker = self.by_ieee(rule.get("source_ieee", ""))
             if worker:
                 found[worker.id]["triggers"].append(rule["id"])
+            # A trigger condition may read a worker other than the source.
+            for cond in rule.get("conditions") or []:
+                cw = self.by_ieee(cond.get("ieee", "") or "")
+                if cw and rule["id"] not in found[cw.id]["triggers"]:
+                    found[cw.id]["triggers"].append(rule["id"])
             for prereq in rule.get("prerequisites") or []:
                 pw = self.by_ieee(prereq.get("ieee", "") or "")
                 if pw and rule["id"] not in found[pw.id]["triggers"]:

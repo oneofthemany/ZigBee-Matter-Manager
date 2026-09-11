@@ -64,6 +64,14 @@ ZONE_ANY = "any"
 # of places a household can define, since grouping them all is what ZONE_ANY is.
 MAX_PLACES_PER_ZONE = 16
 
+# Attributes that report something happening rather than something being true:
+# a press, a scene recall. They stay in device state after the moment has gone,
+# so a condition on one matches only on the update that carries it — otherwise
+# a button pressed this morning would still read "pressed" when a second
+# device's update, or a clock boundary, re-evaluates the rule this evening.
+EVENT_ATTRS = frozenset({"action", "click", "button_action", "event", "scene",
+                         "command"})
+
 OPERATORS = {
     "eq":  lambda a, b: a == b,
     "neq": lambda a, b: a != b,
@@ -304,6 +312,29 @@ class AutomationEngine:
         Rules saved before OR support carry no key, so they stay AND."""
         return "or" if str(rule.get("condition_logic", "and")).lower() == "or" else "and"
 
+    @staticmethod
+    def _cond_source(rule, cond) -> Optional[str]:
+        """The device a trigger condition reads, or None for a clock condition.
+
+        A condition may name its own device in `ieee`; without one it reads the
+        rule's source, which is how every rule saved before multi-source reads.
+        """
+        if cond.get("type", "attribute") in TEMPORAL_TYPES:
+            return None
+        return cond.get("ieee") or rule.get("source_ieee")
+
+    @classmethod
+    def rule_sources(cls, rule) -> List[str]:
+        """Every device whose updates can move this rule — its source first,
+        then each other device a trigger condition names."""
+        out: List[str] = []
+        candidates = [rule.get("source_ieee")] + [
+            cls._cond_source(rule, c) for c in rule.get("conditions") or []]
+        for src in candidates:
+            if src and src not in out:
+                out.append(src)
+        return out
+
     def _rule_temporal_boundaries(self, rule) -> set:
         """HH:MM strings at which this rule's temporal conditions can change state."""
         b: set = set()
@@ -364,14 +395,14 @@ class AutomationEngine:
 
             rule_id = rule["id"]
             rule_name = rule.get("name") or rule_id
-            source_ieee = rule.get("source_ieee", "")
-            source_device = devices.get(source_ieee)
-            full_state = source_device.state if source_device else {}
 
-            # Evaluate with empty changed_data — time_window conditions don't need it
+            # No device updated: every device condition reads its device as it
+            # stands, with nothing marked as changed — a clock tick is not a
+            # button press, whichever device the condition names.
             logic = self._condition_logic(rule)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                rule.get("conditions", []), rule_id, {}, full_state, now, logic)
+                rule.get("conditions", []), rule_id, {}, {}, now, logic,
+                view=self._condition_view(rule, devices), names=names)
 
             if has_sustain:
                 continue
@@ -492,8 +523,9 @@ class AutomationEngine:
     def _rebuild_index(self):
         self._source_index.clear()
         for rule in self.rules:
-            src = rule.get("source_ieee")
-            if src:
+            # Indexed under every trigger device, so an update on any of them
+            # re-evaluates the rule — that is what makes AND/OR span devices.
+            for src in self.rule_sources(rule):
                 self._source_index.setdefault(src, []).append(rule["id"])
 
     def _disable_broken_rule(self, rule_id: str, reason: str):
@@ -569,6 +601,20 @@ class AutomationEngine:
             return f"Max {MAX_CONDITIONS_PER_RULE} conditions"
         for i, c in enumerate(conds):
             ctype = c.get("type", "attribute")
+            # The device this condition reads, when it is not the rule's source.
+            # A clock condition reads no device, so an ieee on one is dropped.
+            if "ieee" in c:
+                src = str(c.get("ieee") or "").strip()
+                if ctype in TEMPORAL_TYPES or not src:
+                    c.pop("ieee", None)
+                elif src.startswith("group:"):
+                    return (f"Condition {i+1}: a group can't trigger a rule — it "
+                            f"never reports a change of its own. Check it with a "
+                            f"prerequisite instead")
+                elif src == TIME_SOURCE:
+                    return f"Condition {i+1}: '{TIME_SOURCE}' is not a device"
+                else:
+                    c["ieee"] = src
             if ctype == "time_window":
                 for f in ("time_from", "time_to"):
                     if f not in c:
@@ -623,16 +669,47 @@ class AutomationEngine:
                     c.pop("sustain", None)
         return None
 
-    def _validate_zone_source(self, conds: List[Dict], source_ieee: str) -> Optional[str]:
-        """Zone conditions read `place`, which only presence users have."""
-        if not self._has_zone(conds):
-            return None
-        dev = self._get_all_devices().get(source_ieee)
-        state = getattr(dev, "state", None) if dev else None
-        if not state or ZONE_ATTR not in state:
-            return ("Enters/leaves conditions need a presence user as the "
-                    "trigger — only people have a place.")
+    def _validate_condition_sources(self, conds: List[Dict],
+                                    source_ieee: str) -> Optional[str]:
+        """Check the device each trigger condition reads.
+
+        A condition naming its own device must name one that exists; a zone
+        condition reads `place`, which only presence users have; and a device
+        condition on a clock rule has no source to fall back on, so it must
+        name a device.
+        """
+        devices = self._get_all_devices()
+        for i, c in enumerate(conds):
+            ctype = c.get("type", "attribute")
+            if ctype in TEMPORAL_TYPES:
+                continue
+            src = c.get("ieee") or source_ieee
+            if src == TIME_SOURCE:
+                return (f"Condition {i+1} reads a device, but a time rule has "
+                        f"no source device — pick the device it reads")
+            dev = devices.get(src)
+            if c.get("ieee") and dev is None:
+                return f"Condition {i+1}: device not found: {src}"
+            if ctype == "zone":
+                state = getattr(dev, "state", None) if dev else None
+                if not state or ZONE_ATTR not in state:
+                    return ("Enters/leaves conditions need a presence user as the "
+                            "device — only people have a place.")
         return None
+
+    def _source_cap_error(self, sources: List[str],
+                          exclude_rule_id: Optional[str] = None) -> Optional[str]:
+        """MAX_RULES_PER_DEVICE, counted on every device a rule triggers on —
+        each is evaluated on every update of that device, source or not."""
+        for src in sources:
+            ids = [r for r in self._source_index.get(src, []) if r != exclude_rule_id]
+            if len(ids) >= MAX_RULES_PER_DEVICE:
+                name = self._get_all_names().get(src, src)
+                return f"Max {MAX_RULES_PER_DEVICE} rules per trigger device ({name})"
+        return None
+
+    # The swarm's suggestion builder validates through the older name.
+    _validate_zone_source = _validate_condition_sources
 
     def _validate_prerequisites(self, prereqs: List[Dict]) -> Optional[str]:
         import re
@@ -795,18 +872,22 @@ class AutomationEngine:
         source = data.get("source_ieee")
         if not source:
             return {"success": False, "error": "source_ieee required"}
-        if len(self._source_index.get(source, [])) >= MAX_RULES_PER_DEVICE:
-            return {"success": False, "error": f"Max {MAX_RULES_PER_DEVICE} rules"}
         if source == TIME_SOURCE:
-            # Clock-triggered rule: must carry a temporal condition (it never sees
-            # a device update), but needs no physical source device to exist.
-            if not any(c.get("type") in TEMPORAL_TYPES for c in conditions):
+            # Clock-triggered rule: it has no physical source device, so it must
+            # carry a temporal condition or a condition on a device whose
+            # updates can move it.
+            if not any(c.get("type") in TEMPORAL_TYPES or c.get("ieee")
+                       for c in conditions):
                 return {"success": False,
-                        "error": "Time/alarm rule needs a time, alarm, or sun condition"}
+                        "error": "Time/alarm rule needs a time, alarm, or sun "
+                                 "condition, or a condition on a device"}
         elif source not in self._get_all_devices():
             return {"success": False, "error": f"Source not found: {source}"}
 
-        err = self._validate_zone_source(conditions, source)
+        err = self._validate_condition_sources(conditions, source)
+        if err: return {"success": False, "error": err}
+        err = self._source_cap_error(self.rule_sources(
+            {"source_ieee": source, "conditions": conditions}))
         if err: return {"success": False, "error": err}
 
         rule = {
@@ -838,8 +919,13 @@ class AutomationEngine:
         if "conditions" in updates:
             err = self._validate_conditions(updates["conditions"])
             if err: return {"success": False, "error": err}
-            err = self._validate_zone_source(updates["conditions"],
-                                             rule.get("source_ieee", ""))
+            source = rule.get("source_ieee", "")
+            err = self._validate_condition_sources(updates["conditions"], source)
+            if err: return {"success": False, "error": err}
+            err = self._source_cap_error(
+                self.rule_sources({"source_ieee": source,
+                                   "conditions": updates["conditions"]}),
+                exclude_rule_id=rule_id)
             if err: return {"success": False, "error": err}
             rule["conditions"] = updates["conditions"]
         if "condition_logic" in updates:
@@ -889,14 +975,17 @@ class AutomationEngine:
         return {"success": True}
 
     def get_rules(self, source_ieee: Optional[str] = None) -> List[Dict[str, Any]]:
-        names = self._get_names()
+        names = self._get_all_names()
+        # A rule belongs to every device it triggers on, not only its source.
         rules = self.rules if not source_ieee else [
-            r for r in self.rules if r["source_ieee"] == source_ieee
+            r for r in self.rules if source_ieee in self.rule_sources(r)
         ]
         enriched = []
         for rule in rules:
             r = json.loads(json.dumps(rule))  # deep copy
             r["source_name"] = names.get(rule["source_ieee"], rule["source_ieee"])
+            r["sources"] = self.rule_sources(rule)
+            self._enrich_names(r.get("conditions", []), names, "ieee", "device_name")
             r["_state"] = self._rule_states.get(rule["id"], "unknown")
             r["_running"] = (rule["id"] in self._running_sequences and
                              not self._running_sequences[rule["id"]].done())
@@ -987,16 +1076,25 @@ class AutomationEngine:
 
             rule_name = rule.get("name") or rule_id
 
-            # Relevance
-            watched = self._watched_attributes(conditions)
-            if watched and not watched.intersection(changed_data.keys()):
+            # Relevance — judged on the conditions that read this device. A rule
+            # indexed here only as its source, whose device conditions all read
+            # other devices, has nothing this update can move.
+            own = [c for c in conditions if self._cond_source(rule, c) == source_ieee]
+            if own:
+                watched = self._watched_attributes(own)
+                if watched and not watched.intersection(changed_data.keys()):
+                    continue
+            elif any(self._cond_source(rule, c) for c in conditions):
                 continue
 
             # CONDITIONS
             logic = self._condition_logic(rule)
             has_zone = self._has_zone(conditions)
+            view = self._condition_view(rule, devices, source_ieee, changed_data,
+                                        full_state, prev_values)
             all_matched, cond_results, has_sustain = self._eval_conditions_block(
-                conditions, rule_id, changed_data, full_state, now, logic, prev_values)
+                conditions, rule_id, changed_data, full_state, now, logic,
+                prev_values, view=view, names=names)
 
             if has_sustain:
                 self._trace(rule_id, "evaluate", "SUSTAIN_WAIT",
@@ -1082,8 +1180,7 @@ class AutomationEngine:
             # Momentary triggers (a button press, a boundary crossing) have to
             # re-arm: they are never "still true", so without this the second
             # press — or the second arrival — would look like no transition.
-            _EVENT_ATTRS = {"action", "click", "button_action", "event", "scene", "command"}
-            if has_zone or any(c.get("attribute") in _EVENT_ATTRS for c in conditions):
+            if has_zone or any(c.get("attribute") in EVENT_ATTRS for c in conditions):
                 self._rule_states[rule_id] = "unmatched"
 
         # Baseline for the next update. full_state is already the new state, so
@@ -1092,9 +1189,35 @@ class AutomationEngine:
 
     # CONDITION / PREREQUISITE EVALUATION
 
+    def _condition_view(self, rule, devices, updating=None, changed_data=None,
+                        full_state=None, prev_values=None):
+        """Return view(cond) -> (changed_data, full_state, prev_values) for a rule.
+
+        A condition on the device that just updated reads the update. A condition
+        on any other device reads that device as it stands, with nothing marked
+        as changed: it did not change in this update, so neither a zone crossing
+        nor a momentary press on it can match on another device's update.
+        `updating=None` is a clock tick — no device changed at all.
+        """
+        default = rule.get("source_ieee", "")
+        snapshots: Dict[str, tuple] = {}
+
+        def view(cond):
+            src = cond.get("ieee") or default
+            if updating is not None and src == updating:
+                return changed_data or {}, full_state or {}, prev_values or {}
+            if src not in snapshots:
+                dev = devices.get(src)
+                state = (getattr(dev, "state", None) or {}) if dev else {}
+                snapshots[src] = (state, self._last_values.get(src, state))
+            state, prev = snapshots[src]
+            return {}, state, prev
+        return view
+
     def _eval_conditions_block(self, conditions, rule_id, changed_data, full_state,
-                               now, logic="and", prev_values=None):
-        """Evaluate source device conditions. Returns (matched, results, has_sustain).
+                               now, logic="and", prev_values=None, view=None,
+                               names=None):
+        """Evaluate trigger conditions. Returns (matched, results, has_sustain).
 
         logic 'and' (default): every condition must pass; stops at the first failure.
         logic 'or':            any one condition passing is enough; stops at the first
@@ -1102,6 +1225,10 @@ class AutomationEngine:
 
         has_sustain means "a condition is mid-sustain, don't decide yet" — under OR
         that only holds the rule back while nothing else has already passed.
+
+        view, when given (see _condition_view), supplies each condition's own
+        device reading, which is what lets AND/OR span several devices. Without
+        it every condition reads the one device passed in.
         """
         or_mode = str(logic).lower() == "or"
         results = []
@@ -1109,8 +1236,15 @@ class AutomationEngine:
         has_sustain = False
 
         for i, cond in enumerate(conditions):
+            cd, fs, pv = (view(cond) if view
+                          else (changed_data, full_state, prev_values or {}))
             matched, result, sustain_pending = self._eval_one_condition(
-                cond, i, rule_id, changed_data, full_state, now, prev_values or {})
+                cond, i, rule_id, cd, fs, now, pv)
+            if cond.get("ieee"):
+                # Name the device in the trace — otherwise a FAIL on another
+                # device's attribute reads as though it were the source's.
+                result["ieee"] = cond["ieee"]
+                result["device_name"] = (names or {}).get(cond["ieee"], cond["ieee"])
             results.append(result)
 
             if or_mode:
@@ -1199,6 +1333,14 @@ class AutomationEngine:
         threshold = cond["value"]
         sustain = cond.get("sustain", 0) or 0
         skey = f"{rule_id}_{i}"
+
+        # A momentary attribute is true only on the update that carries it (see
+        # EVENT_ATTRS): its last value lingering in state is not a new press.
+        if attr in EVENT_ATTRS and attr not in changed_data:
+            self._sustain_tracker.pop(skey, None)
+            return False, {"index": i + 1, "attribute": attr, "result": "FAIL",
+                           "reason": f"'{attr}' is momentary and did not fire "
+                                     f"in this update"}, False
 
         if attr in changed_data:
             val = changed_data[attr]; src = "changed_data"

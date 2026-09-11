@@ -354,10 +354,14 @@ def _check_rules(rules: List[Dict[str, Any]],
             unsignable.append({"id": rule.get("id"), "name": rule.get("name"),
                                "error": f"{type(e).__name__}: {e}"})
             continue
-        src = rule.get("source_ieee")
-        if src and src != "__time__" and src not in known:
+        # Every trigger device counts: a condition may name its own device.
+        srcs = [rule.get("source_ieee")] + [
+            c.get("ieee") for c in rule.get("conditions") or [] if c.get("ieee")]
+        missing = [s for s in dict.fromkeys(srcs)
+                   if s and s != "__time__" and s not in known]
+        if missing:
             orphaned.append({"id": rule.get("id"), "name": rule.get("name"),
-                             "source_ieee": src})
+                             "source_ieee": missing[0]})
         if not rule.get("enabled", True):
             disabled.append({"id": rule.get("id"), "name": rule.get("name")})
 

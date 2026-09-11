@@ -44,7 +44,7 @@ Rules track **matched/unmatched** state and only fire on transitions — not on 
 
 Every automation rule consists of four parts:
 
-1. **Trigger Conditions** — attribute checks on the source device (AND or OR logic, up to 5)
+1. **Trigger Conditions** — attribute checks on the source device, or on any other device a condition names (AND or OR logic, up to 5)
 2. **Prerequisites** — optional state checks on other devices before firing (supports NOT)
 3. **THEN Sequence** — action steps when conditions become true
 4. **ELSE Sequence** — action steps when conditions become false
@@ -121,6 +121,55 @@ Leaving somewhere for "away" counts as a departure from that place; "away" and
 
 After a hub restart the engine restores where each person was, so the first
 crossing after a restart is still reported correctly.
+
+#### Several trigger devices (AND / OR across devices)
+
+A condition does not have to read the source device. Each **Attr** and **Zone**
+row has a device picker: **This device** is the rule's source, and picking any
+other device makes that row read it instead. The **Match ALL / Match ANY**
+selector then combines the rows across devices exactly as it does on one:
+
+- **Match ALL (AND)** — fires when every condition holds. An update on *any* of
+  the named devices re-evaluates the rule, reading the others as they currently
+  stand, so the order the devices change in does not matter.
+- **Match ANY (OR)** — fires when any one condition holds, whichever device it
+  is on. "Front door **or** back door opens" is one rule, not two.
+
+A condition on another device is different from a prerequisite: a prerequisite
+is only *checked* when the trigger fires, while a trigger condition on another
+device can fire the rule itself.
+
+Some things to know:
+
+- **Momentary attributes** — `action`, `click`, `button_action`, `event`,
+  `scene`, `command` — count only on the update that carries them. A button
+  pressed this morning does not still read "pressed" when another device
+  updates this evening, or when a clock boundary re-evaluates the rule.
+- A **Zone** condition on another person passes only on that person's own
+  crossing, for the same reason.
+- A **group** can't be a trigger device: it never reports a change of its own.
+  Check a group's state with a prerequisite.
+- The per-device rule limit (`MAX_RULES_PER_DEVICE`) counts every trigger
+  device a rule names, not only its source.
+- Removing a device that is one of several trigger devices **disables** the rule
+  (with an alert) instead of deleting it; removing the source device still
+  deletes it.
+- A **Time / Alarm** rule can carry device conditions too; each must pick a device.
+
+On the wire a condition names its device with `ieee`; without one it reads
+`source_ieee`, so rules saved before this existed are unchanged:
+
+```json
+{
+  "source_ieee": "0x00158d0001a2b3c4",
+  "condition_logic": "and",
+  "conditions": [
+    { "type": "attribute", "attribute": "occupancy", "operator": "eq", "value": true },
+    { "type": "attribute", "ieee": "0x00124b0022d4e5f6",
+      "attribute": "illuminance_lux", "operator": "lt", "value": 20 }
+  ]
+}
+```
 
 ### Step 2: Prerequisites (Optional)
 
