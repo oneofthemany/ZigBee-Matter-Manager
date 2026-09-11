@@ -31,7 +31,7 @@ def _walk_steps(steps: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
         if not isinstance(step, dict):
             continue
         yield step
-        for field in ("then_steps", "else_steps"):
+        for field in ("then_steps", "else_steps", "steps"):
             yield from _walk_steps(step.get(field) or [])
         for branch in step.get("branches") or []:
             yield from _walk_steps(branch)

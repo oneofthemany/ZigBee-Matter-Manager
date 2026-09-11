@@ -361,6 +361,52 @@ Executes two or more branches concurrently. All branches run simultaneously and 
 
 Additional branches can be added with the **+ Branch** button.
 
+### Repeat
+
+Runs its steps (**EACH TIME**) again and again:
+
+| Mode | Repeats | Condition checked |
+|------|---------|-------------------|
+| **Times** | a fixed number of times (up to 500) | — |
+| **While…** | while its conditions hold | before each pass — false at the start means no passes |
+| **Until…** | until its conditions hold | after each pass — the steps always run at least once |
+
+While and Until stop at **at most N times** (default 20, up to 500) even if the
+condition never changes, and log a warning when that is why they stopped. Their
+conditions work like If / Else ones: device, attribute, operator, value, NOT,
+AND/OR.
+
+Put a **Delay** inside to pace it. *Until Front Door is closed: message "front
+door still open", wait 600 s* is a reminder every ten minutes, at most 20 times.
+A **Gate** that fails, or a **Wait For** that times out, ends that pass only — as
+it would inside an If / Else — and the next pass starts.
+
+Disabling, deleting or restarting the rule stops a repeat mid-pass. (Cancelling
+a rule used not to reach steps nested inside If / Else or Together at all: the
+sequence carried on with its next step. It now stops everything.)
+
+### Live values in messages
+
+**Message**, **Ask First** and **Announce** text can include placeholders, filled
+in when the step runs. The **＋ value** picker beside the text inserts them:
+
+| Placeholder | Becomes |
+|---|---|
+| `{time}` / `{date}` | `18:42` / `Fri 11 Sep` |
+| `{trigger}` | the name of the device whose update fired the rule |
+| `{trigger.temperature}` | that device's `temperature`, read as the step runs |
+| `{<device id>.humidity}` | any device's value — `{0x00158d0001a2b3c4.humidity}`, `{group:3.state}`, `{worker::comfort_temp.value}` |
+
+`{trigger}` is what makes one rule with several trigger devices speak precisely:
+*{trigger} was left open* names whichever door it was. A clock-fired rule, or a
+sustain re-check, uses the rule's first device; an **Ask First** remembers the
+device that fired it, so its yes-steps can use `{trigger}` too.
+
+Values are read when the step runs, not when the rule fired. A value that can't
+be read becomes `?`; braces that don't name a device (`{like this}`) are left as
+written. Yes/no values read `yes` / `no`, and decimals are rounded to two places.
+The editor preview shows each placeholder as ‹what will fill it›.
+
 ---
 
 ## Rule Card Display
@@ -408,7 +454,7 @@ The trace log shows real-time evaluation history for debugging automation behavi
 
 | Colour  | Results                                                                  |
 |---------|--------------------------------------------------------------------------|
-| Green   | SUCCESS, FIRING, COMPLETE, WAIT_MET, GATE_PASS, IF_TRUE, PARALLEL_DONE   |
+| Green   | SUCCESS, FIRING, COMPLETE, WAIT_MET, GATE_PASS, IF_TRUE, PARALLEL_DONE, REPEAT_DONE |
 | Red     | FAIL, ERROR, EXCEPTION, MISSING, CMD_FAIL                                |
 | Yellow  | BLOCKED, SUSTAIN_WAIT, DELAY, WAITING, RUN_SKIPPED, QUEUE_FULL           |
 | Blue    | CANCELLED, WAIT_TIMEOUT, IF_FALSE, QUEUED, DEQUEUED                      |

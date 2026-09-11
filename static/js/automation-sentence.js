@@ -219,6 +219,25 @@ export function createHumanizer(ctx = {}) {
                  raw: `${ieee && String(ieee).startsWith('group:') ? ieee + ' ' : ''}${esc(p.attribute)} ${p.operator} ${esc(p.value)}` };
     }
 
+    // {trigger}, {trigger.attr}, {<device>.attr}, {time}, {date} in message
+    // text, shown as what will fill them. Mirrors _render_text in the engine;
+    // braces naming no device are left as written, as the engine leaves them.
+    function withTokens(text) {
+        const mark = label => `<span class="ap-token" style="font-style:italic">‹${label}›</span>`;
+        return esc(text).replace(/\{([^{}\s]+)\}/g, (whole, tok) => {
+            if (tok === 'time') return mark('the time');
+            if (tok === 'date') return mark('the date');
+            if (tok === 'trigger') return mark('the triggering device');
+            const dot = tok.lastIndexOf('.');
+            if (dot <= 0) return whole;
+            const dev = tok.slice(0, dot), attr = tok.slice(dot + 1);
+            if (dev === 'trigger')
+                return mark(`the triggering device's ${esc(attrLabel('unknown', attr).toLowerCase())}`);
+            const r = resolve(dev);
+            return mark(`${esc(r.name)} ${esc(attrLabel(r.type, attr).toLowerCase())}`);
+        });
+    }
+
     function cmdPhrase(s) {
         const verb = CMD_VERB[s.command] || esc(s.command);
         let tail = resolve(s.target_ieee).name;
@@ -278,6 +297,16 @@ export function createHumanizer(ctx = {}) {
                     h += `<div class="ap-sub-head" style="margin-top:6px">…else:</div>${renderSeq(s.else_steps)}`;
                 h += `</div>`;
             }
+            else if (s.type === 'repeat') {
+                const conds = (s.inline_conditions || []).map(c =>
+                    `${devSpan(c.ieee)} ${attrVerb(resolve(c.ieee).type, c.attribute, c.operator, c.value)}`)
+                    .join(` ${s.condition_logic || 'and'} `);
+                const cap = esc(s.max_iterations || 20);
+                const head = s.mode === 'while' ? `Repeat while ${conds || '…'} (at most ${cap} times):`
+                    : s.mode === 'until' ? `Repeat until ${conds || '…'} (at most ${cap} times):`
+                    : `Repeat ${esc(s.count || 1)} times:`;
+                h += `<div class="ap-sub"><div class="ap-sub-head">${head}</div>${renderSeq(s.steps)}</div>`;
+            }
             else if (s.type === 'wait_for') {
                 const d = resolve(s.ieee);
                 h += `<div class="ap-act"><i class="fas fa-hourglass-half"></i><span>wait for ${devSpan(s.ieee)} ${attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
@@ -286,15 +315,19 @@ export function createHumanizer(ctx = {}) {
                 const d = resolve(s.ieee);
                 h += `<div class="ap-act"><i class="fas fa-filter"></i><span>only continue if ${devSpan(s.ieee)} ${attrVerb(d.type, s.attribute, s.operator, s.value)}</span></div>`;
             }
-            else if (s.type === 'media')
-                h += `<div class="ap-act"><i class="fas fa-music"></i><span>${esc(mediaStepText(s))}</span></div>`;
+            else if (s.type === 'media') {
+                const text = s.media_action === 'announce'
+                    ? `announce on ${esc(getPlayer(s.player_id) || s.player_id || 'player')}: “${withTokens(String(s.text || '').slice(0, 80))}”`
+                    : esc(mediaStepText(s));
+                h += `<div class="ap-act"><i class="fas fa-music"></i><span>${text}</span></div>`;
+            }
             else if (s.type === 'request')
-                h += `<div class="ap-act"><i class="fas fa-comment"></i><span>message ${esc(s.to_user || '?')}: &ldquo;${esc(s.message || '')}&rdquo;`
+                h += `<div class="ap-act"><i class="fas fa-comment"></i><span>message ${esc(s.to_user || '?')}: &ldquo;${withTokens(s.message || '')}&rdquo;`
                    + (s.from_user ? ` (from ${esc(s.from_user)})` : '') + `</span></div>`;
             else if (s.type === 'offer') {
                 // The nested sequence is what makes an offer different from a
                 // message, so it is shown rather than summarised as a count.
-                h += `<div class="ap-act"><i class="fas fa-circle-question"></i><span>ask ${esc(s.to_user || '?')}: &ldquo;${esc(s.message || '')}&rdquo;</span></div>`;
+                h += `<div class="ap-act"><i class="fas fa-circle-question"></i><span>ask ${esc(s.to_user || '?')}: &ldquo;${withTokens(s.message || '')}&rdquo;</span></div>`;
                 if ((s.accept_steps || []).length)
                     h += `<div class="ap-act-nested">${renderSeq(s.accept_steps)}</div>`;
             }

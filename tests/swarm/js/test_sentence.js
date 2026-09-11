@@ -333,5 +333,22 @@ check('offline for minutes names the device and the time',
 const hubOff = plainText(H.condPhrase({ type: 'offline', ieee: '0xdoor' }, '0xradar').text);
 check("offline without minutes is the hub's call", hubOff.includes('Front Door goes offline'), hubOff);
 
+section('repeat steps and live values read as words');
+const until = plainText(H.renderSeq([{ type: 'repeat', mode: 'until', max_iterations: 10,
+  inline_conditions: [{ ieee: '0xdoor', attribute: 'contact', operator: 'eq', value: true }],
+  steps: [{ type: 'command', target_ieee: '0xlight', command: 'toggle' }] }]));
+check('until names its condition and cap',
+      /Repeat until Front Door .* \(at most 10 times\):/.test(until), until);
+check('and shows what repeats', until.includes('Toggle'), until);
+const times = plainText(H.renderSeq([{ type: 'repeat', mode: 'count', count: 3,
+  steps: [{ type: 'delay', seconds: 1 }] }]));
+check('a count reads as times', times.includes('Repeat 3 times:'), times);
+const filled = plainText(H.renderSeq([{ type: 'request', to_user: 'sean',
+  message: '{trigger} is {0xradar.illuminance_lux} lux at {time}, {not a token}' }]));
+check('placeholders read as what fills them',
+      filled.includes('‹the triggering device›') && filled.includes('‹Radar - Hallway light level›')
+      && filled.includes('‹the time›'), filled);
+check('braces that name nothing stay as written', filled.includes('{not a token}'), filled);
+
 console.log('\n' + (fails.length ? fails.length + ' failed' : 'all passed'));
 process.exit(fails.length ? 1 : 0);

@@ -59,9 +59,9 @@ function _opOpts(sel) {
         `<option value="${k}" ${k===sel?'selected':''}>${v} ${OPT[k]}</option>`
     ).join('');
 }
-const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment',offer:'fa-circle-question'};
+const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',condition:'fa-filter',if_then_else:'fa-code-branch',parallel:'fa-columns',media:'fa-music',request:'fa-comment',offer:'fa-circle-question',repeat:'fa-repeat'};
 
-const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First'};
+const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First',repeat:'Repeat'};
 
 // Media action picker options (label, value).
 const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
@@ -363,6 +363,7 @@ function _seqSummary(steps, label, color) {
         if (s.type==='condition') return `<span class="badge bg-dark">🔒 ${s.device_name||s.ieee||'?'} ${s.attribute}</span>`;
         if (s.type==='if_then_else') return `<span class="badge bg-purple" style="background:#6f42c1">IF/THEN/ELSE</span>`;
         if (s.type==='parallel') return `<span class="badge bg-dark">⚡ PARALLEL(${(s.branches||[]).length})</span>`;
+        if (s.type==='repeat') return `<span class="badge bg-primary">🔁 ${s.mode==='count'||!s.mode ? '×'+(s.count||1) : s.mode.toUpperCase()}</span>`;
         if (s.type==='media') return `<span class="badge" style="background:#0a9396">♪ ${_mediaDesc(s)}</span>`;
         if (s.type==='request') return `<span class="badge" style="background:#9d4edd">✉ ${s.to_user||'?'}</span>`;
         if (s.type==='offer') return `<span class="badge" style="background:#d4a017">? ask ${s.to_user||'?'} (${(s.accept_steps||[]).length} on yes)</span>`;
@@ -486,12 +487,13 @@ function _cloneSteps(steps) {
         if(c.else_steps) c.else_steps = _cloneSteps(c.else_steps);
         if(c.branches) c.branches = c.branches.map(b=>_cloneSteps(b));
         if(c.accept_steps) c.accept_steps = _cloneSteps(c.accept_steps);
+        if(c.steps) c.steps = _cloneSteps(c.steps);
         if(c.inline_conditions) c.inline_conditions = c.inline_conditions.map(ic=>({...ic, _id:_uid()}));
         return c;
     });
 }
 
-// The nine step types, as one palette. Rendered once per sequence and kept
+// The step types, as one palette. Rendered once per sequence and kept
 // shut: eighteen buttons framing a rule with two steps read as chrome, not as
 // choices, and the step being added is nearly always a command.
 const STEP_PALETTE = [
@@ -504,6 +506,7 @@ const STEP_PALETTE = [
     ['offer',        'fa-circle-question',  'Ask first',    'btn-outline-warning'],
     ['if_then_else', 'fa-code-branch',      'If / Else',    'btn-outline-primary'],
     ['parallel',     'fa-columns',          'Together',     'btn-outline-info'],
+    ['repeat',       'fa-repeat',           'Repeat',       'btn-outline-primary'],
 ];
 
 function _addBtns(path) {
@@ -902,6 +905,25 @@ function _renderStep(step, path, idx, total) {
             <div id="par-${sid}-${bi}">${br.map((s,i)=>_renderStep(s,`par-${sid}-${bi}`,i,br.length)).join('')}</div>
             ${_addBtns(`par-${sid}-${bi}`)}</div>`).join('');
         body += `<button class="btn btn-sm btn-outline-info" onclick="window._aAddBranch(${sid})"><i class="fas fa-plus"></i> Branch</button>`;
+    } else if(step.type==='repeat') {
+        // Times, or While / Until conditions (the If / Else rows), around a
+        // nested sequence that runs on each pass.
+        const mode = step.mode||'count';
+        const ics = step.inline_conditions||[];
+        const logic = step.condition_logic||'and';
+        const modeSel = `<select class="form-select form-select-sm s-rp-mode" data-sid="${sid}" style="width:auto" onchange="window._aRpMode(${sid},this)">${[['count','Times'],['while','While…'],['until','Until…']].map(([v,l])=>`<option value="${v}" ${mode===v?'selected':''}>${l}</option>`).join('')}</select>`;
+        const limit = mode==='count'
+            ? `<input type="number" class="form-control form-control-sm s-rp-count" data-sid="${sid}" min="1" max="500" value="${step.count||3}" style="width:80px"><span class="small">times</span>`
+            : `<span class="small text-muted">at most</span><input type="number" class="form-control form-control-sm s-rp-max" data-sid="${sid}" min="1" max="500" value="${step.max_iterations||20}" style="width:80px" title="Stops here even if the condition never changes"><span class="small text-muted">times</span>`;
+        const conds = mode==='count' ? '' : `<div class="mb-2"><div class="d-flex gap-2 align-items-center mb-1">
+            <span class="small fw-bold">${mode==='while'?'WHILE':'UNTIL'}</span>
+            <select class="form-select form-select-sm s-logic" data-sid="${sid}" style="width:70px${ics.length>1?'':';display:none'}"><option value="and" ${logic==='and'?'selected':''}>AND</option><option value="or" ${logic==='or'?'selected':''}>OR</option></select>
+            <button class="btn btn-sm btn-outline-primary py-0" onclick="window._aAddIC(${sid})"><i class="fas fa-plus"></i></button></div>
+            <div id="ic-${sid}">${ics.map((ic,j)=>_renderInlineCond(ic,j,sid,ics.length)).join('')}</div></div>`;
+        body = `<div class="d-flex flex-wrap gap-2 align-items-center mb-1">${modeSel}${limit}</div>${conds}
+            <div class="border-start border-primary border-3 ps-2"><div class="small fw-bold text-primary mb-1">EACH TIME</div>
+                <div id="rp-${sid}">${(step.steps||[]).map((s2,i)=>_renderStep(s2,`rp-${sid}`,i,(step.steps||[]).length)).join('')}</div>
+                ${_addBtns(`rp-${sid}`)}</div>`;
     } else if(step.type==='media') {
         // Wrapped so switching target can rebuild the whole body — a zone and
         // a speaker do not offer the same actions.
@@ -926,7 +948,7 @@ function _renderStep(step, path, idx, total) {
         body=`<div class="row g-1 align-items-center mb-1">
             <div class="col-md-6">${toSel}</div>
             <div class="col-md-6">${fromSel}</div></div>
-            <input type="text" class="form-control form-control-sm s-rq-msg" data-sid="${sid}" placeholder="Message, e.g. At the shops — need anything?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">`;
+            <div class="d-flex gap-1"><input type="text" class="form-control form-control-sm s-rq-msg" data-sid="${sid}" placeholder="Message, e.g. {trigger} was left open at {time}" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">${_tokenPicker('s-rq-msg', sid)}</div>`;
     } else if(step.type==='offer') {
         // A message that can act. The recipient pickers are the message step's;
         // what differs is the nested sequence, which runs only on Accept — so
@@ -946,7 +968,7 @@ function _renderStep(step, path, idx, total) {
                 <span class="input-group-text">Expires</span>
                 <input type="number" class="form-control s-of-exp" data-sid="${sid}" min="1" max="1440" value="${mins}" title="Minutes before the offer lapses unanswered">
                 <span class="input-group-text">min</span></div></div></div>
-            <input type="text" class="form-control form-control-sm s-of-msg mb-2" data-sid="${sid}" placeholder="Question, e.g. It's cooler outside — open up or run the AC?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">
+            <div class="d-flex gap-1 mb-2"><input type="text" class="form-control form-control-sm s-of-msg" data-sid="${sid}" placeholder="Question, e.g. It's cooler outside — open up or run the AC?" value="${step.message?String(step.message).replace(/"/g,'&quot;'):''}">${_tokenPicker('s-of-msg', sid)}</div>
             <div class="border-start border-warning border-3 ps-2"><div class="small fw-bold text-warning mb-1">IF THEY ACCEPT</div>
                 <div id="ofa-${sid}">${(step.accept_steps||[]).map((s2,i)=>_renderStep(s2,`ofa-${sid}`,i,(step.accept_steps||[]).length)).join('')}</div>
                 ${_addBtns(`ofa-${sid}`)}</div>`;
@@ -975,6 +997,55 @@ function _renderInlineCond(ic, idx, parentSid, total) {
         <div class="col-auto">${rmBtn}</div>
     </div>`;
 }
+
+// Live values in text
+//
+// A "＋ value" picker beside message / question / announcement text. It inserts
+// a placeholder the engine fills when the step runs (_render_text): the time,
+// the date, the device that fired the rule, or a value from any device the
+// rule's conditions read.
+function _tokenPicker(cls, sid) {
+    const fixed = [['{trigger}', 'Name of the device that fired it'], ['{time}', 'Time'], ['{date}', 'Date']]
+        .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    const group = (label, ieee, tok) => {
+        const attrs = (attrCache[ieee] || []).filter(a => !a._synthetic);
+        if (!attrs.length) return '';
+        return `<optgroup label="${esc(label)}">${attrs.map(a =>
+            `<option value="${esc(tok(a.attribute))}">${esc(attrLabel(_dtype(ieee), a.attribute))}</option>`).join('')}</optgroup>`;
+    };
+    // The source's values as {trigger.…}, so a multi-device rule reads
+    // whichever device fired; every other condition device by its id.
+    const own = currentSourceIeee && currentSourceIeee !== '__time__'
+        ? group('The device that fired it', currentSourceIeee, a => `{trigger.${a}}`) : '';
+    const others = [...new Set(Object.values(condSrc).filter(Boolean))]
+        .map(ieee => group(_summary(ieee)?.friendly_name || ieee, ieee, a => `{${ieee}.${a}}`)).join('');
+    return `<select class="form-select form-select-sm a-token" style="width:auto;max-width:150px" title="Insert a live value, filled in when the step runs" onchange="window._aInsertToken(this,'${cls}',${sid})"><option value="">＋ value</option>${fixed}${own}${others}</select>`;
+}
+
+/** Insert the picked placeholder at the text box's cursor. */
+window._aInsertToken = (sel, cls, sid) => {
+    const tok = sel.value;
+    sel.value = '';
+    const input = document.querySelector(`.${cls}[data-sid="${sid}"]`);
+    if (!tok || !input) return;
+    const at = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? at;
+    input.value = input.value.slice(0, at) + tok + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(at + tok.length, at + tok.length);
+    window._aPreview();
+};
+
+/** Switching a repeat between Times / While / Until changes what it shows. */
+window._aRpMode = (sid, sel) => {
+    _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
+    const s = _findStepById(sid); if (!s) return;
+    s.mode = sel.value;
+    if (s.mode !== 'count' && !(s.inline_conditions || []).some(ic => ic.ieee))
+        s.inline_conditions = [{ _id: _uid(), ieee: '', attribute: '', operator: 'eq', value: '' }];
+    _renderStepTree('then'); _renderStepTree('else');
+    window._aPreview();
+};
 
 // Media step rendering
 function _mediaStepBody(step, sid) {
@@ -1007,6 +1078,7 @@ function _allSteps(steps, out = []) {
         _allSteps(st.then_steps, out);
         _allSteps(st.else_steps, out);
         _allSteps(st.accept_steps, out);
+        _allSteps(st.steps, out);
         for (const b of st.branches || []) _allSteps(b, out);
     }
     return out;
@@ -1062,7 +1134,7 @@ function _mediaSubHtml(step, sid) {
     if (a === 'announce') {
         const vol = step.volume!=null ? Math.round(step.volume*100) : '';
         return `<textarea class="form-control form-control-sm s-mtext mb-1" data-sid="${sid}" rows="2" placeholder="Spoken text, e.g. Front door has been open for 5 minutes">${step.text?String(step.text).replace(/</g,'&lt;'):''}</textarea>
-            <div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${vol}" min="0" max="100" placeholder="vol" style="width:75px"><span class="small text-muted">% volume (optional)</span></div>`;
+            <div class="d-flex gap-1 align-items-center"><input type="number" class="form-control form-control-sm s-mvol" data-sid="${sid}" value="${vol}" min="0" max="100" placeholder="vol" style="width:75px"><span class="small text-muted">% volume (optional)</span><span class="ms-auto">${_tokenPicker('s-mtext', sid)}</span></div>`;
     }
     if (a === 'volume_fade') {
         const pct = step.volume!=null ? Math.round(step.volume*100) : 0;
@@ -1219,6 +1291,9 @@ function _initStepSelects(steps, path) {
             if(sel){const o=sel.options[sel.selectedIndex];if(o?.dataset?.cmds)_popCmds(s._id,JSON.parse(o.dataset.cmds),s.command,s.endpoint_id);}
         } else if((s.type==='wait_for'||s.type==='condition')&&s.ieee) {
             _loadAttrs(s._id,s.ieee,s.attribute,s.value);
+        } else if(s.type==='repeat') {
+            (s.inline_conditions||[]).forEach(ic=>{if(ic.ieee)_loadICAttrs(ic._id,ic.ieee,ic.attribute,ic.value);});
+            _initStepSelects(s.steps||[],'rp-'+s._id);
         } else if(s.type==='if_then_else') {
             (s.inline_conditions||[]).forEach(ic=>{if(ic.ieee)_loadICAttrs(ic._id,ic.ieee,ic.attribute,ic.value);});
             _initStepSelects(s.then_steps||[],'ite-then-'+s._id);
@@ -1310,6 +1385,13 @@ function _findStepList(path) {
         if(!step) return null;
         return branch==='then' ? (step.then_steps||(step.then_steps=[])) : (step.else_steps||(step.else_steps=[]));
     }
+    // "rp-{sid}" — the sequence a repeat runs on each pass.
+    const rpM = path.match(/^rp-(\d+)$/);
+    if(rpM) {
+        const step = _findStepById(parseInt(rpM[1]));
+        if(!step) return null;
+        return step.steps||(step.steps=[]);
+    }
     // "ofa-{sid}" — the sequence an offer runs only if it is accepted.
     const ofaM = path.match(/^ofa-(\d+)$/);
     if(ofaM) {
@@ -1341,6 +1423,7 @@ function _findInTree(steps, id) {
         if(s.then_steps) { const r=_findInTree(s.then_steps,id); if(r) return r; }
         if(s.else_steps) { const r=_findInTree(s.else_steps,id); if(r) return r; }
         if(s.accept_steps) { const r=_findInTree(s.accept_steps,id); if(r) return r; }
+        if(s.steps) { const r=_findInTree(s.steps,id); if(r) return r; }
         if(s.branches) { for(const b of s.branches) { const r=_findInTree(b,id); if(r) return r; } }
     }
     return null;
@@ -1353,6 +1436,7 @@ function _removeFromTree(steps, id) {
         if(s.then_steps && _removeFromTree(s.then_steps,id)) return true;
         if(s.else_steps && _removeFromTree(s.else_steps,id)) return true;
         if(s.accept_steps && _removeFromTree(s.accept_steps,id)) return true;
+        if(s.steps && _removeFromTree(s.steps,id)) return true;
         if(s.branches) { for(const b of s.branches) { if(_removeFromTree(b,id)) return true; } }
     }
     return false;
@@ -1513,6 +1597,7 @@ window._aAddStep = (path, type) => {
     }
     if (type === 'parallel') s.branches = [[], []];
     if (type === 'offer') { s.accept_steps = []; s.expires_in = 3600; }
+    if (type === 'repeat') { s.mode = 'count'; s.count = 3; s.max_iterations = 20; s.steps = []; s.inline_conditions = []; s.condition_logic = 'and'; }
 
     list.push(s);
 
@@ -1846,25 +1931,16 @@ function _syncTreeFromDOM(steps) {
             s.negate=document.querySelector(`.s-neg[data-sid="${sid}"]`)?.checked||false;
             if(s.type==='wait_for')s.timeout=parseInt(document.querySelector(`.s-tout[data-sid="${sid}"]`)?.value)||300;
         } else if(s.type==='if_then_else') {
-            s.condition_logic=document.querySelector(`.s-logic[data-sid="${sid}"]`)?.value||'and';
-            (s.inline_conditions||[]).forEach(ic=>{
-                const icid = ic._id;
-                ic.ieee=document.querySelector(`.ic-ieee[data-icid="${icid}"]`)?.value||'';
-                ic.attribute=document.querySelector(`.ic-attr[data-icid="${icid}"]`)?.value||'';
-                ic.operator=document.querySelector(`.ic-op[data-icid="${icid}"]`)?.value||'eq';
-
-                // Support dropdown values for inline conditions
-                const icValEl = document.querySelector(`.ic-vl[data-icid="${icid}"]`);
-                const icRawVal = icValEl?.value;
-
-                ic.value=(ic.operator==='in'||ic.operator==='nin')
-                    ? String(icRawVal||'').split(',').map(x=>_co(x.trim()))
-                    : _co(icRawVal||'');
-
-                ic.negate=document.querySelector(`.ic-neg[data-icid="${icid}"]`)?.checked||false;
-            });
+            _syncInlineConds(s);
             _syncTreeFromDOM(s.then_steps||[]);
             _syncTreeFromDOM(s.else_steps||[]);
+        } else if(s.type==='repeat') {
+            s.mode=document.querySelector(`.s-rp-mode[data-sid="${sid}"]`)?.value||s.mode||'count';
+            const n=parseInt(document.querySelector(`.s-rp-count[data-sid="${sid}"]`)?.value);if(n>0)s.count=n;
+            const mx=parseInt(document.querySelector(`.s-rp-max[data-sid="${sid}"]`)?.value);if(mx>0)s.max_iterations=mx;
+            // Times shows no conditions, so there is nothing on screen to read.
+            if(s.mode!=='count')_syncInlineConds(s);
+            _syncTreeFromDOM(s.steps||[]);
         } else if(s.type==='parallel') {
             (s.branches||[]).forEach(br=>_syncTreeFromDOM(br));
         } else if(s.type==='request') {
@@ -1912,6 +1988,26 @@ function _syncTreeFromDOM(steps) {
     });
 }
 
+/** Read an If / Else or Repeat step's inline condition rows back into it. */
+function _syncInlineConds(s) {
+    s.condition_logic=document.querySelector(`.s-logic[data-sid="${s._id}"]`)?.value||'and';
+    (s.inline_conditions||[]).forEach(ic=>{
+        const icid = ic._id;
+        ic.ieee=document.querySelector(`.ic-ieee[data-icid="${icid}"]`)?.value||'';
+        ic.attribute=document.querySelector(`.ic-attr[data-icid="${icid}"]`)?.value||'';
+        ic.operator=document.querySelector(`.ic-op[data-icid="${icid}"]`)?.value||'eq';
+
+        // Support dropdown values for inline conditions
+        const icRawVal = document.querySelector(`.ic-vl[data-icid="${icid}"]`)?.value;
+
+        ic.value=(ic.operator==='in'||ic.operator==='nin')
+            ? String(icRawVal||'').split(',').map(x=>_co(x.trim()))
+            : _co(icRawVal||'');
+
+        ic.negate=document.querySelector(`.ic-neg[data-icid="${icid}"]`)?.checked||false;
+    });
+}
+
 function _cleanTree(steps) {
     return steps.map(s=>{
         const d={type:s.type};
@@ -1920,6 +2016,9 @@ function _cleanTree(steps) {
         else if(s.type==='wait_for'||s.type==='condition'){d.ieee=s.ieee;d.attribute=s.attribute;d.operator=s.operator;d.value=s.value;if(s.negate)d.negate=true;if(s.type==='wait_for')d.timeout=s.timeout;}
         else if(s.type==='if_then_else'){d.inline_conditions=(s.inline_conditions||[]).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.then_steps=_cleanTree(s.then_steps||[]);d.else_steps=_cleanTree(s.else_steps||[]);}
         else if(s.type==='parallel'){d.branches=(s.branches||[]).map(br=>_cleanTree(br));}
+        else if(s.type==='repeat'){d.mode=s.mode||'count';d.steps=_cleanTree(s.steps||[]);
+            if(d.mode==='count'){d.count=s.count||3;}
+            else{d.inline_conditions=(s.inline_conditions||[]).filter(ic=>ic.ieee&&ic.attribute).map(ic=>({ieee:ic.ieee,attribute:ic.attribute,operator:ic.operator,value:ic.value,...(ic.negate?{negate:true}:{})}));d.condition_logic=s.condition_logic||'and';d.max_iterations=s.max_iterations||20;}}
         else if(s.type==='request'){d.to_user=s.to_user;d.message=(s.message||'').trim();if(s.from_user)d.from_user=s.from_user;}
         else if(s.type==='offer'){d.to_user=s.to_user;d.message=(s.message||'').trim();d.accept_steps=_cleanTree(s.accept_steps||[]);d.expires_in=s.expires_in||3600;if(s.from_user)d.from_user=s.from_user;}
         else if(s.type==='media'){
@@ -1944,6 +2043,7 @@ function _cleanTree(steps) {
         if(d.type==='offer')return !!(d.to_user&&d.message&&(d.accept_steps||[]).length);
         if(d.type==='if_then_else')return(d.inline_conditions||[]).length>0;
         if(d.type==='parallel')return(d.branches||[]).length>=2;
+        if(d.type==='repeat')return d.steps.length>0&&(d.mode==='count'||(d.inline_conditions||[]).length>0);
         if(d.type==='media'){
             if(!d.player_id)return false;
             if(d.media_action==='play_zone')return isZoneId(d.player_id);
@@ -1973,7 +2073,7 @@ async function _loadTr() {
         let h='';[...entries].reverse().forEach(e=>{
             const ts=new Date(e.timestamp*1000).toLocaleTimeString(),r=e.result||'';
             let cl='text-muted';
-            if(r==='SUCCESS'||r.includes('FIRING')||r==='COMPLETE'||r==='WAIT_MET'||r==='GATE_PASS'||r==='IF_TRUE'||r==='PARALLEL_DONE')cl='text-success';
+            if(r==='SUCCESS'||r.includes('FIRING')||r==='COMPLETE'||r==='WAIT_MET'||r==='GATE_PASS'||r==='IF_TRUE'||r==='PARALLEL_DONE'||r==='REPEAT_DONE')cl='text-success';
             else if(r.includes('FAIL')||r.includes('ERROR')||r==='EXCEPTION'||r.includes('MISSING')||r==='CMD_FAIL')cl='text-danger';
             else if(r==='BLOCKED'||r==='SUSTAIN_WAIT'||r==='DELAY'||r==='WAITING'||r==='RUN_SKIPPED'||r==='QUEUE_FULL')cl='text-warning';
             else if(r==='CANCELLED'||r==='WAIT_TIMEOUT'||r==='IF_FALSE'||r==='QUEUED'||r==='DEQUEUED')cl='text-info';

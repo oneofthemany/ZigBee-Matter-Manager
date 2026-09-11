@@ -2,7 +2,8 @@
 Automation engine — evaluates device state changes and fires recursive action
 sequences on transitions.
 
-Step types: command, delay, wait_for, condition, if_then_else, parallel.
+Step types: command, delay, wait_for, condition, if_then_else, parallel, repeat,
+media, request (message), offer.
 Conditions support AND/OR/NOT across triggers and prerequisites, duration
 ("for N seconds") checks, and edge-triggered zone crossings.
 
@@ -13,6 +14,7 @@ See docs/automations.md.
 import asyncio
 import json
 import logging
+import re
 import os
 import time
 import traceback
@@ -43,6 +45,11 @@ MAX_CHAIN_DEPTH = 4
 # the chain without travelling sideways into unrelated rules firing at once.
 _chain_depth: ContextVar[int] = ContextVar("zmm_automation_chain_depth",
                                            default=0)
+# The device whose update fired the running sequence, for {trigger} in message
+# text. A ContextVar for the same reason as the chain depth: the sequence task
+# inherits it from the evaluation that started it, queued runs included.
+_trigger_ieee: ContextVar[Optional[str]] = ContextVar("zmm_automation_trigger",
+                                                      default=None)
 
 # Virtual source for clock-driven rules ("play radio at 07:00"), which fire from
 # the time-boundary scheduler rather than any device update.
@@ -110,6 +117,17 @@ MAX_TREND_POINTS = 2000          # readings kept per device attribute
 MAX_OFFLINE_MINUTES = 7 * 24 * 60
 OFFLINE_WATCH = ("last_seen", "available")
 
+# {placeholder} in message / offer / announce text: {time}, {date}, {trigger},
+# {trigger.attr}, {<device id>.attr}. No spaces, so prose in braces is left be.
+TEMPLATE_TOKEN = re.compile(r"\{([^{}\s]+)\}")
+
+# A repeat step runs its steps `count` times, while its conditions hold, or
+# until they do. while/until are capped as well, so a condition that never
+# changes cannot loop for ever.
+REPEAT_MODES = ("count", "while", "until")
+MAX_REPEAT_COUNT = 500
+DEFAULT_REPEAT_MAX = 20
+
 
 def iter_leaf_conditions(conditions):
     """Every plain condition in a condition list, looking inside groups.
@@ -167,7 +185,7 @@ FLAT_STEP_TYPES = {"command", "delay", "wait_for", "condition", "media", "reques
 MAX_PENDING_OFFERS = 50
 DEFAULT_OFFER_EXPIRY = 3600
 MAX_OFFER_EXPIRY = 86400
-BRANCHING_STEP_TYPES = {"if_then_else", "parallel"}
+BRANCHING_STEP_TYPES = {"if_then_else", "parallel", "repeat"}
 ALL_STEP_TYPES = FLAT_STEP_TYPES | BRANCHING_STEP_TYPES
 
 
@@ -927,6 +945,38 @@ class AutomationEngine:
                 if err: return err
                 err = self._validate_sequence(step.get("else_steps", []), f"{label}[{i+1}].else", depth + 1)
                 if err: return err
+            elif st == "repeat":
+                mode = step.get("mode", "count")
+                if mode not in REPEAT_MODES:
+                    return (f"{label}[{i+1}]: repeat mode must be one of "
+                            f"{', '.join(REPEAT_MODES)}")
+                if not step.get("steps"):
+                    return f"{label}[{i+1}]: repeat needs steps to repeat"
+                if mode == "count":
+                    n = step.get("count")
+                    if isinstance(n, bool) or not isinstance(n, int) \
+                            or not 1 <= n <= MAX_REPEAT_COUNT:
+                        return f"{label}[{i+1}]: repeat count must be 1-{MAX_REPEAT_COUNT}"
+                else:
+                    inline = step.get("inline_conditions") or []
+                    if not inline:
+                        return f"{label}[{i+1}]: repeat {mode} needs a condition"
+                    for j, ic in enumerate(inline):
+                        for f in ("ieee", "attribute", "operator", "value"):
+                            if f not in ic:
+                                return f"{label}[{i+1}] condition {j+1} missing '{f}'"
+                        if ic.get("operator") in TRIGGER_OPERATORS:
+                            return (f"{label}[{i+1}] condition {j+1}: '{ic['operator']}' "
+                                    f"only works as a trigger condition")
+                    if str(step.get("condition_logic", "and")).lower() not in ("and", "or"):
+                        return f"{label}[{i+1}]: repeat condition_logic must be 'and' or 'or'"
+                    cap = step.get("max_iterations", DEFAULT_REPEAT_MAX)
+                    if isinstance(cap, bool) or not isinstance(cap, int) \
+                            or not 1 <= cap <= MAX_REPEAT_COUNT:
+                        return (f"{label}[{i+1}]: repeat max_iterations must be 1-"
+                                f"{MAX_REPEAT_COUNT}")
+                err = self._validate_sequence(step["steps"], f"{label}[{i+1}].repeat", depth + 1)
+                if err: return err
             elif st == "parallel":
                 branches = step.get("branches", [])
                 if len(branches) < 2:
@@ -1126,7 +1176,7 @@ class AutomationEngine:
                 for ic in step["inline_conditions"]:
                     if ic.get("ieee"):
                         ic["device_name"] = names.get(ic["ieee"], ic["ieee"])
-            for sub in ("then_steps", "else_steps"):
+            for sub in ("then_steps", "else_steps", "steps", "accept_steps"):
                 if step.get(sub):
                     self._enrich_steps(step[sub], names)
             if step.get("branches"):
@@ -1206,13 +1256,13 @@ class AutomationEngine:
 
             view = self._condition_view(rule, devices, source_ieee, changed_data,
                                         full_state, prev_values)
-            self._evaluate_rule(rule, devices, names, now, view)
+            self._evaluate_rule(rule, devices, names, now, view, trigger=source_ieee)
 
         # Baseline for the next update. full_state is already the new state, so
         # this is the "before" that the next evaluation compares against.
         self._last_values[source_ieee] = {**full_state, **changed_data}
 
-    def _evaluate_rule(self, rule, devices, names, now, view) -> None:
+    def _evaluate_rule(self, rule, devices, names, now, view, trigger=None) -> None:
         """Run one rule through the state machine — conditions, prerequisites,
         the transition, and the sequence that transition fires.
 
@@ -1311,7 +1361,13 @@ class AutomationEngine:
                     conditions=cond_results, prerequisites=prereq_results,
                     condition_logic=logic)
 
-        self._start_sequence(rule, seq, path)
+        # {trigger} in message text means the device that fired this. The task
+        # the sequence runs in copies the context it was created in.
+        ctx = _trigger_ieee.set(trigger or self._default_trigger(rule))
+        try:
+            self._start_sequence(rule, seq, path)
+        finally:
+            _trigger_ieee.reset(ctx)
 
         # EVENT ATTRIBUTE RESET
         # Momentary triggers (a button press, a boundary crossing) have to
@@ -1320,6 +1376,63 @@ class AutomationEngine:
         if edge or any(c.get("attribute") in EVENT_ATTRS
                            for c in iter_leaf_conditions(conditions)):
             self._rule_states[rule_id] = "unmatched"
+
+    # LIVE VALUES IN TEXT
+
+    def _default_trigger(self, rule) -> Optional[str]:
+        """The device to call the trigger when no update names one — a clock
+        boundary or a sustain re-check: the rule's first real device."""
+        return next((s for s in self.rule_sources(rule or {}) if s != TIME_SOURCE), None)
+
+    def _render_text(self, text: str, rule_id: str) -> str:
+        """Fill {placeholders} in message, offer or announcement text.
+
+        {time} {date}; {trigger} — the name of the device whose update fired the
+        rule; {trigger.attr} — one of its values now; {<device id>.attr} — any
+        device's (or group's, or worker's) value now. A value that can't be read
+        becomes "?"; braces that name no device are left as written, so ordinary
+        text with braces in it survives.
+        """
+        if not text or "{" not in text:
+            return text
+        import datetime
+        now = datetime.datetime.now()
+        trigger = _trigger_ieee.get() or self._default_trigger(self._find_rule(rule_id))
+        names = self._get_all_names()
+
+        def fill(match):
+            token = match.group(1)
+            if token == "time":
+                return now.strftime("%H:%M")
+            if token == "date":
+                return now.strftime("%a %d %b").replace(" 0", " ")
+            if token == "trigger":
+                return names.get(trigger, trigger) if trigger else "?"
+            # Device ids contain colons ("user::sean", "00:15:8d:…") but no dots,
+            # so the attribute is whatever follows the last dot.
+            device, dot, attribute = token.rpartition(".")
+            if not dot or not device or not attribute:
+                return match.group(0)
+            ieee = trigger if device == "trigger" else device
+            if not ieee:
+                return "?"
+            _, state = self._resolve_state(ieee)
+            if state is None:
+                return "?" if device == "trigger" else match.group(0)
+            return self._format_value(state.get(attribute))
+
+        return TEMPLATE_TOKEN.sub(fill, text)
+
+    @staticmethod
+    def _format_value(value) -> str:
+        """A state value as a person would say it."""
+        if value is None:
+            return "?"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, float):
+            return ("%.2f" % value).rstrip("0").rstrip(".")
+        return str(value)
 
     # SUSTAIN RE-CHECKS
 
@@ -1744,21 +1857,22 @@ class AutomationEngine:
         names = None
         seen = set()
         for rule in rules:
-            moved = False
+            moved = None                 # the device whose verdict moved
             for n, c in enumerate(iter_leaf_conditions(rule.get("conditions"))):
                 if c.get("type") != "offline":
                     continue
-                dev = devices.get(self._cond_source(rule, c))
+                src = self._cond_source(rule, c)
+                dev = devices.get(src)
                 verdict = self._eval_offline(c, n, getattr(dev, "state", None) or {}, dev)[0]
                 key = (rule["id"], n)
                 seen.add(key)
                 if self._offline_verdicts.get(key) != verdict:
                     self._offline_verdicts[key] = verdict
-                    moved = True
+                    moved = src
             if moved:
                 names = names if names is not None else self._get_all_names()
                 self._evaluate_rule(rule, devices, names, now,
-                                    self._condition_view(rule, devices))
+                                    self._condition_view(rule, devices), trigger=moved)
         for key in [k for k in self._offline_verdicts if k not in seen]:
             del self._offline_verdicts[key]
 
@@ -2225,6 +2339,9 @@ class AutomationEngine:
                 elif st == "parallel":
                     await self._step_parallel(rule_id, rule_name, step,
                                               f"{prefix}[{path} {num}/{total}]", depth)
+                elif st == "repeat":
+                    await self._step_repeat(rule_id, rule_name, step,
+                                            f"{prefix}[{path} {num}/{total}]", depth)
 
             if depth == 0:
                 self._trace(rule_id, "sequence", "COMPLETE",
@@ -2234,6 +2351,11 @@ class AutomationEngine:
             if depth == 0:
                 self._trace(rule_id, "sequence", "CANCELLED",
                             f"{path} cancelled — {rule_name}")
+            else:
+                # Let the cancel reach the outermost run. Swallowed here, a
+                # cancelled rule carried on with the step after its If/Else,
+                # Together or Repeat as though nothing had happened.
+                raise
         except Exception as e:
             self._stats["errors"] += 1
             self._trace(rule_id, "sequence", "EXCEPTION",
@@ -2326,7 +2448,7 @@ class AutomationEngine:
             return
 
         to_user = step.get("to_user")
-        message = (step.get("message") or "").strip()
+        message = self._render_text((step.get("message") or "").strip(), rule_id)
         # Attribute the ask to a person where the rule names one, otherwise to
         # the system. "ZMM asks you to get milk" is odd but honest; inventing a
         # sender would be worse, since knowing who is asking is the point.
@@ -2362,7 +2484,7 @@ class AutomationEngine:
             return
 
         to_user = step.get("to_user")
-        message = (step.get("message") or "").strip()
+        message = self._render_text((step.get("message") or "").strip(), rule_id)
         expires_in = step.get("expires_in", DEFAULT_OFFER_EXPIRY)
 
         self._expire_offers()
@@ -2390,6 +2512,8 @@ class AutomationEngine:
             "created": time.time(),
             "expires_at": time.time() + float(expires_in),
             "state": "pending",
+            # So the accept sequence can still say which device started this.
+            "trigger": _trigger_ieee.get(),
         }
 
         result = await store.send(
@@ -2448,8 +2572,12 @@ class AutomationEngine:
         self._trace(offer["rule_id"], "offer", "ACCEPTED",
                     f"{offer['to_user']} accepted: {offer['message'][:60]}")
 
-        task = asyncio.create_task(self._run_sequence(
-            offer["rule_id"], offer["rule_name"], offer["accept_steps"], "ACCEPT"))
+        ctx = _trigger_ieee.set(offer.get("trigger"))
+        try:
+            task = asyncio.create_task(self._run_sequence(
+                offer["rule_id"], offer["rule_name"], offer["accept_steps"], "ACCEPT"))
+        finally:
+            _trigger_ieee.reset(ctx)
         # Tracked like any other sequence so a shutdown does not orphan it, and
         # untracked by its own task once finished rather than by rule id.
         key = f"offer:{token}"
@@ -2485,6 +2613,9 @@ class AutomationEngine:
 
         player_id = step.get("player_id")
         action = step.get("media_action")
+        if action == "announce":
+            # Fill {placeholders} once, for whichever path speaks it.
+            step = {**step, "text": self._render_text(step.get("text") or "", rule_id)}
         label = step.get("label") or action
         self._trace(rule_id, "step", "MEDIA", f"{tag} ♪ {label} → {player_id}")
         try:
@@ -2782,6 +2913,51 @@ class AutomationEngine:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._trace(rule_id, "step", "PARALLEL_DONE",
                     f"{tag} All parallel branches complete")
+
+    async def _step_repeat(self, rule_id, rule_name, step, tag, depth):
+        """Run `steps` again and again: `count` times, `while` its conditions
+        hold (checked before each pass), or `until` they do (checked after
+        each). while/until stop at `max_iterations` regardless. A gate or a
+        wait_for timeout inside ends that pass only, as inside an If/Else."""
+        mode = step.get("mode", "count")
+        body = step.get("steps") or []
+        inline = step.get("inline_conditions") or []
+        logic = step.get("condition_logic", "and")
+        limit = (int(step.get("count") or 1) if mode == "count"
+                 else int(step.get("max_iterations") or DEFAULT_REPEAT_MAX))
+        self._trace(rule_id, "step", "REPEAT",
+                    f"{tag} 🔁 repeat {limit} time(s)" if mode == "count"
+                    else f"{tag} 🔁 repeat {mode} ({logic.upper()}), at most {limit} time(s)")
+
+        done, reason = 0, None
+        while done < limit:
+            if mode == "while":
+                met, results = self._eval_inline_conditions(inline, logic)
+                if not met:
+                    reason = "its condition no longer holds"
+                    self._trace(rule_id, "step", "REPEAT_CHECK", f"{tag} 🔁 {reason}",
+                                level="DEBUG", inline_conditions=results)
+                    break
+            await self._run_sequence(rule_id, rule_name, body,
+                                     f"repeat.{done + 1}", depth + 1)
+            done += 1
+            if mode == "until":
+                met, results = self._eval_inline_conditions(inline, logic)
+                if met:
+                    reason = "its condition was met"
+                    self._trace(rule_id, "step", "REPEAT_CHECK", f"{tag} 🔁 {reason}",
+                                level="DEBUG", inline_conditions=results)
+                    break
+            # A body of instant steps must not hold the event loop for 500 passes.
+            await asyncio.sleep(0)
+
+        capped = reason is None and mode != "count"
+        if reason is None:
+            reason = ("the count was reached" if mode == "count"
+                      else f"it reached its limit of {limit} passes")
+        self._trace(rule_id, "step", "REPEAT_DONE",
+                    f"{tag} 🔁 repeated {done} time(s): {reason}",
+                    level="WARNING" if capped else "INFO")
 
     # CONDITION HELPERS
 

@@ -948,7 +948,7 @@ class WorkerManager:
                 worker = self.by_ieee(target) if target else None
                 if worker and rule["id"] not in found[worker.id]["targets"]:
                     found[worker.id]["targets"].append(rule["id"])
-                for key in ("then_steps", "else_steps", "accept_steps"):
+                for key in ("then_steps", "else_steps", "accept_steps", "steps"):
                     walk(step.get(key), rule)
                 for branch in step.get("branches") or []:
                     walk(branch, rule)
