@@ -74,6 +74,9 @@ class MediaService:
             enabled=tidal_cfg.get("enabled", False),
             quality=tidal_cfg.get("quality", "high"),
             manifest_base_url=tidal_cfg.get("manifest_base_url", ""),
+            # Names the ZMM user who owns a login made before Tidal was
+            # per-user, and the account un-namespaced calls resolve to.
+            owner=tidal_cfg.get("owner", ""),
             # Lossless to a zone is decoded on this host, so it fetches the
             # manifest over loopback — deferred, the listener is built below.
             local_base=lambda: f"http://127.0.0.1:{self.device_http.port}",
@@ -120,6 +123,8 @@ class MediaService:
                     # Custom receiver that shows album art + synced lyrics on
                     # screened devices (Nest Hub). Empty → feature off.
                     lyrics_app_id=cast_cfg.get("lyrics_app_id", ""),
+                    # Takes the item's owner: the receiver shows lyrics for
+                    # whatever is playing, which may not be the caller's track.
                     lyrics_getter=self.tidal.track_lyrics,
                     karaoke=self._karaoke,
                 )
@@ -143,8 +148,8 @@ class MediaService:
                 # Resolved as a zone: ffmpeg decodes the timeline here, so it
                 # takes Tidal's DASH/FLAC where a speaker would need AAC.
                 self.cast_sync.set_url_resolver(
-                    lambda mt, sid: self.controller.resolve_source_url(
-                        mt, sid, provider="zone"))
+                    lambda mt, sid, owner="": self.controller.resolve_source_url(
+                        mt, sid, provider="zone", owner=owner))
                 # Lets a zone play a Tidal album/playlist/mix/artist, not just
                 # one track: the engine walks this list and re-resolves each
                 # item's (expiring) URL as it reaches it.
@@ -265,15 +270,28 @@ class MediaService:
                 f"&tl={lang or self._tts_lang}&q={quote(text[:200])}")
 
     async def tidal_items(self, kind: str, tidal_id: str,
-                          mode: str = "play") -> List[MediaItem]:
+                          mode: str = "play",
+                          username: str = "") -> List[MediaItem]:
         """Resolve a Tidal track/album/playlist/artist/mix to MediaItems.
 
         Raises ValueError for a bad kind or an empty result. Shared by casting
         (play_tidal) and browser-local playback, which builds its own queue.
+
+        ``username`` is whose Tidal account to browse, and is stamped on every
+        item so its stream URL can be re-resolved against the same account long
+        after this request. Empty means the default account — which is how the
+        callers that do not name a user yet keep working.
         """
-        src = self.controller.get_source("tidal")
-        if not src:
+        registry = self.controller.get_source("tidal")
+        if not registry:
             raise ValueError("Tidal unavailable")
+        # Naming nobody means the default account — a rule written before
+        # steps carried an owner. Either way what comes back stamps its own
+        # owner on every item it builds.
+        src = (registry.account(username) if username
+               else registry.default_account())
+        if src is None:
+            raise ValueError(f"No Tidal account is linked for {username}")
         radio = mode == "radio"
         if kind == "track":
             if radio:
@@ -296,7 +314,8 @@ class MediaService:
         return items
 
     async def sync_queue_items(self, media_type: str, kind: str,
-                               container_id: str) -> List[dict]:
+                               container_id: str,
+                               username: str = "") -> List[dict]:
         """Expand a container into the plain rows the sync engine walks.
 
         Only the fields it needs: the id it re-resolves a fresh stream URL
@@ -305,15 +324,17 @@ class MediaService:
         as it does on one speaker."""
         if media_type != "tidal":
             return []
-        items = await self.tidal_items(kind, container_id)
-        # duration_ms rides along so a zone can report a position against it.
+        items = await self.tidal_items(kind, container_id, username=username)
+        # duration_ms rides along so a zone can report a position against it,
+        # and owner so the engine re-resolves each item on the right account.
         return [{"source_id": i.source_id, "title": i.title,
                  "artist": i.artist, "artwork_url": i.artwork_url,
-                 "media_type": i.media_type, "duration_ms": i.duration_ms}
+                 "media_type": i.media_type, "duration_ms": i.duration_ms,
+                 "owner": i.owner}
                 for i in items if i.source_id]
 
     async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
-                         mode: str = "play") -> dict:
+                         mode: str = "play", username: str = "") -> dict:
         """Resolve a Tidal track/album/playlist/artist/mix to items and play them.
         ``mode='radio'`` makes track/artist play an infinite auto-extending queue.
         Shared by the API route and the automation engine."""
@@ -325,7 +346,7 @@ class MediaService:
                     "error": "Radio∞ isn't available on a zone — play the "
                              "artist, album or a mix instead"}
         try:
-            items = await self.tidal_items(kind, tidal_id, mode)
+            items = await self.tidal_items(kind, tidal_id, mode, username)
         except ValueError as e:
             return {"success": False, "error": str(e)}
         await self.controller.play_items(player_id, items, auto_extend=radio)
@@ -348,7 +369,8 @@ class MediaService:
     async def start_zone(self, group_id: str, media: Optional[dict] = None,
                          duration_s: Optional[int] = None,
                          crossfade_s: Optional[float] = None,
-                         use_saved: bool = False) -> dict:
+                         use_saved: bool = False,
+                         username: str = "") -> dict:
         """Start an OpenZone group.
 
         ``use_saved`` takes the zone's stored source and window — what the
@@ -377,7 +399,7 @@ class MediaService:
 
         if media:
             media = dict(media)
-            ok, err = await self.resolve_zone_media(media)
+            ok, err = await self.resolve_zone_media(media, username)
             if not ok:
                 return {"success": False, "error": err}
         return await sync.start_session(
@@ -385,7 +407,8 @@ class MediaService:
             duration_s=min(max(int(duration_s or 0), 0), 3600),
             media=media or None, crossfade_s=crossfade_s)
 
-    async def resolve_zone_media(self, media: dict) -> Tuple[bool, str]:
+    async def resolve_zone_media(self, media: dict,
+                                 username: str = "") -> Tuple[bool, str]:
         """Validate a zone media block in place, resolving a station id to a
         stream URL. Returns ``(ok, error)``.
 
@@ -394,6 +417,13 @@ class MediaService:
         Tidal deliberately does not resolve here — the engine re-resolves its
         signed URLs per item, which is what lets a long session outlive them.
         """
+        # Whose source account the zone plays on. Stamped here rather than
+        # read from the request body: the body is client-supplied, and naming
+        # an owner is naming an account to stream on. Empty is the default
+        # account, exactly as it is for a queued item.
+        # The existing value survives only on the saved-config path, where it
+        # was stamped here when the zone's source was last set.
+        media["owner"] = username or media.get("owner") or ""
         rows = media.get("items")
         if rows is not None:
             # An explicit queue is already resolved — each row carries the id

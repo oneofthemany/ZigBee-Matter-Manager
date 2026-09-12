@@ -7,8 +7,10 @@ delegate validation to the engine.
 import logging
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+
+from modules.auth_middleware import Principal, require_authenticated
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +177,31 @@ def _prereqs_to_dicts(items):
     return result
 
 
+def _stamp_tidal_owner(data: dict, username: str, overwrite: bool) -> None:
+    """Record whose Tidal account a rule's play_tidal steps run on.
+
+    A rule fires with no request behind it, so the account cannot be looked up
+    when it runs — it has to be stored when the rule is saved. Taken from the
+    caller and never from the body: naming an owner is naming an account to
+    stream on, and a rule is exactly the thing that would do so unattended.
+
+    ``overwrite`` is true on create and false on update, so editing somebody
+    else's rule does not quietly move which account it plays on. A step that
+    has no owner is filled in either way.
+    """
+    if not username:
+        return
+    for key in ("then_sequence", "else_sequence"):
+        for step in (data.get(key) or []):
+            if not isinstance(step, dict):
+                continue
+            if step.get("media_action") != "play_tidal":
+                step.pop("tidal_owner", None)   # not a Tidal step; not its field
+                continue
+            if overwrite or not step.get("tidal_owner"):
+                step["tidal_owner"] = username
+
+
 def register_automation_routes(app: FastAPI,
                                automation_getter: Union[Any, Callable[[], Any]]):
     def ge():
@@ -205,20 +232,23 @@ def register_automation_routes(app: FastAPI,
         return r
 
     @app.post("/api/automations", tags=["automations"])
-    async def create(request: AutomationCreateRequest):
+    async def create(request: AutomationCreateRequest,
+                     principal: Principal = Depends(require_authenticated)):
         e = ge()
         if not e: raise HTTPException(503)
         data = request.model_dump()
         if data.get("conditions"): data["conditions"] = _conds_to_dicts(request.conditions)
         if data.get("prerequisites"): data["prerequisites"] = _prereqs_to_dicts(request.prerequisites)
         # then_sequence and else_sequence are already raw dicts
+        _stamp_tidal_owner(data, principal.user.username, overwrite=True)
         result = e.add_rule(data)
         if not result.get("success"):
             raise HTTPException(400, result.get("error"))
         return result
 
     @app.put("/api/automations/{rule_id}", tags=["automations"])
-    async def update(rule_id: str, request: AutomationUpdateRequest):
+    async def update(rule_id: str, request: AutomationUpdateRequest,
+                     principal: Principal = Depends(require_authenticated)):
         e = ge()
         if not e: raise HTTPException(503)
         updates = {k:v for k,v in request.model_dump().items() if v is not None}
@@ -227,6 +257,7 @@ def register_automation_routes(app: FastAPI,
             updates["conditions"] = _conds_to_dicts(request.conditions)
         if "prerequisites" in updates and request.prerequisites:
             updates["prerequisites"] = _prereqs_to_dicts(request.prerequisites)
+        _stamp_tidal_owner(updates, principal.user.username, overwrite=False)
         result = e.update_rule(rule_id, updates)
         if not result.get("success"):
             code = 404 if "not found" in result.get("error","").lower() else 400

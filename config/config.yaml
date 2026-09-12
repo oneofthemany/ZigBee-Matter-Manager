@@ -80,6 +80,9 @@ media:
                               # Requires manifest_base_url below (else AAC everywhere).
     manifest_base_url: ""  # public URL of THIS app, reachable by Cast
                               # on the LAN (needs valid TLS or http). Needed for lossless DASH.
+    owner: ""                 # ZMM user owning a login made before Tidal was
+                              # per-user. Blank = the sole admin, if there is
+                              # exactly one; otherwise it is parked until set.
 
 heating:
   enabled: false

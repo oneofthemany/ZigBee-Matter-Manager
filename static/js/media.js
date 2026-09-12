@@ -1103,7 +1103,7 @@ async function refreshTidalNotice() {
     if (_tidalState === 'logged_in') { notice.innerHTML = ''; return; }
     const msg = {
         unavailable: 'Tidal isn\'t enabled. Turn it on under Settings → APIs → Media.',
-        logged_out: 'Not logged in to Tidal. Log in under Settings → APIs → Media.',
+        logged_out: 'You haven\'t linked your Tidal account yet. Link it under Settings → APIs → Media.',
         pending: 'Tidal login pending — finish authorising in the opened link.',
     }[_tidalState] || 'Tidal unavailable.';
     notice.innerHTML = `<div class="alert alert-warning small py-2">${esc(msg)}</div>`;

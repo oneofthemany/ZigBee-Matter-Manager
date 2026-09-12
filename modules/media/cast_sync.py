@@ -160,7 +160,7 @@ SPECTRUM_FLOOR_DB = -72.0
 # vocabulary the start path reads. `items`/`start_index` are excluded on
 # purpose — an explicit queue is one act of playback, not a standing choice.
 MEDIA_FIELDS = ("url", "station_uuid", "source_id", "media_type", "kind",
-                "title", "artwork_url", "artist", "loop")
+                "title", "artwork_url", "artist", "loop", "owner")
 
 
 _GENERATED = GeneratedSource()
@@ -424,8 +424,11 @@ class OpenZone:
         self._crossfade_s = float(cfg.get("crossfade_s", 0.0))
         self._session_crossfade_s = self._crossfade_s
         self._eq_engine = None
-        self._url_resolver = None      # async (media_type, source_id) -> url
-        self._queue_resolver = None    # async (media_type, kind, id) -> [items]
+        # async (media_type, source_id, owner) -> url. `owner` names the user
+        # whose source account it resolves against; a zone outlives the request
+        # that started it, so the row carries it rather than a principal.
+        self._url_resolver = None
+        self._queue_resolver = None    # async (media_type, kind, id, owner) -> [items]
         self._queue: List[dict] = []
         self._queue_pos = 0
         self._trim_learn_tasks: Dict[str, asyncio.Task] = {}
@@ -492,7 +495,7 @@ class OpenZone:
         self._eq_engine = engine
 
     def set_url_resolver(self, fn) -> None:
-        """``async (media_type, source_id) -> url`` for sources whose URLs
+        """``async (media_type, source_id, owner) -> url`` for sources whose URLs
         expire. Wired by MediaService; absent means URL-only sources."""
         self._url_resolver = fn
 
@@ -704,6 +707,9 @@ class OpenZone:
         provider = None
         self._queue, self._queue_pos = [], 0
         stype, sid = media.get("media_type") or "", media.get("source_id") or ""
+        # Whose source account this block plays on. A row may name its own —
+        # a queue can mix accounts — and falls back to the block's.
+        owner = media.get("owner") or ""
         kind = (media.get("kind") or "track").strip() or "track"
         loop_forever = bool(media.get("loop"))
         rows = media.get("items") or []
@@ -718,7 +724,8 @@ class OpenZone:
                 self._queue_pos = start if 0 <= start < len(self._queue) else 0
             elif kind != "track" and self._queue_resolver is not None:
                 try:
-                    self._queue = list(await self._queue_resolver(stype, kind, sid))
+                    self._queue = list(await self._queue_resolver(
+                        stype, kind, sid, owner))
                 except Exception as e:
                     return None, f"could not open {kind}: {e}"
                 if not self._queue:
@@ -727,7 +734,8 @@ class OpenZone:
             else:
                 self._queue = [{"source_id": sid,
                                 "title": (media.get("title") or "").strip(),
-                                "artwork_url": media.get("artwork_url") or ""}]
+                                "artwork_url": media.get("artwork_url") or "",
+                                "owner": owner}]
 
             async def provider(last_rc=None):
                 if last_rc == 0:
@@ -739,7 +747,8 @@ class OpenZone:
                 item = self._queue[self._queue_pos]
                 # Mixed queues: an item's own media_type wins over the block's.
                 sub = item.get("source_id") or ""
-                url = (await self._url_resolver(item.get("media_type") or stype, sub)
+                url = (await self._url_resolver(item.get("media_type") or stype,
+                                                sub, item.get("owner") or owner)
                        if sub else (item.get("url") or ""))
                 if not url:
                     return ""

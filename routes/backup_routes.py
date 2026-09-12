@@ -60,12 +60,14 @@ BACKUP_MANIFEST = [
     "data/media_prefs.json",
     "data/media_sessions.json",
     "data/radio_favourites.json",
-    "data/media/tidal_session.json",
 ]
 
 # Directories included recursively (each contained file is backed up and
 # restorable — see _entry_allowed()).
 BACKUP_DIRS = [
+    # One Tidal refresh token per linked user. Plural where it used to be a
+    # single file, so a restore now hands back every household member's login.
+    "data/media/tidal",
     "data/floor_plans",   # heating floor-plan background images
     "data/matter",        # Matter fabric / commissioning storage
     "data/certs",         # TLS pair — preserves browser trust across restores

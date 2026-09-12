@@ -3076,9 +3076,13 @@ class AutomationEngine:
                 # live lookup for non-favourited stations.
                 await svc.play_radio_favourite(player_id, step["station_uuid"])
             elif action == "play_tidal":
+                # A rule has no user, so the step carries the account it plays
+                # on, stamped when it was saved. Rules written before that
+                # have none and fall back to media.tidal.owner.
                 res = await svc.play_tidal(
                     player_id, step.get("tidal_kind"), step.get("tidal_id"),
-                    step.get("tidal_mode", "play"))
+                    step.get("tidal_mode", "play"),
+                    step.get("tidal_owner", ""))
                 ok = res.get("success", False)
                 detail = res.get("error", "") or f"{res.get('count', 0)} track(s)"
             elif action == "control":
@@ -3146,7 +3150,7 @@ class AutomationEngine:
                 "media_type": "tidal",
                 "kind": step.get("tidal_kind", "track"),
                 "title": step.get("label", "") or "Tidal",
-            }, use_saved=True)
+            }, use_saved=True, username=step.get("tidal_owner", ""))
             return res.get("success", False), res.get("error", "")
         if action == "announce":
             # Spoken through the zone rather than device-by-device: one

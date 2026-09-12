@@ -46,7 +46,8 @@ MEDIA_DEFAULTS = {
     },
     "wiim": {"enabled": True, "devices": []},
     "radio_browser": {"enabled": True},
-    "tidal": {"enabled": False, "quality": "high", "manifest_base_url": ""},
+    "tidal": {"enabled": False, "quality": "high", "manifest_base_url": "",
+              "owner": ""},
     "tts": {
         "base_url": "https://translate.google.com/translate_tts",
         "lang": "en",
@@ -306,6 +307,9 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     # Allow clearing the manifest URL (lossless off).
                     if "manifest_base_url" in td_in:
                         td_cfg["manifest_base_url"] = str(td_in.get("manifest_base_url") or "").strip()
+                    # Clearable too — empty means "work it out at startup".
+                    if "owner" in td_in:
+                        td_cfg["owner"] = str(td_in.get("owner") or "").strip()
 
             # ---- Security providers (Nuki first; future providers merge
             # their own sub-dict the same way) ----

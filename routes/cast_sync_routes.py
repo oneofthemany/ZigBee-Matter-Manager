@@ -8,8 +8,10 @@ lazy-getter pattern as the other media routes.
 import logging
 from typing import List, Optional
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
+
+from modules.auth_middleware import Principal, require_authenticated
 
 logger = logging.getLogger("routes.cast_sync")
 
@@ -25,6 +27,10 @@ class SyncMediaBody(BaseModel):
     artwork_url: str = ""        # album art / station logo for the displays
     artist: str = ""
     loop: bool = False           # for finite sources (a file); ignored on live
+    # Note: the media dict also carries an `owner` — the ZMM user whose source
+    # account the zone plays on. It is deliberately NOT a field here. The body
+    # is client-supplied, and naming an owner is naming an account to stream
+    # on; the server stamps it in resolve_zone_media() instead.
 
 
 class SyncStartBody(BaseModel):
@@ -84,7 +90,8 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         return sync.status()
 
     @app.post("/api/media/sync/start")
-    async def sync_start(body: SyncStartBody):
+    async def sync_start(body: SyncStartBody,
+                         principal: Principal = Depends(require_authenticated)):
         sync = _sync()
         if sync is None:
             return {"success": False,
@@ -99,9 +106,11 @@ def register_cast_sync_routes(app: FastAPI, get_media):
             return await svc.start_zone(body.group_id, media=media,
                                         duration_s=body.duration_s,
                                         crossfade_s=body.crossfade_s,
-                                        use_saved=body.use_saved)
+                                        use_saved=body.use_saved,
+                                        username=principal.user.username)
         if media:
-            ok, err = await svc.resolve_zone_media(media)
+            ok, err = await svc.resolve_zone_media(media,
+                                                   principal.user.username)
             if not ok:
                 return {"success": False, "error": err}
         return await sync.start_session(body.player_ids, group_id="",
@@ -149,16 +158,23 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         return sync.save_group(body.name, body.members, body.id)
 
     @app.post("/api/media/sync/groups/config")
-    async def sync_group_config(body: SyncGroupConfigBody):
+    async def sync_group_config(body: SyncGroupConfigBody,
+                                principal: Principal = Depends(require_authenticated)):
         sync = _sync()
         if sync is None:
             return {"success": False,
                     "error": "OpenZone is disabled — enable it under Settings → Audio"}
+        media = body.media.model_dump() if body.media else None
+        if media:
+            # A saved source is replayed by a rule or a resume, long after
+            # whoever set it has gone, so it has to remember whose account it
+            # plays on. Stamped from the caller, never read from the body.
+            media["owner"] = principal.user.username
         return sync.set_group_config(body.id, {
             "key": body.key,
             "custom_url": body.custom_url,
             "loop": body.loop,
-            "media": body.media.model_dump() if body.media else None,
+            "media": media,
             "duration_s": body.duration_s,
             "crossfade_s": body.crossfade_s,
         })

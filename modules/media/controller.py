@@ -107,7 +107,8 @@ class MediaController:
 
     async def resolve_source_url(self, media_type: str, source_id: str,
                                  player_id: Optional[str] = None,
-                                 provider: Optional[str] = None) -> str:
+                                 provider: Optional[str] = None,
+                                 owner: str = "") -> str:
         """Current playable URL for a source that issues time-limited ones.
 
         The target decides the format, so pass whichever names it: a player_id
@@ -119,7 +120,7 @@ class MediaController:
             return ""
         if provider is None and player_id:
             provider = player_id.split(":", 1)[0]
-        fresh = await resolver(source_id, provider)
+        fresh = await resolver(source_id, provider, owner)
         if isinstance(fresh, dict):
             return fresh.get("url") or ""
         return fresh or ""
@@ -160,13 +161,18 @@ class MediaController:
         return self._sources.get(key)
 
     def register_resolver(self, media_type: str, resolver) -> None:
-        """Register an async `(source_id) -> fresh_url` for a media_type whose
-        stream URLs expire (e.g. Tidal). Called just before each play."""
+        """Register an async `(source_id, provider, owner) -> fresh_url` for a
+        media_type whose stream URLs expire (e.g. Tidal). Called just before
+        each play. `owner` names the user whose account it resolves against —
+        this runs on auto-advance and on resume, where no request is in scope
+        to ask."""
         self._resolvers[media_type] = resolver
 
     def register_extender(self, extender) -> None:
-        """Register an async `(seed_source_id) -> [MediaItem]` used to keep a
-        `auto_extend` ('radio') queue infinite by appending similar tracks."""
+        """Register an async `(seed_source_id, owner) -> [MediaItem]` used to
+        keep a `auto_extend` ('radio') queue infinite by appending similar
+        tracks. `owner` comes off the seed item — a radio queue must top up
+        from the library it started in."""
         self._extender = extender
 
     async def start(self) -> None:
@@ -304,12 +310,14 @@ class MediaController:
         The resolver may return a plain URL string, or a ``{"url","content_type"}``
         dict when the playable format depends on the target device (e.g. Tidal
         lossless is DASH on Cast but AAC on WiiM). The provider is derived from
-        ``player_id`` so the source can choose."""
+        ``player_id`` so the source can choose, and ``item.owner`` names the
+        account it resolves against."""
         resolver = self._resolvers.get(item.media_type)
         if resolver and item.source_id:
             provider = player_id.split(":", 1)[0] if player_id else None
             try:
-                fresh = await resolver(item.source_id, provider)
+                fresh = await resolver(item.source_id, provider,
+                                       getattr(item, "owner", ""))
                 if isinstance(fresh, dict):
                     if fresh.get("url"):
                         item.url = fresh["url"]
@@ -485,9 +493,10 @@ class MediaController:
         seed = cur.item.source_id if cur else None
         if not seed:
             return
+        owner = getattr(cur.item, "owner", "")
         self._extending.add(player_id)
         try:
-            more = await self._extender(seed)
+            more = await self._extender(seed, owner)
             have = q.source_ids()
             fresh = [it for it in (more or []) if it.source_id and it.source_id not in have]
             if fresh:

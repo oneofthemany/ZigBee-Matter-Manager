@@ -5,6 +5,11 @@ Serves AAC via a directly playable URL so devices need no stream server;
 lossless DASH/FLAC is a later phase. Hard-isolated — imported lazily, every
 failure swallowed, and every blocking call wrapped in asyncio.to_thread — so a
 Tidal breakage never affects Cast, WiiM or radio. See docs/speaker_sync.md.
+
+Two classes: ``TidalAccount`` is one ZMM user's login — their session, their
+caches, their credential file — and ``TidalSource`` is the registry of them
+that the controller actually registers, since it addresses one source per
+media type. See docs/plans/tidal-per-user-auth.md.
 """
 from __future__ import annotations
 
@@ -13,6 +18,8 @@ import base64
 import json
 import logging
 import os
+import re
+import secrets
 import threading
 import time
 from typing import List, Optional
@@ -22,7 +29,19 @@ from modules.media.sources.base import SourceProvider
 
 logger = logging.getLogger("modules.media.tidal")
 
-SESSION_PATH = "./data/media/tidal_session.json"
+# One credential file per ZMM user, named for them. The pre-multi-user single
+# file is adopted into this directory on first start (_migrate_legacy).
+SESSION_DIR = "./data/media/tidal"
+LEGACY_SESSION_PATH = "./data/media/tidal_session.json"
+
+# Owner of an adopted legacy session when no ZMM user can be identified as its
+# owner. Deliberately outside the username charset, so no real account can
+# collide with it and no request can name one.
+UNASSIGNED = "~unassigned"
+
+# A username becomes a filename here, so this is what keeps a path separator
+# out of one. Mirrors auth._VALID_ID_RE and must never be looser than it.
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{2,32}$")
 
 # TIDAL caps a favourites request at 50 rows, so a larger page is assembled
 # from several requests. A ceiling, not a preference.
@@ -33,6 +52,17 @@ LIBRARY_MAX = 500
 # long enough to bridge the lossless check and the fetch that follows it.
 MPD_CACHE_TTL_S = 30
 MPD_CACHE_MAX = 64
+
+# The manifest route is fetched by the speaker, which carries no session, so the
+# URL itself has to say which account to serve. A token rather than a username:
+# the route is reachable by anything on the LAN, and a URL naming its owner
+# would let any of it stream that user's Tidal. Long enough to survive a Cast
+# refetch mid-track, short enough to be worthless afterwards; it also stops the
+# URL naming the track. 16 bytes, not the EQ stream's 8 — this one names an
+# account rather than a stream already playing, so a guess is worth more.
+MANIFEST_TOKEN_TTL_S = 600
+MANIFEST_TOKEN_MAX = 256
+MANIFEST_TOKEN_BYTES = 16
 
 # Favourite-state cache (docs/speaker_sync.md → Tidal).
 FAVOURITE_KINDS = ("track", "album", "artist", "playlist")
@@ -61,12 +91,20 @@ def _quality_enum(tidalapi, want: str):
     return list(Q)[0]
 
 
-class TidalSource(SourceProvider):
-    source = "tidal"
+class TidalAccount:
+    """One ZMM user's Tidal login: their session, their caches, their file.
 
-    def __init__(self, enabled: bool = False, quality: str = "high",
-                 manifest_base_url: str = "", local_base=None):
-        self.enabled = enabled
+    Nothing here is shared between users. tidalapi has no per-call quality
+    override — ``audio_quality`` is a property of the session object — so the
+    swap in ``_aac_url`` now contends only with the same user's own playback
+    rather than with everyone's.
+    """
+
+    def __init__(self, username: str, quality: str = "high",
+                 manifest_base_url: str = "", local_base=None,
+                 available: bool = False, mint_token=None):
+        # The ZMM user this login belongs to, and the name of its session file.
+        self.username = username
         # "high" (320k AAC, single URL, every device) or "lossless" (FLAC via a
         # DASH manifest — Cast only; WiiM transparently falls back to AAC).
         self._quality = (quality or "high").lower()
@@ -77,12 +115,16 @@ class TidalSource(SourceProvider):
         # () -> base URL of this host's plain-HTTP device listener. Lossless to
         # a zone is decoded here, so it needs no operator-supplied address.
         self._local_base = local_base
+        # (owner, track_id) -> token for the manifest URL. Held by the registry,
+        # because the route that redeems it has no account to start from.
+        self._mint_token = mint_token
         # track_id -> (fetched_at, mpd). The zone path checks a track has a
         # lossless variant before committing to it; without this the route
         # would then fetch the same manifest again seconds later.
         self._mpd_cache: dict = {}
         self._session = None
-        self._available = False           # tidalapi importable + session usable
+        # tidalapi importable — resolved once by the registry, not per user.
+        self._available = available
         self._login_future = None
         self._login_link: Optional[str] = None
         self._pending = False
@@ -95,15 +137,14 @@ class TidalSource(SourceProvider):
         self._fav_built_at: float = 0.0
         self._fav_task: Optional[asyncio.Task] = None
 
-    async def start(self) -> None:
-        if not self.enabled:
+    @property
+    def session_path(self) -> str:
+        return os.path.join(SESSION_DIR, f"{self.username}.json")
+
+    async def load(self) -> None:
+        """Build the session and restore this user's saved login, if any."""
+        if not self._available:
             return
-        try:
-            import tidalapi  # noqa: F401
-        except ImportError:
-            logger.warning("Tidal disabled: tidalapi not installed")
-            return
-        self._available = True
         await asyncio.to_thread(self._build_session)
 
     def _build_session(self):
@@ -120,31 +161,28 @@ class TidalSource(SourceProvider):
                     saved.get("expiry_time"),
                 )
                 if ok and self._session.check_login():
-                    logger.info("Tidal session restored")
+                    logger.info(f"Tidal session restored for {self.username}")
                 else:
-                    logger.info("Tidal saved session invalid — login required")
+                    logger.info(f"Tidal saved session invalid for {self.username} — login required")
         except Exception as e:
-            logger.warning(f"Tidal session init failed: {e}")
-
-    async def stop(self) -> None:
-        pass
+            logger.warning(f"Tidal session init failed for {self.username}: {e}")
 
     # Session persistence
     def _load_session_file(self) -> Optional[dict]:
         try:
-            if os.path.exists(SESSION_PATH):
-                with open(SESSION_PATH, "r") as f:
+            if os.path.exists(self.session_path):
+                with open(self.session_path, "r") as f:
                     return json.load(f)
         except Exception as e:
-            logger.debug(f"Tidal session read failed: {e}")
+            logger.debug(f"Tidal session read failed for {self.username}: {e}")
         return None
 
     def _persist_session(self):
         try:
-            os.makedirs(os.path.dirname(SESSION_PATH), exist_ok=True)
+            os.makedirs(SESSION_DIR, exist_ok=True)
             s = self._session
             expiry = s.expiry_time
-            with open(SESSION_PATH, "w") as f:
+            with open(self.session_path, "w") as f:
                 json.dump({
                     "token_type": s.token_type,
                     "access_token": s.access_token,
@@ -152,9 +190,14 @@ class TidalSource(SourceProvider):
                     # expiry_time may be a datetime — store epoch for portability.
                     "expiry_time": expiry.timestamp() if hasattr(expiry, "timestamp") else expiry,
                 }, f)
-            logger.info("Tidal session persisted")
+            # The file holds a refresh token, so it is readable only by us.
+            try:
+                os.chmod(self.session_path, 0o600)
+            except OSError:
+                pass
+            logger.info(f"Tidal session persisted for {self.username}")
         except Exception as e:
-            logger.warning(f"Tidal session persist failed: {e}")
+            logger.warning(f"Tidal session persist failed for {self.username}: {e}")
 
     # Login (web flow)
     async def login_start(self) -> Optional[str]:
@@ -173,9 +216,9 @@ class TidalSource(SourceProvider):
             await asyncio.to_thread(self._login_future.result)  # blocks until done/expiry
             if self._session.check_login():
                 await asyncio.to_thread(self._persist_session)
-                logger.info("Tidal login complete")
+                logger.info(f"Tidal login complete for {self.username}")
         except Exception as e:
-            logger.warning(f"Tidal login did not complete: {e}")
+            logger.warning(f"Tidal login did not complete for {self.username}: {e}")
         finally:
             self._pending = False
             self._login_future = None
@@ -197,8 +240,8 @@ class TidalSource(SourceProvider):
 
     async def logout(self) -> None:
         try:
-            if os.path.exists(SESSION_PATH):
-                os.remove(SESSION_PATH)
+            if os.path.exists(self.session_path):
+                os.remove(self.session_path)
         except Exception:
             pass
         # Rebuild a fresh, logged-out session.
@@ -221,8 +264,9 @@ class TidalSource(SourceProvider):
         if not self._session:
             return None
         base = self._lossless_base(provider)
-        if base:
-            mpd = f"{base}/api/media/tidal/manifest/{source_id}.mpd"
+        if base and self._mint_token:
+            token = self._mint_token(self.username, source_id)
+            mpd = f"{base}/api/media/tidal/manifest/{token}.mpd"
             dash = {"url": mpd, "content_type": "application/dash+xml"}
             if provider != "zone":
                 return dash
@@ -906,6 +950,9 @@ class TidalSource(SourceProvider):
             content_type="audio/mp4",        # HIGH = AAC in an MP4 container
             source_id=str(getattr(t, "id", "")),
             duration_ms=int((getattr(t, "duration", 0) or 0) * 1000),
+            # Whose account this came from, and whose it must be played back
+            # through when its signed URL is re-resolved later.
+            owner=self.username,
         )
 
     def _track_summary(self, t) -> dict:
@@ -998,3 +1045,324 @@ class TidalSource(SourceProvider):
             "artwork": artwork,
             "type": "mix",
         }
+
+
+class TidalSource(SourceProvider):
+    """The registered source: a registry of per-user Tidal accounts.
+
+    The controller addresses one source per media type, so this stays the
+    single registered object. It owns no session itself — every call lands on
+    the account for one ZMM user.
+
+    Every caller names a user, save the handful that cannot — a rule written
+    before a step carried an owner, and the four bound methods below — which
+    take ``default_account()`` explicitly rather than by falling through to it.
+    See docs/plans/tidal-per-user-auth.md.
+    """
+    source = "tidal"
+    LIBRARY_KINDS = TidalAccount.LIBRARY_KINDS
+    #: Owner of a login adopted from before Tidal was per-user, when no ZMM
+    #: user could be identified for it. Exposed so callers can name it without
+    #: reaching for a module constant.
+    UNASSIGNED = UNASSIGNED
+
+    def __init__(self, enabled: bool = False, quality: str = "high",
+                 manifest_base_url: str = "", local_base=None,
+                 owner: str = ""):
+        self.enabled = enabled
+        self._quality = (quality or "high").lower()
+        self._manifest_base = (manifest_base_url or "").rstrip("/")
+        self._local_base = local_base
+        # media.tidal.owner — names the ZMM user who owns a session that
+        # predates per-user auth, and the default account thereafter.
+        self._owner_hint = (owner or "").strip()
+        self._available = False           # tidalapi importable
+        self._accounts: dict = {}         # username -> TidalAccount
+        # token -> (owner, track_id, issued_at). What the manifest route
+        # redeems: it is fetched by a speaker with no session, so this is the
+        # only thing saying whose account to serve.
+        self._manifest_tokens: dict = {}
+
+    # Lifecycle
+    async def start(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            import tidalapi  # noqa: F401
+        except ImportError:
+            logger.warning("Tidal disabled: tidalapi not installed")
+            return
+        self._available = True
+        self._migrate_legacy()
+        names = self._stored_usernames()
+        if not names:
+            logger.info("Tidal enabled; no accounts linked yet")
+            return
+        await asyncio.gather(*(self._ensure(n).load() for n in names),
+                             return_exceptions=True)
+        logger.info(f"Tidal accounts loaded: {', '.join(sorted(names))}")
+
+    async def stop(self) -> None:
+        pass
+
+    # Accounts
+    def account(self, username: str, create: bool = False) -> Optional[TidalAccount]:
+        """This user's account, or None.
+
+        ``create`` builds an empty (logged-out) one, which is what linking a
+        Tidal login to a ZMM user starts from. A name that could not have come
+        from AuthManager is refused outright rather than reaching the
+        filesystem, because it would name a file.
+        """
+        name = (username or "").strip()
+        if not USERNAME_RE.match(name):
+            logger.warning(f"Tidal: refusing account for invalid username {name!r}")
+            return None
+        acct = self._accounts.get(name)
+        if acct is None and create:
+            acct = self._ensure(name)
+        return acct
+
+    def accounts(self) -> List[dict]:
+        """Who has linked an account, for the admin view. Never any token.
+
+        The placeholder is listed only when it holds an adopted login nobody
+        has been able to claim — that is a real thing an admin has to resolve,
+        whereas the empty one is an artefact of somebody asking for a status.
+        """
+        rows = []
+        for name in sorted(self._accounts):
+            acct = self._accounts[name]
+            linked = bool(acct._session) or os.path.exists(acct.session_path)
+            if name == UNASSIGNED and not linked:
+                continue
+            rows.append({"username": name, "linked": linked})
+        return rows
+
+    def _ensure(self, username: str) -> TidalAccount:
+        acct = self._accounts.get(username)
+        if acct is None:
+            acct = TidalAccount(
+                username=username,
+                quality=self._quality,
+                manifest_base_url=self._manifest_base,
+                local_base=self._local_base,
+                available=self._available,
+                mint_token=self.mint_manifest_token,
+            )
+            self._accounts[username] = acct
+        return acct
+
+    def _default(self) -> TidalAccount:
+        """The account an un-namespaced call resolves to.
+
+        Deterministic, in order: the configured owner, the only named account,
+        then the unassigned one — created empty so a call with nothing linked
+        still answers "logged out" rather than raising, exactly as the
+        single-account source did.
+
+        The placeholder is excluded from that count, or merely having asked for
+        a status while nothing was linked would bring it into existence and
+        leave a real account outnumbered by it for ever. Two named accounts is
+        genuinely ambiguous and resolves to the placeholder rather than to
+        whichever user sorts first.
+        """
+        if self._owner_hint and self._owner_hint in self._accounts:
+            return self._accounts[self._owner_hint]
+        named = [a for n, a in self._accounts.items() if n != UNASSIGNED]
+        if len(named) == 1:
+            return named[0]
+        return self._ensure(UNASSIGNED)
+
+    # Manifest tokens
+    def mint_manifest_token(self, owner: str, track_id: str) -> str:
+        """A single-use-ish handle for one user's manifest of one track.
+
+        Minted when a lossless URL is built and redeemed by whatever fetches it,
+        which is a Cast device on the LAN or this host's own decoder — neither
+        of which can carry a session cookie. It expires on its own: the manifest
+        is fetched at load rather than on a schedule, so there is no playback
+        lifecycle to hang an explicit release off.
+        """
+        token = secrets.token_urlsafe(MANIFEST_TOKEN_BYTES)
+        self._manifest_tokens[token] = (owner, str(track_id), time.time())
+        # After the insert, so MANIFEST_TOKEN_MAX is a ceiling on the live set
+        # rather than one less than what it actually holds.
+        self._prune_manifest_tokens()
+        return token
+
+    def redeem_manifest_token(self, token: str) -> Optional[tuple]:
+        """``(account, track_id)`` for a live token, else None.
+
+        Fails closed the same way resolution does: a token naming a user whose
+        account has since gone answers nothing rather than falling back.
+        """
+        got = self._manifest_tokens.get(token or "")
+        if not got:
+            return None
+        owner, track_id, issued = got
+        if (time.time() - issued) > MANIFEST_TOKEN_TTL_S:
+            self._manifest_tokens.pop(token, None)
+            return None
+        acct = self._for(owner)
+        return (acct, track_id) if acct else None
+
+    def _prune_manifest_tokens(self) -> None:
+        now = time.time()
+        dead = [t for t, (_, _, at) in self._manifest_tokens.items()
+                if (now - at) > MANIFEST_TOKEN_TTL_S]
+        for t in dead:
+            self._manifest_tokens.pop(t, None)
+        # A speaker that never fetches leaves its token behind, so the live set
+        # is bounded as well as aged.
+        if len(self._manifest_tokens) > MANIFEST_TOKEN_MAX:
+            for t, _ in sorted(self._manifest_tokens.items(),
+                               key=lambda kv: kv[1][2])[:len(self._manifest_tokens)
+                                                        - MANIFEST_TOKEN_MAX]:
+                self._manifest_tokens.pop(t, None)
+
+    def _stored_usernames(self) -> List[str]:
+        try:
+            names = os.listdir(SESSION_DIR)
+        except OSError:
+            return []
+        out = []
+        for fn in names:
+            if not fn.endswith(".json"):
+                continue
+            stem = fn[:-5]
+            if USERNAME_RE.match(stem) or stem == UNASSIGNED:
+                out.append(stem)
+            else:
+                logger.warning(f"Tidal: ignoring session file {fn!r} — not a username")
+        return out
+
+    # Legacy adoption
+    def _migrate_legacy(self) -> None:
+        """Adopt the pre-multi-user session file for one owner, once.
+
+        Skipped the moment any per-user file exists: the move has already
+        happened, and a legacy file sitting next to per-user ones came from a
+        restored backup, not from a session waiting to be claimed. Adoption is
+        a rename, so it cannot leave two files holding the same login.
+        """
+        if not os.path.exists(LEGACY_SESSION_PATH):
+            return
+        if self._stored_usernames():
+            logger.info("Tidal: per-user sessions exist — leaving the legacy "
+                        "session file alone")
+            return
+        owner = self._legacy_owner()
+        dest = os.path.join(SESSION_DIR, f"{owner}.json")
+        try:
+            os.makedirs(SESSION_DIR, exist_ok=True)
+            os.replace(LEGACY_SESSION_PATH, dest)
+            try:
+                os.chmod(dest, 0o600)
+            except OSError:
+                pass
+        except OSError as e:
+            logger.warning(f"Tidal: could not adopt the legacy session file: {e}")
+            return
+        if owner == UNASSIGNED:
+            logger.warning(
+                "Tidal: adopted the existing login, but could not tell which "
+                "ZMM user owns it — set media.tidal.owner to name them")
+        else:
+            logger.info(f"Tidal: adopted the existing login for {owner}")
+
+    def _legacy_owner(self) -> str:
+        """Who the pre-multi-user login belongs to.
+
+        Config wins. Otherwise a single admin is an unambiguous answer and
+        anything else is a guess, so the session is parked under UNASSIGNED
+        rather than handed to whichever account happened to sort first.
+        """
+        if self._owner_hint:
+            if USERNAME_RE.match(self._owner_hint):
+                return self._owner_hint
+            logger.warning(f"Tidal: media.tidal.owner {self._owner_hint!r} is "
+                           "not a valid username — ignoring it")
+        admins = self._admin_usernames()
+        return admins[0] if len(admins) == 1 else UNASSIGNED
+
+    def _admin_usernames(self) -> List[str]:
+        """Enabled admins, by the same test the auth middleware's first-run
+        gate uses. Resolved here rather than injected: this runs at startup,
+        long after the auth manager is registered, and the media service is
+        constructed before it exists."""
+        try:
+            from modules.auth import get_auth_manager
+            mgr = get_auth_manager()
+            if mgr is None:
+                return []
+            return sorted(
+                u.username for u in mgr.users.values()
+                if (not u.disabled)
+                and ("admins" in u.groups or "admin" in u.extra_scopes)
+            )
+        except Exception as e:
+            logger.debug(f"Tidal: admin lookup unavailable: {e}")
+            return []
+
+    def default_account(self) -> TidalAccount:
+        """The account a caller that names no user gets.
+
+        The last of the pre-multi-user surface: an automation rule written
+        before a step carried an owner has none, and this is what it plays on.
+        """
+        return self._default()
+
+    def default_username(self) -> str:
+        """Name of the account an un-namespaced call resolves to.
+
+        Lets the service stamp an owner on items while the routes still do not
+        name a user. Goes away with the shim.
+        """
+        return self._default().username
+
+    def _for(self, owner: str) -> Optional[TidalAccount]:
+        """The account an off-request resolution must use, or None.
+
+        Fails closed: an owner naming a user with no linked account resolves to
+        nothing, so the track does not play. It must never fall back to
+        whichever account happens to be linked — that is how one user's
+        playback would end up on another's subscription.
+
+        An empty owner is the one exception, and it means "queued before Tidal
+        was per-user". Those go to the default account, which is what played
+        them at the time. That is still fail-closed once there is more than one
+        user: with two named accounts the default is the empty placeholder,
+        which resolves nothing.
+        """
+        if not owner:
+            return self._default()
+        acct = self._accounts.get(owner)
+        if acct is None:
+            logger.warning(f"Tidal: no linked account for {owner!r} — "
+                           "not resolving on anyone else's")
+        return acct
+
+    # Delegation
+    #
+    # The four calls that reach a source without naming a user. Each is taken as
+    # a bound method and kept — search because SourceProvider makes it abstract,
+    # and the other three because the media service hands them to the controller
+    # and the Cast provider when it is constructed, before start() has loaded any
+    # account — so each must resolve the account when it is called, never when it
+    # is taken. Everything else names a user and goes through account().
+    async def search(self, query: str, limit: int = 25) -> List[MediaItem]:
+        return await self._default().search(query, limit)
+
+    async def resolve_url(self, source_id: str, provider: Optional[str] = None,
+                          owner: str = ""):
+        acct = self._for(owner)
+        return await acct.resolve_url(source_id, provider) if acct else None
+
+    async def track_radio(self, track_id: str, owner: str = "") -> List[MediaItem]:
+        acct = self._for(owner)
+        return await acct.track_radio(track_id) if acct else []
+
+    async def track_lyrics(self, track_id: str, owner: str = "") -> Optional[dict]:
+        acct = self._for(owner)
+        return await acct.track_lyrics(track_id) if acct else None

@@ -9,8 +9,12 @@ import re
 from typing import List, Optional
 from urllib.parse import quote, urljoin
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from pydantic import BaseModel
+
+from modules.auth_middleware import (
+    Principal, require_authenticated, require_scope,
+)
 
 logger = logging.getLogger("routes.media")
 
@@ -228,7 +232,8 @@ def register_media_routes(app: FastAPI, get_media_service):
     # AAC for non-Cast providers, which is exactly what a browser plays natively.
 
     @app.post("/api/media/local/playlist")
-    async def local_playlist(body: LocalPlaylistBody):
+    async def local_playlist(body: LocalPlaylistBody,
+                             principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
@@ -243,7 +248,8 @@ def register_media_routes(app: FastAPI, get_media_service):
             elif body.kind and body.id:
                 if not _tidal(svc):
                     return {"success": False, "error": "Tidal unavailable"}
-                items = await svc.tidal_items(body.kind, body.id, body.mode)
+                items = await svc.tidal_items(body.kind, body.id, body.mode,
+                                              principal.user.username)
             else:
                 return {"success": False, "error": "Provide station_uuid or kind+id"}
         except ValueError as e:
@@ -254,7 +260,8 @@ def register_media_routes(app: FastAPI, get_media_service):
         return {"success": True, "items": [i.to_dict() for i in items]}
 
     @app.get("/api/media/local/track_url")
-    async def local_track_url(source_id: str):
+    async def local_track_url(source_id: str,
+                              principal: Principal = Depends(require_authenticated)):
         """Fresh, browser-playable URL for one Tidal track.
 
         Resolved just-in-time per track: the signed URLs are short-lived, so a
@@ -263,9 +270,9 @@ def register_media_routes(app: FastAPI, get_media_service):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         try:
             # provider="browser" → never Cast → AAC, not DASH (see _wants_lossless)
             got = await src.resolve_url(source_id, "browser")
@@ -577,61 +584,90 @@ def register_media_routes(app: FastAPI, get_media_service):
         return {"success": True}
 
     # Tidal
+    #
+    # Every endpoint below resolves the caller's own account. Tidal is per-ZMM-user:
+    # you browse your library, your favourites and your playlists, and the account a
+    # track is played on is the one it was queued from. See docs/plans/tidal-per-user-auth.md.
     def _tidal(svc):
+        """The registry. Only the routes that do not belong to a user use this."""
         return svc.controller.get_source("tidal")
 
+    def _acct(svc, principal, create: bool = False):
+        """The calling user's Tidal account, or None if they have not linked one.
+
+        ``create`` is for the login flow, which is where an account starts.
+        """
+        src = _tidal(svc)
+        if not src:
+            return None
+        return src.account(principal.user.username, create=create)
+
+    #: What an endpoint answers when the caller has no Tidal of their own. Not an
+    #: error: it is the same "log in" state the UI has always rendered, now asked
+    #: of one user rather than of the hub.
+    NOT_LINKED = {"success": False, "error": "Link your Tidal account first "
+                                             "(Settings → APIs → Media)"}
+
     @app.get("/api/media/tidal/status")
-    async def tidal_status():
+    async def tidal_status(principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
         src = _tidal(svc)
         if not src:
             return {"success": True, "status": {"state": "unavailable"}}
-        return {"success": True, "status": await src.status()}
+        acct = _acct(svc, principal)
+        if acct is None:
+            # Nothing linked for this user. "unavailable" would be wrong — the
+            # source works, they just have no account on it yet.
+            return {"success": True, "status": {"state": "logged_out"}}
+        return {"success": True, "status": await acct.status()}
 
     @app.post("/api/media/tidal/login")
-    async def tidal_login():
+    async def tidal_login(principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
-        link = await src.login_start() if src else None
+        # The one endpoint that creates an account: linking is what makes one.
+        acct = _acct(svc, principal, create=True)
+        link = await acct.login_start() if acct else None
         if not link:
             return {"success": False, "error": "Tidal unavailable (not installed/enabled)"}
         return {"success": True, "link": link}
 
     @app.post("/api/media/tidal/logout")
-    async def tidal_logout():
+    async def tidal_logout(principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
-        if src:
-            await src.logout()
+        acct = _acct(svc, principal)
+        if acct:
+            await acct.logout()
         return {"success": True}
 
     @app.get("/api/media/tidal/search")
-    async def tidal_search(q: str, limit: int = 20):
+    async def tidal_search(q: str, limit: int = 20,
+                           principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         try:
             return {"success": True, "results": await src.search_grouped(q, limit)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     @app.get("/api/media/tidal/library")
-    async def tidal_library(kind: str, limit: int = 100, offset: int = 0):
+    async def tidal_library(kind: str, limit: int = 100, offset: int = 0,
+                            principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         kinds = src.LIBRARY_KINDS
         if kind not in kinds:
             return {"success": False, "error": f"kind must be {'|'.join(kinds)}"}
@@ -643,41 +679,46 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": str(e)}
 
     @app.post("/api/media/tidal/play")
-    async def tidal_play(body: TidalPlayBody):
+    async def tidal_play(body: TidalPlayBody,
+                         principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
-        if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+        if not _acct(svc, principal):
+            return dict(NOT_LINKED)
         try:
-            return await svc.play_tidal(body.player_id, body.kind, body.id, body.mode)
+            # The username is stamped on every queued item, so the stream URL is
+            # re-resolved on this account long after the request has gone.
+            return await svc.play_tidal(body.player_id, body.kind, body.id,
+                                        body.mode, principal.user.username)
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     @app.get("/api/media/tidal/lyrics")
-    async def tidal_lyrics(track_id: str):
+    async def tidal_lyrics(track_id: str,
+                           principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         lyrics = await src.track_lyrics(track_id)
         if not lyrics:
             return {"success": False, "error": "No lyrics for this track"}
         return {"success": True, "lyrics": lyrics}
 
     @app.get("/api/media/tidal/track/{track_id}/context")
-    async def tidal_track_context(track_id: str):
+    async def tidal_track_context(track_id: str,
+                                  principal: Principal = Depends(require_authenticated)):
         """Artist of the now-playing track + their other albums — powers the
         'artist radio' and 'more from this artist' actions on the player card."""
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         artist = await src.track_artist(track_id)
         if not artist:
             return {"success": False, "error": "No artist info for this track"}
@@ -685,26 +726,28 @@ def register_media_routes(app: FastAPI, get_media_service):
         return {"success": True, "artist": artist, "albums": albums}
 
     @app.get("/api/media/tidal/playlist/{playlist_id}")
-    async def tidal_playlist(playlist_id: str):
+    async def tidal_playlist(playlist_id: str,
+                             principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         detail = await src.playlist_detail(playlist_id)
         if not detail:
             return {"success": False, "error": "Playlist not found"}
         return {"success": True, "playlist": detail}
 
     @app.post("/api/media/tidal/playlist/create")
-    async def tidal_playlist_create(body: TidalPlaylistCreateBody):
+    async def tidal_playlist_create(body: TidalPlaylistCreateBody,
+                                    principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         res = await src.playlist_create(body.name, body.description or "")
         # A playlist created to hold tracks should come back holding them.
         if res.get("success") and body.track_ids:
@@ -716,13 +759,14 @@ def register_media_routes(app: FastAPI, get_media_service):
         return res
 
     @app.post("/api/media/tidal/playlist/edit")
-    async def tidal_playlist_edit(body: TidalPlaylistEditBody):
+    async def tidal_playlist_edit(body: TidalPlaylistEditBody,
+                                  principal: Principal = Depends(require_authenticated)):
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         if body.action not in ("add", "remove", "move", "edit", "delete",
                                "visibility"):
             return {"success": False, "error": "unknown playlist action"}
@@ -733,28 +777,35 @@ def register_media_routes(app: FastAPI, get_media_service):
             allow_duplicates=body.allow_duplicates)
 
     @app.get("/api/media/tidal/favorites")
-    async def tidal_favorites(refresh: bool = False):
+    async def tidal_favorites(refresh: bool = False,
+                              principal: Principal = Depends(require_authenticated)):
         """Which ids are already favourited, so the UI can draw a heart in the
-        state it is in. `ready` false means a build is running — ask again."""
+        state it is in. `ready` false means a build is running — ask again.
+
+        The *viewer's* favourites, not the owner's: the heart on a now-playing
+        card reflects your library, whoever queued the track."""
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         try:
             return {"success": True, **await src.favourite_ids(refresh)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     @app.post("/api/media/tidal/favorite")
-    async def tidal_favorite(body: TidalFavoriteBody):
+    async def tidal_favorite(body: TidalFavoriteBody,
+                             principal: Principal = Depends(require_authenticated)):
+        """Hearting a track adds it to *your* library, even one a housemate
+        queued — which is the point of the account being yours."""
         svc = _svc()
         if not svc:
             return {"success": False, "error": "Media service not enabled"}
-        src = _tidal(svc)
+        src = _acct(svc, principal)
         if not src:
-            return {"success": False, "error": "Tidal unavailable"}
+            return dict(NOT_LINKED)
         if body.kind not in ("track", "album", "artist", "playlist"):
             return {"success": False, "error": "kind must be track|album|artist|playlist"}
         if body.action not in ("add", "remove"):
@@ -764,17 +815,49 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": False, "error": "Favourite update failed (login required?)"}
         return {"success": True, "favorited": body.action == "add"}
 
-    @app.get("/api/media/tidal/manifest/{track_id}.mpd")
-    async def tidal_manifest(track_id: str):
+    @app.get("/api/media/tidal/accounts")
+    async def tidal_accounts(_: Principal = Depends(require_scope("admin"))):
+        """Who has linked a Tidal account. Admin-only, and read-only.
+
+        Names and linked-state, never a token and never anyone's library: it
+        exists so an admin can see who is set up and spot a login that was
+        adopted from before Tidal was per-user and still needs claiming.
+        """
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        src = _tidal(svc)
+        if not src:
+            return {"success": True, "accounts": [], "unassigned": ""}
+        rows = src.accounts()
+        return {"success": True, "accounts": rows,
+                # Named separately so the UI can say what to do about it,
+                # rather than showing a user nobody recognises.
+                "unassigned": next((r["username"] for r in rows
+                                    if r["username"] == src.UNASSIGNED), "")}
+
+    @app.get("/api/media/tidal/manifest/{token}.mpd")
+    async def tidal_manifest(token: str):
         # Served to Cast for lossless playback: a fresh DASH MPD whose segment
         # URLs point straight at Tidal's CDN. Generated on each fetch (URLs expire).
+        #
+        # The one Tidal route with no principal — the speaker fetches it itself
+        # and carries no session — so the token in the URL is what says whose
+        # account to serve, and which track. It is minted when the lossless URL
+        # is built and expires on its own; a URL naming the user would let
+        # anything on the LAN stream their Tidal.
         svc = _svc()
         if not svc:
             return Response("media service not enabled", status_code=503)
         src = _tidal(svc)
         if not src:
             return Response("tidal unavailable", status_code=503)
-        mpd = await src.dash_manifest(track_id)
+        got = src.redeem_manifest_token(token)
+        if not got:
+            # Unknown, expired, or naming an account that has since gone.
+            return Response("unknown or expired manifest token", status_code=404)
+        acct, track_id = got
+        mpd = await acct.dash_manifest(track_id)
         if not mpd:
             return Response("no lossless manifest for track", status_code=404)
         # CORS: the Cast receiver XHR-fetches the MPD from its google-hosted

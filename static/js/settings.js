@@ -600,6 +600,7 @@ function renderApisTab(config) {
 
     loadWeatherStatus();
     loadTidalStatus();
+    loadTidalAccounts();
     loadAcUnits();
     loadOctopusStatus();
     loadFuelRegion();
@@ -1723,7 +1724,10 @@ function renderTidalSection(config) {
           itself — not needed for zones.</small>
       </div>
     </div>
+    <div class="form-text mb-2">Each ZMM user links their own Tidal account —
+      what you log in with here is yours alone.</div>
     <div id="tidalStatusRow" class="mb-2"></div>
+    <div id="tidalAccountsRow" class="mb-2"></div>
     <div class="d-flex gap-2">
       <button type="button" class="btn btn-outline-primary btn-sm" onclick="window.tidalLogin()">
         <i class="fas fa-right-to-bracket me-1"></i> Log in to Tidal
@@ -1770,6 +1774,7 @@ window.tidalLogout = async function () {
     await fetch('/api/media/tidal/logout', { method: 'POST' });
     document.getElementById('tidalLoginLink').innerHTML = '';
     loadTidalStatus();
+    loadTidalAccounts();
 };
 
 async function pollTidalStatus(tries) {
@@ -1779,6 +1784,7 @@ async function pollTidalStatus(tries) {
         if (state === 'logged_in') {
             document.getElementById('tidalLoginLink').innerHTML =
                 '<div class="alert alert-success small py-2 mb-0">Logged in to Tidal.</div>';
+            loadTidalAccounts();
             return;
         }
     }
@@ -1792,15 +1798,53 @@ async function loadTidalStatus() {
         const st = data.status || { state: 'unavailable' };
         const badge = {
             logged_in: `<span class="badge bg-success">Logged in${st.user ? ' · ' + w_escape(st.user) : ''}</span>`,
-            logged_out: '<span class="badge bg-secondary">Logged out</span>',
+            logged_out: '<span class="badge bg-secondary">Not linked</span>',
             pending: '<span class="badge bg-warning text-dark">Login pending…</span>',
             unavailable: '<span class="badge bg-light text-muted">Unavailable (enable + restart)</span>',
         }[st.state] || '<span class="badge bg-light text-muted">Unknown</span>';
-        if (row) row.innerHTML = `Status: ${badge}`;
+        // Per-ZMM-user: this is the signed-in user's own Tidal, not the hub's.
+        if (row) row.innerHTML = `Your Tidal: ${badge}`;
         return st.state;
     } catch (e) {
         if (row) row.innerHTML = '<span class="text-muted small">Status unavailable</span>';
         return 'unavailable';
+    }
+}
+
+// Admin-only: who in the household has linked a Tidal account. Read-only, and
+// deliberately just names — an admin can see who is set up without being able
+// to act as them. The "unassigned" row is the login adopted from before Tidal
+// was per-user, which nobody has claimed yet.
+async function loadTidalAccounts() {
+    const row = document.getElementById('tidalAccountsRow');
+    if (!row) return;
+    if (!window.zmmAuth?.hasScope?.('admin')) { row.innerHTML = ''; return; }
+    try {
+        const res = await fetch('/api/media/tidal/accounts');
+        const data = await res.json();
+        if (!data.success) { row.innerHTML = ''; return; }
+        const rows = data.accounts || [];
+        if (!rows.length) {
+            row.innerHTML = '<div class="form-text">No ZMM user has linked '
+                + 'Tidal yet.</div>';
+            return;
+        }
+        const badges = rows.map(a => {
+            const claimed = a.username !== data.unassigned;
+            const name = claimed ? w_escape(a.username) : 'unclaimed login';
+            const cls = claimed ? (a.linked ? 'bg-success' : 'bg-secondary')
+                                : 'bg-warning text-dark';
+            return `<span class="badge ${cls} me-1">${name}</span>`;
+        }).join('');
+        const note = data.unassigned
+            ? '<div class="form-text text-warning">A Tidal login was carried '
+              + 'over from before accounts were per-user. Set '
+              + '<code>media.tidal.owner</code> to say whose it is.</div>'
+            : '';
+        row.innerHTML = `<div class="form-text mb-1">Linked accounts:</div>`
+            + badges + note;
+    } catch (e) {
+        row.innerHTML = '';
     }
 }
 

@@ -298,7 +298,10 @@ class CastPlayerProvider(PlayerProvider):
         if (self.karaoke and self.lyrics_app_id and self._lyrics_getter
                 and item.media_type == "tidal" and item.source_id):
             try:
-                lyr = await self._lyrics_getter(item.source_id)
+                # The item's own account: a zone or a restored queue can be
+                # playing a track this device's viewer never queued.
+                lyr = await self._lyrics_getter(item.source_id,
+                                                getattr(item, "owner", ""))
             except Exception as e:
                 logger.debug(f"Lyrics fetch failed for {item.source_id}: {e}")
                 lyr = None

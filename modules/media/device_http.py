@@ -80,12 +80,21 @@ class DeviceAudioListener:
                                      headers={"Cache-Control": "no-store",
                                               "Access-Control-Allow-Origin": "*"})
 
-        @app.get("/api/media/tidal/manifest/{track_id}.mpd")
-        async def tidal_manifest(track_id: str):
+        @app.get("/api/media/tidal/manifest/{token}.mpd")
+        async def tidal_manifest(token: str):
+            # A zone decodes on this host and fetches its manifest over
+            # loopback, so this is the same route as the main app's, redeeming
+            # the same token — which is what names the account, since nothing
+            # reaching this listener carries a session.
             src = getattr(svc, "tidal", None)
             if not src:
                 return Response("tidal unavailable", status_code=503)
-            mpd = await src.dash_manifest(track_id)
+            got = src.redeem_manifest_token(token)
+            if not got:
+                return Response("unknown or expired manifest token",
+                                status_code=404)
+            acct, track_id = got
+            mpd = await acct.dash_manifest(track_id)
             if not mpd:
                 return Response("no lossless manifest for track",
                                 status_code=404)
