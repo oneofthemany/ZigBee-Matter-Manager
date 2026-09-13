@@ -19,7 +19,7 @@ let _remote = [];           // players from /api/media/players (Cast / WiiM)
 let _players = [];          // _remote + the "This device" entry, as rendered
 let _selectedId = null;     // player targeted by search "play"
 let _groupBuilderOpen = false;
-let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sync'
+let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sonos' | 'sync'
 let _syncGroups = [];       // saved speaker-sync groups (from /api/media/sync/groups)
 let _syncStatus = null;     // last /api/media/sync/status snapshot
 let _syncTimer = null;      // stats poll while the sync pane is open
@@ -289,6 +289,7 @@ function iconFor(p) {
     if (p.provider === 'zone') return 'fas fa-object-group';     // an OpenZone zone
     if (p.is_group) return 'fas fa-layer-group';          // any group: stacked icon
     if (p.provider === 'local') return 'fas fa-mobile-screen';   // this browser
+    if (p.provider === 'sonos') return 'fas fa-house-signal';
     return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
 }
 
@@ -307,6 +308,10 @@ function groupBadge(p) {
     if (p.provider === 'wiim') {
         return '<span class="badge bg-info text-dark ms-1" title="WiiM multiroom group">'
              + '<i class="fas fa-volume-up me-1"></i>WiiM group</span>';
+    }
+    if (p.provider === 'sonos') {
+        return '<span class="badge bg-warning text-dark ms-1" title="Sonos group">'
+             + '<i class="fas fa-house-signal me-1"></i>Sonos group</span>';
     }
     return '<span class="badge bg-secondary ms-1">group</span>';
 }
@@ -438,7 +443,7 @@ function renderPlayers() {
               </button>
               <span class="small text-muted" id="vol-lbl-${pidE}" style="width:2.5em">${vol}%</span>
             </div>
-            ${p.is_group && p.provider === 'wiim'
+            ${p.is_group && NATIVE_GROUP_PROVIDERS[p.provider]
                 ? `<button class="btn btn-sm btn-outline-danger" onclick="window.mediaUngroup('${pid}')" title="Ungroup">
                      <i class="far fa-object-ungroup"></i></button>`
                 : ''}
@@ -1863,6 +1868,11 @@ function renderGroupBuilder() {
                 <i class="fas fa-volume-up me-1"></i>WiiM<span class="d-none d-sm-inline"> multiroom</span></button>
             </li>
             <li class="nav-item">
+              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSonos"
+                      onclick="window.mediaGroupTab('sonos')">
+                <i class="fas fa-house-signal me-1"></i>Sonos</button>
+            </li>
+            <li class="nav-item">
               <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSync"
                       onclick="window.mediaGroupTab('sync')">
                 <i class="zmm-openzone-icon me-1"></i>OpenZone</button>
@@ -1878,39 +1888,46 @@ function renderGroupBuilder() {
     }
     document.getElementById('mediaGroupTabWiim')
         ?.classList.toggle('active', _groupTab === 'wiim');
+    document.getElementById('mediaGroupTabSonos')
+        ?.classList.toggle('active', _groupTab === 'sonos');
     document.getElementById('mediaGroupTabSync')
         ?.classList.toggle('active', _groupTab === 'sync');
-    if (_groupTab === 'wiim') {
+    if (NATIVE_GROUP_PROVIDERS[_groupTab]) {
         _stopSyncPoll();
-        renderWiimBuilder();          // cheap + depends on _players
+        renderNativeBuilder(_groupTab);   // cheap + depends on _players
     } else if (pane.dataset.tab !== 'sync') {
         renderSyncPane();             // first show / tab switch only
     }
 }
 
-function renderWiimBuilder() {
+// Ecosystems whose speakers group natively (the provider implements
+// join_group / ungroup); each gets a tab in the group builder.
+const NATIVE_GROUP_PROVIDERS = { wiim: 'WiiM', sonos: 'Sonos' };
+
+function renderNativeBuilder(provider) {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
-    el.dataset.tab = 'wiim';
-    const wiim = _players.filter(p => p.provider === 'wiim' && p.available && !p.is_group);
-    if (wiim.length < 2) {
+    el.dataset.tab = provider;
+    const label = NATIVE_GROUP_PROVIDERS[provider];
+    const players = _players.filter(p => p.provider === provider && p.available && !p.is_group);
+    if (players.length < 2) {
         el.innerHTML = `<div class="alert alert-info mb-0">
-            Native grouping here needs at least two available WiiM players.
+            Native grouping here needs at least two available ${label} players.
             <div class="small mt-1">Google Cast speakers: use the <em>OpenZone</em> tab
             (no Google Home needed), or a Google-Home group (appears automatically).</div></div>`;
         return;
     }
     el.innerHTML = `
-      <div class="mb-2 fw-semibold"><i class="far fa-object-group me-1"></i> Build a WiiM group</div>
+      <div class="mb-2 fw-semibold"><i class="far fa-object-group me-1"></i> Build a ${label} group</div>
       <p class="small text-muted">Pick a master (plays the source) and the members to sync to it.</p>
       <div class="mb-2">
         <label class="form-label small">Master</label>
         <select class="form-select form-select-sm" id="mediaGroupMaster">
-          ${wiim.map(p => `<option value="${esc(p.player_id)}">${esc(p.name)}</option>`).join('')}
+          ${players.map(p => `<option value="${esc(p.player_id)}">${esc(p.name)}</option>`).join('')}
         </select>
       </div>
       <label class="form-label small">Members</label>
-      ${wiim.map(p => `
+      ${players.map(p => `
         <div class="form-check">
           <input class="form-check-input media-group-member" type="checkbox" value="${esc(p.player_id)}" id="gm_${esc(p.player_id)}">
           <label class="form-check-label small" for="gm_${esc(p.player_id)}">${esc(p.name)}</label>

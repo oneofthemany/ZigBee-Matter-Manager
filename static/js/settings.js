@@ -598,6 +598,23 @@ const API_PROVIDERS = [
             && (c.media.cast?.enabled !== false || c.media.wiim?.enabled !== false),
     },
     {
+        id: 'sonos', label: 'Sonos', icon: 'fa-house-signal', mediaEngine: true,
+        render: c => renderSonosSection(c),
+        onShow: () => loadSonosPlayers(),
+        collect: () => ({
+            media: {
+                sonos: {
+                    enabled: document.getElementById('cfg_media_sonos_enabled')?.checked ?? false,
+                    discovery: document.getElementById('cfg_media_sonos_discovery')?.checked ?? true,
+                    devices: (document.getElementById('cfg_media_sonos_devices')?.value || '')
+                        .split('\n').map(s => s.trim()).filter(Boolean),
+                },
+            },
+        }),
+        disablePatch: { media: { sonos: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled && !!c.media.sonos?.enabled,
+    },
+    {
         id: 'radio', label: 'Radio Browser', icon: 'fa-broadcast-tower', mediaEngine: true,
         render: c => renderRadioBrowserSection(c),
         collect: () => ({
@@ -914,7 +931,7 @@ function collectApiValues() {
     // Without the Casting pane nothing sends media.enabled, but Tidal and
     // Radio Browser still need the media engine running.
     const m = out.media;
-    if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled)) {
+    if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled || m.sonos?.enabled)) {
         m.enabled = true;
     }
     return out;
@@ -1428,6 +1445,70 @@ function renderCastingSection(config) {
       </div>
     </div>
     `;
+}
+
+// SONOS SECTION — lives in the External APIs tab
+
+function renderSonosSection(config) {
+    const s = (config.media || {}).sonos || {};
+    const devices = (s.devices || []).join('\n');
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-house-signal me-1"></i> Sonos</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_media_sonos_enabled" ${s.enabled ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Controls Sonos speakers directly on your network — no Sonos account needed. Groups made in the
+      Sonos app show up here, and you can build new ones from the Media tab. Radio, Tidal and
+      announcements play on them like any other speaker. Changes take effect after a service restart.
+    </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Auto-discovery</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_sonos_discovery" ${s.discovery !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Find speakers on the LAN</label>
+        </div>
+      </div>
+      <div class="col-md-9">
+        <label class="form-label small fw-semibold">Speaker IPs (optional)</label>
+        <textarea class="form-control" id="cfg_media_sonos_devices" rows="3"
+                  placeholder="One IP per line, e.g.&#10;192.168.1.60">${w_escape(devices)}</textarea>
+        <small class="text-muted">Only needed when discovery can't see them (VLANs, blocked multicast).</small>
+      </div>
+    </div>
+    <div class="fw-semibold small mb-1">Speakers found</div>
+    <div id="sonosPlayersList" class="small text-muted"></div>
+    `;
+}
+
+async function loadSonosPlayers() {
+    const el = document.getElementById('sonosPlayersList');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Loading…';
+    try {
+        const res = await fetch('/api/media/players').then(r => r.json());
+        if (!res.success) {
+            el.textContent = 'The media engine isn’t running — enable Sonos, save and restart.';
+            return;
+        }
+        const sonos = (res.players || []).filter(p => p.provider === 'sonos');
+        if (!sonos.length) {
+            el.textContent = 'None yet. After enabling, save and restart; speakers appear within a few seconds.';
+            return;
+        }
+        el.innerHTML = `<ul class="list-unstyled mb-0">${sonos.map(p => `
+          <li class="py-1">
+            <span class="badge ${p.available ? 'bg-success' : 'bg-secondary'} me-1">${p.available ? 'online' : 'offline'}</span>
+            <span class="text-body">${w_escape(p.name)}</span>
+            ${p.is_group ? `<span class="badge bg-info text-dark ms-1">group · ${p.group_members.length + 1}</span>` : ''}
+          </li>`).join('')}</ul>`;
+    } catch (e) {
+        el.textContent = 'Could not load speakers: ' + e.message;
+    }
 }
 
 // RADIO BROWSER SECTION — lives in the External APIs tab

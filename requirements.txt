@@ -16,6 +16,7 @@ uk-fuel-prices-api
 tzdata
 aiohttp>=3.9
 pychromecast~=14.0
+soco~=0.31
 zeroconf>=0.131,<1.0
 tidalapi~=0.8
 greeclimate

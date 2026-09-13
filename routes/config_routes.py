@@ -45,6 +45,9 @@ MEDIA_DEFAULTS = {
                  "mic_device": ""},
     },
     "wiim": {"enabled": True, "devices": []},
+    # Sonos is opt-in (unlike cast/wiim): it needs the soco package and its
+    # SSDP discovery sweeps the LAN on startup.
+    "sonos": {"enabled": False, "discovery": True, "devices": []},
     "radio_browser": {"enabled": True},
     "tidal": {"enabled": False, "quality": "high", "manifest_base_url": "",
               "owner": ""},
@@ -302,6 +305,18 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         # Normalise to a clean list of non-empty IP strings.
                         wiim_cfg["devices"] = [
                             str(d).strip() for d in (wiim_in["devices"] or [])
+                            if str(d).strip()
+                        ]
+                if "sonos" in m:
+                    sonos_in = m["sonos"] or {}
+                    sonos_cfg = media_cfg.setdefault("sonos", {})
+                    if "enabled" in sonos_in:
+                        sonos_cfg["enabled"] = bool(sonos_in["enabled"])
+                    if "discovery" in sonos_in:
+                        sonos_cfg["discovery"] = bool(sonos_in["discovery"])
+                    if "devices" in sonos_in:
+                        sonos_cfg["devices"] = [
+                            str(d).strip() for d in (sonos_in["devices"] or [])
                             if str(d).strip()
                         ]
                 if "radio_browser" in m:

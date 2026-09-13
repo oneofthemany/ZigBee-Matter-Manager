@@ -113,6 +113,20 @@ class MediaService:
                 )
             )
 
+        sonos_cfg = config.get("sonos", {}) or {}
+        if sonos_cfg.get("enabled", False):
+            # Imported lazily so the app still boots if soco isn't installed.
+            try:
+                from modules.media.players.sonos import SonosPlayerProvider
+                self.controller.add_player_provider(
+                    SonosPlayerProvider(
+                        device_ips=sonos_cfg.get("devices", []) or [],
+                        discovery=sonos_cfg.get("discovery", True),
+                    )
+                )
+            except ImportError as e:
+                logger.warning(f"Sonos support unavailable (soco not installed?): {e}")
+
         cast_cfg = config.get("cast", {}) or {}
         if cast_cfg.get("enabled", True):
             # Imported lazily so the app still boots if pychromecast isn't installed.
