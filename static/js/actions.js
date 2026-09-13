@@ -981,7 +981,7 @@ export async function handleUnbanClick(ieee) {
 export async function cleanupOrphans() {
     if (!await confirmDialog({
         title: 'Clean database',
-        message: 'This will find and remove devices that exist in the database but are not active on the network. Continue?',
+        message: 'This will find and remove devices that exist in the database but are not active on the network, and devices still shown in the app that the network no longer knows about. Continue?',
         confirmText: 'Scan'
     })) {
         return;

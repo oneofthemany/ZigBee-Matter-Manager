@@ -114,7 +114,14 @@ class DatabaseMixin:
             stale = [ieee for ieee in db_devices_normalized
                      if ieee in zigpy_devices and ieee not in managed_devices]
 
-            orphaned = list(set(db_orphaned + stale))
+            # Ghosts = still in our wrapper dict but gone from zigpy. They keep
+            # rendering in the UI (Frames, device list) with nothing behind them.
+            # Only meaningful once zigpy has loaded — an empty app.devices would
+            # make the whole network look ghosted, so report none then.
+            ghosts = [ieee for ieee in managed_devices if ieee not in zigpy_devices] \
+                if zigpy_devices else []
+
+            orphaned = list(set(db_orphaned + stale + ghosts))
 
             return {
                 "total_in_db": len(db_devices),
@@ -123,6 +130,7 @@ class DatabaseMixin:
                 "orphaned": orphaned,
                 "db_orphaned": db_orphaned,
                 "stale": stale,
+                "ghosts": ghosts,
                 "count": len(orphaned)
             }
         except Exception as e:
@@ -191,9 +199,17 @@ class DatabaseMixin:
         if "error" in result:
             return result
 
-        removed, failed = await self._remove_orphans(result.get("db_orphaned", []))
+        ghosts = result.get("ghosts", [])
+        # A ghost also in the device table goes through the full removal below,
+        # which force-cleans the DB too — don't sweep it twice.
+        db_only = [i for i in result.get("db_orphaned", []) if i not in ghosts]
+
+        removed, failed = await self._remove_orphans(db_only)
         recovered, recover_failed = self._recover_stale(result.get("stale", []))
         failed += recover_failed
+        ghosts_removed, ghost_failed = await self._remove_ghosts(ghosts)
+        removed += ghosts_removed
+        failed += ghost_failed
 
         # Refresh frontend if anything changed
         if removed or recovered:
@@ -207,6 +223,25 @@ class DatabaseMixin:
             "count_recovered": len(recovered),
             "count_failed": len(failed)
         }
+
+    async def _remove_ghosts(self, ieees) -> tuple:
+        """Drop wrapper-only devices via the normal removal path. (removed, failed)
+
+        remove_device skips zigpy when the device isn't there, and also clears
+        names, settings, polling, state cache and notifies the frontend — a
+        plain `del self.devices[ieee]` would leave all of that behind.
+        Manual cleanup only: the janitor loop never calls this.
+        """
+        removed, failed = [], []
+        for ieee in ieees:
+            res = await self.remove_device(ieee, force=True)
+            if res.get("success"):
+                removed.append(ieee)
+                logger.info(f"Removed ghost device (not in zigpy): {ieee}")
+            else:
+                failed.append({"ieee": ieee, "error": res.get("error", "unknown")})
+                logger.error(f"Failed to remove ghost {ieee}: {res.get('error')}")
+        return removed, failed
 
     # AUTOMATIC MAINTENANCE
 
