@@ -127,6 +127,24 @@ class MediaService:
             except ImportError as e:
                 logger.warning(f"Sonos support unavailable (soco not installed?): {e}")
 
+        self.airplay = None
+        airplay_cfg = config.get("airplay", {}) or {}
+        if airplay_cfg.get("enabled", False):
+            # Imported lazily so the app still boots if pyatv isn't installed.
+            try:
+                import os
+                from modules.media.players.airplay import (
+                    AirPlayPlayerProvider, SecretsCredentialStore)
+                self.airplay = AirPlayPlayerProvider(
+                    device_hosts=airplay_cfg.get("devices", []) or [],
+                    discovery=airplay_cfg.get("discovery", True),
+                    credential_store=SecretsCredentialStore(
+                        os.environ.get("ZMM_SECRETS_FILE", "./config/secrets.yaml")),
+                )
+                self.controller.add_player_provider(self.airplay)
+            except ImportError as e:
+                logger.warning(f"AirPlay support unavailable (pyatv not installed?): {e}")
+
         cast_cfg = config.get("cast", {}) or {}
         if cast_cfg.get("enabled", True):
             # Imported lazily so the app still boots if pychromecast isn't installed.
