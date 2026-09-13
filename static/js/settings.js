@@ -536,77 +536,391 @@ function renderSecurityTab(config) {
 }
 
 
-// WEATHER TAB RENDER
+// EXTERNAL APIs TAB
+//
+// Each supported API is one registry entry; the user picks which ones get a
+// sub-tab and the choice persists as ui.enabled_apis in config.yaml.
+//
+//   collect()      config slice this pane saves. Save only collects panes that
+//                  are in the DOM — collectFormValues' fallbacks would otherwise
+//                  send enabled:false for every hidden integration.
+//   disablePatch   config slice written when the tab is removed, or null when
+//                  the API has nothing in config.yaml to switch off (AC units
+//                  and Fuel credentials live behind their own endpoints).
+//   isConfigured   picks the default tabs before ui.enabled_apis exists;
+//                  null = state not in config, so the tab is shown.
+//   mediaEngine    runs inside MediaService, which only starts with media.enabled.
+
+const API_PROVIDERS = [
+    {
+        id: 'weather', label: 'Weather', icon: 'fa-cloud-sun',
+        render: c => renderWeatherSection(c),
+        onShow: () => loadWeatherStatus(),
+        collect: () => ({
+            weather: {
+                enabled: document.getElementById('cfg_weather_enabled')?.checked ?? false,
+                latitude: parseFloat(document.getElementById('cfg_weather_lat')?.value) || null,
+                longitude: parseFloat(document.getElementById('cfg_weather_lon')?.value) || null,
+                poll_interval_minutes: Number(document.getElementById('cfg_weather_interval')?.value) || 30,
+                mqtt_publish: document.getElementById('cfg_weather_mqtt')?.checked ?? false,
+            },
+        }),
+        disablePatch: { weather: { enabled: false } },
+        isConfigured: c => !!c.weather?.enabled,
+    },
+    {
+        id: 'casting', label: 'Casting', icon: 'fa-volume-up', mediaEngine: true,
+        render: c => renderCastingSection(c),
+        collect: () => ({
+            media: {
+                enabled: document.getElementById('cfg_media_enabled')?.checked ?? false,
+                poll_interval_seconds: Number(document.getElementById('cfg_media_poll')?.value) || 10,
+                adopt_sessions: document.getElementById('cfg_media_adopt')?.checked ?? true,
+                cast: {
+                    enabled: document.getElementById('cfg_media_cast_enabled')?.checked ?? true,
+                    app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',
+                    lyrics_app_id: document.getElementById('cfg_media_cast_lyrics_appid')?.value?.trim() || '',
+                },
+                wiim: {
+                    enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? true,
+                    devices: (document.getElementById('cfg_media_wiim_devices')?.value || '')
+                        .split('\n').map(s => s.trim()).filter(Boolean),
+                },
+                tts: {
+                    base_url: document.getElementById('cfg_media_tts_base')?.value?.trim()
+                        || 'https://translate.google.com/translate_tts',
+                    lang: document.getElementById('cfg_media_tts_lang')?.value?.trim() || 'en',
+                },
+            },
+        }),
+        disablePatch: { media: { cast: { enabled: false }, wiim: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled
+            && (c.media.cast?.enabled !== false || c.media.wiim?.enabled !== false),
+    },
+    {
+        id: 'radio', label: 'Radio Browser', icon: 'fa-broadcast-tower', mediaEngine: true,
+        render: c => renderRadioBrowserSection(c),
+        collect: () => ({
+            media: {
+                radio_browser: {
+                    enabled: document.getElementById('cfg_media_rb_enabled')?.checked ?? true,
+                },
+            },
+        }),
+        disablePatch: { media: { radio_browser: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled && c.media.radio_browser?.enabled !== false,
+    },
+    {
+        id: 'tidal', label: 'Tidal', icon: 'fa-music', mediaEngine: true,
+        render: c => renderTidalSection(c),
+        onShow: () => { loadTidalStatus(); loadTidalAccounts(); },
+        collect: () => ({
+            media: {
+                tidal: {
+                    enabled: document.getElementById('cfg_media_tidal_enabled')?.checked ?? false,
+                    quality: document.getElementById('cfg_media_tidal_quality')?.value || 'high',
+                    manifest_base_url: document.getElementById('cfg_media_tidal_manifest')?.value?.trim() || '',
+                },
+            },
+        }),
+        disablePatch: { media: { tidal: { enabled: false } } },
+        isConfigured: c => !!c.media?.tidal?.enabled,
+    },
+    {
+        id: 'ac', label: 'Air Con', icon: 'fa-snowflake',
+        render: () => renderAcSection(),
+        onShow: () => window.loadAcUnits(),
+        collect: () => ({}),
+        disablePatch: null,
+        isConfigured: () => null,
+    },
+    {
+        id: 'energy', label: 'Energy', icon: 'fa-plug',
+        render: c => renderOctopusSection(c),
+        onShow: () => loadOctopusStatus(),
+        collect: () => {
+            const get = id => document.getElementById(id)?.value?.trim() ?? null;
+            const getNum = id => { const v = get(id); return v !== null ? Number(v) : null; };
+            return {
+                octopus: {
+                    enabled: document.getElementById('cfg_octopus_enabled')?.checked ?? false,
+                    // Blank = keep the stored key (backend skips falsy)
+                    api_key: get('cfg_octopus_api_key') || '',
+                    account_number: get('cfg_octopus_account') ?? '',
+                    gas_unit: get('cfg_octopus_gas_unit') || 'auto',
+                    gas_calorific_value: getNum('cfg_octopus_cv') || 39.5,
+                    consumption_poll_minutes: getNum('cfg_octopus_cons_poll') || 30,
+                    backfill_days: getNum('cfg_octopus_backfill') || 90,
+                    home_mini: document.getElementById('cfg_octopus_home_mini')?.checked ?? false,
+                    telemetry_poll_minutes: getNum('cfg_octopus_tele_poll') || 5,
+                    retention_days: getNum('cfg_octopus_retention') || 400,
+                },
+            };
+        },
+        disablePatch: { octopus: { enabled: false } },
+        isConfigured: c => !!c.octopus?.enabled,
+    },
+    {
+        id: 'fuel', label: 'Fuel', icon: 'fa-gas-pump',
+        render: () => renderFuelRegionSection() + renderFuelFinderSection(),
+        onShow: () => { loadFuelRegion(); loadFuelFinderConfig(); },
+        collect: () => ({}),
+        disablePatch: null,
+        isConfigured: () => null,
+    },
+    {
+        id: 'security', label: 'Security', icon: 'fa-shield-alt',
+        render: c => renderSecuritySection(c),
+        onShow: () => SECURITY_PROVIDERS.forEach(p => p.onShow?.()),
+        collect: () => {
+            const get = id => document.getElementById(id)?.value?.trim() ?? null;
+            return {
+                security: {
+                    nuki: {
+                        enabled: document.getElementById('cfg_nuki_enabled')?.checked ?? false,
+                        bridge: {
+                            enabled: document.getElementById('cfg_nuki_bridge_enabled')?.checked ?? true,
+                            host: get('cfg_nuki_bridge_host') ?? '',
+                            port: Number(get('cfg_nuki_bridge_port')) || 8080,
+                            // Blank = keep the stored token (backend skips falsy)
+                            token: get('cfg_nuki_bridge_token') || '',
+                            hashed_token: document.getElementById('cfg_nuki_bridge_hashed')?.checked ?? true,
+                        },
+                        matter: {
+                            enabled: document.getElementById('cfg_nuki_matter_enabled')?.checked ?? true,
+                        },
+                    },
+                    yale: {
+                        enabled: document.getElementById('cfg_yale_enabled')?.checked ?? false,
+                        matter: {
+                            enabled: document.getElementById('cfg_yale_matter_enabled')?.checked ?? true,
+                        },
+                    },
+                },
+            };
+        },
+        disablePatch: { security: { nuki: { enabled: false }, yale: { enabled: false } } },
+        isConfigured: c => !!(c.security?.nuki?.enabled || c.security?.yale?.enabled),
+    },
+];
+
+let _enabledApis = [];
+
+function _apiProvider(id) {
+    return API_PROVIDERS.find(p => p.id === id);
+}
+
+function _deepMerge(target, src) {
+    for (const [k, v] of Object.entries(src || {})) {
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            if (!target[k] || typeof target[k] !== 'object') target[k] = {};
+            _deepMerge(target[k], v);
+        } else {
+            target[k] = v;
+        }
+    }
+    return target;
+}
+
+function _initialEnabledApis(config) {
+    const saved = config.ui?.enabled_apis;
+    if (Array.isArray(saved)) return saved.filter(id => _apiProvider(id));
+    return API_PROVIDERS.filter(p => p.isConfigured(config) !== false).map(p => p.id);
+}
+
+function _apiTabHtml(p, active) {
+    return `
+      <li class="nav-item d-flex align-items-center" data-api-tab="${w_escape(p.id)}">
+        <button class="nav-link ${active ? 'active' : ''}" data-bs-toggle="tab"
+                data-bs-target="#apiPane_${w_escape(p.id)}" type="button">
+          <i class="fas ${w_escape(p.icon)} me-1"></i> <span class="tab-label">${w_escape(p.label)}</span>
+        </button>
+        <button type="button" class="btn btn-link btn-sm text-muted px-1 py-0"
+                title="Remove ${w_escape(p.label)}" aria-label="Remove ${w_escape(p.label)}"
+                onclick="window.apiRemove('${w_escape(p.id)}')">
+          <i class="fas fa-times fa-xs"></i>
+        </button>
+      </li>`;
+}
+
+function _apiPaneHtml(p, config, active) {
+    return `<div class="tab-pane fade ${active ? 'show active' : ''}" id="apiPane_${w_escape(p.id)}">${p.render(config)}</div>`;
+}
+
+// Loaders run the first time a pane is shown, not for every API up front.
+function _wireApiTab(li) {
+    const p = _apiProvider(li.dataset.apiTab);
+    const btn = li.querySelector('[data-bs-toggle="tab"]');
+    if (!p?.onShow || !btn) return;
+    let loaded = false;
+    btn.addEventListener('shown.bs.tab', () => {
+        if (loaded) return;
+        loaded = true;
+        p.onShow();
+    });
+    if (btn.classList.contains('active')) { loaded = true; p.onShow(); }
+}
+
+function _renderApiAddMenu() {
+    const menu = document.getElementById('apiAddMenu');
+    const btn = document.getElementById('apiAddBtn');
+    if (!menu || !btn) return;
+    const available = API_PROVIDERS.filter(p => !_enabledApis.includes(p.id));
+    btn.disabled = !available.length;
+    menu.innerHTML = available.map(p => `
+      <li><button class="dropdown-item" type="button" onclick="window.apiAdd('${w_escape(p.id)}')">
+        <i class="fas ${w_escape(p.icon)} fa-fw me-2"></i>${w_escape(p.label)}
+      </button></li>`).join('');
+}
+
+function _renderApiEmptyState() {
+    const empty = document.getElementById('apiEmptyState');
+    if (empty) empty.hidden = _enabledApis.length > 0;
+}
 
 function renderApisTab(config) {
     const el = document.getElementById('apisFormBody');
     if (!el) return;
 
-    // Internal tabs so each provider group is its own pane (no long scroll).
+    _enabledApis = _initialEnabledApis(config);
+    const selected = _enabledApis.map(_apiProvider);
+
+    // The Add menu sits outside the rail: on mobile the rail scrolls
+    // horizontally, which would clip an open dropdown.
     el.innerHTML = `
-    <ul class="nav nav-tabs mb-3 zmm-icon-rail" role="tablist">
-      <li class="nav-item d-md-none rail-toggle-item">
-        <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
-                onclick="this.closest('ul').classList.toggle('labels-expanded')">
-          <i class="fas fa-text-width"></i>
+    <div class="d-flex align-items-start gap-2 mb-3">
+      <ul class="nav nav-tabs zmm-icon-rail flex-grow-1" style="min-width:0" role="tablist" id="apiTabRail">
+        <li class="nav-item d-md-none rail-toggle-item">
+          <button class="nav-link rail-toggle" type="button" title="Toggle tab labels" aria-label="Toggle tab labels"
+                  onclick="this.closest('ul').classList.toggle('labels-expanded')">
+            <i class="fas fa-text-width"></i>
+          </button>
+        </li>
+        ${selected.map((p, i) => _apiTabHtml(p, i === 0)).join('')}
+      </ul>
+      <div class="dropdown flex-shrink-0">
+        <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" id="apiAddBtn"
+                data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="fas fa-plus me-1"></i><span class="d-none d-sm-inline">Add API</span>
         </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#apiPaneWeather" type="button">
-          <i class="fas fa-cloud-sun me-1"></i> <span class="tab-label">Weather</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneMedia" type="button">
-          <i class="fas fa-volume-up me-1"></i> <span class="tab-label">Media</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneTidal" type="button">
-          <i class="fas fa-music me-1"></i> <span class="tab-label">Tidal</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneAc" type="button">
-          <i class="fas fa-snowflake me-1"></i> <span class="tab-label">Air Con</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneEnergy" type="button">
-          <i class="fas fa-plug me-1"></i> <span class="tab-label">Energy</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneFuel" type="button">
-          <i class="fas fa-gas-pump me-1"></i> <span class="tab-label">Fuel</span>
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#apiPaneSecurity" type="button">
-          <i class="fas fa-shield-alt me-1"></i> <span class="tab-label">Security</span>
-        </button>
-      </li>
-    </ul>
-    <div class="tab-content">
-      <div class="tab-pane fade show active" id="apiPaneWeather">${renderWeatherSection(config)}</div>
-      <div class="tab-pane fade" id="apiPaneMedia">${renderMediaSection(config)}</div>
-      <div class="tab-pane fade" id="apiPaneTidal">${renderTidalSection(config)}</div>
-      <div class="tab-pane fade" id="apiPaneAc">${renderAcSection()}</div>
-      <div class="tab-pane fade" id="apiPaneEnergy">${renderOctopusSection(config)}</div>
-      <div class="tab-pane fade" id="apiPaneFuel">${renderFuelRegionSection()}${renderFuelFinderSection()}</div>
-      <div class="tab-pane fade" id="apiPaneSecurity">${renderSecuritySection(config)}</div>
+        <ul class="dropdown-menu dropdown-menu-end" id="apiAddMenu"></ul>
+      </div>
+    </div>
+    <div id="apiEmptyState" class="text-muted small text-center py-4" ${selected.length ? 'hidden' : ''}>
+      No APIs added yet. Use <strong>Add API</strong> to set one up.
+    </div>
+    <div class="tab-content" id="apiTabContent">
+      ${selected.map((p, i) => _apiPaneHtml(p, config, i === 0)).join('')}
     </div>
     `;
 
-    loadWeatherStatus();
-    loadTidalStatus();
-    loadTidalAccounts();
-    loadAcUnits();
-    loadOctopusStatus();
-    loadFuelRegion();
-    loadFuelFinderConfig();
-    SECURITY_PROVIDERS.forEach(p => p.onShow?.());
+    el.querySelectorAll('[data-api-tab]').forEach(_wireApiTab);
+    _renderApiAddMenu();
 }
+
+// Selection changes save straight away (partial payload — the backend merges
+// key by key), so they don't wait on the Save button or disturb unsaved edits
+// in other panes.
+async function _persistApiSelection(extraPatch) {
+    const body = _deepMerge({ ui: { enabled_apis: [..._enabledApis] } }, extraPatch || {});
+    const res = await fetch('/api/config/structured', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: body }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'save failed');
+    _deepMerge(_currentConfig, body);
+}
+
+window.apiAdd = async function (id) {
+    const p = _apiProvider(id);
+    const rail = document.getElementById('apiTabRail');
+    const content = document.getElementById('apiTabContent');
+    if (!p || !rail || !content || _enabledApis.includes(id)) return;
+
+    _enabledApis.push(id);
+    try {
+        await _persistApiSelection();
+    } catch (e) {
+        _enabledApis = _enabledApis.filter(x => x !== id);
+        showSettingsAlert('danger', `Could not add ${p.label}: ${e.message}`);
+        return;
+    }
+
+    rail.insertAdjacentHTML('beforeend', _apiTabHtml(p, false));
+    content.insertAdjacentHTML('beforeend', _apiPaneHtml(p, _currentConfig, false));
+    const li = rail.querySelector(`[data-api-tab="${CSS.escape(id)}"]`);
+    _wireApiTab(li);
+    _renderApiAddMenu();
+    _renderApiEmptyState();
+    bootstrap.Tab.getOrCreateInstance(li.querySelector('[data-bs-toggle="tab"]')).show();
+};
+
+window.apiRemove = async function (id) {
+    const p = _apiProvider(id);
+    if (!p) return;
+
+    const remaining = _enabledApis.filter(x => x !== id);
+    let patch = p.disablePatch ? structuredClone(p.disablePatch) : null;
+    // The media engine stays on while another media API still needs it.
+    if (p.mediaEngine && !remaining.some(x => _apiProvider(x)?.mediaEngine)) {
+        patch = _deepMerge(patch || {}, { media: { enabled: false } });
+    }
+
+    const message = patch
+        ? `Remove ${p.label}? The integration is switched off and its tab removed. ` +
+          `Saved credentials are kept, so adding it back restores them. ` +
+          `Takes effect after a service restart.`
+        : `Remove the ${p.label} tab? Anything already set up there keeps working; ` +
+          `add the tab back to manage it.`;
+    const ok = await confirmDialog({
+        title: `Remove ${p.label}`, message, confirmText: 'Remove', variant: 'danger',
+    });
+    if (!ok) return;
+
+    const previous = _enabledApis;
+    _enabledApis = remaining;
+    try {
+        await _persistApiSelection(patch);
+    } catch (e) {
+        _enabledApis = previous;
+        showSettingsAlert('danger', `Could not remove ${p.label}: ${e.message}`);
+        return;
+    }
+
+    const li = document.querySelector(`#apiTabRail [data-api-tab="${CSS.escape(id)}"]`);
+    const pane = document.getElementById(`apiPane_${id}`);
+    const wasActive = li?.querySelector('.nav-link')?.classList.contains('active');
+    li?.remove();
+    pane?.remove();
+    if (wasActive) {
+        const first = document.querySelector('#apiTabRail [data-api-tab] [data-bs-toggle="tab"]');
+        if (first) bootstrap.Tab.getOrCreateInstance(first).show();
+    }
+    _renderApiAddMenu();
+    _renderApiEmptyState();
+    showSettingsAlert('success', `${p.label} removed.`);
+};
+
+function collectApiValues() {
+    // No rail means the APIs tab never rendered: send nothing rather than an
+    // empty selection that would wipe the saved one.
+    if (!document.getElementById('apiTabRail')) return {};
+    const out = { ui: { enabled_apis: [..._enabledApis] } };
+    const present = API_PROVIDERS.filter(p => document.getElementById(`apiPane_${p.id}`));
+    present.forEach(p => _deepMerge(out, p.collect()));
+
+    // Without the Casting pane nothing sends media.enabled, but Tidal and
+    // Radio Browser still need the media engine running.
+    const m = out.media;
+    if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled)) {
+        m.enabled = true;
+    }
+    return out;
+}
+
+// WEATHER SECTION
 
 function renderWeatherSection(config) {
     const w = config.weather || {};
@@ -1020,23 +1334,22 @@ window.testFuelFinder = async function () {
     }
 };
 
-// MEDIA SECTION (Cast / WiiM / Radio) — lives in the External APIs tab
+// CASTING SECTION (Cast / WiiM / TTS) — lives in the External APIs tab
 
-function renderMediaSection(config) {
+function renderCastingSection(config) {
     const m = config.media || {};
     const cast = m.cast || {};
     const wiim = m.wiim || {};
-    const rb = m.radio_browser || {};
     const tts = m.tts || {};
     const devices = (wiim.devices || []).join('\n');
     return `
     <p class="text-muted small mb-3">
-      Multi-room audio for Google Cast (Nest/Home) and WiiM players, plus internet radio.
+      Multi-room audio for Google Cast (Nest/Home) and WiiM players.
       Self-contained — no Home Assistant required. Changes take effect after a service restart.
     </p>
     <div class="row g-3 mb-3">
       <div class="col-md-2">
-        <label class="form-label small fw-semibold">Enabled</label>
+        <label class="form-label small fw-semibold" title="Also runs Tidal and Radio Browser">Media engine</label>
         <div class="form-check form-switch mt-1">
           <input class="form-check-input" type="checkbox" id="cfg_media_enabled" ${m.enabled ? 'checked' : ''}>
         </div>
@@ -1097,16 +1410,6 @@ function renderMediaSection(config) {
       </div>
     </div>
 
-    <div class="row g-3 mb-3">
-      <div class="col-md-4">
-        <label class="form-label small fw-semibold">Radio-Browser</label>
-        <div class="form-check form-switch mt-1">
-          <input class="form-check-input" type="checkbox" id="cfg_media_rb_enabled" ${rb.enabled !== false ? 'checked' : ''}>
-          <label class="form-check-label small text-muted">Enable station directory</label>
-        </div>
-      </div>
-    </div>
-
     <hr class="my-3">
     <div class="fw-semibold mb-2"><i class="fas fa-bullhorn me-1"></i> Announcements (TTS)</div>
     <p class="text-muted small mb-2">Text-to-speech for automation announcements. Default is the
@@ -1124,6 +1427,27 @@ function renderMediaSection(config) {
                value="${w_escape(tts.lang || 'en')}" placeholder="en">
       </div>
     </div>
+    `;
+}
+
+// RADIO BROWSER SECTION — lives in the External APIs tab
+
+function renderRadioBrowserSection(config) {
+    const rb = (config.media || {}).radio_browser || {};
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-broadcast-tower me-1"></i> Radio Browser</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_media_rb_enabled" ${rb.enabled !== false ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-0">
+      Free internet-radio station directory
+      (<a href="https://www.radio-browser.info" target="_blank" rel="noopener">radio-browser.info
+      <i class="fas fa-external-link-alt fa-xs"></i></a>) — no account needed. Stations play on any
+      player the media engine knows about. Changes take effect after a service restart.
+    </p>
     `;
 }
 
@@ -1747,7 +2071,7 @@ function w_escape(s) {
     ));
 }
 
-// Tidal login (lives in the Media settings section)
+// Tidal login (lives in the Tidal settings section)
 window.tidalLogin = async function () {
     const link = document.getElementById('tidalLoginLink');
     if (link) link.innerHTML = '<span class="small text-muted"><i class="fas fa-spinner fa-spin"></i> Requesting link…</span>';
@@ -2434,81 +2758,13 @@ function collectFormValues() {
         logging: {
             level: get('cfg_log_level'),
         },
-        weather: {
-            enabled: document.getElementById('cfg_weather_enabled')?.checked ?? false,
-            latitude: parseFloat(document.getElementById('cfg_weather_lat')?.value) || null,
-            longitude: parseFloat(document.getElementById('cfg_weather_lon')?.value) || null,
-            poll_interval_minutes: Number(document.getElementById('cfg_weather_interval')?.value) || 30,
-            mqtt_publish: document.getElementById('cfg_weather_mqtt')?.checked ?? false,
-        },
-        media: {
-            enabled: document.getElementById('cfg_media_enabled')?.checked ?? false,
-            poll_interval_seconds: Number(document.getElementById('cfg_media_poll')?.value) || 10,
-            adopt_sessions: document.getElementById('cfg_media_adopt')?.checked ?? true,
-            cast: {
-                enabled: document.getElementById('cfg_media_cast_enabled')?.checked ?? true,
-                app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',
-                lyrics_app_id: document.getElementById('cfg_media_cast_lyrics_appid')?.value?.trim() || '',
-            },
-            wiim: {
-                enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? true,
-                devices: (document.getElementById('cfg_media_wiim_devices')?.value || '')
-                    .split('\n').map(s => s.trim()).filter(Boolean),
-            },
-            radio_browser: {
-                enabled: document.getElementById('cfg_media_rb_enabled')?.checked ?? true,
-            },
-            tts: {
-                base_url: document.getElementById('cfg_media_tts_base')?.value?.trim()
-                    || 'https://translate.google.com/translate_tts',
-                lang: document.getElementById('cfg_media_tts_lang')?.value?.trim() || 'en',
-            },
-            tidal: {
-                enabled: document.getElementById('cfg_media_tidal_enabled')?.checked ?? false,
-                quality: document.getElementById('cfg_media_tidal_quality')?.value || 'high',
-                manifest_base_url: document.getElementById('cfg_media_tidal_manifest')?.value?.trim() || '',
-            },
-        },
         ota: {
             enabled: document.getElementById('cfg_ota_enabled')?.checked ?? true,
             extra_providers: collectOtaProviderRows(),
             disable_default_providers: disableDefaults,
         },
-        octopus: {
-            enabled: document.getElementById('cfg_octopus_enabled')?.checked ?? false,
-            // Blank = keep the stored key (backend skips falsy)
-            api_key: get('cfg_octopus_api_key') || '',
-            account_number: get('cfg_octopus_account') ?? '',
-            gas_unit: get('cfg_octopus_gas_unit') || 'auto',
-            gas_calorific_value: getNum('cfg_octopus_cv') || 39.5,
-            consumption_poll_minutes: getNum('cfg_octopus_cons_poll') || 30,
-            backfill_days: getNum('cfg_octopus_backfill') || 90,
-            home_mini: document.getElementById('cfg_octopus_home_mini')?.checked ?? false,
-            telemetry_poll_minutes: getNum('cfg_octopus_tele_poll') || 5,
-            retention_days: getNum('cfg_octopus_retention') || 400,
-        },
-        security: {
-            nuki: {
-                enabled: document.getElementById('cfg_nuki_enabled')?.checked ?? false,
-                bridge: {
-                    enabled: document.getElementById('cfg_nuki_bridge_enabled')?.checked ?? true,
-                    host: get('cfg_nuki_bridge_host') ?? '',
-                    port: getNum('cfg_nuki_bridge_port') || 8080,
-                    // Blank = keep the stored token (backend skips falsy)
-                    token: get('cfg_nuki_bridge_token') || '',
-                    hashed_token: document.getElementById('cfg_nuki_bridge_hashed')?.checked ?? true,
-                },
-                matter: {
-                    enabled: document.getElementById('cfg_nuki_matter_enabled')?.checked ?? true,
-                },
-            },
-            yale: {
-                enabled: document.getElementById('cfg_yale_enabled')?.checked ?? false,
-                matter: {
-                    enabled: document.getElementById('cfg_yale_matter_enabled')?.checked ?? true,
-                },
-            },
-        },
+        // External APIs: only the panes the user has added (see API_PROVIDERS)
+        ...collectApiValues(),
     };
 }
 

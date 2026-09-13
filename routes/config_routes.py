@@ -162,6 +162,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "web": {k: v for k, v in cfg.get("web", {}).items() if k != "ssl"},
                     "web_ssl": cfg.get("web", {}).get("ssl", {}),
                     "logging": cfg.get("logging", {}),
+                    # Which Settings → APIs sub-tabs the user added. None (not
+                    # []) when never chosen, so the UI can tell "no selection
+                    # yet" from "removed everything" and pick defaults.
+                    "ui": {
+                        "enabled_apis": (cfg.get("ui") or {}).get("enabled_apis"),
+                    },
                     # Integrations are default-filled so every supported API
                     # always reaches the frontend with its full shape — the
                     # Settings → APIs tab must never depend on config.yaml
@@ -219,6 +225,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                 cfg.setdefault("web", {}).setdefault("ssl", {}).update(incoming["web_ssl"])
             if "logging" in incoming:
                 cfg.setdefault("logging", {}).update(incoming["logging"])
+            if "ui" in incoming:
+                ui_in = incoming["ui"] or {}
+                if isinstance(ui_in.get("enabled_apis"), list):
+                    cfg.setdefault("ui", {})["enabled_apis"] = list(dict.fromkeys(
+                        str(a).strip() for a in ui_in["enabled_apis"] if str(a).strip()
+                    ))
 
             if "weather" in incoming:
                 w = incoming["weather"]
