@@ -375,6 +375,14 @@ The most operationally-sensitive part of the system. Every step has a failure mo
 15. Write status: idle / 100% / "Upgrade complete"
 ```
 
+### Thread toolchain stages and their cache
+
+cpcd, zigbeed and the OpenThread Border Router don't use Python, so the Containerfile builds them in two stages on `debian:bookworm-slim` (`silabs`, `otbr`) and copies the result into the Python app image. A new Python base image or a lock change then reuses the cached OTBR compile instead of rebuilding it; only a change to the stages themselves (a pin bump, their apt lists) recompiles.
+
+Every source is pinned by build argument at the top of the Containerfile — `SISDK_TAG` (SiLabs `simplicity_sdk` release: the cpcd/zigbeed/libcpc debs and the MultiPAN platform files), `OTBR_COMMIT` (`ot-br-posix`), `CPCD_TAG` (`cpc-daemon`) — so a rebuild on a cache miss or a fresh host produces the same binaries. Bump them deliberately and test Thread afterwards.
+
+Stage images end up untagged, which `do_gc`'s dangling sweep would delete. Both `build.sh` and `upgrade.sh` therefore re-run the build for `--target silabs` and `--target otbr` after a successful build (a cache hit) and tag them `zigbee-matter-manager-stage-<stage>:cache`. When a pin changes, the old stage image loses that tag, goes dangling and is collected normally.
+
 ### Step A — suppress the supervisor
 
 `zigbee-matter-manager.service` is configured `Restart=always` with `ExecStart=podman start -a zigbee-matter-manager`. When we `podman stop` the container, the attached `podman start -a` exits and systemd treats the service as failed → `RestartSec=10` later it `podman start`s the old container again, binding port 8000 (and 5580) before our new container can.

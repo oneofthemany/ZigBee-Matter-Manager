@@ -459,6 +459,126 @@ write_containerfile() {
     : "${WITH_EQ:=$WITH_APPENDER}"
 
     cat > "$CLONE_DIR/Containerfile" << 'DOCKERFILE_TOP'
+# ─────────────────────────────────────────────────────────────────────────────
+# Thread / MultiPAN toolchain. Nothing here uses Python, so it is built in its
+# own stages on plain Debian bookworm (the same release as the app image) and
+# copied in. A change to the Python base image or the lock then reuses the
+# cached OTBR build instead of recompiling it.
+#
+# Every external source is pinned, so a rebuild — cache miss or fresh host —
+# produces the same binaries. Bump deliberately:
+#   SISDK_TAG    SiLabs simplicity_sdk release: cpcd / zigbeed / libcpc debs and
+#                the MultiPAN platform-abstraction files OTBR is built against
+#   OTBR_COMMIT  openthread/ot-br-posix commit (submodules follow the commit)
+#   CPCD_TAG     SiLabs cpc-daemon source tag OTBR links its CPC bus against
+# ─────────────────────────────────────────────────────────────────────────────
+ARG SISDK_TAG=v2025.6.3
+ARG OTBR_COMMIT=5b5dffa775466e65c74913e36e561c70dbd405f6
+ARG CPCD_TAG=v4.7.1
+
+# ── Stage: SiLabs packages ──
+FROM debian:bookworm-slim AS silabs
+ARG SISDK_TAG
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://github.com/SiliconLabs/simplicity_sdk/releases/download/${SISDK_TAG}/debian-bookworm.zip" \
+        -o /tmp/debian-bookworm.zip \
+    && unzip -q /tmp/debian-bookworm.zip -d /tmp/silabs \
+    && ARCH=$(dpkg --print-architecture) \
+    && mkdir -p /debs \
+    && cp /tmp/silabs/debian-bookworm/deb/libcpc3_*_${ARCH}.deb \
+          /tmp/silabs/debian-bookworm/deb/libcpc-dev_*_${ARCH}.deb \
+          /tmp/silabs/debian-bookworm/deb/cpcd_*_${ARCH}.deb \
+          /tmp/silabs/debian-bookworm/deb/zigbeed_*_${ARCH}.deb /debs/ \
+    && rm -rf /tmp/silabs /tmp/debian-bookworm.zip
+
+# ── Stage: OpenThread Border Router with SiLabs CPC MultiPAN support ──
+FROM debian:bookworm-slim AS otbr
+ARG SISDK_TAG
+ARG OTBR_COMMIT
+ARG CPCD_TAG
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential lsb-release sudo git ca-certificates cmake ninja-build g++ \
+        libffi-dev libmbedtls-dev libssl-dev libdbus-1-dev libavahi-client-dev \
+        libreadline-dev libboost-dev libboost-filesystem-dev libboost-system-dev \
+        libnetfilter-queue-dev libsystemd-dev ipset iptables dbus avahi-daemon \
+        curl wget unzip jq libglib2.0-0 libnl-3-200 libnl-route-3-200 \
+        procps iproute2 net-tools pkg-config python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=silabs /debs/ /tmp/silabs-debs/
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/silabs-debs/*.deb \
+    && rm -rf /tmp/silabs-debs /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --filter=blob:none --sparse --branch "${SISDK_TAG}" \
+        https://github.com/SiliconLabs/simplicity_sdk.git /src/silabs_sdk \
+    && cd /src/silabs_sdk \
+    && git sparse-checkout set protocol/openthread/platform-abstraction/posix \
+    && git clone --depth 1 --branch "${CPCD_TAG}" https://github.com/SiliconLabs/cpc-daemon.git /src/cpc-daemon \
+    && sed -i 's/VERSION 4\.7\.1\b/VERSION 4.7.1.0/g' /src/cpc-daemon/CMakeLists.txt \
+    && git init -q /src/otbr \
+    && cd /src/otbr \
+    && git remote add origin https://github.com/openthread/ot-br-posix \
+    && git fetch -q --depth 1 origin "${OTBR_COMMIT}" \
+    && git checkout -q FETCH_HEAD \
+    && git submodule update --init --recursive --depth 1 \
+    && cp /src/silabs_sdk/protocol/openthread/platform-abstraction/posix/openthread-core-silabs-posix-config.h \
+          /src/otbr/third_party/openthread/repo/src/posix/platform/
+
+# The container cannot write /proc/sys; OTBR's scripts sysctl through sudo, so
+# those calls are swallowed and everything else passes through.
+RUN printf '%s\n' '#!/bin/sh' \
+        'if echo "$*" | grep -Eq "/proc/sys|sysctl"; then exit 0; fi' \
+        'exec /usr/bin/sudo "$@"' > /usr/local/bin/sudo \
+    && chmod +x /usr/local/bin/sudo
+
+# bootstrap apt-installs OTBR's build and runtime dependencies; the package
+# snapshots either side record which ones, so the app image installs exactly
+# that set rather than a hand-kept copy of bootstrap's list.
+RUN dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' | awk '$1=="ii"{print $2}' | LC_ALL=C sort > /tmp/pkgs-before \
+    && cd /src/otbr && ./script/bootstrap \
+    && rm -rf /var/lib/apt/lists/*
+
+# setup builds and installs otbr-agent and writes its system config (/etc,
+# /usr). Everything it creates or changes after this marker is captured below.
+RUN touch /tmp/.otbr-marker && sleep 1 \
+    && cd /src/otbr \
+    && INFRA_IF_NAME=eth0 \
+       OTBR_OPTIONS=" \
+        -DOT_THREAD_VERSION=1.4 \
+        -DOT_MULTIPAN_RCP=ON \
+        -DCPCD_SOURCE_DIR=/src/cpc-daemon \
+        -DOT_POSIX_RCP_VENDOR_BUS=ON \
+        -DOT_POSIX_CONFIG_RCP_VENDOR_DEPS_PACKAGE=/src/silabs_sdk/protocol/openthread/platform-abstraction/posix/posix_vendor_rcp.cmake \
+        -DOT_POSIX_CONFIG_RCP_VENDOR_INTERFACE=/src/silabs_sdk/protocol/openthread/platform-abstraction/posix/cpc_interface.cpp \
+        -DOT_PLATFORM_CONFIG=openthread-core-silabs-posix-config.h" \
+       ./script/setup \
+    && (systemctl disable otbr-agent 2>/dev/null || true) \
+    && rm -rf /var/lib/apt/lists/*
+
+# Package the result: the packages bootstrap/setup added, and every file setup
+# created or changed — except files belonging to those packages (the app image
+# installs them properly through apt), scratch/package-manager state, and the
+# network files the container runtime writes into every build container.
+RUN set -e; mkdir -p /otbr-out/root \
+    && dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' | awk '$1=="ii"{print $2}' | LC_ALL=C sort > /tmp/pkgs-after \
+    && LC_ALL=C comm -13 /tmp/pkgs-before /tmp/pkgs-after > /otbr-out/packages.txt \
+    && { [ -s /otbr-out/packages.txt ] && xargs -a /otbr-out/packages.txt dpkg-query -L 2>/dev/null || true; } \
+        | LC_ALL=C sort -u > /tmp/owned \
+    && find / -xdev \
+        \( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /tmp -o -path /root \
+           -o -path /src -o -path /otbr-out -o -path /var/lib/dpkg -o -path /var/lib/apt \
+           -o -path /var/cache -o -path /var/log -o -path /usr/local/bin/sudo \
+           -o -path /etc/hostname -o -path /etc/hosts -o -path /etc/resolv.conf \) -prune \
+        -o \( -type f -o -type l -o \( -type d -empty \) \) -cnewer /tmp/.otbr-marker -print \
+        | LC_ALL=C sort | LC_ALL=C comm -23 - /tmp/owned > /tmp/otbr-files \
+    && tar -cf - --no-recursion -T /tmp/otbr-files | tar -xf - -C /otbr-out/root \
+    && test -x /otbr-out/root/usr/sbin/otbr-agent \
+    && echo "OTBR stage: $(wc -l < /tmp/otbr-files) files, $(wc -l < /otbr-out/packages.txt) packages"
+
+# ── App image ──
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
@@ -505,52 +625,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
     && rm -rf /var/lib/apt/lists/*
 
-RUN DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SiliconLabs/simplicity_sdk/releases/latest | jq -r '.assets[] | select(.name=="debian-bookworm.zip") | .browser_download_url') \
-    && wget "$DOWNLOAD_URL" -O debian-bookworm.zip \
-    && unzip debian-bookworm.zip -d /tmp/silabs \
-    && ARCH=$(dpkg --print-architecture) \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        /tmp/silabs/debian-bookworm/deb/libcpc3_*_${ARCH}.deb \
-        /tmp/silabs/debian-bookworm/deb/libcpc-dev_*_${ARCH}.deb \
-        /tmp/silabs/debian-bookworm/deb/cpcd_*_${ARCH}.deb \
-        /tmp/silabs/debian-bookworm/deb/zigbeed_*_${ARCH}.deb \
-    && rm -rf /tmp/silabs debian-bookworm.zip /var/lib/apt/lists/*
+# SiLabs debs plus the packages OTBR's bootstrap added, then OTBR's files over
+# the top (its config edits to package-owned files such as rt_tables win).
+COPY --from=silabs /debs/ /tmp/silabs-debs/
+COPY --from=otbr /otbr-out/packages.txt /tmp/otbr-packages.txt
+RUN apt-get update \
+    && xargs -a /tmp/otbr-packages.txt apt-get install -y --no-install-recommends /tmp/silabs-debs/*.deb \
+    && rm -rf /tmp/silabs-debs /tmp/otbr-packages.txt /var/lib/apt/lists/*
+COPY --from=otbr /otbr-out/root/ /
 
-# ── OTBR with SiLabs CPC MultiPAN support ──────────────────────────────
-ENV SDK_DIR=/tmp/silabs_sdk
-
-RUN git clone --depth 1 --filter=blob:none --sparse \
-        https://github.com/SiliconLabs/simplicity_sdk.git ${SDK_DIR} && \
-    cd ${SDK_DIR} && \
-    git sparse-checkout set protocol/openthread/platform-abstraction/posix
-
-RUN echo '#!/bin/sh' > /usr/local/bin/sudo && \
-    echo 'if echo "$*" | grep -Eq "/proc/sys|sysctl"; then exit 0; fi' >> /usr/local/bin/sudo && \
-    echo 'exec /usr/bin/sudo "$@"' >> /usr/local/bin/sudo && \
-    chmod +x /usr/local/bin/sudo && \
-    git clone --depth 1 --branch v4.7.1 https://github.com/SiliconLabs/cpc-daemon.git /tmp/cpc-daemon && \
-    sed -i 's/VERSION 4\.7\.1\b/VERSION 4.7.1.0/g' /tmp/cpc-daemon/CMakeLists.txt && \
-    git clone --depth=1 https://github.com/openthread/ot-br-posix /tmp/otbr && \
-    cd /tmp/otbr && \
-    git submodule update --init --recursive && \
-    cp ${SDK_DIR}/protocol/openthread/platform-abstraction/posix/openthread-core-silabs-posix-config.h \
-       /tmp/otbr/third_party/openthread/repo/src/posix/platform/ && \
-    ./script/bootstrap && \
-    INFRA_IF_NAME=eth0 \
-    OTBR_OPTIONS=" \
-        -DOT_THREAD_VERSION=1.4 \
-        -DOT_MULTIPAN_RCP=ON \
-        -DCPCD_SOURCE_DIR=/tmp/cpc-daemon \
-        -DOT_POSIX_RCP_VENDOR_BUS=ON \
-        -DOT_POSIX_CONFIG_RCP_VENDOR_DEPS_PACKAGE=${SDK_DIR}/protocol/openthread/platform-abstraction/posix/posix_vendor_rcp.cmake \
-        -DOT_POSIX_CONFIG_RCP_VENDOR_INTERFACE=${SDK_DIR}/protocol/openthread/platform-abstraction/posix/cpc_interface.cpp \
-        -DOT_PLATFORM_CONFIG=openthread-core-silabs-posix-config.h" \
-    ./script/setup && \
-    rm -f /usr/local/bin/sudo
-
-RUN systemctl disable otbr-agent 2>/dev/null || true
-RUN rm -rf ${SDK_DIR} /tmp/otbr /tmp/cpc-daemon
+# Fail the build here, not at runtime, if the copied binaries are missing a
+# shared library the stage split failed to carry over.
+RUN set -e; for bin in otbr-agent ot-ctl cpcd zigbeed; do \
+        path=$(command -v "$bin") || { echo "missing: $bin" >&2; exit 1; }; \
+        if ldd "$path" | grep -q "not found"; then ldd "$path" >&2; exit 1; fi; \
+    done; echo "Thread toolchain OK"
 
 WORKDIR /app
 DOCKERFILE_TOP
@@ -729,15 +818,34 @@ DOCKERIGNORE
 # BUILD IMAGE
 # =============================================================================
 BASE_IMAGE="python:3.12-slim-bookworm"
+# The Thread toolchain stages (silabs, otbr) build on plain Debian.
+STAGE_BASE_IMAGE="debian:bookworm-slim"
 
-base_image_present() {
+image_present() {
     local n
-    for n in "$BASE_IMAGE" \
-             "docker.io/library/${BASE_IMAGE}" \
-             "docker.io/${BASE_IMAGE}"; do
+    for n in "$1" "docker.io/library/$1" "docker.io/$1"; do
         "$RUNTIME" image inspect "$n" >/dev/null 2>&1 && return 0
     done
     return 1
+}
+
+base_image_present() {
+    image_present "$BASE_IMAGE" && image_present "$STAGE_BASE_IMAGE"
+}
+
+# The silabs and otbr stages finish as untagged images, which the upgrade GC's
+# dangling-image sweep would delete — and with them the cached OTBR compile.
+# Tagging them (an instant cache hit) keeps them. When a pin changes, the
+# superseded stage image loses its tag, goes dangling and is collected.
+tag_stage_caches() {
+    local containerfile="$1" stage
+    for stage in silabs otbr; do
+        grep -qE "^FROM .* AS ${stage}\$" "$containerfile" || continue
+        "$RUNTIME" build --format docker --target "$stage" \
+            --tag "${IMAGE_NAME}-stage-${stage}:cache" \
+            --file "$containerfile" "$(dirname "$containerfile")" >/dev/null 2>&1 \
+            || warn "Could not tag the ${stage} stage cache (next build may recompile it)"
+    done
 }
 
 build_image() {
@@ -746,10 +854,10 @@ build_image() {
 
     local -a pull_args=()
     if base_image_present; then
-        ok "Base image ${BOLD}${BASE_IMAGE}${NC} already in local storage — reusing it (no pull)"
+        ok "Base images ${BOLD}${BASE_IMAGE}${NC} and ${STAGE_BASE_IMAGE} already in local storage — reusing them (no pull)"
         [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=never)
     else
-        info "Base image ${BASE_IMAGE} not in local storage — it will be pulled once"
+        info "Base image ${BASE_IMAGE} or ${STAGE_BASE_IMAGE} not in local storage — pulling what is missing once"
         [[ "$RUNTIME" == "podman" ]] && pull_args=(--pull=missing)
     fi
 
@@ -774,6 +882,7 @@ build_image() {
     fi
 
     ok "Image built: ${IMAGE_NAME}:latest"
+    tag_stage_caches "$CLONE_DIR/Containerfile"
     info "Full build log: $log_file"
 }
 

@@ -684,6 +684,18 @@ do_build() {
 
     "$RUNTIME" tag "$new_tag" "${IMAGE_NAME}:latest-${arch}" >>"$BUILD_LOG" 2>&1 || true
 
+    # Keep the Thread toolchain stage images (see build.sh tag_stage_caches):
+    # untagged, do_gc's dangling sweep would delete them and the next upgrade
+    # would recompile OTBR. A cache hit, so this adds seconds, not a build.
+    local stage
+    for stage in silabs otbr; do
+        grep -qE "^FROM .* AS ${stage}\$" "$work_dir/Containerfile" || continue
+        "$RUNTIME" build --format docker --target "$stage" \
+            --tag "${IMAGE_NAME}-stage-${stage}:cache" \
+            --file "$work_dir/Containerfile" "$work_dir" >>"$BUILD_LOG" 2>&1 \
+            || log_to_build "WARN: could not tag the ${stage} stage cache"
+    done
+
     log_to_build ""
     log_to_build "Build complete. Image tagged as $new_tag"
     log_to_build "Container swap has NOT happened yet. Swap is a separate action."
