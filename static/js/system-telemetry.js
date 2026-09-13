@@ -11,6 +11,7 @@
 
 import { state } from './state.js';
 import { createChart } from './chart-utils.js';
+import { openSystemDrilldown } from './system-drilldown.js';
 
 let _gaugeTimer = null;
 let _chartTimer = null;
@@ -41,6 +42,18 @@ function _startTab() {
     if (!document.getElementById('sys-gauges')) {
         container.innerHTML = _renderSkeleton();
         container.removeAttribute('aria-busy');   // shimmer placeholders replaced
+        const gauges = document.getElementById('sys-gauges');
+        gauges.addEventListener('click', e => {
+            const card = e.target.closest('[data-sys-area]');
+            if (card) openSystemDrilldown(card.dataset.sysArea);
+        });
+        gauges.addEventListener('keydown', e => {
+            const card = e.target.closest('[data-sys-area]');
+            if (card && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                openSystemDrilldown(card.dataset.sysArea);
+            }
+        });
     }
 
     // Initial fetch
@@ -68,16 +81,20 @@ function _renderSkeleton() {
     <style>
         .sys-bar { transition: width 0.8s ease, background-color 0.5s ease; }
         .sys-val { transition: color 0.5s ease; }
+        .sys-drill { cursor: pointer; transition: box-shadow 0.15s ease, transform 0.15s ease; }
+        .sys-drill:hover, .sys-drill:focus-visible { box-shadow: 0 0.25rem 0.75rem rgba(0,0,0,.12); transform: translateY(-1px); }
+        .sys-drill .sys-drill-hint { opacity: 0.35; transition: opacity 0.15s ease; }
+        .sys-drill:hover .sys-drill-hint { opacity: 0.9; }
     </style>
 
     <!-- Gauges -->
     <div class="row g-3 mb-3" id="sys-gauges">
-        ${_gaugeCard('cpu',  'CPU',         'microchip',        80, 95)}
-        ${_gaugeCard('mem',  'Memory',      'memory',           80, 90)}
-        ${_gaugeCard('temp', 'Temperature', 'thermometer-half', 75, 85)}
-        ${_gaugeCard('disk', 'Disk',        'hdd',              85, 95)}
-        ${_gaugeCard('proc', 'Process',     'cogs',             0,  0)}
-        ${_gaugeCard('load', 'Load / Uptime','tachometer-alt',  0,  0)}
+        ${_gaugeCard('cpu',  'CPU',         'microchip',        80, 95, 'cpu')}
+        ${_gaugeCard('mem',  'Memory',      'memory',           80, 90, 'memory')}
+        ${_gaugeCard('temp', 'Temperature', 'thermometer-half', 75, 85, 'temperature')}
+        ${_gaugeCard('disk', 'Disk',        'hdd',              85, 95, 'disk')}
+        ${_gaugeCard('proc', 'Process',     'cogs',             0,  0,  'process')}
+        ${_gaugeCard('load', 'Load / Uptime','tachometer-alt',  0,  0,  'load')}
     </div>
 
     <!-- Alerts -->
@@ -119,13 +136,14 @@ function _renderSkeleton() {
     </div>`;
 }
 
-function _gaugeCard(id, label, icon, warn, crit) {
+function _gaugeCard(id, label, icon, warn, crit, area) {
     return `
     <div class="col-md-2 col-sm-4 col-6">
-        <div class="card h-100">
+        <div class="card h-100 sys-drill" role="button" tabindex="0" data-sys-area="${area}"
+             title="Show ${label.toLowerCase()} details">
             <div class="card-body py-2 px-2">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <span class="text-muted small"><i class="fas fa-${icon} me-1"></i>${label}</span>
+                    <span class="text-muted small"><i class="fas fa-${icon} me-1"></i>${label}<i class="fas fa-chevron-right ms-1 sys-drill-hint" style="font-size:0.6rem"></i></span>
                     <span id="sys-val-${id}" class="fw-bold sys-val" style="font-size:1.1rem">—</span>
                 </div>
                 ${(warn > 0) ? `<div class="progress" style="height:4px">

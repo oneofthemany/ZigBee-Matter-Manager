@@ -28,11 +28,24 @@ def register_telemetry_routes(app, system_monitor_getter: Callable):
 
 @router.get("/system/current")
 async def system_current():
-    """Get the latest system metrics snapshot (no DB query)."""
+    """Get a live system metrics snapshot (no DB query; reused for up to 4s)."""
     mon = _get_system_monitor() if _get_system_monitor else None
     if not mon:
         return {"error": "System monitor not running"}
-    return mon.get_current()
+    return await mon.get_current()
+
+
+@router.get("/system/detail/{area}")
+async def system_detail(area: str):
+    """Drill-down detail for one System tab card (cpu, memory, temperature, disk, process, load)."""
+    from modules.system_detail import AREAS, collect_detail
+    if area not in AREAS:
+        raise HTTPException(status_code=404, detail=f"Unknown area '{area}'")
+    try:
+        return {"success": True, "area": area, **(await collect_detail(area))}
+    except Exception as e:
+        logger.error(f"System detail '{area}' failed: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @router.get("/system/history")

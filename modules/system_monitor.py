@@ -9,6 +9,7 @@ Also raises threshold alerts over the websocket (CPU >90% sustained, memory
 import asyncio
 import logging
 import os
+import shutil
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -27,56 +28,175 @@ DEFAULT_THRESHOLDS = {
     "swap_percent": {"warn": 40, "critical": 70, "sustain": 1},
 }
 
+# Live snapshots for the API are reused if younger than this (seconds)
+LIVE_MIN_AGE = 4.0
+
 # Alert cooldown — don't re-alert for same metric within this window
 ALERT_COOLDOWN = 300  # 5 minutes
 
 
-def _read_cpu_temp() -> Optional[float]:
-    """Read CPU temperature from thermal zones (Linux)."""
-    # Try common thermal zone paths
-    paths = [
-        "/sys/class/thermal/thermal_zone0/temp",  # Most ARM SBCs
-        "/sys/class/thermal/thermal_zone1/temp",
-        "/sys/class/hwmon/hwmon0/temp1_input",     # x86
-    ]
-    for path in paths:
-        try:
-            with open(path) as f:
-                return int(f.read().strip()) / 1000.0
-        except (FileNotFoundError, ValueError, PermissionError):
+# Temperature sensors are chosen by name, not position: thermal_zone0 is a
+# placeholder on many x86 machines (INT3400 reads a fixed 20°C) and zone1 can
+# be a chassis/skin sensor. Lists are best-first.
+#   hwmon: (chip name, preferred label or None for the hottest input)
+_CPU_HWMON = (
+    ("coretemp", "Package id 0"),     # Intel
+    ("k10temp", "Tctl"),              # AMD
+    ("k10temp", "Tdie"),
+    ("zenpower", "Tdie"),
+    ("cpu_thermal", None),            # Raspberry Pi
+    ("cpu-thermal", None),
+    ("soc_thermal", None),            # Rockchip
+)
+_CPU_ZONES = ("x86_pkg_temp", "cpu-thermal", "cpu_thermal", "soc-thermal", "soc_thermal",
+              "cpu0-thermal", "cpu", "tcpu")
+_GPU_HWMON = (("amdgpu", "edge"), ("amdgpu", None), ("nouveau", None), ("radeon", None))
+_GPU_ZONES = ("gpu-thermal", "gpu_thermal", "gpu0-thermal", "gpu")
+# Zones known not to be the CPU — never used as a last-resort fallback
+_NOT_CPU_ZONES = ("int3400 thermal", "acpitz", "tskn", "iwlwifi", "pch_", "b0d4")
+
+_HWMON_BASE = "/sys/class/hwmon"
+_THERMAL_BASE = "/sys/class/thermal"
+_sensor_paths: Dict[str, Optional[tuple]] = {}   # kind -> (path, description)
+_NVIDIA_SMI = shutil.which("nvidia-smi")
+
+
+def _read_millideg(path: str) -> Optional[float]:
+    try:
+        with open(path) as f:
+            val = int(f.read().strip()) / 1000.0
+    except (OSError, ValueError):
+        return None
+    # Disconnected/unsupported sensors report 0 or absurd values
+    return val if -40 < val < 150 and val != 0 else None
+
+
+def _hwmon_chips() -> List[tuple]:
+    """[(hwmon dir, chip name)] for every hwmon device."""
+    base = _HWMON_BASE
+    try:
+        return [(f"{base}/{h}", open(f"{base}/{h}/name").read().strip())
+                for h in sorted(os.listdir(base)) if os.path.exists(f"{base}/{h}/name")]
+    except OSError:
+        return []
+
+
+def _thermal_zones() -> List[tuple]:
+    """[(temp path, lower-cased zone type)] for every thermal zone."""
+    base = _THERMAL_BASE
+    zones = []
+    try:
+        names = sorted(os.listdir(base), key=lambda n: int(n[12:]) if n[12:].isdigit() else 0)
+    except OSError:
+        return zones
+    for name in names:
+        if not name.startswith("thermal_zone"):
             continue
+        try:
+            with open(f"{base}/{name}/type") as f:
+                zones.append((f"{base}/{name}/temp", f.read().strip().lower()))
+        except OSError:
+            continue
+    return zones
+
+
+def _find_hwmon(wanted: tuple) -> Optional[tuple]:
+    chips = _hwmon_chips()
+    for chip, label in wanted:
+        for path, name in chips:
+            if name != chip:
+                continue
+            inputs = []
+            for f in sorted(os.listdir(path)):
+                if not (f.startswith("temp") and f.endswith("_input")):
+                    continue
+                try:
+                    with open(f"{path}/{f[:-6]}_label") as lf:
+                        lbl = lf.read().strip()
+                except OSError:
+                    lbl = f[:-6]
+                if _read_millideg(f"{path}/{f}") is not None:
+                    inputs.append((f"{path}/{f}", lbl))
+            if label is not None:
+                inputs = [i for i in inputs if i[1] == label]
+            if inputs:
+                best = max(inputs, key=lambda i: _read_millideg(i[0]) or -999)
+                return best[0], f"{chip} {best[1]}"
     return None
 
 
-def _read_gpu_temp() -> Optional[float]:
-    """Read GPU temperature if available."""
-    # RK3588 Mali GPU
-    paths = [
-        "/sys/class/thermal/thermal_zone1/temp",
-        "/sys/class/thermal/thermal_zone2/temp",
-        "/sys/devices/virtual/thermal/thermal_zone1/temp",
-    ]
-    for path in paths:
-        try:
-            with open(path) as f:
-                val = int(f.read().strip()) / 1000.0
-                if val > 0:
-                    return val
-        except (FileNotFoundError, ValueError, PermissionError):
-            continue
+def _find_zone(types: tuple) -> Optional[tuple]:
+    zones = _thermal_zones()
+    for wanted in types:
+        for path, ztype in zones:
+            if ztype == wanted and _read_millideg(path) is not None:
+                return path, f"thermal zone {ztype}"
+    return None
 
-    # NVIDIA GPU
+
+def _resolve_sensor(kind: str) -> Optional[tuple]:
+    if kind == "cpu":
+        found = _find_hwmon(_CPU_HWMON) or _find_zone(_CPU_ZONES)
+        if not found:
+            # Unknown board: the first zone that isn't a known non-CPU sensor
+            for path, ztype in _thermal_zones():
+                if not ztype.startswith(_NOT_CPU_ZONES) and _read_millideg(path) is not None:
+                    found = path, f"thermal zone {ztype} (fallback)"
+                    break
+    else:
+        found = _find_hwmon(_GPU_HWMON) or _find_zone(_GPU_ZONES)
+    if found:
+        logger.info(f"{kind.upper()} temperature sensor: {found[1]} ({found[0]})")
+    return found
+
+
+def _read_sensor(kind: str) -> Optional[float]:
+    """Read a resolved sensor, re-resolving once if it disappeared."""
+    for attempt in range(2):
+        if kind not in _sensor_paths or attempt:
+            _sensor_paths[kind] = _resolve_sensor(kind)
+        found = _sensor_paths[kind]
+        if not found:
+            return None
+        val = _read_millideg(found[0])
+        if val is not None:
+            return val
+    return None
+
+
+def temp_sensor_sources() -> Dict[str, Optional[str]]:
+    """Which sensor each card temperature comes from (for the drill-down)."""
+    out = {}
+    for kind in ("cpu", "gpu"):
+        if kind not in _sensor_paths:
+            _sensor_paths[kind] = _resolve_sensor(kind)
+        found = _sensor_paths[kind]
+        out[kind] = found[1] if found else None
+    if not out["gpu"] and _NVIDIA_SMI:
+        out["gpu"] = "nvidia-smi"
+    return out
+
+
+def _read_cpu_temp() -> Optional[float]:
+    """CPU package temperature from the best named sensor available."""
+    return _read_sensor("cpu")
+
+
+def _read_gpu_temp() -> Optional[float]:
+    """GPU temperature from a named GPU sensor, else nvidia-smi."""
+    val = _read_sensor("gpu")
+    if val is not None or not _NVIDIA_SMI:
+        return val
     try:
         import subprocess
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            [_NVIDIA_SMI, "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            return float(result.stdout.strip())
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            return float(result.stdout.strip().splitlines()[0])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
         pass
-
     return None
 
 
@@ -190,10 +310,10 @@ def _collect_diagnostics(metric: str, latest_metrics: Dict) -> Dict[str, Any]:
 
         elif metric == "cpu_percent":
             load = latest_metrics.get("load_1m", 0)
+            cpu = latest_metrics.get("cpu_percent") or 0
             cores = os.cpu_count() or 1
-            diag["cause"] = f"Load average {load:.2f} across {cores} cores ({load/cores*100:.0f}% utilisation)"
+            diag["cause"] = f"CPU at {cpu:.0f}% across {cores} cores (load average {load:.2f})"
 
-            # Read top CPU from /proc/stat is complex; use load as proxy
             diag["fixes"] = [
                 f"Current load: {load:.2f} (1m), target: < {cores}.0 for healthy operation",
                 "Check top consumers: top -bn1 | head -15",
@@ -269,10 +389,68 @@ def _collect_diagnostics(metric: str, latest_metrics: Dict) -> Dict[str, Any]:
     return diag
 
 
-def collect_metrics() -> Dict[str, Any]:
+# Previous aggregate /proc/stat sample: (busy_jiffies, total_jiffies)
+def _cpu_jiffies() -> Optional[tuple]:
+    """(busy, total) jiffies across all CPUs from the aggregate /proc/stat line."""
+    try:
+        with open("/proc/stat") as f:
+            fields = [int(x) for x in f.readline().split()[1:]]
+    except (OSError, ValueError):
+        return None
+    # user nice system idle iowait irq softirq steal (guest is already in user)
+    total = sum(fields[:8])
+    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+    return total - idle, total
+
+
+class CpuSampler:
+    """
+    Real CPU utilisation from /proc/stat, averaged since the previous reading.
+    Each consumer keeps its own sampler so their windows don't interfere.
+    """
+
+    def __init__(self, min_window: float = 0.0):
+        # Readings requested sooner than min_window after the last one return
+        # the cached value, so several viewers polling at once don't shrink
+        # the window to a noisy sliver.
+        self.min_window = min_window
+        self._prev: Optional[tuple] = None
+        self._prev_t = 0.0
+        self.value: Optional[float] = None
+
+    def read(self, block_first: bool = False) -> Optional[float]:
+        """
+        First call has no baseline: returns None, or with block_first takes a
+        short 0.5s sample (only from a worker thread).
+        """
+        now_t = time.monotonic()
+        if self._prev is None:
+            self._prev, self._prev_t = _cpu_jiffies(), now_t
+            if not block_first:
+                return None
+            time.sleep(0.5)
+            now_t = time.monotonic()
+        elif now_t - self._prev_t < self.min_window:
+            return self.value
+        now = _cpu_jiffies()
+        prev = self._prev
+        self._prev, self._prev_t = now, now_t
+        if now is None or prev is None or now[1] - prev[1] <= 0:
+            return self.value
+        self.value = round(min(max((now[0] - prev[0]) / (now[1] - prev[1]) * 100, 0), 100), 1)
+        return self.value
+
+
+# Collection-interval sampler (history + alerts); the API card has its own
+_collect_cpu = CpuSampler()
+
+
+def collect_metrics(cpu_sampler: Optional["CpuSampler"] = None) -> Dict[str, Any]:
     """
     Collect a single snapshot of system metrics.
     Uses /proc directly where possible to avoid psutil dependency.
+    cpu_sampler: whose /proc/stat baseline to measure CPU against (defaults
+    to the collection-interval sampler; blocks 0.5s on its first call).
     """
     metrics = {}
 
@@ -284,10 +462,10 @@ def collect_metrics() -> Dict[str, Any]:
         metrics["load_5m"] = round(load5, 2)
         metrics["load_15m"] = round(load15, 2)
 
-        # CPU percent from /proc/stat (instantaneous isn't meaningful,
-        # so we use load_1m / nproc as a proxy)
-        nproc = os.cpu_count() or 1
-        metrics["cpu_percent"] = round(min(load1 / nproc * 100, 100), 1)
+        if cpu_sampler is None:
+            metrics["cpu_percent"] = _collect_cpu.read(block_first=True)
+        else:
+            metrics["cpu_percent"] = cpu_sampler.read()
 
         # CPU frequency
         try:
@@ -383,6 +561,14 @@ class SystemMonitor:
 
         # Latest snapshot (for API)
         self.latest: Dict[str, Any] = {}
+
+        # Live snapshot for the System tab cards, which poll every 5s — fresher
+        # than the collection interval. Cached for LIVE_MIN_AGE so several
+        # viewers share one read (and the CPU window stays ~5s).
+        self._live_cpu = CpuSampler()
+        self._live: Dict[str, Any] = {}
+        self._live_t = 0.0
+        self._live_lock = asyncio.Lock()
 
     def start(self):
         """Start the background collection loop."""
@@ -532,9 +718,16 @@ class SystemMonitor:
             except Exception as e:
                 logger.debug(f"Recovery callback failed: {e}")
 
-    def get_current(self) -> Dict[str, Any]:
-        """Get the latest metrics snapshot."""
-        return {**self.latest, "active_alerts": dict(self._active_alerts)}
+    async def get_current(self) -> Dict[str, Any]:
+        """Fresh metrics snapshot (at most LIVE_MIN_AGE old) plus active alerts."""
+        async with self._live_lock:
+            if time.monotonic() - self._live_t >= LIVE_MIN_AGE:
+                live = await asyncio.to_thread(collect_metrics, self._live_cpu)
+                if live.get("cpu_percent") is None:
+                    # No live CPU baseline yet (first poll) — use the collected value
+                    live["cpu_percent"] = self.latest.get("cpu_percent")
+                self._live, self._live_t = live, time.monotonic()
+        return {**self._live, "active_alerts": dict(self._active_alerts)}
 
     def get_thresholds(self) -> Dict:
         """Get current alert thresholds."""
