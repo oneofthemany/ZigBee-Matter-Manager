@@ -472,6 +472,9 @@ write_containerfile() {
 #   OTBR_COMMIT  openthread/ot-br-posix commit (submodules follow the commit)
 #   CPCD_TAG     SiLabs cpc-daemon source tag OTBR links its CPC bus against
 # ─────────────────────────────────────────────────────────────────────────────
+# The app image and the Rust wheel stages must share one Python: the wheels are
+# compiled against its ABI.
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG SISDK_TAG=v2025.6.3
 ARG OTBR_COMMIT=5b5dffa775466e65c74913e36e561c70dbd405f6
 ARG CPCD_TAG=v4.7.1
@@ -577,9 +580,61 @@ RUN set -e; mkdir -p /otbr-out/root \
     && tar -cf - --no-recursion -T /tmp/otbr-files | tar -xf - -C /otbr-out/root \
     && test -x /otbr-out/root/usr/sbin/otbr-agent \
     && echo "OTBR stage: $(wc -l < /tmp/otbr-files) files, $(wc -l < /otbr-out/packages.txt) packages"
+DOCKERFILE_TOP
+
+    # Rust wheels — each crate independently optional. Built in their own
+    # stages so the toolchain never ships in the app image, a lock change does
+    # not recompile them, and editing one crate does not rebuild the other.
+    if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
+        info "Including Rust toolchain stage (appender=${WITH_APPENDER}, eq=${WITH_EQ})"
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUST_TOOLCHAIN'
+
+# ── Stage: Rust toolchain (same Python as the app: wheels target its ABI) ──
+FROM ${PYTHON_IMAGE} AS rust-toolchain
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal \
+    && pip install --no-cache-dir "maturin>=1.5,<2.0"
+ENV PATH="/root/.cargo/bin:${PATH}"
+DOCKERFILE_RUST_TOOLCHAIN
+    fi
+
+    if [[ "$WITH_APPENDER" == true ]]; then
+        info "Including zmm_telemetry Rust appender in image build"
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER_STAGE'
+
+# ── Stage: zmm_telemetry wheel (fast DuckDB appender) ──
+FROM rust-toolchain AS wheel-telemetry
+COPY zmm_telemetry/ /src/zmm_telemetry/
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/var/cache/cargo-target-telemetry \
+    export CARGO_TARGET_DIR=/var/cache/cargo-target-telemetry \
+ && cd /src/zmm_telemetry \
+ && maturin build --release --out /wheels
+DOCKERFILE_APPENDER_STAGE
+    fi
+
+    if [[ "$WITH_EQ" == true ]]; then
+        info "Including zmm_eq Cast EQ DSP in image build"
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_EQ_STAGE'
+
+# ── Stage: zmm_eq wheel (Cast EQ biquad DSP) ──
+FROM rust-toolchain AS wheel-eq
+COPY zmm_eq/ /src/zmm_eq/
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/var/cache/cargo-target-eq \
+    export CARGO_TARGET_DIR=/var/cache/cargo-target-eq \
+ && cd /src/zmm_eq \
+ && maturin build --release --out /wheels
+DOCKERFILE_EQ_STAGE
+    fi
+
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APP'
 
 # ── App image ──
-FROM python:3.12-slim-bookworm
+FROM ${PYTHON_IMAGE}
 
 ENV PYTHONUNBUFFERED=1
 
@@ -642,13 +697,13 @@ RUN set -e; for bin in otbr-agent ot-ctl cpcd zigbeed; do \
     done; echo "Thread toolchain OK"
 
 WORKDIR /app
-DOCKERFILE_TOP
+DOCKERFILE_APP
 
     # LAYER ORDER INVARIANT — nothing CONDITIONAL may precede the lock install:
     #   Part 3  Python requirements  churns on dependency bump
     #   Part 4  Runtime extras       unconditional, changes ~never
-    #   Part 5  Rust toolchain       CONDITIONAL      -> BELOW reqs
-    #   Part 5  Rust crate COPY      churns on Rust source edit -> BELOW reqs
+    #   Part 5  Rust wheel install   CONDITIONAL -> BELOW reqs (the compile itself
+    #                                lives in the wheel stages above the app image)
 
     # Part 3 — Python requirements (always present)
     cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
@@ -681,59 +736,24 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 DOCKERFILE_RUNTIME
 
-    # Part 5 — Rust components (each independently optional).
-    if [[ "$WITH_APPENDER" == true || "$WITH_EQ" == true ]]; then
-        info "Including Rust toolchain in image build (appender=${WITH_APPENDER}, eq=${WITH_EQ})"
-        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUST_TOOLCHAIN'
+    # Part 5 — prebuilt Rust wheels (each independently optional). Below the
+    # lock install, so toggling a crate never invalidates the pip layer.
+    if [[ "$WITH_APPENDER" == true ]]; then
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
 
-# ── Rust toolchain (shared by any Rust component built below) ──
-RUN --mount=type=cache,target=/root/.cache/pip \
-    apt-get update && apt-get install -y --no-install-recommends \
-        python3-dev \
-        pkg-config \
- && rm -rf /var/lib/apt/lists/* \
- && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable --profile minimal \
- && pip install maturin
-
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-ARG BUILD_JOBS=4
-ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
-ENV MAKEFLAGS="-j${BUILD_JOBS}"
-DOCKERFILE_RUST_TOOLCHAIN
-
-        if [[ "$WITH_APPENDER" == true ]]; then
-            info "Including zmm_telemetry Rust appender in image build"
-            cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APPENDER'
-
-# ── Build zmm_telemetry (fast DuckDB appender) from source ──
-COPY zmm_telemetry/ /tmp/zmm_telemetry/
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/var/cache/cargo-target \
-    export CARGO_TARGET_DIR=/var/cache/cargo-target \
- && cd /tmp/zmm_telemetry \
- && maturin build --release --out /tmp/wheels \
- && pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl \
- && rm -rf /tmp/zmm_telemetry /tmp/wheels
+# ── zmm_telemetry (fast DuckDB appender), built in the wheel-telemetry stage ──
+COPY --from=wheel-telemetry /wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/zmm_telemetry-*.whl && rm -rf /tmp/wheels
 DOCKERFILE_APPENDER
-        fi
+    fi
 
-        if [[ "$WITH_EQ" == true ]]; then
-            info "Including zmm_eq Cast EQ DSP in image build"
-            cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_EQ'
+    if [[ "$WITH_EQ" == true ]]; then
+        cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_EQ'
 
-# ── Build zmm_eq (Cast EQ biquad DSP) from source ──
-COPY zmm_eq/ /tmp/zmm_eq/
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/var/cache/cargo-target \
-    export CARGO_TARGET_DIR=/var/cache/cargo-target \
- && cd /tmp/zmm_eq \
- && maturin build --release --out /tmp/wheels \
- && pip install --no-cache-dir /tmp/wheels/zmm_eq-*.whl \
- && rm -rf /tmp/zmm_eq /tmp/wheels
+# ── zmm_eq (Cast EQ biquad DSP), built in the wheel-eq stage ──
+COPY --from=wheel-eq /wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/zmm_eq-*.whl && rm -rf /tmp/wheels
 DOCKERFILE_EQ
-        fi
     fi
 
     if [[ "$WITH_APPENDER" != true ]]; then
@@ -833,13 +853,13 @@ base_image_present() {
     image_present "$BASE_IMAGE" && image_present "$STAGE_BASE_IMAGE"
 }
 
-# The silabs and otbr stages finish as untagged images, which the upgrade GC's
+# Build-stage images (Thread toolchain, Rust wheels) finish untagged, which the upgrade GC's
 # dangling-image sweep would delete — and with them the cached OTBR compile.
 # Tagging them (an instant cache hit) keeps them. When a pin changes, the
 # superseded stage image loses its tag, goes dangling and is collected.
 tag_stage_caches() {
     local containerfile="$1" stage
-    for stage in silabs otbr; do
+    for stage in silabs otbr rust-toolchain wheel-telemetry wheel-eq; do
         grep -qE "^FROM .* AS ${stage}\$" "$containerfile" || continue
         "$RUNTIME" build --format docker --target "$stage" \
             --tag "${IMAGE_NAME}-stage-${stage}:cache" \

@@ -684,11 +684,11 @@ do_build() {
 
     "$RUNTIME" tag "$new_tag" "${IMAGE_NAME}:latest-${arch}" >>"$BUILD_LOG" 2>&1 || true
 
-    # Keep the Thread toolchain stage images (see build.sh tag_stage_caches):
+    # Keep the build-stage images (see build.sh tag_stage_caches):
     # untagged, do_gc's dangling sweep would delete them and the next upgrade
     # would recompile OTBR. A cache hit, so this adds seconds, not a build.
     local stage
-    for stage in silabs otbr; do
+    for stage in silabs otbr rust-toolchain wheel-telemetry wheel-eq; do
         grep -qE "^FROM .* AS ${stage}\$" "$work_dir/Containerfile" || continue
         "$RUNTIME" build --format docker --target "$stage" \
             --tag "${IMAGE_NAME}-stage-${stage}:cache" \

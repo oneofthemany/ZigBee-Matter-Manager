@@ -375,13 +375,15 @@ The most operationally-sensitive part of the system. Every step has a failure mo
 15. Write status: idle / 100% / "Upgrade complete"
 ```
 
-### Thread toolchain stages and their cache
+### Build stages and their cache
 
 cpcd, zigbeed and the OpenThread Border Router don't use Python, so the Containerfile builds them in two stages on `debian:bookworm-slim` (`silabs`, `otbr`) and copies the result into the Python app image. A new Python base image or a lock change then reuses the cached OTBR compile instead of rebuilding it; only a change to the stages themselves (a pin bump, their apt lists) recompiles.
 
 Every source is pinned by build argument at the top of the Containerfile — `SISDK_TAG` (SiLabs `simplicity_sdk` release: the cpcd/zigbeed/libcpc debs and the MultiPAN platform files), `OTBR_COMMIT` (`ot-br-posix`), `CPCD_TAG` (`cpc-daemon`) — so a rebuild on a cache miss or a fresh host produces the same binaries. Bump them deliberately and test Thread afterwards.
 
-Stage images end up untagged, which `do_gc`'s dangling sweep would delete. Both `build.sh` and `upgrade.sh` therefore re-run the build for `--target silabs` and `--target otbr` after a successful build (a cache hit) and tag them `zigbee-matter-manager-stage-<stage>:cache`. When a pin changes, the old stage image loses that tag, goes dangling and is collected normally.
+The Rust extensions are staged the same way when enabled (`appender.enabled` / `eq.enabled` markers): a `rust-toolchain` stage on the app's Python image (the wheels are compiled against its ABI, so both use the one `PYTHON_IMAGE` build argument), then `wheel-telemetry` and `wheel-eq`, each copying in only its own crate. The app image just `pip install`s the finished wheel below the lock install. So a dependency bump no longer recompiles Rust, editing one crate does not rebuild the other, and the toolchain (rustup, cargo, maturin) is not in the app image. A Python base-image change still rebuilds the wheels — they genuinely depend on it.
+
+Stage images end up untagged, which `do_gc`'s dangling sweep would delete. Both `build.sh` and `upgrade.sh` therefore re-run the build for each stage present (`--target silabs`, `otbr`, `rust-toolchain`, `wheel-telemetry`, `wheel-eq`) after a successful build — a cache hit — and tag them `zigbee-matter-manager-stage-<stage>:cache`. When a pin or crate changes, the superseded stage image loses that tag, goes dangling and is collected normally.
 
 ### Step A — suppress the supervisor
 
