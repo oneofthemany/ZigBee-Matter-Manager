@@ -11,6 +11,7 @@ aiohttp==3.11.11
     #   -r requirements.txt
     #   blueair-api
     #   midea-local
+    #   pyatv
     #   python-matter-server
     #   uk-fuel-prices-api
     #   zigpy
@@ -36,7 +37,9 @@ appdirs==1.4.4
 asttokens==3.0.1
     # via stack-data
 async-timeout==5.0.1
-    # via python-matter-server
+    # via
+    #   pyatv
+    #   python-matter-server
 asyncio==4.0.0
     # via uk-fuel-prices-api
 atomicwrites==1.4.1
@@ -64,7 +67,10 @@ certifi==2026.6.17
 cffi==2.0.0
     # via
     #   cryptography
+    #   miniaudio
     #   sounddevice
+chacha20poly1305-reuseable==0.13.2
+    # via pyatv
 charset-normalizer==3.4.7
     # via requests
 click==8.4.2
@@ -92,7 +98,9 @@ crccheck==1.3.1
 cryptography==44.0.0
     # via
     #   -r requirements.txt
+    #   chacha20poly1305-reuseable
     #   home-assistant-chip-core
+    #   pyatv
     #   python-matter-server
     #   zigpy
 csvw==4.1.0
@@ -158,6 +166,7 @@ idna==3.18
 ifaddr==0.2.0
     # via
     #   midea-local
+    #   pyatv
     #   soco
     #   zeroconf
 ipdb==0.13.13
@@ -197,6 +206,8 @@ mdurl==0.1.2
     # via markdown-it-py
 midea-local==6.6.1
     # via -r requirements.txt
+miniaudio==1.71
+    # via pyatv
 mpegdash==0.4.1
     # via tidalapi
 multidict==6.7.1
@@ -242,6 +253,7 @@ propcache==0.5.2
 protobuf==7.35.1
     # via
     #   onnxruntime
+    #   pyatv
     #   pychromecast
 psutil==7.2.2
     # via ipython
@@ -251,6 +263,8 @@ pure-eval==0.2.3
     # via stack-data
 pyaes==1.6.1
     # via tidalapi
+pyatv==0.16.0
+    # via -r requirements.txt
 pychromecast==14.0.10
     # via -r requirements.txt
 pycparser==3.0
@@ -263,6 +277,7 @@ pydantic==2.13.4
     # via
     #   -r requirements.txt
     #   fastapi
+    #   pyatv
 pydantic-core==2.46.4
     # via pydantic
 pygments==2.20.0
@@ -305,6 +320,7 @@ regex==2026.7.10
 requests==2.34.2
     # via
     #   casttube
+    #   pyatv
     #   soco
     #   tidalapi
 rfc3986==1.5.0
@@ -321,18 +337,25 @@ six==1.17.0
     # via
     #   ecdsa
     #   python-dateutil
+    #   srptools
 soco==0.31.2
     # via -r requirements.txt
 sounddevice==0.5.5
     # via -r requirements.txt
+srptools==1.0.1
+    # via pyatv
 stack-data==0.6.3
     # via ipython
 starlette==1.3.1
     # via fastapi
+tabulate==0.10.0
+    # via pyatv
 termcolor==3.3.0
     # via csvw
 tidalapi==0.8.11
     # via -r requirements.txt
+tinytag==2.3.2
+    # via pyatv
 traitlets==5.15.1
     # via
     #   ipython
@@ -387,6 +410,7 @@ yarl==1.24.2
 zeroconf==0.136.2
     # via
     #   -r requirements.txt
+    #   pyatv
     #   pychromecast
     #   python-matter-server
 zha-quirks==0.0.112

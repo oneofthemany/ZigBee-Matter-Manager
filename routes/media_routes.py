@@ -86,6 +86,10 @@ class GroupBody(BaseModel):
     member_ids: List[str] = []
 
 
+class AirPlayPinBody(BaseModel):
+    pin: str
+
+
 class EqBody(BaseModel):
     player_id: str
     enabled: Optional[bool] = None
@@ -814,6 +818,48 @@ def register_media_routes(app: FastAPI, get_media_service):
         if not ok:
             return {"success": False, "error": "Favourite update failed (login required?)"}
         return {"success": True, "favorited": body.action == "add"}
+
+    # AirPlay pairing. Only receivers with access control (Apple TV, HomePods
+    # set to "require password/pairing") need it; the PIN appears on the TV.
+
+    def _airplay(svc):
+        return getattr(svc, "airplay", None) if svc else None
+
+    @app.get("/api/media/airplay/devices")
+    async def airplay_devices(_: Principal = Depends(require_scope("admin"))):
+        ap = _airplay(_svc())
+        if ap is None:
+            return {"success": False, "error": "AirPlay is not enabled (or the media engine is off)"}
+        players = await ap.list_players()
+        return {"success": True, "devices": [
+            {**p.to_dict(), "pairing_required": ap.pairing_required(p.player_id)}
+            for p in players]}
+
+    @app.post("/api/media/airplay/{player_id}/pair/begin")
+    async def airplay_pair_begin(player_id: str,
+                                 _: Principal = Depends(require_scope("admin"))):
+        ap = _airplay(_svc())
+        if ap is None:
+            return {"success": False, "error": "AirPlay is not enabled"}
+        try:
+            return {"success": True, **await ap.pair_begin(player_id)}
+        except Exception as e:
+            logger.warning(f"AirPlay pairing start failed for {player_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/media/airplay/{player_id}/pair/finish")
+    async def airplay_pair_finish(player_id: str, body: AirPlayPinBody,
+                                  _: Principal = Depends(require_scope("admin"))):
+        ap = _airplay(_svc())
+        if ap is None:
+            return {"success": False, "error": "AirPlay is not enabled"}
+        try:
+            if await ap.pair_finish(player_id, body.pin.strip()):
+                return {"success": True}
+            return {"success": False, "error": "Pairing failed — check the PIN and try again"}
+        except Exception as e:
+            logger.warning(f"AirPlay pairing failed for {player_id}: {e}")
+            return {"success": False, "error": str(e)}
 
     @app.get("/api/media/tidal/accounts")
     async def tidal_accounts(_: Principal = Depends(require_scope("admin"))):

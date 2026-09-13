@@ -24,7 +24,7 @@ if str(HERE) not in sys.path:
 PY_MODULES = ["test_tidal_accounts", "test_tidal_owner",
               "test_tidal_routes",
               "test_tidal_manifest_token", "test_tidal_automation",
-              "test_sonos_player"]
+              "test_sonos_player", "test_airplay_player"]
 
 
 def main() -> int:

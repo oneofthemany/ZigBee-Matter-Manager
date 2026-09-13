@@ -290,6 +290,7 @@ function iconFor(p) {
     if (p.is_group) return 'fas fa-layer-group';          // any group: stacked icon
     if (p.provider === 'local') return 'fas fa-mobile-screen';   // this browser
     if (p.provider === 'sonos') return 'fas fa-house-signal';
+    if (p.provider === 'airplay') return 'fab fa-apple';
     return p.provider === 'cast' ? 'fab fa-chromecast' : 'fas fa-volume-up';
 }
 

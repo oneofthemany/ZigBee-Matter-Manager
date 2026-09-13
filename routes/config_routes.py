@@ -48,6 +48,9 @@ MEDIA_DEFAULTS = {
     # Sonos is opt-in (unlike cast/wiim): it needs the soco package and its
     # SSDP discovery sweeps the LAN on startup.
     "sonos": {"enabled": False, "discovery": True, "devices": []},
+    # AirPlay is opt-in: this host decodes and pushes every stream (ffmpeg),
+    # so it costs CPU that the URL-fetching players do not.
+    "airplay": {"enabled": False, "discovery": True, "devices": []},
     "radio_browser": {"enabled": True},
     "tidal": {"enabled": False, "quality": "high", "manifest_base_url": "",
               "owner": ""},
@@ -311,6 +314,18 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                         # Normalise to a clean list of non-empty IP strings.
                         wiim_cfg["devices"] = [
                             str(d).strip() for d in (wiim_in["devices"] or [])
+                            if str(d).strip()
+                        ]
+                if "airplay" in m:
+                    ap_in = m["airplay"] or {}
+                    ap_cfg = media_cfg.setdefault("airplay", {})
+                    if "enabled" in ap_in:
+                        ap_cfg["enabled"] = bool(ap_in["enabled"])
+                    if "discovery" in ap_in:
+                        ap_cfg["discovery"] = bool(ap_in["discovery"])
+                    if "devices" in ap_in:
+                        ap_cfg["devices"] = [
+                            str(d).strip() for d in (ap_in["devices"] or [])
                             if str(d).strip()
                         ]
                 if "sonos" in m:

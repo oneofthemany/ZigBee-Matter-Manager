@@ -617,6 +617,23 @@ const API_PROVIDERS = [
         isConfigured: c => !!c.media?.enabled && !!c.media.sonos?.enabled,
     },
     {
+        id: 'airplay', label: 'AirPlay', icon: 'fa-apple', iconStyle: 'fab', mediaEngine: true,
+        render: c => renderAirPlaySection(c),
+        onShow: () => loadAirPlayDevices(),
+        collect: () => ({
+            media: {
+                airplay: {
+                    enabled: document.getElementById('cfg_media_airplay_enabled')?.checked ?? false,
+                    discovery: document.getElementById('cfg_media_airplay_discovery')?.checked ?? true,
+                    devices: (document.getElementById('cfg_media_airplay_devices')?.value || '')
+                        .split('\n').map(s => s.trim()).filter(Boolean),
+                },
+            },
+        }),
+        disablePatch: { media: { airplay: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled && !!c.media.airplay?.enabled,
+    },
+    {
         id: 'radio', label: 'Radio Browser', icon: 'fa-broadcast-tower', mediaEngine: true,
         render: c => renderRadioBrowserSection(c),
         collect: () => ({
@@ -763,7 +780,7 @@ function _apiTabHtml(p, active) {
       <li class="nav-item d-flex align-items-center" data-api-tab="${w_escape(p.id)}">
         <button class="nav-link ${active ? 'active' : ''}" data-bs-toggle="tab"
                 data-bs-target="#apiPane_${w_escape(p.id)}" type="button">
-          <i class="fas ${w_escape(p.icon)} me-1"></i> <span class="tab-label">${w_escape(p.label)}</span>
+          <i class="${p.iconStyle || 'fas'} ${w_escape(p.icon)} me-1"></i> <span class="tab-label">${w_escape(p.label)}</span>
         </button>
         <button type="button" class="btn btn-link btn-sm text-muted px-1 py-0"
                 title="Remove ${w_escape(p.label)}" aria-label="Remove ${w_escape(p.label)}"
@@ -799,7 +816,7 @@ function _renderApiAddMenu() {
     btn.disabled = !available.length;
     menu.innerHTML = available.map(p => `
       <li><button class="dropdown-item" type="button" onclick="window.apiAdd('${w_escape(p.id)}')">
-        <i class="fas ${w_escape(p.icon)} fa-fw me-2"></i>${w_escape(p.label)}
+        <i class="${p.iconStyle || 'fas'} ${w_escape(p.icon)} fa-fw me-2"></i>${w_escape(p.label)}
       </button></li>`).join('');
 }
 
@@ -945,7 +962,8 @@ function collectApiValues() {
     // Without the Casting pane nothing sends media.enabled, but Tidal and
     // Radio Browser still need the media engine running.
     const m = out.media;
-    if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled || m.sonos?.enabled)) {
+    if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled
+                                   || m.sonos?.enabled || m.airplay?.enabled)) {
         m.enabled = true;
     }
     return out;
@@ -1629,6 +1647,99 @@ window.testBlueair = async function () {
     } catch (e) {
         if (out) out.innerHTML = `<div class="text-danger small">${w_escape(e.message)}</div>`;
     }
+};
+
+// AIRPLAY SECTION — lives in the External APIs tab
+
+function renderAirPlaySection(config) {
+    const a = (config.media || {}).airplay || {};
+    const devices = (a.devices || []).join('\n');
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fab fa-apple me-1"></i> AirPlay</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_media_airplay_enabled" ${a.enabled ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Plays to HomePods, Apple TVs and AirPlay speakers on your network — no Apple account involved.
+      This hub decodes and sends the audio itself, so each AirPlay stream uses some CPU here.
+      One speaker per stream (no AirPlay multi-room yet). Changes take effect after a service restart.
+    </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Auto-discovery</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_airplay_discovery" ${a.discovery !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Find receivers on the LAN</label>
+        </div>
+      </div>
+      <div class="col-md-9">
+        <label class="form-label small fw-semibold">Receiver IPs (optional)</label>
+        <textarea class="form-control" id="cfg_media_airplay_devices" rows="3"
+                  placeholder="One IP per line, e.g.&#10;192.168.1.70">${w_escape(devices)}</textarea>
+        <small class="text-muted">Only needed when discovery can't see them (VLANs, blocked multicast).</small>
+      </div>
+    </div>
+    <div class="fw-semibold small mb-1">Receivers found</div>
+    <div id="airplayDevicesList" class="small text-muted"></div>
+    `;
+}
+
+async function loadAirPlayDevices() {
+    const el = document.getElementById('airplayDevicesList');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Loading…';
+    try {
+        const res = await fetch('/api/media/airplay/devices', { credentials: 'same-origin' }).then(r => r.json());
+        if (!res.success) {
+            el.textContent = (res.error || res.detail || 'Unavailable') + ' — enable AirPlay, save and restart.';
+            return;
+        }
+        const devices = res.devices || [];
+        if (!devices.length) {
+            el.textContent = 'None found yet. After enabling, save and restart; receivers appear within a few seconds.';
+            return;
+        }
+        el.innerHTML = `<ul class="list-unstyled mb-0">${devices.map(d => `
+          <li class="py-1 d-flex align-items-center gap-2">
+            ${d.pairing_required
+                ? '<span class="badge bg-warning text-dark">needs pairing</span>'
+                : '<span class="badge bg-success">ready</span>'}
+            <span class="text-body">${w_escape(d.name)}</span>
+            ${d.pairing_required ? `<button class="btn btn-sm btn-outline-primary py-0 ms-auto"
+                onclick="window.airplayPair('${w_escape(d.player_id)}', '${w_escape(d.name)}')">
+                <i class="fas fa-link me-1"></i>Pair</button>` : ''}
+          </li>`).join('')}</ul>`;
+    } catch (e) {
+        el.textContent = 'Could not load receivers: ' + e.message;
+    }
+}
+
+window.airplayPair = async function (playerId, name) {
+    const post = (path, body) => fetch(`/api/media/airplay/${encodeURIComponent(playerId)}/pair/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify(body || {}),
+    }).then(r => r.json());
+    try {
+        const begin = await post('begin');
+        if (!begin.success) throw new Error(begin.error || begin.detail || 'Could not start pairing');
+        const pin = await window.zbmPrompt({
+            title: `Pair ${name}`,
+            label: begin.device_provides_pin
+                ? `Enter the PIN shown on ${name}:`
+                : `Enter the PIN or password for ${name}:`,
+            confirmText: 'Pair',
+        });
+        if (pin === null) return;
+        const done = await post('finish', { pin });
+        if (!done.success) throw new Error(done.error || done.detail || 'Pairing failed');
+        window.toast?.success?.('AirPlay', `${name} paired`);
+    } catch (e) {
+        window.toast?.error?.('AirPlay pairing failed', e.message);
+    }
+    loadAirPlayDevices();
 };
 
 // SONOS SECTION — lives in the External APIs tab

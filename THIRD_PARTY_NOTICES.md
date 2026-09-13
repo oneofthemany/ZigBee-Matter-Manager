@@ -51,6 +51,7 @@ redistributed in this repository.
 | markdown-it-py | MIT |
 | midea-local | MIT |
 | numpy | BSD-3-Clause |
+| pyatv | MIT |
 | pychromecast | MIT |
 | pydantic | MIT |
 | python-matter-server | Apache-2.0 |
