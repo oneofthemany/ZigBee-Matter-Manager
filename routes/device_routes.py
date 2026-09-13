@@ -34,6 +34,13 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 devices.extend(await ac_entries())
             except Exception as e:
                 logger.warning(f"AC device-list merge failed: {e}")
+        # Blueair purifiers — provider registered by blueair_routes
+        blueair_entries = getattr(app.state, "blueair_device_entries", None)
+        if blueair_entries is not None:
+            try:
+                devices.extend(await blueair_entries())
+            except Exception as e:
+                logger.warning(f"Blueair device-list merge failed: {e}")
         # Nuki bridge locks — provider registered by security_routes
         # (Matter-commissioned locks already arrive via the matter bridge)
         nuki_entries = getattr(app.state, "nuki_device_entries", None)

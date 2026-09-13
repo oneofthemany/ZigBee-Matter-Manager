@@ -459,7 +459,7 @@ write_containerfile() {
     : "${WITH_EQ:=$WITH_APPENDER}"
 
     cat > "$CLONE_DIR/Containerfile" << 'DOCKERFILE_TOP'
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
 
@@ -678,7 +678,7 @@ RUN cd /app \
  && echo "release manifest: $(wc -l < /app/.release_manifest) files, $(du -h /app/.release_manifest | cut -f1)"
 
 RUN mkdir -p /data /app/data/matter /app/data/backups /app/data/certs /app/logs /app/config /var/lib/thread \
-        /usr/local/lib/python3.11/site-packages/credentials/development/paa-root-certs
+        /usr/local/lib/python3.12/site-packages/credentials/development/paa-root-certs
 
 ENV ZMM_BACKUP_DIR=/app/data/backups
 ENV ZMM_APP_DIR=/app
@@ -728,7 +728,7 @@ DOCKERIGNORE
 # =============================================================================
 # BUILD IMAGE
 # =============================================================================
-BASE_IMAGE="python:3.11-slim-bookworm"
+BASE_IMAGE="python:3.12-slim-bookworm"
 
 base_image_present() {
     local n

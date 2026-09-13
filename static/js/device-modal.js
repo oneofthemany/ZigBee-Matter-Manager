@@ -34,6 +34,11 @@ export async function openDeviceModal(d) {
         const { openAcModal } = await import('./modal/ac-modal.js');
         return openAcModal(d.ac_unit_id);
     }
+    // Blueair purifiers (cloud account) likewise
+    if (d?.blueair_device_id) {
+        const { openBlueairModal } = await import('./modal/blueair-modal.js');
+        return openBlueairModal(d.blueair_device_id);
+    }
     // Nuki bridge locks likewise (matter-commissioned locks fall through
     // to the standard modal, whose Control tab has lock/unlock/unlatch)
     if (d?.nuki_lock_id) {

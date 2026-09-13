@@ -547,6 +547,8 @@ function renderSecurityTab(config) {
 //   disablePatch   config slice written when the tab is removed, or null when
 //                  the API has nothing in config.yaml to switch off (AC units
 //                  and Fuel credentials live behind their own endpoints).
+//   onRemove       async switch-off for APIs that save through their own
+//                  endpoint instead of the structured config (Blueair).
 //   isConfigured   picks the default tabs before ui.enabled_apis exists;
 //                  null = state not in config, so the tab is shown.
 //   mediaEngine    runs inside MediaService, which only starts with media.enabled.
@@ -676,6 +678,17 @@ const API_PROVIDERS = [
         },
         disablePatch: { octopus: { enabled: false } },
         isConfigured: c => !!c.octopus?.enabled,
+    },
+    {
+        id: 'blueair', label: 'Blueair', icon: 'fa-wind',
+        render: () => renderBlueairSection(),
+        onShow: () => loadBlueairConfig(),
+        // Saves through its own button: the password must never ride along
+        // with the main Save, and changes apply without a restart.
+        collect: () => ({}),
+        disablePatch: null,
+        onRemove: () => _blueairPost('/api/blueair/config', { enabled: false }),
+        isConfigured: c => !!c.blueair?.enabled,
     },
     {
         id: 'fuel', label: 'Fuel', icon: 'fa-gas-pump',
@@ -885,10 +898,10 @@ window.apiRemove = async function (id) {
         patch = _deepMerge(patch || {}, { media: { enabled: false } });
     }
 
-    const message = patch
+    const message = patch || p.onRemove
         ? `Remove ${p.label}? The integration is switched off and its tab removed. ` +
-          `Saved credentials are kept, so adding it back restores them. ` +
-          `Takes effect after a service restart.`
+          `Saved credentials are kept, so adding it back restores them.` +
+          (p.onRemove ? '' : ' Takes effect after a service restart.')
         : `Remove the ${p.label} tab? Anything already set up there keeps working; ` +
           `add the tab back to manage it.`;
     const ok = await confirmDialog({
@@ -899,6 +912,7 @@ window.apiRemove = async function (id) {
     const previous = _enabledApis;
     _enabledApis = remaining;
     try {
+        if (p.onRemove) await p.onRemove();
         await _persistApiSelection(patch);
     } catch (e) {
         _enabledApis = previous;
@@ -1446,6 +1460,176 @@ function renderCastingSection(config) {
     </div>
     `;
 }
+
+// BLUEAIR SECTION — lives in the External APIs tab
+//
+// Like Fuel Finder, rendered empty and filled from its own endpoint: the
+// account password lives in config/secrets.yaml, never in config.yaml, and is
+// write-only — a blank password field means "keep the stored one".
+
+async function _blueairPost(url, body) {
+    const res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    return data;
+}
+
+function renderBlueairSection() {
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-wind me-1"></i> Blueair</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_blueair_enabled">
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <div class="alert alert-warning small py-2">
+      <i class="fas fa-cloud me-1"></i>
+      Blueair has no local control: purifiers are reached through <strong>Blueair's cloud</strong>
+      (hosted on AWS) using your Blueair app account, and the purifier itself stays connected to it.
+    </div>
+    <div id="blueairStatus" class="mb-3"></div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Region</label>
+        <select class="form-select" id="cfg_blueair_region">
+          <option value="eu">Europe</option>
+          <option value="us">North America</option>
+          <option value="au">Australia</option>
+          <option value="cn">China</option>
+        </select>
+        <small class="text-muted">Where the account was created.</small>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold">Account email</label>
+        <input type="email" class="form-control" id="cfg_blueair_username" autocomplete="off">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Password</label>
+        <input type="password" class="form-control" id="cfg_blueair_password" autocomplete="new-password">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small fw-semibold">Poll (s)</label>
+        <input type="number" class="form-control" id="cfg_blueair_poll" min="60" step="30">
+      </div>
+    </div>
+    <div class="d-flex gap-2 mb-2">
+      <button class="btn btn-primary btn-sm" onclick="window.saveBlueairConfig()">
+        <i class="fas fa-save me-1"></i> Save account</button>
+      <button class="btn btn-outline-secondary btn-sm" onclick="window.testBlueair()">
+        <i class="fas fa-plug me-1"></i> Test login</button>
+    </div>
+    <div id="blueairResult" class="mb-3"></div>
+    <div class="fw-semibold small mb-1">Devices</div>
+    <div id="blueairDevices" class="small text-muted"></div>
+    `;
+}
+
+async function loadBlueairConfig() {
+    const status = document.getElementById('blueairStatus');
+    try {
+        const res = await fetch('/api/blueair/config', { credentials: 'same-origin' });
+        const cfg = await res.json();
+        if (!res.ok) throw new Error(cfg.detail || ('HTTP ' + res.status));
+        const set = (id, fn) => { const el = document.getElementById(id); if (el) fn(el); };
+        set('cfg_blueair_enabled', el => { el.checked = !!cfg.enabled; });
+        set('cfg_blueair_region', el => { el.value = cfg.region || 'eu'; });
+        set('cfg_blueair_username', el => {
+            el.value = cfg.username || '';
+            el.disabled = cfg.source === 'environment';
+        });
+        set('cfg_blueair_password', el => {
+            el.value = '';
+            el.placeholder = cfg.configured ? 'Saved — leave blank to keep' : '';
+            el.disabled = cfg.source === 'environment';
+        });
+        set('cfg_blueair_poll', el => { el.value = cfg.poll_interval_seconds || 120; });
+        if (status) {
+            status.innerHTML = cfg.source === 'environment'
+                ? '<div class="text-muted small">Account comes from ZMM_BLUEAIR_USERNAME / ZMM_BLUEAIR_PASSWORD.</div>'
+                : cfg.configured ? ''
+                : '<div class="text-muted small">No account saved yet.</div>';
+            if (cfg.last_error) {
+                status.innerHTML += `<div class="text-danger small">Last error: ${w_escape(cfg.last_error)}</div>`;
+            }
+        }
+        if (cfg.enabled && cfg.configured) loadBlueairDevices();
+    } catch (e) {
+        if (status) status.innerHTML = `<div class="text-danger small">Could not load: ${w_escape(e.message)}</div>`;
+    }
+}
+
+async function loadBlueairDevices() {
+    const el = document.getElementById('blueairDevices');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Loading…';
+    try {
+        const res = await fetch('/api/blueair/devices').then(r => r.json());
+        if (!res.success) throw new Error(res.error || 'failed');
+        const devices = res.devices || [];
+        if (!devices.length) {
+            el.textContent = 'No devices on this account.';
+            return;
+        }
+        el.innerHTML = `<ul class="list-unstyled mb-0">${devices.map(d => `
+          <li class="py-1">
+            <span class="badge ${d.stale ? 'bg-warning text-dark' : 'bg-success'} me-1">${d.stale ? 'last known' : 'online'}</span>
+            <span class="text-body">${w_escape(d.name)}</span>
+            <span class="text-muted">· ${w_escape(d.model)}</span>
+            ${d.pm2_5 != null ? `<span class="ms-1">· PM2.5 ${w_escape(d.pm2_5)}</span>` : ''}
+            ${d.filter_usage_pct != null ? `<span class="ms-1">· filter ${w_escape(d.filter_usage_pct)}%</span>` : ''}
+          </li>`).join('')}</ul>
+          <div class="fst-italic mt-1">Control them from the Devices tab — Manage button.</div>`;
+    } catch (e) {
+        el.innerHTML = `<span class="text-danger">${w_escape(e.message)}</span>`;
+    }
+}
+
+function _blueairForm() {
+    const val = id => (document.getElementById(id)?.value || '').trim();
+    return {
+        enabled: !!document.getElementById('cfg_blueair_enabled')?.checked,
+        region: val('cfg_blueair_region'),
+        username: val('cfg_blueair_username'),
+        password: val('cfg_blueair_password'),
+        poll_interval_seconds: Number(val('cfg_blueair_poll')) || 120,
+    };
+}
+
+window.saveBlueairConfig = async function () {
+    const out = document.getElementById('blueairResult');
+    try {
+        await _blueairPost('/api/blueair/config', _blueairForm());
+        const pw = document.getElementById('cfg_blueair_password');
+        if (pw) pw.value = '';          // never leave a secret sitting in the DOM
+        if (out) out.innerHTML = '<div class="text-success small">Saved.</div>';
+        loadBlueairConfig();
+    } catch (e) {
+        if (out) out.innerHTML = `<div class="text-danger small">${w_escape(e.message)}</div>`;
+    }
+};
+
+window.testBlueair = async function () {
+    const out = document.getElementById('blueairResult');
+    if (out) out.innerHTML = '<span class="text-muted small"><i class="fas fa-spinner fa-spin me-1"></i> Logging in…</span>';
+    const { username, password, region } = _blueairForm();
+    try {
+        const res = await _blueairPost('/api/blueair/test', { username, password, region });
+        if (!out) return;
+        if (!res.success) {
+            out.innerHTML = `<div class="alert alert-danger py-2 small mb-0">${w_escape(res.error || 'Login failed')}</div>`;
+            return;
+        }
+        const names = (res.devices || []).map(d => w_escape(d.name)).join(', ') || 'no devices';
+        out.innerHTML = `<div class="alert alert-success py-2 small mb-0">
+            <i class="fas fa-check-circle me-1"></i> Logged in — ${names}. Save to use this account.</div>`;
+    } catch (e) {
+        if (out) out.innerHTML = `<div class="text-danger small">${w_escape(e.message)}</div>`;
+    }
+};
 
 // SONOS SECTION — lives in the External APIs tab
 

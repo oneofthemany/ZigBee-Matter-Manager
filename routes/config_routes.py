@@ -171,6 +171,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     "ui": {
                         "enabled_apis": (cfg.get("ui") or {}).get("enabled_apis"),
                     },
+                    # Read-only here: Blueair saves through /api/blueair/config,
+                    # which also owns the credentials. Present so the APIs tab
+                    # can tell whether the integration is in use.
+                    "blueair": {
+                        "enabled": bool((cfg.get("blueair") or {}).get("enabled", False)),
+                    },
                     # Integrations are default-filled so every supported API
                     # always reaches the frontend with its full shape — the
                     # Settings → APIs tab must never depend on config.yaml

@@ -26,3 +26,5 @@ zmm_eq/target/
 # Secrets. config/config.yaml is tracked, so anything that must not reach the
 # remote lives here instead (or in the environment). See config/secrets.yaml.example.
 /config/secrets.yaml
+/data/auth.yaml
+/data/vapid.json

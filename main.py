@@ -1212,6 +1212,8 @@ register_floor_plan_routes(app, lambda: heating_controller)
 register_chamber_routes(app, get_zigbee_service)
 register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)
+from routes import register_blueair_routes
+register_blueair_routes(app)
 register_adblock_routes(app)
 register_worker_routes(app, lambda: zigbee_service.automation)
 register_security_routes(app, get_matter_bridge, get_zigbee_service)

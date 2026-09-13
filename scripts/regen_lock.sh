@@ -32,7 +32,7 @@ info "Compiling requirements.txt -> requirements.lock ..."
 (
     cd "$REPO_ROOT"
     uv pip compile requirements.txt \
-        --python-version 3.11 \
+        --python-version 3.12 \
         --python-platform x86_64-manylinux_2_31 \
         -o requirements.lock
 )
@@ -48,7 +48,7 @@ done < <(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$REQ_TXT" \
 
 if [[ -n "$drift" ]]; then
     die "Lock regenerated but still missing pins for:${drift}
-      This usually means uv could not resolve them for py3.11/manylinux_2_31."
+      This usually means uv could not resolve them for py3.12/manylinux_2_31."
 fi
 ok "Lock is in sync — every requirements.txt package is pinned."
 

@@ -349,7 +349,7 @@ If the cache becomes corrupted, `podman system prune -a` will force a full rebui
 
 ### Why we don't use `--pull=always`
 
-Each build does NOT do `--pull=always` on the base `python:3.11-slim-bookworm` image, because that would re-download the base image every upgrade and discard the cache. A fresh base image is a separate concern handled by occasional manual `podman pull python:3.11-slim-bookworm`.
+Each build does NOT do `--pull=always` on the base `python:3.12-slim-bookworm` image, because that would re-download the base image every upgrade and discard the cache. A fresh base image is a separate concern handled by occasional manual `podman pull python:3.12-slim-bookworm`.
 
 ---
 

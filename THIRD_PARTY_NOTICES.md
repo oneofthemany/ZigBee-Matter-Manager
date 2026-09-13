@@ -41,6 +41,7 @@ redistributed in this repository.
 | aiohttp | Apache-2.0 |
 | aiomqtt | BSD-3-Clause |
 | bellows | GPL-3.0 |
+| blueair_api | MIT |
 | cryptography | Apache-2.0 / BSD-3-Clause (dual) |
 | duckdb | MIT |
 | fastapi | MIT |
@@ -55,6 +56,7 @@ redistributed in this repository.
 | python-matter-server | Apache-2.0 |
 | python-multipart | Apache-2.0 |
 | pyyaml | MIT |
+| soco | MIT |
 | sounddevice | MIT |
 | tidalapi | LGPL-3.0 |
 | tzdata | Apache-2.0 |

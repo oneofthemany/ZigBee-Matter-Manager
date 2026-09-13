@@ -20,6 +20,7 @@ soco~=0.31
 zeroconf>=0.131,<1.0
 tidalapi~=0.8
 greeclimate
+blueair_api~=1.56
 midea-local
 numpy
 sounddevice
