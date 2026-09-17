@@ -497,6 +497,48 @@ rollback_to_previous() {
     return 1
 }
 
+# ── BUILD PROGRESS ──────────────────────────────────────────────────────────
+# Echoes "percent|description" from the builder's own step counters, or nothing
+# if it has not printed one yet. Only the log tail is scanned: a build reaches
+# tens of MB and this runs every 2s. Stages are weighted equally though their
+# costs are not, so the percentage tracks direction, not duration; the
+# description carries the detail.
+build_progress() {
+    local lo="${1:-20}" hi="${2:-85}"
+    local txt line s S x X per pct instr
+    txt=$(tail -c 65536 "$BUILD_LOG" 2>/dev/null) || return 1
+    line=$(grep -aE '(\[[0-9]+/[0-9]+\] )?STEP [0-9]+/[0-9]+:|^Step [0-9]+/[0-9]+ :' \
+        <<<"$txt" | tail -1)
+    [[ -n "$line" ]] || return 1
+
+    if [[ "$line" =~ \[([0-9]+)/([0-9]+)\][[:space:]]+STEP[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+        s=${BASH_REMATCH[1]}; S=${BASH_REMATCH[2]}
+        x=${BASH_REMATCH[3]}; X=${BASH_REMATCH[4]}
+    elif [[ "$line" =~ STEP[[:space:]]+([0-9]+)/([0-9]+) ]] \
+      || [[ "$line" =~ Step[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+        s=1; S=1; x=${BASH_REMATCH[1]}; X=${BASH_REMATCH[2]}
+    else
+        return 1
+    fi
+    (( S > 0 && X > 0 && s > 0 && x > 0 )) || return 1
+    (( s > S )) && s=$S
+    (( x > X )) && x=$X
+
+    # Permille: bash has no floats, and (s-1 + x/X)/S truncates to zero.
+    per=$(( ( (s - 1) * 1000 + (x * 1000 / X) ) / S ))
+    pct=$(( lo + per * (hi - lo) / 1000 ))
+    (( pct < lo )) && pct=$lo
+    (( pct > hi )) && pct=$hi
+
+    instr=$(sed -E 's/.*STEP [0-9]+\/[0-9]+:[[:space:]]*//; s/.*Step [0-9]+\/[0-9]+ :[[:space:]]*//' \
+        <<<"$line" | cut -c1-58)
+    if (( S > 1 )); then
+        printf '%s|Stage %s/%s, step %s/%s: %s\n' "$pct" "$s" "$S" "$x" "$X" "$instr"
+    else
+        printf '%s|Step %s/%s: %s\n' "$pct" "$x" "$X" "$instr"
+    fi
+}
+
 # ── BUILD: clone target tag, build image, tag with version ──────────────────
 do_build() {
     local target_version
@@ -647,7 +689,24 @@ do_build() {
             "$work_dir" >>"$BUILD_LOG" 2>&1 &
     local build_pid=$!
     local cancelled=0
+    # Monotonic: cached stages make the counters jump back, and a bar going
+    # backwards reads as a fault. Seeded at the value written above.
+    local last_pct=20 last_desc="" prog p d
+    # A wedged git fetch or apt hang otherwise blocks the upgrade forever: the
+    # loop only ever asked whether the process existed, never how long for.
+    local max_h deadline timed_out=0
+    max_h=$(jq -r '.build_max_hours // empty' "$VERSION_STATE_FILE" 2>/dev/null || echo "")
+    [[ "$max_h" =~ ^[0-9]+$ ]] && (( max_h > 0 )) || max_h=3
+    deadline=$(( $(date -u +%s) + max_h * 3600 ))
     while kill -0 "$build_pid" 2>/dev/null; do
+        if (( $(date -u +%s) > deadline )); then
+            timed_out=1
+            log_to_build ""
+            log_to_build "ERROR: build exceeded ${max_h}h — stopping."
+            kill_build_tree "$build_pid"
+            cleanup_build_containers
+            break
+        fi
         if [[ -f "$CANCEL_MARKER" ]]; then
             cancelled=1
         elif [[ -f "$TRIGGER_FILE" ]] && [[ "$(jq -r '.action // empty' \
@@ -662,6 +721,16 @@ do_build() {
             cleanup_build_containers
             break
         fi
+        # Written only when it moves: the app reads this file, and rewriting it
+        # every 2s for an unchanged value is churn.
+        if prog=$(build_progress 20 85); then
+            p=${prog%%|*}; d=${prog#*|}
+            (( p < last_pct )) && p=$last_pct
+            if [[ "$p" != "$last_pct" || "$d" != "$last_desc" ]]; then
+                last_pct=$p; last_desc=$d
+                write_status "building" "$target_version" "$p" "$d" "" "$started_at"
+            fi
+        fi
         sleep 2
     done
     local build_rc=0
@@ -673,6 +742,11 @@ do_build() {
     if (( cancelled )); then
         log_to_build "Build cancelled by user."
         write_status "idle" "" 0 "Cancelled by user" ""
+        return 1
+    fi
+    if (( timed_out )); then
+        write_status "failed" "$target_version" "$last_pct" "Build timed out" \
+            "Build exceeded ${max_h}h and was stopped; see build.log" "$started_at"
         return 1
     fi
     if (( build_rc != 0 )); then
@@ -688,8 +762,7 @@ do_build() {
     # untagged, do_gc's dangling sweep would delete them and the next upgrade
     # would recompile OTBR. A cache hit, so this adds seconds, not a build.
     local stage
-    for stage in silabs otbr rust-toolchain wheel-telemetry wheel-eq; do
-        grep -qE "^FROM .* AS ${stage}\$" "$work_dir/Containerfile" || continue
+    for stage in $(sed -nE 's/^FROM .* AS ([A-Za-z0-9_.-]+)$/\1/p' "$work_dir/Containerfile"); do
         "$RUNTIME" build --format docker --target "$stage" \
             --tag "${IMAGE_NAME}-stage-${stage}:cache" \
             --file "$work_dir/Containerfile" "$work_dir" >>"$BUILD_LOG" 2>&1 \
@@ -1210,10 +1283,27 @@ do_gc() {
     done <<< "$listing"
 
     # ── Dangling <none> layers from past rebuilds ────────────────────────────
-    local dangling d
+    # Recent ones are spared: a build that failed or was cancelled leaves its
+    # finished stages untagged, and those are the OTBR and wheel compiles the
+    # next attempt would otherwise redo from scratch. Only a build that
+    # succeeds gets as far as tagging them (see do_build), so age is the only
+    # signal separating "wreckage" from "not yet labelled".
+    local dangling d cutoff age_h
+    age_h=$(jq -r '.dangling_min_age_h // empty' "$VERSION_STATE_FILE" 2>/dev/null || echo "")
+    [[ "$age_h" =~ ^[0-9]+$ ]] || age_h=48
+    cutoff=$(( $(date -u +%s) - age_h * 3600 ))
     dangling=$("$RUNTIME" images --filter dangling=true --quiet 2>/dev/null | sort -u)
     for d in $dangling; do
         is_protected "$d" && continue
+        created=$("$RUNTIME" image inspect -f '{{.Created}}' "$d" 2>/dev/null || echo "")
+        if [[ -n "$created" ]]; then
+            created=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+            if (( created > cutoff )); then
+                log "GC: keeping dangling $d (younger than ${age_h}h — unfinished build's stage cache)"
+                kept=$((kept + 1))
+                continue
+            fi
+        fi
         log "GC: removing dangling image $d"
         if "$RUNTIME" rmi "$d" >>"$WATCHER_LOG" 2>&1; then
             removed=$((removed + 1))

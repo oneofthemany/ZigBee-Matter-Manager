@@ -591,6 +591,7 @@ DOCKERFILE_TOP
 
 # ── Stage: Rust toolchain (same Python as the app: wheels target its ABI) ──
 FROM ${PYTHON_IMAGE} AS rust-toolchain
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -631,53 +632,28 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 DOCKERFILE_EQ_STAGE
     fi
 
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APP'
+    # Everything but the app, tagged and reused whole. Rarest change first
+    # (docs/upgrades.md, "Build stages and their cache").
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUNTIME_BASE'
 
-# ── App image ──
-FROM ${PYTHON_IMAGE}
+# ── Stage: runtime base ──
+FROM ${PYTHON_IMAGE} AS runtime-base
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore
 
+# OTBR's runtime .so, not its headers. Compiler and git stay for live-container
+# pip installs and live-edit detection (docs/upgrades.md).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        lsb-release \
-        sudo \
-        git \
-        ca-certificates \
-        cmake \
-        ninja-build \
-        g++ \
-        libffi-dev \
-        libmbedtls-dev \
-        libssl-dev \
-        libdbus-1-dev \
-        libavahi-client-dev \
-        libreadline-dev \
-        libboost-dev \
-        libboost-filesystem-dev \
-        libboost-system-dev \
-        libnetfilter-queue-dev \
-        libsystemd-dev \
-        ipset \
-        iptables \
-        dbus \
-        avahi-daemon \
-        logrotate \
-        curl \
-        wget \
-        unzip \
-        jq \
-        libglib2.0-0 \
-        libnl-3-200 \
-        libnl-route-3-200 \
-        socat \
-        ffmpeg \
-        procps \
-        strace \
-        iproute2 \
-        net-tools \
-        pkg-config \
-        bluez \
+        build-essential pkg-config libffi-dev libssl-dev git \
+        lsb-release sudo ca-certificates \
+        libmbedtls14 libmbedcrypto7 libmbedx509-1 \
+        libdbus-1-3 libavahi-client3 libreadline8 \
+        libboost-filesystem1.74.0 libboost-system1.74.0 \
+        libnetfilter-queue1 libsystemd0 \
+        ipset iptables dbus avahi-daemon logrotate \
+        curl wget unzip jq libglib2.0-0 libnl-3-200 libnl-route-3-200 \
+        socat ffmpeg procps strace iproute2 net-tools bluez \
+        usbutils openssl libportaudio2 alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # SiLabs debs plus the packages OTBR's bootstrap added, then OTBR's files over
@@ -689,44 +665,11 @@ RUN apt-get update \
     && rm -rf /tmp/silabs-debs /tmp/otbr-packages.txt /var/lib/apt/lists/*
 COPY --from=otbr /otbr-out/root/ /
 
-# Fail the build here, not at runtime, if the copied binaries are missing a
-# shared library the stage split failed to carry over.
+# Fail the build here, not at runtime, if a copied binary lacks a shared library.
 RUN set -e; for bin in otbr-agent ot-ctl cpcd zigbeed; do \
         path=$(command -v "$bin") || { echo "missing: $bin" >&2; exit 1; }; \
         if ldd "$path" | grep -q "not found"; then ldd "$path" >&2; exit 1; fi; \
     done; echo "Thread toolchain OK"
-
-WORKDIR /app
-DOCKERFILE_APP
-
-    # LAYER ORDER INVARIANT — nothing CONDITIONAL may precede the lock install:
-    #   Part 3  Python requirements  churns on dependency bump
-    #   Part 4  Runtime extras       unconditional, changes ~never
-    #   Part 5  Rust wheel install   CONDITIONAL -> BELOW reqs (the compile itself
-    #                                lives in the wheel stages above the app image)
-
-    # Part 3 — Python requirements (always present)
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_REQS'
-
-# ── Application requirements (layer cache) ──
-COPY requirements.lock ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -r requirements.lock
-
-COPY requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_ROOT_USER_ACTION=ignore pip install -c requirements.lock -r requirements.txt
-DOCKERFILE_REQS
-
-    # Part 4 — runtime extras (always present).
-    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_RUNTIME'
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        usbutils \
-        openssl \
-        libportaudio2 \
-        alsa-utils \
-    && rm -rf /var/lib/apt/lists/*
 
 RUN ARCH=$(dpkg --print-architecture) \
     && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
@@ -734,7 +677,24 @@ RUN ARCH=$(dpkg --print-architecture) \
     && chmod +x /usr/local/bin/cloudflared \
     && /usr/local/bin/cloudflared --version
 
-DOCKERFILE_RUNTIME
+WORKDIR /app
+
+COPY requirements.lock ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.lock
+
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -c requirements.lock -r requirements.txt
+DOCKERFILE_RUNTIME_BASE
+
+    # LAYER ORDER INVARIANT — nothing CONDITIONAL in runtime-base: toggling a
+    # Rust crate must not invalidate the dependency install.
+    cat >> "$CLONE_DIR/Containerfile" << 'DOCKERFILE_APP'
+
+# ── App image ──
+FROM runtime-base
+DOCKERFILE_APP
 
     # Part 5 — prebuilt Rust wheels (each independently optional). Below the
     # lock install, so toggling a crate never invalidates the pip layer.
@@ -859,8 +819,9 @@ base_image_present() {
 # superseded stage image loses its tag, goes dangling and is collected.
 tag_stage_caches() {
     local containerfile="$1" stage
-    for stage in silabs otbr rust-toolchain wheel-telemetry wheel-eq; do
-        grep -qE "^FROM .* AS ${stage}\$" "$containerfile" || continue
+    # Every named stage, read from the file: a hardcoded list silently skips
+    # any stage added later, which the dangling sweep then deletes.
+    for stage in $(sed -nE 's/^FROM .* AS ([A-Za-z0-9_.-]+)$/\1/p' "$containerfile"); do
         "$RUNTIME" build --format docker --target "$stage" \
             --tag "${IMAGE_NAME}-stage-${stage}:cache" \
             --file "$containerfile" "$(dirname "$containerfile")" >/dev/null 2>&1 \
