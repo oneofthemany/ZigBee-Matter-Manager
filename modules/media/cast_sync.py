@@ -50,48 +50,36 @@ STREAM_STATUS_READS_ACQ = 5      # ...while acquiring: denser + more robust.
 STREAM_STATUS_WAIT_S = 0.2       # wait for each status push to land
 STREAM_STATUS_MAX_AGE_S = 5.0
 STREAM_COOLDOWN_S = 7.0          # ignore polls this long after a jump
-# Ceiling on the observation latency a single lag reading may buy itself. The
-# cooldown scales with the device's own lag so a step is not re-decided on
-# pre-step data, but a bogus reading would otherwise blind the ladder for as
-# long as the reading was wrong — and a blinded device is exactly what the
-# silence watchdog cannot see, since a device in cooldown is still measured.
+# Ceiling on the observation latency one lag reading may buy itself: the
+# cooldown scales with the device's lag, so a bogus reading would otherwise
+# blind the ladder for as long as it was wrong (§7.1).
 STREAM_COOLDOWN_MAX_S = 45.0
 STREAM_CONNECT_GRACE_S = 4.0     # ignore polls this long after a stream
 STREAM_RECONNECT_GRACE_S = 15.0
-# Floor between forced re-LOADs of one receiver. A LOAD costs the device its
-# buffer and seconds of re-acquisition, so it must not be reachable in a tight
-# loop: if the first did not take, neither will three more in ten seconds.
+# Floor between forced re-LOADs of one receiver: a LOAD costs its buffer and
+# seconds of re-acquisition, so it must not be reachable in a tight loop.
 STREAM_RELOAD_MIN_INTERVAL_S = 30.0
-# Reloads of one device before the group is re-aligned instead. A single-device
-# reload can only restore alignment if that receiver resumes within roughly
-# `target_lag - (delay_s + trim + precomp)` — a quarter-second for the most
-# pre-compensated device in a wide group — so past a couple of attempts it is
-# not a slow rescue, it is one that cannot work (_realign_group).
+# Reloads of one device before the group is re-aligned instead. A reload
+# converges only inside `target_lag - (delay_s + trim + precomp)`, so past a
+# couple of attempts it cannot work rather than merely being slow (§7.1).
 STREAM_RELOADS_BEFORE_REALIGN = 2
-# A re-align re-LOADs every receiver, so it costs the whole zone several
-# seconds. Rare by construction: it is the rung above a per-device reload.
+# A re-align re-LOADs every receiver, costing the whole zone several seconds.
 STREAM_REALIGN_MIN_INTERVAL_S = 180.0
-# A step corrects by exactly the error it measured, so the error that follows
-# it should be a fraction of the one before. An error still this large a
-# cooldown later means the reader moved but the device did not follow it, and
-# repeating the step cannot fix that.
+# A step corrects by the error it measured, so the next error should be a
+# fraction of it. Still this large a cooldown later means the reader moved and
+# the device did not follow (§7.1).
 STREAM_STEP_FUTILE_FRACTION = 0.5
-# Consecutive futile steps before escalating past the step rung. Two is a
-# demonstration, not a sample: each one is an audible discontinuity, and a
-# correction that has failed twice running on fresh post-cooldown evidence
-# is not going to succeed on the third.
+# Consecutive futile steps before escalating past the step rung. Each is an
+# audible discontinuity, so two is a demonstration rather than a sample.
 STREAM_FUTILE_STEPS = 2
-# A device that has reported no playable media time for this long has left the
-# correction loop's reach: a call or assistant interruption took the receiver
-# out of PLAYING, or its HTTP fetch ended and was never re-issued. Must exceed
-# a re-LOAD's re-acquisition, which is stamped as a fresh reading.
+# No playable media time for this long = out of the correction loop's reach
+# (§7.1). Must exceed a re-LOAD's re-acquisition, stamped as a fresh reading.
 STREAM_SILENT_MAX_S = 30.0
 STREAM_CLAMP_LOG_EVERY_S = 10.0  # a clamped step now re-decides every poll
 STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
-# Kept clear of the write head when seating or stepping a reader: the slack
-# sync_source._gap_close leaves above the furthest reader, plus the block it
-# is about to serve. See OpenZone._reader_ceiling for why the bare head is
-# the one position a reader must never be given.
+# Kept clear of the write head when seating or stepping: the slack
+# sync_source._gap_close leaves above the furthest reader, plus the block it is
+# about to serve. The bare head is the one seat a reader must never get (§A.2).
 STREAM_HEAD_GUARD_S = _src.XFADE_READER_MARGIN_S + STREAM_BLOCK_S
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
 STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
@@ -112,33 +100,22 @@ STREAM_TRIM_SETTLE_S = 3.0
 STREAM_ACQUIRE_MAX_S = 15.0      # never hold the group silent longer than this
 START_DEDUPE_S = 30.0
 STREAM_FADE_IN_S = 0.4
-# An interruption — a call ringing on a tablet in the zone, an assistant
-# session, any local audio focus grab — takes the receiver out of PLAYING and
-# leaves everything it had already buffered untouched. It resumes into that
-# buffer, so it comes back exactly as far behind as it was held. Read directly
-# off player_state (_sweep_interrupted), because the offset it produces is by
-# construction larger than the reader can step away and the ladder below the
-# reload rung cannot converge on it.
+# An interruption leaves the receiver's buffer intact, so it resumes exactly as
+# far behind as it was held — an offset larger than the reader can step away.
+# Read off player_state rather than inferred from silence (§7.1).
 STREAM_INTERRUPT_MIN_S = 1.0
-# Floor between interruption-driven reloads of one device: a receiver held
-# down longer than one attempt is retried steadily rather than hammered.
+# Floor between interruption-driven reloads of one device: a receiver held down
+# longer than one attempt is retried steadily rather than hammered.
 STREAM_INTERRUPT_RELOAD_MIN_S = 10.0
-# How often a parked device is probed for its return. A device the cast
-# provider cannot resolve is absent, not misaligned, and every rung of the
-# ladder is unreachable for it — including the one that re-LOADs the whole
-# zone on its behalf (_park_stream). Observed outages of the speaker that
-# prompted this were 1 m 47 s and 2 m 48 s, so the probe has to be frequent
-# enough to catch the return inside the gap, and cheap enough to run for as
-# long as the device is away: resolution is one mDNS lookup.
+# How often a parked device is probed for its return. Frequent enough to catch
+# a multi-minute outage ending, and cheap: resolution is one mDNS lookup (§7.1).
 STREAM_PARK_RETRY_S = 30.0
 
-# --- Pre-roll latency probe (open-zone.md 4.1) -----------------------------
-# Every device is LOADed onto a silent lead the moment the source opens, and
-# its pipeline latency is read off that lead while the delay line fills. The
-# two costs at session start are independent — priming is an ffmpeg pipe
-# filling, acquisition is a round trip to the receivers — so the second is
-# free if it runs inside the first, and content then starts already aligned
-# instead of starting wrong and being corrected in front of the listener.
+# --- Pre-roll latency probe (open-zone.md §7.3) ----------------------------
+# Every device is LOADed onto a silent lead as the source opens and its
+# pipeline latency read off that lead while the delay line fills. The two costs
+# are independent, so acquisition is free inside the prime and content starts
+# already aligned instead of being corrected in front of the listener.
 PREROLL_POLL_S = 0.5
 PREROLL_READS = 7            # median window: accuracy comes from here
 PREROLL_MIN_READS = 4        # ...stability from this many inside the band
@@ -147,6 +124,16 @@ PREROLL_SETTLE_S = 0.100     # spread that reads as "the buffer has stopped
                              # of the answer, which the median supplies
 PREROLL_QUORUM_S = 8.0       # after this, start on the devices that answered
 PREROLL_MAX_S = 20.0         # never hold content longer than this
+# Cap on the lead a reload opens to re-measure one device (open-zone.md §7.5).
+# The wait is that speaker playing silence; past it the model is the answer.
+STREAM_PROBE_MAX_S = 15.0
+# Total silence a re-align may cost the zone — the lead *and* any acquisition
+# after it, which is why it replaces STREAM_ACQUIRE_MAX_S rather than adding to
+# it. Session start's budgets are the wrong shape here: nobody is listening
+# when a session opens, where this lands mid-track. Sized to still measure the
+# slowest device in the reference deployment (§3: ~6.3 s of pipeline, plus the
+# settling window and a LOAD round trip) — past it the model is the answer.
+STREAM_REALIGN_MAX_S = 12.0
 
 SPECTRUM_FFT_N = 2048
 SPECTRUM_BANDS = 48
@@ -276,34 +263,25 @@ class _Stream:
         self.resyncs: int = 0
         self.reconnects: int = 0     # control-socket resets seen this session
         self.reloads: int = 0        # receiver re-LOADs forced this session
-        # Reloads since this device was last aligned. Separate from the session
-        # counter above, which the UI and the sample rows report: a re-align
-        # re-establishes the group's timing, so the question the ladder asks —
-        # "has reloading stopped working *against the current target*" — starts
-        # over, while the session total must not.
+        # Reloads since this device was last aligned, separate from the session
+        # counter the UI reports: the ladder asks whether reloading still works
+        # against the *current* target, which a re-align resets.
         self.reloads_since_align: int = 0
-        # None, not 0.0: these gate a rung on elapsed time, and 0.0 only
-        # reads as "long ago" because time.monotonic() is usually large.
-        # On a host whose monotonic clock starts near zero — a hub that has
-        # just rebooted — a floor compared against 0.0 suppresses the very
-        # first escalation of a session, which is the one that matters.
+        # None, not 0.0: these gate a rung on elapsed time, and 0.0 reads as
+        # "long ago" only because time.monotonic() is usually large. On a hub
+        # inside its first minutes of uptime that suppresses the session's
+        # first escalation, which is the one that matters (§7.1).
         self.last_reload: Optional[float] = None
         self.clamp_logged: float = 0.0     # rate-limit for the "not moved" warn
-        # Last time this device returned a usable media time. A receiver that
-        # leaves PLAYING — an incoming call, an assistant, a torn-down media
-        # session — reports nothing at all, which is silence the ladder cannot
-        # read as an error and would otherwise never act on.
+        # Last usable media time. A receiver out of PLAYING reports nothing,
+        # which is silence the ladder cannot read as an error (_sweep_silent).
         self.last_lag_at: Optional[float] = None   # None = never seated
-        # Interruption sensing. ``state`` is the last player_state seen;
-        # ``interrupted_since`` is set the moment it stops being PLAYING and
-        # cleared into ``interrupt_held`` when it comes back, so the sweep can
-        # act on an interruption that is still running *and* on one that ended
-        # between two polls (_sweep_interrupted).
-        # Parked: the cast provider cannot resolve this device at all, so it
-        # is out of the group until it comes back (_park_stream). Distinct
-        # from `connected`, which only says whether a fetch is open, and from
-        # `interrupted_since`, which describes a device that is present and
-        # answering but not playing.
+        # Interruption sensing: ``state`` is the last player_state seen,
+        # ``interrupted_since`` is set when it stops being PLAYING and cleared
+        # into ``interrupt_held`` when it returns, so the sweep sees both a
+        # running interruption and one that ended between polls.
+        # Parked is distinct from both: the provider cannot resolve the device
+        # at all, so it is out of the group entirely (_park_stream).
         self.parked_since: Optional[float] = None
         self.park_probe_at: float = 0.0    # next resolution attempt
         self.park_probing: bool = False    # one probe in flight at a time
@@ -320,6 +298,12 @@ class _Stream:
         self.preroll_frames: int = 0
         self.probe_hist: List[float] = []
         self.latency_s: float = 0.0
+        # On a silent lead alone, being re-measured after a reload
+        # (open-zone.md §7.5). Separate from OpenZone._preroll, which is the
+        # whole zone. While set the generator serves the lead and the monitor
+        # skips the device: every lag it could read describes the lead.
+        self.probing: bool = False
+        self.probe_task = None
         self.futile_steps: int = 0         # consecutive steps that did not take
         self.last_step_error: Optional[float] = None
         self.learn_lag: bool = True  # False once a re-align re-measured this
@@ -404,19 +388,13 @@ class OpenZone:
 
         self._source = _GENERATED
         self._resampler_kind = str(cfg.get("resampler", "rust"))
-        # The delay line's depth ahead of the play point, and — because the
-        # serve loop paces each reader `STREAM_AHEAD_S` behind it — the ladder's
-        # entire forward step authority is `source_delay_s - STREAM_AHEAD_S`.
-        # At the original 2.0 that was 800 ms against group latencies of 8 s
-        # and more: any disturbance larger than that could not be stepped away
-        # at all, only reloaded. A 10.5 s event-loop stall on 2026-08-10 left
-        # five speakers 2.4-6.4 s out, every one of them beyond the step rung.
-        # 4.0 puts 2.8 s inside it, which covers a stall of that size outright.
-        # The cost is 2 s more group latency (music only — §10.2), a longer
-        # prime, and 2 s more decoded headroom to keep. It does NOT widen what
-        # a reload can fix: that budget is `target_lag - (delay_s + trim +
-        # precomp)`, and target_lag grows with delay_s, so the term cancels
-        # (_escalate_shortfall).
+        # The delay line's depth ahead of the play point. The serve loop paces
+        # readers `STREAM_AHEAD_S` behind it, so the ladder's whole forward step
+        # authority is `source_delay_s - STREAM_AHEAD_S` — 2.8 s here, enough to
+        # step away a loop stall of the size actually observed (§7.1). Costs 2 s
+        # of group latency (music only, §10.2) and a longer prime. It does NOT
+        # widen what a reload can fix: target_lag grows with delay_s, so the
+        # term cancels out of that budget (_escalate_shortfall).
         self._source_delay_s = float(cfg.get("source_delay_s", 4.0))
         # Must span the delay plus the widest startup pre-compensation (§4.1),
         # ~9.8 s for a five-device group at the delay above.
@@ -464,9 +442,17 @@ class OpenZone:
         self._preroll: bool = False
         self._preroll_task: Optional[asyncio.Task] = None
         self._preroll_target_s: float = 0.0
+        # The pre-roll is a re-align's, not a session start's: the delay line is
+        # already full, the readings must not teach the model, and readers hold
+        # a stale seat rather than none (_realign_group).
+        self._preroll_realign: bool = False
         # Origin of the acquisition budget. Not the epoch: a pre-roll that did
         # its job would have spent half of that budget before content started.
         self._acquire_from: float = 0.0
+        # How long that budget runs. A re-align narrows it and starts it at the
+        # re-align rather than at the end of the lead, so the two phases share
+        # one bound instead of each getting its own (_realign_group).
+        self._acquire_max_s: float = STREAM_ACQUIRE_MAX_S
 
     def start(self):
         """Bring up the plain-HTTP receiver/WS listener (idempotent)."""
@@ -556,21 +542,17 @@ class OpenZone:
     def _reconcile_model_trims(self) -> None:
         """Fold legacy ``cast_type/model`` model-trim keys onto the model name.
 
-        ``model_key`` used to prefix the cast_type, which mDNS does not report
-        consistently, so one physical device could write under two keys: the
-        live store held ``cast/Pixel Tablet: 0`` beside ``/Pixel Tablet: 219``.
-        Runs once per process, at session start rather than at load, because
-        the tiebreak needs discovery to be up.
+        The key used to prefix cast_type, which mDNS reports inconsistently, so
+        one physical device could write under two keys (open-zone.md §7.4).
+        Runs once per process at session start, not at load: the tiebreak needs
+        discovery up.
 
-        Where a model has one legacy value, it carries over. Where it has
-        several, an explicit per-device trim on a unit of that model decides —
-        that is a value the listener set deliberately, against a stale entry
-        nobody has looked at. Failing that, values that agree within
-        ``TRIM_MODEL_AGREE_MS`` collapse to their median and values that do not
-        are dropped: contradictory evidence about a model is exactly the case
-        §7.4 says to abandon the default for, and an explicit per-device trim
-        (which is where these values are actually in use) is untouched either
-        way."""
+        One legacy value carries over. Several: an explicit per-device trim on
+        a unit of that model decides, being a value the listener set
+        deliberately. Failing that, values agreeing within
+        ``TRIM_MODEL_AGREE_MS`` collapse to their median and the rest are
+        dropped — contradictory evidence is the case §7.4 abandons the default
+        for. Explicit per-device trims are untouched either way."""
         if self._model_trims_reconciled:
             return
         self._model_trims_reconciled = True
@@ -808,25 +790,17 @@ class OpenZone:
         return max(heads) if heads else None
 
     def _reader_ceiling(self, source) -> float:
-        """The furthest a reader may ever be seated or stepped, in timeline
-        samples. Two bounds; the tighter one wins.
+        """The furthest a reader may be seated or stepped, in timeline samples.
+        Two bounds, tighter wins (open-zone.md §A.2).
 
-        **The write head, less STREAM_HEAD_GUARD_S.** Clamping to the bare
-        head reads as harmless — it is the newest sample that exists — but it
-        parks the reader exactly where it overtakes the head on every block,
-        and ``sync_source._gap_close`` closes that overtake by committing
-        silence into the timeline the *whole zone* reads. One clamped step
-        therefore takes every speaker down, not the device that earned it, and
-        nothing in the correction ladder can recover it: the reader keeps pace
-        with the head while the head is dragged along by the reader. Worse,
-        the ladder cannot even see it — the device's deep buffer absorbs the
-        step, so it goes on reporting a healthy on-target lag while the zone
-        plays silence. Only a reload, which reseats the reader, ends it.
+        **The write head, less STREAM_HEAD_GUARD_S.** A reader on the bare head
+        overtakes it every block, and ``sync_source._gap_close`` covers the
+        overtake with silence in the timeline the *whole zone* reads — a latch
+        the ladder cannot even see, since the device's buffer absorbs the step
+        and it goes on reporting an on-target lag.
 
-        **The play point.** A reader ahead of it is being served audio before
-        it is due and has no decoded headroom left, so the next decoder hiccup
-        puts it past the head regardless of the guard. Healthy readers sit a
-        full ``delay_s`` below this, so it only ever binds on a move.
+        **The play point.** A reader past it has no decoded headroom left, so
+        the next decoder hiccup puts it past the head regardless of the guard.
         """
         play_now = (time.monotonic() - self._epoch) * RATE
         _latest = getattr(source, "latest_sample", None)
@@ -836,28 +810,16 @@ class OpenZone:
                    _latest() - _rs.READ_MARGIN - RATE * STREAM_HEAD_GUARD_S)
 
     def _step_cooldown_s(self, lag: Optional[float] = None) -> float:
-        """How long to ignore a device's polls after moving its reader.
+        """How long to ignore a device's polls after moving its reader
+        (open-zone.md §7.1).
 
-        A step moves the reader; the device only reveals it after playing out
-        what it had already buffered. A cooldown shorter than that guarantees
-        at least one poll of pre-step data, and since the decision is a median
-        over three readings, stale readings re-authorise the very step that
-        produced them.
-
-        **What it has buffered is its own lag, not the group's target.** The
-        two are equal only for a device that is already aligned — which is
-        precisely the device that never gets stepped. A device the ladder
-        moves is by definition behind, and behind by `error` means holding
-        `target + error` of undrained audio; waiting only `target` leaves the
-        whole error's worth of pre-step readings inside the window that
-        decides the next move. The loop then re-issues the same step against
-        the same stale evidence, for as many polls as the error is deep, and
-        the rung it needs to escalate to is never reached because each step
-        was accepted rather than clamped. Passing the reading that authorised
-        the move makes the wait match the disturbance instead of the group.
-
-        Capped, because the wait is bought by a single measurement and a wrong
-        one must not blind the ladder for as long as it was wrong.
+        The device reveals a step only after draining what it had buffered, so
+        a shorter cooldown leaves pre-step readings in the median window and
+        they re-authorise the step that produced them. What it holds is *its
+        own* lag — a device the ladder moves is behind by `error` and so holds
+        `target + error` — hence the reading that authorised the move, not the
+        group target. Capped so one wrong reading cannot blind the ladder for
+        as long as it was wrong.
         """
         observed = max(self._target_lag or 0.0, lag or 0.0)
         return min(STREAM_COOLDOWN_MAX_S,
@@ -938,7 +900,9 @@ class OpenZone:
         self._target_wait_until = 0.0
         self._acquire_deadline = self._epoch + 25
         self._acquire_from = self._epoch
+        self._acquire_max_s = STREAM_ACQUIRE_MAX_S   # not a re-align's budget
         self._preroll = False
+        self._preroll_realign = False
         self._fade_start = None      # every session re-acquires under silence
         source, err = await self._build_source(media, group_id)
         if source is None:
@@ -965,13 +929,12 @@ class OpenZone:
                       for pid in player_ids]
             if probes and all(v is not None for v in probes):
                 max_precomp = max(max_precomp, max(probes) - min(probes))
-            # No blocking prime: the devices are LOADed onto a silent lead now
-            # and the delay line fills underneath them while their latencies
-            # are measured (_preroll_probe). The target lag is left unset on
-            # purpose — the monitor derives it from the lags the *measured*
-            # pre-compensation produces, which is the derivation that
-            # converges; a model target would have fixed it to a previous
-            # session's numbers and made every device chase a common offset.
+            # No blocking prime: devices are LOADed onto a silent lead and the
+            # delay line fills underneath them (_preroll_probe). The target lag
+            # is left unset deliberately — the monitor derives it from the lags
+            # the *measured* pre-comp produces, which is the derivation that
+            # converges; a model target fixes it to a previous session's
+            # numbers and makes every device chase a common offset.
             self._preroll = True
             self._preroll_target_s = self._source.delay_s + max_precomp
         else:
@@ -1041,9 +1004,17 @@ class OpenZone:
         # Cleared before the task is cancelled so _end_preroll, which runs in
         # its finally, sees a session that is already over and touches nothing.
         self._preroll = False
+        self._preroll_realign = False
         if self._preroll_task:
             self._preroll_task.cancel()
             self._preroll_task = None
+        # Same order per device: cleared first so the _end_probe in the task's
+        # finally has nothing left to release onto.
+        for st in self._streams.values():
+            st.probing = False
+            if st.probe_task is not None:
+                st.probe_task.cancel()
+                st.probe_task = None
         for t in self._launch_tasks:
             t.cancel()
         self._launch_tasks = []
@@ -1580,7 +1551,11 @@ class OpenZone:
                     return
                 items = [(sid, st) for sid, st in list(self._streams.items())
                          if st.connected and st.pos is not None
-                         and st.parked_since is None]
+                         and st.parked_since is None
+                         and not st.probing]
+                # A probing device is skipped, not merely held in cooldown: its
+                # media time counts from a silent lead, so every lag derived
+                # from it describes the lead (_probe_reload).
                 results = []
                 if items:
                     results = await asyncio.gather(
@@ -1612,7 +1587,8 @@ class OpenZone:
                         continue
                     n_connected = len([s for s in self._streams.values()
                                        if s.connected
-                                       and s.parked_since is None])
+                                       and s.parked_since is None
+                                       and not s.probing])
                     if (len(lags) < n_connected
                             and time.monotonic() < self._acquire_deadline):
                         continue     # wait until every connected device reports
@@ -1652,24 +1628,20 @@ class OpenZone:
                     if not st.acquired and len(st.err_hist) >= 2 \
                             and abs(med3) <= STREAM_SLEW_FAST_THRESH_S:
                         st.acquired = True
-                        # Reloading this device demonstrably works against the
-                        # current target, which is the only question the count
-                        # asks (_escalate_shortfall). Without this, unrelated
-                        # interruptions spread over a long session accumulate
-                        # and eventually take the whole zone through a re-align
-                        # for a fault that was local and already fixed.
+                        # Reloading works against the current target, which is
+                        # the only question the count asks. Otherwise unrelated
+                        # interruptions accumulate over a session and re-align
+                        # the zone for faults already fixed.
                         st.reloads_since_align = 0
                     concordant = (len(st.err_hist) >= 3
                                   and min(abs(e) for e in st.err_hist) > jump_min
                                   and min(st.err_hist) * max(st.err_hist) > 0)
-                    # An offset the reader has no timeline to reach is not made
-                    # more reachable by a third reading, and the median filter
-                    # costs two further polls of audible double-playback before
-                    # it reports one. Two same-signed readings past the ceiling
-                    # are enough to hand it to the rung that can work. This is
-                    # the path an interruption takes when the receiver went on
-                    # reporting PLAYING through it and only its clock stalled,
-                    # which _sweep_interrupted cannot see.
+                    # An offset with no timeline in front of it is not made
+                    # reachable by a third reading, and waiting for one costs
+                    # two polls of audible double-playback. Two same-signed
+                    # readings past the ceiling escalate. This is the path of an
+                    # interruption that kept reporting PLAYING while its clock
+                    # stalled, which _sweep_interrupted cannot see (§7.1).
                     reach_s = max(0.0, self._reader_ceiling(self._source)
                                   - st.pos) / RATE
                     unreachable = (len(st.err_hist) >= 2
@@ -1685,14 +1657,11 @@ class OpenZone:
                         ceil = self._reader_ceiling(self._source)
                         shortfall = 0.0
                         if st.pos + step > ceil:
-                            # Move nothing. A partial step cannot close an
-                            # offset the timeline is too short to hold — that
-                            # is what the reload below is for — and every
-                            # sample of it drags the reader toward the write
-                            # head, the one place a reader must never end up
-                            # (_reader_ceiling). Leaving the device out of
-                            # alignment for another cycle is a fault local to
-                            # it; parking its reader on the head is not.
+                            # Move nothing (§A.2). A partial step cannot close
+                            # an offset the timeline is too short to hold, and
+                            # every sample of it drags the reader toward the
+                            # head. One device out of alignment is a local
+                            # fault; a reader on the head silences the zone.
                             shortfall = (step - max(0.0, ceil - st.pos)) / RATE
                             step = 0.0
                             if time.monotonic() - st.clamp_logged \
@@ -1705,15 +1674,11 @@ class OpenZone:
                                     f"of timeline ahead of the reader — only a "
                                     f"reload or a group re-align fits")
                         if step:
-                            # The step rung needs a failure signal of its own.
-                            # A step corrects by exactly the error it measured
-                            # and the cooldown outlasts the device's buffer, so
-                            # the next reading should be a fraction of the last
-                            # — an error still this large, and still the same
-                            # sign, means the reader moved and the device did
-                            # not follow. Repeating it cannot converge, and
-                            # without this the only way out of the rung is a
-                            # step the timeline was too short to hold: a device
+                            # The step rung's own failure signal (§7.1). The
+                            # cooldown outlasts the buffer, so the next error
+                            # should be a fraction of this one; still this
+                            # large and same-signed means the reader moved and
+                            # the device did not follow. Without it, a device
                             # whose steps are all accepted and none effective
                             # resyncs indefinitely and never escalates.
                             prev = st.last_step_error
@@ -1730,11 +1695,9 @@ class OpenZone:
                             if st.resampler is not None:
                                 st.resampler.reset()
                             st.resyncs += 1
-                            # Long enough for the step to have reached the
-                            # device's output, or the readings that follow
-                            # describe the state before it. That is this
-                            # device's own lag, which is what it still holds
-                            # undrained — not the group target (_step_cooldown_s).
+                            # Long enough for the step to reach the device's
+                            # output, measured against its own lag — what it
+                            # holds undrained — not the group target.
                             st.cooldown_until = (time.monotonic()
                                                  + self._step_cooldown_s(lag))
                             st.err_hist = []
@@ -1749,27 +1712,14 @@ class OpenZone:
                                     st, f"{st.name} still {med3 * 1000:+.0f} ms "
                                         f"out after {st.futile_steps + 1} "
                                         f"consecutive steps")
-                        # A clamped step changed NOTHING, so none of the above
-                        # applies to it and applying it anyway is what turned a
-                        # 10.5 s loop stall into a four-minute outage on
-                        # 2026-08-10. The cooldown exists to wait out a
-                        # discontinuity reaching the device's output; with no
-                        # discontinuity there is nothing to wait for, and the
-                        # ~11 s blackout (target lag + a poll) merely delays the
-                        # one correction that can still work. Clearing the error
-                        # history compounds it: the next decision then needs
-                        # three fresh readings on top of the blackout, which
-                        # spaced reload attempts at ~42 s against a 30 s limit.
-                        # Leaving both alone lets the next poll re-confirm, so
-                        # the rung below fires as soon as its own limit allows.
-                        # The warning is rate-limited instead, because the
-                        # decision now repeats every poll.
-                        #
-                        # The reader has run out of timeline ahead of it, so the
-                        # offset is one only a fresh LOAD closes — it drops the
-                        # device's own buffer, which is the part the reader
-                        # cannot reach. Not awaited: the poll pass owns the
-                        # other four speakers.
+                        # A clamped step is not a step (§A.4): no discontinuity
+                        # to wait out, and clearing the history would cost three
+                        # fresh readings on top of the blackout. Both left alone
+                        # so the next poll re-confirms and the rung below fires
+                        # on its own floor; the warning is rate-limited instead.
+                        # Only a fresh LOAD closes this, by dropping the buffer
+                        # the reader cannot reach. Not awaited: the poll pass
+                        # owns the other speakers.
                         if shortfall > STREAM_JUMP_MIN_S:
                             self._escalate_shortfall(
                                 st, f"{st.name} {med3 * 1000:+.0f} ms out with "
@@ -2007,15 +1957,11 @@ class OpenZone:
     async def _read_media_time(self, st: _Stream) -> Optional[tuple]:
         """One status read → ``(read time, reported media time)``, or None.
 
-        Also the session's only sensor for *interruption*. A receiver that
-        leaves PLAYING — a call ringing on the device, an assistant session, a
-        torn-down media session — keeps everything it had already buffered and
-        resumes into it, so it comes back exactly as far behind as it was
-        held. Folding that state into the same ``None`` returned for a device
-        that is unreachable, stale or not started threw away the one reading
-        that says which fault this is, and left the 30 s silence sweep as the
-        only backstop — an order of magnitude longer than the interruption
-        that causes this in practice (`_sweep_interrupted`).
+        Also the session's only sensor for *interruption* (open-zone.md §A.3).
+        A receiver that leaves PLAYING keeps its buffer and resumes into it, as
+        far behind as it was held; that state must stay distinguishable from
+        the ``None`` meaning unreachable, stale or not started, or the 30 s
+        silence sweep is the only backstop (`_sweep_interrupted`).
         """
         uuid_str = st.player_id.split(":", 1)[1]
         cast = self.cast._casts.get(uuid_str)
@@ -2133,7 +2079,7 @@ class OpenZone:
             # From the end of the pre-roll, not the epoch: the budget is for
             # acquisition, and acquisition has not begun until content has.
             elapsed = time.monotonic() - (self._acquire_from or self._epoch)
-            if self._group_locked() or elapsed > STREAM_ACQUIRE_MAX_S:
+            if self._group_locked() or elapsed > self._acquire_max_s:
                 self._fade_start = time.monotonic()
                 logger.info(
                     f"Sync group locked after {elapsed:.1f}s — fading in"
@@ -2147,32 +2093,25 @@ class OpenZone:
         return np.clip(ramp, 0.0, 1.0).astype(np.float32)
 
     async def _preroll_probe(self) -> None:
-        """Measure every device's latency while the delay line fills.
+        """Measure every device's latency while the delay line fills
+        (open-zone.md §7.3).
 
-        Session start used to pay its two costs one after the other: the
-        source primes ``delay_s + max_precomp`` of timeline with no device
-        connected, and only then are the receivers LOADed and the group held
-        silent while the ladder works out where each one landed. The costs are
-        independent — one is an ffmpeg pipe filling, the other a round trip to
-        five receivers — so the second is free if it runs inside the first.
+        The prime and the receiver probe are independent costs, so the second
+        runs inside the first: every device is LOADed onto a silent lead, its
+        pipeline latency read off that lead (`_probe_once`), and content starts
+        only once the buffer is deep enough *and* the spread is known. Readers
+        are then seated with that spread pre-compensated, so the first content
+        sample is aligned rather than corrected in front of the listener.
 
-        Every device is therefore LOADed immediately onto a silent lead, this
-        probe reads its pipeline latency off that lead (`_probe_once`), and
-        content starts only once the buffer is deep enough *and* the spread
-        between devices is known. The readers are then seated with that
-        measured spread already pre-compensated, so the first content sample
-        is aligned. What the listener used to hear in the opening seconds was
-        that alignment being discovered live: devices starting apart and being
-        pulled together while the music played.
-
-        Bounded at both ends. A device that never reports is left behind after
-        ``PREROLL_QUORUM_S`` rather than holding the zone silent, and the
-        whole phase is capped at ``PREROLL_MAX_S`` — past which the learned
-        model is a better answer than more waiting.
+        Bounded at both ends: a device that never reports is left behind after
+        ``PREROLL_QUORUM_S``, and the phase is capped at ``PREROLL_MAX_S``,
+        past which the learned model beats more waiting.
         """
         start = time.monotonic()
         quorum_until = start + PREROLL_QUORUM_S
-        deadline = start + max(PREROLL_MAX_S, self._preroll_target_s + 5.0)
+        deadline = start + (STREAM_REALIGN_MAX_S if self._preroll_realign
+                            else max(PREROLL_MAX_S,
+                                     self._preroll_target_s + 5.0))
         try:
             while self.running and self._preroll:
                 await asyncio.sleep(PREROLL_POLL_S)
@@ -2194,6 +2133,10 @@ class OpenZone:
                     continue          # a device is still coming up
                 if not all(self._probe_settled(st) for st in live):
                     continue
+                if self._preroll_realign:
+                    break      # the delay line is already full and maintained;
+                               # the measurement is the only thing being waited
+                               # on (_realign_group)
                 vals = [self._median(st.probe_hist) for st in live]
                 # The lead the delay line has to hold is the source's own
                 # delay, plus the widest pre-compensation the measurements are
@@ -2233,9 +2176,13 @@ class OpenZone:
         # Only probes with a full median window. A device that reported once
         # or twice reported from inside a buffer that was still filling, and
         # that number is worse than the model it would replace.
+        # Parked devices excluded: absent, so they must not set the group's
+        # spread — and at a re-align their probe_hist is a stale session-start
+        # reading that was never cleared (_realign_group).
         lats = {sid: self._median(st.probe_hist)
                 for sid, st in self._streams.items()
-                if len(st.probe_hist) >= PREROLL_MIN_READS}
+                if len(st.probe_hist) >= PREROLL_MIN_READS
+                and st.parked_since is None}
         for st in self._streams.values():
             # Coming up is not PLAYING either, so the lead's own startup has
             # been accumulating as an interruption. Carrying it past the
@@ -2251,7 +2198,11 @@ class OpenZone:
                     continue
                 st.latency_s = lat
                 st.precomp_s = max(0.0, slowest - lat)
-                self._model_learn(st, "probe_s", lat)
+                if not self._preroll_realign:
+                    # A re-align measures every receiver refilling at once,
+                    # which is a re-acquisition figure rather than this
+                    # device's natural startup latency (§A.4).
+                    self._model_learn(st, "probe_s", lat)
             # A complete settled probe IS the lock: every connected device has
             # been measured and seated at the offset that measurement asks for,
             # which is exactly what _group_locked waits to observe. Holding the
@@ -2280,41 +2231,123 @@ class OpenZone:
         self._target_wait_until = (now + (max(lats.values()) if lats else 0.0)
                                    + STREAM_AHEAD_S + STREAM_POLL_S)
         self._acquire_deadline = self._target_wait_until + 25
-        # The acquisition budget starts here too: it is a budget for finding
-        # alignment in content, and measuring it from the epoch would have
-        # spent most of it before the first content sample was served.
-        self._acquire_from = now
+        if self._preroll_realign:
+            # The budget is NOT restarted here. A re-align's bound is on the
+            # silence the zone hears, and the lead is part of that silence —
+            # restarting would hand the acquisition a fresh budget on top of
+            # the one the lead just spent (_realign_group).
+            #
+            # A reader seats on leaving the lead, so a device that never
+            # fetched would keep its pre-realign seat. At session start there
+            # is no seat to keep and the generator's own `pos is None` path
+            # covers it; here the fallback has to be explicit (_end_probe).
+            for st in self._streams.values():
+                if (st.pos is not None and st.opened_at is None
+                        and st.parked_since is None):
+                    self._seat_position(st, self._source)
+        else:
+            # A budget for finding alignment in content: measuring it from the
+            # epoch would have spent most of it before content was served.
+            self._acquire_from = now
+        self._preroll_realign = False
         self._preroll = False
+
+    def _precomp_for_target(self, latency_s: float) -> Optional[float]:
+        """Pre-compensation that seats a device of this latency on the group's
+        current target lag; None when there is no target to aim at.
+
+        A fresh seat satisfies ``lag = delay_s + precomp + latency`` (the trim
+        cancels, §6.1) and the ladder drives every lag onto ``_target_lag``, so
+        the pre-compensation is the difference. Not clamped at zero: a device
+        slower than the one that set the target is served newer audio to come
+        out on time, and ``_seat_position`` owns the only real bound (§A.2).
+        """
+        if self._target_lag is None:
+            return None
+        return self._target_lag - self._source.delay_s - latency_s
+
+    async def _probe_reload(self, st: _Stream) -> None:
+        """Measure one device's latency on the lead its reload opened, and seat
+        it on the group's target from that rather than from the model
+        (open-zone.md §7.5).
+
+        The reading is not written to the model: it comes from a device just
+        disturbed badly enough to need a reload, and the model seeds every
+        future session's pre-compensation (§A.4).
+        """
+        deadline = time.monotonic() + STREAM_PROBE_MAX_S
+        measured: Optional[float] = None
+        try:
+            while (self.running and st.probing
+                   and self._streams.get(st.sid) is st):
+                await asyncio.sleep(PREROLL_POLL_S)
+                if st.parked_since is not None:
+                    break      # absent: nothing to measure, and the lead would
+                               # outlast the absence (_park_stream)
+                if st.connected and st.opened_at is not None:
+                    await self._probe_once(st)
+                    if self._probe_settled(st):
+                        measured = self._median(st.probe_hist)
+                        break
+                if time.monotonic() > deadline:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Sync reload probe failed for {st.name}: {e}")
+        finally:
+            self._end_probe(st, measured)
+
+    def _end_probe(self, st: _Stream, measured: Optional[float]) -> None:
+        """Apply what the probe measured and release the device onto content.
+        Clearing ``probing`` is what lets the generator leave the lead, so it
+        comes last: the seat it then takes reads the pre-comp set here."""
+        if not st.probing:
+            return
+        precomp = (self._precomp_for_target(measured)
+                   if measured is not None else None)
+        if precomp is not None:
+            st.latency_s = measured
+            st.precomp_s = precomp
+            logger.info(
+                f"Sync stream {st.name} re-measured at {measured * 1000:.0f} ms "
+                f"— seating at pre-comp {precomp * 1000:.0f} ms against a "
+                f"{self._target_lag:.2f}s target")
+        else:
+            logger.info(
+                f"Sync stream {st.name} probe did not settle — seating from "
+                f"the learned model")
+        # The generator seats on leaving the lead, so it only does so if it
+        # ever entered one. A probe that ends before the device fetches would
+        # otherwise leave the reader on its pre-reload seat — the seat the
+        # unprobed path takes here is the one this replaces, not an extra.
+        # Safe against the generator racing in: neither this nor the lead's
+        # entry awaits between reading the flag and setting the other.
+        if st.opened_at is None:
+            self._seat_position(st, self._source)
+        st.probing = False
 
     def _seat_after_preroll(self, st: _Stream, source) -> None:
         """Seat a reader whose device has already been playing this fetch.
 
-        ``_seat_position`` assumes a fresh LOAD, where the reported media time
-        restarts at zero and the device's queue is empty. After a pre-roll
-        neither holds, and the two corrections are independent.
+        ``_seat_position`` assumes a fresh LOAD — media time restarting at zero,
+        empty queue. After a lead neither holds, and the two corrections are
+        independent.
 
-        **The clock did not restart.** The device has been consuming the same
-        HTTP response since ``opened_at``, so its reported time is already
-        ``preroll_frames`` past the first content sample. Every lag reading is
-        ``(start_pos + shift) / RATE + reported_time``, so the lead has to come
-        off the base or the whole session is wrong by the length of it.
+        **The clock did not restart.** The device has consumed the same HTTP
+        response since ``opened_at``, so its reported time is ``preroll_frames``
+        past the first content sample; the lag reading is
+        ``(start_pos + shift) / RATE + reported_time``, so the lead comes off
+        the base or the session is wrong by its length.
 
-        **The queue may not be empty.** ``latency_s`` is the *steady* part of
-        the pipeline — measured as ``(now - opened_at) - reported_time``, which
-        is flat because both terms advance at playback rate. It is not the
-        whole queue: the serve loop's pacing sawtooth is queue too, and a
-        device holding more of it reaches content later. The caller pays that
-        sawtooth down to zero before seating, which is free — the device plays
-        the queue either way — so what arrives here is only the residue of the
-        caller's sleep granularity, a few milliseconds. It is still corrected
-        rather than ignored, because the correction is exact and costs one
-        subtraction, and because seating against an uncompensated queue is the
-        one error this whole phase exists to eliminate.
+        **The queue may not be empty.** ``latency_s`` is the steady part of the
+        pipeline; the serve loop's pacing sawtooth is queue too. The caller
+        pays it down before seating, so only its sleep-granularity residue
+        arrives here — corrected anyway, since it is exact and one subtraction.
 
-        ``precomp_s`` itself is restored afterwards: it is the
-        model-comparable quantity that ``_model_learn`` subtracts back out of
-        the first stable lag, and a queue residue is a property of this
-        changeover, not of the device.
+        ``precomp_s`` is restored afterwards: it is the model-comparable
+        quantity ``_model_learn`` subtracts back out of the first stable lag,
+        and a queue residue belongs to this changeover, not the device.
         """
         serve_ahead = max(0.0, st.preroll_frames / RATE
                           - (time.monotonic() - (st.opened_at or 0.0)))
@@ -2373,30 +2406,22 @@ class OpenZone:
         st.last_lag_at = time.monotonic()
 
     def _park_stream(self, st: _Stream, reason: str) -> None:
-        """Take an absent device out of the group until it answers again.
+        """Take an absent device out of the group until it answers again
+        (open-zone.md §7.1).
 
-        The ladder's rungs all assume a device that is *present and wrong*:
-        a step moves its reader, a reload drops its buffer, a re-align
-        re-derives the whole group's target. None of them describes a device
-        that is not on the network, and the last one is actively harmful —
-        it re-LOADs every other speaker in the zone, several seconds of
-        disturbance each, on behalf of one that cannot receive the LOAD.
-        Observed on 2026-09-10: one speaker dropped off WiFi for 2 m 48 s and
-        the ladder walked silence → reload → reload → re-align, taking all
-        five speakers down twice for a device that answered none of it.
+        Every rung assumes a device that is *present and wrong*, and the top
+        one is actively harmful for a device that is not: it re-LOADs the whole
+        zone on behalf of a speaker that cannot receive the LOAD. Absence is
+        therefore its own state, not the bottom of the ladder — excluded from
+        measurement, target derivation, the acquisition lock and re-alignment,
+        and probed for its return on its own backoff (`_sweep_parked`).
 
-        Absence is therefore its own state rather than the bottom of the
-        ladder. A parked device is excluded from measurement, from the target
-        derivation, from the acquisition lock and from re-alignment — so the
-        zone plays on undisturbed — and is probed for its return on its own
-        backoff instead (`_sweep_parked`). The signal is precise: the cast
-        provider failing to *resolve* the device, which is the one condition
-        that distinguishes absence from every kind of misbehaviour.
+        The signal is the cast provider failing to *resolve* the device, which
+        is what separates absence from every kind of misbehaviour.
 
-        Its pre-compensation and trim are deliberately left alone. They are
-        properties of the device and the room, they did not change while it
-        was away, and they are what let it rejoin against the group's existing
-        target instead of forcing the re-derivation this exists to avoid.
+        Pre-compensation and trim are left alone: they are properties of the
+        device and the room, unchanged by the absence, and they let it rejoin
+        against the existing target instead of forcing a re-derivation.
         """
         now = time.monotonic()
         if st.parked_since is not None:
@@ -2475,37 +2500,22 @@ class OpenZone:
             asyncio.create_task(self._rejoin_stream(st))
 
     def _sweep_interrupted(self) -> None:
-        """Reload any receiver that has been taken out of playback.
+        """Reload any receiver taken out of playback (open-zone.md §7.1).
 
-        The correction ladder is driven by measured error, and an interruption
-        produces none while it lasts: the device stops reporting a media time
-        at all. When it resumes it resumes *into its own buffer*, so it comes
-        back exactly as far behind as it was held — and that offset is one the
-        reader cannot step away, because the timeline ahead of a reader is
-        only ``target_lag - (delay_s + trim + precomp)`` (`_escalate_shortfall`).
-        Every rung below the reload is therefore unreachable by construction,
-        yet the ladder still has to walk to it through three polls of median
-        filtering, which is three polls of the zone playing the same passage
-        twice. That is the tablet-rings-then-the-call-is-answered-elsewhere
-        case, and it is the common one.
+        An interruption produces no measured error while it lasts, and the
+        device resumes into its own buffer — as far behind as it was held,
+        which is past the reader's forward authority. Every rung below the
+        reload is unreachable by construction, so this decides on the cause
+        (``player_state``) rather than waiting three polls for the symptom.
 
-        The state is available directly (`_read_media_time`), so this rung is
-        decided on the cause instead of inferred from the symptom: an
-        interruption longer than a poll is reloaded as soon as it is seen, and
-        again every ``STREAM_INTERRUPT_RELOAD_MIN_S`` while the device stays
-        down — which is what brings back a receiver held by a ring that
-        outlasts the first attempt. A LOAD is also the only thing that drops
-        the stale buffer, so it is worth issuing while the device is still
-        held: there is nothing to interrupt, and the audio it would otherwise
-        have resumed into no longer exists.
+        Retried every ``STREAM_INTERRUPT_RELOAD_MIN_S`` while the device stays
+        down; issuing a LOAD into a held receiver is still worth it, since it
+        is the only thing that drops the buffer it would resume into.
 
-        Gated on ``natural_lag`` so a device that has not started yet — which
-        is not PLAYING either — is left to the launch path, and on the
-        device's own cooldown so a reload's re-acquisition is not read as the
-        fault it is treating. Deliberately not routed through
-        ``_escalate_shortfall``: an interrupted device is a local fault with a
-        known cause, and taking the whole zone through a re-align because one
-        speaker keeps being rung is the wrong answer at any count.
+        Gated on ``natural_lag`` so a device still starting is left to the
+        launch path, and on the cooldown so a reload's own re-acquisition is
+        not read as the fault. Not routed through ``_escalate_shortfall``: this
+        is a local fault, and re-aligning the zone for it is wrong at any count.
         """
         if self._realigning or self._preroll:
             return
@@ -2515,6 +2525,9 @@ class OpenZone:
                 continue
             if st.parked_since is not None:
                 continue     # absent, not interrupted (_park_stream)
+            if st.probing:
+                continue     # already on the rung this would reach: it is
+                             # playing a lead a reload opened (_probe_reload)
             held = (now - st.interrupted_since
                     if st.interrupted_since is not None else st.interrupt_held)
             if held < STREAM_INTERRUPT_MIN_S or now < st.cooldown_until:
@@ -2534,24 +2547,18 @@ class OpenZone:
             asyncio.create_task(self._reload_stream(st))
 
     def _sweep_silent(self) -> None:
-        """Escalate any device that has stopped reporting a playable position.
+        """Escalate any device that has stopped reporting a playable position
+        (open-zone.md §7.1).
 
-        The whole correction ladder is driven by measured error, so a device
-        that reports no error at all is not corrected — it is not even seen.
-        That is not a hypothetical state: an incoming call or an assistant
-        takes the receiver out of PLAYING, a torn-down media session leaves it
-        IDLE, and a dropped HTTP fetch that the receiver never re-issues
-        leaves it disconnected. In each case ``_measure_lag`` yields nothing,
-        the device falls out of the poll's ``lags`` map, every rung above is
-        unreachable, and the speaker sits in the zone playing whatever it has
-        left — or nothing — for as long as the session lasts. Silence is
-        therefore read as its own fault class and escalated through the same
-        ladder, because the answer is the same one: only a fresh LOAD gets
-        back a receiver that has stopped following the stream.
+        The ladder runs on measured error, so a device reporting none is not
+        merely uncorrected but unseen — it falls out of ``lags`` and plays
+        whatever it has left for the rest of the session. Silence is therefore
+        its own fault class, escalated through the same ladder: only a fresh
+        LOAD retrieves a receiver that has stopped following the stream.
 
         Held off during a re-align, when every receiver is expected to be
-        quiet, and gated on ``last_lag_at`` having ever been set so a device
-        still coming up is not escalated before it has had a chance to report.
+        quiet, and gated on ``last_lag_at`` so a device still coming up is not
+        escalated before it has had a chance to report.
         """
         if self._realigning:
             return
@@ -2562,6 +2569,9 @@ class OpenZone:
             if st.parked_since is not None:
                 continue     # its silence is already accounted for, and the
                              # rungs this would reach cannot touch it
+            if st.probing:
+                continue     # silent by design, and bounded: the lead is
+                             # capped at STREAM_PROBE_MAX_S (_probe_reload)
             silent = now - st.last_lag_at
             if silent < STREAM_SILENT_MAX_S:
                 continue
@@ -2571,20 +2581,17 @@ class OpenZone:
                     f"{silent:.0f}s")
 
     def _escalate_shortfall(self, st: _Stream, reason: str) -> None:
-        """A correction the rung below could not deliver: pick the one above.
+        """A correction the rung below could not deliver: pick the one above
+        (open-zone.md §7.1).
 
-        Two rungs, and which one applies is not a matter of severity but of
-        whether the cheaper one is *capable* of working. A single-device reload
-        re-seats that reader at ``play_now - delay_s - trim - precomp`` and the
-        device then plays that sample only once it has refilled, so it lands on
-        target only if it resumes within ``target_lag - (delay_s + trim +
-        precomp)``. That budget is fixed by the group's geometry, not by how
-        badly the device is out — for the most pre-compensated speaker in a
-        wide group it is a couple of hundred milliseconds, against Cast refills
-        measured in seconds. Past ``STREAM_RELOADS_BEFORE_REALIGN`` attempts
-        the reload is therefore not a slow rescue but one that keeps
-        re-creating the fault, and only re-deriving the group's target can
-        converge (open-zone.md §7.1)."""
+        Which rung applies is a question of capability, not severity. A reload
+        re-seats at ``play_now - delay_s - trim - precomp`` and the device plays
+        that sample only once refilled, so it lands on target only if it
+        resumes within ``target_lag - (delay_s + trim + precomp)`` — a budget
+        fixed by the group's geometry, and a couple of hundred milliseconds for
+        the most pre-compensated speaker against refills measured in seconds.
+        Past ``STREAM_RELOADS_BEFORE_REALIGN`` it re-creates the fault rather
+        than rescuing it, and only re-deriving the target converges."""
         if st.parked_since is not None:
             return       # absent: no rung applies, and the one above would
                          # re-LOAD the zone for it (_park_stream)
@@ -2616,28 +2623,27 @@ class OpenZone:
             asyncio.create_task(self._reload_stream(st))
 
     async def _realign_group(self, reason: str) -> None:
-        """Re-establish the whole group's timing, as at session start.
+        """Re-establish the whole group's timing, as at session start
+        (open-zone.md §7.1). The ladder's last rung.
 
-        The ladder's last rung. Session start is the only path that reliably
-        converges, and the reason is that it does not aim at a fixed target:
-        every device is LOADed at once and ``_target_lag`` is then *derived*
-        from the lags that result (``max + STREAM_LAG_MARGIN_S``), so whatever
-        the receivers actually did becomes the definition of aligned. A
-        mid-session reload of one device inherits a target set when conditions
-        were different and has no way to move it, which is why it can reproduce
-        the same offset indefinitely (`_escalate_shortfall`).
+        Session start converges because it does not aim at a fixed target: every
+        device is LOADed together and ``_target_lag`` is *derived* from the lags
+        that result, so whatever the receivers did defines aligned. A per-device
+        reload inherits a target set under different conditions and cannot move
+        it, which is how it reproduces one offset indefinitely.
 
-        So: re-LOAD everyone together, re-seat every reader from the model, and
-        clear the target so the monitor re-derives it from the fresh lags. The
-        source is untouched — the timeline was never the problem, only the
-        devices' relationship to it — so this costs the zone a few seconds of
-        re-acquisition, not a gap in the audio.
+        So: re-LOAD everyone onto the silent lead session start uses, re-measure
+        every device on it, seat from that, and clear the target so the monitor
+        re-derives it. The source is untouched — the timeline was never the
+        problem, only the devices' relationship to it.
 
-        The re-measured lags must NOT reach the learned model. They are
-        re-acquisition figures taken while five receivers refill at once, not
-        the natural startup latency the model is meant to hold; recording them
-        would seed every future session's pre-compensation with this incident
-        (§7.2, on seed values re-recording themselves as fresh evidence).
+        The group is muted for the re-acquisition rather than playing through
+        it (§7.5): pulling five devices together on content is the echo this
+        exists to remove, and silence in every room is the better cost.
+
+        The re-measured lags must NOT reach the model: they are re-acquisition
+        figures, not natural startup latency, and would seed every future
+        session's pre-compensation with this incident (§A.4).
         """
         if not self.running or self.app_id:
             return
@@ -2690,11 +2696,38 @@ class OpenZone:
                 st.interrupt_held = 0.0
                 st.preroll_frames = 0
                 st.opened_at = None
+                # Supersedes any probe in flight: this re-LOADs the device
+                # anyway, and the probe aims at a target about to be cleared.
+                st.probing = False
+                if st.probe_task is not None:
+                    st.probe_task.cancel()
+                    st.probe_task = None
+                st.probe_hist = []
                 st.fit_lost_at = now
                 st.cooldown_until = now + cooldown
                 if st.resampler is not None:
                     st.resampler.reset()
-                self._seat_position(st, self._source)
+                # Not seated here: the lead below re-measures where each reader
+                # belongs, and _end_preroll seats from that. The model values
+                # above stand as the fallback if nothing measures.
+            # Re-enter the session's own pre-roll (§7.5). Set before the LOADs,
+            # because the generator decides on this flag as each fetch opens.
+            self._preroll_realign = True
+            self._preroll = True
+            self._preroll_target_s = 0.0      # the delay line is already full
+            # Silence, not an echo: the group is muted until the probe settles,
+            # so the re-acquisition is not performed in front of the listener
+            # (_acquire_gain). _end_preroll releases the fade.
+            #
+            # One budget spans the lead and the acquisition after it, timed
+            # from here, so the zone's total silence is bounded by
+            # STREAM_REALIGN_MAX_S however the two divide.
+            self._fade_start = None
+            self._acquire_from = now
+            self._acquire_max_s = STREAM_REALIGN_MAX_S
+            if self._preroll_task is not None:
+                self._preroll_task.cancel()
+            self._preroll_task = asyncio.create_task(self._preroll_probe())
             await asyncio.gather(
                 *(self._launch_stream(st.player_id, st.sid) for st in streams),
                 return_exceptions=True)
@@ -2722,6 +2755,14 @@ class OpenZone:
         # probe's clock origin along with it.
         st.preroll_frames = 0
         st.opened_at = None
+        st.probe_hist = []
+        # Re-measure on the lead this fetch opens instead of re-seating from
+        # the model (_probe_reload). Needs a target to aim at; during pre-roll
+        # the device is already on the shared lead and _end_preroll owns it.
+        probing = (self._target_lag is not None
+                   and not self._preroll
+                   and st.parked_since is None)
+        st.probing = probing
         # This interruption has now been treated. Leaving the reading behind
         # would re-fire the rung one cooldown later on evidence the reload
         # already answered — and the reload's own re-acquisition, which is not
@@ -2731,7 +2772,12 @@ class OpenZone:
         logger.warning(f"Sync stream reloading {st.name} — the correction "
                        f"ladder could not reach it by moving the reader "
                        f"(reload #{st.reloads})")
-        self._seat_position(st, self._source)
+        if not probing:
+            self._seat_position(st, self._source)
+        # else: the seat is what the probe is measuring, so it waits for the
+        # lead to end (_seat_after_preroll). The stale `pos` stands until then;
+        # nothing reads from it on the lead, and leaving it set keeps the
+        # device present to the sweeps.
         st.err_hist = []
         st.lag_hist = []
         st.slew_s = 0.0
@@ -2754,6 +2800,12 @@ class OpenZone:
         st.cooldown_until = time.monotonic() + self._step_cooldown_s()
         if st.resampler is not None:
             st.resampler.reset()
+        if probing:
+            # Before the LOAD, so the cap covers a launch that never lands —
+            # otherwise the lead stays open indefinitely.
+            if st.probe_task is not None:
+                st.probe_task.cancel()
+            st.probe_task = asyncio.create_task(self._probe_reload(st))
         await self._launch_stream(st.player_id, st.sid)
 
     async def _pcm_stream(self, st: _Stream):
@@ -2771,26 +2823,27 @@ class OpenZone:
             source = self._source
             delay = source.delay_s
             block = int(RATE * STREAM_BLOCK_S)
-            if self._preroll:
+            if self._preroll or st.probing:
                 # A silent lead, paced to real time exactly as content is, so
                 # that the device's own buffering shows up as a lag in its
                 # reported media time and the probe can read it off
                 # (_preroll_probe). Nothing is read from the source and no
                 # reader is seated: the delay line is still filling, and where
                 # this reader belongs is not known until the probe says so.
+                # After a reload only the second reason applies, and it applies
+                # unchanged (_probe_reload).
                 silence = _encode_s16(np.zeros((block, CHANNELS),
                                                dtype=np.float32))
                 if st.opened_at is None:
-                    # Only a fresh LOAD restarts the device's media clock, so
-                    # only a fresh LOAD re-origins the probe. A fetch that
-                    # merely supersedes a dropped one (§A.5) is the same clock
-                    # seen through a new socket: re-stamping the origin there
-                    # would subtract the whole lead so far from the latency,
-                    # and re-zeroing the count would subtract it from the seat.
+                    # Only a fresh LOAD restarts the media clock, so only a
+                    # fresh LOAD re-origins the probe. A fetch superseding a
+                    # dropped one (§A.5) is the same clock through a new socket:
+                    # re-stamping would subtract the lead so far from the
+                    # latency, re-zeroing it from the seat.
                     st.opened_at = time.monotonic()
                     st.preroll_frames = 0
                     st.probe_hist = []
-                while (self.running and self._preroll
+                while (self.running and (self._preroll or st.probing)
                        and self._streams.get(st.sid) is st and st.gen == mine):
                     ahead = (st.preroll_frames / RATE
                              - (time.monotonic() - st.opened_at))
@@ -2803,14 +2856,12 @@ class OpenZone:
                         and st.gen == mine):
                     return       # superseded mid-lead: seating would describe
                                  # a fetch that is no longer being consumed
-                # Pay the serve-ahead down before seating. The serve loop runs
-                # a sawtooth up to STREAM_AHEAD_S ahead of real time, and where
-                # in it a generator happens to sit when the lead ends is
-                # arbitrary and independent per device — yet it is queue the
-                # device must play before it reaches content, so seating
-                # against it would leave neighbours as much as a whole block
-                # apart. Waiting it out costs nothing: the device is playing
-                # that queue either way, and it is playing silence.
+                # Pay the serve-ahead down before seating. Where in the serve
+                # loop's sawtooth a generator sits when the lead ends is
+                # arbitrary and per-device, but it is queue the device plays
+                # before reaching content, so seating against it leaves
+                # neighbours a block apart. Waiting costs nothing: the device
+                # plays that queue either way, and it is silence.
                 while (self.running and self._streams.get(st.sid) is st
                        and st.gen == mine):
                     over = (st.preroll_frames / RATE
