@@ -18,8 +18,8 @@ import { mountScope, unmountScope } from './eq-scope.js';
 let _remote = [];           // players from /api/media/players (Cast / WiiM)
 let _players = [];          // _remote + the "This device" entry, as rendered
 let _selectedId = null;     // player targeted by search "play"
-let _groupBuilderOpen = false;
-let _groupTab = 'wiim';     // group-builder sub-tab: 'wiim' | 'sonos' | 'sync'
+let _mediaTab = 'players';  // 'players' | 'wiim' | 'sonos' | 'sync'
+let _playerFilter = 'all';  // ecosystem filter within the players list
 let _syncGroups = [];       // saved speaker-sync groups (from /api/media/sync/groups)
 let _syncStatus = null;     // last /api/media/sync/status snapshot
 let _syncTimer = null;      // stats poll while the sync pane is open
@@ -101,7 +101,8 @@ export function initMedia() {
     // Expose handlers for inline onclick + the websocket dispatcher.
     window.handleMediaState = handleMediaState;
     window.mediaRefresh = loadPlayers;
-    window.mediaOpenGroupBuilder = toggleGroupBuilder;
+    window.mediaTab = switchMediaTab;
+    window.mediaPlayerFilter = setPlayerFilter;
     window.mediaPlayStation = playStation;
     window.mediaControl = control;
     window.mediaSetVolume = setVolume;
@@ -113,7 +114,6 @@ export function initMedia() {
     window.mediaUngroup = ungroup;
     window.mediaSubmitGroup = submitGroup;
     // Speaker-sync groups (group-builder sub-tab)
-    window.mediaGroupTab = switchGroupTab;
     window.mediaSyncCreate = syncCreateGroup;
     window.mediaSyncDelete = syncDeleteGroup;
     window.mediaSyncStart = syncStartGroup;
@@ -233,11 +233,12 @@ function esc(s) {
 
 // Players
 async function loadPlayers() {
-    const el = document.getElementById('mediaPlayers');
-    if (!el) return;
+    if (!document.getElementById('mediaPlayers')) return;
     const data = await apiGet('/api/media/players');
     if (!data.success) {
-        el.innerHTML = `<div class="alert alert-warning mb-0">${esc(data.error || 'Media service unavailable')}</div>`;
+        // Into the pane, not over it: the tab row is the way back out.
+        const pane = _mediaScaffold();
+        if (pane) pane.innerHTML = `<div class="alert alert-warning mb-0">${esc(data.error || 'Media service unavailable')}</div>`;
         return;
     }
     _remote = data.players || [];
@@ -260,7 +261,7 @@ function _rebuild() {
 // Re-render when the local <audio> changes state (play/pause/track/volume).
 function _localChanged() {
     _rebuild();
-    if (_groupBuilderOpen) return;
+    if (_mediaTab !== 'players') return;
     renderPlayers();
 }
 
@@ -282,7 +283,7 @@ function handleMediaState(payload) {
     // Don't yank a volume slider out from under the user mid-drag.
     const active = document.activeElement;
     if (active && active.type === 'range') return;
-    if (_groupBuilderOpen) return;   // builder owns the panel while open
+    if (_mediaTab !== 'players') return;   // a group tab owns the pane
     renderPlayers();
 }
 
@@ -331,10 +332,48 @@ function stateBadge(p) {
     return `<span class="badge ${map[p.state] || 'bg-light text-muted'}">${esc(p.state)}</span>`;
 }
 
+// Player-list filter by ecosystem. Canonical order, so the row does not
+// reshuffle as speakers come and go.
+const PROVIDER_TABS = [
+    { id: 'local', label: 'This device' },
+    { id: 'cast', label: 'Cast' },
+    { id: 'wiim', label: 'WiiM' },
+    { id: 'sonos', label: 'Sonos' },
+    { id: 'airplay', label: 'AirPlay' },
+    { id: 'zone', label: 'Zones' },
+];
+
+// Worth a row only once there is something to separate: one ecosystem plus
+// "This device" filters to nothing useful.
+function _playerFilters() {
+    const present = new Set(_players.map(p => p.provider));
+    const tabs = PROVIDER_TABS.filter(t => present.has(t.id));
+    return tabs.filter(t => t.id !== 'local').length >= 2 ? tabs : [];
+}
+
+function _renderPlayerFilter(tabs) {
+    if (!tabs.length) return '';
+    const pill = (id, label) => `
+      <li class="nav-item">
+        <button class="nav-link py-0 px-2 small text-nowrap${_playerFilter === id ? ' active' : ''}"
+                onclick="window.mediaPlayerFilter('${id}')">${esc(label)}</button>
+      </li>`;
+    return `<ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs">
+              ${pill('all', 'All')}${tabs.map(t => pill(t.id, t.label)).join('')}
+            </ul>`;
+}
+
+function setPlayerFilter(id) {
+    _playerFilter = id;
+    renderPlayers();
+}
+
 function renderPlayers() {
-    const el = document.getElementById('mediaPlayers');
+    const el = _mediaScaffold();
     if (!el) return;
-    if (_groupBuilderOpen) return renderGroupBuilder();
+    if (_mediaTab !== 'players') return renderGroupBuilder();
+    _stopSyncPoll();
+    el.dataset.tab = 'players';
     // "This device" is always in _players, so an empty *remote* list is the
     // real "nothing discovered" case — still usable, just local-only.
     const noRemote = !_remote.length
@@ -342,7 +381,14 @@ function renderPlayers() {
              No speakers found — playing on this device still works. Add WiiM device IPs
              under Settings → APIs, and make sure Cast devices are on the same subnet.</div>`
         : '';
-    el.innerHTML = noRemote + _players.map(p => {
+    const filters = _playerFilters();
+    // An ecosystem that left takes its filter with it rather than leaving the
+    // list looking empty.
+    if (_playerFilter !== 'all' && !filters.some(t => t.id === _playerFilter))
+        _playerFilter = 'all';
+    const shown = _playerFilter === 'all'
+        ? _players : _players.filter(p => p.provider === _playerFilter);
+    el.innerHTML = _renderPlayerFilter(filters) + noRemote + shown.map(p => {
         const selected = p.player_id === _selectedId;
         const playing = p.state === 'playing';
         const lyricsLink = (p.media_type === 'tidal' && p.now_playing_id)
@@ -1842,64 +1888,71 @@ async function replayRecent(i) {
 function spinner() { return '<div class="text-muted small py-2"><i class="fas fa-spinner fa-spin"></i> Loading…</div>'; }
 function warn(m) { return `<div class="alert alert-warning mb-0">${esc(m)}</div>`; }
 
-// Group builder — two sub-tabs: WiiM native multiroom | speaker-sync groups
-function toggleGroupBuilder() {
-    _groupBuilderOpen = !_groupBuilderOpen;
-    if (_groupBuilderOpen) renderGroupBuilder();
-    else { _stopSyncPoll(); renderPlayers(); }
+// The media pane's tabs: the player list and each way of grouping, side by
+// side. They used to nest — a Group button swapped the whole panel for a
+// builder with its own tab row — which cost two clicks to reach a group and
+// hid the players behind a Close button while you were there.
+const MEDIA_TABS = [
+    { id: 'players', label: 'Players', icon: 'fas fa-volume-up' },
+    { id: 'wiim', label: 'WiiM groups', icon: 'fas fa-volume-up', provider: 'wiim' },
+    { id: 'sonos', label: 'Sonos groups', icon: 'fas fa-house-signal', provider: 'sonos' },
+    { id: 'sync', label: 'OpenZone', icon: 'zmm-openzone-icon' },
+];
+
+// A native-grouping tab only earns its place once that ecosystem is actually
+// on the network; OpenZone and the player list are always reachable.
+function _visibleTabs() {
+    return MEDIA_TABS.filter(t => !t.provider
+        || _players.some(p => p.provider === t.provider && !p.is_group));
 }
 
-function switchGroupTab(tab) {
-    _groupTab = tab;
-    renderGroupBuilder();
+function switchMediaTab(tab) {
+    _mediaTab = tab;
+    if (tab === 'players') { _stopSyncPoll(); renderPlayers(); }
+    else renderGroupBuilder();
+}
+
+// Returns the content pane, building the scaffold on first use.
+//
+// Idempotent, because player refreshes re-enter here constantly. Rebuilding
+// the scaffold each time destroyed #mediaGroupPane — and the live Sync Lab
+// inside it — mid-test (the recurring "charts drop out" bug). The bar is
+// rebuilt only when the set of tabs changes; the pane is never touched here.
+function _mediaScaffold() {
+    const host = document.getElementById('mediaPlayers');
+    if (!host) return null;
+    let bar = document.getElementById('mediaTabs');
+    if (!bar) {
+        host.innerHTML = `
+          <ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs" id="mediaTabs"></ul>
+          <div id="mediaGroupPane"></div>`;
+        bar = document.getElementById('mediaTabs');
+    }
+    const tabs = _visibleTabs();
+    if (!tabs.some(t => t.id === _mediaTab)) _mediaTab = 'players';
+    const sig = tabs.map(t => t.id).join(',');
+    if (bar.dataset.sig !== sig) {
+        bar.dataset.sig = sig;
+        bar.innerHTML = tabs.map(t => `
+          <li class="nav-item">
+            <button class="nav-link py-1 px-3 text-nowrap" id="mediaTab-${t.id}"
+                    onclick="window.mediaTab('${t.id}')">
+              <i class="${t.icon} me-1"></i>${t.label}</button>
+          </li>`).join('');
+    }
+    for (const t of tabs) {
+        document.getElementById('mediaTab-' + t.id)
+            ?.classList.toggle('active', _mediaTab === t.id);
+    }
+    return document.getElementById('mediaGroupPane');
 }
 
 function renderGroupBuilder() {
-    const el = document.getElementById('mediaPlayers');
-    if (!el) return;
-    // Idempotent: player refreshes re-enter here constantly while the
-    // builder is open. Rebuilding the scaffold each time destroyed
-    // #mediaGroupPane — and the live Sync Lab inside it — mid-test (the
-    // recurring "charts drop out" bug). Build once; after that only the
-    // pill states are touched, and the sync pane (which keeps its own
-    // state + poller) is left alone unless the tab actually changed.
-    let pane = document.getElementById('mediaGroupPane');
-    if (!pane) {
-        el.innerHTML = `
-          <ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs">
-            <li class="nav-item">
-              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabWiim"
-                      onclick="window.mediaGroupTab('wiim')">
-                <i class="fas fa-volume-up me-1"></i>WiiM<span class="d-none d-sm-inline"> multiroom</span></button>
-            </li>
-            <li class="nav-item">
-              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSonos"
-                      onclick="window.mediaGroupTab('sonos')">
-                <i class="fas fa-house-signal me-1"></i>Sonos</button>
-            </li>
-            <li class="nav-item">
-              <button class="nav-link py-1 px-3 text-nowrap" id="mediaGroupTabSync"
-                      onclick="window.mediaGroupTab('sync')">
-                <i class="zmm-openzone-icon me-1"></i>OpenZone</button>
-            </li>
-            <li class="nav-item ms-auto">
-              <button class="nav-link py-1 px-3 text-nowrap" onclick="window.mediaOpenGroupBuilder()"
-                      aria-label="Close the group builder">
-                <i class="fas fa-xmark"></i><span class="d-none d-sm-inline ms-1">Close</span></button>
-            </li>
-          </ul>
-          <div id="mediaGroupPane"></div>`;
-        pane = document.getElementById('mediaGroupPane');
-    }
-    document.getElementById('mediaGroupTabWiim')
-        ?.classList.toggle('active', _groupTab === 'wiim');
-    document.getElementById('mediaGroupTabSonos')
-        ?.classList.toggle('active', _groupTab === 'sonos');
-    document.getElementById('mediaGroupTabSync')
-        ?.classList.toggle('active', _groupTab === 'sync');
-    if (NATIVE_GROUP_PROVIDERS[_groupTab]) {
+    const pane = _mediaScaffold();
+    if (!pane) return;
+    if (NATIVE_GROUP_PROVIDERS[_mediaTab]) {
         _stopSyncPoll();
-        renderNativeBuilder(_groupTab);   // cheap + depends on _players
+        renderNativeBuilder(_mediaTab);   // cheap + depends on _players
     } else if (pane.dataset.tab !== 'sync') {
         renderSyncPane();             // first show / tab switch only
     }
@@ -3150,7 +3203,7 @@ async function submitGroup() {
     const r = await apiPost('/api/media/group', { master_id: master, member_ids: members });
     if (!r.success) { toast(r.error || 'Grouping failed', 'error'); return; }
     toast('Group created', 'success');
-    _groupBuilderOpen = false;
+    _mediaTab = 'players';
     setTimeout(loadPlayers, 1500);
 }
 
