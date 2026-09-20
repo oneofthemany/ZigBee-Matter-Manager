@@ -174,6 +174,10 @@ class MediaService:
             try:
                 from modules.media.cast_sync import OpenZone
                 self.cast_sync = OpenZone(self.cast, sync_cfg)
+                # Lets a zone ask each device's own ecosystem what hardware it
+                # is, so model-keyed trims cover more than Cast.
+                self.cast_sync.set_provider_resolver(
+                    self.controller._provider_for)
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)

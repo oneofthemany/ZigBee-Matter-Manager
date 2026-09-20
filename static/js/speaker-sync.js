@@ -117,7 +117,9 @@ async function render() {
           Play the same audio on several Google Cast speakers in sync <strong>without</strong>
           creating a group in Google Home. Works out of the box using each speaker's
           <em>built-in</em> receiver (no Cast console account needed) with automatic lag
-          correction; a per-speaker trim (±ms) lets you align them by ear. Build the groups
+          correction. Speakers of a known model start pre-aligned; for anything else the
+          <em>headphones</em> button on a member plays a click on two speakers and asks which
+          came first, a few times over, and sets the trim from your answers. Build the groups
           themselves under <strong>Media → Group</strong>. Optionally, registering a custom
           receiver (Receiver Registration tab) upgrades sync from ~tens of ms to sample-accurate.
         </p>
@@ -237,8 +239,9 @@ async function render() {
               once after registering.</span></li>
           <li>Paste the generated <strong>Application ID</strong> into the App ID field on the
             OpenZone tab and <em>Save &amp; Restart</em>. Then build a sync group under
-            <strong>Media → Group → OpenZone</strong> and start a test — drag each
-            speaker's trim until the clicks land together.</li>
+            <strong>Media → Group → OpenZone</strong> and start a test — then use
+            <em>Align by ear</em> on any speaker that sounds out, or drag its trim
+            directly.</li>
         </ol>
       </div>
     </div>

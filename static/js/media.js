@@ -129,6 +129,10 @@ export function initMedia() {
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
     window.mediaSyncTrimToggle = syncTrimToggle;
+    window.mediaSyncAlign = syncAlignOpen;
+    window.mediaSyncAlignStart = syncAlignStart;
+    window.mediaSyncAlignAnswer = syncAlignAnswer;
+    window.mediaSyncAlignCancel = syncAlignCancel;
     // The group card's lab button now also switches to the Results tab —
     // opening a view you cannot see is worse than not opening it.
     window.mediaSyncLab = (gid) => {
@@ -2042,6 +2046,13 @@ function _syncMemberRow(m, groupActive) {
             <span class="text-muted" id="synctrimlbl-${pidE}">${m.trim_ms} ms</span>
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms later"
                     onclick="window.mediaSyncNudge('${pidE}', 1)">+</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step"
+                    title="Align by ear against another speaker"
+                    aria-label="Align ${esc(m.name)} by ear"
+                    ${groupActive ? '' : 'disabled'}
+                    onclick="window.mediaSyncAlign('${pidE}')">
+              <i class="fas fa-headphones"></i>
+            </button>
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step d-lg-none"
                     id="synctrimbtn-${pidE}" data-name="${esc(m.name)}"
                     aria-expanded="${open}" aria-controls="synctrimbox-${pidE}"
@@ -2970,6 +2981,151 @@ async function syncCalibrate() {
 async function syncSetTrim(pid, val) {
     const r = await apiPost('/api/media/sync/trim', { player_id: pid, trim_ms: Number(val) });
     if (!r.success) toast(r.error || 'Trim failed', 'error');
+}
+
+// Alignment by ear (open-zone.md §7.7). The listener answers "which came
+// first" and the server bisects; this only ever relays one of three words, so
+// the dialog carries no timing state of its own and a reload cannot desync it
+// from the search.
+let _alignSubject = '';
+
+function _alignEl() {
+    let el = document.getElementById('syncAlignModal');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'syncAlignModal';
+    el.className = 'modal fade';
+    el.tabIndex = -1;
+    el.innerHTML = `
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">Align by ear</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"
+                    aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="syncAlignBody"></div>
+        </div>
+      </div>`;
+    document.body.appendChild(el);
+    el.addEventListener('hidden.bs.modal', () => {
+        if (_alignSubject) syncAlignCancel();
+    });
+    return el;
+}
+
+function _alignShow(html) {
+    const el = _alignEl();
+    document.getElementById('syncAlignBody').innerHTML = html;
+    if (!el.classList.contains('show')) new bootstrap.Modal(el).show();
+}
+
+function _alignHide() {
+    const el = document.getElementById('syncAlignModal');
+    if (el) bootstrap.Modal.getInstance(el)?.hide();
+}
+
+// Pick what to judge against: any other member the zone is currently driving.
+function syncAlignOpen(pid) {
+    const peers = (_syncStatus?.devices || [])
+        .filter(d => d.player_id !== pid && d.connected);
+    if (!peers.length) {
+        toast('Need another connected speaker to align against', 'error');
+        return;
+    }
+    const me = _syncDeviceInfo(pid);
+    _alignSubject = '';
+    _alignShow(`
+      <p class="small text-muted">
+        Pick the speaker to judge <strong>${esc(me?.name || pid)}</strong>
+        against. Stand where you normally listen.</p>
+      <div class="d-grid gap-2">
+        ${peers.map(p => `
+          <button class="btn btn-outline-primary"
+                  onclick="window.mediaSyncAlignStart('${esc(p.player_id)}','${esc(pid)}')">
+            ${esc(p.name)}</button>`).join('')}
+      </div>`);
+}
+
+function _alignPrompt(r) {
+    const total = (r.round || 1) + (r.remaining || 0);
+    return `
+      <p class="small text-muted mb-2">
+        <strong>${esc(r.subject)}</strong> against
+        <strong>${esc(r.reference)}</strong> —
+        round ${r.round} of about ${total}</p>
+      <div class="progress mb-3" style="height:4px">
+        <div class="progress-bar" role="progressbar"
+             style="width:${Math.round((r.round - 1) / Math.max(1, total) * 100)}%"
+             aria-valuenow="${r.round}" aria-valuemin="0"
+             aria-valuemax="${total}"></div>
+      </div>
+      <p class="mb-2">Which speaker clicked <em>first</em>?</p>
+      <div class="d-grid gap-2">
+        <button class="btn btn-outline-primary"
+                onclick="window.mediaSyncAlignAnswer('subject')">
+          ${esc(r.subject)}</button>
+        <button class="btn btn-outline-primary"
+                onclick="window.mediaSyncAlignAnswer('reference')">
+          ${esc(r.reference)}</button>
+        <button class="btn btn-outline-success"
+                onclick="window.mediaSyncAlignAnswer('together')">
+          They landed together</button>
+        <div class="d-flex gap-2 mt-1">
+          <button class="btn btn-sm btn-outline-secondary flex-fill"
+                  onclick="window.mediaSyncAlignAnswer('replay')">
+            <i class="fas fa-rotate-right"></i> Play again</button>
+          <button class="btn btn-sm btn-outline-secondary flex-fill"
+                  onclick="window.mediaSyncAlignCancel(true)">Cancel</button>
+        </div>
+      </div>`;
+}
+
+function _alignStep(r) {
+    if (!r.success && !r.done) {
+        _alignSubject = '';
+        _alignShow(`<p class="text-danger mb-0">${esc(r.error || 'Alignment failed')}</p>`);
+        return;
+    }
+    if (r.done) {
+        _alignSubject = '';
+        _alignShow(r.applied
+            ? `<p class="mb-1"><strong>${esc(r.subject)}</strong> is now
+                 ${r.trim_ms} ms, found in ${r.rounds} rounds.</p>
+               <p class="small text-muted mb-0">Every speaker of this model
+                 starts here from now on.</p>`
+            : `<p class="text-warning mb-0">${esc(r.error || 'Inconclusive')}</p>`);
+        setTimeout(() => { _alignHide(); renderSyncPane(); }, r.applied ? 2200 : 4000);
+        return;
+    }
+    _alignShow(_alignPrompt(r));
+}
+
+async function syncAlignStart(referenceId, subjectId) {
+    _alignSubject = subjectId;
+    _alignShow('<p class="mb-0 text-muted">Listening…</p>');
+    try {
+        _alignStep(await apiPost('/api/media/sync/align/start',
+            { reference_id: referenceId, subject_id: subjectId }));
+    } catch (e) {
+        _alignSubject = '';
+        _alignShow(`<p class="text-danger mb-0">${esc(e.message)}</p>`);
+    }
+}
+
+async function syncAlignAnswer(answer) {
+    try {
+        _alignStep(await apiPost('/api/media/sync/align/answer', { answer }));
+    } catch (e) {
+        _alignSubject = '';
+        _alignShow(`<p class="text-danger mb-0">${esc(e.message)}</p>`);
+    }
+}
+
+async function syncAlignCancel(close) {
+    _alignSubject = '';
+    try { await apiPost('/api/media/sync/align/cancel', {}); } catch (e) { /* gone anyway */ }
+    if (close) _alignHide();
 }
 
 async function syncNudgeTrim(pid, delta) {

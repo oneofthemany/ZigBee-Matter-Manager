@@ -24,6 +24,9 @@ try:
 except Exception:                                    # pragma: no cover
     _sdb = None
 
+from modules.media import latency_seed as _seed
+from modules.media.trim_graph import TrimGraph
+from modules.media import sync_align as _align
 from modules.media import sync_chirp as _chirp
 from modules.media import sync_resample as _rs
 from modules.media import sync_source as _src
@@ -319,7 +322,7 @@ class _Stream:
         self.moved_s: float = 0.0
         self.err_hist: List[float] = []   # last 3 poll errors (median filter)
         self.acquired: bool = False
-        self.chirp: Optional[tuple] = None
+        self.inject: Optional[tuple] = None   # (timeline sample, wave)
         self.lag_hist: List[tuple] = []   # (t, lag+moved_s) for drift fitting
         self.fit_lost_at: float = 0.0
         self.precomp_s: float = 0.0  # model-predicted lag pre-compensation
@@ -362,6 +365,10 @@ class OpenZone:
     def __init__(self, cast_provider, cfg: dict):
         cfg = cfg or {}
         self.cast = cast_provider                      # CastPlayerProvider
+        # (player_id) -> PlayerProvider, so model identity can be asked of
+        # whichever ecosystem owns the device rather than only of Cast. Unset
+        # falls back to the Cast provider (_model_key).
+        self._provider_resolver = None
         self.http_port = int(cfg.get("http_port", 8010))
         self.app_id = (cfg.get("app_id") or "").strip()
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
@@ -372,6 +379,11 @@ class OpenZone:
         self._model_trims: Dict[str, int] = {
             k: int(v) for k, v in self._read_json(self._model_trims_file).items()}
         self._model_trims_reconciled = False
+        self._graph_file = cfg.get("trim_graph_file",
+                                   "./data/cast_sync_trim_graph.json")
+        self._graph = TrimGraph(
+            lambda: self._read_json(self._graph_file),
+            lambda d: self._write_json(self._graph_file, d))
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
@@ -384,6 +396,7 @@ class OpenZone:
         self._session_id: str = ""
         self._mic_device = cfg.get("mic_device") or None
         self._calibrating = False
+        self._aligning: Optional[dict] = None      # by-ear session (§7.7)
         self._mic_cache: Optional[Tuple[float, dict]] = None
 
         self._source = _GENERATED
@@ -532,9 +545,25 @@ class OpenZone:
         logger.info(f"Zone queue moved {previous + 1} → {index + 1} of {n}")
         return {"success": True, "index": index}
 
+    def set_provider_resolver(self, resolver) -> None:
+        """Supply ``(player_id) -> PlayerProvider`` so model identity, and the
+        trim defaults keyed on it, work for every ecosystem in a zone."""
+        self._provider_resolver = resolver
+
+    def _provider_for(self, player_id: str) -> object:
+        resolve = self._provider_resolver
+        if resolve is not None:
+            try:
+                prov = resolve(player_id)
+                if prov is not None:
+                    return prov
+            except Exception:
+                pass
+        return getattr(self, "cast", None)
+
     def _model_key(self, player_id: str) -> str:
         try:
-            get = getattr(getattr(self, "cast", None), "model_key", None)
+            get = getattr(self._provider_for(player_id), "model_key", None)
             return get(player_id) if callable(get) else ""
         except Exception:
             return ""
@@ -595,14 +624,37 @@ class OpenZone:
         if out != self._model_trims:
             self._model_trims = out
             self._write_json(self._model_trims_file, out)
+            self._graph.invalidate()
 
     def trim_ms(self, player_id: str) -> int:
         """Effective trim: an explicit per-device value, else whatever this
-        model has been found to need, else nothing."""
+        model has been found to need on this network, else the shipped prior
+        for the model, else nothing.
+
+        Direct beats derived beats shipped. The prior stays reachable after
+        ``_learn_model_trim`` drops a disputed model: that dispute is between
+        units each carrying an explicit trim, which this never sees, while an
+        untrimmed unit still has the hardware constant to start from.
+        """
         if player_id in self._trims:
             return int(self._trims[player_id])
         key = self._model_key(player_id)
-        return int(self._model_trims.get(key, 0)) if key else 0
+        if not key:
+            return 0
+        learned = self._model_trims.get(key)
+        if learned is not None:
+            return int(learned)
+        derived = self._solve_graph().get(key)
+        if derived is not None:
+            return int(derived)
+        return _seed.trim_ms(key)
+
+    def _solve_graph(self) -> Dict[str, int]:
+        """Absolutes the trim graph implies, pinned to what this network has
+        learned and, failing that, to the shipped table (open-zone.md §7.6)."""
+        priors = {m: v for m in self._graph.models()
+                  if m not in self._model_trims and (v := _seed.trim_ms(m))}
+        return self._graph.solve(dict(self._model_trims), priors)
 
     def _learn_model_trim(self, player_id: str, trim_ms: int) -> None:
         """Record a settled trim against the device's model."""
@@ -619,12 +671,18 @@ class OpenZone:
             except asyncio.CancelledError:
                 return
             self._trim_learn_tasks.pop(key, None)
+            # Explicit trims only: an effective one the graph supplied would
+            # feed its own output back in (trim_graph.observe_session).
+            self._graph.observe_session(
+                [(self._model_key(pid), int(self._trims[pid]))
+                 for pid in self._session_players if pid in self._trims])
             peers = [int(v) for pid, v in self._trims.items()
                      if pid != player_id and self._model_key(pid) == key]
             disputed = [v for v in peers if abs(v - trim_ms) > TRIM_MODEL_AGREE_MS]
             if disputed:
                 if self._model_trims.pop(key, None) is not None:
                     self._write_json(self._model_trims_file, self._model_trims)
+                    self._graph.invalidate()
                 logger.info(
                     f"Model trim for '{key}' dropped: units disagree "
                     f"({trim_ms:+d} ms vs {', '.join(f'{v:+d}' for v in disputed)} ms) "
@@ -634,6 +692,7 @@ class OpenZone:
                 return
             self._model_trims[key] = int(trim_ms)
             self._write_json(self._model_trims_file, self._model_trims)
+            self._graph.invalidate()   # graph unchanged, its pinning is not
             logger.info(f"Learned trim {trim_ms:+d} ms for model '{key}' — new "
                         f"devices of this model will start pre-aligned")
 
@@ -1128,6 +1187,9 @@ class OpenZone:
             "remaining_s": (max(0, self._duration_s - elapsed)
                             if self.running and self._duration_s else None),
             "mic": self._mic_status(),
+            "trim_graph": {"edges": self._graph.describe(),
+                           "derived": self._solve_graph()},
+            "align": self.align_status(),
             "now_playing": self.now_playing(),
             "source": self._source.stats(),
             "resampler": {"kind": self._resampler_kind, **_rs.available()},
@@ -1180,6 +1242,139 @@ class OpenZone:
             await self._record_samples([self._sample_row(s, "trim")])
         return {"success": True, "player_id": player_id, "trim_ms": trim_ms}
 
+    # Alignment by ear (open-zone.md §7.7)
+
+    def _align_streams(self, reference_id: str, subject_id: str):
+        """The two live streams, or an error dict."""
+        if not self.running or self.app_id:
+            return {"success": False,
+                    "error": "Alignment needs a running stream-mode session"}
+        if self._calibrating:
+            return {"success": False, "error": "Chirp calibration is running"}
+        if self._target_lag is None:
+            return {"success": False,
+                    "error": "Devices still acquiring — try again in a few seconds"}
+        if reference_id == subject_id:
+            return {"success": False,
+                    "error": "Pick two different speakers"}
+        found = {}
+        for st in self._streams.values():
+            if st.player_id in (reference_id, subject_id):
+                if st.connected and st.pos is not None and st.parked_since is None:
+                    found[st.player_id] = st
+        if len(found) < 2:
+            return {"success": False,
+                    "error": "Both speakers must be connected and playing"}
+        return found[reference_id], found[subject_id]
+
+    async def align_start(self, reference_id: str, subject_id: str) -> dict:
+        """Begin a by-ear alignment of ``subject`` against ``reference``."""
+        picked = self._align_streams(reference_id, subject_id)
+        if isinstance(picked, dict):
+            return picked
+        ref, subj = picked
+        self._aligning = {
+            "search": _align.Bisection(),
+            "ref_sid": ref.sid, "subj_sid": subj.sid,
+            "reference": ref.name, "subject": subj.name,
+            "subject_id": subject_id,
+            "trim0": subj.trim_ms,
+            "wave": _align.click_train(RATE),
+        }
+        logger.info(f"Alignment started: {subj.name} against {ref.name} "
+                    f"(from trim {subj.trim_ms:+d} ms)")
+        return await self._align_probe()
+
+    async def _align_probe(self) -> dict:
+        """Schedule one click train on each device, the subject's delayed by
+        the bracket's midpoint, and report what the listener is about to hear."""
+        a = self._aligning
+        if a is None:
+            return {"success": False, "error": "No alignment in progress"}
+        ref = self._streams.get(a["ref_sid"])
+        subj = self._streams.get(a["subj_sid"])
+        if ref is None or subj is None or not (ref.connected and subj.connected):
+            self._aligning = None
+            return {"success": False, "error": "A speaker left the zone"}
+        delta_ms = a["search"].delta_ms
+        # Ahead of the furthest reader, with room for a negative delta to still
+        # land in front of it.
+        head = max((s.pos - s.shift) / RATE for s in (ref, subj))
+        at = head + _chirp.CHIRP_LEAD_S + max(0, -delta_ms) / 1000.0
+        ceil = self._reader_ceiling(self._source) / RATE
+        if at + len(a["wave"]) / RATE > ceil:
+            self._aligning = None
+            return {"success": False,
+                    "error": "No timeline ahead to place the clicks in"}
+        ref.inject = (int(at * RATE), a["wave"])
+        subj.inject = (int((at + delta_ms / 1000.0) * RATE), a["wave"])
+        return {"success": True, **self.align_status()}
+
+    async def align_answer(self, answer: str) -> dict:
+        """Take one judgement — ``subject``, ``reference``, ``together`` — or
+        ``replay`` to hear the same probe again."""
+        a = self._aligning
+        if a is None:
+            return {"success": False, "error": "No alignment in progress"}
+        if answer == "replay":
+            return await self._align_probe()
+        try:
+            a["search"].answer(answer)
+        except ValueError:
+            return {"success": False, "error": f"Unknown answer '{answer}'"}
+        if not a["search"].done:
+            return await self._align_probe()
+        return await self._align_finish()
+
+    async def _align_finish(self) -> dict:
+        a = self._aligning
+        search = a["search"]
+        delta = search.result()
+        for sid in (a["ref_sid"], a["subj_sid"]):
+            st = self._streams.get(sid)
+            if st is not None:
+                st.inject = None
+        self._aligning = None
+        if delta is None:
+            logger.info(
+                f"Alignment of {a['subject']} inconclusive after "
+                f"{search.rounds} rounds — trim unchanged")
+            return {"success": False, "done": True, "applied": False,
+                    "rounds": search.rounds,
+                    "error": "Answers did not converge — the speakers may be "
+                             "too far apart to judge, or too close to separate"}
+        trim = max(-2000, min(2000, a["trim0"] + delta))
+        logger.info(f"Alignment of {a['subject']} against {a['reference']}: "
+                    f"{delta:+d} ms in {search.rounds} rounds "
+                    f"→ trim {trim:+d} ms")
+        # Feeds _learn_model_trim, and through it the differential graph.
+        await self.set_trim(a["subject_id"], trim)
+        return {"success": True, "done": True, "applied": True,
+                "subject": a["subject"], "reference": a["reference"],
+                "rounds": search.rounds, "delta_ms": delta, "trim_ms": trim}
+
+    def align_cancel(self) -> dict:
+        a, self._aligning = self._aligning, None
+        if a is None:
+            return {"success": False, "error": "No alignment in progress"}
+        for sid in (a["ref_sid"], a["subj_sid"]):
+            st = self._streams.get(sid)
+            if st is not None:
+                st.inject = None
+        logger.info(f"Alignment of {a['subject']} cancelled — trim unchanged")
+        return {"success": True, "cancelled": True}
+
+    def align_status(self) -> dict:
+        a = self._aligning
+        if a is None:
+            return {"running": False}
+        search = a["search"]
+        return {"running": True, "subject": a["subject"],
+                "reference": a["reference"], "round": search.rounds + 1,
+                "remaining": search.remaining, "delta_ms": search.delta_ms,
+                "bracket_ms": [search.lo, search.hi],
+                "trim_ms": a["trim0"] + search.delta_ms}
+
     async def calibrate(self) -> dict:
         """Chirp sequence → GCC-PHAT arrivals → trims. Runs during normal
         playback: each device plays a 100 ms 2–8 kHz chirp in its own time
@@ -1210,7 +1405,7 @@ class OpenZone:
             return await self._run_chirp_sequence(streams)
         finally:
             for s in streams:
-                s.chirp = None
+                s.inject = None
             self._calibrating = False
 
     async def _run_chirp_sequence(self, streams: List[_Stream]) -> dict:
@@ -1219,7 +1414,7 @@ class OpenZone:
         plan = []          # (stream, expected arrival in elapsed-seconds)
         for i, s in enumerate(streams):
             slot_s = head_s + _chirp.CHIRP_LEAD_S + i * _chirp.CHIRP_GAP_S
-            s.chirp = (int(slot_s * RATE), wave)
+            s.inject = (int(slot_s * RATE), wave)
             trim_s = s.trim_ms / 1000.0
             plan.append((s, slot_s + self._target_lag + trim_s))
         rec_start = time.monotonic() - self._epoch
@@ -2892,7 +3087,7 @@ class OpenZone:
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
                 # Window on the loop, filter off it (open-zone.md §A.1).
                 pos0 = st.pos
-                win = st.resampler.window(source, st.pos, block, adv, st.chirp)
+                win = st.resampler.window(source, st.pos, block, adv, st.inject)
                 out, used = await asyncio.to_thread(st.resampler.render, win)
                 if st.pos != pos0:
                     continue     # jump landed mid-render; drop, consume nothing

@@ -52,6 +52,15 @@ class SyncTrimBody(BaseModel):
     trim_ms: int                 # ±ms; positive = play later
 
 
+class SyncAlignBody(BaseModel):
+    reference_id: str            # the speaker judged against
+    subject_id: str              # the speaker whose trim moves
+
+
+class SyncAlignAnswerBody(BaseModel):
+    answer: str                  # subject | reference | together | replay
+
+
 class SyncGroupBody(BaseModel):
     name: str
     members: List[str]           # cast:<uuid> ids
@@ -141,6 +150,30 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         if sync is None:
             return {"success": False, "error": "OpenZone is disabled"}
         return await sync.calibrate()
+
+    @app.post("/api/media/sync/align/start")
+    async def sync_align_start(body: SyncAlignBody):
+        """Begin aligning one speaker against another by ear: each probe fires
+        a click train on both, and the listener says which came first. No mic
+        (open-zone.md §7.7)."""
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        return await sync.align_start(body.reference_id, body.subject_id)
+
+    @app.post("/api/media/sync/align/answer")
+    async def sync_align_answer(body: SyncAlignAnswerBody):
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        return await sync.align_answer(body.answer)
+
+    @app.post("/api/media/sync/align/cancel")
+    async def sync_align_cancel():
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        return sync.align_cancel()
 
     @app.get("/api/media/sync/groups")
     async def sync_groups():

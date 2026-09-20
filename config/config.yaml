@@ -47,7 +47,9 @@ media:
     sync:                     # OpenZone: synchronised multi-speaker casting WITHOUT
       enabled: false          # a Google-Home group. Custom receiver schedules a
                               # server-clocked PCM stream via Web Audio; per-speaker
-                              # ±ms trim. See docs/open-zone.md.
+                              # ±ms trim, defaulted per model from a shipped
+                              # table and from trims already set on this
+                              # network. See docs/open-zone.md.
       http_port: 8010         # plain-HTTP listener for the receiver page + WebSocket
                               # (the Cast device rejects our self-signed HTTPS).
       app_id: ""              # Cast console App ID registered for

@@ -53,6 +53,8 @@ class WiiMPlayerProvider(PlayerProvider):
         self._scheme: Dict[str, str] = {}
         # Cached display names from getStatusEx.
         self._names: Dict[str, str] = {}
+        # Cached hardware identity from getStatusEx ("project"), for model_key.
+        self._models: Dict[str, str] = {}
         # EQ preset list per IP (None = not probed yet, [] = unsupported) and
         # the last preset WE loaded — the API can report on/off (EQGetStat)
         # but not which preset is active, so we remember our own writes.
@@ -110,16 +112,30 @@ class WiiMPlayerProvider(PlayerProvider):
                 ))
         return out
 
+    def model_key(self, player_id: str) -> str:
+        """LinkPlay's ``project`` — the firmware's own name for the hardware
+        (e.g. ``WiiM_Pro_with_gc4a``). Constant for the life of the unit, and
+        carried by every device on the platform, where ``DeviceName`` is
+        user-set and the IP in ``player_id`` moves with the DHCP lease.
+
+        Populated by the first ``get_state``; "" until then, which reads as
+        "no model default" rather than as a wrong one.
+        """
+        return self._models.get(player_id.split(":", 1)[-1], "")
+
     async def get_state(self, player_id: str) -> Optional[PlayerState]:
         ip = player_id.split(":", 1)[1]
         if ip not in self._ips:
             return None
 
-        # Name (cached after first lookup).
+        # Name and hardware identity (one probe, cached after first lookup).
         if ip not in self._names:
             ex = await self._command_json(ip, "getStatusEx")
             if ex:
                 self._names[ip] = ex.get("DeviceName") or ex.get("ssid") or ip
+                project = (ex.get("project") or "").strip()
+                if project:
+                    self._models[ip] = project
 
         status = await self._command_json(ip, "getPlayerStatus")
         name = self._names.get(ip, ip)

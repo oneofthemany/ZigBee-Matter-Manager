@@ -41,6 +41,18 @@ class PlayerProvider(ABC):
     async def get_state(self, player_id: str) -> Optional[PlayerState]:
         """Refresh and return a single player's state, or None if unknown."""
 
+    def model_key(self, player_id: str) -> str:
+        """Stable identity for "devices that behave like this one", or "".
+
+        Output-pipeline latency is a property of the hardware, not the unit, so
+        what is set for one device of a model applies to the rest and survives
+        its address changing. The key must not flicker: a value keyed on an
+        identity that changes with the discovery that minted it silently
+        becomes another device's. Providers that cannot name their hardware
+        stably return "" and opt out.
+        """
+        return ""
+
     # Playback
     @abstractmethod
     async def play_url(self, player_id: str, item: MediaItem) -> None:
