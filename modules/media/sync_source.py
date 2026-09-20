@@ -92,6 +92,9 @@ class GeneratedSource:
     def item_position_s(self) -> Optional[float]:
         return None                # no item boundaries to measure from
 
+    def item_origin_s(self) -> Optional[float]:
+        return None                # ...so nothing starts anywhere either
+
     def stats(self) -> dict:
         return {"kind": self.kind, "title": "Sync test signal", "delay_s": 0.0}
 
@@ -653,6 +656,18 @@ class MediaSource:
             return None
         played = (time.monotonic() - self.epoch - self.delay_s) * self._rate
         return max(0.0, (played - self._item_origin) / self._rate)
+
+    def item_origin_s(self) -> Optional[float]:
+        """Where the current item starts, in timeline seconds. None before the
+        first one does.
+
+        The timeline is the one clock every device shares, so a boundary
+        expressed in it is a boundary every device can act on at the same
+        moment — which is what lets a receiver flip its display when the seam
+        is *heard* rather than when the decoder reached it, seconds earlier."""
+        if self._item_origin is None:
+            return None
+        return self._item_origin / self._rate
 
     def read(self, n0: int, frames: int) -> np.ndarray:
         return self._ring.read(n0, frames)

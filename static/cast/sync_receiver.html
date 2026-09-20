@@ -8,6 +8,14 @@
   the device's fixed audio-output latency. See static/cast/README.md for
   registration; this page must be served over plain HTTP from the ZMM sync
   listener (media.cast.sync.http_port) so the ws:// socket is same-origin.
+
+  It also draws the now-playing screen. The default media receiver cannot:
+  its metadata rides in on the load that starts the stream and there is no way
+  to revise it while the stream runs, so a zone's screens sit under one label
+  for the whole session (docs/open-zone.md §10.7). Here the server pushes each
+  item over the same socket, stamped with the server-clock instant the seam is
+  *heard* — the clock this page already estimates to schedule its audio — so
+  the screen turns over with the speakers rather than with the decoder.
 -->
 <html>
 <head>
@@ -18,20 +26,64 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; background: #000; color: #fff;
       font-family: "Roboto", system-ui, sans-serif; overflow: hidden; }
-    #wrap { position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 2vh; }
-    #state { font-size: 5vh; font-weight: 700; }
-    #detail { font-size: 2.6vh; opacity: .7; font-variant-numeric: tabular-nums; }
-    #pulse { width: 6vh; height: 6vh; border-radius: 50%; background: #2a6;
-      opacity: .25; transition: opacity .1s; }
+
+    /* Blurred cover behind everything — on a screened device the art is the
+       point, and a hard-edged 320px thumbnail on black is not. */
+    #bg { position: fixed; inset: -8vh; background-size: cover;
+      background-position: center; filter: blur(7vh) saturate(1.4)
+      brightness(.45); transform: scale(1.1); opacity: 0;
+      transition: opacity .6s ease; }
+    #shade { position: fixed; inset: 0;
+      background: radial-gradient(ellipse at center,
+        rgba(0,0,0,.25) 0%, rgba(0,0,0,.8) 100%); }
+
+    #wrap { position: fixed; inset: 0; display: flex; align-items: center;
+      justify-content: center; gap: 5vw; padding: 6vh 7vw; }
+
+    #art { width: 46vh; height: 46vh; flex: 0 0 auto; border-radius: 1.6vh;
+      background: #151515 center/cover no-repeat;
+      box-shadow: 0 2vh 6vh rgba(0,0,0,.65); display: none; }
+
+    #text { min-width: 0; max-width: 52vw; }
+    #title { font-size: 6vh; font-weight: 700; line-height: 1.12;
+      overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical; }
+    #artist { font-size: 3.4vh; opacity: .72; margin-top: 1.4vh;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    #pos { margin-top: 3.4vh; display: none; }
+    #bar { height: .7vh; border-radius: .7vh; background: rgba(255,255,255,.22);
+      overflow: hidden; }
+    #fill { height: 100%; width: 0; background: #fff; border-radius: .7vh; }
+    #times { display: flex; justify-content: space-between; margin-top: 1.2vh;
+      font-size: 2vh; opacity: .6; font-variant-numeric: tabular-nums; }
+    #track { font-size: 2.2vh; opacity: .55; margin-top: 2.2vh;
+      letter-spacing: .12em; text-transform: uppercase; }
+
+    /* Session status, deliberately small: it is for whoever is aligning the
+       zone, not for whoever is listening to it. */
+    #foot { position: fixed; left: 0; right: 0; bottom: 2.2vh;
+      display: flex; align-items: center; justify-content: center; gap: 1.4vh;
+      font-size: 1.8vh; opacity: .42; font-variant-numeric: tabular-nums; }
+    #pulse { width: 1.4vh; height: 1.4vh; border-radius: 50%; background: #2a6;
+      opacity: .25; transition: opacity .1s; flex: 0 0 auto; }
   </style>
 </head>
 <body>
+  <div id="bg"></div>
+  <div id="shade"></div>
   <div id="wrap">
-    <div id="pulse"></div>
-    <div id="state">ZMM Sync — waiting for start…</div>
-    <div id="detail"></div>
+    <div id="art"></div>
+    <div id="text">
+      <div id="title">ZMM OpenZone</div>
+      <div id="artist">waiting for start…</div>
+      <div id="pos">
+        <div id="bar"><div id="fill"></div></div>
+        <div id="times"><span id="elapsed">0:00</span><span id="total">0:00</span></div>
+      </div>
+      <div id="track"></div>
+    </div>
   </div>
+  <div id="foot"><div id="pulse"></div><div id="detail"></div></div>
 
   <script>
     const NAMESPACE = 'urn:x-cast:zmm.sync';
@@ -65,6 +117,61 @@
 
     // Playback stats
     let scheduled = 0, late = 0, resyncs = 0, startedAt = 0;
+
+    // Now playing
+    // `at` is a server-clock instant, so the swap waits for the seam to reach
+    // the speakers instead of following the decoder, which is a delay line and
+    // a device buffer ahead of what anyone can hear.
+    let now = null;              // the item currently on screen
+    let nowTimer = null;         // pending swap
+
+    const serverNow = () =>
+      appliedOffset === null ? null : perfSec() + appliedOffset;
+
+    function onNow(msg) {
+      if (nowTimer) { clearTimeout(nowTimer); nowTimer = null; }
+      const s = serverNow();
+      const wait = (s === null || !msg.at) ? 0 : (msg.at - s) * 1000;
+      if (wait <= 0) showNow(msg);
+      else nowTimer = setTimeout(() => { nowTimer = null; showNow(msg); }, wait);
+    }
+
+    function showNow(msg) {
+      now = msg;
+      const title = msg.title || 'ZMM OpenZone';
+      $('title').textContent = title;
+      $('artist').textContent = msg.artist || '';
+      $('artist').style.display = msg.artist ? '' : 'none';
+      const art = msg.artwork || '';
+      // 'block', not '': both start hidden in the stylesheet, and clearing the
+      // inline value would hand them straight back to that rule.
+      $('art').style.display = art ? 'block' : 'none';
+      $('art').style.backgroundImage = art ? `url("${art}")` : '';
+      $('bg').style.backgroundImage = art ? `url("${art}")` : '';
+      $('bg').style.opacity = art ? '1' : '0';
+      $('track').textContent =
+        (msg.count > 1) ? `Track ${(msg.index || 0) + 1} of ${msg.count}` : '';
+      $('pos').style.display = msg.duration_ms > 0 ? 'block' : 'none';
+      $('total').textContent = clock(msg.duration_ms / 1000);
+      drawProgress();
+    }
+
+    function clock(secs) {
+      if (!(secs > 0)) return '0:00';
+      const s = Math.floor(secs % 60), m = Math.floor(secs / 60);
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function drawProgress() {
+      if (!now || !(now.duration_ms > 0)) return;
+      const s = serverNow();
+      if (s === null || !now.at) return;
+      const dur = now.duration_ms / 1000;
+      const elapsed = Math.max(0, Math.min(dur, s - now.at));
+      $('fill').style.width = `${(elapsed / dur) * 100}%`;
+      $('elapsed').textContent = clock(elapsed);
+    }
+    setInterval(drawProgress, 500);
 
     // Chunk scheduling
     function outLatency() {
@@ -129,7 +236,9 @@
       ws = new WebSocket(`ws://${location.host}/ws`);
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
-        $('state').textContent = 'Connected — syncing clock…';
+        // Only while there is nothing better on screen: a reconnect must not
+        // overwrite the item the speakers are still playing.
+        if (!now) $('artist').textContent = 'Connected — syncing clock…';
         ws.send(JSON.stringify({ type: 'hello', sid }));
         let n = 0;
         const ping = () => {
@@ -144,14 +253,17 @@
         if (ev.data instanceof ArrayBuffer) { onChunk(ev.data); return; }
         const msg = JSON.parse(ev.data);
         if (msg.type === 'pong') onPong(msg);
+        else if (msg.type === 'now') onNow(msg);
         else if (msg.type === 'hello_ack') {
           rate = msg.rate; channels = msg.channels; trimMs = msg.trim_ms || 0;
-          $('state').textContent = 'Playing (OpenZone)';
+          if (!now) $('artist').textContent = 'Playing (OpenZone)';
         }
         else if (msg.type === 'trim') trimMs = msg.trim_ms || 0;
       };
       ws.onclose = () => {
-        $('state').textContent = 'Disconnected — retrying…';
+        // The item survives the socket: a reconnect a second later should not
+        // blank a screen that is still, correctly, showing what is playing.
+        if (!now) $('artist').textContent = 'Disconnected — retrying…';
         setTimeout(() => { if (sid) connect(); }, 2000);
       };
     }

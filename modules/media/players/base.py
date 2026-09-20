@@ -25,6 +25,11 @@ class PlayerProvider(ABC):
     #: volume is fanned out to members by the provider, so the controller
     #: must not fan out over group_members as well.
     fans_out_volume: bool = False
+    #: the whole queue is labelled once rather than per item — a zone streams
+    #: it as one endless session, so its endpoint displays carry one title for
+    #: the lot (docs/open-zone.md §10.7). Callers that can name the *set* a queue
+    #: came from check this before paying to look it up.
+    labels_queue_once: bool = False
 
     async def start(self) -> None:
         """Begin discovery / open connections. Override if needed."""
@@ -75,8 +80,11 @@ class PlayerProvider(ABC):
 
     # Self-advancing providers only (self_advancing = True)
     async def play_queue(self, player_id: str, items: List["MediaItem"],
-                         start: int = 0, loop: bool = False) -> None:
-        """Play an ordered queue from ``start``; ``loop`` is repeat-all."""
+                         start: int = 0, loop: bool = False,
+                         collection: Optional[dict] = None) -> None:
+        """Play an ordered queue from ``start``; ``loop`` is repeat-all.
+        ``collection`` names the set the items came from ({"title", "artist",
+        "artwork_url"}), for providers that label the queue once."""
         raise NotImplementedError(f"{self.provider} does not support play_queue")
 
     async def skip_to(self, player_id: str, index: int) -> None:

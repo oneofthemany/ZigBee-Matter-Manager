@@ -927,6 +927,46 @@ class TidalAccount:
         return [self._track_to_item(it) for it in (items or [])
                 if type(it).__name__ == "Track"]
 
+    # Containers
+    async def container_summary(self, kind: str, container_id: str) -> dict:
+        """Name, subtitle and artwork of the album/playlist/artist/mix itself,
+        rather than of any track inside it.
+
+        What a *set* is called is not recoverable from its tracks — an album's
+        name is not on them, and a playlist's is nowhere at all — so anything
+        that has to show the set rather than the item has to ask for it. Used
+        by the zone path, where a whole queue plays as one endless stream and
+        the endpoint displays carry one title for the session
+        (docs/open-zone.md §10.7).
+
+        Returns {} for a track, an unknown kind, or any lookup that fails: the
+        caller falls back to the queue's head item, which is what it would
+        have shown anyway."""
+        if not self._session or kind in ("", "track"):
+            return {}
+        return await asyncio.to_thread(self._container_summary, kind, container_id)
+
+    def _container_summary(self, kind: str, container_id: str) -> dict:
+        try:
+            if kind == "album":
+                row = self._album_summary(self._session.album(int(container_id)))
+            elif kind == "playlist":
+                row = self._playlist_summary(self._session.playlist(container_id))
+            elif kind == "artist":
+                row = self._artist_summary(self._session.artist(int(container_id)))
+            elif kind == "mix":
+                row = self._mix_summary(self._session.mix(container_id))
+            else:
+                return {}
+        except Exception as e:
+            logger.warning(f"Tidal {kind} summary failed: {e}")
+            return {}
+        if not (row.get("name") or "").strip():
+            return {}
+        return {"title": row.get("name", ""),
+                "artist": row.get("artist", ""),
+                "artwork_url": row.get("artwork", "")}
+
     # Mapping helpers
     def _track_to_item(self, t) -> MediaItem:
         artist = getattr(getattr(t, "artist", None), "name", "") or ""

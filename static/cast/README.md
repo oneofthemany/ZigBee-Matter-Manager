@@ -60,6 +60,16 @@ with the Web Audio API. A per-speaker trim (±ms)
 compensates each device's fixed output latency — tune it once by ear against
 the 2-second click track, it stays valid.
 
+It also draws the **now-playing screen**: cover, title, artist, progress and
+the track's place in the queue. This is the only way to get per-song metadata
+on a zone's screens. Without an App ID a zone falls back to the built-in
+default receiver, whose metadata arrives once on the load that starts the
+stream and cannot be revised while it runs — so those screens show the album,
+playlist or mix for the whole session (docs/open-zone.md §10.7). Here the
+server pushes each item over the same socket, stamped with the server-clock
+instant the seam reaches the speakers, so the screen turns over in time with
+the music and the audio path is untouched.
+
 Unlike the lyrics receiver, this page **must be served by ZMM itself over
 plain HTTP** (config `media.cast.sync.http_port`, default 8010): the receiver
 needs a live same-origin `ws://` socket back to ZMM, which an HTTPS-hosted

@@ -34,13 +34,21 @@ class PlayerQueue:
         self.repeat: str = "off"             # off | one | all
         self.shuffle: bool = False
         self.auto_extend: bool = False       # infinite radio: append more near the end
+        # What this queue *is*, when it came from one named set: {"title",
+        # "artist", "artwork_url"}. Only a player that shows one label for the
+        # whole queue reads it (a zone streams the lot as one session), and
+        # nothing is recoverable from the items — an album's name is not on
+        # its tracks. None when the queue was assembled item by item.
+        self.collection: Optional[dict] = None
         self._history: List[int] = []        # for `previous()`
         self._cycle_played: set[int] = set()  # shuffle: indices played this cycle
 
     # Mutation
-    def load(self, items: List[MediaItem], start: int = 0) -> Optional[QueueItem]:
+    def load(self, items: List[MediaItem], start: int = 0,
+             collection: Optional[dict] = None) -> Optional[QueueItem]:
         self.items = [QueueItem(id=_new_id(), item=i) for i in items]
         self.index = start if (0 <= start < len(self.items)) else (0 if self.items else -1)
+        self.collection = collection or None
         self._history.clear()
         self._cycle_played = {self.index} if self.index >= 0 else set()
         return self.current()
@@ -55,6 +63,7 @@ class PlayerQueue:
         self.items = []
         self.index = -1
         self.auto_extend = False
+        self.collection = None
         self._history.clear()
         self._cycle_played = set()
 
@@ -136,6 +145,7 @@ class PlayerQueue:
             "repeat": self.repeat,
             "shuffle": self.shuffle,
             "auto_extend": self.auto_extend,
+            "collection": self.collection,
             "current_id": cur.id if cur else None,
             "length": len(self.items),
         }
@@ -158,6 +168,8 @@ class PlayerQueue:
         q.repeat = d.get("repeat") if d.get("repeat") in REPEAT_MODES else "off"
         q.shuffle = bool(d.get("shuffle"))
         q.auto_extend = bool(d.get("auto_extend"))
+        coll = d.get("collection")
+        q.collection = coll if isinstance(coll, dict) and coll else None
         q._cycle_played = {q.index} if q.index >= 0 else set()
         return q
 

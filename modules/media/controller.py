@@ -198,6 +198,15 @@ class MediaController:
         p = self._provider_for(player_id)
         return bool(p is not None and p.self_advancing)
 
+    def shows_queue_as_one(self, player_id: str) -> bool:
+        """Whether this player labels a whole queue once rather than per item.
+
+        A zone streams its queue as a single endless session, so its endpoint
+        displays carry one title for the lot (docs/open-zone.md §10.7). Callers
+        ask before paying for anything only such a player can use."""
+        p = self._provider_for(player_id)
+        return bool(p is not None and p.labels_queue_once)
+
     async def refresh(self) -> List[PlayerState]:
         """Poll all providers and update the cache. Returns the flat snapshot."""
         results = await asyncio.gather(
@@ -364,13 +373,16 @@ class MediaController:
 
     # Queue (automation-ready)
     async def play_items(self, player_id: str, items: List[MediaItem],
-                         start: int = 0, auto_extend: bool = False) -> None:
+                         start: int = 0, auto_extend: bool = False,
+                         collection: Optional[dict] = None) -> None:
         """Replace the player's queue with `items` and start playing `start`.
-        `auto_extend` marks the queue as infinite radio (appends similar tracks)."""
+        `auto_extend` marks the queue as infinite radio (appends similar tracks).
+        `collection` names the set the items came from, for the players that
+        show one label for a whole queue (see `shows_queue_as_one`)."""
         if not items:
             return
         q = self._queue.get(player_id, create=True)
-        cur = q.load(items, start)
+        cur = q.load(items, start, collection)
         q.auto_extend = auto_extend
         self._advancing.discard(player_id)
         if not cur:
@@ -388,10 +400,10 @@ class MediaController:
         holds and the cursor we hold have to be the same one.
         """
         if q.shuffle:
-            q.load([qi.item for qi in q.shuffled_order()], 0)
+            q.load([qi.item for qi in q.shuffled_order()], 0, q.collection)
         await self._dispatch(player_id, "play_queue",
                              [qi.item for qi in q.items], q.index,
-                             q.repeat == "all")
+                             q.repeat == "all", q.collection)
 
     async def queue_add(self, player_id: str, items: List[MediaItem]) -> None:
         q = self._queue.get(player_id, create=True)

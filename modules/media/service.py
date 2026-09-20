@@ -369,6 +369,27 @@ class MediaService:
                  "owner": i.owner}
                 for i in items if i.source_id]
 
+    async def tidal_collection(self, kind: str, tidal_id: str,
+                               username: str = "") -> Optional[dict]:
+        """What the album/playlist/artist/mix is called, for players that show
+        one title for a whole queue. ``None`` when it cannot be named.
+
+        Best-effort by design: a zone whose screens fall back to the head
+        track is the behaviour that existed before, and is not worth failing
+        a play over."""
+        registry = self.controller.get_source("tidal")
+        if registry is None or (kind or "track") == "track":
+            return None
+        src = (registry.account(username) if username
+               else registry.default_account())
+        if src is None:
+            return None
+        try:
+            return (await src.container_summary(kind, tidal_id)) or None
+        except Exception as e:
+            logger.debug(f"Tidal {kind} summary unavailable: {e}")
+            return None
+
     async def play_tidal(self, player_id: str, kind: str, tidal_id: str,
                          mode: str = "play", username: str = "") -> dict:
         """Resolve a Tidal track/album/playlist/artist/mix to items and play them.
@@ -385,7 +406,15 @@ class MediaService:
             items = await self.tidal_items(kind, tidal_id, mode, username)
         except ValueError as e:
             return {"success": False, "error": str(e)}
-        await self.controller.play_items(player_id, items, auto_extend=radio)
+        # What the set is called, so a player that shows one title for the
+        # whole queue shows the album/playlist rather than its first track.
+        # Only fetched where something will use it — a per-track player
+        # re-labels its display on every load and needs nothing.
+        collection = None
+        if not radio and self.controller.shows_queue_as_one(player_id):
+            collection = await self.tidal_collection(kind, tidal_id, username)
+        await self.controller.play_items(player_id, items, auto_extend=radio,
+                                         collection=collection)
         return {"success": True, "count": len(items), "radio": radio}
 
     # OpenZone

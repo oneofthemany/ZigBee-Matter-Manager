@@ -428,6 +428,11 @@ class OpenZone:
         self._http_server = None                       # uvicorn.Server
         self._http_task: Optional[asyncio.Task] = None
         self._producer: Optional[asyncio.Task] = None
+        # Last now-playing pushed to the custom receivers, as (queue position,
+        # timeline origin). The origin is in the key because an item can repeat
+        # at the same position — a one-track loop is the same row starting
+        # again, and its screens should say so.
+        self._now_key: Optional[tuple] = None
         self._auto_stop: Optional[asyncio.Task] = None
         self._duration_s: int = 0                      # 0 = run until stopped
         self._launch_tasks: List[asyncio.Task] = []
@@ -950,6 +955,7 @@ class OpenZone:
 
         self._epoch = time.monotonic()
         self._buffer = []
+        self._now_key = None
         self._receivers = {}
         self._streams = {}
         self._pending = {}
@@ -1684,16 +1690,77 @@ class OpenZone:
             logger.debug(f"Sync connection watch unavailable for {uuid_str}: {e}")
 
     def _session_art(self) -> tuple:
-        """(artwork_url, title, artist) for what this zone is playing."""
+        """(artwork_url, title, artist) for the whole session.
+
+        The default receiver reads this once, off the load that starts each
+        device's stream, and there is no way to revise it while that stream
+        runs (docs/open-zone.md §10.7) — so this labels the *set*, and the
+        caller is expected to have named one. Falling back to the item the
+        queue opens on is a last resort, and says how many tracks follow it
+        rather than leaving a 40-track playlist looking like one song."""
         m = self._session_media or {}
         title = (m.get("title") or "").strip() or "ZMM OpenZone"
         art = (m.get("artwork_url") or "").strip()
         artist = (m.get("artist") or "").strip()
         if not art and self._queue:
-            art = (self._queue[0].get("artwork_url") or "").strip()
+            head = self._queue[self._queue_pos] if \
+                0 <= self._queue_pos < len(self._queue) else self._queue[0]
+            art = (head.get("artwork_url") or "").strip()
         if len(self._queue) > 1:
             artist = artist or f"{len(self._queue)} tracks"
         return art, title, artist
+
+    def _now_payload(self) -> dict:
+        """The item a custom receiver should be showing, and from when.
+
+        ``at`` is a server-clock instant, not a duration: the receiver already
+        estimates the server clock to schedule its audio, so a boundary sent
+        this way lands on its screen at the moment the seam reaches its
+        speakers — not when the decoder crossed it, which is one delay line and
+        one buffer earlier. Without an origin (the test signal, or before the
+        first item opens) it falls back to "now", which is the best a source
+        with no item boundaries can mean.
+        """
+        np_ = self.now_playing()
+        origin = None
+        try:
+            origin = self._source.item_origin_s()
+        except Exception:
+            pass
+        at = (self._epoch + LEAD_SECONDS + origin) if origin is not None \
+            else time.monotonic()
+        return {"type": "now", "at": at,
+                "title": np_.get("title", ""), "artist": np_.get("artist", ""),
+                "artwork": np_.get("artwork_url", ""),
+                "duration_ms": int(np_.get("duration_ms") or 0),
+                "index": int(np_.get("index") or 0),
+                "count": int(np_.get("count") or 0)}
+
+    async def _push_now(self, receiver: Optional[_Receiver] = None) -> None:
+        """Send the now-playing to one receiver, or to all of them."""
+        payload = self._now_payload()
+        targets = [receiver] if receiver is not None \
+            else list(self._receivers.values())
+        for r in targets:
+            try:
+                await r.ws.send_json(payload)
+            except Exception:
+                self._receivers.pop(r.sid, None)
+
+    async def _push_now_if_changed(self) -> None:
+        """Fan the now-playing out when the queue has moved on. Cheap enough to
+        ask every chunk: it is two attribute reads until something changes."""
+        if not self._receivers:
+            return
+        try:
+            origin = self._source.item_origin_s()
+        except Exception:
+            origin = None
+        key = (self._queue_pos, origin)
+        if key == self._now_key:
+            return
+        self._now_key = key
+        await self._push_now()
 
     def _play_stream(self, cast, url: str):
         cast.wait(timeout=10)
@@ -3128,6 +3195,9 @@ class OpenZone:
                         await r.ws.send_bytes(frame)
                     except Exception:
                         self._receivers.pop(r.sid, None)
+                # Cheapest place to notice a seam: this loop already wakes once
+                # per chunk, and the screens are the only thing waiting on it.
+                await self._push_now_if_changed()
                 i += 1
         except asyncio.CancelledError:
             pass
@@ -3184,6 +3254,10 @@ class OpenZone:
                             "chunk_s": CHUNK_SECONDS,
                             "trim_ms": self.trim_ms(info["player_id"]),
                         })
+                        # What to show, before any audio: a receiver that
+                        # joins mid-session must not sit blank until the next
+                        # seam, which on an album is three minutes away.
+                        await self._push_now(receiver)
                         now = time.monotonic()
                         for frame in list(self._buffer):
                             (play_at,) = struct.unpack(">d", frame[:8])

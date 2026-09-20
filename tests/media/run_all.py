@@ -26,7 +26,8 @@ PY_MODULES = ["test_tidal_accounts", "test_tidal_owner",
               "test_tidal_manifest_token", "test_tidal_automation",
               "test_sonos_player", "test_airplay_player",
               "test_zone_reload_probe", "test_zone_model_trim",
-              "test_zone_trim_graph", "test_zone_align"]
+              "test_zone_trim_graph", "test_zone_align",
+              "test_zone_now_playing"]
 
 
 def main() -> int:

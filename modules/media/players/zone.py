@@ -42,6 +42,9 @@ class ZonePlayerProvider(PlayerProvider):
     self_advancing = True
     #: volume is fanned out here, so the controller must not fan out again
     fans_out_volume = True
+    #: one session, one label: a zone's endpoint displays carry the metadata
+    #: that rode in on the load that started their stream (open-zone.md §10.7)
+    labels_queue_once = True
 
     def __init__(self, cast_sync, start_zone):
         self._sync = cast_sync
@@ -116,7 +119,8 @@ class ZonePlayerProvider(PlayerProvider):
         await self._start(player_id, self._media(item))
 
     async def play_queue(self, player_id: str, items: List[MediaItem],
-                         start: int = 0, loop: bool = False) -> None:
+                         start: int = 0, loop: bool = False,
+                         collection: Optional[dict] = None) -> None:
         """Hand the whole queue to the engine, which walks it at the seams."""
         rows = [_row(i) for i in items if i.source_id or i.url]
         if not rows:
@@ -124,10 +128,34 @@ class ZonePlayerProvider(PlayerProvider):
         head = items[start] if 0 <= start < len(items) else items[0]
         await self._start(player_id, {
             **self._media(head),
+            **self._label(head, rows, collection),
             "items": rows,
             "start_index": max(0, min(start, len(rows) - 1)),
             "loop": bool(loop),
         })
+
+    @staticmethod
+    def _label(head: MediaItem, rows: List[dict],
+               collection: Optional[dict]) -> dict:
+        """What the zone's screens say for the whole session.
+
+        The metadata rides in on the load that starts each device's stream and
+        cannot be revised while it runs (open-zone.md §10.7), so what goes here is
+        read for as long as the queue plays — which makes the head track the
+        one wrong answer: a 40-track playlist would sit under its first track's
+        name and cover to the end. Name the set where the caller could name it,
+        and where it could not, say how many tracks there are rather than
+        implying there is one.
+        """
+        coll = collection or {}
+        if coll.get("title"):
+            return {"title": coll["title"],
+                    "artist": coll.get("artist") or f"{len(rows)} tracks",
+                    "artwork_url": coll.get("artwork_url") or head.artwork_url or ""}
+        if len(rows) > 1:
+            return {"title": head.title or "", "artist": f"{len(rows)} tracks",
+                    "artwork_url": head.artwork_url or ""}
+        return {}
 
     @staticmethod
     def _media(item: MediaItem) -> dict:
