@@ -67,7 +67,9 @@ class SonosPlayerProvider(PlayerProvider):
         self._discovery = discovery
         self._rediscover_seconds = rediscover_seconds
         self._zones: Dict[str, "soco.SoCo"] = {}      # uid -> SoCo
-        self._last_discovery = 0.0
+        # None, not 0.0: monotonic() is time since boot, so on a freshly
+        # booted host 0.0 would read as a recent sweep.
+        self._last_discovery: Optional[float] = None
         self._discover_lock = asyncio.Lock()
         self._discover_task: Optional[asyncio.Task] = None
 
@@ -84,7 +86,8 @@ class SonosPlayerProvider(PlayerProvider):
         """Start a background sweep when the last one is stale. Never awaited
         by the poll: an unreachable manual IP holds a sweep for its full
         connect timeout, which would stall every player's state refresh."""
-        if time.monotonic() - self._last_discovery < self._rediscover_seconds:
+        if (self._last_discovery is not None
+                and time.monotonic() - self._last_discovery < self._rediscover_seconds):
             return
         if self._discover_task is not None and not self._discover_task.done():
             return
