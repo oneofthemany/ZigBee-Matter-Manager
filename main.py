@@ -1083,7 +1083,18 @@ network_resolver = NetworkResolver(
 set_network_resolver(network_resolver)
 logger.info(f"Network policy: {network_resolver.describe()}")
 
-auth_mw = AuthMiddleware(app, auth_manager, enforce=True)
+# Soft mode logs the scope each request would need instead of refusing it,
+# so a deployment can find routes the UI calls that modules/auth_scopes.py
+# does not map before those become 403s. Enforcing is the default; turn it
+# off only for the length of that migration.
+_enforce_scopes = bool(get_conf('auth', 'enforce_scopes', True))
+if not _enforce_scopes:
+    logger.warning(
+        "[auth] scope enforcement is OFF (auth.enforce_scopes: false) — "
+        "requests are logged, not refused. Re-enable once the "
+        "'[auth-soft] would be denied' lines stop."
+    )
+auth_mw = AuthMiddleware(app, auth_manager, enforce_scopes=_enforce_scopes)
 app.add_middleware(BaseHTTPMiddleware, dispatch=auth_mw.dispatch)
 
 register_auth_routes(

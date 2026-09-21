@@ -24,10 +24,40 @@ if str(REPO) not in sys.path:
 #: Matches `@app.get("/api/...")` and the router spelling, across the line
 #: break that black leaves when a decorator carries dependencies.
 _DECORATOR = re.compile(
-    r'@(?:app|router)\.(get|post|put|delete|patch|websocket)\(\s*'
+    r'@(?P<obj>app|router)\.(?P<method>get|post|put|delete|patch|websocket)\(\s*'
     r'(?:[rf]?["\'])(?P<path>[^"\']*)',
     re.S,
 )
+
+#: `router = APIRouter(prefix="/api/ai")` — paths on that router are relative,
+#: so the prefix has to be put back or the route looks like "/chat" and gets
+#: dropped as non-API. modules/{ai,telemetry,dongle_jedi}_api.py and
+#: modules/safe_deploy.py all do this.
+_ROUTER_PREFIX = re.compile(r'APIRouter\(\s*prefix\s*=\s*["\'](?P<prefix>[^"\']*)')
+
+#: Any "/api/..." string literal in the frontend, however it is called —
+#: fetch, apiFetch, a bare constant. Template placeholders become "X".
+_FRONTEND_CALL = re.compile(r"""['"`](/api/[A-Za-z0-9_\-/{}$.]*)""")
+
+
+def frontend_api_paths() -> "dict[str, set]":
+    """Every /api/ path the shipped UI references, mapped to the files using it.
+
+    The route table can be complete and still wrong if the SPA calls a path no
+    route declares, or one the scope table does not map — this is the check
+    that catches a tab going 403 after deny-by-default lands.
+    """
+    found: dict = {}
+    roots = [Path(REPO / "static")]
+    for root in roots:
+        for f in list(root.rglob("*.js")) + list(root.rglob("*.html")):
+            if "vendor" in str(f) or "node_modules" in str(f):
+                continue
+            for m in _FRONTEND_CALL.finditer(f.read_text(errors="ignore")):
+                path = re.sub(r"\$\{[^}]*\}", "X", m.group(1)).rstrip("/?")
+                if path.startswith("/api/"):
+                    found.setdefault(path, set()).add(f.name)
+    return found
 
 
 def registered_routes() -> List[Tuple[str, str, str]]:
@@ -39,10 +69,26 @@ def registered_routes() -> List[Tuple[str, str, str]]:
     it finds so a change in registration style cannot silently shrink it.
     """
     out: List[Tuple[str, str, str]] = []
-    files = sorted((REPO / "routes").glob("*.py")) + [REPO / "main.py"]
+    # routes/ is the FastAPI surface by convention, but the *_api.py modules
+    # under modules/ register ~100 more directly on `app` (ai, automations,
+    # swarm, telemetry, zones, safe_deploy, cast_sync). Scanning only routes/
+    # is how those were missed once already — glob the engine too.
+    files = sorted(REPO.glob("modules/**/*.py"))
+    files += sorted((REPO / "routes").glob("*.py"))
+    files += sorted((REPO / "core").glob("*.py"))
+    files += sorted((REPO / "handlers").glob("*.py"))
+    files.append(REPO / "main.py")
     for f in files:
-        for m in _DECORATOR.finditer(f.read_text()):
-            out.append((m.group(1).upper(), m.group("path"), f.name))
+        if "__pycache__" in str(f):
+            continue
+        text = f.read_text()
+        pm = _ROUTER_PREFIX.search(text)
+        prefix = pm.group("prefix") if pm else ""
+        for m in _DECORATOR.finditer(text):
+            path = m.group("path")
+            if m.group("obj") == "router" and prefix:
+                path = prefix + path
+            out.append((m.group("method").upper(), path, f.name))
     return out
 
 

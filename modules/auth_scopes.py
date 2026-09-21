@@ -86,9 +86,29 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/groups",            {"GET": "group:read", "*": "group:write"}),
     ("/api/matter",            {"GET": "matter:read", "*": "matter:write"}),
 
-    # Automation.
+    # Automation. These live in modules/*_api.py rather than routes/, which is
+    # how they were missed on the first pass — see tests/auth/harness.py.
     ("/api/workers",           {"GET": "automation:read", "*": "automation:write"}),
     ("/api/rotary-bindings",   {"GET": "automation:read", "*": "automation:write"}),
+    ("/api/automations",       {"GET": "automation:read", "*": "automation:write"}),
+    ("/api/swarm",             {"GET": "automation:read", "*": "automation:write"}),
+
+    # The AI assistant writes automations, so it sits with them — but the
+    # provider endpoints install software on the host and configure a model
+    # backend, which is admin work whatever the assistant is used for.
+    ("/api/ai",                {"GET": "automation:read", "*": "automation:write"}),
+    ("/api/ai/config",         {"GET": "system:read", "*": "admin"}),
+    ("/api/ai/host",           {"GET": "system:read", "*": "admin"}),
+    ("/api/ai/ollama",         {"GET": "system:read", "*": "admin"}),
+    ("/api/ai/sglang",         {"GET": "system:read", "*": "admin"}),
+
+    # Telemetry reads are the whole point of system:read; /db/prune destroys
+    # history and is not something a read-only account should reach.
+    ("/api/telemetry",         {"GET": "system:read", "*": "system:write"}),
+    ("/api/telemetry/db",      {"GET": "system:read", "*": "admin"}),
+
+    # Zigbee zone calibration — router aggressiveness, keyed by ieee.
+    ("/api/zones",             {"GET": "device:read", "*": "device:write"}),
 
     # Climate.
     ("/api/heating",           {"GET": "heating:read", "*": "heating:write"}),

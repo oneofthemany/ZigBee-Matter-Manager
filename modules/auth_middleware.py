@@ -198,10 +198,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
     UNLESS auth is in 'soft mode' (legacy compatibility).
     """
 
-    def __init__(self, app, auth_manager: AuthManager, enforce: bool = True):
+    def __init__(self, app, auth_manager: AuthManager, enforce: bool = True,
+                 enforce_scopes: bool = True):
         super().__init__(app)
         self.auth = auth_manager
+        #: Authentication. False is the legacy migration mode and lets
+        #: anonymous requests straight through — it is not a scope switch.
         self.enforce = enforce
+        #: Authorisation. False still authenticates (401 for anonymous) but
+        #: logs scope denials instead of returning 403, so a deployment can
+        #: find unmapped routes without opening the app.
+        self.enforce_scopes = enforce_scopes
         self._secret_path = str(auth_manager.config_path)
         self._cached_secret: Optional[bytes] = None
         self._cached_secret_ino: Optional[int] = None
@@ -258,19 +265,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not self.enforce:
-            # Soft mode for migration. Log but don't block — including the
-            # scope that enforcing mode would demand, so a deployment can see
-            # what would break before the switch is thrown.
+            # Legacy soft mode: no authentication at all. Still name the scope
+            # the request would need, so the logs are useful either way.
             if not principal:
                 logger.warning(f"[auth-soft] anonymous request to {path}")
             else:
-                required = scope_for_path(path, request.method)
-                if (required is not None and required != AUTHENTICATED
-                        and not scope_matches(required, principal.scopes)):
-                    logger.warning(
-                        f"[auth-soft] {principal.user.username} would be "
-                        f"denied {request.method} {path}: needs {required}"
-                    )
+                self._denied_scope(request, path, principal)
             return await call_next(request)
 
         if not principal:
@@ -297,21 +297,36 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # route is closed rather than open. Route-level require_scope
         # dependencies still run and handle the finer cases the table cannot
         # express (presence:write:<id>, admin-only subpaths).
-        required = scope_for_path(path, request.method)
-        if required is not None and required != AUTHENTICATED:
-            if not scope_matches(required, principal.scopes):
-                logger.warning(
-                    f"[auth] {principal.user.username} denied "
-                    f"{request.method} {path}: needs {required}"
-                )
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "detail": f"Insufficient scope: {required} required",
-                        "required_scope": required,
-                    },
-                )
+        required = self._denied_scope(request, path, principal)
+        if required is not None and self.enforce_scopes:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": f"Insufficient scope: {required} required",
+                    "required_scope": required,
+                },
+            )
         return await call_next(request)
+
+    def _denied_scope(self, request: Request, path: str,
+                      principal: "Principal") -> Optional[str]:
+        """The scope this request lacks, or None if it is allowed.
+
+        Logs the refusal, so soft mode produces the same record as enforcing
+        mode and a migration can be read straight out of the log.
+        """
+        required = scope_for_path(path, request.method)
+        if required is None or required == AUTHENTICATED:
+            return None
+        if scope_matches(required, principal.scopes):
+            return None
+        verb = "denied" if self.enforce_scopes else "would be denied"
+        logger.warning(
+            f"[auth{'' if self.enforce_scopes else '-soft'}] "
+            f"{principal.user.username} {verb} "
+            f"{request.method} {path}: needs {required}"
+        )
+        return required
 
     def _client_network(self, request: Request) -> Tuple[str, bool]:
         """Resolve (real client IP, is_lan). If the resolver isn't wired

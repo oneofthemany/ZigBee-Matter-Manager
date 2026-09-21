@@ -9,7 +9,7 @@ decision to make, not as a hole.
 
 from __future__ import annotations
 
-from harness import Checker, registered_routes
+from harness import Checker, frontend_api_paths, registered_routes
 
 from modules.auth import KNOWN_SCOPES, DEFAULT_GROUPS, scope_matches
 from modules.auth_scopes import (
@@ -29,10 +29,18 @@ def run() -> Checker:
     routes = registered_routes()
 
     c.section("route table is intact")
+    # Pinned so a change in registration style cannot silently shrink the set
+    # the rest of this file checks. The first version of this scan looked only
+    # in routes/ and missed the 100 routes the modules/*_api.py files register,
+    # which is exactly the failure these floors exist to catch.
     c.check("source scan finds the whole route surface",
-            len(routes) >= 490, len(routes))
+            len(routes) >= 590, len(routes))
     api = [(m, p, f) for m, p, f in routes if p.startswith("/api/")]
-    c.check("the API surface is the bulk of it", len(api) >= 480, len(api))
+    c.check("the API surface is the bulk of it", len(api) >= 578, len(api))
+    c.check("the modules/*_api.py routers are included",
+            {"ai_api.py", "automation_api.py", "telemetry_api.py",
+             "zones_api.py"} <= {f for _, _, f in api},
+            sorted({f for _, _, f in api})[:8])
 
     c.section("every /api/ route resolves to a scope")
     unmapped = []
@@ -113,6 +121,18 @@ def run() -> Checker:
                  "/api/messages/threads", "/api/push/subscribe"]:
         c.check(f"{path} needs only a principal",
                 scope_for_path(path, "POST") == AUTHENTICATED)
+
+    c.section("the UI only calls paths the table maps")
+    fe = frontend_api_paths()
+    c.check("the frontend scan found the real call sites",
+            len(fe) >= 350, len(fe))
+    fe_unmapped = sorted(
+        p for p in fe
+        if not any(p == pre or p.startswith(pre + "/") for pre, _ in PATH_SCOPES)
+    )
+    c.check("no UI call falls through to the unmapped default",
+            not fe_unmapped,
+            [f"{p} <- {sorted(fe[p])[:2]}" for p in fe_unmapped[:10]])
 
     c.section("the shipped groups can still use the app")
     for group in ("users", "viewers"):
