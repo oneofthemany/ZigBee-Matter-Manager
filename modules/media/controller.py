@@ -266,6 +266,14 @@ class MediaController:
         cur = q.current()
         if cur and s.state in _ACTIVE + (PlaybackState.PAUSED,):
             it = cur.item
+            # A device reporting its own art under a different title is playing
+            # something started elsewhere (a zone, the Home app); the queue's
+            # item would paint stale art over it. Art is required too: WiiM
+            # reports none and tag titles that drift, so there the queue is
+            # the only picture available.
+            if s.artwork_url and s.title and it.title and \
+                    s.title.strip().casefold() != it.title.strip().casefold():
+                return
             if it.title:
                 s.title = it.title
             if it.artist:
