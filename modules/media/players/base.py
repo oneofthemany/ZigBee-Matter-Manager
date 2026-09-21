@@ -18,6 +18,8 @@ from modules.media.models import PlayerState, MediaItem
 class PlayerProvider(ABC):
     #: short, stable provider key — must match the player_id prefix
     provider: str = "base"
+    #: how this ecosystem is named to a listener
+    label: str = ""
     #: the provider walks its own queue (OpenZone's shared timeline). The
     #: controller then hands it whole queues, follows its index instead of
     #: auto-advancing, and navigates with skip_to. See docs/open-zone.md §4.1b.
@@ -25,6 +27,14 @@ class PlayerProvider(ABC):
     #: volume is fanned out to members by the provider, so the controller
     #: must not fan out over group_members as well.
     fans_out_volume: bool = False
+    #: OpenZone can drive this provider's devices: it can point one at a URL it
+    #: serves *and* read a playback position back off it. Both halves are
+    #: required — a device that plays but cannot be measured is an open loop,
+    #: and a zone is a closed one (docs/open-zone.md §6.1).
+    zone_transport: bool = False
+    #: Implements join_group/ungroup: this ecosystem's own firmware syncs the
+    #: members, so a group here needs no timing help from us.
+    groups_natively: bool = False
     #: the whole queue is labelled once rather than per item — a zone streams
     #: it as one endless session, so its endpoint displays carry one title for
     #: the lot (docs/open-zone.md §10.7). Callers that can name the *set* a queue
@@ -45,6 +55,18 @@ class PlayerProvider(ABC):
     @abstractmethod
     async def get_state(self, player_id: str) -> Optional[PlayerState]:
         """Refresh and return a single player's state, or None if unknown."""
+
+    def device_key(self, player_id: str) -> str:
+        """A stable identity for the physical box, or "".
+
+        One speaker can be reachable through two ecosystems at once — a WiiM
+        Ultra answers Cast discovery *and* LinkPlay — and then arrives as two
+        players with two ids, two model keys and two sets of learned timing
+        that know nothing about each other. This is what says they are one
+        device. The address is the identity both sides can agree on, since
+        neither vendor's id means anything to the other.
+        """
+        return ""
 
     def model_key(self, player_id: str) -> str:
         """Stable identity for "devices that behave like this one", or "".

@@ -57,6 +57,8 @@ def _hms_to_ms(value: str) -> int:
 
 class SonosPlayerProvider(PlayerProvider):
     provider = "sonos"
+    label = "Sonos"
+    groups_natively = True
 
     def __init__(self, device_ips: Optional[List[str]] = None,
                  discovery: bool = True,

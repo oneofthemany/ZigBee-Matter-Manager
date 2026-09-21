@@ -573,15 +573,57 @@ class OpenZone:
         self._provider_resolver = resolver
 
     def _provider_for(self, player_id: str) -> object:
+        """The provider that owns this id, or None.
+
+        A resolver that answers None is saying no ecosystem here claims the
+        id, which is not the same as having no resolver: falling back to Cast
+        on that would hand an unknown prefix Cast's capabilities, and a zone
+        would admit a device nothing can drive or measure.
+        """
         resolve = self._provider_resolver
-        if resolve is not None:
-            try:
-                prov = resolve(player_id)
-                if prov is not None:
-                    return prov
-            except Exception:
-                pass
-        return getattr(self, "cast", None)
+        if resolve is None:
+            return getattr(self, "cast", None)
+        try:
+            return resolve(player_id)
+        except Exception:
+            return None
+
+    def _zone_capable(self, player_id: str) -> bool:
+        """Whether a zone can drive this device at all.
+
+        A member has to be one the engine can both serve and measure, which is
+        a property of its ecosystem rather than of the id. Asking the provider
+        keeps the answer in one place as more of them learn to carry a
+        timeline; a prefix test here would have to be edited to match and
+        silently drops whatever it has not heard of.
+        """
+        prov = self._provider_for(player_id)
+        return bool(getattr(prov, "zone_transport", False))
+
+    def _device_key(self, player_id: str) -> str:
+        try:
+            get = getattr(self._provider_for(player_id), "device_key", None)
+            return get(player_id) if callable(get) else ""
+        except Exception:
+            return ""
+
+    def _sibling_trim(self, player_id: str) -> Optional[int]:
+        """An explicit trim set on the same physical box under another
+        ecosystem's id.
+
+        One speaker can answer two providers at once, and then the trim a
+        listener set on it through one is invisible to the other — the same
+        hardware, aligned twice, learned twice, and disagreeing with itself.
+        The output pipeline it describes belongs to the box, not to the
+        protocol the box was reached through.
+        """
+        key = self._device_key(player_id)
+        if not key:
+            return None
+        for pid, trim in self._trims.items():
+            if pid != player_id and self._device_key(pid) == key:
+                return int(trim)
+        return None
 
     def _model_key(self, player_id: str) -> str:
         try:
@@ -660,6 +702,9 @@ class OpenZone:
         """
         if player_id in self._trims:
             return int(self._trims[player_id])
+        sibling = self._sibling_trim(player_id)
+        if sibling is not None:
+            return sibling
         key = self._model_key(player_id)
         if not key:
             return 0
@@ -1669,11 +1714,12 @@ class OpenZone:
     def save_group(self, name: str, members: List[str],
                    group_id: str = "") -> dict:
         name = (name or "").strip()
-        members = [m for m in (members or []) if m.startswith("cast:")]
+        members = [m for m in (members or []) if self._zone_capable(m)]
         if not name:
             return {"success": False, "error": "Group needs a name"}
         if len(members) < 2:
-            return {"success": False, "error": "Pick at least two cast speakers"}
+            return {"success": False,
+                    "error": "Pick at least two speakers a zone can drive"}
         gid = group_id or uuid_mod.uuid4().hex[:8]
         if group_id and group_id not in self._groups:
             return {"success": False, "error": "Unknown sync group"}

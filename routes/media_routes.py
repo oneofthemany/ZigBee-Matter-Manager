@@ -186,7 +186,15 @@ def register_media_routes(app: FastAPI, get_media_service):
         players = svc.controller.snapshot()
         if not players:
             players = await svc.controller.refresh()
-        return {"success": True, "players": [p.to_dict() for p in players]}
+        # What each ecosystem can do, so the UI offers grouping where it exists
+        # instead of carrying its own copy of the list.
+        providers = {
+            key: {"label": getattr(p, "label", key.title()),
+                  "zone_transport": bool(getattr(p, "zone_transport", False)),
+                  "groups_natively": bool(getattr(p, "groups_natively", False))}
+            for key, p in (svc.controller._players or {}).items()}
+        return {"success": True, "providers": providers,
+                "players": [p.to_dict() for p in players]}
 
     @app.get("/api/media/position")
     async def media_position(player_id: str = None):

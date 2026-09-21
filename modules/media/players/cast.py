@@ -51,6 +51,10 @@ def _addr(info) -> str:
 
 class CastPlayerProvider(PlayerProvider):
     provider = "cast"
+    label = "Cast"
+    #: the default receiver plays a URL we serve, and reports a media
+    #: time we can correct against (docs/open-zone.md §6.1).
+    zone_transport = True
 
     def __init__(self, app_id: str = "CC1AD845", lyrics_app_id: str = "",
                  lyrics_getter=None, karaoke: bool = True):
@@ -116,6 +120,15 @@ class CastPlayerProvider(PlayerProvider):
 
     async def stop(self) -> None:
         await asyncio.to_thread(self._stop_browser)
+
+    def device_key(self, player_id: str) -> str:
+        """The address this device is answering on. Not a group's: a group is
+        hosted by an elected member, so its address is that member's and would
+        make the two look like one box."""
+        info = self._infos.get(player_id.split(":", 1)[-1])
+        if info is None or getattr(info, "is_group", False):
+            return ""
+        return (getattr(info, "host", "") or "").strip()
 
     def model_key(self, player_id: str) -> str:
         """A stable identity for "devices that behave like this one".

@@ -45,6 +45,9 @@ def _pid(ip: str) -> str:
 
 class WiiMPlayerProvider(PlayerProvider):
     provider = "wiim"
+    label = "WiiM"
+    #: LinkPlay multiroom — the master syncs its slaves in firmware.
+    groups_natively = True
 
     def __init__(self, device_ips: List[str], enabled: bool = True):
         self.enabled = enabled
@@ -111,6 +114,11 @@ class WiiMPlayerProvider(PlayerProvider):
                     state=PlaybackState.UNKNOWN,
                 ))
         return out
+
+    def device_key(self, player_id: str) -> str:
+        """The IP, which is already this provider's whole notion of a device
+        and is what a Cast discovery of the same box reports as its host."""
+        return player_id.split(":", 1)[-1].strip()
 
     def model_key(self, player_id: str) -> str:
         """LinkPlay's ``project`` — the firmware's own name for the hardware

@@ -243,6 +243,7 @@ async function loadPlayers() {
         if (pane) pane.innerHTML = `<div class="alert alert-warning mb-0">${esc(data.error || 'Media service unavailable')}</div>`;
         return;
     }
+    _readProviderCaps(data);
     _remote = data.players || [];
     _rebuild();
     autoSelect();
@@ -1987,9 +1988,18 @@ function _renderGroupProviderPills(ids) {
       </ul>`;
 }
 
-// Ecosystems whose speakers group natively (the provider implements
-// join_group / ungroup); each gets a tab in the group builder.
-const NATIVE_GROUP_PROVIDERS = { wiim: 'WiiM', sonos: 'Sonos' };
+// Which ecosystems can group natively, as the server reports them. Kept as a
+// lookup of the same shape the hardcoded list had, so callers are unchanged;
+// empty until the first players fetch lands.
+let NATIVE_GROUP_PROVIDERS = {};
+
+function _readProviderCaps(data) {
+    const caps = data?.providers || {};
+    NATIVE_GROUP_PROVIDERS = Object.fromEntries(
+        Object.entries(caps)
+            .filter(([, c]) => c.groups_natively)
+            .map(([id, c]) => [id, c.label || id]));
+}
 
 function renderNativeBuilder(provider) {
     const el = document.getElementById('mediaGroupPane');
