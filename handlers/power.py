@@ -9,6 +9,11 @@ from .base import ClusterHandler, register_handler
 
 logger = logging.getLogger("handlers.power")
 
+#: Meter active power only, from the device's own reports after bind. Z2M
+#: binds these without configuring reporting (aurora_lighting.ts), and they
+#: measure neither voltage nor current.
+POWER_ONLY_BIND_ONLY_MODELS = frozenset({"DoubleSocket50AU"})
+
 # ELECTRICAL MEASUREMENT CLUSTER (0x0B04)
 @register_handler(0x0B04)
 class ElectricalMeasurementHandler(ClusterHandler):
@@ -34,8 +39,17 @@ class ElectricalMeasurementHandler(ClusterHandler):
         self._current_multiplier = 1
         self._current_divisor    = 1000
 
+    def _power_only(self) -> bool:
+        # Read per call: the model may not be known when the handler attaches.
+        model = getattr(self.device, "model", None) or \
+            getattr(getattr(self.device, "zigpy_dev", None), "model", None)
+        return str(model or "") in POWER_ONLY_BIND_ONLY_MODELS
+
     def attribute_updated(self, attrid: int, value: Any, timestamp=None):
         if value is None:
+            return
+        if self._power_only() and attrid in (self.ATTR_RMS_VOLTAGE,
+                                             self.ATTR_RMS_CURRENT):
             return
         ep_id = self.endpoint.endpoint_id
         updates = {}
@@ -72,6 +86,13 @@ class ElectricalMeasurementHandler(ClusterHandler):
         return value
 
     async def configure(self):
+        if self._power_only():
+            # Instance attribute shadows the class list: bind, write nothing.
+            self.REPORT_CONFIG = []
+            await super().configure()
+            logger.info(f"[{self.device.ieee}] {self.device.model}: bound 0x0B04 "
+                        f"without reporting config (power-only model)")
+            return
         await super().configure()
         try:
             result = await self.cluster.read_attributes([
@@ -99,6 +120,8 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
     def get_pollable_attributes(self) -> Dict[int, str]:
         ep = self.endpoint.endpoint_id
+        if self._power_only():
+            return {self.ATTR_ACTIVE_POWER: f"power_{ep}"}
         return {
             self.ATTR_ACTIVE_POWER: f"power_{ep}",
             self.ATTR_RMS_VOLTAGE:  f"voltage_{ep}",
@@ -107,11 +130,12 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id
-        return [
+        configs = [
             {"component": "sensor", "object_id": f"power_{ep}",   "config": {"name": f"Power {ep}",   "device_class": "power",   "unit_of_measurement": "W",  "value_template": f"{{{{ value_json.power_{ep} }}}}"}},
             {"component": "sensor", "object_id": f"voltage_{ep}", "config": {"name": f"Voltage {ep}", "device_class": "voltage", "unit_of_measurement": "V",  "value_template": f"{{{{ value_json.voltage_{ep} }}}}"}},
             {"component": "sensor", "object_id": f"current_{ep}", "config": {"name": f"Current {ep}", "device_class": "current", "unit_of_measurement": "A",  "value_template": f"{{{{ value_json.current_{ep} }}}}"}}
         ]
+        return configs[:1] if self._power_only() else configs
 
 # METERING CLUSTER (0x0702)
 @register_handler(0x0702)
