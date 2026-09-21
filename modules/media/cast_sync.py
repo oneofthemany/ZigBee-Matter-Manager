@@ -127,6 +127,23 @@ PREROLL_SETTLE_S = 0.100     # spread that reads as "the buffer has stopped
                              # of the answer, which the median supplies
 PREROLL_QUORUM_S = 8.0       # after this, start on the devices that answered
 PREROLL_MAX_S = 20.0         # never hold content longer than this
+# A probe reading this many times the device's learned pipeline describes how
+# slowly it started, not what it is (open-zone.md §7.3). The two are the same
+# arithmetic — a constant difference that settles — so only the model tells
+# them apart. Loose enough to pass a genuinely deep pipeline re-measuring
+# itself: the widest real session-to-session spread observed is under 3x.
+PROBE_MODEL_FACTOR = 3.0
+# ...and only once the reading is large in absolute terms. Below this a bad
+# probe cannot drag the group far enough to be worth second-guessing.
+PROBE_MODEL_MIN_S = 1.0
+# How far the learned floor may rise in one session. A slow start only ever
+# *adds* to a probe, so the pipeline is the floor of what a device has been
+# seen to do, not the average of it — an average of a one-sidedly contaminated
+# reading sits between the two answers and recognises neither. The leak keeps
+# a floor from pinning a device forever to one lucky session.
+PROBE_FLOOR_LEAK = 1.05
+PROBE_FLOOR_LEAK_S = 0.010
+
 # Cap on the lead a reload opens to re-measure one device (open-zone.md §7.5).
 # The wait is that speaker playing silence; past it the model is the answer.
 STREAM_PROBE_MAX_S = 15.0
@@ -872,6 +889,99 @@ class OpenZone:
             return play_now
         return min(play_now,
                    _latest() - _rs.READ_MARGIN - RATE * STREAM_HEAD_GUARD_S)
+
+    def _target_lag_cap(self) -> float:
+        """Deepest target the delay line can actually seat a reader against.
+
+        A device is seated ``target - latency`` behind the write head, so the
+        fastest one in the zone binds; bounding on the ring's own span without
+        crediting any latency is the conservative form of that.
+        """
+        return max(self._source.delay_s,
+                   self._ring_capacity_s - STREAM_AHEAD_S
+                   - _src.XFADE_READER_MARGIN_S)
+
+    def _bounded_target(self, lags: Dict[str, float]) -> float:
+        """The group's target lag, refusing one unserveable reading the power
+        to set it (open-zone.md §7.3).
+
+        ``max(lag) + margin`` is the target every other device is then
+        pre-compensated onto, and nothing in the loop questions it: a single
+        device reporting a lag the ring could never hold takes the whole zone
+        with it, for the life of the session. Past the cap the reading is not
+        describing a device this zone can serve, so the target is held at what
+        the delay line can do and the outliers are left to the ladder, which
+        already knows how to reload and finally park what it cannot reach.
+        """
+        target = max(lags.values()) + STREAM_LAG_MARGIN_S
+        cap = self._target_lag_cap()
+        if target <= cap:
+            return target
+        over = ", ".join(
+            f"{self._stream_name(sid)} {lag:.1f}s"
+            for sid, lag in sorted(lags.items(), key=lambda kv: -kv[1])
+            if lag + STREAM_LAG_MARGIN_S > cap)
+        logger.warning(
+            f"Sync stream target lag held at {cap:.2f}s — {over} asked for "
+            f"{target:.2f}s, which a {self._ring_capacity_s:.0f}s delay line "
+            f"cannot seat against; leaving those to the correction ladder")
+        return cap
+
+    def _stream_name(self, sid: str) -> str:
+        st = self._streams.get(sid)
+        return st.name if st is not None else sid
+
+    def _sane_probe(self, st: _Stream, measured: float) -> Tuple[float, bool]:
+        """One probe reading, or the learned one when this start was slow.
+
+        ``latency = (now - opened_at) - reported media time`` cannot separate a
+        deep pipeline from a device that took seconds to *begin* playing: both
+        show a constant difference, so both settle and both look like an
+        answer. Only the model tells them apart — a pipeline is a property of
+        the hardware and barely moves between sessions.
+
+        Returns ``(latency, trusted)``; an untrusted reading must not be fed
+        back into the model, or a few slow starts pull it up to meet them.
+        """
+        m = self._model.get(st.player_id, {})
+        learned = m.get("probe_floor_s", m.get("probe_s"))
+        if (learned is None or measured <= PROBE_MODEL_MIN_S
+                or measured <= learned * PROBE_MODEL_FACTOR):
+            return measured, True
+        logger.warning(
+            f"OpenZone {st.name} probed {measured * 1000:.0f} ms against a "
+            f"learned {learned * 1000:.0f} ms — that is how slowly it started, "
+            f"not its pipeline; seating from the model and leaving it unlearned")
+        return learned, False
+
+    def _slew_cooldown_s(self, st: _Stream) -> float:
+        """How long a fast slew needs before its effect can be read back
+        (open-zone.md §7.1).
+
+        A slew is applied to the *stream*; it reaches the listener only once
+        the stream has been served and the device's own pipeline has played it
+        out. Re-deciding before then reads the very error the slew was issued
+        for — the correction is in flight, not yet in the sound — and issues
+        it again; the two together overshoot, the next poll reverses, and the
+        device hunts instead of converging.
+
+        Only the portion above the fast threshold is waited for. Below it the
+        remainder drains at the gentle rate by design, and the branch that
+        owns that case does not issue another fast slew.
+        """
+        fast = max(0.0, abs(st.slew_s) - STREAM_SLEW_FAST_THRESH_S)
+        drain = fast / (STREAM_SLEW_FAST_PPM / 1e6)
+        return min(STREAM_COOLDOWN_MAX_S,
+                   drain + st.latency_s + STREAM_POLL_S)
+
+    def _seat_fits(self, st: _Stream, precomp_s: float) -> bool:
+        """Whether a reader at this pre-compensation lands inside the delay
+        line, rather than being clamped to its edge (open-zone.md §A.2)."""
+        trim = int(st.trim_ms * RATE / 1000)
+        pos = (int((time.monotonic() - self._epoch - self._source.delay_s)
+                   * RATE) - trim - int(precomp_s * RATE))
+        return (self._source.earliest_sample() + _rs.READ_MARGIN
+                <= pos <= self._reader_ceiling(self._source))
 
     def _step_cooldown_s(self, lag: Optional[float] = None) -> float:
         """How long to ignore a device's polls after moving its reader
@@ -1854,7 +1964,7 @@ class OpenZone:
                     if (len(lags) < n_connected
                             and time.monotonic() < self._acquire_deadline):
                         continue     # wait until every connected device reports
-                    self._target_lag = max(lags.values()) + STREAM_LAG_MARGIN_S
+                    self._target_lag = self._bounded_target(lags)
                     logger.info(f"Sync stream target lag: {self._target_lag:.2f}s")
                 batch = []
                 for sid, lag in lags.items():
@@ -1996,6 +2106,13 @@ class OpenZone:
                         st.slew_s = max(-STREAM_SLEW_MAX_S,
                                         min(STREAM_SLEW_MAX_S, med3))
                         if fresh:
+                            # Nothing may re-decide until this has actually
+                            # reached the speaker, or the reading it was issued
+                            # for authorises it a second time (_slew_cooldown_s).
+                            st.cooldown_until = max(
+                                st.cooldown_until,
+                                time.monotonic() + self._slew_cooldown_s(st))
+                            st.err_hist = []
                             batch.append(self._sample_row(st, "slew", lag=lag,
                                                           error=error))
                             logger.info(f"Sync stream slew {st.name}: "
@@ -2188,6 +2305,27 @@ class OpenZone:
         old = m.get(key)
         m[key] = round(value if old is None else 0.7 * old + 0.3 * value, 4)
         m["sessions"] = m.get("sessions", 0) + (1 if key == "lag_s" else 0)
+        if key == "probe_s":
+            self._learn_probe_floor(m, value)
+
+    @staticmethod
+    def _learn_probe_floor(m: dict, measured: float) -> None:
+        """Track the floor of a device's probe readings (open-zone.md §7.3).
+
+        A probe reads startup delay and pipeline latency as one number, and
+        startup delay is one-sided: it can only make the reading larger, never
+        smaller, because nothing starts faster than its own pipeline. So the
+        pipeline is the smallest reading the device has been seen to give, and
+        the average — which is what ``probe_s`` is — sits between the two
+        populations describing neither. The floor is what a later reading is
+        judged against (``_sane_probe``); it relaxes upward a little each
+        session so a device whose firmware genuinely slowed down is not held
+        to one fast measurement forever.
+        """
+        floor = m.get("probe_floor_s")
+        m["probe_floor_s"] = round(
+            measured if floor is None
+            else min(measured, floor * PROBE_FLOOR_LEAK + PROBE_FLOOR_LEAK_S), 4)
 
     def _acquiring(self) -> bool:
         """True while any device's drift-fit baseline is still building
@@ -2453,6 +2591,15 @@ class OpenZone:
             st.interrupted_since = None
             st.interrupt_held = 0.0
         if lats:
+            # Vetted before anything is derived from them: the slowest reading
+            # sets every other device's pre-compensation, so one slow start
+            # admitted here is the whole zone's geometry (_sane_probe).
+            trusted = {}
+            for sid in list(lats):
+                st = self._streams.get(sid)
+                if st is None:
+                    continue
+                lats[sid], trusted[sid] = self._sane_probe(st, lats[sid])
             slowest = max(lats.values())
             for sid, lat in lats.items():
                 st = self._streams.get(sid)
@@ -2460,7 +2607,7 @@ class OpenZone:
                     continue
                 st.latency_s = lat
                 st.precomp_s = max(0.0, slowest - lat)
-                if not self._preroll_realign:
+                if not self._preroll_realign and trusted.get(sid, True):
                     # A re-align measures every receiver refilling at once,
                     # which is a re-acquisition figure rather than this
                     # device's natural startup latency (§A.4).
@@ -2566,8 +2713,29 @@ class OpenZone:
         comes last: the seat it then takes reads the pre-comp set here."""
         if not st.probing:
             return
+        if measured is not None:
+            # A reload's probe is the same arithmetic as the pre-roll's, so it
+            # mistakes a slow restart for a pipeline the same way. It is never
+            # learned here either way (§7.5); this only keeps a bad reading
+            # from choosing the seat.
+            measured, _ = self._sane_probe(st, measured)
         precomp = (self._precomp_for_target(measured)
                    if measured is not None else None)
+        if precomp is not None and not self._seat_fits(st, precomp):
+            # A joiner slower than the target allows asks to be served audio
+            # newer than the timeline holds. Seating it anyway clamps it to the
+            # edge, where it plays early and no move of the reader can bring it
+            # back — the one late-joiner failure the ladder cannot undo. Only
+            # re-deriving the target with this device in it converges.
+            logger.warning(
+                f"Sync stream {st.name} cannot be seated against the group's "
+                f"{self._target_lag:.2f}s target (needs {precomp * 1000:.0f} ms "
+                f"of pre-comp) — re-aligning the zone around it")
+            st.latency_s = measured
+            st.probing = False
+            self._escalate_shortfall(
+                st, f"{st.name} rejoined needing a target this zone has not set")
+            return
         if precomp is not None:
             st.latency_s = measured
             st.precomp_s = precomp
@@ -2739,7 +2907,8 @@ class OpenZone:
                 f"— rejoining against the group's existing target")
             # If it drops again between this probe and the LOAD, _launch_stream
             # parks it once more and the backoff simply resumes.
-            await self._reload_stream(st)
+            st.reloads_since_align = 0     # back from absent, not failing
+            await self._reload_stream(st, rejoin=True)
         finally:
             st.park_probing = False
 
@@ -2998,7 +3167,7 @@ class OpenZone:
         finally:
             self._realigning = False
 
-    async def _reload_stream(self, st: _Stream) -> None:
+    async def _reload_stream(self, st: _Stream, rejoin: bool = False) -> None:
         """Re-LOAD one receiver and re-seat its reader at the live edge.
 
         The escape hatch for a device the ladder cannot reach: an assistant
@@ -3010,7 +3179,12 @@ class OpenZone:
         if not self.running or self._streams.get(st.sid) is not st:
             return
         st.reloads += 1
-        st.reloads_since_align += 1
+        # The re-align budget counts reloads that failed to fix a device the
+        # ladder could not reach. A device that was absent has not failed at
+        # anything, and charging its return a strike leaves it one ordinary
+        # correction away from muting the whole zone.
+        if not rejoin:
+            st.reloads_since_align += 1
         st.last_reload = time.monotonic()
         # A fresh LOAD restarts the reported media time, so the silent lead
         # this device may have been seated against no longer exists — and the
