@@ -875,6 +875,23 @@ zoom is the scale of the `<g>`. SVG uses +x right, +y down; the model uses +y
 up, so y is flipped on both read and write. An image background's top-left in
 model space sits at `(origin_x_m, origin_y_m + height_m)`.
 
+**Calibrating a background image.** The Calibrate tool takes two clicks and the
+real distance between them, and rescales the image so the two agree. The image
+is re-anchored on the first click, which stays where it is.
+
+A plan traced over that image was drawn at the old scale, so on its own it would
+be left behind — still at its old size, no longer on the walls it traced. So
+where the level already has a drawing, the editor asks: **Scale the drawing** or
+**Only the image**. Scaling moves walls, rooms, openings (their position along
+the wall and their width), radiators, sensors and placed devices by the same
+factor about that first click, and with a single-level plan the map pin too.
+Typed measurements are left alone — a radiator's length and output, a window's
+height, a sensor's mounting height are the user's own figures, not the tracing's.
+*Only the image* is the right answer when the drawing's measurements are already
+correct and the image is the thing that is wrong. Either way the view zooms to
+fit afterwards, and nothing is written until Save. The geometry is
+`scaleLevelGeometry()`, covered by `tests/floor_plan/js/test_calibrate.js`.
+
 ### Two views of one plan
 
 `static/js/floor-plan.js` is one editor with one DOM (`#fpRoot`), mounted in one of

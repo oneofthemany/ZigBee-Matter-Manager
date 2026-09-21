@@ -11,6 +11,8 @@ test_routes needs FastAPI, so on the dev box run it from the lockfile venv
 from __future__ import annotations
 
 import importlib
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +21,21 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 MODULES = ["test_store", "test_model", "test_mesh", "test_radio", "test_routes", "test_scopes"]
+# The editor's own geometry maths, sliced out of the shipped .js and run.
+JS_TESTS = ["test_calibrate.js"]
+
+
+def run_node() -> tuple[list[str], list[str]]:
+    if not shutil.which("node"):
+        return [], ["the JS tests (node not installed)"]
+    failures = []
+    for name in JS_TESTS:
+        print(f"\n{'=' * 62}\n{name}\n{'=' * 62}")
+        result = subprocess.run(["node", str(HERE / "js" / name)], capture_output=True, text=True)
+        print(result.stdout.rstrip() or result.stderr.rstrip())
+        if result.returncode != 0:
+            failures.append(name)
+    return failures, []
 
 
 def main() -> int:
@@ -33,6 +50,10 @@ def main() -> int:
         checker = module.run()
         passed += checker.passed
         failures.extend(checker.failures)
+    js_failures, js_skipped = run_node()
+    failures.extend(js_failures)
+    skipped.extend(js_skipped)
+
     print(f"\n{'=' * 62}")
     print(f"{passed} passed, {len(failures)} failed")
     for s in skipped:

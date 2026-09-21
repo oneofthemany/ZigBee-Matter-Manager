@@ -4592,6 +4592,56 @@ async function removeBackgroundImage() {
     renderScene();
 }
 
+/**
+ * Scale everything drawn on a level by `s` about `about`, so a plan traced
+ * over a background image keeps lining up when the image is recalibrated.
+ *
+ * Only what was drawn moves. Typed physical sizes — a radiator's length, a
+ * window's height, the ceiling — are the user's measurements, not the
+ * tracing's, so they stay as they are.
+ */
+function scaleLevelGeometry(lvl, s, about, map) {
+    const pt = p => ({ x: about.x + (p.x - about.x) * s, y: about.y + (p.y - about.y) * s });
+    for (const w of lvl.walls || []) {
+        const a = pt({ x: w.x1, y: w.y1 }), b = pt({ x: w.x2, y: w.y2 });
+        w.x1 = round3(a.x); w.y1 = round3(a.y); w.x2 = round3(b.x); w.y2 = round3(b.y);
+    }
+    for (const r of lvl.rooms || []) {
+        r.polygon = (r.polygon || []).map(([x, y]) => {
+            const q = pt({ x, y });
+            return [round3(q.x), round3(q.y)];
+        });
+    }
+    for (const o of lvl.openings || []) {
+        o.offset_m = round3((o.offset_m || 0) * s);
+        o.width_m = round3((o.width_m || 0) * s);
+    }
+    for (const r of lvl.radiators || []) {
+        if (r.x != null && r.y != null) { const q = pt(r); r.x = round3(q.x); r.y = round3(q.y); }
+        if (r.offset_m != null) r.offset_m = round3(r.offset_m * s);
+    }
+    for (const list of [lvl.sensors || [], lvl.devices || []]) {
+        for (const d of list) {
+            if (d.x == null || d.y == null) continue;
+            const q = pt(d);
+            d.x = round3(q.x); d.y = round3(q.y);
+        }
+    }
+    // The map pin is a point in the same plan coordinates. With one level
+    // those are the coordinates being rescaled; with more, the other levels
+    // keep theirs, so moving the shared pin would be a guess.
+    if (map && map.anchor_x_m != null) {
+        const q = pt({ x: map.anchor_x_m, y: map.anchor_y_m });
+        map.anchor_x_m = round3(q.x); map.anchor_y_m = round3(q.y);
+    }
+}
+
+function levelHasDrawing(lvl) {
+    return !!((lvl.walls || []).length || (lvl.rooms || []).length
+              || (lvl.radiators || []).length || (lvl.sensors || []).length
+              || (lvl.devices || []).length);
+}
+
 async function promptCalibrationDistance(p1, p2, drawnDist) {
     const lvl = currentLevel();
     if (!lvl.background?.present) {
@@ -4637,6 +4687,26 @@ async function promptCalibrationDistance(p1, p2, drawnDist) {
         return;
     }
 
+    // The image is about to change size by this much; the tracing on top of
+    // it has to change by the same amount to stay on the walls it traced.
+    const factor = realM / drawnDist;
+    let scaleDrawing = false;
+    if (levelHasDrawing(lvl) && Math.abs(factor - 1) > 0.001) {
+        const bigger = factor > 1;
+        scaleDrawing = await window.zbmConfirm({
+            title: 'Scale the drawing too?',
+            message: `The image is about to get ${bigger ? 'bigger' : 'smaller'} by `
+                + `${(bigger ? factor : 1 / factor).toFixed(2)}×.`,
+            detail: 'Walls, rooms, windows, radiators, sensors and placed devices on this '
+                + 'level can scale with it, so a plan traced over the image stays lined up '
+                + "and its measurements become right. Choose “Only the image” if the drawing's "
+                + 'measurements are already correct and it is the image that is wrong. '
+                + 'Nothing is saved until you press Save plan.',
+            confirmText: 'Scale the drawing',
+            cancelText: 'Only the image',
+        });
+    }
+
     // Re-anchor: keep p1 at the same MODEL coordinate after rescale.
     // Image origin in model space shifts so that the pixel under p1 stays at p1.
     const bg = lvl.background;
@@ -4652,9 +4722,19 @@ async function promptCalibrationDistance(p1, p2, drawnDist) {
     bg.origin_x_m = p1.x - u * wNewM;
     bg.origin_y_m = p1.y - (hNewM - v * hNewM);
 
-    toast('success', 'Calibrated', `${realM.toFixed(2)} m = ${drawnDist.toFixed(3)} drawn — scale ${newPpm.toFixed(1)} px/m.`);
+    if (scaleDrawing) {
+        scaleLevelGeometry(lvl, factor, p1,
+                           _state.plan.levels.length === 1 ? _state.plan.map : null);
+    }
+
+    toast('success', 'Calibrated',
+        `${realM.toFixed(2)} m = ${drawnDist.toFixed(3)} drawn — scale ${newPpm.toFixed(1)} px/m.`
+        + (scaleDrawing ? ' The drawing scaled with it.' : ''));
     renderScene();
     renderOverlay();
+    renderProps();
+    // A big change can leave the plan off-screen; bring it back into view.
+    zoomFit();
 }
 
 
