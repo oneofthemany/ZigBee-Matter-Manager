@@ -4,7 +4,7 @@ The Zigbee mesh as the floor plan needs it: one link per pair of devices.
 Pure: takes the service's ``get_simple_mesh()`` output, returns plain data.
 A neighbour table lists each link from both ends, usually with different
 LQIs, and only routers report one; both directions are kept on the one link.
-docs/heating.md § Mesh on the plan.
+docs/signal-coverage.md.
 """
 from __future__ import annotations
 
@@ -59,6 +59,8 @@ def merge_links(mesh: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "role": n.get("role") or "Unknown",
             "online": bool(n.get("online", True)),
             "lqi": n.get("lqi"),
+            # The coordinator's reading of this device's last hop, in dBm.
+            "rssi": n.get("rssi"),
         }
 
     pairs: Dict[tuple, Dict[str, Any]] = {}

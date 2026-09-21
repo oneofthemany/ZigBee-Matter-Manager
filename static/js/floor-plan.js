@@ -69,6 +69,8 @@ function resetState(plan) {
         showDaylight: false,
         showMesh: false,
         mesh: null,                // /api/floor-plan/mesh, fetched when shown
+        showCoverage: false,
+        coverage: null,            // /api/floor-plan/coverage, fetched when shown
         daylight: null,            // /api/floor-plan/daylight, fetched when shown
         daylightIndex: 0,
         placing: null,             // ieee armed from the palette, placed on next tap
@@ -411,6 +413,14 @@ function rootHtml() {
                     <input class="form-check-input" type="checkbox" id="fpToggleMesh">
                     <label class="form-check-label" for="fpToggleMesh">Mesh links</label>
                   </div>
+                  <div class="form-check form-switch small">
+                    <input class="form-check-input" type="checkbox" id="fpToggleCoverage">
+                    <label class="form-check-label" for="fpToggleCoverage">Signal heatmap</label>
+                  </div>
+                  <div id="fpCoverageControls" class="ms-3 mb-1 small d-none">
+                    <div id="fpCoverageModel" class="text-muted"></div>
+                    <div id="fpCoverageAdvice" class="mt-1"></div>
+                  </div>
                   <div id="fpMeshControls" class="ms-3 mb-1 small d-none">
                     <div><span class="fp-link-key fp-link-good"></span>LQI 200+
                       <span class="fp-link-key fp-link-ok ms-2"></span>150+</div>
@@ -741,6 +751,8 @@ function renderAll() {
     syncDaylightControls();
     document.getElementById('fpToggleMesh').checked = !!_state.showMesh;
     syncMeshControls();
+    document.getElementById('fpToggleCoverage').checked = !!_state.showCoverage;
+    syncCoverageControls();
     renderLevelList();
     renderCircuitList();
     renderToolbar();
@@ -1048,6 +1060,8 @@ function renderScene() {
     if (_state.showThermal) {
         parts.push(...renderThermalParts(lvl));
     }
+
+    if (_state.showCoverage && _state.coverage) parts.push(...renderCoverageParts(lvl));
 
     // Rooms (under shapes but over the image)
     // Build circuit colour palette for rooms
@@ -2425,6 +2439,21 @@ function roomHeatField(room, lvl, heatFlux) {
 }
 
 /** Warm colour ramp: amber → orange → red → deep red. Returns [r,g,b]. */
+/** Signal ramp: red (unusable) through amber to green (strong). */
+function rssiRgb(t) {
+    const stops = [[0, 214, 48, 49], [0.33, 225, 112, 85], [0.55, 253, 203, 110],
+                   [0.78, 162, 196, 60], [1, 0, 184, 148]];
+    for (let i = 1; i < stops.length; i++) {
+        if (t <= stops[i][0]) {
+            const [t0, r0, g0, b0] = stops[i - 1], [t1, r1, g1, b1] = stops[i];
+            const k = (t - t0) / (t1 - t0);
+            return [r0 + (r1 - r0) * k, g0 + (g1 - g0) * k, b0 + (b1 - b0) * k].map(Math.round);
+        }
+    }
+    const last = stops[stops.length - 1];
+    return [last[1], last[2], last[3]];
+}
+
 function heatRgb(t) {
     const stops = [
         [0.00, 251, 191, 36],
@@ -2466,7 +2495,12 @@ function fieldToImage(f, mode, intensity) {
             const px = (((ny - 1 - j) * nx) + i) * 4;  // canvas row 0 = max model y
             const v = data[k];
             let r, g, b, a;
-            if (mode === 'heat') {
+            if (mode === 'rssi') {
+                // −100 dBm red, −85 amber, −70 lime, −55 green.
+                const t = Math.max(0, Math.min(1, (v + 100) / 45));
+                [r, g, b] = rssiRgb(t);
+                a = 0.45;
+            } else if (mode === 'heat') {
                 const t = Math.max(0, Math.min(1.35, v));
                 a = Math.max(0, Math.min(0.60, (t - 0.05) * 0.55)) * (0.55 + 0.45 * intensity);
                 [r, g, b] = heatRgb(t);
@@ -4002,6 +4036,11 @@ function bindDeviceLayerEvents() {
         e.preventDefault();
         placeDevice(ieee, clientToSvgModel(e));
     });
+    document.getElementById('fpToggleCoverage').addEventListener('change', async e => {
+        _state.showCoverage = e.target.checked;
+        if (_state.showCoverage) await loadCoverage();
+        syncCoverageControls(); renderScene();
+    });
     document.getElementById('fpToggleMesh').addEventListener('change', async e => {
         _state.showMesh = e.target.checked;
         if (_state.showMesh) await loadMesh();
@@ -4076,7 +4115,99 @@ function renderMapParts() {
                <circle class="fp-map-pin" cx="${anchor.x}" cy="${anchor.y}" r="0.2"/></g>`];
 }
 
-// mesh layer — docs/heating.md § Mesh on the plan
+// signal coverage — docs/signal-coverage.md
+
+async function loadCoverage() {
+    const status = document.getElementById('fpCoverageModel');
+    status.textContent = 'Working out the signal…';
+    try {
+        const r = await fetch('/api/floor-plan/coverage').then(r => r.json());
+        if (!r?.success) throw new Error(r?.error || r?.detail || 'No coverage estimate');
+        _state.coverage = r;
+    } catch (e) {
+        _state.coverage = null;
+        toast('warn', 'Signal heatmap', e.message);
+    }
+}
+
+function syncCoverageControls() {
+    const on = !!_state.showCoverage && !!_state.coverage;
+    document.getElementById('fpCoverageControls').classList.toggle('d-none', !on);
+    if (!on) return;
+    const { model, calibration, weak, suggestions, thresholds } = _state.coverage;
+    const learned = model.samples
+        ? `Learned from ${model.samples} link readings (±${model.rmse_db} dB):`
+        : 'No links to learn from yet — textbook values:';
+    document.getElementById('fpCoverageModel').innerHTML = `
+        <div>${learned}</div>
+        <div>Inside wall <strong>${model.int} dB</strong> · outside/party wall
+             <strong>${model.ext} dB</strong> · floor <strong>${model.floor} dB</strong></div>
+        <div>Falls off at n=${model.n}${calibration.fitted
+            ? '' : ' · LQI→dBm not calibrated, so dBm are rough'}</div>
+        ${model.rough ? `<div class="text-warning-emphasis"><i class="fas fa-triangle-exclamation me-1"></i>
+             Too few readings to be sure — treat this as a rough guide.</div>` : ''}`;
+    document.getElementById('fpCoverageAdvice').innerHTML = suggestions.length
+        ? `<div class="fw-semibold">${weak.length} device${weak.length === 1 ? '' : 's'} struggling
+             (below ${thresholds.weak_dbm} dBm)</div>`
+          + suggestions.map((s, i) => `
+            <div class="border rounded p-1 mt-1">
+              <div><i class="fas fa-tower-broadcast me-1"></i><strong>Repeater ${i + 1}</strong>
+                   in ${escapeHtml(s.room_name || s.room_id)}</div>
+              <div class="text-muted">Would lift ${s.fixes.map(f =>
+                  `${escapeHtml(f.name)} (${f.before_dbm} → ${f.after_dbm} dBm)`).join(', ')}</div>
+              <div class="text-muted">It would hear the mesh at ${s.uplink_dbm} dBm.</div>
+            </div>`).join('')
+        : (weak.length
+            ? `<div>${weak.length} device${weak.length === 1 ? ' is' : 's are'} struggling, but no one
+                 spot both hears the mesh and reaches them. Try moving the coordinator, or a repeater
+                 closer to each.</div>`
+            : '<div class="text-success">Every placed device has a usable signal.</div>');
+}
+
+function coverageField(lvl) {
+    const entry = (_state.coverage.levels || []).find(l => l.level_id === lvl.id);
+    if (!entry) return null;
+    // fieldToImage caches its PNGs on the field object, so keep the one we build.
+    if (!entry._f) entry._f = { ...entry.field, urls: {} };
+    return entry._f;
+}
+
+function renderCoverageParts(lvl) {
+    const f = coverageField(lvl);
+    if (!f) return [];
+    // Clipped to the rooms: the field is computed past the walls so the weak
+    // contour follows the signal, but only inside the house is worth showing.
+    const clip = `cov_${lvl.id.replace(/[^a-z0-9]/gi, '_')}`;
+    const out = [`<defs><clipPath id="${clip}">${
+        lvl.rooms.map(r => `<path d="${polygonToPath(r.polygon)}"/>`).join('')}</clipPath></defs>`,
+        `<image href="${fieldToImage(f, 'rssi', 1)}"
+                    x="${f.x0}" y="${-(f.y0 + f.ny * f.h)}"
+                    width="${f.nx * f.h}" height="${f.ny * f.h}"
+                    clip-path="url(#${clip})" preserveAspectRatio="none" pointer-events="none"/>`];
+    const weakLine = fieldContourPath(f, _state.coverage.thresholds.weak_dbm);
+    if (weakLine) out.push(`<path class="fp-weak-edge" d="${weakLine}"
+                                  clip-path="url(#${clip})" pointer-events="none"/>`);
+    for (const w of _state.coverage.weak) {
+        if (w.level_id !== lvl.id) continue;
+        const p = modelToSvg(w);
+        out.push(`<circle class="fp-weak-ring" cx="${p.x}" cy="${p.y}" r="0.3" pointer-events="none"/>
+          <text class="fp-weak-label" x="${p.x}" y="${p.y - 0.42}" font-size="0.14"
+                text-anchor="middle" pointer-events="none">${w.dbm} dBm${w.lqi != null ? ` · LQI ${w.lqi}` : ''}</text>`);
+    }
+    (_state.coverage.suggestions || []).forEach((s, i) => {
+        if (s.level_id !== lvl.id) return;
+        const p = modelToSvg(s);
+        out.push(`<g pointer-events="none">
+            <circle class="fp-repeater" cx="${p.x}" cy="${p.y}" r="0.32"/>
+            <text class="fp-repeater-label" x="${p.x}" y="${p.y + 0.09}" font-size="0.26"
+                  text-anchor="middle">${i + 1}</text>
+            <text class="fp-repeater-label" x="${p.x}" y="${p.y + 0.62}" font-size="0.15"
+                  text-anchor="middle">repeater here</text></g>`);
+    });
+    return out;
+}
+
+// mesh layer — docs/signal-coverage.md
 
 async function loadMesh() {
     try {

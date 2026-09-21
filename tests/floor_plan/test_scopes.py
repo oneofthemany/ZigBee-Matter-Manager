@@ -151,6 +151,12 @@ def run() -> Checker:
             mesh.get("success") and len(mesh["links"]) == 1 and mesh["links"][0]["band"] == "ok", mesh)
     c.check("and needs system:read, as the network routes do",
             client.get("/api/floor-plan/mesh", headers={"x-scopes": "device:read"}).status_code == 403)
+    cov = client.get("/api/floor-plan/coverage", headers={"x-scopes": "system:read"}).json()
+    c.check("coverage comes with the learned model and its priors",
+            cov.get("success") and set(cov["model"]) >= set(("p0", "n", "ext", "int", "floor"))
+            and "weak" in cov and "suggestions" in cov, cov)
+    c.check("and needs system:read too",
+            client.get("/api/floor-plan/coverage", headers={"x-scopes": "device:read"}).status_code == 403)
     c.check("and needs a read scope",
             client.get("/api/floor-plan/daylight", headers={"x-scopes": "media:read"}).status_code == 403)
     png = {"file": ("g.png", b"\x89PNG\r\n\x1a\nxx", "image/png")}

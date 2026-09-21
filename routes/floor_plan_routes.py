@@ -9,6 +9,7 @@ existing clients. See docs/heating.md.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -24,6 +25,7 @@ from modules import floor_plan_store
 from modules.auth import scope_matches
 from modules import daylight
 from modules.mesh_plan import merge_links
+from modules.radio_model import analyse
 from modules.floor_plan import (
     changed_parts,
     clean_floor_plan,
@@ -286,6 +288,27 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
         if mesh is None:
             return {"success": False, "error": "The Zigbee network isn't available."}
         return {"success": True, **merge_links(mesh)}
+
+    @app.get("/api/floor-plan/coverage")
+    async def coverage(step: float = 0.5, _=Depends(_require("system:read"))):
+        """Learned attenuation, predicted RSSI per level, and repeater advice.
+
+        Off the loop: it is a grid search over every wall, and this shares its
+        loop with the audio engine. Model: docs/signal-coverage.md.
+        """
+        try:
+            mesh = get_mesh() if get_mesh else None
+        except Exception as e:
+            logger.warning(f"mesh unavailable: {e}")
+            mesh = None
+        if mesh is None:
+            return {"success": False, "error": "The Zigbee network isn't available."}
+        plan = floor_plan_store.load_plan()
+        if not plan:
+            return {"success": False, "error": "Draw the floor plan first."}
+        step = max(0.25, min(2.0, float(step)))
+        result = await asyncio.to_thread(analyse, plan, mesh, step)
+        return {"success": True, **result}
 
     @app.get("/api/floor-plan/preview")
     @app.get("/api/heating/floor-plan/preview", **ALIAS)

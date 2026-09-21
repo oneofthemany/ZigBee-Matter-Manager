@@ -696,7 +696,7 @@ Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSock
 | **Beekeeper** | DNS sinkhole dashboard — query volume, block rate, live log, top domains and clients |
 | **Drive** | Journeys, Drivers, Fuel, Price History and Apiary |
 | **Zones** | RSSI-based presence detection zones |
-| **Topology** | Mesh visualisation, connection table and packet statistics; **Floor plan** — the home's plan with every device placed on it (shared with Heating, see `docs/heating.md` § Floor plan) |
+| **Topology** | Mesh visualisation, connection table and packet statistics; **Floor plan** — the home's plan with every device placed on it, the mesh drawn over it, a signal heatmap and repeater advice (`docs/signal-coverage.md`) |
 | **MQTT Explorer** | Real-time MQTT traffic monitor and publish tool |
 | **Debug** | Live logs, Signal Inspector and raw packet analyser |
 | **System Overview** | Host vitals, 1h history and telemetry database size/retention |
@@ -1026,6 +1026,8 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/automations.md](docs/automations.md) | Automation engine — rule syntax, conditions, sequences, NL parser |
 | [docs/workers.md](docs/workers.md) | Workers — booleans, modes, timers, counters, markers and numbers rules can read and set |
 | [docs/heating.md](docs/heating.md) | Heating — advisor, controller, thermal profile, radiator sizing, solar gain |
+| [docs/daylight.md](docs/daylight.md) | Daylight — outdoor light from sun and weather, and each room's own estimate |
+| [docs/signal-coverage.md](docs/signal-coverage.md) | The mesh on the floor plan — learned attenuation, RSSI heatmap, repeater advice |
 | [docs/energy.md](docs/energy.md) | Octopus integration — consumption, tariffs, Home Mini |
 | [docs/speaker_sync.md](docs/speaker_sync.md) | Media, OpenZone groups, EQ, TTS and the Sync Lab |
 | [docs/open-zone.md](docs/open-zone.md) | Source-side clock discipline for multi-room audio |

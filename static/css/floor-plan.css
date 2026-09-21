@@ -351,6 +351,14 @@
 }
 .fp-palette-item { cursor: grab; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-palette-item.active { outline: 2px solid var(--fp-selection); }
+/* signal coverage */
+.fp-weak-edge { fill: none; stroke: #d63031; stroke-width: 0.04; stroke-dasharray: 0.2 0.12; opacity: 0.8; }
+.fp-weak-ring { fill: none; stroke: #d63031; stroke-width: 0.05; }
+.fp-weak-label { fill: #d63031; font-weight: 600; }
+.fp-repeater { fill: rgba(0, 184, 148, 0.25); stroke: #00b894; stroke-width: 0.06;
+               stroke-dasharray: 0.16 0.1; }
+.fp-repeater-label { fill: var(--fp-text); font-weight: 600; }
+
 /* mesh links: the same LQI bands and colours as the Topology graph (mesh.js) */
 .fp-link line { fill: none; stroke-linecap: round; }
 .fp-link-good line    { stroke: #00b894; }

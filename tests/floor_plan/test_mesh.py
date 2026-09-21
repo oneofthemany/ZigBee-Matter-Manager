@@ -66,7 +66,7 @@ def run() -> Checker:
     c.check("ieees are lowercased to match the plan", "00:0c" in out["nodes"])
     c.check("nodes carry name, role and whether they are online",
             out["nodes"]["00:0c"] == {"ieee": "00:0c", "name": "Coordinator", "role": "Coordinator",
-                                     "online": True, "lqi": None}, out["nodes"]["00:0c"])
+                                     "online": True, "lqi": None, "rssi": None}, out["nodes"]["00:0c"])
     c.check("nothing in, nothing out", merge_links(None) == {"nodes": {}, "links": []})
 
     c.section("bands match the Topology graph's colours")

@@ -929,28 +929,6 @@ home location, rotated by `north_offset_deg`. *Mark where the home pin is* sets
 `plan.map.anchor_x_m/anchor_y_m`, the point on the plan where the address pin
 sits. Turn the compass until the map's buildings line up with the walls.
 
-### Mesh on the plan
-
-In the home view, View → *Mesh links* draws the Zigbee mesh over the plan, from
-`GET /api/floor-plan/mesh` (`system:read`, like `/api/network`).
-
-`modules/mesh_plan.py` merges the neighbour tables into **one link per pair**. A
-link is usually listed from both ends, each with its own LQI and its own
-relationship. The merged link keeps both (`lqi_ab`/`lqi_ba`, `rel_ab`/`rel_ba`),
-and is coloured by the **worse** of the two, in the same bands and colours as the
-Topology graph (200+, 150+, 100+, below 100). Links to devices the hub doesn't
-know are dropped. Links with an offline end aren't drawn, and offline devices are
-dimmed.
-
-The server sends links by device id only. Positions are resolved in the editor
-from the plan being edited, by the one-position rule (`livePositions()`, which
-mirrors `floor_plan.placed_devices`), so a link follows a device while you drag
-it, before you save. Where only one end is on the level being shown, a short
-dashed stub points out from that end, labelled with the far device and either
-"↕ <level>" (placed on another floor) or "not placed". The coordinator is drawn
-as a square. Hover a link for both LQIs and the relationship. The note under the
-toggle counts the devices on the mesh that aren't placed yet.
-
 ### Windows and rooms
 
 An opening belongs to a room only if the opening itself lies on one of that
