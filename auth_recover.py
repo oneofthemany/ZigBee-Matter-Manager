@@ -42,6 +42,10 @@ def _load(path: Path) -> AuthManager:
         sys.exit(f"No auth store at {path}. Is the container path right?")
     auth = AuthManager(config_path=path)
     auth.load()
+    # Wrapping installs the MFA-aware save. Without it every write here would
+    # drop the mfa section and unenrol every user.
+    from modules.auth_secure import SecureAuthManager
+    auth._secure = SecureAuthManager(auth)
     return auth
 
 
@@ -50,13 +54,17 @@ def _new_password() -> str:
 
 
 def _mfa_on(auth: AuthManager, username: str) -> bool:
-    # Display only: an unreadable MFA store must not stop `list` working,
-    # which is the one command you run when already locked out.
     try:
-        from modules.auth_secure import SecureAuthManager
-        return bool(SecureAuthManager(auth).mfa_status(username).get("enabled"))
-    except (ImportError, KeyError, AttributeError, OSError):
+        return bool(auth._secure.mfa_status(username).get("enabled"))
+    except (KeyError, AttributeError):
         return False
+
+
+def _restart_note() -> None:
+    # The running app holds auth in memory and writes it back on its next
+    # save, which would undo this change.
+    print("Restart ZMM now so it loads this change:\n"
+          "  podman restart zigbee-matter-manager")
 
 
 def cmd_list(auth: AuthManager, _args) -> None:
@@ -82,15 +90,16 @@ def cmd_reset_password(auth: AuthManager, args) -> None:
                    args.username)
     print(f"\n  user:     {args.username}\n  password: {pw}\n")
     print("Shown once. Existing sessions for this user are invalidated.")
+    _restart_note()
 
 
 def cmd_disable_mfa(auth: AuthManager, args) -> None:
     _require(auth, args.username)
-    from modules.auth_secure import SecureAuthManager
-    asyncio.run(SecureAuthManager(auth).disable_mfa(args.username))
+    asyncio.run(auth._secure.disable_mfa(args.username))
     logger.warning("[recover] MFA disabled for '%s' via auth_recover",
                    args.username)
     print(f"MFA disabled for '{args.username}'. Re-enrol from Settings → Users.")
+    _restart_note()
 
 
 def cmd_make_admin(auth: AuthManager, args) -> None:
@@ -103,6 +112,7 @@ def cmd_make_admin(auth: AuthManager, args) -> None:
     logger.warning("[recover] '%s' added to %s via auth_recover",
                    args.username, ADMIN_GROUP)
     print(f"'{args.username}' is now in {ADMIN_GROUP}.")
+    _restart_note()
 
 
 def cmd_create_admin(auth: AuthManager, args) -> None:
@@ -118,6 +128,7 @@ def cmd_create_admin(auth: AuthManager, args) -> None:
     logger.warning("[recover] admin '%s' created via auth_recover", args.username)
     print(f"\n  user:     {args.username}\n  password: {pw}\n")
     print("Shown once. Delete this account once you are back in.")
+    _restart_note()
 
 
 def main() -> int:

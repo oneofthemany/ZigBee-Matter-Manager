@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_scope_coverage"]
+PY_MODULES = ["test_scope_coverage", "test_scope_migration"]
 
 #: Needs FastAPI, so it is skipped rather than failed on a bare host. CI has
 #: the lockfile installed and runs it.

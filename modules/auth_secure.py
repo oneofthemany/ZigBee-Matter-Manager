@@ -67,6 +67,10 @@ class SecureAuthManager:
         # Patch the underlying manager's save to also persist MFA records.
         self._wrap_save()
         self._load_mfa()
+        if getattr(auth, "_dirty", False):
+            # load() upgraded the store; only now can it be saved with MFA.
+            auth._save_locked()
+            auth._dirty = False
 
     # persistence
 
@@ -79,6 +83,7 @@ class SecureAuthManager:
                 path = self.auth.config_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {
+                    "schema": self.auth.schema,
                     "groups": [g.to_dict() for g in self.auth.groups.values()],
                     "users":  [u.to_dict() for u in self.auth.users.values()],
                     "tokens": [t.to_dict() for t in self.auth.tokens.values()],

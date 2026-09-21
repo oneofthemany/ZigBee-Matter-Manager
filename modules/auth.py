@@ -62,6 +62,14 @@ KNOWN_SCOPES: Dict[str, str] = {
     # presence:read would let a stolen device token track the whole household.
 }
 
+#: auth.yaml layout version. 2 = heating/media/energy/security split out of
+#: device:*; a store written before that is upgraded once on load.
+AUTH_SCHEMA = 2
+
+#: Areas that were reachable through device:* (in practice, by any signed-in
+#: user) before scopes were enforced, and now carry their own scopes.
+SPLIT_FROM_DEVICE = ("heating", "media", "energy", "security")
+
 # Built-in groups created on first run if no auth.yaml exists.
 DEFAULT_GROUPS: Dict[str, List[str]] = {
     "admins":   ["admin"],
@@ -272,6 +280,11 @@ class AuthManager:
         self.groups: Dict[str, Group] = {}
         self.tokens: Dict[str, TokenRecord] = {}     # keyed by token_hash
         self._loaded = False
+        self.schema = AUTH_SCHEMA
+        #: Set when load() upgraded the store in memory. Persisted by
+        #: SecureAuthManager once its MFA-aware save is installed — saving here
+        #: would write the store without its mfa section.
+        self._dirty = False
 
     def load(self) -> None:
         if self.config_path.exists():
@@ -318,11 +331,55 @@ class AuthManager:
                     f"Auth loaded: {len(self.users)} users, "
                     f"{len(self.groups)} groups, {len(self.tokens)} tokens"
                 )
+                if int(raw.get("schema") or 1) < 2:
+                    self._migrate_split_scopes()
+                    self._dirty = True
             except Exception as e:
                 logger.error(f"Failed to load auth.yaml: {e}")
         else:
             self._bootstrap()
         self._loaded = True
+
+    def _migrate_split_scopes(self) -> None:
+        """Keep pre-upgrade access when device:* is split (AUTH_SCHEMA 2).
+
+        Before enforcement every signed-in user reached heating, media, energy
+        and locks. A grant that could write devices keeps write on the split
+        areas; one that could only read keeps read. Runs once, so a scope
+        removed deliberately afterwards stays removed.
+        """
+        def widen(scopes: List[str]) -> List[str]:
+            have = set(scopes)
+            if "admin" in have:
+                return scopes
+            if scope_matches("device:write", have):
+                add = [f"{a}:{m}" for a in SPLIT_FROM_DEVICE for m in ("read", "write")]
+            elif scope_matches("device:read", have):
+                add = [f"{a}:read" for a in SPLIT_FROM_DEVICE]
+            else:
+                return scopes
+            return scopes + [s for s in add if s not in have]
+
+        changed = []
+        for g in self.groups.values():
+            new = widen(g.scopes)
+            if new != g.scopes:
+                changed.append(f"group {g.name}")
+                g.scopes = new
+        for u in self.users.values():
+            new = widen(u.extra_scopes)
+            if new != u.extra_scopes:
+                changed.append(f"user {u.username}")
+                u.extra_scopes = new
+        for t in self.tokens.values():
+            new = widen(t.scopes)
+            if new != t.scopes:
+                changed.append(f"token {t.label}")
+                t.scopes = new
+        if changed:
+            logger.warning(
+                "[auth] upgraded to schema 2: granted the heating/media/energy/"
+                "security scopes split out of device:* to " + ", ".join(changed))
 
     def _bootstrap(self) -> None:
         """First-run setup: default groups only. The first admin user is
@@ -341,6 +398,7 @@ class AuthManager:
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
+                "schema": self.schema,
                 "groups": [g.to_dict() for g in self.groups.values()],
                 "users":  [u.to_dict() for u in self.users.values()],
                 "tokens": [t.to_dict() for t in self.tokens.values()],

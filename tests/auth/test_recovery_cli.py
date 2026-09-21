@@ -78,6 +78,20 @@ def run() -> Checker:
         c.check("the old one does not",
                 not _load(store).verify_password("sean", "correct-horse"))
 
+        c.section("no command unenrols anyone else")
+        # The plain AuthManager save drops the mfa section; every write must
+        # go through the MFA-aware one or all enrolments vanish.
+        _enrol_mfa(store, "guest")
+        from modules.auth_secure import SecureAuthManager as _S
+        for args in (("reset-password", "sean"), ("make-admin", "sean"),
+                     ("create-admin", "bystander-check")):
+            _run(store, *args)
+            c.check(f"guest's MFA survives {args[0]}",
+                    _S(_load(store)).mfa_status("guest")["enabled"])
+        import yaml
+        c.check("the mfa section is still on disk",
+                bool((yaml.safe_load(store.read_text()) or {}).get("mfa")))
+
         c.section("a lost TOTP device is recoverable")
         _enrol_mfa(store, "sean")
         from modules.auth_secure import SecureAuthManager
