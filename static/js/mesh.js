@@ -44,8 +44,6 @@ const TOPOLOGY_VIEW_KEY = 'zmm.topologyView';
  * on first use; the choice is remembered per browser.
  */
 function initTopologyViewToggle() {
-    const radios = document.querySelectorAll('input[name="topologyView"]');
-    if (!radios.length) return;
     const show = async (view) => {
         const plan = view === 'plan';
         document.getElementById('topologyGraphCard')?.classList.toggle('d-none', plan);
@@ -63,10 +61,16 @@ function initTopologyViewToggle() {
             window.dispatchEvent(new Event('resize'));
         }
     };
-    radios.forEach(r => r.addEventListener('change', () => r.checked && show(r.value)));
+    // Delegated from the document: the toggle binds whatever order the tab
+    // pane and this module arrive in, and survives the pane being re-rendered.
+    document.addEventListener('change', e => {
+        const el = e.target;
+        if (el?.name === 'topologyView' && el.checked) show(el.value);
+    });
 
     let saved = null;
     try { saved = localStorage.getItem(TOPOLOGY_VIEW_KEY); } catch { /* private mode */ }
+    log.log('Topology view toggle bound; saved view:', saved);
     const tabEl = document.querySelector('button[data-bs-target="#topology"]');
     tabEl?.addEventListener('shown.bs.tab', () => {
         const current = document.querySelector('input[name="topologyView"]:checked')?.value;
