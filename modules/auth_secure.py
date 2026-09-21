@@ -47,6 +47,10 @@ class LoginOutcome:
     lan_only_violation: bool = False
 
 
+#: How long a re-verified second factor stays good for.
+STEP_UP_WINDOW_S = 300
+
+
 class SecureAuthManager:
     """Composes AuthManager + MFA records + brute-force + LAN-only checks."""
 
@@ -55,6 +59,11 @@ class SecureAuthManager:
         self.mfa: Dict[str, MFARecord] = {}
         self.bruteforce = BruteForceTracker()
         self.challenges = MFAChallengeStore()
+        #: (username, credential id) -> when the second factor was re-verified.
+        #: Keyed on the credential, not the user, so a step-up in one browser
+        #: does not authorise another session. In memory on purpose: a restart
+        #: should force re-verification.
+        self._step_ups: Dict[Tuple[str, str], float] = {}
         # Patch the underlying manager's save to also persist MFA records.
         self._wrap_save()
         self._load_mfa()
@@ -259,6 +268,53 @@ class SecureAuthManager:
         await constant_time_login(started_at)
         return LoginOutcome(success=False, reason="Invalid MFA code")
 
+    # step-up
+
+    async def verify_step_up(self, username: str, code: str, client_ip: str,
+                             credential_id: str) -> Tuple[bool, str]:
+        """Re-verify the second factor for an already-authenticated caller.
+
+        Returns (ok, reason). Failures count toward the same lockout bucket
+        as a bad password, so this cannot be used to brute-force TOTP.
+        """
+        rec = self.mfa.get(username)
+        if not rec or not rec.enabled or not rec.secret:
+            return False, "MFA not enrolled"
+
+        if verify_totp(rec.secret, code):
+            rec.last_used_at = time.time()
+            self.bruteforce.record_attempt(username, client_ip, succeeded=True)
+            self._step_ups[(username, credential_id)] = time.time()
+            self.auth._save_locked()
+            return True, ""
+
+        h = hash_recovery_code(code)
+        if h in rec.recovery_code_hashes and h not in rec.used_recovery_hashes:
+            rec.used_recovery_hashes.append(h)
+            rec.last_used_at = time.time()
+            self.bruteforce.record_attempt(username, client_ip, succeeded=True)
+            self._step_ups[(username, credential_id)] = time.time()
+            self.auth._save_locked()
+            logger.warning(f"[mfa] {username} used a recovery code for step-up")
+            return True, ""
+
+        self.bruteforce.record_attempt(username, client_ip, succeeded=False)
+        return False, "Invalid MFA code"
+
+    def step_up_valid(self, username: str, credential_id: str) -> bool:
+        at = self._step_ups.get((username, credential_id))
+        if at is None:
+            return False
+        if time.time() - at > STEP_UP_WINDOW_S:
+            self._step_ups.pop((username, credential_id), None)
+            return False
+        return True
+
+    def clear_step_ups(self, username: str) -> None:
+        """Drop every step-up for a user; called when credentials change."""
+        for key in [k for k in self._step_ups if k[0] == username]:
+            self._step_ups.pop(key, None)
+
     # enrolment
 
     async def begin_enrolment(self, username: str) -> Tuple[str, str]:
@@ -317,6 +373,7 @@ class SecureAuthManager:
         rec.recovery_code_hashes = []
         rec.used_recovery_hashes = []
         rec.enrolled_at = None
+        self.clear_step_ups(username)
         self.auth._save_locked()
         logger.info(f"[mfa] {username} disabled MFA")
 

@@ -303,8 +303,45 @@
 
     // Fetch interceptor
     var origFetch = window.fetch;
+
+    // A 403 carrying step_up_required means the route runs code and wants the
+    // second factor re-verified. Prompt, verify, replay once. Only string URLs
+    // are replayed: a Request object's body is already consumed.
+    function stepUpAndRetry(resp, input, init) {
+        if (typeof input !== 'string') return Promise.resolve(resp);
+        return resp.clone().json().then(function (body) {
+            if (!body || body.step_up_required !== true) return resp;
+            if (body.mfa_enrolled === false) return resp;   // nothing to prompt
+            var ask = window.zbmPrompt
+                ? window.zbmPrompt({
+                    title: 'Confirm it is you',
+                    message: 'This action runs code on your hub.',
+                    label: 'Authenticator code',
+                    placeholder: '123456',
+                })
+                : Promise.resolve(window.prompt('Authenticator code'));
+            return Promise.resolve(ask).then(function (code) {
+                if (!code) return resp;
+                return origFetch('/api/auth/step-up', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: String(code).trim() }),
+                }).then(function (r) {
+                    if (!r.ok) return resp;
+                    var retry = {};
+                    for (var k in (init || {})) retry[k] = init[k];
+                    retry.__zmmStepUpRetried = true;
+                    return origFetch(input, retry);
+                });
+            });
+        }, function () { return resp; });
+    }
+
     window.fetch = function (input, init) {
         return origFetch(input, init).then(function (resp) {
+            if (resp.status === 403 && !(init && init.__zmmStepUpRetried)) {
+                return stepUpAndRetry(resp, input, init);
+            }
             if (resp.status === 401) {
                 var url = (typeof input === 'string') ? input : (input.url || '');
                 // Don't hijack 401s from auth-management endpoints — they handle

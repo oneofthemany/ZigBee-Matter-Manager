@@ -45,6 +45,11 @@ class MFAEnrolFinishRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=8)
 
 
+class StepUpRequest(BaseModel):
+    # TOTP or a recovery code, same as the login second step.
+    code: str = Field(..., min_length=6, max_length=20)
+
+
 class DisableMFARequest(BaseModel):
     # Re-prompt for password to confirm dangerous self-action
     password: str = Field(..., min_length=1, max_length=200)
@@ -323,6 +328,25 @@ def register_auth_routes(
             principal: Principal = Depends(require_authenticated),
     ):
         return _sec().mfa_status(principal.user.username)
+
+    @app.post("/api/auth/step-up")
+    async def step_up(
+            body: StepUpRequest,
+            request: Request,
+            principal: Principal = Depends(require_authenticated),
+    ):
+        """Re-verify the second factor, unlocking the code-execution routes
+        for STEP_UP_WINDOW_S. Bound to the credential that presented it."""
+        from modules.auth_middleware import credential_id_for
+        from modules.auth_secure import STEP_UP_WINDOW_S
+
+        ok, reason = await _sec().verify_step_up(
+            principal.user.username, body.code, _net().resolve(request),
+            credential_id_for(request, principal),
+        )
+        if not ok:
+            raise HTTPException(403, reason)
+        return {"success": True, "valid_for_s": STEP_UP_WINDOW_S}
 
     # admin: lockouts and MFA reset
 
