@@ -161,11 +161,11 @@ it grants nothing the shell running it does not already have. Every action
 logs at `WARNING`.
 
 ```bash
-podman exec -it zigee-matter-manager python3 /app/auth_recover.py list
-podman exec -it zigee-matter-manager python3 /app/auth_recover.py reset-password <user>
-podman exec -it zigee-matter-manager python3 /app/auth_recover.py disable-mfa <user>
-podman exec -it zigee-matter-manager python3 /app/auth_recover.py make-admin <user>
-podman exec -it zigee-matter-manager python3 /app/auth_recover.py create-admin rescue
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py list
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py reset-password <user>
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py disable-mfa <user>
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py make-admin <user>
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py create-admin rescue
 ```
 
 `reset-password` and `create-admin` generate a password and print it once.
@@ -180,7 +180,7 @@ On first boot, ZMM creates an `admin` user with a random password and
 prints it to the logs at `WARNING` level. To find it:
 
 ```bash
-podman logs zigee-matter-manager 2>&1 | grep -A3 "FIRST-RUN AUTH"
+podman logs zigbee-matter-manager 2>&1 | grep -A3 "FIRST-RUN AUTH"
 ```
 
 or

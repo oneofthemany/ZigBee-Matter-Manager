@@ -2,11 +2,11 @@
 """
 Break-glass account recovery. Runs inside the container, never over the network.
 
-    podman exec -it zigee-matter-manager python3 /app/auth_recover.py list
-    podman exec -it zigee-matter-manager python3 /app/auth_recover.py reset-password sean
-    podman exec -it zigee-matter-manager python3 /app/auth_recover.py disable-mfa sean
-    podman exec -it zigee-matter-manager python3 /app/auth_recover.py make-admin sean
-    podman exec -it zigee-matter-manager python3 /app/auth_recover.py create-admin rescue
+    podman exec -it zigbee-matter-manager python3 /app/auth_recover.py list
+    podman exec -it zigbee-matter-manager python3 /app/auth_recover.py reset-password sean
+    podman exec -it zigbee-matter-manager python3 /app/auth_recover.py disable-mfa sean
+    podman exec -it zigbee-matter-manager python3 /app/auth_recover.py make-admin sean
+    podman exec -it zigbee-matter-manager python3 /app/auth_recover.py create-admin rescue
 
 The realistic lockout is a lost TOTP device with the recovery codes gone, not
 a scope mistake — an admin satisfies every scope check by construction

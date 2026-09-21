@@ -25,7 +25,9 @@ from modules.auth import (
     AuthManager, User, TokenRecord, scope_matches, LAN_ONLY_SCOPE,
 )
 from modules.auth_network import get_network_resolver
-from modules.auth_scopes import AUTHENTICATED, needs_step_up, scope_for_path
+from modules.auth_scopes import (
+    AUTHENTICATED, READ_METHODS, needs_step_up, scope_for_path,
+)
 
 logger = logging.getLogger("modules.auth_middleware")
 
@@ -288,6 +290,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        if _cross_site_write(request, principal):
+            logger.warning(f"[auth] cross-site {request.method} {path} refused "
+                           f"for {principal.user.username}")
+            return JSONResponse(status_code=403,
+                                content={"detail": "Cross-site request refused",
+                                         "csrf": True})
+
         # Deny by default; require_scope deps still run as the finer check.
         required = self._denied_scope(request, path, principal)
         if required is not None:
@@ -399,6 +408,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 # dependency factory
+
+def _cross_site_write(request: Request, principal: "Principal") -> bool:
+    """A cookie-authenticated write that a browser says came from another site.
+
+    Bearer tokens are exempt: the browser never attaches them by itself.
+    Sec-Fetch-Site is checked first because it does not depend on the Host
+    header, which a tunnel or proxy may rewrite. A request carrying neither
+    header is not from a browser, so it cannot be a forged one.
+    """
+    if principal.auth_method != "cookie" or request.method in READ_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if not origin or origin == "null":
+        return origin == "null"
+    host = request.headers.get("host", "")
+    return origin.split("://", 1)[-1].rstrip("/") != host
+
 
 def credential_id_for(request: Request, principal: "Principal") -> str:
     """Fingerprint of the credential presented, so a step-up in one browser

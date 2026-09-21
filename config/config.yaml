@@ -160,7 +160,6 @@ web:
   host: 0.0.0.0
   port: 8000
   debug: false
-  secret_key: ssshItsASecret
   ssl:
     # HTTPS is always on — a self-signed cert is generated at first boot.
     # Point these at your own cert/key to use a trusted certificate instead.

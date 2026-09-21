@@ -44,19 +44,14 @@ time.
 
 ### "I lost both my phone and my recovery codes"
 
-You'll need shell access to ZMM to reset:
+You'll need shell access to the host:
 
 ```bash
-podman exec zmm python3 -c "
-    from modules.auth import AuthManager
-    from modules.auth_secure import SecureAuthManager
-    import asyncio
-    a = AuthManager(); a.load()
-    s = SecureAuthManager(a)
-    asyncio.run(s.disable_mfa('your-username'))
-    print('MFA disabled — log in with password and re-enrol')
-"
+podman exec -it zigbee-matter-manager python3 /app/auth_recover.py disable-mfa <your-username>
 ```
+
+Then log in with your password and re-enrol. `auth_recover.py` also resets
+passwords and creates a rescue admin — see auth.md §Locked out.
 
 If you're not the only admin, ask another admin to:
 **Settings → Users → \[your account\] → Edit → Disable MFA**.
@@ -176,6 +171,31 @@ Without configured trusted proxies, an attacker could send
 `X-Forwarded-For: 192.168.1.5` to bypass the LAN-only check. ZMM
 **ignores** these headers from any IP not in the trusted list,
 specifically to prevent this attack.
+
+## MQTT broker
+
+ZMM connects to the broker with one username and password
+(`mqtt.username` / `mqtt.password`). Anything on the LAN that learns them can
+publish to `<base_topic>/+/set` and drive the mesh, locks included.
+
+The fix is on the broker, not in ZMM: give ZMM its own broker user and an ACL
+limiting it to its `base_topic` subtree, and make sure `allow_anonymous` is
+off. For mosquitto:
+
+```
+# /etc/mosquitto/acl
+user zmm
+topic readwrite zigbee_manager/#
+topic readwrite homeassistant/#
+```
+
+The MQTT Explorer page subscribes to `#`, so under this ACL it shows only
+those two subtrees. Add `topic read #` for the `zmm` user if you want it to
+see everything; read-only cannot drive a device.
+
+TLS to the broker was considered and left out. It protects the password in
+transit but does nothing about a device on the LAN that already holds it, and
+an expired certificate on an always-on hub fails silently.
 
 ## Token-based access (mobile app, scripts)
 
