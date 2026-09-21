@@ -20,6 +20,7 @@ let _players = [];          // _remote + the "This device" entry, as rendered
 let _selectedId = null;     // player targeted by search "play"
 let _mediaTab = 'players';  // 'players' | 'wiim' | 'sonos' | 'sync'
 let _playerFilter = 'all';  // ecosystem filter within the players list
+let _groupProvider = 'wiim';  // ecosystem chosen inside the Groups tab
 let _syncGroups = [];       // saved speaker-sync groups (from /api/media/sync/groups)
 let _syncStatus = null;     // last /api/media/sync/status snapshot
 let _syncTimer = null;      // stats poll while the sync pane is open
@@ -103,6 +104,7 @@ export function initMedia() {
     window.mediaRefresh = loadPlayers;
     window.mediaTab = switchMediaTab;
     window.mediaPlayerFilter = setPlayerFilter;
+    window.mediaGroupProvider = setGroupProvider;
     window.mediaPlayStation = playStation;
     window.mediaControl = control;
     window.mediaSetVolume = setVolume;
@@ -1894,22 +1896,25 @@ function warn(m) { return `<div class="alert alert-warning mb-0">${esc(m)}</div>
 // hid the players behind a Close button while you were there.
 const MEDIA_TABS = [
     { id: 'players', label: 'Players', icon: 'fas fa-volume-up' },
-    { id: 'wiim', label: 'WiiM groups', icon: 'fas fa-volume-up', provider: 'wiim' },
-    { id: 'sonos', label: 'Sonos groups', icon: 'fas fa-house-signal', provider: 'sonos' },
+    { id: 'groups', label: 'Groups', icon: 'far fa-object-group' },
     { id: 'sync', label: 'OpenZone', icon: 'zmm-openzone-icon' },
 ];
 
-// A native-grouping tab only earns its place once that ecosystem is actually
-// on the network; OpenZone and the player list are always reachable.
 function _visibleTabs() {
-    return MEDIA_TABS.filter(t => !t.provider
-        || _players.some(p => p.provider === t.provider && !p.is_group));
+    return MEDIA_TABS;
 }
 
 function switchMediaTab(tab) {
     _mediaTab = tab;
     if (tab === 'players') { _stopSyncPoll(); renderPlayers(); }
     else renderGroupBuilder();
+}
+
+// Default the Groups tab to an ecosystem that is actually present, so it does
+// not open on an empty WiiM pane in a Sonos-only house.
+function _defaultGroupProvider() {
+    const ids = _groupProviders();
+    if (ids.length && !ids.includes(_groupProvider)) _groupProvider = ids[0];
 }
 
 // Returns the content pane, building the scaffold on first use.
@@ -1930,6 +1935,7 @@ function _mediaScaffold() {
     }
     const tabs = _visibleTabs();
     if (!tabs.some(t => t.id === _mediaTab)) _mediaTab = 'players';
+    _defaultGroupProvider();
     const sig = tabs.map(t => t.id).join(',');
     if (bar.dataset.sig !== sig) {
         bar.dataset.sig = sig;
@@ -1950,12 +1956,35 @@ function _mediaScaffold() {
 function renderGroupBuilder() {
     const pane = _mediaScaffold();
     if (!pane) return;
-    if (NATIVE_GROUP_PROVIDERS[_mediaTab]) {
+    if (_mediaTab === 'groups') {
         _stopSyncPoll();
-        renderNativeBuilder(_mediaTab);   // cheap + depends on _players
+        renderNativeBuilder(_groupProvider);   // cheap + depends on _players
     } else if (pane.dataset.tab !== 'sync') {
         renderSyncPane();             // first show / tab switch only
     }
+}
+
+function setGroupProvider(id) {
+    _groupProvider = id;
+    renderGroupBuilder();
+}
+
+// Ecosystems that can group natively and are actually on the network. The
+// chooser only appears when there is a choice to make.
+function _groupProviders() {
+    return Object.keys(NATIVE_GROUP_PROVIDERS)
+        .filter(id => _players.some(p => p.provider === id && !p.is_group));
+}
+
+function _renderGroupProviderPills(ids) {
+    if (ids.length < 2) return '';
+    return `<ul class="nav nav-pills mb-2 flex-nowrap zmm-group-tabs">
+        ${ids.map(id => `
+          <li class="nav-item">
+            <button class="nav-link py-0 px-2 small text-nowrap${_groupProvider === id ? ' active' : ''}"
+                    onclick="window.mediaGroupProvider('${id}')">${esc(NATIVE_GROUP_PROVIDERS[id])}</button>
+          </li>`).join('')}
+      </ul>`;
 }
 
 // Ecosystems whose speakers group natively (the provider implements
@@ -1965,17 +1994,20 @@ const NATIVE_GROUP_PROVIDERS = { wiim: 'WiiM', sonos: 'Sonos' };
 function renderNativeBuilder(provider) {
     const el = document.getElementById('mediaGroupPane');
     if (!el) return;
-    el.dataset.tab = provider;
-    const label = NATIVE_GROUP_PROVIDERS[provider];
+    el.dataset.tab = 'groups';
+    const ids = _groupProviders();
+    if (ids.length && !ids.includes(provider)) provider = _groupProvider = ids[0];
+    const chooser = _renderGroupProviderPills(ids);
+    const label = NATIVE_GROUP_PROVIDERS[provider] || 'speaker';
     const players = _players.filter(p => p.provider === provider && p.available && !p.is_group);
     if (players.length < 2) {
-        el.innerHTML = `<div class="alert alert-info mb-0">
+        el.innerHTML = chooser + `<div class="alert alert-info mb-0">
             Native grouping here needs at least two available ${label} players.
             <div class="small mt-1">Google Cast speakers: use the <em>OpenZone</em> tab
             (no Google Home needed), or a Google-Home group (appears automatically).</div></div>`;
         return;
     }
-    el.innerHTML = `
+    el.innerHTML = chooser + `
       <div class="mb-2 fw-semibold"><i class="far fa-object-group me-1"></i> Build a ${label} group</div>
       <p class="small text-muted">Pick a master (plays the source) and the members to sync to it.</p>
       <div class="mb-2">
