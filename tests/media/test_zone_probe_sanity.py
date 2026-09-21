@@ -17,6 +17,7 @@ import time
 from harness import Checker, REPO  # noqa: F401  (REPO sets sys.path)
 
 from modules.media import cast_sync
+from modules.media import cast_sync as cs
 from modules.media.cast_sync import OpenZone, _Stream, PROBE_MODEL_FACTOR
 
 # Observed on one zone across ten sessions. The Pixel Tablet's ~6.6 s is real
@@ -128,14 +129,53 @@ def run() -> Checker:
             c.check(f"{name}: a mean would have admitted them",
                     mean * PROBE_MODEL_FACTOR > 7900, mean)
 
-        c.section("a floor relaxes upward if the device really did slow down")
+        c.section("a floor rises again once the fast sessions age out")
         st = _stream(z, "slow", "Slowed Down")
         m = z._model.setdefault(st.player_id, {})
         z._learn_probe_floor(m, 0.5)
-        for _ in range(40):
+        c.check("one fast session sets it", m["probe_floor_s"] == 0.5)
+        for _ in range(cs.PROBE_HISTORY - 1):
             z._learn_probe_floor(m, 2.0)
-        c.check("it climbs toward the new truth",
-                1.9 < m["probe_floor_s"] <= 2.0, m["probe_floor_s"])
+        c.check("it is still held down while that session is in the window",
+                m["probe_floor_s"] == 0.5, m["probe_floor_s"])
+        z._learn_probe_floor(m, 2.0)
+        c.check("and climbs once it falls out", m["probe_floor_s"] == 2.0,
+                m["probe_floor_s"])
+        c.check("the window is bounded",
+                len(m["probe_recent"]) == cs.PROBE_HISTORY, m["probe_recent"])
+
+        c.section("a store contaminated before the floor existed converges")
+        # The live model at the time this was written: a mean of honest and
+        # slow-start readings, no history. The readings are the real arrival
+        # order for each speaker.
+        live = {"Kitchen Right": 2.676, "Kitchen Left": 1.260,
+                "Pixel Tablet": 6.64, "WiiM Ultra": 0.65}
+        arrivals = {
+            "Kitchen Right": [8.032, 0.806, 7.913, 0.500, 0.586, 1.082, 0.454],
+            "Kitchen Left": [7.972, 0.545, 0.765, 7.848, 0.455, 1.113, 0.646],
+            "Pixel Tablet": [6.605, 6.634, 6.692, 6.608, 6.778, 6.616, 6.624],
+            "WiiM Ultra": [0.628, 0.613, 0.641, 0.648, 0.624, 0.677, 0.620],
+        }
+        for name, prior in live.items():
+            st = _stream(z, "live-" + name, name)
+            m = z._model.setdefault(st.player_id, {})
+            m["probe_s"] = prior
+            admitted_slow, settled_at = [], None
+            for i, r in enumerate(arrivals[name], 1):
+                lat, trusted = z._sane_probe(st, r)
+                if trusted:
+                    z._learn_probe_floor(m, r)
+                    if r > 7.0:
+                        admitted_slow.append(i)
+                if settled_at is None and m.get("probe_floor_s", 9) < 7.0:
+                    settled_at = i
+            c.check(f"{name}: settles within two sessions",
+                    settled_at is not None and settled_at <= 2, settled_at)
+            c.check(f"{name}: and admits no slow start after that",
+                    all(i <= 2 for i in admitted_slow), admitted_slow)
+        c.check("a genuinely deep pipeline was never once rejected",
+                z._model["cast:live-Pixel Tablet"]["probe_floor_s"] == 6.605,
+                z._model["cast:live-Pixel Tablet"])
 
         # --- the target-lag bound ------------------------------------------
         c.section("one unserveable reading may not set the zone's target")

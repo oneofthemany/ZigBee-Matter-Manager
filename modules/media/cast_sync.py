@@ -136,13 +136,13 @@ PROBE_MODEL_FACTOR = 3.0
 # ...and only once the reading is large in absolute terms. Below this a bad
 # probe cannot drag the group far enough to be worth second-guessing.
 PROBE_MODEL_MIN_S = 1.0
-# How far the learned floor may rise in one session. A slow start only ever
-# *adds* to a probe, so the pipeline is the floor of what a device has been
-# seen to do, not the average of it — an average of a one-sidedly contaminated
-# reading sits between the two answers and recognises neither. The leak keeps
-# a floor from pinning a device forever to one lucky session.
-PROBE_FLOOR_LEAK = 1.05
-PROBE_FLOOR_LEAK_S = 0.010
+# Sessions of readings the floor is taken over. A slow start only ever *adds*
+# to a probe, so the pipeline is the floor of what a device has been seen to
+# do, never the average — an average of a one-sidedly contaminated population
+# sits between the two answers and recognises neither. A window rather than a
+# running minimum so a device that genuinely slowed is not pinned forever to
+# one lucky session: the old readings age out and the floor rises with them.
+PROBE_HISTORY = 8
 
 # Cap on the lead a reload opens to re-measure one device (open-zone.md §7.5).
 # The wait is that speaker playing silence; past it the model is the answer.
@@ -2356,22 +2356,33 @@ class OpenZone:
 
     @staticmethod
     def _learn_probe_floor(m: dict, measured: float) -> None:
-        """Track the floor of a device's probe readings (open-zone.md §7.3).
+        """Keep the recent probe readings, and the floor over them
+        (open-zone.md §7.3).
 
         A probe reads startup delay and pipeline latency as one number, and
         startup delay is one-sided: it can only make the reading larger, never
         smaller, because nothing starts faster than its own pipeline. So the
-        pipeline is the smallest reading the device has been seen to give, and
-        the average — which is what ``probe_s`` is — sits between the two
-        populations describing neither. The floor is what a later reading is
-        judged against (``_sane_probe``); it relaxes upward a little each
-        session so a device whose firmware genuinely slowed down is not held
-        to one fast measurement forever.
+        pipeline is the smallest reading in the window, and the average —
+        which is what ``probe_s`` is — sits between the two populations and
+        describes neither. Keeping the readings rather than a running minimum
+        is what lets the floor rise again: a device that genuinely slowed has
+        its fast sessions age out of the window.
+
+        A store written before this existed carries only the average, which
+        the same slow starts contaminated upward. It seeds the window as one
+        reading, so the floor can start no higher than it and then falls as
+        honest readings arrive.
         """
-        floor = m.get("probe_floor_s")
-        m["probe_floor_s"] = round(
-            measured if floor is None
-            else min(measured, floor * PROBE_FLOOR_LEAK + PROBE_FLOOR_LEAK_S), 4)
+        hist = m.get("probe_recent")
+        if not isinstance(hist, list) or not hist:
+            prior = m.get("probe_s")
+            hist = ([round(float(prior), 4)]
+                    if isinstance(prior, (int, float)) else [])
+        hist = [float(v) for v in hist if isinstance(v, (int, float))]
+        hist.append(round(measured, 4))
+        del hist[:-PROBE_HISTORY]
+        m["probe_recent"] = hist
+        m["probe_floor_s"] = round(min(hist), 4)
 
     def _acquiring(self) -> bool:
         """True while any device's drift-fit baseline is still building
