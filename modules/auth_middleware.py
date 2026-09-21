@@ -379,21 +379,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
 def _cross_site_write(request: Request, principal: "Principal") -> bool:
     """A cookie-authenticated write that a browser says came from another site.
 
+    Only Sec-Fetch-Site counts. Comparing Origin to Host refuses every write
+    from behind a tunnel that rewrites Host, and `Origin: null` is what a
+    WebView sends — both locked mobile clients out. SameSite=Lax on the cookie
+    is the actual defence; this is the second layer, so it fails open.
+
     Bearer tokens are exempt: the browser never attaches them by itself.
-    Sec-Fetch-Site is checked first because it does not depend on the Host
-    header, which a tunnel or proxy may rewrite. A request carrying neither
-    header is not from a browser, so it cannot be a forged one.
     """
     if principal.auth_method != "cookie" or request.method in READ_METHODS:
         return False
     site = request.headers.get("sec-fetch-site")
-    if site is not None:
-        return site not in ("same-origin", "none")
-    origin = request.headers.get("origin")
-    if not origin or origin == "null":
-        return origin == "null"
-    host = request.headers.get("host", "")
-    return origin.split("://", 1)[-1].rstrip("/") != host
+    return site is not None and site not in ("same-origin", "none")
 
 
 def require_scope(scope: str):

@@ -60,30 +60,24 @@ def run() -> Checker:
         c.section("the UI's own writes still work")
         c.check("same-origin fetch", post(**{"sec-fetch-site": "same-origin"}) == 200)
         c.check("user-initiated navigation", post(**{"sec-fetch-site": "none"}) == 200)
-        c.check("Origin matching Host, no Sec-Fetch-Site",
-                post(origin="https://testserver") == 200)
+        c.check("no Sec-Fetch-Site at all (older iOS Safari, WebViews)",
+                post() == 200)
+        c.check("behind a tunnel: Origin not matching Host",
+                post(origin="https://hub.example.com") == 200)
+        c.check("Origin null, as a WebView sends", post(origin="null") == 200)
 
         c.section("forged writes are refused")
         c.check("cross-site", post(**{"sec-fetch-site": "cross-site"}) == 403)
         c.check("same-site sibling subdomain",
                 post(**{"sec-fetch-site": "same-site"}) == 403)
-        c.check("foreign Origin", post(origin="https://evil.example") == 403)
-        c.check("opaque null Origin (sandboxed frame)", post(origin="null") == 403)
         r = client.post("/api/heating/zones", headers={"sec-fetch-site": "cross-site"})
         c.check("the refusal says why", r.json().get("csrf") is True, r.json())
-
-        c.section("Sec-Fetch-Site wins over a rewritten Host")
-        # Behind a tunnel Host may not match Origin; the browser's own verdict
-        # is what counts.
-        c.check("same-origin with mismatched Origin/Host is allowed",
-                post(**{"sec-fetch-site": "same-origin",
-                        "origin": "https://hub.example.com"}) == 200)
 
         c.section("what the check leaves alone")
         c.check("reads are never refused",
                 client.get("/api/heating/zones",
                            headers={"sec-fetch-site": "cross-site"}).status_code == 200)
-        c.check("a non-browser client with a cookie and no headers", post() == 200)
+        c.check("a script with a cookie and no headers", post() == 200)
 
         client.cookies.clear()
         r = client.post("/api/heating/zones",
