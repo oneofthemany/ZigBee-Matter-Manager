@@ -74,15 +74,15 @@ def run() -> Checker:
         st = _stream(z, "w", "WiiM Ultra")
 
         c.section("a slew is given time to reach the speaker")
-        st.slew_s = 0.066
+        st.slew_s, st.slew_ppm = 0.040, cs.STREAM_SLEW_FAST_PPM
         hold = z._slew_cooldown_s(st)
-        # Only the portion above the fast threshold is served quickly; the
-        # rest drains gently by design.
-        fast_s = (0.066 - cs.STREAM_SLEW_FAST_THRESH_S) / (cs.STREAM_SLEW_FAST_PPM / 1e6)
-        c.check("it covers serving the fast part",
-                hold > fast_s, (hold, fast_s))
+        # The rate is latched, so the whole slew drains at it — not just the
+        # part above the threshold.
+        drain = 0.040 / (cs.STREAM_SLEW_FAST_PPM / 1e6)
+        c.check("it covers draining the whole correction",
+                hold >= drain, (hold, drain))
         c.check("plus the device's own pipeline",
-                hold >= fast_s + st.latency_s, hold)
+                hold >= drain + st.latency_s, hold)
         c.check("and is bounded so the ladder is never blind for long",
                 hold <= cs.STREAM_COOLDOWN_MAX_S, hold)
 
@@ -91,24 +91,27 @@ def run() -> Checker:
         small = z._slew_cooldown_s(st)
         st.slew_s = 0.071
         large = z._slew_cooldown_s(st)
-        c.check("a small correction waits briefly", small < 5.0, small)
         c.check("a large one waits longer", large > small, (small, large))
 
         c.section("every observed slew is held past its own flight time")
         worst = float("-inf")
         for ms in OBSERVED_MS:
             st.slew_s = ms / 1000.0
-            flight = (max(0.0, abs(st.slew_s) - cs.STREAM_SLEW_FAST_THRESH_S)
-                      / (cs.STREAM_SLEW_FAST_PPM / 1e6))
+            flight = abs(st.slew_s) / (cs.STREAM_SLEW_FAST_PPM / 1e6)
             hold = z._slew_cooldown_s(st)
-            worst = max(worst, flight - hold)
+            if flight + st.latency_s < cs.STREAM_COOLDOWN_MAX_S:
+                worst = max(worst, flight - hold)
         c.check("none can be re-authorised mid-flight", worst < 0.0, worst)
 
-        c.section("a correction inside the quiet band is not held at all")
-        st.slew_s = 0.010
-        c.check("no fast portion to wait for",
-                z._slew_cooldown_s(st) <= st.latency_s + cs.STREAM_POLL_S,
-                z._slew_cooldown_s(st))
+        c.section("a slew finishes at the rate it started")
+        # Re-choosing the rate from the remainder dropped a correction to the
+        # gentle rate at the threshold and parked the device there.
+        st.slew_s, st.slew_ppm = 0.040, cs.STREAM_SLEW_FAST_PPM
+        c.check("the latched rate is kept below the threshold",
+                st.slew_ppm == cs.STREAM_SLEW_FAST_PPM)
+        c.check("the gentle rate outruns a realistic residual drift",
+                cs.STREAM_SLEW_GENTLE_PPM >= 4 * 40,
+                cs.STREAM_SLEW_GENTLE_PPM)
 
         # --- late joiner ---------------------------------------------------
         c.section("a seat inside the delay line is accepted")

@@ -85,7 +85,13 @@ STREAM_JUMP_MIN_S = 0.10         # hard resync only beyond this
 # about to serve. The bare head is the one seat a reader must never get (§A.2).
 STREAM_HEAD_GUARD_S = _src.XFADE_READER_MARGIN_S + STREAM_BLOCK_S
 STREAM_SLEW_FAST_PPM = 1000.0    # |offset| > fast threshold (≈1.7 cents, inaudible)
-STREAM_SLEW_GENTLE_PPM = 20.0    # steady-state slew cap
+# Steady-state slew cap. It has to *outrun* the drift left over after the
+# rate term, not merely nudge against it: at 20 ppm it was the same order
+# as that residual, so inside the quiet band the correction had no
+# authority over the disturbance and the offset settled wherever the two
+# balanced — tens of ms, held there indefinitely. 0.02% of pitch, about
+# a third of a cent, well under a tenth of what anyone can hear.
+STREAM_SLEW_GENTLE_PPM = 200.0
 STREAM_SLEW_FAST_THRESH_S = 0.030
 STREAM_SLEW_MAX_S = STREAM_JUMP_MIN_S
 STREAM_RATE_MAX_PPM = 50.0
@@ -335,6 +341,12 @@ class _Stream:
         self.stats: dict = {}
         self.rate_ppm: float = 0.0   # >0 = device clock slow, serve faster
         self.rate_prior: float = 0.0
+        self.slew_ppm: float = 0.0   # rate the pending slew was issued at
+        # No new slew until the pending one has been served and played out.
+        # A hold on *deciding*, not on measuring: the drift fit adds deliberate
+        # moves back (`moved_s`), so a slew in flight does not spoil it, and
+        # skipping the poll outright would starve it (§7.2).
+        self.slew_hold_until: float = 0.0
         self.slew_s: float = 0.0     # pending offset to slew away (s, >0 =
         self.moved_s: float = 0.0
         self.err_hist: List[float] = []   # last 3 poll errors (median filter)
@@ -1014,8 +1026,8 @@ class OpenZone:
         remainder drains at the gentle rate by design, and the branch that
         owns that case does not issue another fast slew.
         """
-        fast = max(0.0, abs(st.slew_s) - STREAM_SLEW_FAST_THRESH_S)
-        drain = fast / (STREAM_SLEW_FAST_PPM / 1e6)
+        ppm = st.slew_ppm or STREAM_SLEW_FAST_PPM
+        drain = abs(st.slew_s) / (ppm / 1e6)
         return min(STREAM_COOLDOWN_MAX_S,
                    drain + st.latency_s + STREAM_POLL_S)
 
@@ -2019,6 +2031,13 @@ class OpenZone:
                         continue
                     if time.monotonic() < st.cooldown_until:
                         continue
+                    if st.slew_hold_until and (time.monotonic()
+                                               >= st.slew_hold_until):
+                        # The slew has landed. Readings taken while it was in
+                        # flight describe the offset it was issued for, not the
+                        # one it left behind.
+                        st.slew_hold_until = 0.0
+                        st.err_hist = []
                     if st.natural_lag is None:
                         st.natural_lag = lag
                         if st.learn_lag:
@@ -2110,6 +2129,8 @@ class OpenZone:
                             st.shift += step
                             st.moved_s += step / RATE
                             st.slew_s = 0.0   # jump supersedes any pending slew
+                            st.slew_ppm = 0.0
+                            st.slew_hold_until = 0.0
                             if st.resampler is not None:
                                 st.resampler.reset()
                             st.resyncs += 1
@@ -2143,22 +2164,22 @@ class OpenZone:
                                 st, f"{st.name} {med3 * 1000:+.0f} ms out with "
                                     f"only {shortfall * 1000:.0f} ms more "
                                     f"timeline than the reader can reach")
-                    elif abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S \
-                            or len(st.err_hist) < 2:
+                    elif (time.monotonic() < st.slew_hold_until
+                          or abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S
+                          or len(st.err_hist) < 2):
                         self._pll_update(st, lag)
                     elif abs(med3) > STREAM_SLEW_FAST_THRESH_S:
                         fresh = abs(med3 - st.slew_s) > 0.010
                         # Ceiling keeps the jump rung armed (§A.4).
                         st.slew_s = max(-STREAM_SLEW_MAX_S,
                                         min(STREAM_SLEW_MAX_S, med3))
+                        st.slew_ppm = STREAM_SLEW_FAST_PPM
                         if fresh:
                             # Nothing may re-decide until this has actually
                             # reached the speaker, or the reading it was issued
                             # for authorises it a second time (_slew_cooldown_s).
-                            st.cooldown_until = max(
-                                st.cooldown_until,
-                                time.monotonic() + self._slew_cooldown_s(st))
-                            st.err_hist = []
+                            st.slew_hold_until = (time.monotonic()
+                                                  + self._slew_cooldown_s(st))
                             batch.append(self._sample_row(st, "slew", lag=lag,
                                                           error=error))
                             logger.info(f"Sync stream slew {st.name}: "
@@ -2174,6 +2195,7 @@ class OpenZone:
                         # was aimed at is gone, so it is not evidence about the
                         # next one.
                         st.slew_s = med3
+                        st.slew_ppm = STREAM_SLEW_GENTLE_PPM
                         st.futile_steps = 0
                         st.last_step_error = None
                         self._pll_update(st, lag)
@@ -2921,6 +2943,8 @@ class OpenZone:
         st.err_hist = []
         st.lag_hist = []
         st.slew_s = 0.0
+        st.slew_ppm = 0.0
+        st.slew_hold_until = 0.0
         st.futile_steps = 0
         st.last_step_error = None
         st.interrupted_since = None
@@ -3173,6 +3197,8 @@ class OpenZone:
                 st.err_hist = []
                 st.lag_hist = []
                 st.slew_s = 0.0
+                st.slew_ppm = 0.0
+                st.slew_hold_until = 0.0
                 st.acquired = False
                 st.futile_steps = 0
                 st.last_step_error = None
@@ -3274,6 +3300,8 @@ class OpenZone:
         st.err_hist = []
         st.lag_hist = []
         st.slew_s = 0.0
+        st.slew_ppm = 0.0
+        st.slew_hold_until = 0.0
         st.acquired = False          # re-acquiring: step small offsets away
         st.futile_steps = 0          # a fresh LOAD is a fresh relationship
         st.last_step_error = None
@@ -3377,9 +3405,12 @@ class OpenZone:
                     continue
                 rm = 0.0
                 if st.slew_s:
-                    ppm = (STREAM_SLEW_FAST_PPM
-                           if abs(st.slew_s) > STREAM_SLEW_FAST_THRESH_S
-                           else STREAM_SLEW_GENTLE_PPM)
+                    # The rate a slew was issued at, not one re-chosen from
+                    # what is left of it: re-choosing drops a correction to the
+                    # gentle rate the moment its remainder falls under the
+                    # threshold, and the gentle rate cannot clear that
+                    # remainder in any useful time (§7.1).
+                    ppm = st.slew_ppm or STREAM_SLEW_GENTLE_PPM
                     lim = (block / RATE) * ppm / 1e6
                     rm = max(-lim, min(lim, st.slew_s))
                 adv = block * (1.0 + st.rate_ppm / 1e6) + rm * RATE
