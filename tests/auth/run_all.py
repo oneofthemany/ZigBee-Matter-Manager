@@ -25,7 +25,8 @@ PY_MODULES = ["test_scope_coverage"]
 
 #: Needs FastAPI, so it is skipped rather than failed on a bare host. CI has
 #: the lockfile installed and runs it.
-NEEDS_FASTAPI = ["test_middleware_enforcement"]
+NEEDS_FASTAPI = ["test_middleware_enforcement", "test_security_headers",
+                 "test_recovery_cli"]
 
 
 def main() -> int:

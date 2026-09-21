@@ -133,6 +133,7 @@ ANONYMOUS_PATHS: Tuple[str, ...] = (
     "/api/auth/login/mfa",       # second factor — no principal exists yet
     "/api/auth/whoami",          # returns 200 anonymous if no creds
     "/api/system/health",        # health check used by container
+    "/api/csp/report",           # reports carry no credentials
 )
 
 ANONYMOUS_PREFIXES: Tuple[str, ...] = (
@@ -198,17 +199,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     UNLESS auth is in 'soft mode' (legacy compatibility).
     """
 
-    def __init__(self, app, auth_manager: AuthManager, enforce: bool = True,
-                 enforce_scopes: bool = True):
+    def __init__(self, app, auth_manager: AuthManager, enforce: bool = True):
         super().__init__(app)
         self.auth = auth_manager
         #: Authentication. False is the legacy migration mode and lets
-        #: anonymous requests straight through — it is not a scope switch.
+        #: anonymous requests straight through.
         self.enforce = enforce
-        #: Authorisation. False still authenticates (401 for anonymous) but
-        #: logs scope denials instead of returning 403, so a deployment can
-        #: find unmapped routes without opening the app.
-        self.enforce_scopes = enforce_scopes
         self._secret_path = str(auth_manager.config_path)
         self._cached_secret: Optional[bytes] = None
         self._cached_secret_ino: Optional[int] = None
@@ -292,13 +288,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Authorisation. Deny by default: an /api/ path with no entry in
-        # modules/auth_scopes.py resolves to `admin`, so an unguarded new
-        # route is closed rather than open. Route-level require_scope
-        # dependencies still run and handle the finer cases the table cannot
-        # express (presence:write:<id>, admin-only subpaths).
+        # Deny by default; require_scope deps still run as the finer check.
         required = self._denied_scope(request, path, principal)
-        if required is not None and self.enforce_scopes:
+        if required is not None:
             return JSONResponse(
                 status_code=403,
                 content={
@@ -310,20 +302,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     def _denied_scope(self, request: Request, path: str,
                       principal: "Principal") -> Optional[str]:
-        """The scope this request lacks, or None if it is allowed.
+        """Scope this request lacks, or None if allowed.
 
-        Logs the refusal, so soft mode produces the same record as enforcing
-        mode and a migration can be read straight out of the log.
+        The log names the scope because granting it is the fix — an admin
+        passes every check, so only a non-admin can land here.
         """
         required = scope_for_path(path, request.method)
         if required is None or required == AUTHENTICATED:
             return None
         if scope_matches(required, principal.scopes):
             return None
-        verb = "denied" if self.enforce_scopes else "would be denied"
         logger.warning(
-            f"[auth{'' if self.enforce_scopes else '-soft'}] "
-            f"{principal.user.username} {verb} "
+            f"[auth] {principal.user.username} denied "
             f"{request.method} {path}: needs {required}"
         )
         return required

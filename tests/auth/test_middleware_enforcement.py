@@ -1,9 +1,6 @@
 """
-The middleware actually refuses the request — not just the table saying it should.
-
-test_scope_coverage proves the table resolves correctly; this drives real
-requests through the real AuthMiddleware with a real AuthManager and real
-bearer tokens, because a correct table wired in wrongly is still an open door.
+The middleware refuses the request, not just the table saying it should — a
+correct table wired in wrongly is still an open door.
 
 Needs FastAPI, so run_all skips it on a bare host (AGENTS.md §The dev box).
 """
@@ -23,7 +20,7 @@ from modules.auth import AuthManager, DEFAULT_GROUPS, Group
 from modules.auth_middleware import AuthMiddleware
 
 
-def _build(tmp: Path, enforce_scopes: bool = True):
+def _build(tmp: Path):
     """An app carrying one route per scope class, guarded only by the middleware."""
     auth = AuthManager(config_path=tmp / "auth.yaml")
     auth.load()
@@ -34,8 +31,7 @@ def _build(tmp: Path, enforce_scopes: bool = True):
         await auth.create_user("boss", "correct-horse", groups=["admins"])
         await auth.create_user("resident", "correct-horse", groups=["users"])
         await auth.create_user("guest", "correct-horse", groups=["viewers"])
-        # A companion phone: the exact principal the roadmap says must not be
-        # able to reach the editor.
+        # A companion phone: must not be able to reach the editor.
         await auth.create_user("phone", None, extra_scopes=["presence:read:phone",
                                                             "presence:write:phone"])
         out = {}
@@ -47,8 +43,7 @@ def _build(tmp: Path, enforce_scopes: bool = True):
 
     app = FastAPI()
 
-    # Deliberately undecorated: the middleware is the only thing standing
-    # between these and the caller, which is the property under test.
+    # Undecorated: the middleware is the only gate, which is the point.
     for path in ("/api/editor/save", "/api/system/restart", "/api/backup/restore",
                  "/api/config/save", "/api/heating/zones", "/api/media/play",
                  "/api/security/locks/front/unlock", "/api/brand_new_thing/go"):
@@ -57,8 +52,7 @@ def _build(tmp: Path, enforce_scopes: bool = True):
                  "/api/system/status-ish", "/api/auth/tokens"):
         app.get(path)(lambda: {"ran": True})
 
-    app.add_middleware(AuthMiddleware, auth_manager=auth, enforce=True,
-                       enforce_scopes=enforce_scopes)
+    app.add_middleware(AuthMiddleware, auth_manager=auth, enforce=True)
     return TestClient(app, raise_server_exceptions=False), tokens
 
 
@@ -131,30 +125,6 @@ def run() -> Checker:
         r = post("guest", "/api/heating/zones")
         c.check("403 names the missing scope",
                 r.json().get("required_scope") == "heating:write", r.json())
-
-    # Soft mode is a migration aid, not a back door: it must stop refusing
-    # on scope while still refusing anonymous callers outright.
-    with tempfile.TemporaryDirectory() as td:
-        client, tok = _build(Path(td), enforce_scopes=False)
-
-        c.section("soft mode logs instead of refusing")
-        r = client.post("/api/editor/save",
-                        headers={"Authorization": f"Bearer {tok['phone']}"})
-        c.check("phone token now passes the scope gate", r.status_code == 200,
-                r.status_code)
-        r = client.post("/api/brand_new_thing/go",
-                        headers={"Authorization": f"Bearer {tok['guest']}"})
-        c.check("an unmapped route passes too", r.status_code == 200,
-                r.status_code)
-
-        c.section("soft mode does not disable authentication")
-        c.check("anonymous is still refused",
-                client.post("/api/editor/save").status_code == 401,
-                client.post("/api/editor/save").status_code)
-        c.check("a junk bearer token is still refused",
-                client.post("/api/editor/save",
-                            headers={"Authorization": "Bearer nope"}
-                            ).status_code == 401)
 
     return c
 

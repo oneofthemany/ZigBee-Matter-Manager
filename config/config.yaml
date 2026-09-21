@@ -133,7 +133,7 @@ heating:
           external_temp_push_interval_sec: 300
           freshness_threshold_minutes: 15
           trvs:
-            - ieee: "54:ef:44:10:00:67:3e:a6"
+            - ieee: "54:ef:44:..."
               window_detection: true
               child_lock: false
               valve_detection: true
@@ -171,18 +171,6 @@ ota:
   enabled: false
   extra_providers:
     - type: # z2m as an example
-
-auth:
-  # Authorisation. When true (the default) every /api/ request must carry the
-  # scope that modules/auth_scopes.py maps its path to, and an unmapped path
-  # requires admin — so a new route is closed until somebody maps it.
-  #
-  # Set false ONLY while migrating: requests are still authenticated, but a
-  # missing scope is logged as "[auth-soft] would be denied" instead of
-  # refused. Run it this way once, exercise every tab, map whatever the log
-  # names in auth_scopes.py, then put it back. Deliberately not exposed in
-  # Settings → Config: it is a migration switch, not a preference.
-  enforce_scopes: true
 
 security:
   network:

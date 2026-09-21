@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from modules.dongle_jedi import DongleJedi, list_serial_ports, ScanProgress
@@ -65,7 +65,8 @@ async def _broadcast_scan_progress(progress: ScanProgress):
 
 
 @router.post("/create-admin")
-async def create_first_admin(req: CreateAdminRequest, response: Response):
+async def create_first_admin(req: CreateAdminRequest, request: Request,
+                             response: Response):
     from modules.auth import get_auth_manager, validate_password
     from modules.auth_middleware import issue_session_cookie, _derive_session_secret
 
@@ -98,10 +99,14 @@ async def create_first_admin(req: CreateAdminRequest, response: Response):
     # Auto-login: issue session cookie so the wizard can keep going
     secret = _derive_session_secret(str(auth.config_path))
     cookie = issue_session_cookie(user.username, secret)
+    # Secure tracks the client-facing scheme, as routes/auth_routes.py does.
+    from modules.auth_network import get_network_resolver
+    resolver = get_network_resolver()
     response.set_cookie(
         key="zmm_session", value=cookie,
         max_age=30 * 24 * 3600, httponly=True,
-        samesite="lax", secure=False, path="/",
+        samesite="lax", path="/",
+        secure=bool(resolver and resolver.request_is_https(request)),
     )
     return {"success": True, "username": user.username}
 

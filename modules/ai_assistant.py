@@ -66,6 +66,12 @@ class AIAssistant:
         # in-flight request per assistant keeps every call inside its budget.
         self._lock = asyncio.Lock()
 
+        if defaults["requires_key"] and not self.api_key:
+            logger.warning(f"AI provider '{self.provider}' requires an API key")
+
+        logger.info(f"AI Assistant initialised: provider={self.provider} "
+                    f"model={self.model} base_url={self.base_url}")
+
     def _is_local(self) -> bool:
         return any(h in self.base_url for h in
                    ("127.0.0.1", "localhost", "10.0.2.2"))
@@ -74,12 +80,6 @@ class AIAssistant:
         # CPU-bound local models legitimately take minutes on a long prompt;
         # remote APIs that haven't answered in 2 minutes never will.
         return 480.0 if self._is_local() else 120.0
-
-        if defaults["requires_key"] and not self.api_key:
-            logger.warning(f"AI provider '{self.provider}' requires an API key")
-
-        logger.info(f"AI Assistant initialised: provider={self.provider} "
-                    f"model={self.model} base_url={self.base_url}")
 
     async def chat(self, system_prompt: str, user_message: str,
                    temperature: Optional[float] = None,

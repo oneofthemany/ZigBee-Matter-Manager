@@ -1,15 +1,17 @@
 """
-Every /api/ route resolves to a scope, and the scopes it resolves to are real.
+Every /api/ route resolves to a scope, and those scopes are real.
 
-The point of the table in modules/auth_scopes.py is that adding a route cannot
-quietly add an unguarded route. These checks are what make that true: a new
-prefix nobody mapped lands on `admin` and shows up here as a deliberate
-decision to make, not as a hole.
+Adding a route must not quietly add an unguarded one: an unmapped prefix
+lands on `admin` and surfaces here as a decision to make, not a hole.
 """
 
 from __future__ import annotations
 
-from harness import Checker, frontend_api_paths, registered_routes
+import re
+
+from harness import (
+    Checker, frontend_api_paths, registered_routes, source_files,
+)
 
 from modules.auth import KNOWN_SCOPES, DEFAULT_GROUPS, scope_matches
 from modules.auth_scopes import (
@@ -19,8 +21,8 @@ from modules.auth_scopes import (
     scope_for_path,
 )
 
-#: Routes that resolve to `admin` only because no prefix matches them. Empty
-#: on purpose: an entry here is a route somebody has not classified yet.
+
+#: Empty on purpose: an entry is a route nobody has classified yet.
 EXPECTED_UNMAPPED: set = set()
 
 
@@ -29,10 +31,7 @@ def run() -> Checker:
     routes = registered_routes()
 
     c.section("route table is intact")
-    # Pinned so a change in registration style cannot silently shrink the set
-    # the rest of this file checks. The first version of this scan looked only
-    # in routes/ and missed the 100 routes the modules/*_api.py files register,
-    # which is exactly the failure these floors exist to catch.
+    # Pinned: a scan that looked only in routes/ once missed 100 routes.
     c.check("source scan finds the whole route surface",
             len(routes) >= 590, len(routes))
     api = [(m, p, f) for m, p, f in routes if p.startswith("/api/")]
@@ -42,6 +41,14 @@ def run() -> Checker:
              "zones_api.py"} <= {f for _, _, f in api},
             sorted({f for _, _, f in api})[:8])
 
+    c.section("no route hides from the scanner")
+    # A constant path is invisible to the scanner, so never coverage-checked.
+    nonliteral = re.findall(
+        r'@(?:app|router)\.(?:get|post|put|delete|patch|websocket)\(\s*'
+        r'(?![rf]?["\'])([A-Za-z_][A-Za-z0-9_]*)',
+        "\n".join(f.read_text() for f in source_files()))
+    c.check("every route path is a literal the scanner can read",
+            not nonliteral, sorted(set(nonliteral)))
     c.section("every /api/ route resolves to a scope")
     unmapped = []
     for method, path, src in api:
@@ -146,8 +153,7 @@ def run() -> Checker:
             and not scope_matches(s, granted)
             and not s.startswith("admin")
         })
-        # Everything left must be a system:write path — those are admin work
-        # by design, not a lockout.
+        # What remains must be system:write: admin work, not a lockout.
         leaked = [d for d in denied
                   if scope_for_path(d.split(" ", 1)[1],
                                     d.split(" ", 1)[0]) != "system:write"]

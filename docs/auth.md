@@ -86,6 +86,44 @@ under one of those prefixes without its own check is open to any principal.
 prefix, or if the shipped `users` / `viewers` groups lose access to ordinary
 parts of the app.
 
+**There is no switch to turn this off, by design.** An admin satisfies every
+check — `scope_matches` short-circuits on `admin`, and an unmapped path asks
+for `admin` — so no table, however wrong, can lock an admin out. Only a
+non-admin can be refused, and the refusal names the remedy:
+
+```
+[auth] alice denied POST /api/heating/zones: needs heating:write
+```
+
+Grant that scope to the user or their group in Settings → Users. A global
+"stop enforcing" flag would buy nothing that granting a scope does not, while
+leaving the hub silently unauthorised if anyone forgot to put it back.
+
+### Headers
+
+Every response carries `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and two
+Content-Security-Policy headers (`modules/security_headers.py`):
+
+- **Enforced:** `frame-ancestors`, `base-uri`, `form-action`, `object-src`.
+  None touch inline script or style, so they are safe against the SPA as it
+  stands, and `frame-ancestors` is what stops the UI being framed on a
+  hostile page.
+- **Report-Only:** the strict target, including `script-src 'self'`.
+  `static/` still has inline handlers and inline `<script>` blocks, so
+  enforcing it would break the UI. Violations post to `/api/csp/report`
+  (anonymous, rate-limited, size-capped) and log as `[csp] ... blocked ...`,
+  which is the list of what is left to fix.
+
+Promoting the target to enforced is a code change, not a setting. It is safe
+only once `static/` is clean, and enforcing it early breaks the SPA including
+the settings page — leaving no way back in.
+
+There is no `Strict-Transport-Security`. HSTS prevents a downgrade to plain
+HTTP, but the first-boot certificate is self-signed, so the header would only
+remove the browser's click-through and strand the user on their own hub for
+the `max-age`. Behind the tunnel, the edge sends HSTS itself.
+
 ### Tokens
 
 Long-lived bearer credentials. A token is owned by one user, can be a
@@ -96,6 +134,27 @@ other devices the user owns.
 Token plaintext is shown ONCE at issue time. Copy it immediately — ZMM
 only stores its SHA-256 hash, so a forgotten token can't be recovered;
 you'd need to revoke it and issue a new one.
+
+## Locked out
+
+`auth_recover.py` runs inside the container and never over the network. It
+needs write access to `data/auth.yaml`, which is already root-equivalent, so
+it grants nothing the shell running it does not already have. Every action
+logs at `WARNING`.
+
+```bash
+podman exec -it zigee-matter-manager python3 /app/auth_recover.py list
+podman exec -it zigee-matter-manager python3 /app/auth_recover.py reset-password <user>
+podman exec -it zigee-matter-manager python3 /app/auth_recover.py disable-mfa <user>
+podman exec -it zigee-matter-manager python3 /app/auth_recover.py make-admin <user>
+podman exec -it zigee-matter-manager python3 /app/auth_recover.py create-admin rescue
+```
+
+`reset-password` and `create-admin` generate a password and print it once.
+Delete a rescue account once you are back in.
+
+The lockout this exists for is a lost TOTP device with the recovery codes
+gone. Scope enforcement cannot lock an admin out — see above.
 
 ## First run
 

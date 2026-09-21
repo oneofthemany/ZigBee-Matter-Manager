@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: gitleaks
+    # Host runner, not the app image: gitleaks walks full history.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # E9/F821 are the rules the repo passes clean. BLE001 fires 1238 times
+      # because wrapping hardware calls is what keeps the hub up. Widen as
+      # counts reach zero; never loosen.
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: check --select E9,F821 --output-format github
+      - uses: astral-sh/ruff-action@v3
+        continue-on-error: true
+        with:
+          args: check --select F,BLE --statistics
+
+  tests:
+    name: test suites
+    runs-on: ubuntu-latest
+    # PYTHON_IMAGE from build.sh:477. GitHub offers no Debian runner, so the
+    # job runs inside the shipped image rather than on the Ubuntu host.
+    container:
+      image: python:3.12-slim-bookworm
+    steps:
+      # Before checkout: the slim image has no git.
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v4
+      - name: Confirm the runtime
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          python3 --version
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -r requirements.lock
+      - name: Run every suite
+        # Looped so the log names the suite that broke.
+        run: |
+          failed=""
+          for suite in tests/*/run_all.py; do
+            echo "::group::$suite"
+            .venv/bin/python "$suite" || failed="$failed $suite"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::failing suites:$failed"
+            exit 1
+          fi
+      - name: Clean test artifacts
+        if: always()
+        run: rm -rf tests/*/logs

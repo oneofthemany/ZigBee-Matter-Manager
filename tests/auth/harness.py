@@ -1,13 +1,9 @@
 """
 Shared scaffolding for the auth tests.
 
-Plain scripts, matching tests/media and tests/fuel: no framework, each module
-exposes `run()` driven by tests/auth/run_all.py.
-
-Nothing here imports FastAPI. The route table is recovered by reading the
-decorators out of routes/*.py and main.py, which keeps the coverage test
-runnable on a box with none of the app's dependencies (AGENTS.md §The dev box)
-and is why `modules.auth_scopes` carries no framework import.
+Nothing here imports FastAPI: the route table is recovered by reading
+decorators out of source, so the coverage test runs on a bare box
+(AGENTS.md §The dev box).
 """
 
 from __future__ import annotations
@@ -21,32 +17,24 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-#: Matches `@app.get("/api/...")` and the router spelling, across the line
-#: break that black leaves when a decorator carries dependencies.
+#: `@app.get("/api/...")` and the router spelling, across a wrapped line.
 _DECORATOR = re.compile(
     r'@(?P<obj>app|router)\.(?P<method>get|post|put|delete|patch|websocket)\(\s*'
     r'(?:[rf]?["\'])(?P<path>[^"\']*)',
     re.S,
 )
 
-#: `router = APIRouter(prefix="/api/ai")` — paths on that router are relative,
-#: so the prefix has to be put back or the route looks like "/chat" and gets
-#: dropped as non-API. modules/{ai,telemetry,dongle_jedi}_api.py and
-#: modules/safe_deploy.py all do this.
+#: Paths on a prefixed router are relative; the prefix must be put back or
+#: the route reads as "/chat" and is dropped as non-API.
 _ROUTER_PREFIX = re.compile(r'APIRouter\(\s*prefix\s*=\s*["\'](?P<prefix>[^"\']*)')
 
-#: Any "/api/..." string literal in the frontend, however it is called —
-#: fetch, apiFetch, a bare constant. Template placeholders become "X".
+#: Any "/api/..." literal in the frontend. Placeholders become "X".
 _FRONTEND_CALL = re.compile(r"""['"`](/api/[A-Za-z0-9_\-/{}$.]*)""")
 
 
 def frontend_api_paths() -> "dict[str, set]":
-    """Every /api/ path the shipped UI references, mapped to the files using it.
-
-    The route table can be complete and still wrong if the SPA calls a path no
-    route declares, or one the scope table does not map — this is the check
-    that catches a tab going 403 after deny-by-default lands.
-    """
+    """Every /api/ path the UI references → the files using it. Catches a tab
+    going 403 that a complete route table would not."""
     found: dict = {}
     roots = [Path(REPO / "static")]
     for root in roots:
@@ -60,27 +48,23 @@ def frontend_api_paths() -> "dict[str, set]":
     return found
 
 
-def registered_routes() -> List[Tuple[str, str, str]]:
-    """Every (method, path, source file) the app registers.
-
-    Read from source rather than from `app.routes` so the test needs no venv.
-    A route registered by a call this regex cannot see would be invisible here
-    — see test_scope_coverage's total-count assertion, which pins the number
-    it finds so a change in registration style cannot silently shrink it.
-    """
-    out: List[Tuple[str, str, str]] = []
-    # routes/ is the FastAPI surface by convention, but the *_api.py modules
-    # under modules/ register ~100 more directly on `app` (ai, automations,
-    # swarm, telemetry, zones, safe_deploy, cast_sync). Scanning only routes/
-    # is how those were missed once already — glob the engine too.
+def source_files() -> List[Path]:
+    """Every file that may register a route. modules/*_api.py registers ~100
+    directly on `app`, so routes/ alone is not the surface."""
     files = sorted(REPO.glob("modules/**/*.py"))
     files += sorted((REPO / "routes").glob("*.py"))
     files += sorted((REPO / "core").glob("*.py"))
     files += sorted((REPO / "handlers").glob("*.py"))
     files.append(REPO / "main.py")
-    for f in files:
-        if "__pycache__" in str(f):
-            continue
+    return [f for f in files if "__pycache__" not in str(f)]
+
+
+def registered_routes() -> List[Tuple[str, str, str]]:
+    """Every (method, path, file) the app registers, read from source so the
+    test needs no venv. Pinned counts in test_scope_coverage stop a change in
+    registration style shrinking this silently."""
+    out: List[Tuple[str, str, str]] = []
+    for f in source_files():
         text = f.read_text()
         pm = _ROUTER_PREFIX.search(text)
         prefix = pm.group("prefix") if pm else ""

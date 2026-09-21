@@ -1,24 +1,16 @@
 """
-Path → scope table: the authoritative answer to "what does this request need?"
+Path → scope table. Deny by default: an unmapped `/api/` path needs `admin`.
 
-Deny by default. An `/api/` path that matches no prefix requires `admin`, so a
-new route is locked until someone maps it here rather than open until someone
-remembers to guard it. `tests/auth/test_scope_coverage.py` fails the build on
-any unmapped path.
-
-Standard library only, and deliberately free of any FastAPI import: the
-coverage test reads the route table out of the source files and must run on a
-box with none of the app's dependencies installed (AGENTS.md §The dev box).
+Standard library only — the coverage test imports this on a box with none of
+the app's dependencies (AGENTS.md §The dev box). Model: auth.md §Scopes.
 """
 
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-#: Required scope for routes that any authenticated principal may call.
-#: These resolve "me" from the principal and scope their own results —
-#: own tokens, own password, own push subscriptions, own message threads —
-#: so a scope gate here would lock users out of their own data.
+#: Any principal. These routes resolve "me" and scope their own results, so
+#: a scope gate would lock users out of their own data.
 AUTHENTICATED = "@authenticated"
 
 #: Scope demanded by an `/api/` path that matches no prefix below.
@@ -27,18 +19,17 @@ UNMAPPED_SCOPE = "admin"
 #: Methods that only read. Everything else is treated as a write.
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# Prefix → {METHOD: scope}. "*" is the fallback for methods not named.
-# Longest matching prefix wins, so "/api/device_overrides" resolves ahead of
-# "/api/device". Order in this list is irrelevant; length decides.
+# Prefix → {METHOD: scope}; "*" is the method fallback. Longest prefix wins,
+# so "/api/device_overrides" resolves ahead of "/api/device".
 PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
-    # Self-service: the route resolves the caller and returns only their own
-    # data. Finer gates (admin for user/group management) stay as per-route
-    # require_scope dependencies.
+    # Self-service. Finer gates stay as per-route require_scope dependencies.
     ("/api/auth",              {"*": AUTHENTICATED}),
     ("/api/messages",          {"*": AUTHENTICATED}),
     ("/api/push",              {"*": AUTHENTICATED}),
     ("/api/wiki",              {"*": AUTHENTICATED}),
     ("/api/therapy",           {"*": AUTHENTICATED}),
+    # Anonymous in practice (ANONYMOUS_PATHS); mapped so coverage sees intent.
+    ("/api/csp",               {"*": AUTHENTICATED}),
 
     # Code execution and system state.
     ("/api/editor",            {"*": "admin"}),
@@ -86,28 +77,25 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/groups",            {"GET": "group:read", "*": "group:write"}),
     ("/api/matter",            {"GET": "matter:read", "*": "matter:write"}),
 
-    # Automation. These live in modules/*_api.py rather than routes/, which is
-    # how they were missed on the first pass — see tests/auth/harness.py.
+    # Automation. Registered in modules/*_api.py, not routes/.
     ("/api/workers",           {"GET": "automation:read", "*": "automation:write"}),
     ("/api/rotary-bindings",   {"GET": "automation:read", "*": "automation:write"}),
     ("/api/automations",       {"GET": "automation:read", "*": "automation:write"}),
     ("/api/swarm",             {"GET": "automation:read", "*": "automation:write"}),
 
-    # The AI assistant writes automations, so it sits with them — but the
-    # provider endpoints install software on the host and configure a model
-    # backend, which is admin work whatever the assistant is used for.
+    # Writes automations, so it sits with them. The provider endpoints
+    # install software on the host, which is admin work regardless.
     ("/api/ai",                {"GET": "automation:read", "*": "automation:write"}),
     ("/api/ai/config",         {"GET": "system:read", "*": "admin"}),
     ("/api/ai/host",           {"GET": "system:read", "*": "admin"}),
     ("/api/ai/ollama",         {"GET": "system:read", "*": "admin"}),
     ("/api/ai/sglang",         {"GET": "system:read", "*": "admin"}),
 
-    # Telemetry reads are the whole point of system:read; /db/prune destroys
-    # history and is not something a read-only account should reach.
+    # /db/prune destroys history, so it is not a system:write matter.
     ("/api/telemetry",         {"GET": "system:read", "*": "system:write"}),
     ("/api/telemetry/db",      {"GET": "system:read", "*": "admin"}),
 
-    # Zigbee zone calibration — router aggressiveness, keyed by ieee.
+    # Zigbee zone calibration: router aggressiveness, keyed by ieee.
     ("/api/zones",             {"GET": "device:read", "*": "device:write"}),
 
     # Climate.
@@ -121,17 +109,13 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     # Energy and tariffs.
     ("/api/octopus",           {"GET": "energy:read", "*": "energy:write"}),
 
-    # Locks. Separate from device:* on purpose — see KNOWN_SCOPES.
+    # Separate from device:* on purpose — see KNOWN_SCOPES.
     ("/api/security",          {"GET": "security:read", "*": "security:write"}),
 
-    # Presence, people and places. Per-user gates
-    # (presence:write:<id>) remain as route dependencies.
     ("/api/presence",          {"GET": "presence:read", "*": "presence:write"}),
-    # Every route under /api/presence/users resolves the target user and
-    # checks presence:{read,write}:<user_id> itself, which a prefix table
-    # cannot express — a blanket presence:write here would lock a phone out
-    # of its own user. The routes are the gate; a new one added here without
-    # its own check would be open to any principal.
+    # Routes here check presence:{read,write}:<user_id> themselves, which a
+    # prefix cannot express. They are the gate; one added without its own
+    # check is open to any principal.
     ("/api/presence/users",    {"*": AUTHENTICATED}),
     ("/api/places",            {"GET": "presence:read", "*": "admin"}),
     ("/api/journeys",          {"GET": "presence:read", "*": "admin"}),
@@ -151,10 +135,9 @@ _SORTED: List[Tuple[str, Dict[str, str]]] = sorted(
 
 
 def scope_for_path(path: str, method: str) -> Optional[str]:
-    """Return the scope `method path` requires, or None if it is not an API path.
+    """Scope `method path` requires; None if it is not an API path.
 
-    `AUTHENTICATED` means "any principal will do". An `/api/` path matching no
-    prefix returns UNMAPPED_SCOPE, never None — that is the deny-by-default.
+    An `/api/` path matching no prefix returns UNMAPPED_SCOPE, never None.
     """
     if not path.startswith("/api/") and path != "/api":
         return None

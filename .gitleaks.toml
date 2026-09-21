@@ -1,0 +1,12 @@
+# gitleaks config. CI fails the build on a finding (.github/workflows/ci.yml),
+# so every exclusion here has to be justified rather than convenient.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Illustrative first-run password in docs/auth.md"
+
+regexes = [
+  '''8sKr-X3yG2qN''',
+]
