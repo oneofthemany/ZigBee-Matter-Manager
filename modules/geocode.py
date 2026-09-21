@@ -227,7 +227,7 @@ class Geocoder:
             max_workers=1, thread_name_prefix="geocode-db")
         self._con: Optional[duckdb.DuckDBPyConnection] = None
         self._nominatim_lock = asyncio.Lock()
-        self._last_nominatim = 0.0
+        self._last_nominatim: Optional[float] = None  # None = never; 0.0 reads as recent on a freshly booted host.
         self.online_fallback = False
         #: Where the toggle is written back to. Injected so a test can point it
         #: somewhere harmless, and so the module never assumes it owns the
@@ -381,7 +381,8 @@ class Geocoder:
         import aiohttp
 
         async with self._nominatim_lock:
-            wait = _NOMINATIM_MIN_INTERVAL_S - (time.monotonic() - self._last_nominatim)
+            wait = (0.0 if self._last_nominatim is None else
+                    _NOMINATIM_MIN_INTERVAL_S - (time.monotonic() - self._last_nominatim))
             if wait > 0:
                 await asyncio.sleep(wait)
             try:

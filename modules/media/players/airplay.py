@@ -151,7 +151,7 @@ class AirPlayPlayerProvider(PlayerProvider):
         self._rediscover_seconds = rediscover_seconds
         self._connect = connect or pyatv.connect
         self._devices: Dict[str, _Device] = {}
-        self._last_scan = 0.0
+        self._last_scan: Optional[float] = None  # None = never; 0.0 reads as recent on a freshly booted host.
         self._scan_task: Optional[asyncio.Task] = None
         self._pairings: Dict[str, object] = {}
 
@@ -171,7 +171,8 @@ class AirPlayPlayerProvider(PlayerProvider):
     def _maybe_rescan(self) -> None:
         """Background rescan when stale; never awaited by the poll, since a
         scan holds for its full timeout."""
-        if time.monotonic() - self._last_scan < self._rediscover_seconds:
+        if (self._last_scan is not None
+                and time.monotonic() - self._last_scan < self._rediscover_seconds):
             return
         if self._scan_task is not None and not self._scan_task.done():
             return

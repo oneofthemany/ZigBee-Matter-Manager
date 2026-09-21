@@ -256,7 +256,7 @@ class MideaAdapter:
         self.cfg = cfg
         self._device = None
         self._lock = threading.Lock()      # one protocol exchange at a time
-        self._last_connect_fail = 0.0
+        self._last_connect_fail: Optional[float] = None  # None = never; 0.0 reads as recent on a freshly booted host.
 
     def close(self) -> None:
         device, self._device = self._device, None
@@ -282,7 +282,10 @@ class MideaAdapter:
             raise ACError("Midea V3 unit needs token+key — run "
                           "POST /api/ac/units/{id}/bind first (fetches them "
                           "via the library's preset cloud account)")
-        remaining = MIDEA_CONNECT_BACKOFF_SEC - (time.monotonic() - self._last_connect_fail)
+        if self._last_connect_fail is not None:
+            remaining = MIDEA_CONNECT_BACKOFF_SEC - (time.monotonic() - self._last_connect_fail)
+        else:
+            remaining = 0.0
         if remaining > 0:
             raise ACError(f"Midea unit refused a connection recently — "
                           f"retrying in {remaining:.0f}s")
@@ -302,7 +305,7 @@ class MideaAdapter:
             self._last_connect_fail = time.monotonic()
             raise ACError(f"could not connect to Midea unit at "
                           f"{self.cfg['host']}:{self.cfg.get('port') or MIDEA_DEFAULT_PORT}")
-        self._last_connect_fail = 0.0
+        self._last_connect_fail = None
         self._device = device
         return device
 
