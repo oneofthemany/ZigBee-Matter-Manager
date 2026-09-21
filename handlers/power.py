@@ -39,6 +39,18 @@ class ElectricalMeasurementHandler(ClusterHandler):
         self._current_multiplier = 1
         self._current_divisor    = 1000
 
+    def _total_power(self, ep_id: int, val: float) -> float:
+        """This endpoint's power plus whatever the others last reported."""
+        state = getattr(self.device, "state", None) or {}
+        total = val
+        for key, other in state.items():
+            if key.startswith("power_") and key != f"power_{ep_id}":
+                try:
+                    total += float(other)
+                except (TypeError, ValueError):
+                    continue
+        return round(total, 1)
+
     def _power_only(self) -> bool:
         # Read per call: the model may not be known when the handler attaches.
         model = getattr(self.device, "model", None) or \
@@ -57,14 +69,22 @@ class ElectricalMeasurementHandler(ClusterHandler):
         if attrid == self.ATTR_ACTIVE_POWER:
             val = round(float(value) * self._power_multiplier / self._power_divisor, 1)
             updates[f"power_{ep_id}"] = val
+            # Unsuffixed alias: Frames and the device list read "power", not
+            # "power_1" (modules/frames.py:83). Summed, so a double socket
+            # reads as the whole device; a single meter is unchanged.
+            updates["power"] = self._total_power(ep_id, val)
 
         elif attrid == self.ATTR_RMS_VOLTAGE:
             val = round(float(value) * self._voltage_multiplier / self._voltage_divisor, 1)
             updates[f"voltage_{ep_id}"] = val
+            if ep_id == 1:
+                updates["voltage"] = val      # not additive: mains is shared
 
         elif attrid == self.ATTR_RMS_CURRENT:
             val = round(float(value) * self._current_multiplier / self._current_divisor, 3)
             updates[f"current_{ep_id}"] = val
+            if ep_id == 1:
+                updates["current"] = val
 
         elif attrid == self.ATTR_AC_POWER_MULTIPLIER:   self._power_multiplier   = value or 1
         elif attrid == self.ATTR_AC_POWER_DIVISOR:      self._power_divisor      = value or 1
@@ -127,6 +147,18 @@ class ElectricalMeasurementHandler(ClusterHandler):
             self.ATTR_RMS_VOLTAGE:  f"voltage_{ep}",
             self.ATTR_RMS_CURRENT:  f"current_{ep}",
         }
+
+    async def poll(self) -> Dict[str, Any]:
+        # Polled values bypass attribute_updated, so alias here too.
+        results = await super().poll()
+        ep = self.endpoint.endpoint_id
+        if f"power_{ep}" in results:
+            results["power"] = self._total_power(ep, results[f"power_{ep}"])
+        if ep == 1:
+            for name in ("voltage", "current"):
+                if f"{name}_{ep}" in results:
+                    results[name] = results[f"{name}_{ep}"]
+        return results
 
     def get_discovery_configs(self) -> List[Dict]:
         ep = self.endpoint.endpoint_id
