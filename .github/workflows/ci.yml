@@ -51,11 +51,13 @@ jobs:
     container:
       image: python:3.12-slim-bookworm
     steps:
-      # Before checkout: the slim image has no git.
-      - name: Install git
+      # The build set from build.sh's runtime stage: some lockfile packages
+      # (netifaces) have no 3.12 wheel and compile. git before checkout.
+      - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config libffi-dev libssl-dev git
       - uses: actions/checkout@v4
       - name: Confirm the runtime
         run: |
