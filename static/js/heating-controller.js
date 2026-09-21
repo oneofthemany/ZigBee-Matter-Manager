@@ -706,7 +706,7 @@ async function switchConfigMode(targetMode) {
 /** Quick existence check — used to tailor the confirm-dialog wording. */
 async function hasSavedFloorPlan() {
     try {
-        const r = await fetch('/api/heating/floor-plan').then(r => r.json());
+        const r = await fetch('/api/floor-plan').then(r => r.json());
         return !!(r?.success && r.plan);
     } catch { return false; }
 }

@@ -236,12 +236,24 @@ def run() -> Checker:
         c.check("applied with overrides", r.status_code == 200, r.text[:200])
         rule = r.json()["rule"]
         c.check("the name was used", rule["name"] == "My rule", rule["name"])
-        lux = [x for x in rule["conditions"]
+        # A condition on the source, or a prerequisite when another device reads it.
+        lux = [x for x in rule["conditions"] + (rule.get("prerequisites") or [])
                if x.get("attribute") == "illuminance_lux"]
         c.check("the override reached the rule",
-                lux and lux[0]["value"] == 42, lux)
+                lux and lux[0]["value"] == 42,
+                (tunable["pattern_id"], rule["conditions"], rule.get("prerequisites")))
     else:
         c.check("a tunable suggestion was available", False, "none found")
+
+    c.section("exclude on apply")
+    spare = next((s for s in client.get("/api/swarm/suggestions").json()["suggestions"]
+                  if s["status"] == "available"), None)
+    if spare:
+        r = client.post(f"/api/swarm/suggestions/{spare['id']}/apply",
+                        json={"exclude": "0xhalllight"})
+        c.check("a non-list exclude is refused", r.status_code == 400, r.text[:200])
+    else:
+        c.check("an available suggestion was left", False, "none found")
 
     c.section("coverage endpoint")
     r = client.get("/api/swarm/coverage")

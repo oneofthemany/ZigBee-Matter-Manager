@@ -830,8 +830,12 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
              "operator": "lt", "value": param("cold_c"), "polarity": 1},
             {"id": "got_warm_out", "label": "it rises above {value} outside",
              "operator": "gt", "value": param("warm_c"), "polarity": -1},
+            # Estimated from sun and cloud with hysteresis (docs/daylight.md), so
+            # no lux sensor is needed and a passing cloud does not re-fire it.
             {"id": "got_dark_out", "label": "daylight fades",
              "attrs": ["is_daylight"], "operator": "eq", "value": 0, "polarity": 1},
+            {"id": "got_gloomy_out", "label": "the day turns gloomy",
+             "attrs": ["is_gloomy"], "operator": "eq", "value": 1, "polarity": 1},
         ],
         "conditions": [
             {"id": "cold_out", "label": "it is below {value} outside",
@@ -842,7 +846,24 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
              "attrs": ["is_daylight"], "operator": "eq", "value": 1},
             {"id": "is_dark_out", "label": "it is dark outside",
              "attrs": ["is_daylight"], "operator": "eq", "value": 0},
+            {"id": "is_gloomy_out", "label": "it is gloomy outside",
+             "attrs": ["is_gloomy"], "operator": "eq", "value": 1},
         ],
+        "actions": [],
+    },
+
+    # A room's daylight, estimated from its windows (docs/daylight.md §7). It
+    # declares illuminance for the readings, and this so it is never offered
+    # as something that can go offline: it is computed, not heard from.
+    "daylight_estimate": {
+        "label": "Estimated daylight",
+        "kind": "virtual",
+        "excludes": ["availability"],
+        "sniffable": False,
+        "tags": ["light", "environment"],
+        "attrs": [],
+        "triggers": [],
+        "conditions": [],
         "actions": [],
     },
 

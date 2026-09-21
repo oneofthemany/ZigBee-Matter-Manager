@@ -121,7 +121,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 chambers=build_registry(cfg),
                 include_chambers=_csv(chambers),
                 include_kinds=_csv(kinds),
-                levels=chamber_levels(cfg),
+                levels=chamber_levels(),
                 device_groups=_device_groups(),
                 include_hidden=hidden,
             )
@@ -302,7 +302,7 @@ def register_frame_routes(app: FastAPI, get_zigbee_service):
                 return {"success": False, "error": f"no frame '{frame_id}'", "groups": [], "total": 0}
             cfg = _load_config()
             rendered = render_saved_frame(
-                frame, _devices(), build_registry(cfg), chamber_levels(cfg),
+                frame, _devices(), build_registry(cfg), chamber_levels(),
                 device_groups=_device_groups(), include_hidden=hidden,
             )
             return {"success": True, **rendered, "frame": frame}

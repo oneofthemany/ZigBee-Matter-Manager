@@ -138,43 +138,47 @@
   },
   {
     "id": "dark_light_on",
-    "title": "Light on when it gets dark",
-    "description": "Tracks real light levels rather than the clock, so it follows the seasons on its own.",
+    "title": "Lights on when the room gets dark",
+    "description": "Every light in the room comes on as the room darkens and goes back to how it was when it brightens. Uses a light sensor if the room has one; otherwise the hub estimates the room's daylight from its windows on the floor plan. Untick any light to leave it alone.",
     "category": "lighting",
     "scope": "room",
     "slots": {
       "dark": {
         "role": "trigger",
-        "offer": "illuminance:got_dark"
+        "offer": "illuminance:got_dark",
+        "sustain": 120
       },
-      "light": {
+      "lights": {
         "role": "action",
         "offer": "on_off:turn_on",
         "device_class": [
           "light",
-          "color_light",
-          "switch"
-        ]
-      },
-      "off": {
-        "role": "action",
-        "offer": "on_off:turn_off",
-        "optional": true,
-        "prefer": "same_device",
-        "prefer_slot": "light"
+          "color_light"
+        ],
+        "collect": true
       }
     },
     "emits": {
-      "name": "{room} light follows daylight",
+      "name": "{room} lights follow daylight",
       "source": "dark",
       "conditions": [
         "dark"
       ],
       "then": [
-        "light"
+        {
+          "type": "snapshot",
+          "targets": [
+            "$lights@all"
+          ],
+          "name": "before_dark"
+        },
+        "lights"
       ],
       "else": [
-        "off"
+        {
+          "type": "restore",
+          "name": "before_dark"
+        }
       ],
       "cooldown": 300
     },

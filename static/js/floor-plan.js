@@ -1,13 +1,12 @@
-// Heating Controller floor-plan editor — a self-contained Bootstrap modal for
-// drawing a multi-level plan (walls, openings, rooms, radiators, sensors,
-// contacts) and binding real devices to it.
+// The home floor plan editor: walls, openings, rooms, radiators, sensors,
+// contacts and placed devices, on one plan shared by Heating and Topology.
 //
-//   import { openFloorPlanEditor } from './floor-plan.js';
-//   openFloorPlanEditor({ circuits, devices, sensors, contacts, onSave });
+//   openFloorPlanEditor({ circuits, devices, sensors, contacts, onSave });  // Heating: modal, heating view
+//   showFloorPlanInline(hostEl);                                             // Topology: inline, home view
 //
-// Saves to /api/heating/floor-plan (the rich plan) and
-// /api/heating/controller/config (the projected rooms). Coordinate system and
-// the overlay models: docs/heating.md.
+// One editor DOM (#fpRoot) moves between the two hosts; the view only decides
+// what is shown. Saves to /api/floor-plan. Coordinates, overlays and the
+// one-position rule: docs/heating.md § Floor plan.
 
 const log = zmmLog('floor-plan');
 
@@ -28,6 +27,19 @@ let _availableCircuits = [];
 // True while the Alt key is held — suppresses grid snap and endpoint merging
 // so points can be placed exactly where the cursor is.
 let _altDown = false;
+// 'heating' shows heating's devices and tools; 'home' shows every device.
+let _view = 'heating';
+let _root = null;          // #fpRoot, mounted in the modal or inline
+let _inlineHost = null;    // Topology's container, once it has asked
+// ieee → { name, kind } for every device the hub knows; kind picks the icon.
+let _catalogue = new Map();
+// Devices heating works with (its own classification, from its routes).
+let _heatingIeees = new Set();
+let _home = null;          // { lat, lon } for the map backdrop
+let _devDrag = null;       // { ieee } or { sensorId } while dragging a marker
+// A plan loaded into a canvas with no size yet (a modal still animating in, a
+// hidden tab) is fitted when the canvas first gets one.
+let _needsFit = false;
 
 function resetState(plan) {
     _fieldCache = new Map();
@@ -53,6 +65,13 @@ function resetState(plan) {
         solarImpact: null,         // Map roomKey → measured entry, once fetched
         solarImpactLoaded: false,  // true after fetch attempt (even if empty)
         calibration: null,         // { p1: {x,y} } during 2-click calibrate
+        showMap: false,
+        showDaylight: false,
+        showMesh: false,
+        mesh: null,                // /api/floor-plan/mesh, fetched when shown
+        daylight: null,            // /api/floor-plan/daylight, fetched when shown
+        daylightIndex: 0,
+        placing: null,             // ieee armed from the palette, placed on next tap
     };
     _state.currentLevelId = (_state.plan.levels[0] || {}).id || null;
 }
@@ -75,6 +94,7 @@ function newEmptyPlan() {
             radiators: [],
             sensors: [],
             contacts: [],
+            devices: [],
         }],
     };
 }
@@ -89,6 +109,7 @@ function currentLevel() {
 
 // public entry
 
+/** Heating's entry: the modal, filtered to heating. */
 export async function openFloorPlanEditor(opts = {}) {
     _availableDevices = {
         trvs: opts.devices?.thermostats || [],
@@ -98,20 +119,36 @@ export async function openFloorPlanEditor(opts = {}) {
     };
     _availableCircuits = opts.circuits || [];
     _onSaveCallback = opts.onSave || null;
+    ensureModal();
+    const modalEl = document.getElementById('floorPlanModal');
+    mountRoot(modalEl.querySelector('.modal-content'));
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    await loadPlan('heating');
+}
 
+/** Topology's entry: inline in ``host``, every device. */
+export async function showFloorPlanInline(host) {
+    _inlineHost = host;
+    // Heating has it open; it comes back here when that modal closes.
+    if (_root && _root.closest('#floorPlanModal.show')) return;
+    _onSaveCallback = null;
+    mountRoot(host);
+    await loadPlan('home');
+}
+
+async function loadPlan(view) {
     let initialPlan;
     try {
-        const r = await fetch('/api/heating/floor-plan').then(r => r.json());
+        const r = await fetch('/api/floor-plan').then(r => r.json());
         initialPlan = (r && r.success && r.plan) ? r.plan : newEmptyPlan();
+        _home = r?.home || null;
     } catch {
         initialPlan = newEmptyPlan();
     }
 
     // Heal orphan images: any level with no `background` block but an image
     // on disk gets a synthesised metadata block so the user sees their image
-    // and can recalibrate it. This recovers state where the editor previously
-    // failed to persist the metadata (now fixed in save(), but leaving the
-    // recovery path in place as defence-in-depth).
+    // and can recalibrate it.
     let orphansAdopted = 0;
     for (const lvl of (initialPlan.levels || [])) {
         if (lvl.background?.present) continue;
@@ -122,11 +159,13 @@ export async function openFloorPlanEditor(opts = {}) {
     resetState(initialPlan);
     // Ensure plan always has a circuits array (backward compat with older saves)
     if (!Array.isArray(_state.plan.circuits)) _state.plan.circuits = [];
-
-    ensureModal();
-    const modalEl = document.getElementById('floorPlanModal');
-    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
-    modal.show();
+    for (const l of _state.plan.levels) if (!Array.isArray(l.devices)) l.devices = [];
+    _view = view;
+    await loadCatalogue();
+    applyViewChrome();
+    const status = document.getElementById('fpSaveStatus');
+    if (status) status.innerHTML = '';
+    _needsFit = true;
     renderAll();
 
     if (orphansAdopted > 0) {
@@ -140,13 +179,69 @@ export async function openFloorPlanEditor(opts = {}) {
 }
 
 /**
+ * Names and kinds for every device, and which of them heating works with.
+ * Heating's list comes from heating's own routes (passed in, or fetched for
+ * the home view) so the filter never disagrees with the heating page.
+ */
+async function loadCatalogue() {
+    const get = url => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+    const wantHeating = _view === 'home';
+    const [devs, hDev, hSens, hCon] = await Promise.all([
+        get('/api/devices'),
+        wantHeating ? get('/api/heating/controller/devices') : null,
+        wantHeating ? get('/api/heating/controller/sensors') : null,
+        wantHeating ? get('/api/heating/controller/contact-sensors') : null,
+    ]);
+    if (wantHeating) {
+        _availableDevices = {
+            trvs: hDev?.thermostats || [], receivers: hDev?.receivers || [],
+            sensors: hSens?.sensors || [], contacts: hCon?.sensors || [],
+        };
+    }
+    _heatingIeees = new Set(
+        [..._availableDevices.trvs, ..._availableDevices.sensors, ..._availableDevices.contacts]
+            .map(d => String(d.ieee || '').toLowerCase()).filter(Boolean));
+    _catalogue = new Map();
+    for (const d of (Array.isArray(devs) ? devs : [])) {
+        if (!d?.ieee) continue;
+        const ieee = String(d.ieee).toLowerCase();
+        _catalogue.set(ieee, { name: d.friendly_name || d.name || ieee, kind: deviceKind(ieee, d) });
+    }
+}
+
+function deviceKind(ieee, d) {
+    const caps = d.capability_list || [];
+    if (_heatingIeees.has(ieee)) return 'heating';
+    if (caps.includes('light')) return 'light';
+    if (d.type === 'Coordinator') return 'coordinator';
+    if (d.type === 'Router') return 'router';
+    return 'other';
+}
+
+const KIND_LABEL = { light: 'Lights', heating: 'Heating', router: 'Routers',
+                     coordinator: 'Coordinator', other: 'Other' };
+
+/** Show only what this view is for: ``data-fp-view`` and ``data-fp-host``. */
+function applyViewChrome() {
+    const host = _root?.closest('#floorPlanModal') ? 'modal' : 'inline';
+    _root?.querySelectorAll('[data-fp-view]').forEach(el => {
+        el.classList.toggle('d-none', el.dataset.fpView !== _view);
+    });
+    _root?.querySelectorAll('[data-fp-host]').forEach(el => {
+        el.classList.toggle('d-none', el.dataset.fpHost !== host);
+    });
+    const title = _root?.querySelector('#fpTitle');
+    if (title) title.textContent = _view === 'heating' ? 'Floor plan — heating' : 'Floor plan';
+}
+
+/**
  * For a level missing its `background` block, probe the image endpoint and
  * synthesise metadata if the image bytes exist on the server. Returns true
  * iff a block was synthesised.
  */
 async function tryAdoptOrphanImage(lvl) {
     try {
-        const url = `/api/heating/floor-plan/image/${encodeURIComponent(lvl.id)}`;
+        const url = `/api/floor-plan/image/${encodeURIComponent(lvl.id)}`;
         const resp = await fetch(url, { method: 'GET' });
         if (!resp.ok) return false;
         const blob = await resp.blob();
@@ -173,14 +268,42 @@ async function tryAdoptOrphanImage(lvl) {
 
 // modal scaffold
 
+/** The modal shell Heating opens; #fpRoot is moved into it. */
 function ensureModal() {
     if (document.getElementById('floorPlanModal')) return;
-    const html = `
+    document.body.insertAdjacentHTML('beforeend', `
     <div class="modal fade" id="floorPlanModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-fullscreen">
-        <div class="modal-content">
+      <div class="modal-dialog modal-fullscreen"><div class="modal-content"></div></div>
+    </div>`);
+    document.getElementById('floorPlanModal').addEventListener('hidden.bs.modal', () => {
+        _altDown = false;
+        closeMobileDrawers();
+        _state = null;
+        // Topology was showing the plan before Heating borrowed it.
+        if (_inlineHost?.isConnected && _inlineHost.offsetParent !== null) {
+            showFloorPlanInline(_inlineHost);
+        }
+    });
+}
+
+/** Build #fpRoot once, then move it into ``host``. */
+function mountRoot(host) {
+    if (!_root) {
+        _root = document.createElement('div');
+        _root.id = 'fpRoot';
+        _root.className = 'fp-root d-flex flex-column h-100';
+        _root.innerHTML = rootHtml();
+        host.appendChild(_root);
+        bindModalEvents();
+    } else if (_root.parentElement !== host) {
+        host.appendChild(_root);
+    }
+}
+
+function rootHtml() {
+    return `
           <div class="modal-header py-2">
-            <h5 class="modal-title"><i class="fas fa-drafting-compass me-2"></i>Floor plan</h5>
+            <h5 class="modal-title"><i class="fas fa-drafting-compass me-2"></i><span id="fpTitle">Floor plan</span></h5>
             <div class="d-flex align-items-center gap-2 ms-auto">
               <div class="small text-muted d-none d-md-block" id="fpStatus"></div>
               <!-- Phone-only: the tools/levels and properties panes are off-canvas
@@ -194,7 +317,7 @@ function ensureModal() {
                       title="Properties" aria-label="Toggle properties">
                 <i class="fas fa-list"></i>
               </button>
-              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" data-fp-host="modal"></button>
             </div>
           </div>
           <div class="modal-body p-0 d-flex" style="overflow:hidden">
@@ -205,7 +328,14 @@ function ensureModal() {
                 <div id="fpLevelList" class="list-group list-group-flush small"></div>
                 <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="fpAddLevel"><i class="fas fa-plus me-1"></i>Add level</button>
               </div>
-              <div class="mb-3" id="fpCircuitSection">
+              <div class="mb-3" id="fpPaletteSection" data-fp-view="home">
+                <div class="small text-muted text-uppercase mb-1">Devices to place</div>
+                <input type="search" id="fpPaletteSearch" class="form-control form-control-sm mb-1"
+                       placeholder="Find a device" aria-label="Find a device">
+                <div class="form-text small mb-1">Drag one onto its room, or tap it and then tap the plan.</div>
+                <div id="fpPalette" class="small"></div>
+              </div>
+              <div class="mb-3" id="fpCircuitSection" data-fp-view="heating">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                   <div class="small text-muted text-uppercase">Circuits</div>
                   <button class="btn btn-sm btn-outline-success py-0 px-1" id="fpAddCircuit" title="Add circuit"><i class="fas fa-plus"></i></button>
@@ -220,9 +350,9 @@ function ensureModal() {
                   <button class="btn btn-sm btn-outline-primary" data-tool="room"><i class="fas fa-vector-square me-1"></i>Room</button>
                   <button class="btn btn-sm btn-outline-primary" data-tool="window"><i class="fas fa-window-maximize me-1"></i>Window</button>
                   <button class="btn btn-sm btn-outline-primary" data-tool="door"><i class="fas fa-door-open me-1"></i>Door</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="radiator"><i class="fas fa-fire me-1"></i>Radiator</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="sensor"><i class="fas fa-thermometer-half me-1"></i>Sensor</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="contact"><i class="fas fa-link me-1"></i>Contact</button>
+                  <button class="btn btn-sm btn-outline-primary" data-tool="radiator" data-fp-view="heating"><i class="fas fa-fire me-1"></i>Radiator</button>
+                  <button class="btn btn-sm btn-outline-primary" data-tool="sensor" data-fp-view="heating"><i class="fas fa-thermometer-half me-1"></i>Sensor</button>
+                  <button class="btn btn-sm btn-outline-primary" data-tool="contact" data-fp-view="heating"><i class="fas fa-link me-1"></i>Contact</button>
                   <button class="btn btn-sm btn-outline-warning" data-tool="calibrate"><i class="fas fa-ruler me-1"></i>Calibrate</button>
                 </div>
                 <div class="d-flex align-items-center gap-2 mt-2">
@@ -273,6 +403,32 @@ function ensureModal() {
                   <label class="form-check-label" for="fpToggleSun">Sun path (today)</label>
                 </div>
                 <div class="form-check form-switch small">
+                  <input class="form-check-input" type="checkbox" id="fpToggleDaylight">
+                  <label class="form-check-label" for="fpToggleDaylight">Daylight in each room</label>
+                </div>
+                <div data-fp-view="home">
+                  <div class="form-check form-switch small">
+                    <input class="form-check-input" type="checkbox" id="fpToggleMesh">
+                    <label class="form-check-label" for="fpToggleMesh">Mesh links</label>
+                  </div>
+                  <div id="fpMeshControls" class="ms-3 mb-1 small d-none">
+                    <div><span class="fp-link-key fp-link-good"></span>LQI 200+
+                      <span class="fp-link-key fp-link-ok ms-2"></span>150+</div>
+                    <div><span class="fp-link-key fp-link-weak"></span>100+
+                      <span class="fp-link-key fp-link-bad ms-2"></span>below 100</div>
+                    <div class="form-text small" id="fpMeshNote"></div>
+                  </div>
+                </div>
+                <div id="fpDaylightControls" class="ms-3 mb-1 d-none">
+                  <input type="range" id="fpDaylightTime" class="form-range" min="0" max="48" step="1"
+                         aria-label="Time of day">
+                  <div class="small"><span id="fpDaylightClock"></span> · outside
+                    <span id="fpDaylightOutdoor"></span></div>
+                  <div class="form-text small" id="fpDaylightNote">Estimated from the saved plan's windows
+                    and today's weather.</div>
+                </div>
+                <div data-fp-view="heating">
+                <div class="form-check form-switch small">
                   <input class="form-check-input" type="checkbox" id="fpToggleThermal">
                   <label class="form-check-label" for="fpToggleThermal">Thermal overlay</label>
                 </div>
@@ -299,6 +455,7 @@ function ensureModal() {
                     <option value="80">Poorly insulated — 80 W/m²</option>
                   </select>
                 </div>
+                </div>
                 <div class="d-flex gap-1 mt-2">
                   <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomOut">−</button>
                   <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomFit">Fit</button>
@@ -311,6 +468,21 @@ function ensureModal() {
                 <div class="small text-center mt-1">
                   <input type="number" id="fpNorthDeg" class="form-control form-control-sm text-center" step="1" style="display:inline-block;width:80px"> °
                 </div>
+              </div>
+              <div class="mb-3">
+                <div class="small text-muted text-uppercase mb-1">Map</div>
+                <div class="form-check form-switch small">
+                  <input class="form-check-input" type="checkbox" id="fpToggleMap">
+                  <label class="form-check-label" for="fpToggleMap">Show map under the plan</label>
+                </div>
+                <div id="fpMapControls" class="d-none">
+                  <label class="form-label small mb-0" for="fpMapOpacity">Opacity</label>
+                  <input type="range" id="fpMapOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.6">
+                  <button class="btn btn-sm btn-outline-secondary w-100" id="fpMapAnchor">
+                    <i class="fas fa-location-crosshairs me-1"></i>Mark where the home pin is</button>
+                  <div class="form-text small">Turn the compass until the map's buildings line up with your walls.</div>
+                </div>
+                <div id="fpMapMissing" class="form-text small d-none">Set the home location in Settings to use the map.</div>
               </div>
             </div>
 
@@ -348,24 +520,21 @@ function ensureModal() {
             </div>
           </div>
           <div class="modal-footer py-2">
-            <button type="button" class="btn btn-outline-warning btn-sm me-2" id="fpSwitchMode"
+            <button type="button" class="btn btn-outline-warning btn-sm me-2" id="fpSwitchMode" data-fp-view="heating"
                     title="Switch the heating controller back to manual configuration">
               <i class="fas fa-list-ul me-1"></i>Switch to manual
             </button>
             <div id="fpSaveStatus" class="me-auto small text-muted"></div>
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-fp-host="modal">Cancel</button>
+            <button type="button" class="btn btn-outline-secondary" id="fpRevert" data-fp-host="inline"
+                    title="Discard unsaved changes"><i class="fas fa-rotate-left me-1"></i>Revert</button>
             <button type="button" class="btn btn-primary" id="fpSave"><i class="fas fa-save me-1"></i>Save plan</button>
-          </div>
-        </div>
-      </div>
-    </div>`;
-    document.body.insertAdjacentHTML('beforeend', html);
-    bindModalEvents();
+          </div>`;
 }
 
 /** Phone-only off-canvas drawers — see the @media block in floor-plan.css. */
 function setMobileDrawer(which, open) {
-    const modal = document.getElementById('floorPlanModal');
+    const modal = _root;
     if (!modal) return;
     const cls = which === 'sidebar' ? 'fp-sidebar-open' : 'fp-props-open';
     const other = which === 'sidebar' ? 'fp-props-open' : 'fp-sidebar-open';
@@ -374,7 +543,7 @@ function setMobileDrawer(which, open) {
 }
 
 function closeMobileDrawers() {
-    document.getElementById('floorPlanModal')?.classList.remove('fp-sidebar-open', 'fp-props-open');
+    _root?.classList.remove('fp-sidebar-open', 'fp-props-open');
 }
 
 function bindModalEvents() {
@@ -394,11 +563,11 @@ function bindModalEvents() {
     // Phone-only off-canvas drawers (see the @media block in floor-plan.css).
     // These buttons are hidden at desktop widths, so no harm binding always.
     document.getElementById('fpToggleSidebarBtn')?.addEventListener('click', () => {
-        const open = !document.getElementById('floorPlanModal').classList.contains('fp-sidebar-open');
+        const open = !_root.classList.contains('fp-sidebar-open');
         setMobileDrawer('sidebar', open);
     });
     document.getElementById('fpTogglePropsBtn')?.addEventListener('click', () => {
-        const open = !document.getElementById('floorPlanModal').classList.contains('fp-props-open');
+        const open = !_root.classList.contains('fp-props-open');
         setMobileDrawer('props', open);
     });
     // Tapping the dimmed canvas while a drawer is open closes it. The CSS
@@ -473,6 +642,8 @@ function bindModalEvents() {
         }
     });
 
+    bindDeviceLayerEvents();
+
     document.getElementById('fpImageFile').addEventListener('change', onImageFileChosen);
     document.getElementById('fpRemoveImage').addEventListener('click', removeBackgroundImage);
     document.getElementById('fpImageOpacity').addEventListener('input', e => {
@@ -520,7 +691,8 @@ function bindModalEvents() {
     // Keyboard: Enter / Esc handle in-progress chains across the whole modal
     // so the user doesn't have to keep focus on the canvas.
     const onKey = (e) => {
-        if (!_state) return;
+        // Bound once for the page; only acts while the editor is on screen.
+        if (!_state || !_root || _root.offsetParent === null) return;
         // Alt suppresses snapping while held (tracked before the form-field
         // guard so it works regardless of focus).
         if (e.key === 'Alt') _altDown = true;
@@ -555,20 +727,20 @@ function bindModalEvents() {
     document.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
 
-    // Cleanup on hide
-    document.getElementById('floorPlanModal').addEventListener('hidden.bs.modal', () => {
-        document.removeEventListener('keydown', onKey);
-        document.removeEventListener('keyup', onKeyUp);
-        window.removeEventListener('blur', onBlur);
-        _altDown = false;
-        _state = null;
-        closeMobileDrawers();
+    document.getElementById('fpRevert').addEventListener('click', () => {
+        if (_inlineHost) showFloorPlanInline(_inlineHost);
     });
 }
 
 // render top-level
 
 function renderAll() {
+    renderPalette();
+    syncMapControls();
+    document.getElementById('fpToggleDaylight').checked = !!_state.showDaylight;
+    syncDaylightControls();
+    document.getElementById('fpToggleMesh').checked = !!_state.showMesh;
+    syncMeshControls();
     renderLevelList();
     renderCircuitList();
     renderToolbar();
@@ -662,6 +834,7 @@ function renderToolbar() {
         select: 'default', wall: 'crosshair', room: 'crosshair',
         window: 'crosshair', door: 'crosshair', radiator: 'crosshair',
         sensor: 'crosshair', contact: 'crosshair', calibrate: 'crosshair',
+        place: 'copy', 'map-anchor': 'crosshair',
     };
     document.getElementById('fpCanvas').style.cursor = cursors[_state.tool] || 'default';
 }
@@ -848,7 +1021,9 @@ function renderScene() {
 
     const parts = [];
 
-    // Background image (drawn first, under everything else)
+    if (_state.showMap) parts.push(...renderMapParts());
+
+    // Background image (drawn under everything but the map)
     if (_state.showBackground && lvl.background?.present) {
         const bg = lvl.background;
         const wM = bg.image_width_px / bg.pixels_per_metre;
@@ -858,7 +1033,7 @@ function renderScene() {
         const tlSvg = modelToSvg({ x: bg.origin_x_m, y: bg.origin_y_m + hM });
         const bgTransform = `rotate(${-(bg.rotation_deg || 0)} ${tlSvg.x + wM/2} ${tlSvg.y + hM/2})`;
         parts.push(`
-          <image href="/api/heating/floor-plan/image/${escapeAttr(lvl.id)}?t=${bg._cb || 0}"
+          <image href="/api/floor-plan/image/${escapeAttr(lvl.id)}?t=${bg._cb || 0}"
                  x="${tlSvg.x}" y="${tlSvg.y}" width="${wM}" height="${hM}"
                  opacity="${bg.opacity}" preserveAspectRatio="none"
                  transform="${bgTransform}"
@@ -914,6 +1089,8 @@ function renderScene() {
                         fill="#64748b" pointer-events="none">${escapeHtml(circuitName)}</text>`);
         }
     }
+
+    if (_state.showDaylight && _state.daylight) parts.push(...renderDaylightParts(lvl));
 
     // Solar gain overlay — amber fill on rooms that receive direct sunlight via windows today.
     if (_state.showSun && _state.sunData) {
@@ -1102,6 +1279,9 @@ function renderScene() {
           </g>`);
     }
 
+    if (_state.showMesh && _state.mesh) parts.push(...renderMeshParts(lvl));
+    parts.push(...renderDeviceParts(lvl));
+
     scene.innerHTML = parts.join('');
 
     // Click bindings.
@@ -1136,6 +1316,9 @@ function renderScene() {
             if (_state.tool !== 'select') return;
             e.stopPropagation();
             _state.selection = { kind: el.dataset.kind, id: el.dataset.id };
+            // A device's marker (or a sensor, which is one) moves with the pointer.
+            if (el.dataset.kind === 'device') _devDrag = { ieee: el.dataset.id };
+            else if (el.dataset.kind === 'sensor') _devDrag = { sensorId: el.dataset.id };
             renderScene(); renderProps();
         });
     });
@@ -1515,9 +1698,19 @@ function onCanvasMouseDown(e) {
                 renderOverlay();
             });
         }
+    } else if (_state.tool === 'place' && _state.placing) {
+        placeDevice(_state.placing, clientToSvgModel(e));
+    } else if (_state.tool === 'map-anchor') {
+        _state.plan.map = { opacity: 0.6, ...(_state.plan.map || {}),
+                            anchor_x_m: round3(m.x), anchor_y_m: round3(m.y) };
+        setTool('select');
+        renderScene();
     } else if (_state.tool === 'select') {
-        // Empty-canvas click clears selection
-        _state.selection = null;
+        // A tap arrives here, not on the element; find what is under it.
+        const hit = document.elementFromPoint?.(e.clientX, e.clientY)
+            ?.closest?.('#fpScene [data-kind][data-id]');
+        _state.selection = hit && !hit.dataset.kind.endsWith('handle')
+            ? { kind: hit.dataset.kind, id: hit.dataset.id } : null;
         renderScene(); renderProps();
     }
 }
@@ -1569,6 +1762,14 @@ function onCanvasMouseMove(e) {
         }
         return;
     }
+    if (_devDrag) {
+        const m = snapPt(clientToSvgModel(e));
+        const target = _devDrag.ieee
+            ? (currentLevel().devices || []).find(d => d.ieee === _devDrag.ieee)
+            : currentLevel().sensors.find(x => x.id === _devDrag.sensorId);
+        if (target) { target.x = round3(m.x); target.y = round3(m.y); renderScene(); }
+        return;
+    }
     // Calibration tool tracks cursor between the two clicks for live feedback.
     if (_state.tool === 'calibrate' && _state.calibration && _state.calibration.p1) {
         _state.calibration.cur = snapPt(clientToSvgModel(e));
@@ -1595,6 +1796,7 @@ function onCanvasMouseUp(e) {
     if (_isPanning) { _isPanning = false; _panStart = null; renderToolbar(); return; }
     if (_wallDrag) { _wallDrag = null; renderScene(); renderProps(); return; }
     if (_radDrag)  { _radDrag = null;  renderScene(); renderProps(); return; }
+    if (_devDrag)  { _devDrag = null;  renderScene(); renderProps(); return; }
     if (!_state.drawBuffer) return;
     const lvl = currentLevel();
 
@@ -1642,6 +1844,14 @@ function onCanvasTouchStart(e) {
     e.preventDefault();
     if (e.touches.length === 1) {
         const t = e.touches[0];
+        // A finger on the selected marker drags it; anywhere else pans.
+        const hit = document.elementFromPoint?.(t.clientX, t.clientY)
+            ?.closest?.('#fpScene [data-kind="device"], #fpScene [data-kind="sensor"]');
+        if (hit && _state.tool === 'select' && isSelected(hit.dataset.kind, hit.dataset.id)) {
+            _devDrag = hit.dataset.kind === 'device' ? { ieee: hit.dataset.id } : { sensorId: hit.dataset.id };
+            _touch = { mode: 'drag' };
+            return;
+        }
         _touch = {
             mode: 'single',
             id: t.identifier,
@@ -1666,6 +1876,10 @@ function onCanvasTouchMove(e) {
     e.preventDefault();
     if (!_touch) return;
 
+    if (_touch.mode === 'drag' && e.touches.length === 1) {
+        onCanvasMouseMove({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
+        return;
+    }
     if (_touch.mode === 'single' && e.touches.length === 1) {
         const t = e.touches[0];
         const dx = t.clientX - _touch.startX;
@@ -1706,6 +1920,12 @@ function onCanvasTouchEnd(e) {
     e.preventDefault();
     if (!_touch) return;
 
+    if (_touch.mode === 'drag') {
+        _devDrag = null;
+        _touch = null;
+        renderScene(); renderProps();
+        return;
+    }
     if (_touch.mode === 'single') {
         const dt = Date.now() - _touch.startTime;
         if (!_touch.moved && dt < 400) {
@@ -2881,6 +3101,7 @@ function renderProps() {
         case 'radiator': html = renderRadiatorProps(lvl.radiators.find(r => r.id === id)); break;
         case 'sensor':   html = renderSensorProps(lvl.sensors.find(s => s.id === id)); break;
         case 'contact':  html = renderContactProps(lvl.contacts.find(c => c.id === id)); break;
+        case 'device':   html = renderDeviceProps(id); break;
     }
     el.innerHTML = html;
     bindPropsHandlers();
@@ -3381,6 +3602,13 @@ function bindPropsHandlers() {
 
             if (val === undefined) delete target[key]; else target[key] = val;
 
+            // Heating now holds this device's position: one position only.
+            if (typeof val === 'string' && val
+                && ((scope === 'radiator' && key === 'trv_ieee')
+                    || ((scope === 'sensor' || scope === 'contact') && key === 'ieee'))) {
+                unplaceDevice(val.toLowerCase());
+            }
+
             // Primary sensor: enforce one-per-room
             if (scope === 'sensor' && key === 'primary' && val) {
                 lvl.sensors.forEach(s2 => { if (s2.id !== sel.id && s2.room_id === target.room_id) s2.primary = false; });
@@ -3453,6 +3681,7 @@ function bindPropsHandlers() {
     root.querySelector('[data-action="delete-radiator"]')?.addEventListener('click', () => deleteSelected('radiators'));
     root.querySelector('[data-action="delete-sensor"]')?.addEventListener('click', () => deleteSelected('sensors'));
     root.querySelector('[data-action="delete-contact"]')?.addEventListener('click', () => deleteSelected('contacts'));
+    if (sel.kind === 'device') bindDeviceProps(sel.id);
 
     // Radiator mounting-mode conversions
     root.querySelector('[data-action="rad-to-freestanding"]')?.addEventListener('click', () => {
@@ -3555,6 +3784,7 @@ function zoomFit() {
     if (!wrap) return;
     const rect = wrap.getBoundingClientRect();
     if (rect.width < 50 || rect.height < 50) return;
+    _needsFit = false;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const consider = p => {
@@ -3594,6 +3824,409 @@ async function loadSunData() {
     } catch (e) { /* swallow */ }
 }
 
+// device layer — docs/heating.md § Floor plan
+
+function round3(v) { return Math.round(v * 1000) / 1000; }
+
+/** Every ieee with a position anywhere on the plan, however it is held. */
+function placedIeees() {
+    const out = new Set();
+    for (const l of _state.plan.levels) {
+        (l.devices || []).forEach(d => out.add(d.ieee));
+        l.radiators.forEach(r => r.trv_ieee && out.add(r.trv_ieee));
+        l.sensors.forEach(x => x.ieee && out.add(x.ieee));
+        l.contacts.forEach(c => c.ieee && out.add(c.ieee));
+    }
+    return out;
+}
+
+function unplaceDevice(ieee) {
+    for (const l of _state.plan.levels) l.devices = (l.devices || []).filter(d => d.ieee !== ieee);
+    renderPalette();
+}
+
+function placeDevice(ieee, m) {
+    ieee = String(ieee).toLowerCase();
+    if (placedIeees().has(ieee)) {
+        toast('info', 'Already placed', 'That device is already on the plan.');
+        return;
+    }
+    const p = snapPt(m);
+    currentLevel().devices.push({ ieee, x: round3(p.x), y: round3(p.y) });
+    _state.placing = null;
+    _state.tool = 'select';
+    _state.selection = { kind: 'device', id: ieee };
+    renderToolbar(); renderPalette(); renderScene(); renderProps();
+    if (_state.showMesh) syncMeshControls();
+}
+
+function deviceInfo(ieee) {
+    return _catalogue.get(ieee) || { name: ieee, kind: _heatingIeees.has(ieee) ? 'heating' : 'other' };
+}
+
+function renderPalette() {
+    const wrap = document.getElementById('fpPalette');
+    if (!wrap || !_state) return;
+    const q = (document.getElementById('fpPaletteSearch')?.value || '').trim().toLowerCase();
+    const placed = placedIeees();
+    const groups = {};
+    for (const [ieee, info] of _catalogue) {
+        if (placed.has(ieee)) continue;
+        if (q && !info.name.toLowerCase().includes(q) && !ieee.includes(q)) continue;
+        (groups[info.kind] ||= []).push([ieee, info]);
+    }
+    const order = ['light', 'heating', 'router', 'coordinator', 'other'];
+    const html = order.filter(k => groups[k]).map(k => `
+        <div class="text-muted mt-2 mb-1">${KIND_LABEL[k]} <span class="badge bg-secondary">${groups[k].length}</span></div>
+        ${groups[k].sort((a, b) => a[1].name.localeCompare(b[1].name)).map(([ieee, info]) => `
+          <button type="button" class="fp-palette-item btn btn-sm btn-outline-secondary w-100 text-start mb-1
+                  ${_state.placing === ieee ? 'active' : ''}" draggable="true" data-ieee="${escapeAttr(ieee)}">
+            <span class="fp-device-dot fp-device-${k}"></span>${escapeHtml(info.name)}
+          </button>`).join('')}`).join('');
+    wrap.innerHTML = html || `<div class="text-muted">${_catalogue.size ? 'Everything is placed.' : 'No devices found.'}</div>`;
+    wrap.querySelectorAll('[data-ieee]').forEach(el => {
+        el.addEventListener('dragstart', e => {
+            e.dataTransfer.setData('text/x-zmm-ieee', el.dataset.ieee);
+            e.dataTransfer.effectAllowed = 'copy';
+        });
+        el.addEventListener('click', () => {
+            const arm = _state.placing !== el.dataset.ieee;
+            _state.placing = arm ? el.dataset.ieee : null;
+            _state.tool = arm ? 'place' : 'select';
+            renderToolbar(); renderPalette();
+            if (arm) { closeMobileDrawers(); toast('info', 'Place it', 'Tap the plan where it is.'); }
+        });
+    });
+}
+
+function renderDeviceParts(lvl) {
+    const parts = [];
+    for (const d of lvl.devices || []) {
+        const info = deviceInfo(d.ieee);
+        // Heating's view is heating's devices only; the rest stay on the plan.
+        if (_view === 'heating' && info.kind !== 'heating') continue;
+        const p = modelToSvg(d);
+        const sel = isSelected('device', d.ieee);
+        const offline = _state.showMesh && _state.mesh?.nodes?.[d.ieee]?.online === false;
+        const cls = `fp-device fp-device-${info.kind} ${sel ? 'fp-selected' : ''}`;
+        // The coordinator is the mesh's root: square, and larger.
+        const marker = info.kind === 'coordinator'
+            ? `<rect class="${cls}" x="${p.x - 0.2}" y="${p.y - 0.2}" width="0.4" height="0.4" rx="0.06"
+                     stroke-width="${sel ? 0.05 : 0.03}"/>`
+            : `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="0.14" stroke-width="${sel ? 0.05 : 0.025}"/>`;
+        parts.push(`
+          <g data-kind="device" data-id="${escapeAttr(d.ieee)}" style="cursor:grab"
+             class="${offline ? 'fp-offline' : ''}">
+            ${marker}
+            <text class="fp-device-label" x="${p.x}" y="${p.y + 0.32}" font-size="0.13"
+                  text-anchor="middle" pointer-events="none">${escapeHtml(info.name)}</text>
+          </g>`);
+    }
+    return parts;
+}
+
+function renderDeviceProps(ieee) {
+    const lvl = currentLevel();
+    const d = (lvl.devices || []).find(x => x.ieee === ieee);
+    if (!d) return '';
+    const info = deviceInfo(ieee);
+    const room = (lvl.rooms || []).find(r => pointInPolygon(d, r.polygon));
+    const isSensor = _availableDevices.sensors.some(x => String(x.ieee).toLowerCase() === ieee);
+    const isContact = _availableDevices.contacts.some(x => String(x.ieee).toLowerCase() === ieee);
+    const isTrv = _availableDevices.trvs.some(x => String(x.ieee).toLowerCase() === ieee);
+    return `
+      <div class="text-muted small text-uppercase mb-2">Placed device</div>
+      <div class="fw-semibold mb-1"><span class="fp-device-dot fp-device-${info.kind}"></span>${escapeHtml(info.name)}</div>
+      <div class="small text-muted mb-2">${escapeHtml(KIND_LABEL[info.kind] || 'Other')} · <code>${escapeHtml(ieee)}</code></div>
+      <div class="small mb-2"><i class="fas fa-door-closed me-1"></i>${room
+          ? `In <strong>${escapeHtml(room.name || room.id)}</strong>`
+          : '<span class="text-warning">Not inside a room — drag it into one.</span>'}</div>
+      <div class="mb-2"><label class="form-label small">Mounting height (m)</label>
+        <input type="number" step="0.1" min="0" max="10" class="form-control form-control-sm"
+               id="fpDevHeight" value="${d.height_m ?? ''}" placeholder="Not set"/></div>
+      ${isSensor ? `<button class="btn btn-sm btn-outline-primary w-100 mb-2" data-action="device-to-sensor" ${room ? '' : 'disabled'}>
+          <i class="fas fa-thermometer-half me-1"></i>Use as this room's heating sensor</button>` : ''}
+      ${isContact ? `<button class="btn btn-sm btn-outline-primary w-100 mb-2" data-action="device-to-contact">
+          <i class="fas fa-link me-1"></i>Attach to the nearest window or door</button>` : ''}
+      ${isTrv ? `<div class="form-text small mb-2">To use it for heating, select its radiator and pick it as the TRV.
+          It will then sit on the radiator.</div>` : ''}
+      <button class="btn btn-sm btn-outline-danger w-100" data-action="device-unplace">
+        <i class="fas fa-xmark me-1"></i>Take off the plan</button>`;
+}
+
+function bindDeviceProps(ieee) {
+    const lvl = currentLevel();
+    const d = (lvl.devices || []).find(x => x.ieee === ieee);
+    if (!d) return;
+    const root = document.getElementById('fpProps');
+    root.querySelector('#fpDevHeight')?.addEventListener('change', e => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v)) d.height_m = v; else delete d.height_m;
+    });
+    root.querySelector('[data-action="device-unplace"]')?.addEventListener('click', () => {
+        unplaceDevice(ieee);
+        _state.selection = null;
+        renderScene(); renderProps();
+    });
+    root.querySelector('[data-action="device-to-sensor"]')?.addEventListener('click', () => {
+        const room = lvl.rooms.find(r => pointInPolygon(d, r.polygon));
+        if (!room) return;
+        const id = genId('sens');
+        lvl.sensors.push({ id, room_id: room.id, ieee, kind: 'temp_sensor', x: d.x, y: d.y,
+                           height_m: d.height_m ?? 1.5,
+                           primary: !lvl.sensors.some(x => x.room_id === room.id) });
+        unplaceDevice(ieee);
+        _state.selection = { kind: 'sensor', id };
+        renderScene(); renderProps();
+    });
+    root.querySelector('[data-action="device-to-contact"]')?.addEventListener('click', () => {
+        const op = nearestOpening(lvl, d);
+        if (!op) { toast('warn', 'No window or door nearby', 'Drag it within 60 cm of one first.'); return; }
+        addContact(op);
+        lvl.contacts[lvl.contacts.length - 1].ieee = ieee;
+        unplaceDevice(ieee);
+        renderScene(); renderProps();
+    });
+}
+
+function bindDeviceLayerEvents() {
+    document.getElementById('fpPaletteSearch')?.addEventListener('input', renderPalette);
+    const wrap = document.getElementById('fpCanvasWrap');
+    new ResizeObserver(() => { if (_needsFit && _state) zoomFit(); }).observe(wrap);
+    wrap.addEventListener('dragover', e => {
+        if (e.dataTransfer.types.includes('text/x-zmm-ieee')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+    });
+    wrap.addEventListener('drop', e => {
+        const ieee = e.dataTransfer.getData('text/x-zmm-ieee');
+        if (!ieee || !_state) return;
+        e.preventDefault();
+        placeDevice(ieee, clientToSvgModel(e));
+    });
+    document.getElementById('fpToggleMesh').addEventListener('change', async e => {
+        _state.showMesh = e.target.checked;
+        if (_state.showMesh) await loadMesh();
+        syncMeshControls(); renderScene();
+    });
+    document.getElementById('fpToggleDaylight').addEventListener('change', async e => {
+        _state.showDaylight = e.target.checked;
+        if (_state.showDaylight) await loadDaylight();
+        syncDaylightControls(); renderScene();
+    });
+    document.getElementById('fpDaylightTime').addEventListener('input', e => {
+        _state.daylightIndex = parseInt(e.target.value, 10) || 0;
+        syncDaylightControls(); renderScene();
+    });
+    document.getElementById('fpToggleMap').addEventListener('change', e => {
+        _state.showMap = e.target.checked;
+        syncMapControls(); renderScene();
+    });
+    document.getElementById('fpMapOpacity').addEventListener('input', e => {
+        _state.plan.map = { anchor_x_m: 0, anchor_y_m: 0, ...(_state.plan.map || {}),
+                            opacity: parseFloat(e.target.value) };
+        renderScene();
+    });
+    document.getElementById('fpMapAnchor').addEventListener('click', () => {
+        setTool('map-anchor');
+        closeMobileDrawers();
+        toast('info', 'Home pin', 'Click the spot on the plan where the map pin for your address sits.');
+    });
+}
+
+function syncMapControls() {
+    if (!_state) return;
+    const on = !!_state.showMap && !!_home;
+    document.getElementById('fpToggleMap').checked = !!_state.showMap;
+    document.getElementById('fpToggleMap').disabled = !_home;
+    document.getElementById('fpMapControls').classList.toggle('d-none', !on);
+    document.getElementById('fpMapMissing').classList.toggle('d-none', !!_home);
+    document.getElementById('fpMapOpacity').value = String(_state.plan.map?.opacity ?? 0.6);
+}
+
+const MAP_ZOOM = 19;
+const MAP_RADIUS_TILES = 2;   // a 5×5 block: ~150 m across at UK latitudes
+
+/**
+ * OSM tiles around the home pin, in plan metres, north turned to the compass.
+ * The pin sits at ``plan.map.anchor_*``; true north is ``north_offset_deg``
+ * clockwise from plan-up, so the tile block is rotated by that much.
+ */
+function renderMapParts() {
+    if (!_home) return [];
+    const { lat, lon } = _home;
+    const n = 2 ** MAP_ZOOM;
+    const latRad = lat * Math.PI / 180;
+    const fx = (lon + 180) / 360 * n;
+    const fy = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+    const tileM = 40075016.686 * Math.cos(latRad) / n;      // metres per tile edge
+    const anchor = modelToSvg({ x: _state.plan.map?.anchor_x_m || 0, y: _state.plan.map?.anchor_y_m || 0 });
+    const opacity = _state.plan.map?.opacity ?? 0.6;
+    const tx0 = Math.floor(fx), ty0 = Math.floor(fy);
+    const tiles = [];
+    for (let dy = -MAP_RADIUS_TILES; dy <= MAP_RADIUS_TILES; dy++) {
+        for (let dx = -MAP_RADIUS_TILES; dx <= MAP_RADIUS_TILES; dx++) {
+            const tx = tx0 + dx, ty = ty0 + dy;
+            const x = anchor.x + (tx - fx) * tileM, y = anchor.y + (ty - fy) * tileM;
+            tiles.push(`<image href="/api/map/tiles/${MAP_ZOOM}/${tx}/${ty}.png" x="${x}" y="${y}"
+                               width="${tileM}" height="${tileM}" preserveAspectRatio="none"/>`);
+        }
+    }
+    const rot = _state.plan.north_offset_deg || 0;
+    return [`<g class="fp-map" opacity="${opacity}" pointer-events="none"
+               transform="rotate(${rot} ${anchor.x} ${anchor.y})">${tiles.join('')}
+               <circle class="fp-map-pin" cx="${anchor.x}" cy="${anchor.y}" r="0.2"/></g>`];
+}
+
+// mesh layer — docs/heating.md § Mesh on the plan
+
+async function loadMesh() {
+    try {
+        const r = await fetch('/api/floor-plan/mesh').then(r => r.json());
+        if (!r?.success) throw new Error(r?.error || r?.detail || 'Mesh unavailable');
+        _state.mesh = r;
+    } catch (e) {
+        _state.mesh = null;
+        toast('warn', 'Mesh', e.message);
+    }
+}
+
+function syncMeshControls() {
+    const on = !!_state.showMesh && !!_state.mesh;
+    document.getElementById('fpMeshControls').classList.toggle('d-none', !on);
+    if (!on) return;
+    const placed = livePositions();
+    const nodes = Object.keys(_state.mesh.nodes || {});
+    const missing = nodes.filter(i => !placed.has(i)).length;
+    document.getElementById('fpMeshNote').textContent = missing
+        ? `${missing} of ${nodes.length} devices aren't placed; their links end in a stub.`
+        : 'Every device on the mesh is placed.';
+}
+
+function openingCentre(lvl, openingId) {
+    const op = lvl.openings.find(o => o.id === openingId);
+    const wall = op && lvl.walls.find(w => w.id === op.wall_id);
+    if (!wall) return null;
+    const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+    const t = op.offset_m + op.width_m / 2;
+    return { x: wall.x1 + (wall.x2 - wall.x1) * t / wlen, y: wall.y1 + (wall.y2 - wall.y1) * t / wlen };
+}
+
+/**
+ * ieee → { levelId, x, y } for the plan being edited, by the one-position
+ * rule: the radiator for a fitted TRV, the sensor entry, the opening for a
+ * contact, else devices[]. Mirrors floor_plan.placed_devices on the server.
+ */
+function livePositions() {
+    const out = new Map();
+    for (const lvl of _state.plan.levels) {
+        const add = (ieee, p) => { if (ieee && p && !out.has(ieee)) out.set(ieee, { levelId: lvl.id, ...p }); };
+        lvl.radiators.forEach(r => r.trv_ieee && add(r.trv_ieee, radiatorCenter(r, lvl)));
+        lvl.sensors.forEach(x => x.ieee && x.x != null && add(x.ieee, { x: x.x, y: x.y }));
+        lvl.contacts.forEach(c => c.ieee && add(c.ieee, openingCentre(lvl, c.opening_id)));
+        (lvl.devices || []).forEach(d => add(d.ieee, { x: d.x, y: d.y }));
+    }
+    return out;
+}
+
+function renderMeshParts(lvl) {
+    const pos = livePositions();
+    const nodes = _state.mesh.nodes || {};
+    const name = i => nodes[i]?.name || i;
+    const levelName = id => _state.plan.levels.find(l => l.id === id)?.name || id;
+    const parts = [];
+    const stubCount = new Map();
+    for (const link of _state.mesh.links || []) {
+        if (!link.online) continue;
+        const pa = pos.get(link.a), pb = pos.get(link.b);
+        const hereA = pa?.levelId === lvl.id, hereB = pb?.levelId === lvl.id;
+        if (!hereA && !hereB) continue;
+        const title = `${escapeHtml(name(link.a))} ↔ ${escapeHtml(name(link.b))} · LQI ${link.lqi_ab ?? '–'} / ${link.lqi_ba ?? '–'}`
+            + (link.rel_ab ? ` · ${escapeHtml(name(link.b))} is its ${escapeHtml(link.rel_ab)}` : '');
+        if (hereA && hereB) {
+            const A = modelToSvg(pa), B = modelToSvg(pb);
+            parts.push(`<g class="fp-link fp-link-${link.band}">
+                <line x1="${A.x}" y1="${A.y}" x2="${B.x}" y2="${B.y}" stroke-width="0.06"><title>${title}</title></line>
+                <text class="fp-link-label" x="${(A.x + B.x) / 2}" y="${(A.y + B.y) / 2 - 0.08}" font-size="0.13"
+                      text-anchor="middle" pointer-events="none">${link.lqi ?? ''}</text></g>`);
+            continue;
+        }
+        // One end here: a short stub fanning out from it, labelled with the far end.
+        const [near, far, farPos] = hereA ? [link.a, link.b, pb] : [link.b, link.a, pa];
+        const k = stubCount.get(near) || 0;
+        stubCount.set(near, k + 1);
+        const angle = (-60 + k * 35) * Math.PI / 180;
+        const P = pos.get(near), end = { x: P.x + 0.9 * Math.cos(angle), y: P.y + 0.9 * Math.sin(angle) };
+        const A = modelToSvg(P), B = modelToSvg(end);
+        const where = farPos ? `↕ ${levelName(farPos.levelId)}` : 'not placed';
+        parts.push(`<g class="fp-link fp-link-stub fp-link-${link.band}">
+            <line x1="${A.x}" y1="${A.y}" x2="${B.x}" y2="${B.y}" stroke-width="0.05"><title>${title}</title></line>
+            <text class="fp-link-label" x="${B.x + 0.05}" y="${B.y}" font-size="0.12"
+                  pointer-events="none">${escapeHtml(name(far))} (${escapeHtml(where)}) · ${link.lqi ?? ''}</text></g>`);
+    }
+    return parts;
+}
+
+// daylight layer — docs/daylight.md §7
+
+async function loadDaylight() {
+    try {
+        const r = await fetch('/api/floor-plan/daylight?step_minutes=30').then(r => r.json());
+        if (!r?.success) throw new Error(r?.error || 'No estimate');
+        _state.daylight = r;
+        // Start at the step nearest now.
+        const i = r.times.reduce((best, t, k) =>
+            Math.abs(t - r.now) < Math.abs(r.times[best] - r.now) ? k : best, 0);
+        _state.daylightIndex = i;
+    } catch (e) {
+        _state.daylight = null;
+        toast('warn', 'Daylight', e.message);
+    }
+}
+
+function syncDaylightControls() {
+    const on = !!_state.showDaylight && !!_state.daylight;
+    document.getElementById('fpDaylightControls').classList.toggle('d-none', !on);
+    if (!on) return;
+    const d = _state.daylight, i = _state.daylightIndex;
+    const slider = document.getElementById('fpDaylightTime');
+    slider.max = String(d.times.length - 1);
+    slider.value = String(i);
+    document.getElementById('fpDaylightClock').textContent =
+        new Date(d.times[i] * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    document.getElementById('fpDaylightOutdoor').textContent = `${formatLux(d.outdoor[i])}`;
+}
+
+function formatLux(v) {
+    return v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k lx` : `${Math.round(v)} lx`;
+}
+
+/** Night blue through to sunlit yellow, on a log scale from 1 to ~3000 lux. */
+function daylightFill(lux) {
+    const t = Math.max(0, Math.min(1, Math.log10(Math.max(1, lux)) / 3.5));
+    const lerp = (a, b) => Math.round(a + (b - a) * t);
+    return `rgba(${lerp(30, 250)},${lerp(41, 204)},${lerp(90, 21)},0.45)`;
+}
+
+function renderDaylightParts(lvl) {
+    const d = _state.daylight, i = _state.daylightIndex;
+    const byRoom = new Map(d.rooms.filter(r => r.level_id === lvl.id).map(r => [r.room_id, r]));
+    const parts = [];
+    for (const room of lvl.rooms) {
+        const est = byRoom.get(room.id);
+        const c = modelToSvg(polygonCentroid(room.polygon));
+        if (!est) {
+            parts.push(`<path d="${polygonToPath(room.polygon)}" class="fp-daylight-none" pointer-events="none"/>
+              <text class="fp-daylight-label" x="${c.x}" y="${c.y - 0.3}" font-size="0.14"
+                    text-anchor="middle" pointer-events="none">no outside window</text>`);
+            continue;
+        }
+        const lux = est.lux[i] || 0;
+        parts.push(`<path d="${polygonToPath(room.polygon)}" fill="${daylightFill(lux)}" pointer-events="none"/>
+          <text class="fp-daylight-label" x="${c.x}" y="${c.y - 0.3}" font-size="0.16"
+                text-anchor="middle" pointer-events="none">${est.sun[i] ? '☀ ' : ''}${formatLux(lux)}</text>`);
+    }
+    return parts;
+}
+
 // save
 
 async function save() {
@@ -3609,6 +4242,7 @@ async function save() {
             scale_pixels_per_metre: _state.plan.scale_pixels_per_metre,
             // Plan-level circuit definitions — MUST be sent so the backend
             // can persist them and use plan-native projection mode.
+            ...(_state.plan.map ? { map: _state.plan.map } : {}),
             circuits: (_state.plan.circuits || []).map(c => ({
                 id: c.id,
                 name: c.name,
@@ -3623,6 +4257,8 @@ async function save() {
                     floor_above_ground_m: l.floor_above_ground_m,
                     walls: l.walls, openings: l.openings, rooms: l.rooms,
                     radiators: l.radiators, sensors: l.sensors, contacts: l.contacts,
+                    // Every placed device, whatever this view shows.
+                    devices: l.devices || [],
                 };
                 if (l.background?.present) {
                     // Strip view-only fields (cache-buster) before sending
@@ -3632,7 +4268,7 @@ async function save() {
                 return out;
             }),
         };
-        const r = await fetch('/api/heating/floor-plan', {
+        const r = await fetch('/api/floor-plan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -3642,10 +4278,21 @@ async function save() {
         if (typeof _onSaveCallback === 'function') {
             try { await _onSaveCallback(r); } catch (e) { log.error(e); }
         }
-        setTimeout(() => {
-            const modalEl = document.getElementById('floorPlanModal');
-            if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-        }, 600);
+        const modalEl = _root.closest('#floorPlanModal');
+        if (modalEl) {
+            setTimeout(() => bootstrap.Modal.getOrCreateInstance(modalEl).hide(), 600);
+        } else if (r.plan) {
+            // The server's copy: it drops a devices[] entry heating now holds.
+            const keep = _state.currentLevelId;
+            _state.plan = { circuits: [], ...r.plan };
+            for (const l of _state.plan.levels) if (!Array.isArray(l.devices)) l.devices = [];
+            _state.currentLevelId = _state.plan.levels.some(l => l.id === keep)
+                ? keep : _state.plan.levels[0]?.id;
+            _state.selection = null;
+            // The estimate reads the saved plan, which has just changed.
+            if (_state.showDaylight) { await loadDaylight(); syncDaylightControls(); }
+            renderScene(); renderProps(); renderPalette();
+        }
     } catch (e) {
         status.innerHTML = `<span class="text-danger"><i class="fas fa-times-circle me-1"></i>${escapeHtml(e.message)}</span>`;
     } finally {
@@ -3751,7 +4398,7 @@ async function onImageFileChosen(e) {
         // POST to server
         const fd = new FormData();
         fd.append('file', uploadBlob, contentType === 'image/png' ? 'plan.png' : 'plan.jpg');
-        const r = await fetch(`/api/heating/floor-plan/image/${encodeURIComponent(lvl.id)}`, {
+        const r = await fetch(`/api/floor-plan/image/${encodeURIComponent(lvl.id)}`, {
             method: 'POST', body: fd,
         }).then(r => r.json());
         if (!r.success) throw new Error(r.error || 'upload failed');
@@ -3807,7 +4454,7 @@ async function removeBackgroundImage() {
         variant: 'danger'
     })) return;
     try {
-        await fetch(`/api/heating/floor-plan/image/${encodeURIComponent(lvl.id)}`, { method: 'DELETE' });
+        await fetch(`/api/floor-plan/image/${encodeURIComponent(lvl.id)}`, { method: 'DELETE' });
     } catch { /* swallow */ }
     delete lvl.background;
     document.getElementById('fpRemoveImage').disabled = true;

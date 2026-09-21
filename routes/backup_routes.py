@@ -43,6 +43,7 @@ BACKUP_MANIFEST = [
     "data/device_overrides.json",
     "data/zones.yaml",
     "data/auth.yaml",
+    "data/floor_plan.json",
 
     # Groups — live registry is data/groups.json; the groups/ entry is the
     # legacy in-image location, kept so old backups still restore.
@@ -92,7 +93,7 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
         Includes: config.yaml (all integration enablement + settings),
         the zigpy device DB, groups/zones/automations/auth, per-integration
         data files (presence, remote access, alerts, AC timers, media,
-        speaker-sync), floor-plan images, Matter storage, the TLS cert pair,
+        speaker-sync), the floor plan and its images, Matter storage, the TLS cert pair,
         and (optionally) the telemetry DuckDBs.
         """
         try:
@@ -307,6 +308,18 @@ def register_backup_routes(app: FastAPI, get_zigbee_service):
                     except Exception as e:
                         logger.warning(f"Could not remove stale WAL {wal_path}: {e}")
 
+
+            # A backup from before the plan left config.yaml carries it there and
+            # no floor_plan.json; drop the live file so the restored plan is the
+            # one migrated on the next start, not the plan being replaced.
+            if "config/config.yaml" in restored and "data/floor_plan.json" not in restored:
+                stale_plan = os.path.join(APP_DIR, "data/floor_plan.json")
+                if os.path.isfile(stale_plan):
+                    try:
+                        os.remove(stale_plan)
+                        logger.info("Removed data/floor_plan.json; the restored config's plan applies")
+                    except Exception as e:
+                        logger.warning(f"Could not remove {stale_plan}: {e}")
 
             # After extracting all files, fix up config.yaml if needed
             config_target = os.path.join(APP_DIR, "config/config.yaml")

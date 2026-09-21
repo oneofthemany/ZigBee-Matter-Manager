@@ -209,6 +209,12 @@ function readParams(card, specs) {
     return out;
 }
 
+/** Devices unticked on a card's checklist — what apply leaves out. */
+export function readExcluded(card) {
+    return [...card.querySelectorAll('[data-sg-member]')]
+        .filter(el => !el.checked).map(el => el.dataset.sgMember);
+}
+
 // RENDER
 
 export function cardHtml(s, opts) {
@@ -218,8 +224,14 @@ export function cardHtml(s, opts) {
     const badge = CONFIDENCE_BADGE[s.confidence] || 'bg-secondary';
     const built = s.status !== 'available';
 
-    const devices = (s.devices || []).map(d =>
-        `<span class="badge bg-light text-dark border fw-normal${d.proposed ? ' border-info' : ''}"
+    // A collected action ("every light") is a checklist the user may untick;
+    // everything else is fixed by the pattern and shown as a badge.
+    const choosable = new Set(!built && editable ? (s.choosable || []) : []);
+    const devices = (s.devices || []).map(d => choosable.has(d.slot)
+        ? `<label class="badge bg-light text-dark border fw-normal" title="${esc(d.label || d.offer)}">
+               <input type="checkbox" class="form-check-input me-1 align-middle" checked
+                      data-sg-member="${esc(d.ieee)}">${esc(d.name)}</label>`
+        : `<span class="badge bg-light text-dark border fw-normal${d.proposed ? ' border-info' : ''}"
                title="${esc(d.label || d.offer)}">${d.proposed ? '<i class="fas fa-plus me-1"></i>' : ''}
             ${esc(d.name)}</span>`).join(' ');
 
@@ -437,6 +449,7 @@ async function create(id, btn) {
     if (!suggestion) return;
     const card = document.querySelector(`[data-sg-card="${CSS.escape(id)}"]`);
     const params = card ? readParams(card, suggestion.params) : {};
+    const exclude = card ? readExcluded(card) : [];
 
     await withBusy(btn, async () => {
         try {
@@ -444,7 +457,7 @@ async function create(id, btn) {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ params }),
+                body: JSON.stringify({ params, exclude }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Could not build that suggestion');

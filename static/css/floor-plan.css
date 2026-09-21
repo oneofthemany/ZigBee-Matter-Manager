@@ -45,6 +45,14 @@
     --fp-contact-fill:     #a78bfa;
     --fp-contact-stroke:   #5b21b6;
 
+    --fp-device-stroke:      #1f2937;
+    --fp-device-light:       #f59e0b;
+    --fp-device-heating:     #ef4444;
+    --fp-device-router:      #3b82f6;
+    --fp-device-coordinator: #8b5cf6;
+    --fp-device-other:       #94a3b8;
+    --fp-device-label:       #334155;
+
     --fp-selection:        #fbbf24;
     --fp-selection-stroke: #92400e;
 
@@ -99,6 +107,14 @@
     --fp-contact-fill:     #c4b5fd;
     --fp-contact-stroke:   #ddd6fe;
 
+    --fp-device-stroke:      #f8fafc;
+    --fp-device-light:       #fbbf24;
+    --fp-device-heating:     #f87171;
+    --fp-device-router:      #60a5fa;
+    --fp-device-coordinator: #a78bfa;
+    --fp-device-other:       #94a3b8;
+    --fp-device-label:       #cbd5e1;
+
     --fp-selection:        var(--honey, #f2a93b);
     --fp-selection-stroke: #fde68a;
 
@@ -112,20 +128,21 @@
     --fp-sun-stroke:       rgba(251, 191, 36, 0.7);
 }
 
-/* modal chrome */
-#floorPlanModal .modal-content {
+/* editor chrome — .fp-root is the editor, in Heating's modal or inline in Topology */
+#floorPlanModal .modal-content,
+.fp-root {
     background: var(--fp-sidebar-bg);
     color: var(--fp-text);
 }
 
-#floorPlanModal #fpSidebar,
-#floorPlanModal #fpProps {
+.fp-root #fpSidebar,
+.fp-root #fpProps {
     background: var(--fp-sidebar-bg);
     color: var(--fp-text);
     border-color: var(--fp-border) !important;
 }
 
-#floorPlanModal #fpCanvasWrap {
+.fp-root #fpCanvasWrap {
     background: var(--fp-canvas-bg);
 }
 
@@ -137,11 +154,11 @@
     -webkit-user-select: none;
 }
 
-#floorPlanModal #fpSidebar .text-muted,
-#floorPlanModal #fpProps .text-muted,
-#floorPlanModal #fpStatus,
-#floorPlanModal #fpSaveStatus,
-#floorPlanModal .form-text {
+.fp-root #fpSidebar .text-muted,
+.fp-root #fpProps .text-muted,
+.fp-root #fpStatus,
+.fp-root #fpSaveStatus,
+.fp-root .form-text {
     color: var(--fp-text-muted) !important;
 }
 
@@ -168,43 +185,43 @@
 #fpStatus { min-height: 1.1em; }
 
 /* Dark-mode chrome overrides for elements not driven by --fp- vars */
-[data-theme="dark"] #floorPlanModal .modal-header,
-[data-theme="dark"] #floorPlanModal .modal-footer {
+[data-theme="dark"] .fp-root .modal-header,
+[data-theme="dark"] .fp-root .modal-footer {
     background: var(--fp-sidebar-bg);
     border-color: var(--fp-border);
 }
 
-[data-theme="dark"] #floorPlanModal .form-control,
-[data-theme="dark"] #floorPlanModal .form-select {
+[data-theme="dark"] .fp-root .form-control,
+[data-theme="dark"] .fp-root .form-select {
     background-color: #0f172a;
     color: var(--fp-text);
     border-color: var(--fp-border);
 }
 
-[data-theme="dark"] #floorPlanModal .form-control::placeholder {
+[data-theme="dark"] .fp-root .form-control::placeholder {
     color: var(--fp-text-muted);
 }
 
-[data-theme="dark"] #floorPlanModal .btn-outline-primary,
-[data-theme="dark"] #floorPlanModal .btn-outline-secondary,
-[data-theme="dark"] #floorPlanModal .btn-outline-info,
-[data-theme="dark"] #floorPlanModal .btn-outline-warning,
-[data-theme="dark"] #floorPlanModal .btn-outline-danger {
+[data-theme="dark"] .fp-root .btn-outline-primary,
+[data-theme="dark"] .fp-root .btn-outline-secondary,
+[data-theme="dark"] .fp-root .btn-outline-info,
+[data-theme="dark"] .fp-root .btn-outline-warning,
+[data-theme="dark"] .fp-root .btn-outline-danger {
     color: var(--fp-text);
     border-color: var(--fp-border);
 }
 
-[data-theme="dark"] #floorPlanModal .btn-outline-primary:hover,
-[data-theme="dark"] #floorPlanModal .btn-outline-secondary:hover,
-[data-theme="dark"] #floorPlanModal .btn-outline-info:hover,
-[data-theme="dark"] #floorPlanModal .btn-outline-warning:hover,
-[data-theme="dark"] #floorPlanModal .btn-outline-danger:hover {
+[data-theme="dark"] .fp-root .btn-outline-primary:hover,
+[data-theme="dark"] .fp-root .btn-outline-secondary:hover,
+[data-theme="dark"] .fp-root .btn-outline-info:hover,
+[data-theme="dark"] .fp-root .btn-outline-warning:hover,
+[data-theme="dark"] .fp-root .btn-outline-danger:hover {
     background-color: var(--fp-border);
     border-color: var(--fp-text-muted);
     color: #fff;
 }
 
-[data-theme="dark"] #floorPlanModal .btn-close {
+[data-theme="dark"] .fp-root .btn-close {
     filter: invert(1) grayscale(100%) brightness(200%);
 }
 
@@ -319,6 +336,45 @@
     fill: var(--fp-contact-fill);
     stroke: var(--fp-contact-stroke);
 }
+
+/* placed devices: colour by kind, on the canvas and in the palette */
+.fp-device { stroke: var(--fp-device-stroke); }
+.fp-device-light       { fill: var(--fp-device-light);       background: var(--fp-device-light); }
+.fp-device-heating     { fill: var(--fp-device-heating);     background: var(--fp-device-heating); }
+.fp-device-router      { fill: var(--fp-device-router);      background: var(--fp-device-router); }
+.fp-device-coordinator { fill: var(--fp-device-coordinator); background: var(--fp-device-coordinator); }
+.fp-device-other       { fill: var(--fp-device-other);       background: var(--fp-device-other); }
+.fp-device-label { fill: var(--fp-device-label); }
+.fp-device-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+}
+.fp-palette-item { cursor: grab; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-palette-item.active { outline: 2px solid var(--fp-selection); }
+/* mesh links: the same LQI bands and colours as the Topology graph (mesh.js) */
+.fp-link line { fill: none; stroke-linecap: round; }
+.fp-link-good line    { stroke: #00b894; }
+.fp-link-ok line      { stroke: #fdcb6e; }
+.fp-link-weak line    { stroke: #e17055; }
+.fp-link-bad line     { stroke: #d63031; }
+.fp-link-unknown line { stroke: #94a3b8; }
+.fp-link-stub line { stroke-dasharray: 0.12 0.08; }
+.fp-link-label { fill: var(--fp-text); }
+.fp-link-key { display: inline-block; width: 16px; height: 3px; margin-right: 4px; vertical-align: middle; }
+.fp-link-key.fp-link-good { background: #00b894; }
+.fp-link-key.fp-link-ok   { background: #fdcb6e; }
+.fp-link-key.fp-link-weak { background: #e17055; }
+.fp-link-key.fp-link-bad  { background: #d63031; }
+.fp-offline { opacity: 0.35; }
+
+.fp-daylight-none  { fill: rgba(15, 23, 42, 0.35); }
+.fp-daylight-label { fill: var(--fp-text); font-weight: 600; }
+.fp-map-pin { fill: var(--fp-device-heating); stroke: var(--fp-device-stroke); stroke-width: 0.04; }
+
+/* inline in Topology: fill the tab's container, no modal chrome */
+.fp-inline-host { height: 75vh; min-height: 480px; position: relative; }
+.fp-inline-host .fp-root .modal-header { border-bottom: 1px solid var(--fp-border); }
+.fp-inline-host .fp-root .modal-body { min-height: 0; }
 
 /* Selection — overrides the per-shape stroke for any selected element */
 .fp-selected {
@@ -525,7 +581,7 @@
    leaving the canvas no room, so below 768px they become off-canvas drawers
    toggled by floor-plan.js. See docs/structure.md. */
 @media (max-width: 767.98px) {
-    #floorPlanModal .modal-body {
+    .fp-root .modal-body {
         position: relative;
     }
 
@@ -556,8 +612,8 @@
         transform: translateX(100%);
     }
 
-    #floorPlanModal.fp-sidebar-open #fpSidebar,
-    #floorPlanModal.fp-props-open #fpProps {
+    .fp-root.fp-sidebar-open #fpSidebar,
+    .fp-root.fp-props-open #fpProps {
         transform: translateX(0);
     }
 
@@ -569,8 +625,8 @@
        tap closes the drawer instead of also placing a wall/room vertex
        underneath it. Real element (not the canvas itself) — floor-plan.js
        closes the drawer on click via #fpCanvasWrap, which sits under this. */
-    #floorPlanModal.fp-sidebar-open #fpCanvasWrap::after,
-    #floorPlanModal.fp-props-open #fpCanvasWrap::after {
+    .fp-root.fp-sidebar-open #fpCanvasWrap::after,
+    .fp-root.fp-props-open #fpCanvasWrap::after {
         content: '';
         position: absolute;
         inset: 0;

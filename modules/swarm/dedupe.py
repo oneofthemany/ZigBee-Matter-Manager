@@ -170,9 +170,20 @@ def index_rules(rules: Iterable[Dict[str, Any]]) -> Dict[Signature, List[Dict[st
 
 
 def status_for(compiled: Dict[str, Any],
-               index: Dict[Signature, List[Dict[str, Any]]]) -> Dict[str, Any]:
-    """Whether this compiled rule is already live, and which rule it matches."""
+               index: Dict[Signature, List[Dict[str, Any]]],
+               subset_ok: bool = False) -> Dict[str, Any]:
+    """Whether this compiled rule is already live, and which rule it matches.
+
+    ``subset_ok`` is for a suggestion whose targets the user may untick: a rule
+    wired the same way to some of those targets is that suggestion, built.
+    """
     matches = index.get(signature(compiled)) or []
+    if not matches and subset_ok:
+        source, watched, targets, shape = signature(compiled)
+        wanted = set(targets)
+        matches = [r for (s, w, t, sh), rules in index.items()
+                   if (s, w, sh) == (source, watched, shape) and t and set(t) <= wanted
+                   for r in rules]
     if not matches:
         return {"status": "available"}
     rule = matches[0]

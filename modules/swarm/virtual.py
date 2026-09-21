@@ -38,6 +38,8 @@ REFRESH_SECONDS = 60
 WEATHER_IEEE = "virtual::weather"
 HOUSE_IEEE = "virtual::house"
 TARIFF_IEEE = "virtual::tariff"
+#: One per room with a window to the outside: ``virtual::daylight::<room id>``.
+ROOM_DAYLIGHT_PREFIX = "virtual::daylight::"
 
 # Walking-pace fallback for turning a straight-line distance into a time.
 # Deliberately conservative: an arrival predicted late is a cold house, while
@@ -130,8 +132,17 @@ class VirtualDeviceProvider:
                  advisor_getter: Optional[Callable[[], Any]] = None,
                  tariff_getter: Optional[Callable[[], Any]] = None,
                  presence_getter: Optional[Callable[[], Any]] = None,
-                 evaluator: Optional[Callable] = None) -> None:
+                 location_getter: Optional[Callable[[], Any]] = None,
+                 plan_getter: Optional[Callable[[], Any]] = None,
+                 evaluator: Optional[Callable] = None,
+                 clock: Callable[[], float] = time.time) -> None:
         self._weather = weather_getter
+        self._location = location_getter
+        self._plan = plan_getter
+        self._clock = clock
+        # Outdoor light and the sun, as the last refresh saw them — the rooms'
+        # input. None until a refresh has had a location.
+        self._sky: Optional[Dict[str, float]] = None
         self._advisor = advisor_getter
         self._tariff = tariff_getter
         self._presence = presence_getter
@@ -218,8 +229,9 @@ class VirtualDeviceProvider:
         tariff = self._read_tariff()
 
         changes = {}
-        for ieee, values in ((WEATHER_IEEE, weather), (HOUSE_IEEE, house),
-                             (TARIFF_IEEE, tariff)):
+        updates = [(WEATHER_IEEE, weather), (HOUSE_IEEE, house), (TARIFF_IEEE, tariff)]
+        updates += self._read_rooms()
+        for ieee, values in updates:
             changed = self.devices[ieee].apply(values)
             if changed:
                 changes[ieee] = changed
@@ -237,19 +249,101 @@ class VirtualDeviceProvider:
 
     def _read_weather(self) -> Dict[str, Any]:
         svc = self._weather() if self._weather else None
-        if not svc:
-            return {}
-        try:
-            current = svc.get_current() or {}
-        except Exception:
+        current: Dict[str, Any] = {}
+        if svc:
+            try:
+                current = svc.get_current() or {}
+            except Exception:
+                current = {}
+        daylight = self._read_daylight(current)
+        if not svc and daylight.get("outdoor_lux") is None:
             return {}
         return {
             "temperature": _f(current.get("temperature_2m")),
             "humidity": _f(current.get("relative_humidity_2m")),
             "wind_speed": _f(current.get("wind_speed_10m")),
             "solar_wm2": _f(current.get("shortwave_radiation")),
-            "is_daylight": _int_flag(_f(current.get("shortwave_radiation")), 1.0),
+            **daylight,
         }
+
+    def _coords(self, current: Dict[str, Any]) -> Optional[tuple]:
+        try:
+            got = self._location() if self._location else None
+        except Exception:
+            got = None
+        lat, lon = got if got else (current.get("latitude"), current.get("longitude"))
+        lat, lon = _f(lat), _f(lon)
+        return (lat, lon) if lat is not None and lon is not None else None
+
+    def _read_daylight(self, current: Dict[str, Any]) -> Dict[str, Any]:
+        """Estimated outdoor light, and the bands a rule triggers on.
+
+        Needs a location or a measured irradiance; with neither every key is
+        None and so dropped. Model: docs/daylight.md.
+        """
+        from modules import daylight
+
+        try:
+            sky = daylight.sky(self._clock(), self._coords(current), current)
+        except Exception as e:                                  # noqa: BLE001
+            logger.debug(f"Daylight estimate failed: {e}")
+            sky = None
+        self._sky = sky if sky and sky["elevation"] is not None else None
+        if sky is None:
+            return {"outdoor_lux": None, "daylight_level": None, "is_daylight": None,
+                    "is_gloomy": None, "daylight_source": None}
+        lux, source, elevation = sky["lux"], sky["source"], sky["elevation"]
+
+        # Hysteresis needs the band published last time, which is this device's state.
+        previous = self.devices[WEATHER_IEEE].state.get("daylight_level")
+        level = daylight.light_level(lux, previous)
+        return {
+            "outdoor_lux": daylight.round_lux(lux),
+            "daylight_level": level,
+            "is_daylight": 1 if level in daylight.DAYLIGHT_LEVELS else 0,
+            "is_gloomy": 0 if level == "bright" else 1,
+            "daylight_source": source,
+            "sun_elevation": round(elevation) if elevation is not None else None,
+        }
+
+    def _read_rooms(self) -> List[tuple]:
+        """Each windowed room's estimated daylight, as a lux sensor would report it.
+
+        Rooms come and go with the floor plan; a room's device is created on
+        first sight and dropped when the room or its last outside window is.
+        Model: docs/daylight.md §7.
+        """
+        if not self._plan:
+            return []
+        from modules import daylight
+        from modules.floor_plan import daylight_geometry
+        try:
+            rooms = daylight_geometry(self._plan())
+        except Exception as e:                                  # noqa: BLE001
+            logger.warning(f"Room daylight geometry failed: {e}")
+            return []
+        wanted = {ROOM_DAYLIGHT_PREFIX + r["room_id"]: r for r in rooms}
+        for ieee in [i for i in self.devices if i.startswith(ROOM_DAYLIGHT_PREFIX)]:
+            if ieee not in wanted:
+                del self.devices[ieee]
+        out = []
+        for ieee, room in wanted.items():
+            dev = self.devices.get(ieee)
+            if dev is None:
+                dev = self.devices[ieee] = VirtualDevice(
+                    ieee, f"{room['name']} daylight", "Estimated Daylight",
+                    ["illuminance", "daylight_estimate"])
+                dev.estimated = True
+            dev.chamber = room["room_id"]
+            sky = self._sky
+            if sky is None:
+                out.append((ieee, {"illuminance_lux": None, "direct_sun": None}))
+                continue
+            lux, sun_in = daylight.room_lux(room, sky["lux"], sky["azimuth"],
+                                            sky["elevation"], sky["cloud"])
+            out.append((ieee, {"illuminance_lux": daylight.round_lux(lux),
+                               "direct_sun": 1 if sun_in else 0}))
+        return out
 
     def _read_house(self, outdoor: Optional[float]) -> Dict[str, Any]:
         svc = self._advisor() if self._advisor else None
@@ -365,12 +459,6 @@ def _eta_minutes(distance_m: Optional[float]) -> Optional[float]:
         return None
     minutes = (distance_m / DEFAULT_SPEED_MS) / 60.0
     return min(minutes, MAX_ETA_MINUTES)
-
-
-def _int_flag(value: Optional[float], threshold: float) -> Optional[int]:
-    if value is None:
-        return None
-    return 1 if value > threshold else 0
 
 
 _provider: Optional[VirtualDeviceProvider] = None

@@ -77,7 +77,7 @@ than replacing either:
 | --- | --- |
 | `chambers:` | `config` (this module) |
 | `heating.circuits[].rooms[]` | `heating` (adopted) |
-| `heating.floor_plan.levels[].rooms[]` | `floor_plan` (adopted) |
+| the floor plan's `levels[].rooms[]` (`floor_plan_store`) | `floor_plan` (adopted) |
 
 A chamber's `id` is the **same string** heating uses as its `room.id` (e.g.
 `living`). That is what keeps "Living Room" a single chamber instead of two.

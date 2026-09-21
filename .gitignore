@@ -28,3 +28,12 @@ zmm_eq/target/
 /config/secrets.yaml
 /data/auth.yaml
 /data/vapid.json
+/docs/plans/daylight-lighting-and-home-floor-plan.md
+/docs/plans/fuel_prices_region.md
+/docs/plans/swarm-intelligence.md
+/docs/plans/tidal-per-user-auth.md
+/docs/plans/usability-and-hardening-roadmap.md
+/tests/media/logs/zigbee_debug.log
+/AGENTS.md
+/CLAUDE.md
+/tests/floor_plan/logs/zigbee_debug.log

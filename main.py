@@ -316,6 +316,11 @@ heating_advisor = HeatingAdvisor(
     tariff_provider=lambda fuel: octopus_service.heating_tariff(fuel),
 )
 
+# Loaded before the loop starts: the first load may move the plan out of
+# config.yaml, and every read after it is served from memory.
+from modules.floor_plan_store import load_plan as _load_floor_plan
+_load_floor_plan()
+
 heating_controller = HeatingController(
     config=CONFIG.get("heating", {}),
     device_getter=lambda: (zigbee_service.devices if zigbee_service else {}),
@@ -824,11 +829,22 @@ async def lifespan(app: FastAPI):
         # Registered through add_device_getter, the hook the engine provides for
         # exactly this, rather than by wrapping the registry getters again.
         from modules.swarm.virtual import VirtualDeviceProvider, set_virtual_provider
+        from modules.location import home_coords
+
+        def _home_coords():
+            # The weather service's coordinates first, as sun conditions use.
+            if weather_service.latitude not in (None, "") and \
+                    weather_service.longitude not in (None, ""):
+                return weather_service.latitude, weather_service.longitude
+            return home_coords(CONFIG)
+
         virtual_provider = VirtualDeviceProvider(
             weather_getter=lambda: weather_service,
             advisor_getter=lambda: heating_advisor,
             tariff_getter=lambda: octopus_service,
             presence_getter=lambda: presence_manager,
+            location_getter=_home_coords,
+            plan_getter=_load_floor_plan,
             evaluator=zigbee_service.automation.evaluate,
         )
         zigbee_service.automation.add_device_getter(
@@ -1217,7 +1233,8 @@ register_tts_routes(app, lambda: therapy_tts)
 register_heating_routes(app, lambda: heating_advisor, get_zigbee_service, lambda: heating_anomaly_watcher,
                         get_octopus=lambda: octopus_service)
 register_heating_controller_routes(app, lambda: heating_controller, get_zigbee_service)
-register_floor_plan_routes(app, lambda: heating_controller)
+register_floor_plan_routes(app, lambda: heating_controller, lambda: weather_service,
+                           lambda: zigbee_service.get_simple_mesh() if zigbee_service else None)
 register_chamber_routes(app, get_zigbee_service)
 register_frame_routes(app, get_zigbee_service)
 register_ac_routes(app)

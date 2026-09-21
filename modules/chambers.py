@@ -1,9 +1,10 @@
 """
 Chamber registry — the Frames-side notion of "a room in the home".
 
-Pure module: no I/O, no FastAPI, no global state. Wired in by
-routes/chamber_routes.py. A union over configured chambers and rooms adopted
-from heating and the floor plan; never writes to heating. See docs/frames.md.
+No I/O of its own and no FastAPI. Wired in by routes/chamber_routes.py. A
+union over configured chambers and rooms adopted from heating and the floor
+plan; never writes to either. The plan is passed in, or read from
+floor_plan_store's in-memory copy. See docs/frames.md.
 """
 from __future__ import annotations
 
@@ -173,12 +174,16 @@ def heating_rooms(cfg: Dict[str, Any]) -> List[dict]:
     return out
 
 
-def floor_plan_rooms(cfg: Dict[str, Any]) -> List[dict]:
-    """Adopt ``heating.floor_plan.levels[].rooms[]`` as chambers. Read-only."""
-    heating = cfg.get("heating")
-    if not isinstance(heating, dict):
-        return []
-    plan = heating.get("floor_plan")
+def _plan(plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if plan is not None:
+        return plan
+    from modules.floor_plan_store import load_plan
+    return load_plan()
+
+
+def floor_plan_rooms(plan: Optional[Dict[str, Any]] = None) -> List[dict]:
+    """Adopt the floor plan's ``levels[].rooms[]`` as chambers. Read-only."""
+    plan = _plan(plan)
     if not isinstance(plan, dict):
         return []
 
@@ -206,17 +211,14 @@ def floor_plan_rooms(cfg: Dict[str, Any]) -> List[dict]:
     return out
 
 
-def levels(cfg: Dict[str, Any]) -> List[dict]:
+def levels(plan: Optional[Dict[str, Any]] = None) -> List[dict]:
     """
     Known levels (``id``, ``name``, ``index``), from the floor plan if drawn.
 
     Used to order and group chambers in the UI. Empty when no plan exists —
     chambers stay flat in that case, which is fine.
     """
-    heating = cfg.get("heating")
-    if not isinstance(heating, dict):
-        return []
-    plan = heating.get("floor_plan")
+    plan = _plan(plan)
     if not isinstance(plan, dict):
         return []
     out: List[dict] = []
@@ -237,7 +239,8 @@ def levels(cfg: Dict[str, Any]) -> List[dict]:
 
 # registry
 
-def build_registry(cfg: Dict[str, Any]) -> List[dict]:
+def build_registry(cfg: Dict[str, Any],
+                   plan: Optional[Dict[str, Any]] = None) -> List[dict]:
     """
     The full chamber registry: configured chambers unioned with adopted rooms.
 
@@ -258,6 +261,7 @@ def build_registry(cfg: Dict[str, Any]) -> List[dict]:
     Ordering is by level index (per the floor plan), then name — so a frame
     split by chamber reads ground floor first, as you'd walk the house.
     """
+    plan = _plan(plan)
     configured = clean_chambers(cfg.get("chambers"))
     by_id: Dict[str, dict] = {}
 
@@ -269,7 +273,7 @@ def build_registry(cfg: Dict[str, Any]) -> List[dict]:
             "editable": True,
         }
 
-    for room in heating_rooms(cfg) + floor_plan_rooms(cfg):
+    for room in heating_rooms(cfg) + floor_plan_rooms(plan):
         rid = room["id"]
         existing = by_id.get(rid)
         if existing is None:
@@ -285,7 +289,7 @@ def build_registry(cfg: Dict[str, Any]) -> List[dict]:
         if room.get("level") and not existing.get("level"):
             existing["level"] = room["level"]
 
-    level_index = {l["id"]: l["index"] for l in levels(cfg)}
+    level_index = {l["id"]: l["index"] for l in levels(plan)}
 
     def sort_key(c: dict):
         lvl = c.get("level")
@@ -360,7 +364,7 @@ def delete_chamber(cfg: Dict[str, Any], chamber_id: Any) -> tuple[bool, Optional
     remaining = [c for c in cleaned if c["id"] != cid]
     was_configured = len(remaining) != len(cleaned)
 
-    adopted_ids = {r["id"] for r in heating_rooms(cfg) + floor_plan_rooms(cfg)}
+    adopted_ids = {r["id"] for r in heating_rooms(cfg) + floor_plan_rooms()}
     if cid in adopted_ids:
         if not was_configured:
             return False, (

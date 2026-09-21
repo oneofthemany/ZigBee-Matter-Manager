@@ -83,7 +83,7 @@ def register_chamber_routes(app: FastAPI, get_zigbee_service):
             return {
                 "success": True,
                 "chambers": build_registry(cfg),
-                "levels": levels(cfg),
+                "levels": levels(),
             }
         except Exception as e:
             logger.error(f"Failed to build chamber registry: {e}")

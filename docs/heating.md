@@ -769,6 +769,21 @@ the projection back to the legacy per-room `dimensions` blocks. Pure module —
 no I/O, no FastAPI, no global state — wired in by
 `routes/floor_plan_routes.py`.
 
+There is **one plan for the whole home**. Heating, the chamber registry (and so
+Frames), and Topology all read the same one.
+`modules/floor_plan_store.py` is the only way in: `load_plan()` / `save_plan()` /
+`delete_plan()`. The plan is stored at `data/floor_plan.json`, and after the
+first read it's served from memory, so a read costs no I/O. Nothing reads a
+plan from `config.yaml`.
+
+Earlier versions kept the plan at `heating.floor_plan` in `config.yaml`. On such
+a hub, the first load (at startup) copies it to `data/floor_plan.json`, and the
+old key is never read after that. The key is removed the next time the plan is
+saved or deleted, since those writes rewrite `config.yaml` anyway. The move on
+its own doesn't rewrite `config.yaml`, which would lose its comments. Restoring a
+backup that predates the move replaces `data/floor_plan.json` with the restored
+config's plan.
+
 The floor plan is an **editor surface**. The source of truth for circuits and
 rooms remains `heating.circuits` in `config.yaml`. On save, this module projects
 the plan back into each existing room's `dimensions` / `radiator` / `trvs` /
@@ -860,23 +875,134 @@ zoom is the scale of the `<g>`. SVG uses +x right, +y down; the model uses +y
 up, so y is flipped on both read and write. An image background's top-left in
 model space sits at `(origin_x_m, origin_y_m + height_m)`.
 
+### Two views of one plan
+
+`static/js/floor-plan.js` is one editor with one DOM (`#fpRoot`), mounted in one of
+two places:
+
+| Opened from | Host | View | Shows |
+|---|---|---|---|
+| **Topology → Floor plan** | inline in the tab | home | every placed device, the *Devices to place* palette, the map backdrop |
+| **Heating Controller → floor plan** | the full-screen modal | heating | heating's devices only (TRVs, thermostats, temperature sensors, window/door contacts), the heating tools, circuits and thermal overlays |
+
+Both views show the structure (walls, rooms, windows) and the compass. Both save
+the whole plan. The heating view hides lights, plugs and routers but doesn't
+remove them. What counts as a heating device comes from heating's own routes
+(`/api/heating/controller/devices`, `/sensors`, `/contact-sensors`), so the filter
+always agrees with the heating page. When the Heating modal closes, the editor
+goes back into Topology if Topology is on screen.
+
+### Placing devices
+
+A device is placed **once** and has **one position**. That position feeds auto
+lights (the room a light is in, for per-room daylight), repeater advice (mesh
+coverage) and heating (the room a sensor is in).
+
+`levels[].devices[]` holds `{ieee, x, y, height_m?}` for a device placed by
+position alone. The room isn't stored; it's derived from the room polygon the
+point falls in. A device held by a heating object takes its position from that
+object instead:
+
+| Device | Position from |
+|---|---|
+| TRV fitted to a radiator | the radiator (`radiators[].trv_ieee`) |
+| Temperature sensor used by heating | the sensor entry (`sensors[].x/y`) |
+| Contact bound to a window or door | the middle of the opening (`contacts[].opening_id`) |
+| anything else | `devices[]` |
+
+`clean_floor_plan()` enforces this. It drops a `devices[]` entry for any device a
+heating object holds, and keeps only the first of any repeats. So when Heating
+fits a placed TRV to a radiator, or uses a placed sensor for a room, the device
+moves off `devices[]` in the same save. `floor_plan.placed_devices(plan)` resolves
+every device to one `{ieee, level_id, x, y, room_id, source}`. Per-room daylight
+and the mesh overlay read positions through it.
+
+In the editor, the palette lists every device the hub knows that isn't placed
+anywhere, grouped as lights, heating, routers, coordinator and other. Drag one
+onto the plan, or tap it and then tap the plan. Drag a marker to move it; on a
+touch screen, select it first and then drag. A placed device's panel says which
+room it's in. For heating devices it also offers *Use as this room's heating
+sensor* or *Attach to the nearest window or door*, which hand the device to heating.
+
+The map backdrop draws OpenStreetMap tiles (`/api/map/tiles`, zoom 19) around the
+home location, rotated by `north_offset_deg`. *Mark where the home pin is* sets
+`plan.map.anchor_x_m/anchor_y_m`, the point on the plan where the address pin
+sits. Turn the compass until the map's buildings line up with the walls.
+
+### Mesh on the plan
+
+In the home view, View → *Mesh links* draws the Zigbee mesh over the plan, from
+`GET /api/floor-plan/mesh` (`system:read`, like `/api/network`).
+
+`modules/mesh_plan.py` merges the neighbour tables into **one link per pair**. A
+link is usually listed from both ends, each with its own LQI and its own
+relationship. The merged link keeps both (`lqi_ab`/`lqi_ba`, `rel_ab`/`rel_ba`),
+and is coloured by the **worse** of the two, in the same bands and colours as the
+Topology graph (200+, 150+, 100+, below 100). Links to devices the hub doesn't
+know are dropped. Links with an offline end aren't drawn, and offline devices are
+dimmed.
+
+The server sends links by device id only. Positions are resolved in the editor
+from the plan being edited, by the one-position rule (`livePositions()`, which
+mirrors `floor_plan.placed_devices`), so a link follows a device while you drag
+it, before you save. Where only one end is on the level being shown, a short
+dashed stub points out from that end, labelled with the far device and either
+"↕ <level>" (placed on another floor) or "not placed". The coordinator is drawn
+as a square. Hover a link for both LQIs and the relationship. The note under the
+toggle counts the devices on the mesh that aren't placed yet.
+
+### Windows and rooms
+
+An opening belongs to a room only if the opening itself lies on one of that
+room's edges (`opening_borders_room`). Bordering the opening's wall isn't enough.
+Before this, a window on an outside wall shared by two rooms counted in both
+rooms' heat loss and solar gain. Plans drawn that way will see those two rooms'
+figures change on the next projection.
+
+The Daylight layer (View → *Daylight in each room*) colours rooms by estimated
+daylight for any time today; see `docs/daylight.md` §7.
+
+### Who may change what
+
+A save is split into two parts by `floor_plan.changed_parts(old, new)`. The route
+refuses the whole save if the caller lacks the scope for any part it changes:
+
+| Part | Scope | What's in it |
+|---|---|---|
+| structure | `device:write` | walls, rooms, openings, levels, background images, compass, map, `devices[]`, and the position of heating's sensors |
+| heating | `heating:write` | radiators (and their TRVs), sensor roles (room, device, kind, primary, height), contacts, circuits |
+
+Reading needs `device:read` or `heating:read`. The preview needs `heating:read`.
+Deleting the whole plan needs both write scopes. Fitting a placed device to a
+radiator is a heating change only, even though it removes a `devices[]` entry.
+The comparison runs on the cleaned old plan against the cleaned new one, so a
+stale copy that would undo someone else's placement reads as a structure change
+and is refused. Admins satisfy every scope, and the shipped `users` group holds
+both write scopes. A heating-only caller can't move a sensor's position, because
+positions are structure.
+
 ### Floor-plan API
 
 `routes/floor_plan_routes.py`:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/heating/floor-plan` | read the saved plan |
-| `POST /api/heating/floor-plan` | save plan, project into circuits, return warnings |
-| `GET /api/heating/floor-plan/preview` | dry-run projection |
-| `DELETE /api/heating/floor-plan` | clear the plan |
-| `POST /api/heating/floor-plan/image/{level_id}` | upload a background image |
-| `GET /api/heating/floor-plan/image/{level_id}` | fetch the image |
-| `DELETE /api/heating/floor-plan/image/{level_id}` | clear the image |
+| `GET /api/floor-plan` | read the saved plan, plus `home` (`{lat, lon}`) for the map |
+| `POST /api/floor-plan` | save plan, project into circuits, return warnings |
+| `GET /api/floor-plan/preview` | dry-run projection |
+| `DELETE /api/floor-plan` | clear the plan |
+| `POST /api/floor-plan/image/{level_id}` | upload a background image |
+| `GET /api/floor-plan/image/{level_id}` | fetch the image |
+| `DELETE /api/floor-plan/image/{level_id}` | clear the image |
 
-Plan metadata lives at `heating.floor_plan` in `config/config.yaml`; background
-images are first-class files on disk at `data/floor_plans/{level_id}.{ext}`,
-which keeps the YAML small.
+Every endpoint also answers at its old `/api/heating/floor-plan…` address, served
+by the same handler and left out of the OpenAPI schema. Permissions are checked
+in the routes, per part of the plan (see *Who may change what* below). The
+middleware table maps both addresses to any signed-in caller.
+
+The plan is stored at `data/floor_plan.json` (see above). Background images are
+separate files at `data/floor_plans/{level_id}.{ext}`. Both are included in
+backups.
 
 Image limits: 20 MB per upload, `image/png` and `image/jpeg` only. **PDFs must be
 rendered to PNG client-side** (via pdf.js) before upload.

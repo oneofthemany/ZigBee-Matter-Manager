@@ -651,10 +651,6 @@ class HeatingController:
         The diff is the audit trail — both the user-facing toast and the
         log line are built from it, so they're guaranteed to match.
         """
-        # Cached alongside the cleaned circuits so the thermal-profile path
-        # avoids a second _load_config().
-        self._floor_plan_cache = (new_config or {}).get("_floor_plan_for_thermal")
-
         async with self._config_lock:
             new_config = new_config or {}
 
@@ -1056,12 +1052,9 @@ class HeatingController:
         return out
 
     def _config_floor_plan(self) -> Optional[Dict[str, Any]]:
-        """
-        Return the currently-applied floor plan (if any) from the cached
-        controller config. Used by thermal_profile to enable the plan-aware
-        heat-loss path on projected rooms.
-        """
-        return getattr(self, "_floor_plan_cache", None)
+        """The saved floor plan, for thermal_profile's plan-aware heat-loss path."""
+        from modules.floor_plan_store import load_plan
+        return load_plan()
 
     def _clean_rooms(self, rooms: list) -> List[Dict]:
         if not isinstance(rooms, list):

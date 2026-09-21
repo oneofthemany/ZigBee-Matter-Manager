@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 # Used when switching config_mode → floor_plan with an existing saved plan
 from modules.floor_plan import project_floor_plan_to_circuits
+from modules.floor_plan_store import load_plan
 
 logger = logging.getLogger("routes.heating_controller")
 
@@ -677,7 +678,7 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
         Side effects:
           - mode == 'manual':     strips `floor_plan_ref` from all rooms so
                                   the manual UI is fully editable. The saved
-                                  floor plan (heating.floor_plan) is kept as
+                                  floor plan (data/floor_plan.json) is kept as
                                   a backup; switching back re-projects it.
           - mode == 'floor_plan': if a plan is saved, re-projects it onto
                                   the circuits so room geometry/devices
@@ -715,7 +716,7 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                 heating["circuits"] = _clean_circuits(manual_circuits)
 
             elif mode == "floor_plan":
-                plan = heating.get("floor_plan")
+                plan = load_plan()
                 if plan:
                     try:
                         circuits = controller_block.get("circuits") or []
@@ -735,11 +736,8 @@ def register_heating_controller_routes(app: FastAPI, get_controller, get_zigbee_
                 try:
                     # Pass the full heating block so apply_config can resolve
                     # mode-aware circuits (floor_plan → controller.circuits,
-                    # manual → heating.circuits). The special thermal-plan key
-                    # is injected into the heating block temporarily.
-                    heating["_floor_plan_for_thermal"] = heating.get("floor_plan")
+                    # manual → heating.circuits).
                     await ctrl.apply_config(heating)
-                    heating.pop("_floor_plan_for_thermal", None)
                 except Exception as e:
                     logger.warning(f"controller hot-apply on mode switch failed: {e}")
                     warnings.append(f"controller hot-apply failed: {e}")

@@ -235,8 +235,9 @@ def build(described: List[Dict[str, Any]],
                 "creates_workers": _creates_workers(candidate["fills"]),
                 "params": _exposed_params(pattern),
                 "alternatives": candidate.get("alternatives") or {},
+                "choosable": choosable_slots(pattern),
                 "rule": rule,
-                **status_for(rule, index),
+                **status_for(rule, index, subset_ok=bool(choosable_slots(pattern))),
             })
 
     suggestions.sort(key=lambda s: (
@@ -334,20 +335,57 @@ def find(built: Dict[str, Any], suggestion_id_: str) -> Optional[Dict[str, Any]]
     return None
 
 
+def choosable_slots(pattern: Dict[str, Any]) -> List[str]:
+    """Collected action slots: every light, say, of which the user may untick some."""
+    return sorted(name for name, spec in (pattern.get("slots") or {}).items()
+                  if spec.get("role") == "action" and spec.get("collect"))
+
+
+def without_members(pattern: Dict[str, Any], fills: Dict[str, Dict[str, Any]],
+                    exclude: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """``fills`` with the excluded devices dropped from choosable slots only.
+
+    Emptying a required slot is refused rather than compiled to a rule that
+    does nothing; emptying an optional one drops the slot.
+    """
+    exclude = {str(e).lower() for e in exclude or ()}
+    if not exclude:
+        return fills
+    slots = pattern.get("slots") or {}
+    out = dict(fills)
+    for name in choosable_slots(pattern):
+        fill = out.get(name)
+        if not fill:
+            continue
+        kept = [m for m in (fill.get("members") or [fill])
+                if str(m["ieee"]).lower() not in exclude]
+        if not kept:
+            if not slots[name].get("optional"):
+                raise CompileError(f"leave at least one device in {name!r}")
+            out.pop(name)
+            continue
+        out[name] = {"ieee": kept[0]["ieee"], "device": kept[0]["device"],
+                     "offer": kept[0]["offer"], "members": kept}
+    return out
+
+
 def recompile(pattern: Dict[str, Any], suggestion: Dict[str, Any],
               described: List[Dict[str, Any]],
               overrides: Optional[Dict[str, Any]] = None,
-              rooms: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+              rooms: Optional[Dict[str, str]] = None,
+              exclude: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """Rebuild one suggestion's rule with user-supplied parameter values.
 
     Applying a suggestion re-matches rather than trusting a rule carried back
     from the client: the network may have changed since it was offered, and a
-    client-supplied rule is a client-supplied rule.
+    client-supplied rule is a client-supplied rule. ``exclude`` only ever
+    narrows a choosable slot, so it cannot add a device the match did not.
     """
     result = match_pattern(pattern, with_synthetic(described, [pattern]), rooms or {})
     for candidate in result["candidates"]:
         if suggestion_id(pattern["id"], candidate["fills"]) == suggestion["id"]:
-            return compile_rule(pattern, candidate["fills"], overrides,
+            fills = without_members(pattern, candidate["fills"], exclude or ())
+            return compile_rule(pattern, fills, overrides,
                                 candidate.get("room_label"))
     raise CompileError(
         f"suggestion {suggestion['id']} no longer matches — the devices it used "

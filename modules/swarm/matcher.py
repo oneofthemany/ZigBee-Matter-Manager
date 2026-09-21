@@ -99,8 +99,9 @@ def _candidates(devices: List[Dict[str, Any]], spec: Dict[str, Any]
 
 
 def _rank_fills(pairs: List[Tuple[Dict, Dict]]) -> List[Tuple[Dict, Dict]]:
-    """Best filler first: the offer the vocabulary weights highest, then by name."""
-    return sorted(pairs, key=lambda p: (-p[1].get("weight", 0), p[0]["name"]))
+    """Best filler first: highest-weighted offer, a measurement before an estimate, then name."""
+    return sorted(pairs, key=lambda p: (-p[1].get("weight", 0),
+                                        bool(p[0].get("estimated")), p[0]["name"]))
 
 
 def _endpoint_of(offer: Dict[str, Any]) -> Any:

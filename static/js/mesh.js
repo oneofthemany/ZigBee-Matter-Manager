@@ -21,6 +21,7 @@ let statsInterval = null;
  */
 export function initMesh() {
     log.log('Mesh module initialised');
+    initTopologyViewToggle();
 
     const tabEl = document.querySelector('button[data-bs-target="#topology"]');
     if (tabEl) {
@@ -33,6 +34,49 @@ export function initMesh() {
                 }
             }, 50);
         });
+    }
+}
+
+const TOPOLOGY_VIEW_KEY = 'zmm.topologyView';
+
+/**
+ * Graph | Floor plan. The plan is the shared editor (floor-plan.js), loaded
+ * on first use; the choice is remembered per browser.
+ */
+function initTopologyViewToggle() {
+    const radios = document.querySelectorAll('input[name="topologyView"]');
+    if (!radios.length) return;
+    const show = async (view) => {
+        const plan = view === 'plan';
+        document.getElementById('topologyGraphCard')?.classList.toggle('d-none', plan);
+        document.getElementById('topologyPlanCard')?.classList.toggle('d-none', !plan);
+        try { localStorage.setItem(TOPOLOGY_VIEW_KEY, view); } catch { /* private mode */ }
+        if (plan) {
+            // Already mounted here means unsaved edits may be on it: keep them.
+            const host = document.getElementById('topologyFloorPlan');
+            if (host && !host.querySelector('#fpRoot')) {
+                const mod = await import('./floor-plan.js');
+                await mod.showFloorPlanInline(host);
+            }
+        } else {
+            // The graph may have been laid out while hidden; let it re-measure.
+            window.dispatchEvent(new Event('resize'));
+        }
+    };
+    radios.forEach(r => r.addEventListener('change', () => r.checked && show(r.value)));
+
+    let saved = null;
+    try { saved = localStorage.getItem(TOPOLOGY_VIEW_KEY); } catch { /* private mode */ }
+    const tabEl = document.querySelector('button[data-bs-target="#topology"]');
+    tabEl?.addEventListener('shown.bs.tab', () => {
+        const current = document.querySelector('input[name="topologyView"]:checked')?.value;
+        if (current === 'plan') show('plan');
+    });
+    if (saved === 'plan') {
+        const planRadio = document.getElementById('topologyViewPlan');
+        if (planRadio) planRadio.checked = true;
+        document.getElementById('topologyGraphCard')?.classList.add('d-none');
+        document.getElementById('topologyPlanCard')?.classList.remove('d-none');
     }
 }
 

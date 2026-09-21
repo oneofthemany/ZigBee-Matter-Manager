@@ -143,22 +143,23 @@
   {
     "id": "dusk_lights_on",
     "title": "Lights on as daylight fades",
-    "description": "Uses the measured light level outdoors rather than a clock, so it tracks the seasons without a schedule.",
+    "description": "No light sensor needed: the hub estimates the light outside from the sun's position and the cloud cover, so it follows the seasons and comes on early on a dark day. Every light is included \u2014 untick any to leave alone. At daybreak each light goes back to how it was.",
     "category": "lighting",
     "scope": "house",
     "slots": {
       "dusk": {
         "role": "trigger",
-        "offer": "weather:got_dark_out"
+        "offer": "weather:got_dark_out",
+        "sustain": 120
       },
-      "light": {
+      "lights": {
         "role": "action",
         "offer": "on_off:turn_on",
         "device_class": [
           "light",
-          "color_light",
-          "switch"
-        ]
+          "color_light"
+        ],
+        "collect": true
       }
     },
     "emits": {
@@ -168,9 +169,22 @@
         "dusk"
       ],
       "then": [
-        "light"
+        {
+          "type": "snapshot",
+          "targets": [
+            "$lights@all"
+          ],
+          "name": "before_dusk"
+        },
+        "lights"
       ],
-      "cooldown": 1800
+      "else": [
+        {
+          "type": "restore",
+          "name": "before_dusk"
+        }
+      ],
+      "cooldown": 600
     }
   },
   {

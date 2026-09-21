@@ -108,12 +108,68 @@ not from when it got dark. Changing or disabling the rule resets its clocks.
 | **Attr**      | An attribute on the source device meeting a comparison             |
 | **Alarm**     | A clock time on chosen days                                        |
 | **Time/Day**  | Being inside a time window on chosen days                          |
-| **Sun**       | Being between two sun/clock boundaries (tracks the seasons)        |
+| **Sun**       | Being between two sun/clock boundaries (tracks the seasons). For "when it gets dark" that follows the cloud too, use the Weather device's daylight — see *Daylight* below |
 | **Zone**      | A person entering or leaving a place — offered for presence users  |
 | **Offline**   | A device that has stopped reporting                                |
 | **Date**      | Being inside a range of days — every year, or on particular dates  |
 | **Webhook**   | An authenticated call to the rule's webhook URL                    |
 | **Startup**   | The hub starting                                                   |
+
+#### Daylight: lights without a lux sensor
+
+A light that comes on "when it gets dark" normally needs a lux sensor. The hub
+can do without one. It knows where the house is, so it knows where the sun is,
+and it knows the cloud cover from the weather. From these it estimates the
+light level outside, and it recomputes that every minute.
+
+The estimate lives on the **Weather** device (`virtual::weather`), so it is an
+ordinary **Attr** condition:
+
+| Attribute | Use it for |
+|---|---|
+| `is_daylight` = 0 | "it has got dark" — around sunset on a clear day, earlier under heavy cloud |
+| `is_gloomy` = 1 | "the day has turned gloomy" — an overcast afternoon, as well as dusk and night |
+| `daylight_level` ∈ … | `dark`, `dusk`, `dull`, `bright`, for anything finer |
+| `outdoor_lux` < N | your own threshold, in lux |
+
+`is_daylight`, `is_gloomy` and `daylight_level` switch with a margin. Once it has
+gone dark, it has to get clearly brighter before it counts as light again, so a
+cloud passing at dusk doesn't switch the lights off and on. A plain
+`outdoor_lux` threshold has no margin, so give it a **Sustain** instead.
+
+**The ready-made rule.** Under **Automations → Suggested**, *Lights on as
+daylight fades* is one card for the whole house. It lists every light, all
+ticked. Untick any to leave alone, then press **Create**. The rule it builds:
+
+    IF   Weather is_daylight = 0            (sustain 2 min)
+    THEN Snapshot every chosen light → turn each on
+    ELSE Restore
+
+At daybreak the ELSE puts each light back as it was at dusk. A light that was
+already on stays on, and one that was off goes off. It is a normal rule, so it
+can be edited in the builder afterwards: add a presence prerequisite ("only
+when someone's home"), a Time/Day prerequisite for a bedtime cut-off, or swap
+the trigger for `is_gloomy` for dark winter days. Snapshots are kept in memory,
+so after a hub restart that night's Restore has nothing to put back and leaves
+the lights as they are. The trace says so.
+
+**Per room.** With a floor plan, each room with a window to the outside also
+gets a **"<Room> daylight"** device. It reports `illuminance_lux`, estimated from
+that room's own windows, as a lux sensor there would. So *Lights on when the
+room gets dark* (Automations → Suggested, one card per room) works without a
+sensor: every light in the room is listed, all ticked, and restored when the room
+brightens. A south-facing room stays lit long after a north-facing one darkens.
+Where a room has a real lux sensor, the suggestion uses it instead. The **Dark
+below** figure on the card is room lux (default 11), not outdoor lux. Draw the
+windows on the floor plan (Topology → Floor plan, or Heating) and set the
+compass so the estimate knows which way they face.
+
+**Accuracy.** The Weather estimate is for **outdoors**. A north-facing or deep room
+darkens sooner, and trees or hills to the west bring dusk forward. On a clear
+day expect the switch within a few minutes of sunset. With a weather location
+and irradiance available it also follows heavy cloud. Without weather it falls
+back to clear-sky timing, which is right on a clear day and late on a grey one.
+The model and its constants are in `docs/daylight.md`.
 
 #### Zone: arriving and leaving
 
@@ -553,6 +609,27 @@ A practical example — turn on a light when a door opens in low light, turn it 
 **ELSE:**
 - ⏱ Delay → 5 seconds
 - ⚡ Command → Hall Light → OFF
+
+---
+
+## Example: Lights at dusk, no sensor
+
+Every light on as it gets dark, back as they were at daybreak — the
+*Lights on as daylight fades* suggestion, shown here as the builder holds it.
+
+**Conditions:**
+- IF Weather `is_daylight` = `0`, sustain 120 s
+
+**THEN:**
+- 📸 Snapshot → Hall Light, Lamp, Pendant (as *before_dusk*)
+- ⚡ Command → Hall Light → ON
+- ⚡ Command → Lamp → ON
+- ⚡ Command → Pendant → ON
+
+**ELSE:**
+- ↩ Restore → *before_dusk*
+
+For a dull-afternoon version, change the condition to `is_gloomy` = `1`.
 
 ---
 

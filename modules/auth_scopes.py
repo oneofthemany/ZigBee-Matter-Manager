@@ -108,6 +108,10 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
 
     # Climate.
     ("/api/heating",           {"GET": "heating:read", "*": "heating:write"}),
+    # One plan, two owners: device:* for structure and positions, heating:*
+    # for radiators and sensors. The routes check which part a save changes.
+    ("/api/floor-plan",        {"*": AUTHENTICATED}),
+    ("/api/heating/floor-plan", {"*": AUTHENTICATED}),
     ("/api/ac",                {"GET": "heating:read", "*": "heating:write"}),
 
     # Media.

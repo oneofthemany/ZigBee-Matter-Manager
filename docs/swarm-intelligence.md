@@ -434,9 +434,16 @@ triggers on one with no new condition type.
 
 | Device | Attributes |
 |---|---|
-| `virtual::weather` | `temperature`, `humidity`, `wind_speed`, `solar_wm2`, `is_daylight` |
+| `virtual::weather` | `temperature`, `humidity`, `wind_speed`, `solar_wm2`; daylight estimated from sun and cloud — `outdoor_lux`, `daylight_level`, `is_daylight`, `is_gloomy`, `daylight_source`, `sun_elevation` (`docs/daylight.md`) |
 | `virtual::house` | `indoor_avg_temp`, `outdoor_temp`, `preheat_minutes`, `outdoor_cooler_than_indoor`, `preheat_now_for_arrival` |
 | `virtual::tariff` | `unit_rate`, `is_off_peak` (only on an agile tariff, where a cheapest window exists) |
+| `virtual::daylight::<room>` | `illuminance_lux`, `direct_sun`. One per floor-plan room with an outside window, in that room (`docs/daylight.md` §7) |
+
+A room's daylight device is the one virtual device with a room. It carries a
+`chamber`, which `describe_network` uses unless the Frames setting says
+otherwise. It is also `estimated`, which `_rank_fills` sorts after a real device
+making the same offer. So a room with a lux sensor uses the sensor, and a room
+without one still gets its lux-driven suggestions.
 
 ### Colour as a notification
 
@@ -753,6 +760,16 @@ have moved on since the suggestion was offered, and a client-supplied rule is a
 client-supplied rule. A suggestion that no longer matches is refused with a
 reason rather than compiled from stale data.
 
+A collected **action** slot is *choosable* — the suggestion lists it in
+`choosable`, and the card draws its devices as a ticked checklist. Unticked
+devices come back as `exclude` and are dropped from those slots only, after
+re-matching, so `exclude` can narrow a suggestion but never add to or re-aim it.
+Unticking every device of a required slot is refused. Because the rule then
+drives fewer targets than the suggestion, dedupe treats a rule with the same
+source, triggers and shape whose targets are a non-empty **subset** of a
+choosable suggestion's as that suggestion, built — so "every light at dusk,
+minus the pendant" does not re-offer "every light at dusk".
+
 Workers the suggestion needs (`creates_workers`) are created through the
 worker manager first, starting at the card's parameters, so the rule's source
 and targets exist when the engine checks them; any made for a rule the engine
@@ -804,7 +821,9 @@ could this house do". Most of the suggestion list was therefore computed on ever
 call and never seen. **Automations → Suggested** is that list.
 
 Each card is one suggestion: its sentence, the devices that fill its slots, and
-its tunable parameters as live fields. Cards are grouped by the room the pattern
+its tunable parameters as live fields. Devices in a choosable slot are
+checkboxes, all ticked — *Lights on as daylight fades* lists every light, and
+unticking one leaves it out of the rule. Cards are grouped by the room the pattern
 matched in, with house-scoped patterns (`room: null`) under *Whole house* rather
 than lumped in with the unassigned.
 
@@ -1137,7 +1156,7 @@ All read-only except `apply`. Rule creation goes through the engine's
 | `POST /api/swarm/validate` | Check a pattern without saving it |
 | `GET /api/swarm/suggestions` | Suggestions. `room`, `category`, `status`, `include_trace` |
 | `GET /api/swarm/suggestions/{id}` | One suggestion, with the rule it would create |
-| `POST /api/swarm/suggestions/{id}/apply` | Create it. Body: `{params, name}` |
+| `POST /api/swarm/suggestions/{id}/apply` | Create it. Body: `{params, name, exclude}` |
 | `GET /api/swarm/coverage` | Which devices take part in a rule |
 | `GET /api/swarm/diagnostics` | Triage report |
 | `GET /api/swarm/explain/{pattern_id}` | Why a pattern matched, per scope |

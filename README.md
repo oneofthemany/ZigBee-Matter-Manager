@@ -696,7 +696,7 @@ Access at **http://YOUR_IP:8000**. All tabs update in real time over the WebSock
 | **Beekeeper** | DNS sinkhole dashboard — query volume, block rate, live log, top domains and clients |
 | **Drive** | Journeys, Drivers, Fuel, Price History and Apiary |
 | **Zones** | RSSI-based presence detection zones |
-| **Topology** | Mesh visualisation, connection table and packet statistics |
+| **Topology** | Mesh visualisation, connection table and packet statistics; **Floor plan** — the home's plan with every device placed on it (shared with Heating, see `docs/heating.md` § Floor plan) |
 | **MQTT Explorer** | Real-time MQTT traffic monitor and publish tool |
 | **Debug** | Live logs, Signal Inspector and raw packet analyser |
 | **System Overview** | Host vitals, 1h history and telemetry database size/retention |

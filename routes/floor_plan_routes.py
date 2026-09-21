@@ -2,9 +2,10 @@
 Floor-plan API — read, save (projecting into circuits), preview and clear the
 plan, plus per-level background images.
 
-Plan metadata lives in config.yaml; images are files under data/floor_plans/ to
-keep the YAML small. 20 MB, PNG/JPEG only — PDFs must be rendered client-side.
-See docs/heating.md.
+The plan is read and written only through modules/floor_plan_store; images are
+files under data/floor_plans/. 20 MB, PNG/JPEG only — PDFs must be rendered
+client-side. Served at /api/floor-plan, and at /api/heating/floor-plan for
+existing clients. See docs/heating.md.
 """
 from __future__ import annotations
 
@@ -12,16 +13,24 @@ import logging
 import mimetypes
 import os
 import re
+import time
 from typing import Any, Dict, Optional
 
 import yaml
-from fastapi import FastAPI, Request, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 
+from modules import floor_plan_store
+from modules.auth import scope_matches
+from modules import daylight
+from modules.mesh_plan import merge_links
 from modules.floor_plan import (
+    changed_parts,
     clean_floor_plan,
+    daylight_geometry,
     project_floor_plan_to_circuits,
 )
+from modules.location import home_coords
 
 logger = logging.getLogger("routes.floor_plan")
 
@@ -31,6 +40,31 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg"}
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+# The alias keeps existing clients working; only /api/floor-plan is documented.
+ALIAS = {"include_in_schema": False}
+
+#: Scope each part of a save needs. docs/heating.md § Who may change what.
+PART_SCOPES = {"structure": "device:write", "heating": "heating:write"}
+
+
+def _scopes(request: Request) -> list:
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(401, "Authentication required",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return list(principal.scopes)
+
+
+def _require(*alternatives: str):
+    """Dependency: the caller holds at least one of ``alternatives``."""
+    def dep(request: Request) -> None:
+        granted = _scopes(request)
+        if not any(scope_matches(s, granted) for s in alternatives):
+            raise HTTPException(403, f"Needs {' or '.join(alternatives)}")
+    return dep
+
+
+READ = Depends(_require("device:read", "heating:read"))
 
 
 def _load_config() -> Dict[str, Any]:
@@ -62,7 +96,20 @@ def _existing_image_path(level_id: str) -> Optional[str]:
     return None
 
 
-def register_floor_plan_routes(app: FastAPI, get_controller=None):
+def _hourly_cloud(weather) -> Dict[str, float]:
+    """Forecast cloud fraction by local hour ("YYYY-MM-DDTHH:00")."""
+    try:
+        hourly = weather.get_hourly_solar() if weather else None
+    except Exception:
+        hourly = None
+    if not hourly:
+        return {}
+    return {str(t)[:13] + ":00": cf for t, cf in zip(hourly.get("times") or [],
+                                                      hourly.get("cloud_fraction") or [])}
+
+
+def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=None,
+                               get_mesh=None):
 
     os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -79,21 +126,26 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
 
     # plan read/write
 
-    @app.get("/api/heating/floor-plan")
-    async def get_floor_plan():
-        """Return the saved floor plan, or null if none exists yet."""
-        cfg = _load_config()
-        plan = (cfg.get("heating") or {}).get("floor_plan")
-        return {"success": True, "plan": plan or None}
+    @app.get("/api/floor-plan")
+    @app.get("/api/heating/floor-plan", **ALIAS)
+    async def get_floor_plan(_=READ):
+        """The saved plan (or null), and the home's coordinates for the map."""
+        coords = home_coords(_load_config())
+        return {"success": True, "plan": floor_plan_store.load_plan(),
+                "home": {"lat": coords[0], "lon": coords[1]} if coords else None}
 
-    @app.post("/api/heating/floor-plan")
+    @app.post("/api/floor-plan")
+    @app.post("/api/heating/floor-plan", **ALIAS)
     async def post_floor_plan(req: Request):
         """
         Save the floor plan and project it into the controller circuits.
 
+        Each part changed needs its own scope (``PART_SCOPES``), so someone
+        without heating:write can place lights but not move a radiator.
         Request body: full floor-plan dict (see modules/floor_plan.py).
         Response: ``{success, plan, warnings, projected_room_ids}``.
         """
+        granted = _scopes(req)
         try:
             raw = await req.json()
         except Exception as e:
@@ -102,6 +154,19 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
         cleaned = clean_floor_plan(raw)
         if cleaned is None:
             return {"success": False, "error": "floor plan is empty or invalid"}
+
+        # Cleaned both sides, so a plan saved before a schema change does not
+        # read as changed where only the cleaner's defaults differ.
+        parts = changed_parts(clean_floor_plan(floor_plan_store.load_plan()), cleaned)
+        missing = sorted({PART_SCOPES[p] for p in parts
+                          if not scope_matches(PART_SCOPES[p], granted)})
+        if missing:
+            what = {"device:write": "walls, rooms or device positions",
+                    "heating:write": "radiators, sensors, contacts or circuits"}
+            return JSONResponse(status_code=403, content={
+                "success": False, "missing_scopes": missing,
+                "error": "You can't change " + " or ".join(what[m] for m in missing)
+                         + f" (needs {', '.join(missing)})."})
 
         cfg = _load_config()
         heating = cfg.setdefault("heating", {})
@@ -124,10 +189,16 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
             logger.exception("floor plan projection failed")
             return {"success": False, "error": f"projection failed: {e}"}
 
-        heating["floor_plan"] = cleaned
+        try:
+            floor_plan_store.save_plan(cleaned)
+        except Exception as e:
+            logger.exception("floor plan write failed")
+            return {"success": False, "error": f"could not write floor plan: {e}"}
+
         controller["circuits"] = updated_circuits
         # Ensure the controller knows it is in floor-plan mode
         controller.setdefault("config_mode", "floor_plan")
+        floor_plan_store.drop_legacy_key(cfg)
 
         try:
             _save_config(cfg)
@@ -141,12 +212,9 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
                 if hasattr(ctrl, "apply_config"):
                     # Pass the full heating block so apply_config resolves
                     # circuits with mode-awareness (floor_plan -> controller.circuits)
-                    heating["_floor_plan_for_thermal"] = cleaned
                     await ctrl.apply_config(heating)
-                    heating.pop("_floor_plan_for_thermal", None)
                 elif hasattr(ctrl, "circuits"):
                     ctrl.circuits = updated_circuits
-                    ctrl._floor_plan_cache = cleaned
             except Exception as e:
                 logger.warning(f"controller hot-apply failed: {e}")
                 warnings.append(f"controller hot-apply failed: {e}")
@@ -164,12 +232,68 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
             "projected_room_ids": projected_room_ids,
         }
 
-    @app.get("/api/heating/floor-plan/preview")
-    async def preview_floor_plan():
+    @app.get("/api/floor-plan/daylight")
+    async def room_daylight(step_minutes: int = 30, _=READ):
+        """Each windowed room's estimated daylight across today, for the editor.
+
+        The same model the rooms' daylight devices publish (docs/daylight.md
+        §7), on the saved plan: the current weather near now, the hourly cloud
+        forecast elsewhere, a clear sky where there is neither.
+        """
+        weather = get_weather() if get_weather else None
+        coords = None
+        if weather and weather.latitude not in (None, "") and weather.longitude not in (None, ""):
+            coords = (float(weather.latitude), float(weather.longitude))
+        coords = coords or home_coords(_load_config())
+        if not coords:
+            return {"success": False, "error": "Set the home location to estimate daylight."}
+        step = max(10, min(120, int(step_minutes))) * 60
+        now = time.time()
+        midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+        times = [midnight + i * step for i in range(int(86400 / step) + 1)]
+        current = weather.get_current() if weather else None
+        clouds = _hourly_cloud(weather)
+        rooms = daylight_geometry(floor_plan_store.load_plan())
+        skies = [daylight.sky(t, coords, current,
+                              clouds.get(time.strftime("%Y-%m-%dT%H:00", time.localtime(t))))
+                 for t in times]
+        out = []
+        for room in rooms:
+            lux, sun = [], []
+            for sk in skies:
+                v, s_in = daylight.room_lux(room, sk["lux"], sk["azimuth"], sk["elevation"],
+                                            sk["cloud"]) if sk else (0.0, False)
+                lux.append(daylight.round_lux(v))
+                sun.append(1 if s_in else 0)
+            out.append({"room_id": room["room_id"], "name": room["name"],
+                        "level_id": room["level_id"], "lux": lux, "sun": sun})
+        return {"success": True, "times": [int(t) for t in times], "now": int(now),
+                "outdoor": [daylight.round_lux(sk["lux"]) if sk else 0 for sk in skies],
+                "rooms": out}
+
+    @app.get("/api/floor-plan/mesh")
+    async def mesh_links(_=Depends(_require("system:read"))):
+        """The mesh, one link per pair, for drawing on the plan.
+
+        Positions are the editor's to resolve: it draws the plan being edited,
+        not the saved one. system:read, as /api/network is.
+        """
+        try:
+            mesh = get_mesh() if get_mesh else None
+        except Exception as e:
+            logger.warning(f"mesh unavailable: {e}")
+            mesh = None
+        if mesh is None:
+            return {"success": False, "error": "The Zigbee network isn't available."}
+        return {"success": True, **merge_links(mesh)}
+
+    @app.get("/api/floor-plan/preview")
+    @app.get("/api/heating/floor-plan/preview", **ALIAS)
+    async def preview_floor_plan(_=Depends(_require("heating:read"))):
         """Dry-run projection: shows what the saved plan would write."""
         cfg = _load_config()
         heating = cfg.get("heating") or {}
-        plan = heating.get("floor_plan")
+        plan = floor_plan_store.load_plan()
         circuits = (heating.get("controller") or {}).get("circuits") or []
         if not plan:
             return {"success": False, "error": "no floor plan saved"}
@@ -179,13 +303,17 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
             return {"success": False, "error": f"projection failed: {e}"}
         return {"success": True, "circuits": updated, "warnings": warnings}
 
-    @app.delete("/api/heating/floor-plan")
-    async def delete_floor_plan():
+    @app.delete("/api/floor-plan")
+    @app.delete("/api/heating/floor-plan", **ALIAS)
+    async def delete_floor_plan(_=Depends(_require("device:write")),
+                                __=Depends(_require("heating:write"))):
         """Remove the saved plan (and all level background images)."""
+        try:
+            floor_plan_store.delete_plan()
+        except Exception as e:
+            return {"success": False, "error": f"could not delete floor plan: {e}"}
         cfg = _load_config()
-        heating = cfg.get("heating") or {}
-        if "floor_plan" in heating:
-            del heating["floor_plan"]
+        if floor_plan_store.drop_legacy_key(cfg):
             try:
                 _save_config(cfg)
             except Exception as e:
@@ -201,8 +329,10 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
 
     # background images
 
-    @app.post("/api/heating/floor-plan/image/{level_id}")
-    async def upload_floor_plan_image(level_id: str, file: UploadFile = File(...)):
+    @app.post("/api/floor-plan/image/{level_id}")
+    @app.post("/api/heating/floor-plan/image/{level_id}", **ALIAS)
+    async def upload_floor_plan_image(level_id: str, file: UploadFile = File(...),
+                                      _=Depends(_require("device:write"))):
         """
         Upload a background image for a level. PNG and JPEG only.
 
@@ -263,13 +393,14 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
         return {
             "success": True,
             "level_id": lid,
-            "url": f"/api/heating/floor-plan/image/{lid}",
+            "url": f"/api/floor-plan/image/{lid}",
             "bytes": written,
             "content_type": ctype,
         }
 
-    @app.get("/api/heating/floor-plan/image/{level_id}")
-    async def get_floor_plan_image(level_id: str):
+    @app.get("/api/floor-plan/image/{level_id}")
+    @app.get("/api/heating/floor-plan/image/{level_id}", **ALIAS)
+    async def get_floor_plan_image(level_id: str, _=READ):
         """Return the background image for a level, or 404."""
         lid = _safe_level_id(level_id)
         if not lid:
@@ -280,8 +411,9 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None):
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
-    @app.delete("/api/heating/floor-plan/image/{level_id}")
-    async def delete_floor_plan_image(level_id: str):
+    @app.delete("/api/floor-plan/image/{level_id}")
+    @app.delete("/api/heating/floor-plan/image/{level_id}", **ALIAS)
+    async def delete_floor_plan_image(level_id: str, _=Depends(_require("device:write"))):
         """Remove the background image for a level."""
         lid = _safe_level_id(level_id)
         if not lid:

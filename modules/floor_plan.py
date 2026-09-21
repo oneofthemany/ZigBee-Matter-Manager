@@ -284,6 +284,27 @@ def _segment_overlaps_polygon_edge(
     return False
 
 
+def opening_borders_room(level: dict, room: dict, opening: dict) -> bool:
+    """Does the opening itself sit on this room's edge?
+
+    Bordering the opening's wall is not enough: one outside wall often runs
+    past several rooms, and its window belongs only to the room it opens into.
+    """
+    wall = next((w for w in level.get("walls") or [] if w.get("id") == opening.get("wall_id")), None)
+    poly = [tuple(p) for p in (room.get("polygon") or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if not wall or len(poly) < 3:
+        return False
+    x1, y1, x2, y2 = _wall_xy_endpoints(wall)
+    L = math.hypot(x2 - x1, y2 - y1)
+    if L < 1e-9:
+        return False
+    ux, uy = (x2 - x1) / L, (y2 - y1) / L
+    t0 = float(opening.get("offset_m") or 0.0)
+    t1 = t0 + float(opening.get("width_m") or 0.0)
+    return _segment_overlaps_polygon_edge(x1 + ux * t0, y1 + uy * t0,
+                                          x1 + ux * t1, y1 + uy * t1, poly)
+
+
 def find_walls_for_room(level: dict, room: dict) -> List[dict]:
     """All walls whose segment lies on (or is collinear with) a polygon edge."""
     poly = [tuple(p) for p in (room.get("polygon") or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
@@ -603,6 +624,32 @@ def _clean_contact(raw: Any) -> Optional[dict]:
     return out
 
 
+def _clean_placed_device(raw: Any) -> Optional[dict]:
+    """A device placed on the plan by position alone (``level.devices[]``)."""
+    if not isinstance(raw, dict):
+        return None
+    ieee = raw.get("ieee")
+    x = _as_float(raw.get("x")); y = _as_float(raw.get("y"))
+    if not isinstance(ieee, str) or not ieee.strip() or x is None or y is None:
+        return None
+    out: Dict[str, Any] = {"ieee": ieee.strip().lower(), "x": round(x, 3), "y": round(y, 3)}
+    h = _as_float(raw.get("height_m"))
+    if h is not None and h >= 0:
+        out["height_m"] = round(_clamp(h, 0.0, 10.0), 2)
+    return out
+
+
+def _clean_map(raw: Any) -> Optional[dict]:
+    """Where the home's coordinates sit on the plan, for the map backdrop."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "anchor_x_m": round(_as_float(raw.get("anchor_x_m"), 0.0) or 0.0, 3),
+        "anchor_y_m": round(_as_float(raw.get("anchor_y_m"), 0.0) or 0.0, 3),
+        "opacity": round(_clamp(_as_float(raw.get("opacity"), 0.6) or 0.6, 0.05, 1.0), 2),
+    }
+
+
 def _clean_plan_circuit(raw: Any, existing_ids: set) -> Optional[dict]:
     """
     Clean a plan-level circuit definition.
@@ -839,6 +886,13 @@ def _clean_level(raw: Any, existing_level_ids: set) -> Optional[dict]:
         cons_clean.append(cc)
     out["contacts"] = cons_clean
 
+    devs_clean = []
+    for d in raw.get("devices") or []:
+        cd = _clean_placed_device(d)
+        if cd:
+            devs_clean.append(cd)
+    out["devices"] = devs_clean
+
     return out
 
 
@@ -889,7 +943,163 @@ def clean_floor_plan(raw: Any) -> Optional[dict]:
     }
     if plan_circuits:
         result["circuits"] = plan_circuits
+    map_block = _clean_map(raw.get("map"))
+    if map_block:
+        result["map"] = map_block
+    _one_position_per_device(result)
     return result
+
+
+# one position per device
+
+def heating_claimed_ieees(plan: dict) -> set:
+    """Devices whose position a heating object holds: TRV, sensor, contact."""
+    out: set = set()
+    for level in plan.get("levels") or []:
+        for r in level.get("radiators") or []:
+            if r.get("trv_ieee"):
+                out.add(r["trv_ieee"])
+        for s in level.get("sensors") or []:
+            if s.get("ieee"):
+                out.add(s["ieee"])
+        for c in level.get("contacts") or []:
+            if c.get("ieee"):
+                out.add(c["ieee"])
+    return out
+
+
+def _one_position_per_device(plan: dict) -> None:
+    """Drop ``devices[]`` entries a heating object already places, and repeats.
+
+    The heating object wins because it carries more than a position; the
+    first ``devices[]`` entry wins over a later one on any level.
+    """
+    seen = heating_claimed_ieees(plan)
+    for level in plan["levels"]:
+        kept = []
+        for d in level.get("devices") or []:
+            if d["ieee"] in seen:
+                continue
+            seen.add(d["ieee"])
+            kept.append(d)
+        level["devices"] = kept
+
+
+def _opening_centre(level: dict, opening_id: str) -> Optional[Tuple[float, float]]:
+    op = next((o for o in level.get("openings") or [] if o["id"] == opening_id), None)
+    wall = next((w for w in level.get("walls") or [] if op and w["id"] == op["wall_id"]), None)
+    if not op or not wall:
+        return None
+    x1, y1, x2, y2 = _wall_xy_endpoints(wall)
+    L = math.hypot(x2 - x1, y2 - y1) or 1.0
+    t = op["offset_m"] + op["width_m"] / 2.0
+    return (x1 + (x2 - x1) * t / L, y1 + (y2 - y1) * t / L)
+
+
+def _radiator_centre(level: dict, r: dict) -> Optional[Tuple[float, float]]:
+    wall = next((w for w in level.get("walls") or [] if w["id"] == r.get("wall_id")), None)
+    if wall:
+        x1, y1, x2, y2 = _wall_xy_endpoints(wall)
+        L = math.hypot(x2 - x1, y2 - y1) or 1.0
+        length = r.get("length_m") or 0.6
+        t = _clamp(r.get("offset_m", L / 2.0), 0.0, max(0.0, L - length)) + length / 2.0
+        return (x1 + (x2 - x1) * t / L, y1 + (y2 - y1) * t / L)
+    if r.get("x") is not None and r.get("y") is not None:
+        return (r["x"], r["y"])
+    return None
+
+
+def _room_at(level: dict, x: float, y: float) -> Optional[str]:
+    for room in level.get("rooms") or []:
+        poly = room.get("polygon") or []
+        inside = False
+        for i in range(len(poly)):
+            (xa, ya), (xb, yb) = poly[i], poly[(i + 1) % len(poly)]
+            if (ya > y) != (yb > y) and x < xa + (y - ya) * (xb - xa) / (yb - ya):
+                inside = not inside
+        if inside:
+            return room["id"]
+    return None
+
+
+def placed_devices(plan: Optional[dict]) -> List[dict]:
+    """Every placed device with its one position and the room it falls in.
+
+    ``source`` says what holds the position: ``device`` (``devices[]``),
+    ``radiator`` (a fitted TRV), ``sensor`` or ``contact`` (its opening).
+    """
+    out: List[dict] = []
+    for level in (plan or {}).get("levels") or []:
+        def add(ieee, pos, source, room_id=None):
+            if pos is None:
+                return
+            out.append({"ieee": ieee, "level_id": level["id"],
+                        "x": round(pos[0], 3), "y": round(pos[1], 3), "source": source,
+                        "room_id": room_id or _room_at(level, pos[0], pos[1])})
+        for r in level.get("radiators") or []:
+            if r.get("trv_ieee"):
+                add(r["trv_ieee"], _radiator_centre(level, r), "radiator", r.get("room_id"))
+        for s in level.get("sensors") or []:
+            if s.get("ieee") and s.get("x") is not None:
+                add(s["ieee"], (s["x"], s["y"]), "sensor", s.get("room_id"))
+        for c in level.get("contacts") or []:
+            add(c["ieee"], _opening_centre(level, c["opening_id"]), "contact")
+        for d in level.get("devices") or []:
+            add(d["ieee"], (d["x"], d["y"]), "device")
+    return out
+
+
+# who may change what — docs/heating.md § Floor plan
+
+#: Per-level keys that are heating's. A sensor's position is not: see below.
+HEATING_LEVEL_KEYS = ("radiators", "sensors", "contacts")
+
+
+def _heating_part(plan: dict) -> dict:
+    return {
+        "circuits": plan.get("circuits") or [],
+        "levels": {l["id"]: {
+            "radiators": l.get("radiators") or [],
+            "sensors": [{k: v for k, v in s.items() if k not in ("x", "y")}
+                        for s in l.get("sensors") or []],
+            "contacts": l.get("contacts") or [],
+        } for l in plan.get("levels") or []},
+    }
+
+
+def _structure_part(plan: dict, claimed: set) -> dict:
+    """Everything that is not heating's, with sensor positions counted here.
+
+    ``devices[]`` entries for devices heating claims are left out, so fitting
+    a placed TRV to a radiator is a heating change only.
+    """
+    out = {k: v for k, v in plan.items() if k not in ("circuits", "levels")}
+    out["levels"] = {}
+    for l in plan.get("levels") or []:
+        lv = {k: v for k, v in l.items() if k not in HEATING_LEVEL_KEYS + ("devices",)}
+        lv["sensor_positions"] = {s["id"]: (s.get("x"), s.get("y"))
+                                  for s in l.get("sensors") or []}
+        lv["devices"] = [d for d in l.get("devices") or [] if d["ieee"] not in claimed]
+        out["levels"][l["id"]] = lv
+    return out
+
+
+def changed_parts(old: Optional[dict], new: Optional[dict]) -> set:
+    """Which parts a save changes: ``"structure"`` and/or ``"heating"``.
+
+    Structure (walls, rooms, openings, levels, compass, map, device positions)
+    needs device:write; heating (radiators, sensor roles, contacts, circuits)
+    needs heating:write. Both plans must already be cleaned.
+    """
+    old = old or {"levels": []}
+    new = new or {"levels": []}
+    parts = set()
+    claimed = heating_claimed_ieees(new) | heating_claimed_ieees(old)
+    if _structure_part(old, claimed) != _structure_part(new, claimed):
+        parts.add("structure")
+    if _heating_part(old) != _heating_part(new):
+        parts.add("heating")
+    return parts
 
 
 # projection
@@ -941,9 +1151,7 @@ def _opening_to_dimension_entry(
     if not wall:
         return None
 
-    # Confirm the wall borders this room
-    walls_of_room = find_walls_for_room(level, room)
-    if wall["id"] not in {w["id"] for w in walls_of_room}:
+    if not opening_borders_room(level, room, opening):
         return None
 
     centroid = polygon_centroid([tuple(p) for p in room.get("polygon") or []])
@@ -1104,7 +1312,7 @@ def per_wall_breakdown_for_room(
         wtype = infer_wall_type(level, w,
                                 explicit if explicit in VALID_WALL_TYPES else None)
         wall_meta[w["id"]] = {"type": wtype, "compass": bearing_to_compass8(bearing),
-                              "length_m": length_m}
+                              "bearing_deg": round(bearing, 1), "length_m": length_m}
         walls_out.append({
             "id": w["id"],
             "length_m": round(length_m, 3),
@@ -1120,7 +1328,7 @@ def per_wall_breakdown_for_room(
     doors_out:   List[Dict[str, Any]] = []
     for op in level.get("openings", []) or []:
         host = wall_meta.get(op.get("wall_id"))
-        if not host:
+        if not host or not opening_borders_room(level, room, op):
             continue
         width = float(op.get("width_m") or 0.0)
         height = float(op.get("height_m") or 0.0)
@@ -1140,6 +1348,7 @@ def per_wall_breakdown_for_room(
                 "area_m2": area,
                 "glazing": op.get("glazing", "double"),
                 "compass": host["compass"],
+                "bearing_deg": host["bearing_deg"],
                 "on_external": on_external,
             })
         else:
@@ -1162,6 +1371,40 @@ def per_wall_breakdown_for_room(
     ct = room.get("ceiling_type")
     if ct in VALID_CEILING_TYPES:
         out["ceiling_type"] = ct
+    return out
+
+
+def daylight_geometry(plan: Optional[dict]) -> List[Dict[str, Any]]:
+    """Per room with a window to the outside: what daylight needs to know.
+
+    ``surface_m2`` is floor + ceiling + walls (the room's inner surface, which
+    the daylight factor divides by); windows on internal walls are left out.
+    Bearings are true, after ``north_offset_deg``. docs/daylight.md §7.
+    """
+    plan = plan or {}
+    north = float(plan.get("north_offset_deg") or 0.0)
+    out: List[Dict[str, Any]] = []
+    for level in plan.get("levels") or []:
+        for room in level.get("rooms") or []:
+            geom = per_wall_breakdown_for_room(level, room, north)
+            if not geom:
+                continue
+            windows = [{"area_m2": w["area_m2"], "glazing": w.get("glazing") or "double",
+                        "bearing_deg": w["bearing_deg"]}
+                       for w in geom["windows"] if w["on_external"]]
+            if not windows:
+                continue
+            poly = [tuple(p) for p in room["polygon"]]
+            perimeter = sum(segment_length_m(*poly[i], *poly[(i + 1) % len(poly)])
+                            for i in range(len(poly)))
+            out.append({
+                "room_id": room["id"], "name": room.get("name") or room["id"],
+                "level_id": level["id"],
+                "floor_area_m2": geom["floor_area_m2"],
+                "surface_m2": round(2 * geom["floor_area_m2"]
+                                    + perimeter * geom["ceiling_height_m"], 2),
+                "windows": windows,
+            })
     return out
 
 

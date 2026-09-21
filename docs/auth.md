@@ -82,6 +82,11 @@ Routes whose table entry is `@authenticated` are self-service endpoints that
 resolve the caller themselves; **they are the gate**, so a new route added
 under one of those prefixes without its own check is open to any principal.
 
+The floor plan (`/api/floor-plan`) is the one place a single write needs two
+scopes. The table passes any signed-in caller, and the route splits the save into
+structure (`device:write`) and heating (`heating:write`). See `docs/heating.md`
+§ Who may change what.
+
 `tests/auth/run_all.py` fails the build if any `/api/` route resolves to no
 prefix, or if the shipped `users` / `viewers` groups lose access to ordinary
 parts of the app.

@@ -218,8 +218,12 @@ def register_swarm_routes(app: FastAPI,
             raise HTTPException(404, f"Unknown pattern: {found['pattern_id']}")
 
         try:
+            exclude = body.get("exclude") or []
+            if not isinstance(exclude, list):
+                raise HTTPException(400, "exclude must be a list of device ids")
             rule = sg.recompile(pattern, found, described,
-                                overrides=body.get("params"), rooms=load_rooms())
+                                overrides=body.get("params"), rooms=load_rooms(),
+                                exclude=exclude)
         except CompileError as exc:
             raise HTTPException(409, str(exc))
 

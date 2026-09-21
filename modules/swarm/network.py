@@ -195,7 +195,9 @@ def describe_network(devices: Dict[str, Any],
     described: List[Dict[str, Any]] = []
     for ieee, dev in devices.items():
         try:
-            room = assigned.get(ieee)
+            # A device that knows its own room (a room's daylight estimate)
+            # says so; the Frames setting still wins where one is made.
+            room = assigned.get(ieee) or getattr(dev, "chamber", None)
             described.append(describe_device(
                 ieee, dev,
                 name=names.get(ieee),

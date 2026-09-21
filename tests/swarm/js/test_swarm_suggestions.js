@@ -245,6 +245,30 @@ section('cardHtml states');
         { editable: true }).includes('Also creates'));
 }
 
+section('a collected slot is a checklist');
+{
+  const DUSK = {
+    id: 'sg_dusk', pattern_id: 'dusk_lights_on', title: 'Lights on as daylight fades',
+    sentence: 'when daylight fades, turn on every light', category: 'lighting',
+    room: null, confidence: 'high', status: 'available', choosable: ['lights'],
+    devices: [
+      { slot: 'dusk', ieee: 'virtual::weather', name: 'Weather', offer: 'weather:got_dark_out' },
+      { slot: 'lights', ieee: '0xhall', name: 'Hall <Light>', offer: 'on_off:turn_on' },
+      { slot: 'lights', ieee: '0xlamp', name: 'Lamp', offer: 'on_off:turn_on' },
+    ],
+  };
+  const html = S.cardHtml(DUSK, { editable: true, dismissed: false });
+  const boxes = html.match(/data-sg-member="[^"]+"/g) || [];
+  check('every light gets a box', boxes.length === 2, boxes);
+  check('ticked by default', (html.match(/ checked/g) || []).length === 2, html);
+  check('the trigger is not a choice', !html.includes('data-sg-member="virtual::weather"'));
+  check('names are escaped', html.includes('Hall &lt;Light&gt;') && !html.includes('Hall <Light>'));
+  check('a read-only card shows badges, not boxes',
+        !S.cardHtml(DUSK, { editable: false }).includes('data-sg-member'));
+  check('a built card shows badges, not boxes',
+        !S.cardHtml({ ...DUSK, status: 'active' }, { editable: true }).includes('data-sg-member'));
+}
+
 section('summaryLine');
 {
   const sum = { patterns: 40, patterns_matched: 26, patterns_unmatched: 14,

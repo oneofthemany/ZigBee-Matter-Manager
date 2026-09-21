@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 
+from modules.floor_plan_store import load_plan
+
 logger = logging.getLogger("routes.heating")
 
 CONFIG_PATH = "./config/config.yaml"
@@ -1207,7 +1209,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 temperature_series=temp_series,
                 outdoor_temp_getter=outdoor_getter,
                 heating_state_getter=heating_state_getter,
-                floor_plan=heating.get("floor_plan"),
+                floor_plan=load_plan(),
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 
@@ -1270,7 +1272,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
             lat = weather_cfg.get("latitude")
             lon = weather_cfg.get("longitude")
             insulation = (heating.get("property") or {}).get("insulation", "partial")
-            floor_plan = heating.get("floor_plan")
+            floor_plan = load_plan()
 
             rooms_out: List[Dict[str, Any]] = []
             for c in _active_circuits(heating):
@@ -1396,7 +1398,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 insulation=insulation,
                 temperature_series=temp_series,
                 outdoor_temp_getter=outdoor_temp_getter,
-                floor_plan=heating.get("floor_plan"),
+                floor_plan=load_plan(),
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 
@@ -1485,7 +1487,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 insulation=insulation,
                 temperature_series=temp_series,
                 outdoor_temp_getter=outdoor_getter,
-                floor_plan=heating.get("floor_plan"),
+                floor_plan=load_plan(),
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 
@@ -1602,7 +1604,7 @@ def register_heating_routes(app: FastAPI, get_heating_advisor, get_zigbee_servic
                 insulation=insulation,
                 temperature_series=temp_series,
                 outdoor_temp_getter=outdoor_getter,
-                floor_plan=heating.get("floor_plan"),
+                floor_plan=load_plan(),
                 floor_plan_ref=found_room.get("floor_plan_ref"),
             )
 

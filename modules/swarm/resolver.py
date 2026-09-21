@@ -736,6 +736,8 @@ def describe_device(ieee: str, dev: Any, name: Optional[str] = None,
         "room": room,
         "room_label": room_label,
         "scope": scope,
+        # Modelled rather than measured; a real sensor for the same slot wins.
+        "estimated": bool(getattr(dev, "estimated", False)),
         "device_class": classify(caps),
         "capabilities": caps,
         # Declared and then dropped because nothing backs it — see

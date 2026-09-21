@@ -373,9 +373,20 @@
 
         <!-- TOPOLOGY TAB -->
         <div class="tab-pane fade" id="topology">
-            <div class="card shadow-sm">
+            <div class="btn-group btn-group-sm mb-2" role="group" aria-label="Topology view">
+                <input type="radio" class="btn-check" name="topologyView" id="topologyViewGraph" value="graph" checked>
+                <label class="btn btn-outline-primary" for="topologyViewGraph"><i class="fas fa-circle-nodes me-1"></i>Graph</label>
+                <input type="radio" class="btn-check" name="topologyView" id="topologyViewPlan" value="plan">
+                <label class="btn btn-outline-primary" for="topologyViewPlan"><i class="fas fa-drafting-compass me-1"></i>Floor plan</label>
+            </div>
+            <div class="card shadow-sm" id="topologyGraphCard">
                 <div class="card-body p-0">
                     <div class="mesh-topology-container" style="height: 75vh; background: var(--bg-surface-sunken); overflow: hidden;"></div>
+                </div>
+            </div>
+            <div class="card shadow-sm d-none" id="topologyPlanCard">
+                <div class="card-body p-0">
+                    <div id="topologyFloorPlan" class="fp-inline-host"></div>
                 </div>
             </div>
         </div>
