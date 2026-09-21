@@ -25,9 +25,7 @@ from modules.auth import (
     AuthManager, User, TokenRecord, scope_matches, LAN_ONLY_SCOPE,
 )
 from modules.auth_network import get_network_resolver
-from modules.auth_scopes import (
-    AUTHENTICATED, READ_METHODS, needs_step_up, scope_for_path,
-)
+from modules.auth_scopes import AUTHENTICATED, READ_METHODS, scope_for_path
 
 logger = logging.getLogger("modules.auth_middleware")
 
@@ -308,38 +306,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Writing code the hub runs needs a second factor re-verified inside
-        # the window, so a stolen cookie alone is not enough.
-        if needs_step_up(path, request.method):
-            denial = self._step_up_denial(request, principal)
-            if denial is not None:
-                return denial
         return await call_next(request)
-
-    def _step_up_denial(self, request: Request,
-                        principal: "Principal") -> Optional[JSONResponse]:
-        from modules.auth_secure import get_secure_auth_manager
-        sec = get_secure_auth_manager()
-        if sec is None:
-            return None
-        user = principal.user.username
-        if sec.step_up_valid(user, credential_id_for(request, principal)):
-            return None
-        enrolled = bool(sec.mfa_status(user).get("enabled"))
-        logger.warning(
-            f"[auth] {user} needs step-up for {request.method} {request.url.path}"
-            f"{'' if enrolled else ' (MFA not enrolled)'}"
-        )
-        return JSONResponse(
-            status_code=403,
-            content={
-                "detail": ("Re-verify your second factor to continue"
-                           if enrolled else
-                           "This action requires MFA. Enrol in Settings → Users."),
-                "step_up_required": True,
-                "mfa_enrolled": enrolled,
-            },
-        )
 
     def _denied_scope(self, request: Request, path: str,
                       principal: "Principal") -> Optional[str]:
@@ -427,15 +394,6 @@ def _cross_site_write(request: Request, principal: "Principal") -> bool:
         return origin == "null"
     host = request.headers.get("host", "")
     return origin.split("://", 1)[-1].rstrip("/") != host
-
-
-def credential_id_for(request: Request, principal: "Principal") -> str:
-    """Fingerprint of the credential presented, so a step-up in one browser
-    does not authorise another session of the same user."""
-    if principal.token is not None:
-        return f"t:{principal.token.token_hash[:16]}"
-    cookie = request.cookies.get("zmm_session") or ""
-    return "c:" + hashlib.sha256(cookie.encode()).hexdigest()[:16]
 
 
 def require_scope(scope: str):

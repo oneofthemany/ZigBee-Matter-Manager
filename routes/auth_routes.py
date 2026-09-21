@@ -45,10 +45,6 @@ class MFAEnrolFinishRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=8)
 
 
-class StepUpRequest(BaseModel):
-    # TOTP or a recovery code, same as the login second step.
-    code: str = Field(..., min_length=6, max_length=20)
-
 
 class DisableMFARequest(BaseModel):
     # Re-prompt for password to confirm dangerous self-action
@@ -329,24 +325,106 @@ def register_auth_routes(
     ):
         return _sec().mfa_status(principal.user.username)
 
-    @app.post("/api/auth/step-up")
-    async def step_up(
-            body: StepUpRequest,
-            request: Request,
+    @app.post("/api/auth/logout")
+    async def logout(response: Response):
+        response.delete_cookie("zmm_session", path="/")
+        return {"success": True}
+
+    @app.get("/api/auth/whoami")
+    async def whoami(request: Request):
+        p = get_principal(request)
+        if not p:
+            return {"authenticated": False}
+        sec = _sec()
+        return {
+            "authenticated": True,
+            "username": p.user.username,
+            "scopes": sorted(p.scopes),
+            "auth_method": p.auth_method,
+            "token_id": p.token.token_hash[:12] if p.token else None,
+            "mfa": sec.mfa_status(p.user.username),
+            "is_lan": _net().is_lan(_net().resolve(request)),
+        }
+
+    # MFA enrolment (self-service)
+
+    @app.post("/api/auth/mfa/enrol/start")
+    async def mfa_start(
             principal: Principal = Depends(require_authenticated),
     ):
-        """Re-verify the second factor, unlocking the code-execution routes
-        for STEP_UP_WINDOW_S. Bound to the credential that presented it."""
-        from modules.auth_middleware import credential_id_for
-        from modules.auth_secure import STEP_UP_WINDOW_S
+        # Bearer-token sessions can't enrol MFA — must be cookie session
+        # (the user must have a real interactive session)
+        if principal.auth_method != "cookie":
+            raise HTTPException(
+                403,
+                "MFA enrolment requires an interactive web session "
+                "(not bearer token).",
+            )
+        try:
+            secret, uri = await _sec().begin_enrolment(principal.user.username)
+        except KeyError:
+            raise HTTPException(404, "User not found")
+        return {
+            "success": True,
+            "secret": secret,
+            "otpauth_uri": uri,
+            "issuer": "ZMM",
+            "account": principal.user.username,
+        }
 
-        ok, reason = await _sec().verify_step_up(
-            principal.user.username, body.code, _net().resolve(request),
-            credential_id_for(request, principal),
-        )
-        if not ok:
-            raise HTTPException(403, reason)
-        return {"success": True, "valid_for_s": STEP_UP_WINDOW_S}
+    @app.post("/api/auth/mfa/enrol/finish")
+    async def mfa_finish(
+            body: MFAEnrolFinishRequest,
+            principal: Principal = Depends(require_authenticated),
+    ):
+        if principal.auth_method != "cookie":
+            raise HTTPException(403, "MFA enrolment requires interactive session.")
+        try:
+            recovery = await _sec().finish_enrolment(
+                principal.user.username, body.code,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Recovery codes shown ONCE
+        return {
+            "success": True,
+            "recovery_codes": recovery,
+            "warning": "These recovery codes are shown only once. "
+                       "Store them somewhere safe.",
+        }
+
+    @app.post("/api/auth/mfa/disable")
+    async def mfa_self_disable(
+            body: DisableMFARequest,
+            principal: Principal = Depends(require_authenticated),
+    ):
+        # Require password re-confirmation
+        if not _auth().verify_password(principal.user.username, body.password):
+            raise HTTPException(401, "Password incorrect")
+        await _sec().disable_mfa(principal.user.username)
+        return {"success": True}
+
+    @app.post("/api/auth/mfa/recovery-codes/regenerate")
+    async def mfa_regen_recovery(
+            principal: Principal = Depends(require_authenticated),
+    ):
+        try:
+            codes = await _sec().regenerate_recovery_codes(
+                principal.user.username,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {
+            "success": True,
+            "recovery_codes": codes,
+            "warning": "Old recovery codes have been invalidated.",
+        }
+
+    @app.get("/api/auth/mfa/status")
+    async def mfa_status(
+            principal: Principal = Depends(require_authenticated),
+    ):
+        return _sec().mfa_status(principal.user.username)
 
     # admin: lockouts and MFA reset
 

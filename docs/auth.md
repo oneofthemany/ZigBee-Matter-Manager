@@ -140,24 +140,6 @@ Token plaintext is shown ONCE at issue time. Copy it immediately — ZMM
 only stores its SHA-256 hash, so a forgotten token can't be recovered;
 you'd need to revoke it and issue a new one.
 
-### Step-up for code execution
-
-Writing to the editor or restoring a backup needs the second factor
-re-verified within the last 5 minutes (`STEP_UP_WINDOW_S`), on top of `admin`.
-A stolen session cookie carries no second factor, so this is what stops a
-borrowed browser turning into arbitrary code execution.
-
-Paths are listed in `STEP_UP_PREFIXES` (`modules/auth_scopes.py`) and enforced
-in the middleware. Reads are exempt — browsing a file is not running one.
-
-The refusal is a 403 carrying `step_up_required: true`; the fetch interceptor
-in `static/js/auth.js` prompts, posts the code to `/api/auth/step-up` and
-replays the request. The step-up is bound to the credential that verified it,
-so one browser cannot unlock another, and it is dropped if MFA is disabled.
-
-An admin with no MFA enrolled is refused rather than waved through, and told
-to enrol. If that leaves you stuck, see below.
-
 ## Locked out
 
 `auth_recover.py` runs inside the container and never over the network. It

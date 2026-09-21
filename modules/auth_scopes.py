@@ -19,14 +19,6 @@ UNMAPPED_SCOPE = "admin"
 #: Methods that only read. Everything else is treated as a write.
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-#: Prefixes where a write means running code the hub will execute, so `admin`
-#: alone is not enough — a stolen session cookie carries no second factor.
-#: Reads are exempt: browsing a file is not executing one.
-STEP_UP_PREFIXES: Tuple[str, ...] = (
-    "/api/editor",          # writes Python the app then runs, test-deploy included
-    "/api/backup/restore",  # restores over config, auth and the device DB
-)
-
 # Prefix → {METHOD: scope}; "*" is the method fallback. Longest prefix wins,
 # so "/api/device_overrides" resolves ahead of "/api/device".
 PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
@@ -144,14 +136,6 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
 _SORTED: List[Tuple[str, Dict[str, str]]] = sorted(
     PATH_SCOPES, key=lambda kv: len(kv[0]), reverse=True
 )
-
-
-def needs_step_up(path: str, method: str) -> bool:
-    """True if this request needs a recently re-verified second factor."""
-    if method.upper() in READ_METHODS:
-        return False
-    return any(path == p or path.startswith(p + "/") or path.startswith(p)
-               for p in STEP_UP_PREFIXES)
 
 
 def scope_for_path(path: str, method: str) -> Optional[str]:
