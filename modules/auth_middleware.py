@@ -25,6 +25,7 @@ from modules.auth import (
     AuthManager, User, TokenRecord, scope_matches, LAN_ONLY_SCOPE,
 )
 from modules.auth_network import get_network_resolver
+from modules.auth_scopes import AUTHENTICATED, scope_for_path
 
 logger = logging.getLogger("modules.auth_middleware")
 
@@ -257,9 +258,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not self.enforce:
-            # Soft mode for migration. Log but don't block.
+            # Soft mode for migration. Log but don't block — including the
+            # scope that enforcing mode would demand, so a deployment can see
+            # what would break before the switch is thrown.
             if not principal:
                 logger.warning(f"[auth-soft] anonymous request to {path}")
+            else:
+                required = scope_for_path(path, request.method)
+                if (required is not None and required != AUTHENTICATED
+                        and not scope_matches(required, principal.scopes)):
+                    logger.warning(
+                        f"[auth-soft] {principal.user.username} would be "
+                        f"denied {request.method} {path}: needs {required}"
+                    )
             return await call_next(request)
 
         if not principal:
@@ -280,6 +291,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # Authorisation. Deny by default: an /api/ path with no entry in
+        # modules/auth_scopes.py resolves to `admin`, so an unguarded new
+        # route is closed rather than open. Route-level require_scope
+        # dependencies still run and handle the finer cases the table cannot
+        # express (presence:write:<id>, admin-only subpaths).
+        required = scope_for_path(path, request.method)
+        if required is not None and required != AUTHENTICATED:
+            if not scope_matches(required, principal.scopes):
+                logger.warning(
+                    f"[auth] {principal.user.username} denied "
+                    f"{request.method} {path}: needs {required}"
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": f"Insufficient scope: {required} required",
+                        "required_scope": required,
+                    },
+                )
         return await call_next(request)
 
     def _client_network(self, request: Request) -> Tuple[str, bool]:

@@ -43,6 +43,17 @@ KNOWN_SCOPES: Dict[str, str] = {
     "matter:write":           "Commission, remove, control Matter devices.",
     "system:read":            "View system status, telemetry, logs.",
     "system:write":           "Restart services, edit config, run upgrades.",
+    "heating:read":           "View heating and AC state, schedules, zones.",
+    "heating:write":          "Change target temperatures, schedules, modes.",
+    "media:read":             "View players, queues, libraries.",
+    "media:write":            "Play, pause, group, change volume, announce.",
+    "energy:read":            "View tariffs, consumption and cost.",
+    "energy:write":           "Change tariff and energy settings.",
+    # Locks are deliberately not device:* — unlocking a door is not the same
+    # capability as switching a lamp, and a token should be able to hold one
+    # without the other.
+    "security:read":          "View lock state.",
+    "security:write":         "Lock and unlock.",
     "presence:read":          "Read all presence users' state.",
     "presence:write":         "Update any presence user's location.",
     # Per-user presence scopes are checked dynamically as
@@ -54,14 +65,23 @@ KNOWN_SCOPES: Dict[str, str] = {
 # Built-in groups created on first run if no auth.yaml exists.
 DEFAULT_GROUPS: Dict[str, List[str]] = {
     "admins":   ["admin"],
+    # Every subsystem a household member uses day to day. Kept in step with
+    # modules/auth_scopes.py: a scope that appears there and in no group means
+    # only admins can reach that part of the app.
     "users":    ["device:read", "device:write",
                  "automation:read", "automation:write",
                  "group:read", "group:write",
                  "matter:read", "matter:write",
+                 "heating:read", "heating:write",
+                 "media:read", "media:write",
+                 "energy:read", "energy:write",
+                 "security:read", "security:write",
                  "system:read",
                  "presence:read", "presence:write:*"],
     "viewers":  ["device:read", "automation:read", "group:read",
-                 "matter:read", "system:read", "presence:read"],
+                 "matter:read", "heating:read", "media:read",
+                 "energy:read", "security:read",
+                 "system:read", "presence:read"],
     "mobile":   ["presence:read"],   # phones get scoped tokens, not group access
 }
 

@@ -48,12 +48,43 @@ Permissions are expressed as dotted strings like `device:write` or
 | `matter:write`         | Commission / remove / control Matter devices.            |
 | `system:read`          | System status, telemetry, logs.                          |
 | `system:write`         | Restart services, edit config, run upgrades.             |
+| `heating:read`         | View heating and AC state, schedules, zones.             |
+| `heating:write`        | Change target temperatures, schedules, modes.            |
+| `media:read`           | View players, queues, libraries.                         |
+| `media:write`          | Play, pause, group, change volume, announce.             |
+| `energy:read`          | View tariffs, consumption and cost.                      |
+| `energy:write`         | Change tariff and energy settings.                       |
+| `security:read`        | View lock state.                                         |
+| `security:write`       | Lock and unlock.                                         |
 | `presence:read`        | Read presence-user state.                                |
 | `presence:write`       | Update **any** user's presence.                          |
 | `presence:write:<id>`  | Update **only** the named user's presence (mobile-app token). |
 
 Wildcards work at any segment: `device:*` matches all device permissions,
 `presence:write:*` matches all per-user presence writes.
+
+`security:*` is deliberately not part of `device:*`. Unlocking a door is not
+the same capability as switching a lamp, and a token should be able to hold
+one without the other.
+
+### How a scope is enforced
+
+`AuthMiddleware` resolves the required scope for every `/api/` request from
+the path → scope table in `modules/auth_scopes.py`, and refuses with 403
+before the route runs. **The table denies by default**: a path matching no
+prefix requires `admin`, so a newly added route is closed until someone maps
+it deliberately.
+
+Route-level `require_scope(...)` dependencies still run, as a second and finer
+check — they see path parameters the prefix table cannot, which is how
+`presence:write:<id>` and the admin-only corners of `/api/auth` are enforced.
+Routes whose table entry is `@authenticated` are self-service endpoints that
+resolve the caller themselves; **they are the gate**, so a new route added
+under one of those prefixes without its own check is open to any principal.
+
+`tests/auth/run_all.py` fails the build if any `/api/` route resolves to no
+prefix, or if the shipped `users` / `viewers` groups lose access to ordinary
+parts of the app.
 
 ### Tokens
 
