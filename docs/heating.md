@@ -954,6 +954,15 @@ Before this, a window on an outside wall shared by two rooms counted in both
 rooms' heat loss and solar gain. Plans drawn that way will see those two rooms'
 figures change on the next projection.
 
+**Which walls face outside.** An untyped wall is inferred from which *side* its
+rooms are on (`rooms_each_side`): rooms on one side only means external, rooms on
+both means party — something heated behind it. Counting rooms instead of sides,
+as it did before, made one long outside wall that several rooms sit along look
+like a party wall, which cost those rooms their daylight and under-counted their
+heat loss. The cleaner writes `type: "unknown"` for a wall nobody typed, and that
+is treated as the absence of an answer, not as an answer. A type the user sets
+explicitly always wins.
+
 The Daylight layer (View → *Daylight in each room*) colours rooms by estimated
 daylight for any time today; see `docs/daylight.md` §7.
 

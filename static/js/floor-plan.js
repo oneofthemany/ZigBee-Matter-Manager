@@ -66,7 +66,9 @@ function resetState(plan) {
         solarImpactLoaded: false,  // true after fetch attempt (even if empty)
         calibration: null,         // { p1: {x,y} } during 2-click calibrate
         showMap: false,
+        placeCursor: null,         // pointer position while a device is armed
         showDaylight: false,
+        daylightError: null,       // why there is no estimate, shown in the panel
         showMesh: false,
         mesh: null,                // /api/floor-plan/mesh, fetched when shown
         showCoverage: false,
@@ -432,8 +434,8 @@ function rootHtml() {
                 <div id="fpDaylightControls" class="ms-3 mb-1 d-none">
                   <input type="range" id="fpDaylightTime" class="form-range" min="0" max="48" step="1"
                          aria-label="Time of day">
-                  <div class="small"><span id="fpDaylightClock"></span> · outside
-                    <span id="fpDaylightOutdoor"></span></div>
+                  <div class="small d-none" id="fpDaylightReadout"><span id="fpDaylightClock"></span>
+                    · outside <span id="fpDaylightOutdoor"></span></div>
                   <div class="form-text small" id="fpDaylightNote">Estimated from the saved plan's windows
                     and today's weather.</div>
                 </div>
@@ -602,6 +604,9 @@ function bindModalEvents() {
         _state.showSun = e.target.checked;
         if (_state.showSun) { await loadSunData(); await loadSolarImpact(); }
         renderScene(); renderOverlay(); renderProps();
+        // The arc is wider than the house, so make room for it (and give it
+        // back when it goes away).
+        zoomFit();
     });
     document.getElementById('fpToggleThermal').addEventListener('change', e => {
         _state.showThermal = e.target.checked;
@@ -903,6 +908,30 @@ function radiatorCenter(r, lvl) {
 }
 
 // Centroid of the whole plan — average of room centroids, falling back to wall midpoints.
+/**
+ * How far the level's geometry reaches from `origin`, in metres — the radius
+ * of a circle that contains the building.
+ */
+function planReach(lvl, origin) {
+    let far = 0;
+    const see = (x, y) => { far = Math.max(far, Math.hypot(x - origin.x, y - origin.y)); };
+    for (const r of lvl.rooms || []) for (const [x, y] of r.polygon || []) see(x, y);
+    for (const w of lvl.walls || []) { see(w.x1, w.y1); see(w.x2, w.y2); }
+    return far;
+}
+
+/**
+ * Where the sun arc sits for this level: outside the building, and growing
+ * with it. A fixed radius ends up indoors as soon as the plan is bigger.
+ * `min` is how far in the midday pull-in may come — the building line.
+ */
+function sunArc(lvl) {
+    const origin = planCentroid(lvl);
+    const reach = planReach(lvl, origin);
+    const clear = Math.max(1.5, reach * 0.18);
+    return { origin, clear, r: Math.max(7, reach * 1.6 + clear), min: reach + clear };
+}
+
 function planCentroid(lvl) {
     const rooms = lvl.rooms || [];
     if (rooms.length > 0) {
@@ -1446,6 +1475,21 @@ function renderOverlay() {
         }
     }
 
+    // The armed device follows the pointer as a pin, so it is clear where the
+    // tip — the spot it will be placed at — actually is.
+    if (_state.tool === 'place' && _state.placing && _state.placeCursor) {
+        const info = deviceInfo(_state.placing);
+        const p = modelToSvg(snapPt(_state.placeCursor));
+        html += `<g class="fp-place-pin" pointer-events="none">
+            <path class="fp-pin-body fp-device-${info.kind}"
+                  d="M${p.x} ${p.y} l-0.22 -0.46 a0.26 0.26 0 1 1 0.44 0 Z"/>
+            <circle class="fp-pin-hole" cx="${p.x}" cy="${p.y - 0.62}" r="0.09"/>
+            <circle class="fp-pin-tip" cx="${p.x}" cy="${p.y}" r="0.05"/>
+            <text class="fp-pin-text" x="${p.x}" y="${p.y + 0.26}" font-size="0.15"
+                  text-anchor="middle">${escapeHtml(info.name)}</text>
+          </g>`;
+    }
+
     // Sun overlay — arc projected onto the floor plan, centred on the plan centroid.
     // Radial distance encodes solar elevation (high sun = arc pulled inward).
     if (_state.showSun) {
@@ -1455,14 +1499,16 @@ function renderOverlay() {
                            opacity="0.6">Sun position unavailable — check location config</text>`;
         } else {
             const sd = _state.sunData;
-            const ARC_R = 7; // metres — arc radius around the plan centroid
             const lvl = currentLevel();
             const origin = planCentroid(lvl);
+            // High sun pulls the arc inward (radius encodes elevation); it
+            // stops at the building line so midday never crosses the rooms.
+            const { clear: CLEAR_M, r: ARC_R, min: MIN_R } = sunArc(lvl);
 
             const sunPtToSvg = (pt) => {
                 const planAz = ((pt.az + _state.plan.north_offset_deg) % 360 + 360) % 360;
                 const ang = planAz * Math.PI / 180;
-                const projR = ARC_R * Math.cos(pt.el * Math.PI / 180);
+                const projR = Math.max(MIN_R, ARC_R * Math.cos(pt.el * Math.PI / 180));
                 return modelToSvg({ x: origin.x + Math.sin(ang) * projR, y: origin.y + Math.cos(ang) * projR });
             };
 
@@ -1586,8 +1632,8 @@ function renderOverlay() {
                 // North marker just outside the arc, honouring the compass offset
                 const nRad = (_state.plan.north_offset_deg * Math.PI) / 180;
                 const np = modelToSvg({
-                    x: origin.x + Math.sin(nRad) * (ARC_R + 0.9),
-                    y: origin.y + Math.cos(nRad) * (ARC_R + 0.9),
+                    x: origin.x + Math.sin(nRad) * (ARC_R + CLEAR_M * 0.6),
+                    y: origin.y + Math.cos(nRad) * (ARC_R + CLEAR_M * 0.6),
                 });
                 html += `<text class="fp-north-mark" x="${np.x}" y="${np.y + 0.09}" font-size="0.28"
                                text-anchor="middle" font-weight="bold">N</text>`;
@@ -1782,6 +1828,11 @@ function onCanvasMouseMove(e) {
             ? (currentLevel().devices || []).find(d => d.ieee === _devDrag.ieee)
             : currentLevel().sensors.find(x => x.id === _devDrag.sensorId);
         if (target) { target.x = round3(m.x); target.y = round3(m.y); renderScene(); }
+        return;
+    }
+    if (_state.tool === 'place' && _state.placing) {
+        _state.placeCursor = clientToSvgModel(e);
+        renderOverlay();
         return;
     }
     // Calibration tool tracks cursor between the two clicks for live feedback.
@@ -3827,6 +3878,12 @@ function zoomFit() {
     };
     for (const w of lvl.walls) { consider({x: w.x1, y: w.y1}); consider({x: w.x2, y: w.y2}); }
     for (const r of lvl.rooms) for (const p of r.polygon) consider({x: p[0], y: p[1]});
+    // The sun arc is part of what the user is looking at when it is on.
+    if (_state.showSun && _state.sunData) {
+        const { origin, r } = sunArc(lvl);
+        consider({ x: origin.x - r, y: origin.y - r });
+        consider({ x: origin.x + r, y: origin.y + r });
+    }
 
     if (!Number.isFinite(minX)) {
         // Empty level: centre on origin
@@ -3888,6 +3945,7 @@ function placeDevice(ieee, m) {
     const p = snapPt(m);
     currentLevel().devices.push({ ieee, x: round3(p.x), y: round3(p.y) });
     _state.placing = null;
+    _state.placeCursor = null;
     _state.tool = 'select';
     _state.selection = { kind: 'device', id: ieee };
     renderToolbar(); renderPalette(); renderScene(); renderProps();
@@ -3896,6 +3954,25 @@ function placeDevice(ieee, m) {
 
 function deviceInfo(ieee) {
     return _catalogue.get(ieee) || { name: ieee, kind: _heatingIeees.has(ieee) ? 'heating' : 'other' };
+}
+
+// A map-style pin, so what you drag looks like where it will land rather than
+// a screenshot of the button. One element, re-coloured per drag.
+let _dragGhost = null;
+
+function dragGhost(kind, name) {
+    if (!_dragGhost) {
+        _dragGhost = document.createElement('div');
+        _dragGhost.className = 'fp-drag-ghost';
+        document.body.appendChild(_dragGhost);
+    }
+    _dragGhost.innerHTML = `
+      <svg width="40" height="52" viewBox="0 0 40 52">
+        <path class="fp-pin-body fp-device-${kind}" d="M20 51 L8 26 A14 14 0 1 1 32 26 Z"/>
+        <circle class="fp-pin-hole" cx="20" cy="18" r="5"/>
+      </svg>
+      <div class="fp-pin-label">${escapeHtml(name)}</div>`;
+    return _dragGhost;
 }
 
 function renderPalette() {
@@ -3922,6 +3999,9 @@ function renderPalette() {
         el.addEventListener('dragstart', e => {
             e.dataTransfer.setData('text/x-zmm-ieee', el.dataset.ieee);
             e.dataTransfer.effectAllowed = 'copy';
+            const info = deviceInfo(el.dataset.ieee);
+            // Hotspot at the pin's point: the tip is where the device lands.
+            e.dataTransfer.setDragImage(dragGhost(info.kind, info.name), 20, 52);
         });
         el.addEventListener('click', () => {
             const arm = _state.placing !== el.dataset.ieee;
@@ -4299,8 +4379,11 @@ function renderMeshParts(lvl) {
 // daylight layer — docs/daylight.md §7
 
 async function loadDaylight() {
+    _state.daylightError = null;
     try {
-        const r = await fetch('/api/floor-plan/daylight?step_minutes=30').then(r => r.json());
+        const res = await fetch('/api/floor-plan/daylight?step_minutes=30');
+        const r = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(r?.detail || `The hub said ${res.status}.`);
         if (!r?.success) throw new Error(r?.error || 'No estimate');
         _state.daylight = r;
         // Start at the step nearest now.
@@ -4309,14 +4392,32 @@ async function loadDaylight() {
         _state.daylightIndex = i;
     } catch (e) {
         _state.daylight = null;
-        toast('warn', 'Daylight', e.message);
+        _state.daylightError = e.message;
     }
 }
 
 function syncDaylightControls() {
+    const box = document.getElementById('fpDaylightControls');
+    const note = document.getElementById('fpDaylightNote');
     const on = !!_state.showDaylight && !!_state.daylight;
-    document.getElementById('fpDaylightControls').classList.toggle('d-none', !on);
-    if (!on) return;
+    // Say why rather than going quiet: an empty layer with no explanation is
+    // indistinguishable from a broken one.
+    box.classList.toggle('d-none', !_state.showDaylight);
+    document.getElementById('fpDaylightTime').classList.toggle('d-none', !on);
+    document.getElementById('fpDaylightReadout').classList.toggle('d-none', !on);
+    if (!on) {
+        note.innerHTML = _state.daylightError
+            ? `<span class="text-warning-emphasis">${escapeHtml(_state.daylightError)}</span>`
+            : 'Working it out…';
+        return;
+    }
+    const lit = (_state.daylight.rooms || []).length;
+    note.innerHTML = lit
+        ? `Estimated from the saved plan's windows and today's weather — ${lit} room`
+          + `${lit === 1 ? '' : 's'} with a window to the outside.`
+        : `<span class="text-warning-emphasis">No room has a window on an outside wall.</span>
+           Draw the windows on the outside walls, set the compass, then save — the estimate
+           reads the saved plan.`;
     const d = _state.daylight, i = _state.daylightIndex;
     const slider = document.getElementById('fpDaylightTime');
     slider.max = String(d.times.length - 1);

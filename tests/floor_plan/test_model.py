@@ -113,6 +113,39 @@ def run() -> Checker:
     c.check("so only the lounge gets its daylight",
             [g["room_id"] for g in daylight_geometry(two)] == ["lounge"])
 
+    c.section("which walls face outside")
+    from modules.floor_plan import infer_wall_type, rooms_each_side
+    # What people actually draw: one outline, rooms inside it, nothing typed.
+    house = clean_floor_plan({"levels": [{"id": "g", "rooms": [
+        {"id": "lounge", "name": "Lounge", "polygon": [[0, 0], [5, 0], [5, 4], [0, 4]]},
+        {"id": "kitchen", "name": "Kitchen", "polygon": [[5, 0], [9, 0], [9, 4], [5, 4]]}],
+        "walls": [{"id": "ws", "x1": 0, "y1": 0, "x2": 9, "y2": 0},
+                  {"id": "wn", "x1": 9, "y1": 4, "x2": 0, "y2": 4},
+                  {"id": "ww", "x1": 0, "y1": 4, "x2": 0, "y2": 0},
+                  {"id": "we", "x1": 9, "y1": 0, "x2": 9, "y2": 4},
+                  {"id": "wi", "x1": 5, "y1": 0, "x2": 5, "y2": 4}],
+        "openings": [{"id": "w1", "wall_id": "ws", "kind": "window", "offset_m": 1,
+                      "width_m": 1.4, "height_m": 1.2},
+                     {"id": "w2", "wall_id": "ws", "kind": "window", "offset_m": 6,
+                      "width_m": 1.4, "height_m": 1.2}]}]})
+    hl = house["levels"][0]
+    types = {w["id"]: infer_wall_type(hl, w, None) for w in hl["walls"]}
+    c.check("one long outside wall that two rooms sit along is still outside",
+            types["ws"] == "external" and types["wn"] == "external", types)
+    c.check("a wall with a room on each side is not", types["wi"] == "party", types)
+    c.check("because both its rooms are on the same side of it",
+            rooms_each_side(hl, hl["walls"][0]) == (2, 0)
+            and sorted(rooms_each_side(hl, hl["walls"][4])) == [1, 1],
+            [rooms_each_side(hl, w) for w in hl["walls"]])
+    c.check("'unknown' from the cleaner is not treated as an answer",
+            all(w.get("type") == "unknown" for w in hl["walls"])
+            and infer_wall_type(hl, hl["walls"][0], "unknown") == "external")
+    c.check("a type the user set is still obeyed",
+            infer_wall_type(hl, hl["walls"][0], "internal") == "internal")
+    c.check("so both rooms get their own window's daylight",
+            [(g["room_id"], len(g["windows"])) for g in daylight_geometry(house)]
+            == [("lounge", 1), ("kitchen", 1)], daylight_geometry(house))
+
     c.section("which part a save changes")
     def after(fn):
         new = copy.deepcopy(plan)

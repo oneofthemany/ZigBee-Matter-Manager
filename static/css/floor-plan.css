@@ -349,6 +349,23 @@
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle;
 }
+/* the pin dragged from the palette, and its twin on the canvas */
+.fp-drag-ghost {
+    position: fixed; top: -200px; left: -200px; pointer-events: none;
+    text-align: center; font: 600 12px/1.2 system-ui, sans-serif;
+}
+.fp-pin-body { stroke: var(--fp-device-stroke); stroke-width: 1.5; }
+.fp-pin-hole { fill: var(--fp-device-stroke); }
+.fp-drag-ghost .fp-pin-label {
+    display: inline-block; margin-top: 2px; padding: 1px 5px; border-radius: 6px;
+    background: var(--fp-sidebar-bg); color: var(--fp-text);
+    border: 1px solid var(--fp-border); white-space: nowrap;
+}
+.fp-place-pin .fp-pin-body { stroke-width: 0.03; opacity: 0.9; }
+.fp-place-pin .fp-pin-hole { fill: var(--fp-device-stroke); }
+.fp-place-pin .fp-pin-tip  { fill: var(--fp-device-stroke); }
+.fp-place-pin .fp-pin-text { fill: var(--fp-text); font-weight: 600; }
+
 .fp-palette-item { cursor: grab; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-palette-item.active { outline: 2px solid var(--fp-selection); }
 /* signal coverage */

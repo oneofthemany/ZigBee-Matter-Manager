@@ -331,19 +331,45 @@ def shared_edge_room_count(level: dict, wall: dict) -> int:
     return n
 
 
+def rooms_each_side(level: dict, wall: dict) -> Tuple[int, int]:
+    """How many adjoining rooms lie on each side of the wall.
+
+    Counting rooms rather than sides made one long outside wall that several
+    rooms sit along look like a wall with heated space behind it — which cost
+    those rooms their daylight and under-counted their heat loss.
+    """
+    x1, y1, x2, y2 = _wall_xy_endpoints(wall)
+    dx, dy = x2 - x1, y2 - y1
+    left = right = 0
+    for r in level.get("rooms", []) or []:
+        poly = [tuple(p) for p in (r.get("polygon") or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(poly) < 3 or not _segment_overlaps_polygon_edge(x1, y1, x2, y2, poly):
+            continue
+        cx, cy = polygon_centroid(poly)
+        side = dx * (cy - y1) - dy * (cx - x1)
+        if side > 1e-9:
+            left += 1
+        elif side < -1e-9:
+            right += 1
+    return left, right
+
+
 def infer_wall_type(level: dict, wall: dict, explicit: Optional[str]) -> str:
     """
-    If user set an explicit type, respect it. Otherwise infer:
-      shared by 0 rooms -> 'unknown' (orphan wall)
-      shared by 1 room  -> 'external'
-      shared by 2 rooms -> 'party' (heated neighbour)
+    If the user set an explicit type, respect it. Otherwise infer from which
+    side its rooms are on:
+      no adjoining room       -> 'unknown' (orphan wall)
+      rooms on one side only  -> 'external'
+      rooms on both sides     -> 'party' (heated space behind it)
     """
-    if explicit and explicit in VALID_WALL_TYPES:
+    # "unknown" is what the cleaner writes for a wall nobody typed, so it is
+    # the absence of an answer, not one: infer rather than take it literally.
+    if explicit and explicit != "unknown" and explicit in VALID_WALL_TYPES:
         return explicit
-    n = shared_edge_room_count(level, wall)
-    if n >= 2:
+    left, right = rooms_each_side(level, wall)
+    if left and right:
         return "party"
-    if n == 1:
+    if left or right:
         return "external"
     return "unknown"
 
