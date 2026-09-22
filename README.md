@@ -348,6 +348,7 @@ A heating system with a thermal model underneath it, not just a schedule.
 </p>
 
 See **[docs/heating.md](docs/heating.md)** for the physics, config schema, tip triggers and hysteresis constants.
+The floor plan it draws on is shared with the rest of the app — see **[docs/floor-plan.md](docs/floor-plan.md)**.
 
 ### ⚡ Energy — Octopus
 
@@ -1026,6 +1027,7 @@ The full set is also browsable in-app under the **Docs** tab.
 | [docs/automations.md](docs/automations.md) | Automation engine — rule syntax, conditions, sequences, NL parser |
 | [docs/workers.md](docs/workers.md) | Workers — booleans, modes, timers, counters, markers and numbers rules can read and set |
 | [docs/heating.md](docs/heating.md) | Heating — advisor, controller, thermal profile, radiator sizing, solar gain |
+| [docs/floor-plan.md](docs/floor-plan.md) | The home floor plan — one plan, the editor, device placement, scopes and API |
 | [docs/daylight.md](docs/daylight.md) | Daylight — outdoor light from sun and weather, and each room's own estimate |
 | [docs/signal-coverage.md](docs/signal-coverage.md) | The mesh on the floor plan — learned attenuation, RSSI heatmap, repeater advice |
 | [docs/energy.md](docs/energy.md) | Octopus integration — consumption, tariffs, Home Mini |

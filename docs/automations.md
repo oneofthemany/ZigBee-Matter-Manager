@@ -161,8 +161,8 @@ sensor: every light in the room is listed, all ticked, and restored when the roo
 brightens. A south-facing room stays lit long after a north-facing one darkens.
 Where a room has a real lux sensor, the suggestion uses it instead. The **Dark
 below** figure on the card is room lux (default 11), not outdoor lux. Draw the
-windows on the floor plan (Topology → Floor plan, or Heating) and set the
-compass so the estimate knows which way they face.
+windows on the floor plan (Topology → Floor plan, or Heating — see
+[docs/floor-plan.md](floor-plan.md)) and set the compass so the estimate knows which way they face.
 
 **Accuracy.** The Weather estimate is for **outdoors**. A north-facing or deep room
 darkens sooner, and trees or hills to the west bring dusk forward. On a clear

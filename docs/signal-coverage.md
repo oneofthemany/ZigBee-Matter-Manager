@@ -1,7 +1,7 @@
 # Signal coverage — the mesh on the floor plan
 
-Devices placed on the home floor plan (`docs/heating.md` § Floor plan, shared
-with Heating) give the Zigbee mesh a geometry. From that the hub draws the
+Devices placed on the home floor plan ([docs/floor-plan.md](floor-plan.md),
+shared with Heating) give the Zigbee mesh a geometry. From that the hub draws the
 links to scale, learns what this house's walls and floors cost the signal,
 predicts the signal everywhere, and says where a repeater would help.
 

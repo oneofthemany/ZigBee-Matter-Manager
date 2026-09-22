@@ -6,7 +6,7 @@
 //
 // One editor DOM (#fpRoot) moves between the two hosts; the view only decides
 // what is shown. Saves to /api/floor-plan. Coordinates, overlays and the
-// one-position rule: docs/heating.md § Floor plan.
+// one-position rule: docs/floor-plan.md § Placing devices.
 
 const log = zmmLog('floor-plan');
 
@@ -2608,7 +2608,8 @@ function roomSunlitNow(room, lvl) {
 
 // A per-room scalar heat-coverage field on a coarse grid. One field drives the
 // heat map, the isotherm contours and the cold-zone tint, so all three agree by
-// construction. Formula and the meaning of COLD_THRESH: docs/heating.md.
+// construction. Formula and the meaning of COLD_THRESH: docs/heating.md
+// § Thermal overlays.
 
 const COLD_THRESH = Math.exp(-1);   // coverage value at d = r₀
 let _fieldCache = new Map();        // room.id → field entry (reset per open)
@@ -4205,7 +4206,7 @@ async function loadSunData() {
     } catch (e) { /* swallow */ }
 }
 
-// device layer — docs/heating.md § Floor plan
+// device layer — docs/floor-plan.md § Placing devices
 
 function round3(v) { return Math.round(v * 1000) / 1000; }
 

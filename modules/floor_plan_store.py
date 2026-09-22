@@ -4,7 +4,7 @@ The one floor plan — heating, chambers and the Topology view all read this.
 Stored at data/floor_plan.json. The first load on a hub that still keeps the
 plan at ``heating.floor_plan`` in config.yaml copies it here; from then on the
 old key is never read, and it is dropped the next time the plan routes rewrite
-config.yaml anyway. See docs/heating.md § Floor plan.
+config.yaml anyway. See docs/floor-plan.md.
 
 Held in memory after the first load, so a read costs no I/O and can be made
 from the event loop. Callers get a copy; only ``save_plan`` changes the plan.

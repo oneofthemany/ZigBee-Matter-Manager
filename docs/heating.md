@@ -762,33 +762,20 @@ model, which carries real uncertainty. Comparisons *between* rooms and trends
 over time (before/after fitting window film, say) are trustworthy; absolute
 wattage is indicative only.
 
-## Floor plan
+## Floor plan → heating
 
-`modules/floor_plan.py` holds the floor-plan data model, geometry helpers, and
-the projection back to the legacy per-room `dimensions` blocks. Pure module —
-no I/O, no FastAPI, no global state — wired in by
-`routes/floor_plan_routes.py`.
-
-There is **one plan for the whole home**. Heating, the chamber registry (and so
-Frames), and Topology all read the same one.
-`modules/floor_plan_store.py` is the only way in: `load_plan()` / `save_plan()` /
-`delete_plan()`. The plan is stored at `data/floor_plan.json`, and after the
-first read it's served from memory, so a read costs no I/O. Nothing reads a
-plan from `config.yaml`.
-
-Earlier versions kept the plan at `heating.floor_plan` in `config.yaml`. On such
-a hub, the first load (at startup) copies it to `data/floor_plan.json`, and the
-old key is never read after that. The key is removed the next time the plan is
-saved or deleted, since those writes rewrite `config.yaml` anyway. The move on
-its own doesn't rewrite `config.yaml`, which would lose its comments. Restoring a
-backup that predates the move replaces `data/floor_plan.json` with the restored
-config's plan.
+The plan itself — the data model, the editor, background images, device
+placement, the scopes and the API — is **[docs/floor-plan.md](floor-plan.md)**.
+It is one plan for the whole home, shared with daylight, signal coverage,
+chambers and automations. This section is only what heating does with it.
 
 The floor plan is an **editor surface**. The source of truth for circuits and
-rooms remains `heating.circuits` in `config.yaml`. On save, this module projects
-the plan back into each existing room's `dimensions` / `radiator` / `trvs` /
-`contact_sensors` / `temperature_sensor_ieee`, so `thermal_profile.py` and
-`heating_controller.py` keep working unchanged.
+rooms remains `heating.circuits` in `config.yaml`. On save,
+`modules/floor_plan.py` projects the plan back into each existing room's
+`dimensions` / `radiator` / `trvs` / `contact_sensors` /
+`temperature_sensor_ieee`, so `thermal_profile.py` and `heating_controller.py`
+keep working unchanged. `GET /api/floor-plan/preview` is that projection as a
+dry run.
 
 Where the plan is richer than the legacy schema (multiple radiators per room,
 multiple temperature sensors, contacts bound to specific openings), the
@@ -800,34 +787,11 @@ projection emits the legacy singular fields **and** the new plural ones:
 | `room["temperature_sensor_ieee"]` — primary sensor | `room["temperature_sensors"]` — full list with heights |
 | — | `room["contact_sensors"][i].opening_id` — opening linkage |
 
-### Coordinate convention
+Which walls count as external, and which windows belong to which room, are
+decided by the plan's own rules — both change a room's heat loss and solar gain,
+and both are in [floor-plan.md](floor-plan.md) § Windows and rooms.
 
-`+x` = right, `+y` = up (standard maths). `north_offset_deg` is the clockwise
-angle from plan-up to true north, so 0 means plan-up is north and 90 means true
-north points to the right of the plan.
-
-### Compass and wall-bin convention
-
-A wall's outward-normal bearing relative to true north decides both its
-8-point compass label (N/NE/…/NW), which drives opening orientation, and its
-legacy 4-bin label, which is the `dimensions.walls` bin:
-
-| Bin | Facing | Bearing range |
-| --- | --- | --- |
-| `back` | N | −45 .. +45 |
-| `right` | E | 45 .. 135 |
-| `front` | S | 135 .. 225 |
-| `left` | W | 225 .. 315 |
-
-The 4-bin labels are arbitrary. `thermal_profile.py` only cares about the
-external/party/internal type stored against each bin.
-
-Radiators have two modes: wall-mounted (`wall_id` + `offset_m`, clamped to wall
-length) and freestanding (`x` + `y`). The effective mode is resolved after walls
-are cleaned, and fields not belonging to the chosen mode are stripped so the
-YAML stays tidy.
-
-### Floor-plan editor overlays
+### Thermal overlays
 
 `static/js/floor-plan.js` draws three overlays from one shared scalar field, so
 the heat map, the isotherm contours and the cold-zone tint agree by
@@ -869,144 +833,3 @@ its footprint — offset perpendicular toward the bound room centroid so it sits
 on the room-side face. Freestanding radiators draw as a `length × 0.1 m`
 axis-aligned strip at `(x, y)`, for towel rails, columns, underfloor zones, or
 anywhere placed away from a wall.
-
-**Coordinate system.** Metres in, metres out; the SVG viewBox is in metres and
-zoom is the scale of the `<g>`. SVG uses +x right, +y down; the model uses +y
-up, so y is flipped on both read and write. An image background's top-left in
-model space sits at `(origin_x_m, origin_y_m + height_m)`.
-
-**Calibrating a background image.** The Calibrate tool takes two clicks and the
-real distance between them, and rescales the image so the two agree. The image
-is re-anchored on the first click, which stays where it is.
-
-A plan traced over that image was drawn at the old scale, so on its own it would
-be left behind — still at its old size, no longer on the walls it traced. So
-where the level already has a drawing, the editor asks: **Scale the drawing** or
-**Only the image**. Scaling moves walls, rooms, openings (their position along
-the wall and their width), radiators, sensors and placed devices by the same
-factor about that first click, and with a single-level plan the map pin too.
-Typed measurements are left alone — a radiator's length and output, a window's
-height, a sensor's mounting height are the user's own figures, not the tracing's.
-*Only the image* is the right answer when the drawing's measurements are already
-correct and the image is the thing that is wrong. Either way the view zooms to
-fit afterwards, and nothing is written until Save. The geometry is
-`scaleLevelGeometry()`, covered by `tests/floor_plan/js/test_calibrate.js`.
-
-### Two views of one plan
-
-`static/js/floor-plan.js` is one editor with one DOM (`#fpRoot`), mounted in one of
-two places:
-
-| Opened from | Host | View | Shows |
-|---|---|---|---|
-| **Topology → Floor plan** | inline in the tab | home | every placed device, the *Devices to place* palette, the map backdrop |
-| **Heating Controller → floor plan** | the full-screen modal | heating | heating's devices only (TRVs, thermostats, temperature sensors, window/door contacts), the heating tools, circuits and thermal overlays |
-
-Both views show the structure (walls, rooms, windows) and the compass. Both save
-the whole plan. The heating view hides lights, plugs and routers but doesn't
-remove them. What counts as a heating device comes from heating's own routes
-(`/api/heating/controller/devices`, `/sensors`, `/contact-sensors`), so the filter
-always agrees with the heating page. When the Heating modal closes, the editor
-goes back into Topology if Topology is on screen.
-
-### Placing devices
-
-A device is placed **once** and has **one position**. That position feeds auto
-lights (the room a light is in, for per-room daylight), repeater advice (mesh
-coverage) and heating (the room a sensor is in).
-
-`levels[].devices[]` holds `{ieee, x, y, height_m?}` for a device placed by
-position alone. The room isn't stored; it's derived from the room polygon the
-point falls in. A device held by a heating object takes its position from that
-object instead:
-
-| Device | Position from |
-|---|---|
-| TRV fitted to a radiator | the radiator (`radiators[].trv_ieee`) |
-| Temperature sensor used by heating | the sensor entry (`sensors[].x/y`) |
-| Contact bound to a window or door | the middle of the opening (`contacts[].opening_id`) |
-| anything else | `devices[]` |
-
-`clean_floor_plan()` enforces this. It drops a `devices[]` entry for any device a
-heating object holds, and keeps only the first of any repeats. So when Heating
-fits a placed TRV to a radiator, or uses a placed sensor for a room, the device
-moves off `devices[]` in the same save. `floor_plan.placed_devices(plan)` resolves
-every device to one `{ieee, level_id, x, y, room_id, source}`. Per-room daylight
-and the mesh overlay read positions through it.
-
-In the editor, the palette lists every device the hub knows that isn't placed
-anywhere, grouped as lights, heating, routers, coordinator and other. Drag one
-onto the plan, or tap it and then tap the plan. Drag a marker to move it; on a
-touch screen, select it first and then drag. A placed device's panel says which
-room it's in. For heating devices it also offers *Use as this room's heating
-sensor* or *Attach to the nearest window or door*, which hand the device to heating.
-
-The map backdrop draws OpenStreetMap tiles (`/api/map/tiles`, zoom 19) around the
-home location, rotated by `north_offset_deg`. *Mark where the home pin is* sets
-`plan.map.anchor_x_m/anchor_y_m`, the point on the plan where the address pin
-sits. Turn the compass until the map's buildings line up with the walls.
-
-### Windows and rooms
-
-An opening belongs to a room only if the opening itself lies on one of that
-room's edges (`opening_borders_room`). Bordering the opening's wall isn't enough.
-Before this, a window on an outside wall shared by two rooms counted in both
-rooms' heat loss and solar gain. Plans drawn that way will see those two rooms'
-figures change on the next projection.
-
-**Which walls face outside.** An untyped wall is inferred from which *side* its
-rooms are on (`rooms_each_side`): rooms on one side only means external, rooms on
-both means party — something heated behind it. Counting rooms instead of sides,
-as it did before, made one long outside wall that several rooms sit along look
-like a party wall, which cost those rooms their daylight and under-counted their
-heat loss. The cleaner writes `type: "unknown"` for a wall nobody typed, and that
-is treated as the absence of an answer, not as an answer. A type the user sets
-explicitly always wins.
-
-The Daylight layer (View → *Daylight in each room*) colours rooms by estimated
-daylight for any time today; see `docs/daylight.md` §7.
-
-### Who may change what
-
-A save is split into two parts by `floor_plan.changed_parts(old, new)`. The route
-refuses the whole save if the caller lacks the scope for any part it changes:
-
-| Part | Scope | What's in it |
-|---|---|---|
-| structure | `device:write` | walls, rooms, openings, levels, background images, compass, map, `devices[]`, and the position of heating's sensors |
-| heating | `heating:write` | radiators (and their TRVs), sensor roles (room, device, kind, primary, height), contacts, circuits |
-
-Reading needs `device:read` or `heating:read`. The preview needs `heating:read`.
-Deleting the whole plan needs both write scopes. Fitting a placed device to a
-radiator is a heating change only, even though it removes a `devices[]` entry.
-The comparison runs on the cleaned old plan against the cleaned new one, so a
-stale copy that would undo someone else's placement reads as a structure change
-and is refused. Admins satisfy every scope, and the shipped `users` group holds
-both write scopes. A heating-only caller can't move a sensor's position, because
-positions are structure.
-
-### Floor-plan API
-
-`routes/floor_plan_routes.py`:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/floor-plan` | read the saved plan, plus `home` (`{lat, lon}`) for the map |
-| `POST /api/floor-plan` | save plan, project into circuits, return warnings |
-| `GET /api/floor-plan/preview` | dry-run projection |
-| `DELETE /api/floor-plan` | clear the plan |
-| `POST /api/floor-plan/image/{level_id}` | upload a background image |
-| `GET /api/floor-plan/image/{level_id}` | fetch the image |
-| `DELETE /api/floor-plan/image/{level_id}` | clear the image |
-
-Every endpoint also answers at its old `/api/heating/floor-plan…` address, served
-by the same handler and left out of the OpenAPI schema. Permissions are checked
-in the routes, per part of the plan (see *Who may change what* below). The
-middleware table maps both addresses to any signed-in caller.
-
-The plan is stored at `data/floor_plan.json` (see above). Background images are
-separate files at `data/floor_plans/{level_id}.{ext}`. Both are included in
-backups.
-
-Image limits: 20 MB per upload, `image/png` and `image/jpeg` only. **PDFs must be
-rendered to PNG client-side** (via pdf.js) before upload.

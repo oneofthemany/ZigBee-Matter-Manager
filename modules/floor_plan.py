@@ -5,7 +5,7 @@ per-room ``dimensions`` blocks.
 Pure module: no I/O, no FastAPI, no global state. Wired in by
 routes/floor_plan_routes.py. The plan is an editor surface — heating.circuits
 in config.yaml stays the source of truth. Coordinate and wall-bin conventions:
-docs/heating.md.
+docs/floor-plan.md.
 """
 from __future__ import annotations
 
@@ -1075,7 +1075,7 @@ def placed_devices(plan: Optional[dict]) -> List[dict]:
     return out
 
 
-# who may change what — docs/heating.md § Floor plan
+# who may change what — docs/floor-plan.md § Who may change what
 
 #: Per-level keys that are heating's. A sensor's position is not: see below.
 HEATING_LEVEL_KEYS = ("radiators", "sensors", "contacts")

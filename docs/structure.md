@@ -211,6 +211,9 @@ it. Drawing happens in `eq-scope.js`; the CSS is only the housing.
 
 ### Floor-plan editor
 
+What the editor *is* — the plan it edits, its tools, and who may change what —
+is [docs/floor-plan.md](floor-plan.md). This is how it is dressed and laid out.
+
 The editor's SVG emits CSS classes only; every stroke and fill colour is
 inherited from CSS variables, so a `[data-theme="dark"]` switch on `<html>`
 repaints instantly without re-rendering the SVG.

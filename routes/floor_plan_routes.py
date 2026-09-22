@@ -5,7 +5,7 @@ plan, plus per-level background images.
 The plan is read and written only through modules/floor_plan_store; images are
 files under data/floor_plans/. 20 MB, PNG/JPEG only — PDFs must be rendered
 client-side. Served at /api/floor-plan, and at /api/heating/floor-plan for
-existing clients. See docs/heating.md.
+existing clients. See docs/floor-plan.md.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 # The alias keeps existing clients working; only /api/floor-plan is documented.
 ALIAS = {"include_in_schema": False}
 
-#: Scope each part of a save needs. docs/heating.md § Who may change what.
+#: Scope each part of a save needs. docs/floor-plan.md § Who may change what.
 PART_SCOPES = {"structure": "device:write", "heating": "heating:write"}
 
 

@@ -116,8 +116,8 @@ and on time between weather polls.
 
 ## 7. Each room
 
-With a floor plan, every room that has a window to the outside gets its own
-estimate: roughly what a lux sensor in the middle of the room would read,
+With a floor plan ([docs/floor-plan.md](floor-plan.md)), every room that has a
+window to the outside gets its own estimate: roughly what a lux sensor in the middle of the room would read,
 from daylight alone.
 
 **Geometry** (`floor_plan.daylight_geometry`). For each room this gives the inner
