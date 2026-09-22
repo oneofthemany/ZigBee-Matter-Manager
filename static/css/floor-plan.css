@@ -602,6 +602,26 @@
     stroke-dasharray: 0.12 0.08;
 }
 
+/* Adjust image tool: the image's own outline and its four corner grips.
+   Both use a non-scaling stroke so they stay hairline-thin at any zoom. */
+.fp-bg-adjust {
+    fill: none;
+    stroke: var(--fp-selection);
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke;
+    stroke-dasharray: 6 4;
+    pointer-events: none;
+}
+.fp-bg-handle {
+    fill: var(--fp-sidebar-bg, #fff);
+    stroke: var(--fp-selection);
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke;
+}
+.fp-bg-handle:hover {
+    fill: var(--fp-selection);
+}
+
 /* Mobile: the desktop rails (240px + 300px) are wider than a phone viewport,
    leaving the canvas no room, so below 768px they become off-canvas drawers
    toggled by floor-plan.js. See docs/structure.md. */

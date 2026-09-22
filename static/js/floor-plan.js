@@ -264,6 +264,10 @@ async function tryAdoptOrphanImage(lvl) {
             content_type: contentType,
             _cb: Date.now(),
         };
+        // The calibration is what was lost, so 50 px/m at the origin is a
+        // guess. If the level was traced, sit the image on that tracing
+        // instead — far closer than the guess, and visible either way.
+        fitBackgroundToDrawing({ silent: true, level: lvl });
         return true;
     } catch {
         return false;
@@ -358,6 +362,7 @@ function rootHtml() {
                   <button class="btn btn-sm btn-outline-primary" data-tool="sensor" data-fp-view="heating"><i class="fas fa-thermometer-half me-1"></i>Sensor</button>
                   <button class="btn btn-sm btn-outline-primary" data-tool="contact" data-fp-view="heating"><i class="fas fa-link me-1"></i>Contact</button>
                   <button class="btn btn-sm btn-outline-warning" data-tool="calibrate"><i class="fas fa-ruler me-1"></i>Calibrate</button>
+                  <button class="btn btn-sm btn-outline-warning" data-tool="bg"><i class="fas fa-image me-1"></i>Adjust image</button>
                 </div>
                 <div class="d-flex align-items-center gap-2 mt-2">
                   <label class="small text-muted mb-0" for="fpSnapStep">Snap</label>
@@ -394,6 +399,32 @@ function rootHtml() {
                 <div class="form-check form-switch small mt-1">
                   <input class="form-check-input" type="checkbox" id="fpToggleBackground" checked>
                   <label class="form-check-label" for="fpToggleBackground">Show image</label>
+                </div>
+                <div id="fpBgAdjust" class="mt-2 d-none">
+                  <button class="btn btn-sm btn-outline-warning w-100 mb-2" id="fpBgFit"
+                          title="Scale and centre the image over the walls already drawn">
+                    <i class="fas fa-expand me-1"></i>Fit image to walls</button>
+                  <div class="row g-1">
+                    <div class="col-6">
+                      <label class="form-label small mb-0" for="fpBgWidth">Width (m)</label>
+                      <input type="number" step="0.05" min="0.05" class="form-control form-control-sm py-0" id="fpBgWidth">
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-0" for="fpBgRot">Rotation (&deg;)</label>
+                      <input type="number" step="0.5" class="form-control form-control-sm py-0" id="fpBgRot">
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-0" for="fpBgX">Left X (m)</label>
+                      <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgX">
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-0" for="fpBgY">Bottom Y (m)</label>
+                      <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgY">
+                    </div>
+                  </div>
+                  <div class="form-text small mt-1">Scale <span id="fpBgPpm">&mdash;</span> px/m. Pick
+                    <strong>Adjust image</strong> in Tools to drag the image, or its corners to resize;
+                    arrow keys nudge.</div>
                 </div>
               </div>
               <div class="mb-3">
@@ -661,6 +692,25 @@ function bindModalEvents() {
 
     document.getElementById('fpImageFile').addEventListener('change', onImageFileChosen);
     document.getElementById('fpRemoveImage').addEventListener('click', removeBackgroundImage);
+    document.getElementById('fpBgFit').addEventListener('click', () => {
+        if (fitBackgroundToDrawing()) { renderScene(); renderOverlay(); syncBackgroundControls(); }
+    });
+    // Typed placement. Width grows the image about its centre, so the number
+    // boxes and the corner grips agree about what "resize" means.
+    const bgNumber = (id, apply) =>
+        document.getElementById(id).addEventListener('change', e => {
+            const bg = currentLevel()?.background;
+            const v = parseFloat(e.target.value);
+            if (!bg?.present || !Number.isFinite(v)) { syncBackgroundControls(); return; }
+            apply(bg, v);
+            renderScene(); renderOverlay(); syncBackgroundControls();
+        });
+    bgNumber('fpBgWidth', (bg, v) => {
+        if (v > 0) bgResizeAnchored(bg, v, 0.5, 0.5, bgPoint(bg, 0.5, 0.5));
+    });
+    bgNumber('fpBgX', (bg, v) => { bg.origin_x_m = round3(v); });
+    bgNumber('fpBgY', (bg, v) => { bg.origin_y_m = round3(v); });
+    bgNumber('fpBgRot', (bg, v) => { bg.rotation_deg = round3(((v % 360) + 360) % 360); });
     document.getElementById('fpImageOpacity').addEventListener('input', e => {
         const lvl = currentLevel();
         if (!lvl.background?.present) return;
@@ -723,6 +773,19 @@ function bindModalEvents() {
         } else if (e.key === 'Escape') {
             if (_state.drawBuffer) { e.preventDefault(); cancelDrawing(); }
             else if (_state.calibration) { e.preventDefault(); _state.calibration = null; renderOverlay(); }
+        } else if (_state.tool === 'bg' && e.key.startsWith('Arrow')) {
+            // Nudge the image by one snap step (ten with Shift) so it can be
+            // lined up on a wall more finely than a drag allows.
+            const bg = currentLevel()?.background;
+            if (bg?.present) {
+                e.preventDefault();
+                const step = (_state.snapStep || 0.1) * (e.shiftKey ? 10 : 1);
+                if (e.key === 'ArrowLeft')  bg.origin_x_m = round3(bg.origin_x_m - step);
+                if (e.key === 'ArrowRight') bg.origin_x_m = round3(bg.origin_x_m + step);
+                if (e.key === 'ArrowDown')  bg.origin_y_m = round3(bg.origin_y_m - step);
+                if (e.key === 'ArrowUp')    bg.origin_y_m = round3(bg.origin_y_m + step);
+                renderScene(); renderOverlay(); syncBackgroundControls();
+            }
         } else if (e.key === 'Backspace' || e.key === 'Delete') {
             // Backspace removes the last placed vertex of the current chain
             if ((_state.tool === 'wall' || _state.tool === 'room')
@@ -811,12 +874,24 @@ function syncBackgroundControls() {
     const removeBtn = document.getElementById('fpRemoveImage');
     const opSlider = document.getElementById('fpImageOpacity');
     if (!removeBtn || !opSlider) return;
-    if (lvl?.background?.present) {
-        removeBtn.disabled = false;
-        opSlider.value = lvl.background.opacity ?? 0.5;
-    } else {
-        removeBtn.disabled = true;
-    }
+    const bg = lvl?.background?.present ? lvl.background : null;
+    removeBtn.disabled = !bg;
+    const adjust = document.getElementById('fpBgAdjust');
+    if (adjust) adjust.classList.toggle('d-none', !bg);
+    if (!bg) return;
+    opSlider.value = bg.opacity ?? 0.5;
+    const g = bgGeom(bg);
+    // Don't fight the user mid-edit: leave the box they are typing in alone.
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) el.value = v;
+    };
+    set('fpBgWidth', g.wM.toFixed(2));
+    set('fpBgX', bg.origin_x_m.toFixed(2));
+    set('fpBgY', bg.origin_y_m.toFixed(2));
+    set('fpBgRot', (bg.rotation_deg || 0).toFixed(1));
+    const ppm = document.getElementById('fpBgPpm');
+    if (ppm) ppm.textContent = bg.pixels_per_metre.toFixed(1);
 }
 
 function renderLevelList() {
@@ -851,7 +926,7 @@ function renderToolbar() {
         select: 'default', wall: 'crosshair', room: 'crosshair',
         window: 'crosshair', door: 'crosshair', radiator: 'crosshair',
         sensor: 'crosshair', contact: 'crosshair', calibrate: 'crosshair',
-        place: 'copy', 'map-anchor': 'crosshair',
+        place: 'copy', 'map-anchor': 'crosshair', bg: 'move',
     };
     document.getElementById('fpCanvas').style.cursor = cursors[_state.tool] || 'default';
 }
@@ -893,6 +968,112 @@ function renderCompass() {
 // SVG y-axis goes DOWN. Model y-axis goes UP. Convert at the boundary.
 function modelToSvg(p)  { return { x: p.x,  y: -p.y }; }
 function svgToModel(p)  { return { x: p.x,  y: -p.y }; }
+
+// background image placement
+//
+// `origin_{x,y}_m` is the BOTTOM-LEFT corner of the unrotated image in model
+// coordinates (+y up), `pixels_per_metre` its scale, and `rotation_deg` turns
+// it anti-clockwise about its own centre. Everything that moves, scales or
+// rotates the image goes through these four helpers so the render, the drag
+// handles, the number boxes and Calibrate can never disagree.
+
+/** Size in metres, centre and rotation of a background block. */
+function bgGeom(bg) {
+    const wM = bg.image_width_px / bg.pixels_per_metre;
+    const hM = bg.image_height_px / bg.pixels_per_metre;
+    return {
+        wM, hM,
+        cx: bg.origin_x_m + wM / 2,
+        cy: bg.origin_y_m + hM / 2,
+        phi: (bg.rotation_deg || 0) * Math.PI / 180,
+    };
+}
+
+/** Model point of the image's (u across, v down from the top) 0..1 coord. */
+function bgPoint(bg, u, v) {
+    const g = bgGeom(bg);
+    const ex = (u - 0.5) * g.wM, ey = (0.5 - v) * g.hM;
+    const c = Math.cos(g.phi), sn = Math.sin(g.phi);
+    return { x: g.cx + ex * c - ey * sn, y: g.cy + ex * sn + ey * c };
+}
+
+/** Inverse of bgPoint: where a model point falls in the image (0..1 inside). */
+function bgFrac(bg, p) {
+    const g = bgGeom(bg);
+    const c = Math.cos(-g.phi), sn = Math.sin(-g.phi);
+    const dx = p.x - g.cx, dy = p.y - g.cy;
+    return { u: (dx * c - dy * sn) / g.wM + 0.5, v: 0.5 - (dx * sn + dy * c) / g.hM };
+}
+
+/** A model-space vector turned into the image's own (unrotated) frame. */
+function bgVecToImage(bg, v) {
+    const phi = -(bg.rotation_deg || 0) * Math.PI / 180;
+    const c = Math.cos(phi), sn = Math.sin(phi);
+    return { x: v.x * c - v.y * sn, y: v.x * sn + v.y * c };
+}
+
+/**
+ * Resize the image to `wNewM` metres wide — aspect ratio kept — while its
+ * (uA, vA) corner stays pinned to the model point `anchor`. Rotation is left
+ * alone. Width is clamped to the px/m range the backend will accept.
+ */
+function bgResizeAnchored(bg, wNewM, uA, vA, anchor) {
+    const wPx = bg.image_width_px;
+    wNewM = Math.max(wPx / 10000, Math.min(wPx / 1, wNewM));
+    const hNewM = wNewM * (bg.image_height_px / wPx);
+    const phi = (bg.rotation_deg || 0) * Math.PI / 180;
+    const ex = (uA - 0.5) * wNewM, ey = (0.5 - vA) * hNewM;
+    const c = Math.cos(phi), sn = Math.sin(phi);
+    bg.pixels_per_metre = round3(wPx / wNewM);
+    bg.origin_x_m = round3(anchor.x - (ex * c - ey * sn) - wNewM / 2);
+    bg.origin_y_m = round3(anchor.y - (ex * sn + ey * c) - hNewM / 2);
+}
+
+/** Bounding box of what has been drawn on a level, or null if nothing has. */
+function drawingBounds(lvl) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const consider = (x, y) => {
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+    };
+    for (const w of lvl.walls || []) { consider(w.x1, w.y1); consider(w.x2, w.y2); }
+    for (const r of lvl.rooms || []) for (const q of r.polygon || []) consider(q[0], q[1]);
+    return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+/**
+ * Scale and centre the image over the walls and rooms already drawn, so a
+ * plan that has drifted out of scale lands back on its tracing in one click.
+ * The image is sized to *contain* the drawing, so nothing drawn falls off it.
+ * Returns false (and says nothing, when `silent`) if there is nothing to fit.
+ */
+function fitBackgroundToDrawing({ silent = false, level = null } = {}) {
+    const lvl = level || currentLevel();
+    const bg = lvl?.background;
+    if (!bg?.present) {
+        if (!silent) toast('warn', 'No image', 'Import a background image first.');
+        return false;
+    }
+    const b = drawingBounds(lvl);
+    if (!b) {
+        if (!silent) toast('warn', 'Nothing to fit to', 'Draw some walls or rooms first.');
+        return false;
+    }
+    const wDraw = Math.max(b.maxX - b.minX, 0.5);
+    const hDraw = Math.max(b.maxY - b.minY, 0.5);
+    const aspect = bg.image_height_px / bg.image_width_px;
+    // Contain: wide enough for the drawing's width, and tall enough for its
+    // height once the image's own aspect ratio is applied.
+    const wM = Math.max(wDraw, hDraw / aspect);
+    bgResizeAnchored(bg, wM, 0.5, 0.5,
+                     { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 });
+    if (!silent) {
+        toast('success', 'Image fitted',
+              `${wM.toFixed(2)} m wide at ${bg.pixels_per_metre.toFixed(1)} px/m — `
+              + 'drag it or its corners to line it up, then Save plan.');
+    }
+    return true;
+}
 
 // Returns the model-space centre point of a radiator (wall-mounted or freestanding).
 function radiatorCenter(r, lvl) {
@@ -1067,12 +1248,13 @@ function renderScene() {
     // Background image (drawn under everything but the map)
     if (_state.showBackground && lvl.background?.present) {
         const bg = lvl.background;
-        const wM = bg.image_width_px / bg.pixels_per_metre;
-        const hM = bg.image_height_px / bg.pixels_per_metre;
+        const { wM, hM, cx, cy } = bgGeom(bg);
         // SVG <image> draws downward from its (x,y), and the model is +y up, so
-        // the image's top edge in model space is origin_y + hM.
+        // the image's top edge in model space is origin_y + hM. The rotation is
+        // anti-clockwise in model space, which is a negative SVG rotation.
         const tlSvg = modelToSvg({ x: bg.origin_x_m, y: bg.origin_y_m + hM });
-        const bgTransform = `rotate(${-(bg.rotation_deg || 0)} ${tlSvg.x + wM/2} ${tlSvg.y + hM/2})`;
+        const cSvg = modelToSvg({ x: cx, y: cy });
+        const bgTransform = `rotate(${-(bg.rotation_deg || 0)} ${cSvg.x} ${cSvg.y})`;
         parts.push(`
           <image href="/api/floor-plan/image/${escapeAttr(lvl.id)}?t=${bg._cb || 0}"
                  x="${tlSvg.x}" y="${tlSvg.y}" width="${wM}" height="${hM}"
@@ -1378,6 +1560,12 @@ function renderOverlay() {
         `translate(${_state.pan.x}, ${_state.pan.y}) scale(${m2px}, ${m2px})`);
     let html = '';
 
+    // Background-adjust frame: drag the image to move it, a corner to resize.
+    if (_state.tool === 'bg' && _state.showBackground
+        && currentLevel()?.background?.present) {
+        html += bgAdjustParts(currentLevel().background);
+    }
+
     // Drawing preview
     if (_state.drawBuffer) {
         const db = _state.drawBuffer;
@@ -1642,6 +1830,31 @@ function renderOverlay() {
     }
 
     ov.innerHTML = html;
+
+    ov.querySelectorAll('[data-kind="bg-handle"]').forEach(el => {
+        el.addEventListener('mousedown', e => { e.stopPropagation(); startBgResize(el); });
+    });
+}
+
+/** The outline and corner grips shown while the Adjust image tool is active. */
+function bgAdjustParts(bg) {
+    const g = bgGeom(bg);
+    const r = 7 / _state.zoom;                 // grips a constant size on screen
+    const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    const pts = corners.map(([u, v]) => modelToSvg(bgPoint(bg, u, v)));
+    let out = `<polygon class="fp-bg-adjust" points="${pts.map(q => `${q.x},${q.y}`).join(' ')}"/>`;
+    pts.forEach((q, i) => {
+        // Opposite corners share a diagonal, so the cursor reads correctly.
+        const cursor = (corners[i][0] === corners[i][1]) ? 'nwse-resize' : 'nesw-resize';
+        out += `<rect class="fp-bg-handle" data-kind="bg-handle"
+                      data-u="${corners[i][0]}" data-v="${corners[i][1]}"
+                      x="${q.x - r}" y="${q.y - r}" width="${2 * r}" height="${2 * r}"
+                      style="cursor:${cursor}"/>`;
+    });
+    const lbl = modelToSvg(bgPoint(bg, 0.5, 1));
+    out += `<text class="fp-preview-label" x="${lbl.x}" y="${lbl.y + 0.35}"
+                  font-size="0.22" text-anchor="middle">${g.wM.toFixed(2)} &#215; ${g.hM.toFixed(2)} m</text>`;
+    return out;
 }
 
 // interactions
@@ -1649,6 +1862,13 @@ function renderOverlay() {
 function setTool(tool) {
     _state.tool = tool;
     _state.drawBuffer = null;
+    _bgDrag = null;
+    // Adjusting an image you can't see is a trap; turn it back on.
+    if (tool === 'bg' && !_state.showBackground) {
+        _state.showBackground = true;
+        const t = document.getElementById('fpToggleBackground');
+        if (t) t.checked = true;
+    }
     _state.calibration = null;
     _state.selection = null;
     renderToolbar(); renderProps(); renderOverlay();
@@ -1667,6 +1887,25 @@ let _wallDrag = null;
 // wall and updates `radiator.offset_m` live, clamped so the radiator stays
 // on the wall.
 let _radDrag = null;
+
+// Background-image drag state, set by the Adjust image tool: `move` slides the
+// image, `scale` resizes it about the corner opposite the one being dragged.
+let _bgDrag = null;
+
+/** Grab a corner grip: pin the opposite corner and remember the start size. */
+function startBgResize(el) {
+    const bg = currentLevel()?.background;
+    if (!bg?.present) return;
+    const u = parseFloat(el.dataset.u), v = parseFloat(el.dataset.v);
+    const uA = 1 - u, vA = 1 - v;
+    const g = bgGeom(bg);
+    const d0 = { x: (u - uA) * g.wM, y: (vA - v) * g.hM };
+    _bgDrag = {
+        mode: 'scale', uA, vA, w0: g.wM,
+        anchor: bgPoint(bg, uA, vA),
+        d0, len2: d0.x * d0.x + d0.y * d0.y,
+    };
+}
 
 function onCanvasMouseDown(e) {
     if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
@@ -1758,6 +1997,18 @@ function onCanvasMouseDown(e) {
                 renderOverlay();
             });
         }
+    } else if (_state.tool === 'bg') {
+        const bg = lvl.background;
+        if (!bg?.present) {
+            toast('warn', 'No image', 'Import a background image first.');
+            return;
+        }
+        // Free (unsnapped) point: the image is being lined up with the walls
+        // by eye, and the grid would fight that.
+        const raw = clientToSvgModel(e);
+        const f = bgFrac(bg, raw);
+        if (f.u < 0 || f.u > 1 || f.v < 0 || f.v > 1) return;
+        _bgDrag = { mode: 'move', grab: raw, ox: bg.origin_x_m, oy: bg.origin_y_m };
     } else if (_state.tool === 'place' && _state.placing) {
         placeDevice(_state.placing, clientToSvgModel(e));
     } else if (_state.tool === 'map-anchor') {
@@ -1822,6 +2073,27 @@ function onCanvasMouseMove(e) {
         }
         return;
     }
+    if (_bgDrag) {
+        const bg = currentLevel()?.background;
+        if (bg?.present) {
+            const p = clientToSvgModel(e);
+            if (_bgDrag.mode === 'move') {
+                bg.origin_x_m = round3(_bgDrag.ox + (p.x - _bgDrag.grab.x));
+                bg.origin_y_m = round3(_bgDrag.oy + (p.y - _bgDrag.grab.y));
+            } else {
+                // Project the cursor onto the diagonal the grip started on, so
+                // the resize keeps the image's aspect ratio whatever the drag.
+                const d = bgVecToImage(bg, { x: p.x - _bgDrag.anchor.x,
+                                             y: p.y - _bgDrag.anchor.y });
+                const s = _bgDrag.len2 > 0
+                    ? (d.x * _bgDrag.d0.x + d.y * _bgDrag.d0.y) / _bgDrag.len2 : 1;
+                bgResizeAnchored(bg, Math.max(0.01, _bgDrag.w0 * s),
+                                 _bgDrag.uA, _bgDrag.vA, _bgDrag.anchor);
+            }
+            renderScene(); renderOverlay(); syncBackgroundControls();
+        }
+        return;
+    }
     if (_devDrag) {
         const m = snapPt(clientToSvgModel(e));
         const target = _devDrag.ieee
@@ -1862,6 +2134,8 @@ function onCanvasMouseUp(e) {
     if (_wallDrag) { _wallDrag = null; renderScene(); renderProps(); return; }
     if (_radDrag)  { _radDrag = null;  renderScene(); renderProps(); return; }
     if (_devDrag)  { _devDrag = null;  renderScene(); renderProps(); return; }
+    if (_bgDrag)   { _bgDrag = null;   renderScene(); renderOverlay();
+                     syncBackgroundControls(); return; }
     if (!_state.drawBuffer) return;
     const lvl = currentLevel();
 
@@ -1916,6 +2190,14 @@ function onCanvasTouchStart(e) {
             _devDrag = hit.dataset.kind === 'device' ? { ieee: hit.dataset.id } : { sensorId: hit.dataset.id };
             _touch = { mode: 'drag' };
             return;
+        }
+        if (_state.tool === 'bg') {
+            const grip = document.elementFromPoint?.(t.clientX, t.clientY)
+                ?.closest?.('#fpOverlay [data-kind="bg-handle"]');
+            if (grip) startBgResize(grip);
+            else onCanvasMouseDown({ clientX: t.clientX, clientY: t.clientY,
+                                     button: 0, shiftKey: false });
+            if (_bgDrag) { _touch = { mode: 'drag' }; return; }
         }
         _touch = {
             mode: 'single',
@@ -1987,8 +2269,9 @@ function onCanvasTouchEnd(e) {
 
     if (_touch.mode === 'drag') {
         _devDrag = null;
+        _bgDrag = null;
         _touch = null;
-        renderScene(); renderProps();
+        renderScene(); renderOverlay(); renderProps(); syncBackgroundControls();
         return;
     }
     if (_touch.mode === 'single') {
@@ -3878,6 +4161,13 @@ function zoomFit() {
     };
     for (const w of lvl.walls) { consider({x: w.x1, y: w.y1}); consider({x: w.x2, y: w.y2}); }
     for (const r of lvl.rooms) for (const p of r.polygon) consider({x: p[0], y: p[1]});
+    // Nothing drawn yet: frame the background image instead, so a freshly
+    // imported plan can't land off-screen with no way back to it.
+    if (!Number.isFinite(minX) && _state.showBackground && lvl.background?.present) {
+        for (const c of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+            consider(bgPoint(lvl.background, c[0], c[1]));
+        }
+    }
     // The sun arc is part of what the user is looking at when it is on.
     if (_state.showSun && _state.sunData) {
         const { origin, r } = sunArc(lvl);
@@ -4635,24 +4925,41 @@ async function onImageFileChosen(e) {
         }).then(r => r.json());
         if (!r.success) throw new Error(r.error || 'upload failed');
 
-        // Default calibration: 1 metre = 50 px (placeholder until user calibrates)
-        const ppm = lvl.background?.pixels_per_metre || 50;
+        // A file carries no scale, so the placement has to be inferred. Note
+        // the OLD px/m is deliberately not reused: it belongs to the old
+        // image's pixel dimensions, and a file of a different resolution at
+        // that px/m lands tiny (or huge) and nowhere near the walls.
+        const prev = (lvl.background?.present
+                      && lvl.background.pixels_per_metre > 0
+                      && lvl.background.image_width_px > 0)
+            ? { ...lvl.background } : null;
         lvl.background = {
             present: true,
-            pixels_per_metre: ppm,
+            pixels_per_metre: 50,       // placeholder, replaced just below
             image_width_px: dims.width,
             image_height_px: dims.height,
             origin_x_m: 0,
             origin_y_m: 0,
-            rotation_deg: 0,
-            opacity: lvl.background?.opacity ?? 0.5,
+            rotation_deg: prev?.rotation_deg || 0,
+            opacity: prev?.opacity ?? 0.5,
             content_type: contentType,
             _cb: Date.now(),    // cache-buster for SVG <image>
         };
 
-        document.getElementById('fpRemoveImage').disabled = false;
-        document.getElementById('fpImageOpacity').value = lvl.background.opacity;
-        status.innerHTML = `<span class="text-success"><i class="fas fa-check me-1"></i>Image imported. Use the <strong>Calibrate</strong> tool to set scale.</span>`;
+        let note = 'Use the <strong>Calibrate</strong> tool to set the scale.';
+        if (prev) {
+            // Replacing an image: same physical size and centre as the one it
+            // replaces, so a re-export of the same plan stays on the tracing.
+            bgResizeAnchored(lvl.background, prev.image_width_px / prev.pixels_per_metre,
+                             0.5, 0.5, bgPoint(prev, 0.5, 0.5));
+            note = 'Kept the size and position of the image it replaced.';
+        } else if (fitBackgroundToDrawing({ silent: true, level: lvl })) {
+            note = 'Fitted to the walls already drawn — line it up with '
+                 + '<strong>Adjust image</strong>, then <strong>Calibrate</strong>.';
+        }
+
+        syncBackgroundControls();
+        status.innerHTML = `<span class="text-success"><i class="fas fa-check me-1"></i>Image imported. ${note}</span>`;
         renderScene();
         zoomFit();
     } catch (err) {
