@@ -152,6 +152,42 @@ def _actions(c: Checker) -> None:
     asyncio.run(go())
 
 
+def _eq(c: Checker) -> None:
+    c.section("EQ state survives firmware that refuses EQGetStat")
+    lst = json.dumps(["Flat", "Electronic", "Rock"])
+    band = json.dumps({"status": "OK", "EQStat": "On", "Name": "Electronic",
+                       "source_name": "HDMI", "EQBand": []})
+    failed = '{"status":"Failed"}'
+
+    async def go():
+        w = _wiim({"EQGetList": lst, "EQGetBand": band, "EQGetStat": failed}, [])
+        i = await w.eq_info(PID)
+        c.check("EQGetBand is read: on, with the device's own preset",
+                i["enabled"] and i["preset"] == "Electronic", i)
+
+        # The reported bug, at its worst: the old code read only EQGetStat,
+        # which a WiiM Ultra refuses, so every change read back as "off".
+        # With EQGetBand refused too, our own last write must still stand.
+        replies = {"EQGetList": lst, "EQGetBand": failed, "EQGetStat": failed,
+                   "EQOn": '{"status":"OK"}', "EQOff": '{"status":"OK"}'}
+        w = _wiim(replies, [])
+        await w.set_eq(PID, enabled=True)
+        c.check("switched on, it stays on when the box cannot be read",
+                (await w.eq_info(PID))["enabled"])
+        await w.set_eq(PID, enabled=False)
+        c.check("…and off stays off", not (await w.eq_info(PID))["enabled"])
+
+        w = _wiim({"EQGetList": lst, "EQGetBand": failed,
+                   "EQGetStat": json.dumps({"EQStat": "Off"})}, [])
+        c.check("older firmware: EQGetStat still answers",
+                (await w.eq_info(PID))["enabled"] is False)
+
+        w = _wiim({**replies, "EQOn": failed}, [])
+        c.check("a Failed reply to EQOn is an error, not a silent success",
+                await _raises(w.set_eq(PID, enabled=True)))
+    asyncio.run(go())
+
+
 def _source(c: Checker) -> None:
     c.section("wiring (read from source)")
     auto = (REPO / "modules" / "automation.py").read_text()
@@ -175,6 +211,7 @@ def run() -> Checker:
     _decode(c)
     _panel(c)
     _actions(c)
+    _eq(c)
     _source(c)
     return c
 

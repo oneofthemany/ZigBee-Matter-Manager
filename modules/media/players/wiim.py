@@ -40,6 +40,14 @@ def _decode_hex(value: str) -> str:
         return value.strip()
 
 
+def _refused(reply: Optional[str]) -> bool:
+    """No reply, or one saying so — ``Failed`` bare or as a JSON status."""
+    if reply is None:
+        return True
+    text = reply.strip().strip('"').lower()
+    return text in ("failed", "fail", "unknown command") or '"failed"' in text
+
+
 def _pid(ip: str) -> str:
     return f"wiim:{ip}"
 
@@ -66,6 +74,9 @@ class WiiMPlayerProvider(PlayerProvider):
         # but not which preset is active, so we remember our own writes.
         self._eq_presets: Dict[str, Optional[List[str]]] = {}
         self._eq_current: Dict[str, str] = {}
+        # The last on/off we set, for firmware that answers neither EQ read:
+        # reporting "off" there flips the switch back the moment it is used.
+        self._eq_enabled: Dict[str, bool] = {}
 
     def add_device(self, ip: str, ident: Optional[dict] = None) -> None:
         """Adopt a discovered device (LinkPlayDirectory.on_found)."""
@@ -270,14 +281,38 @@ class WiiMPlayerProvider(PlayerProvider):
         presets = await self._eq_preset_list(ip)
         if not presets:
             return None
-        stat = await self._command_json(ip, "EQGetStat")
-        enabled = bool(stat) and str(stat.get("EQStat", "")).lower() == "on"
+        enabled, preset = await self._eq_state(ip)
         return {
             "mode": "presets",
             "presets": presets,
             "enabled": enabled,
-            "preset": self._eq_current.get(ip, ""),
+            "preset": preset,
         }
+
+    async def _eq_state(self, ip: str) -> tuple:
+        """``(enabled, preset)`` as the device reports them.
+
+        ``EQGetBand`` first: current firmware (a WiiM Ultra on 5.2) answers
+        the documented ``EQGetStat`` with ``{"status":"Failed"}``, which read
+        as "off" after every change and flipped the switch back. EQGetBand
+        carries the state *and* the active preset, where the older API could
+        only say on/off and left the preset to our memory of our own writes.
+        """
+        band = await self._command_json(ip, "EQGetBand")
+        if band and str(band.get("status", "")).upper() == "OK" \
+                and "EQStat" in band:
+            on = str(band.get("EQStat", "")).lower() == "on"
+            name = str(band.get("Name") or "")
+            self._eq_enabled[ip] = on
+            if name:
+                self._eq_current[ip] = name
+            return on, name or self._eq_current.get(ip, "")
+        stat = await self._command_json(ip, "EQGetStat")
+        if stat and "EQStat" in stat:
+            on = str(stat.get("EQStat", "")).lower() == "on"
+            self._eq_enabled[ip] = on
+            return on, self._eq_current.get(ip, "")
+        return self._eq_enabled.get(ip, False), self._eq_current.get(ip, "")
 
     async def set_eq(self, player_id: str, enabled: Optional[bool] = None,
                      preset: Optional[str] = None) -> None:
@@ -290,13 +325,15 @@ class WiiMPlayerProvider(PlayerProvider):
             # that isn't documented — send EQOn explicitly unless turning off.
             if enabled is not False:
                 await self._command(ip, "EQOn")
-            if await self._command(ip, f"EQLoad:{preset}") is None:
+            if _refused(await self._command(ip, f"EQLoad:{preset}")):
                 raise RuntimeError(f"EQ preset load failed on {ip}")
             self._eq_current[ip] = preset
+            self._eq_enabled[ip] = enabled is not False
         if enabled is not None and not (preset and enabled):
             cmd = "EQOn" if enabled else "EQOff"
-            if await self._command(ip, cmd) is None:
+            if _refused(await self._command(ip, cmd)):
                 raise RuntimeError(f"{cmd} failed on {ip}")
+            self._eq_enabled[ip] = bool(enabled)
 
     # Device panel (HTTP API v1.2 §2.1, §2.3, §2.5, §2.7–2.10)
     def _ip(self, player_id: str) -> str:
@@ -440,8 +477,7 @@ class WiiMPlayerProvider(PlayerProvider):
             cmd = "reboot"
         else:
             raise ValueError(f"Unknown WiiM action '{action}'")
-        reply = await self._command(ip, cmd)
-        if reply is None or reply.strip().strip('"').lower() in ("failed", "fail"):
+        if _refused(await self._command(ip, cmd)):
             raise RuntimeError(f"WiiM refused {action}"
                                f"{f' {value}' if value is not None else ''}")
 
