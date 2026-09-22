@@ -284,12 +284,31 @@ def _segment_overlaps_polygon_edge(
     return False
 
 
-def opening_borders_room(level: dict, room: dict, opening: dict) -> bool:
-    """Does the opening itself sit on this room's edge?
+#: How far behind an opening to look for the room it opens into. Hand-traced
+#: rooms sit inside the wall's thickness and a little askew, not on its line.
+OPENING_ROOM_REACH_M = 0.75
 
-    Bordering the opening's wall is not enough: one outside wall often runs
-    past several rooms, and its window belongs only to the room it opens into.
+
+def _point_in_polygon(x: float, y: float, poly: List[Tuple[float, float]]) -> bool:
+    inside = False
+    for i in range(len(poly)):
+        (xa, ya), (xb, yb) = poly[i], poly[(i + 1) % len(poly)]
+        if (ya > y) != (yb > y) and x < xa + (y - ya) * (xb - xa) / (yb - ya):
+            inside = not inside
+    return inside
+
+
+def opening_borders_room(level: dict, room: dict, opening: dict) -> bool:
+    """Does the opening open into this room?
+
+    The room the user picked for it ("Belongs to room") decides. Otherwise it
+    is the room whose edge it sits on, or failing that the nearest room just
+    behind it on either side. Bordering the opening's wall is not enough: one
+    outside wall often runs past several rooms, and its window belongs only
+    to the room it opens into.
     """
+    if opening.get("room_id"):
+        return opening["room_id"] == room.get("id")
     wall = next((w for w in level.get("walls") or [] if w.get("id") == opening.get("wall_id")), None)
     poly = [tuple(p) for p in (room.get("polygon") or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
     if not wall or len(poly) < 3:
@@ -301,8 +320,24 @@ def opening_borders_room(level: dict, room: dict, opening: dict) -> bool:
     ux, uy = (x2 - x1) / L, (y2 - y1) / L
     t0 = float(opening.get("offset_m") or 0.0)
     t1 = t0 + float(opening.get("width_m") or 0.0)
-    return _segment_overlaps_polygon_edge(x1 + ux * t0, y1 + uy * t0,
-                                          x1 + ux * t1, y1 + uy * t1, poly)
+    if _segment_overlaps_polygon_edge(x1 + ux * t0, y1 + uy * t0,
+                                      x1 + ux * t1, y1 + uy * t1, poly):
+        return True
+    # Step out from the opening's middle on each side; the first room hit on
+    # a side is the one it opens into there.
+    tm = (t0 + t1) / 2
+    mx, my = x1 + ux * tm, y1 + uy * tm
+    others = [[tuple(p) for p in (r.get("polygon") or [])]
+              for r in level.get("rooms") or [] if r.get("id") != room.get("id")]
+    for side in (1, -1):
+        for k in range(1, 16):
+            d = side * OPENING_ROOM_REACH_M * k / 15
+            px, py = mx - uy * d, my + ux * d
+            if _point_in_polygon(px, py, poly):
+                return True
+            if any(len(o) >= 3 and _point_in_polygon(px, py, o) for o in others):
+                break
+    return False
 
 
 def find_walls_for_room(level: dict, room: dict) -> List[dict]:
@@ -372,6 +407,82 @@ def infer_wall_type(level: dict, wall: dict, explicit: Optional[str]) -> str:
     if left or right:
         return "external"
     return "unknown"
+
+
+# room overlap — the editor refuses rooms that overlap or cross themselves
+# (static/js/floor-plan.js roomPolygonProblem); this is the same rule where a
+# save lands, so no other client can store one either.
+
+#: Overlap below this is float noise between two rooms sharing an edge, m².
+ROOM_OVERLAP_TOLERANCE_M2 = 0.01
+
+
+def room_geometry_problems(plan: Optional[dict]) -> Optional[List[Dict[str, Any]]]:
+    """Every room outline that crosses itself, and every pair of rooms on one
+    level whose floors overlap.
+
+    Each is ``{level_id, kind: 'self_intersection' | 'overlap', room_ids,
+    names, area_m2?}``. ``None`` when shapely isn't installed (an image built
+    before it was added), so a save isn't blocked by a missing check.
+    """
+    try:
+        import shapely
+        from shapely.geometry import Polygon
+    except ImportError:
+        logger.warning("shapely not installed; room overlap is not checked on save")
+        return None
+    out: List[Dict[str, Any]] = []
+    for level in (plan or {}).get("levels") or []:
+        shapes = []
+        for room in level.get("rooms") or []:
+            pts = [tuple(p[:2]) for p in room.get("polygon") or []
+                   if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(pts) < 3:
+                continue
+            poly = Polygon(pts)
+            name = room.get("name") or room["id"]
+            if not poly.is_valid:
+                out.append({"level_id": level.get("id"), "kind": "self_intersection",
+                            "room_ids": [room["id"]], "names": [name]})
+                poly = shapely.make_valid(poly)   # still compare what it does cover
+            shapes.append((room["id"], name, poly))
+        for i, (ia, na, pa) in enumerate(shapes):
+            for ib, nb, pb in shapes[i + 1:]:
+                if not pa.intersects(pb):
+                    continue
+                area = pa.intersection(pb).area
+                if area > ROOM_OVERLAP_TOLERANCE_M2:
+                    out.append({"level_id": level.get("id"), "kind": "overlap",
+                                "room_ids": sorted([ia, ib]), "names": [na, nb],
+                                "area_m2": round(area, 2)})
+    return out
+
+
+def new_room_geometry_problems(saved: Optional[dict], plan: dict) -> List[Dict[str, Any]]:
+    """The problems ``plan`` brings that ``saved`` didn't already have.
+
+    A plan drawn before the rules may overlap already; refusing every save
+    until it is fixed would lock its owner out of unrelated edits (a device
+    move), so only a new overlap, or a room newly crossing itself, is refused.
+    """
+    now = room_geometry_problems(plan)
+    if not now:
+        return []
+    key = lambda p: (p["level_id"], p["kind"], tuple(p["room_ids"]))  # noqa: E731
+    before = {key(p) for p in room_geometry_problems(saved) or []}
+    return [p for p in now if key(p) not in before]
+
+
+def describe_room_problems(problems: List[Dict[str, Any]]) -> str:
+    """One sentence per problem, for the editor's save status."""
+    parts = []
+    for p in problems:
+        if p["kind"] == "overlap":
+            parts.append(f"{p['names'][0]} and {p['names'][1]} overlap by {p['area_m2']} m².")
+        else:
+            parts.append(f"{p['names'][0]}'s outline crosses itself.")
+    return (" ".join(parts) + " Rooms can't overlap — use Snap rooms to walls, "
+            "or redraw the room.")
 
 
 # cleaners
@@ -1037,13 +1148,7 @@ def _radiator_centre(level: dict, r: dict) -> Optional[Tuple[float, float]]:
 
 def _room_at(level: dict, x: float, y: float) -> Optional[str]:
     for room in level.get("rooms") or []:
-        poly = room.get("polygon") or []
-        inside = False
-        for i in range(len(poly)):
-            (xa, ya), (xb, yb) = poly[i], poly[(i + 1) % len(poly)]
-            if (ya > y) != (yb > y) and x < xa + (y - ya) * (xb - xa) / (yb - ya):
-                inside = not inside
-        if inside:
+        if _point_in_polygon(x, y, room.get("polygon") or []):
             return room["id"]
     return None
 
@@ -1322,49 +1427,80 @@ def per_wall_breakdown_for_room(
     if not room_walls:
         return None
 
-    # Map wall_id -> the host wall's inferred type + bearing, so openings
-    # can be classified by their actual host rather than a folded bin.
-    wall_meta: Dict[str, Dict[str, Any]] = {}
     walls_out: List[Dict[str, Any]] = []
-
     for w in room_walls:
-        x1, y1, x2, y2 = _wall_xy_endpoints(w)
-        length_m = segment_length_m(x1, y1, x2, y2)
-        if length_m < 0.05:
+        meta = _host_wall_meta(level, w, centroid, north_offset_deg)
+        if meta["length_m"] < 0.05:
             continue
-        nx, ny = _outward_normal_unit(x1, y1, x2, y2, centroid[0], centroid[1])
-        bearing = normal_to_compass_bearing_deg(nx, ny, north_offset_deg)
-        explicit = str(w.get("type") or "").lower()
-        wtype = infer_wall_type(level, w,
-                                explicit if explicit in VALID_WALL_TYPES else None)
-        wall_meta[w["id"]] = {"type": wtype, "compass": bearing_to_compass8(bearing),
-                              "bearing_deg": round(bearing, 1), "length_m": length_m}
         walls_out.append({
             "id": w["id"],
-            "length_m": round(length_m, 3),
+            "length_m": round(meta["length_m"], 3),
             "height_m": round(_clamp(ceiling_h, 1.5, 5.0), 2),
-            "type": wtype,
-            "compass": bearing_to_compass8(bearing),
+            "type": meta["type"],
+            "compass": meta["compass"],
             "openings_area_m2": 0.0,   # filled in below
         })
 
-    # Walk openings; tag each with the host wall's type + compass, then
-    # accumulate their area against the corresponding wall record.
+    windows_out, doors_out = _room_openings(level, room, north_offset_deg, walls_out)
+
+    out: Dict[str, Any] = {
+        "floor_area_m2": round(polygon_area_m2(poly), 3),
+        "ceiling_height_m": round(_clamp(ceiling_h, 1.5, 5.0), 2),
+        "walls": walls_out,
+        "windows": windows_out,
+        "doors": doors_out,
+    }
+    ft = room.get("floor_type")
+    if ft in VALID_FLOOR_TYPES:
+        out["floor_type"] = ft
+    ct = room.get("ceiling_type")
+    if ct in VALID_CEILING_TYPES:
+        out["ceiling_type"] = ct
+    return out
+
+
+def _host_wall_meta(level: dict, wall: dict, centroid: Tuple[float, float],
+                    north_offset_deg: float) -> Dict[str, Any]:
+    """A wall's inferred type and outward bearing as seen from a room."""
+    x1, y1, x2, y2 = _wall_xy_endpoints(wall)
+    bearing = _wall_outward_bearing(level, wall, centroid, north_offset_deg)
+    explicit = str(wall.get("type") or "").lower()
+    wtype = infer_wall_type(level, wall, explicit if explicit in VALID_WALL_TYPES else None)
+    return {"type": wtype, "compass": bearing_to_compass8(bearing),
+            "bearing_deg": round(bearing, 1), "length_m": segment_length_m(x1, y1, x2, y2)}
+
+
+def _room_openings(level: dict, room: dict, north_offset_deg: float,
+                   walls_out: Optional[List[Dict[str, Any]]] = None,
+                   ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """The windows and doors that open into this room, tagged by host wall.
+
+    The host wall is classified on its own, not only when the room's outline
+    lies on it: rooms traced inside the walls touch none of them, and their
+    windows still let the light in. Each opening's area is added to its host's
+    record in ``walls_out`` when it has one.
+    """
+    poly = [tuple(p) for p in (room.get("polygon") or [])
+            if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if len(poly) < 3:
+        return [], []
+    centroid = polygon_centroid(poly)
+    walls = {w.get("id"): w for w in level.get("walls") or []}
     windows_out: List[Dict[str, Any]] = []
     doors_out:   List[Dict[str, Any]] = []
     for op in level.get("openings", []) or []:
-        host = wall_meta.get(op.get("wall_id"))
-        if not host or not opening_borders_room(level, room, op):
+        wall = walls.get(op.get("wall_id"))
+        if not wall or not opening_borders_room(level, room, op):
             continue
         width = float(op.get("width_m") or 0.0)
         height = float(op.get("height_m") or 0.0)
         if width <= 0 or height <= 0:
             continue
         area = round(width * height, 3)
+        host = _host_wall_meta(level, wall, centroid, north_offset_deg)
         on_external = host["type"] == "external"
 
-        # Bump the host wall's openings_area_m2
-        for w in walls_out:
+        for w in walls_out or []:
             if w["id"] == op.get("wall_id"):
                 w["openings_area_m2"] = round(w["openings_area_m2"] + area, 3)
                 break
@@ -1383,21 +1519,7 @@ def per_wall_breakdown_for_room(
                 "type": op.get("door_type", "internal"),
                 "on_external": on_external,
             })
-
-    out: Dict[str, Any] = {
-        "floor_area_m2": round(polygon_area_m2(poly), 3),
-        "ceiling_height_m": round(_clamp(ceiling_h, 1.5, 5.0), 2),
-        "walls": walls_out,
-        "windows": windows_out,
-        "doors": doors_out,
-    }
-    ft = room.get("floor_type")
-    if ft in VALID_FLOOR_TYPES:
-        out["floor_type"] = ft
-    ct = room.get("ceiling_type")
-    if ct in VALID_CEILING_TYPES:
-        out["ceiling_type"] = ct
-    return out
+    return windows_out, doors_out
 
 
 def daylight_geometry(plan: Optional[dict]) -> List[Dict[str, Any]]:
@@ -1411,24 +1533,24 @@ def daylight_geometry(plan: Optional[dict]) -> List[Dict[str, Any]]:
     north = float(plan.get("north_offset_deg") or 0.0)
     out: List[Dict[str, Any]] = []
     for level in plan.get("levels") or []:
+        ceiling_h = round(_clamp(float(level.get("ceiling_height_m")
+                                       or DEFAULT_CEILING_HEIGHT_M), 1.5, 5.0), 2)
         for room in level.get("rooms") or []:
-            geom = per_wall_breakdown_for_room(level, room, north)
-            if not geom:
-                continue
+            found, _ = _room_openings(level, room, north)
             windows = [{"area_m2": w["area_m2"], "glazing": w.get("glazing") or "double",
                         "bearing_deg": w["bearing_deg"]}
-                       for w in geom["windows"] if w["on_external"]]
+                       for w in found if w["on_external"]]
             if not windows:
                 continue
             poly = [tuple(p) for p in room["polygon"]]
+            floor_area = round(polygon_area_m2(poly), 3)
             perimeter = sum(segment_length_m(*poly[i], *poly[(i + 1) % len(poly)])
                             for i in range(len(poly)))
             out.append({
                 "room_id": room["id"], "name": room.get("name") or room["id"],
                 "level_id": level["id"],
-                "floor_area_m2": geom["floor_area_m2"],
-                "surface_m2": round(2 * geom["floor_area_m2"]
-                                    + perimeter * geom["ceiling_height_m"], 2),
+                "floor_area_m2": floor_area,
+                "surface_m2": round(2 * floor_area + perimeter * ceiling_h, 2),
                 "windows": windows,
             })
     return out

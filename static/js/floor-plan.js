@@ -1566,6 +1566,19 @@ function renderOverlay() {
         html += bgAdjustParts(currentLevel().background);
     }
 
+    // Room tool: the corners a room may use, and the one a click would take.
+    if (_state.tool === 'room' && currentLevel()) {
+        const px = 1 / (_state.zoom || PIXELS_PER_METRE_DEFAULT);   // markers keep their size on screen
+        for (const c of roomCorners(currentLevel())) {
+            const sp = modelToSvg(c);
+            html += `<circle class="fp-room-corner" cx="${sp.x}" cy="${sp.y}" r="${4 * px}"/>`;
+        }
+        if (_state.roomHover) {
+            const sp = modelToSvg(_state.roomHover);
+            html += `<circle class="fp-room-corner-hover" cx="${sp.x}" cy="${sp.y}" r="${9 * px}"/>`;
+        }
+    }
+
     // Drawing preview
     if (_state.drawBuffer) {
         const db = _state.drawBuffer;
@@ -1589,9 +1602,12 @@ function renderOverlay() {
         else if ((_state.tool === 'wall' || _state.tool === 'room') && db.points) {
             const ptsSvg = db.points.map(modelToSvg);
             const mouseSvg = db.cur ? modelToSvg(db.cur) : null;
-            const polyPts = ptsSvg.map(p => `${p.x},${p.y}`).join(' ')
+            const viaSvg = (_state.tool === 'room' && db.curVia) ? db.curVia.map(modelToSvg) : [];
+            const polyPts = ptsSvg.concat(viaSvg).map(p => `${p.x},${p.y}`).join(' ')
                 + (mouseSvg ? ` ${mouseSvg.x},${mouseSvg.y}` : '');
-            const cls = _state.tool === 'room' ? 'fp-preview-room' : 'fp-preview fp-preview-wall';
+            const cls = _state.tool === 'room'
+                ? `fp-preview-room${db.curOk === false ? ' fp-preview-invalid' : ''}`
+                : 'fp-preview fp-preview-wall';
             html += `<polyline class="${cls}"
                               points="${polyPts}"
                               stroke-width="0.06" stroke-dasharray="0.1 0.05"
@@ -1871,6 +1887,16 @@ function setTool(tool) {
     }
     _state.calibration = null;
     _state.selection = null;
+    _state.roomHover = null;
+    if (tool === 'room') {
+        // Room corners can only go where walls really meet, so close the
+        // near misses first; otherwise those junctions have no corner.
+        const joined = joinWallEnds(currentLevel());
+        if (joined) toast('info', 'Walls joined up',
+            `${joined} wall end${joined === 1 ? ' was' : 's were'} just off the wall `
+            + `${joined === 1 ? 'it meets and now meets it' : 'they meet and now meet them'}, `
+            + 'so rooms can use those corners. Save to keep it.');
+    }
     renderToolbar(); renderProps(); renderOverlay();
 }
 
@@ -1951,18 +1977,9 @@ function onCanvasMouseDown(e) {
         const proj = projectPointOntoSegment(m, w);
         _state.drawBuffer = { wall: w, start: proj.point, startT: proj.t, cur: proj.point };
     } else if (_state.tool === 'room') {
-        if (!_state.drawBuffer) {
-            _state.drawBuffer = { points: [m], cur: m };
-        } else {
-            // Click near the first point closes the polygon
-            const first = _state.drawBuffer.points[0];
-            if (Math.hypot(m.x - first.x, m.y - first.y) < closeRadiusM() && _state.drawBuffer.points.length >= 3) {
-                finishRoom();
-            } else {
-                _state.drawBuffer.points.push(m);
-            }
-        }
-        renderOverlay();
+        // Corner to corner: every vertex lands on a wall corner (or another
+        // room's), and clicking the first corner again closes the room.
+        addRoomCorner(roomDrawPoint(e, lvl), lvl);
     } else if (_state.tool === 'radiator' || _state.tool === 'sensor') {
         addPointFeature(_state.tool, m);
     } else if (_state.tool === 'contact') {
@@ -2041,7 +2058,7 @@ function onCanvasMouseMove(e) {
         const w = lvl.walls.find(x => x.id === _wallDrag.wallId);
         if (w) {
             const m = snapPt(clientToSvgModel(e));
-            const snapped = snapToOtherWallEndpoint(lvl, w.id, m) || m;
+            const snapped = snapToOtherWallEndpoint(lvl, w.id, m) || snapOntoWall(lvl, m, w.id) || m;
             if (_wallDrag.which === 1) { w.x1 = snapped.x; w.y1 = snapped.y; }
             else                       { w.x2 = snapped.x; w.y2 = snapped.y; }
             renderScene(); renderProps();
@@ -2113,6 +2130,27 @@ function onCanvasMouseMove(e) {
         renderOverlay();
         return;
     }
+    if (_state.tool === 'room') {
+        // Light up the corner a click would land on, and show whether the
+        // edge to it is allowed, before the click.
+        const lvl = currentLevel();
+        const hover = roomDrawPoint(e, lvl);
+        const db = _state.drawBuffer;
+        if (!db) {
+            const was = _state.roomHover;
+            _state.roomHover = hover;
+            if (!!was !== !!hover || (was && hover && !samePoint(was, hover))) renderOverlay();
+            return;
+        }
+        _state.roomHover = hover;
+        db.cur = hover || clientToSvgModel(e);
+        const last = db.points[db.points.length - 1];
+        const legs = hover && !samePoint(hover, last) ? roomLegs(lvl, last, hover) : null;
+        db.curOk = !!hover && !legs?.problem;
+        db.curVia = legs && !legs.problem ? legs.via : [];   // preview the route the edge will take
+        renderOverlay();
+        return;
+    }
     if (!_state.drawBuffer) return;
     const m = snapPt(clientToSvgModel(e));
     if (_state.tool === 'wall') {
@@ -2123,8 +2161,6 @@ function onCanvasMouseMove(e) {
         const proj = projectPointOntoSegment(m, _state.drawBuffer.wall);
         _state.drawBuffer.cur = proj.point;
         _state.drawBuffer.curT = proj.t;
-    } else if (_state.tool === 'room') {
-        _state.drawBuffer.cur = m;
     }
     renderOverlay();
 }
@@ -2530,7 +2566,288 @@ function wallDrawPoint(e, lvl) {
         return { x: last.x + Math.cos(a) * dist, y: last.y + Math.sin(a) * dist };
     }
     const m = snapPt(raw);
-    return snapToExistingEndpoint(lvl, m) || m;
+    return snapToExistingEndpoint(lvl, m) || snapOntoWall(lvl, m) || m;
+}
+
+/**
+ * A wall end dropped beside another wall lands on it, so the junction is a
+ * real corner for rooms to use (planCorners) rather than a near miss.
+ */
+function snapOntoWall(lvl, p, excludeWallId = null) {
+    const R = snapRadiusM();
+    if (R <= 0) return null;
+    let best = null, bestD = R;
+    for (const w of (lvl.walls || [])) {
+        if (w.id === excludeWallId) continue;
+        const proj = projectPointOntoSegment(p, w);
+        const d = Math.hypot(p.x - proj.point.x, p.y - proj.point.y);
+        if (d < bestD) { bestD = d; best = proj.point; }
+    }
+    return best;
+}
+
+// Reach for a room corner click: roomier than the wall-end merge radius,
+// since a room corner can only go on a corner anyway.
+function cornerSnapRadiusM() {
+    return Math.min(1.0, Math.max(0.3, 28 / (_state?.zoom || PIXELS_PER_METRE_DEFAULT)));
+}
+
+/**
+ * The corners a new room may use. Where the level has walls, only theirs:
+ * a room drawn before the rules may sit off them, and must not lead a new
+ * one off them too.
+ */
+function roomCorners(lvl) {
+    return planCorners(lvl, { wallsOnly: (lvl.walls || []).length > 0 });
+}
+
+/**
+ * Where a room-corner click lands: the nearest plan corner (or a corner of
+ * the room being drawn), or null when none is in reach. A level with no
+ * walls has no corners to hold to, so there the grid point stands.
+ */
+function roomDrawPoint(e, lvl) {
+    const raw = clientToSvgModel(e);
+    const corners = roomCorners(lvl).concat(_state.drawBuffer?.points || []);
+    const hit = nearestPoint(corners, raw, cornerSnapRadiusM());
+    if (hit || (lvl.walls || []).length) return hit;
+    return snapPt(raw);
+}
+
+function addRoomCorner(p, lvl) {
+    if (!p) {
+        toast('warn', 'Not on a corner',
+              'Room corners go on wall corners — click one of the marked points. '
+              + 'For an open-plan split, draw an internal wall there first.');
+        return;
+    }
+    const db = _state.drawBuffer;
+    if (!db) {
+        _state.drawBuffer = { points: [p], cur: p, curOk: true };
+        renderOverlay();
+        return;
+    }
+    const pts = db.points;
+    if (samePoint(p, pts[pts.length - 1])) return;   // second click of a double-click
+    if (pts.length >= 3 && samePoint(p, pts[0])) { finishRoom(); return; }
+    if (pts.some(q => samePoint(p, q))) {
+        toast('warn', 'Corner already used', 'Each corner goes into a room once.');
+        return;
+    }
+    const legs = roomLegs(lvl, pts[pts.length - 1], p);
+    const problem = legs.problem;
+    if (problem) { toast('warn', "Can't go there", problem); return; }
+    if (legs.via.some(q => pts.some(r => samePoint(q, r)))) {
+        toast('warn', 'Corner already used', 'Following the walls there goes back over this room.');
+        return;
+    }
+    pts.push(...legs.via, p);
+    renderOverlay();
+}
+
+/**
+ * The way from room corner a to b: along the walls when they join the two
+ * (picking up any corner in between, so the outline stays on the walls),
+ * else straight across — an open-plan split. `problem` says why neither
+ * will do.
+ */
+function roomLegs(lvl, a, b) {
+    const path = wallPath(wallGraph(lvl), a, b);
+    const straight = Math.hypot(b.x - a.x, b.y - a.y);
+    if (path && path.length <= straight * 1.5 + 0.3) {
+        const pts = path.points;
+        for (let i = 1; i < pts.length; i++) {
+            const problem = roomEdgeProblem(lvl, pts[i - 1], pts[i]);
+            if (problem) return { via: [], problem };
+        }
+        return { via: pts.slice(1, -1), problem: null };
+    }
+    return { via: [], problem: roomEdgeProblem(lvl, a, b) };
+}
+
+//: How far a wall end may be off the wall it was meant to meet and still be
+//: joined to it: hand-drawn junctions miss by a few centimetres to ~20 cm.
+const WALL_JOIN_REACH_M = 0.3;
+
+function lineIntersection(a, b, c, d) {
+    const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+    const den = rx * sy - ry * sx;
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den;
+    return { x: a.x + rx * t, y: a.y + ry * t, u: ((c.x - a.x) * ry - (c.y - a.y) * rx) / den };
+}
+
+/**
+ * Close the near misses where walls were meant to meet: a wall end short of
+ * (or past) another wall is extended or trimmed along its own line onto it,
+ * and two ends that nearly touch meet where their lines cross. Openings and
+ * radiators on a wall whose start moved keep their place. Returns how many
+ * wall ends moved.
+ */
+function joinWallEnds(lvl, reach = WALL_JOIN_REACH_M) {
+    const walls = lvl.walls || [];
+    const onWall = (p, w) => {
+        const pr = projectPointOntoSegment(p, w);
+        return Math.hypot(p.x - pr.point.x, p.y - pr.point.y) < CORNER_EPS_M;
+    };
+    const setEnd = (w, which, p) => {
+        if (which === 1) {
+            // Offsets run from the start, so a moved start shifts them back.
+            const L = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
+            const shift = ((p.x - w.x1) * (w.x2 - w.x1) + (p.y - w.y1) * (w.y2 - w.y1)) / L;
+            for (const o of [...(lvl.openings || []), ...(lvl.radiators || [])]) {
+                if (o.wall_id === w.id && typeof o.offset_m === 'number') {
+                    o.offset_m = Math.max(0, o.offset_m - shift);
+                }
+            }
+            w.x1 = p.x; w.y1 = p.y;
+        } else { w.x2 = p.x; w.y2 = p.y; }
+    };
+    let moved = 0;
+    for (const w of walls) {
+        for (const which of [1, 2]) {
+            const end = which === 1 ? { x: w.x1, y: w.y1 } : { x: w.x2, y: w.y2 };
+            const others = walls.filter(o => o !== w);
+            // Already joined: shares an end, or sits on another wall.
+            if (others.some(o => wallEnds(o).some(e => samePoint(e, end)) || onWall(end, o))) continue;
+            const [a, b] = wallEnds(w);
+            let best = null, bestD = reach;
+            for (const o of others) {
+                const [c, d] = wallEnds(o);
+                const x = lineIntersection(a, b, c, d);
+                // An L: the other wall's nearby end meets this one where the
+                // lines cross, so both ends move there.
+                for (const [oe, ow] of [[c, 1], [d, 2]]) {
+                    const dist = Math.hypot(oe.x - end.x, oe.y - end.y);
+                    if (dist >= bestD) continue;
+                    const at = x && Math.hypot(x.x - end.x, x.y - end.y) < reach
+                        && Math.hypot(x.x - oe.x, x.y - oe.y) < reach ? { x: x.x, y: x.y } : oe;
+                    best = { at, other: o, otherEnd: ow }; bestD = dist;
+                }
+                // A T: this end lands on the other wall's side.
+                if (x && x.u > 0 && x.u < 1) {
+                    const dist = Math.hypot(x.x - end.x, x.y - end.y);
+                    if (dist < bestD) { best = { at: { x: x.x, y: x.y } }; bestD = dist; }
+                }
+            }
+            if (!best) continue;
+            // Never shrink a wall to nothing by joining it.
+            const keeps = (wl, we) => {
+                const [p, q] = wallEnds(wl), far = we === 1 ? q : p;
+                return Math.hypot(far.x - best.at.x, far.y - best.at.y) >= 0.1;
+            };
+            if (!keeps(w, which) || (best.other && !keeps(best.other, best.otherEnd))) continue;
+            setEnd(w, which, best.at);
+            if (best.other) setEnd(best.other, best.otherEnd, best.at);
+            moved++;
+        }
+    }
+    return moved;
+}
+
+//: How far a hand-traced room corner may be from the wall corner it is moved to.
+const ROOM_SNAP_REACH_M = 1.5;
+
+/** The walls as a graph: each corner joined to the next corner along the same wall. */
+function wallGraph(lvl) {
+    const nodes = planCorners(lvl, { wallsOnly: true });
+    const edges = nodes.map(() => []);
+    for (const w of lvl.walls || []) {
+        const [a, b] = wallEnds(w);
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        if (L < CORNER_EPS_M) continue;
+        const along = [];
+        nodes.forEach((n, i) => {
+            const t = ((n.x - a.x) * (b.x - a.x) + (n.y - a.y) * (b.y - a.y)) / L;
+            const off = Math.abs((n.x - a.x) * (b.y - a.y) - (n.y - a.y) * (b.x - a.x)) / L;
+            if (off < 1e-4 && t > -1e-4 && t < L + 1e-4) along.push([t, i]);
+        });
+        along.sort((p, q) => p[0] - q[0]);
+        for (let k = 1; k < along.length; k++) {
+            const [t0, i] = along[k - 1], [t1, j] = along[k];
+            edges[i].push([j, t1 - t0]); edges[j].push([i, t1 - t0]);
+        }
+    }
+    return { nodes, edges };
+}
+
+/** The corners along the walls from a to b (shortest way), or null. */
+function wallPath(graph, a, b) {
+    const ia = graph.nodes.findIndex(n => samePoint(n, a));
+    const ib = graph.nodes.findIndex(n => samePoint(n, b));
+    if (ia < 0 || ib < 0) return null;
+    const dist = graph.nodes.map(() => Infinity), prev = graph.nodes.map(() => -1);
+    const done = new Set();
+    dist[ia] = 0;
+    while (done.size < graph.nodes.length) {
+        let u = -1;
+        dist.forEach((d, i) => { if (!done.has(i) && d < Infinity && (u < 0 || d < dist[u])) u = i; });
+        if (u < 0 || u === ib) break;
+        done.add(u);
+        for (const [v, len] of graph.edges[u]) {
+            if (dist[u] + len < dist[v]) { dist[v] = dist[u] + len; prev[v] = u; }
+        }
+    }
+    if (dist[ib] === Infinity) return null;
+    const path = [];
+    for (let i = ib; i >= 0; i = prev[i]) path.unshift(graph.nodes[i]);
+    return { points: path, length: dist[ib] };
+}
+
+/**
+ * Move each corner of a hand-traced room onto the nearest wall corner, then
+ * run each edge along the walls between them, picking up any corner the
+ * tracing cut across. An edge with no wall under it (an open-plan split)
+ * stays straight. Returns why it couldn't, or null once the room is moved.
+ */
+function snapRoomToWalls(room, lvl) {
+    const graph = wallGraph(lvl);
+    const moved = [], missing = [];
+    for (const [x, y] of room.polygon || []) {
+        const c = nearestPoint(graph.nodes, { x, y }, ROOM_SNAP_REACH_M);
+        if (!c) { missing.push([x, y]); continue; }
+        if (!moved.length || !samePoint(c, moved[moved.length - 1])) moved.push(c);
+    }
+    if (moved.length > 1 && samePoint(moved[0], moved[moved.length - 1])) moved.pop();
+    if (missing.length) {
+        return `${missing.length} corner${missing.length === 1 ? ' is' : 's are'} more than `
+            + `${ROOM_SNAP_REACH_M} m from any wall corner. Draw the missing walls, or redraw the room.`;
+    }
+    const outline = [];
+    for (let i = 0; i < moved.length; i++) {
+        const a = moved[i], b = moved[(i + 1) % moved.length];
+        const path = wallPath(graph, a, b);
+        const straight = Math.hypot(b.x - a.x, b.y - a.y);
+        // Following the walls may go round a jog, not round another room.
+        const follow = path && path.length <= straight * 1.5 + 0.3;
+        outline.push(...(follow ? path.points.slice(0, -1) : [a]));
+    }
+    const pts = outline.filter((p, i) => !outline.slice(0, i).some(q => samePoint(p, q)));
+    const problem = roomPolygonProblem(lvl, pts, room.id);
+    if (problem) return problem;
+    room.polygon = pts.map(p => [p.x, p.y]);
+    return null;
+}
+
+/**
+ * Snap every room on the level onto its walls, after joining the walls' near
+ * misses. A room may only fit once its neighbour has moved, so this goes
+ * round again while that still gets more rooms in.
+ */
+function snapLevelToWalls(lvl) {
+    const joined = joinWallEnds(lvl);
+    const pending = new Set((lvl.rooms || []).map(r => r.id));
+    const problems = new Map();
+    for (let progress = true; progress && pending.size;) {
+        progress = false;
+        for (const r of lvl.rooms || []) {
+            if (!pending.has(r.id)) continue;
+            const problem = snapRoomToWalls(r, lvl);
+            if (problem) problems.set(r.id, problem);
+            else { pending.delete(r.id); problems.delete(r.id); progress = true; }
+        }
+    }
+    return { joined, snapped: (lvl.rooms || []).length - pending.size, problems };
 }
 
 // Where the backend has a trustworthy measurement, the plan prefers it over the
@@ -3305,6 +3622,12 @@ function finishRoom() {
     if (points.length < 3) {
         _state.drawBuffer = null; renderOverlay(); return;
     }
+    const closing = roomLegs(lvl, points[points.length - 1], points[0]);
+    const closed = closing.problem ? points : points.concat(
+        closing.via.filter(q => !points.some(r => samePoint(q, r))));
+    const problem = roomPolygonProblem(lvl, closed);
+    if (problem) { toast('warn', "Can't close the room", problem); return; }
+    points.splice(0, points.length, ...closed);
     const id = genId('room');
     const r = {
         id, name: `Room ${lvl.rooms.length + 1}`,
@@ -3338,10 +3661,15 @@ function finishWallChain() {
     }
     _state.drawBuffer = null;
     if (newIds.length > 0) {
+        // Where a new wall stops just short of (or past) another, make them
+        // meet, so the junction is a corner rooms can use. Alt means "leave
+        // it where I put it".
+        const joined = _altDown ? 0 : joinWallEnds(lvl);
         // Select the first new wall so the user can classify it immediately.
         _state.selection = { kind: 'wall', id: newIds[0] };
         toast('success', 'Walls added',
-            `${newIds.length} wall${newIds.length === 1 ? '' : 's'} drawn — classify in the panel.`);
+            `${newIds.length} wall${newIds.length === 1 ? '' : 's'} drawn — classify in the panel.`
+            + (joined ? ` ${joined} end${joined === 1 ? '' : 's'} joined onto the wall${joined === 1 ? ' it meets' : 's they meet'}.` : ''));
     }
     renderScene(); renderOverlay(); renderProps();
 }
@@ -3444,6 +3772,153 @@ function pointInPolygon(p, poly) {
         if (intersect) inside = !inside;
     }
     return inside;
+}
+
+// room topology — a room's corners are the walls' corners, so its outline
+// lies exactly on the walls the backend matches it against (a window counts
+// for a room only when its wall is one of the room's edges), and no two
+// rooms overlap.
+
+const CORNER_EPS_M = 1e-6;
+
+function samePoint(a, b) {
+    return Math.abs(a.x - b.x) < CORNER_EPS_M && Math.abs(a.y - b.y) < CORNER_EPS_M;
+}
+
+/** Where segments a–b and c–d cross each other's middles, or null. Touching
+ *  at an end, or running along each other, is not a crossing. */
+function segmentCrossing(a, b, c, d) {
+    const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+    const den = rx * sy - ry * sx;
+    if (Math.abs(den) < 1e-12) return null;
+    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den;
+    const u = ((c.x - a.x) * ry - (c.y - a.y) * rx) / den;
+    const e = 1e-6;
+    return (t > e && t < 1 - e && u > e && u < 1 - e)
+        ? { x: a.x + rx * t, y: a.y + ry * t } : null;
+}
+
+function wallEnds(w) { return [{ x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }]; }
+
+/** Every point a room corner may sit on: the ends of walls, where walls
+ *  cross, and (unless `wallsOnly`) other rooms' corners, so neighbours share
+ *  them exactly. */
+function planCorners(lvl, { excludeRoomId = null, wallsOnly = false } = {}) {
+    const out = [];
+    const add = p => { if (!out.some(c => samePoint(c, p))) out.push({ x: p.x, y: p.y }); };
+    const walls = lvl.walls || [];
+    for (const w of walls) wallEnds(w).forEach(add);
+    for (let i = 0; i < walls.length; i++) {
+        for (let j = i + 1; j < walls.length; j++) {
+            const p = segmentCrossing(...wallEnds(walls[i]), ...wallEnds(walls[j]));
+            if (p) add(p);
+        }
+    }
+    if (!wallsOnly) {
+        for (const r of lvl.rooms || []) {
+            if (r.id === excludeRoomId) continue;
+            for (const [x, y] of r.polygon || []) add({ x, y });
+        }
+    }
+    return out;
+}
+
+function nearestPoint(points, p, radius) {
+    let best = null, bestD = radius;
+    for (const c of points) {
+        const d = Math.hypot(p.x - c.x, p.y - c.y);
+        if (d < bestD) { bestD = d; best = c; }
+    }
+    return best ? { x: best.x, y: best.y } : null;
+}
+
+/** Inside the polygon and not on its outline: rooms may share edges. */
+function pointStrictlyInPolygon(p, poly) {
+    for (let i = 0; i < poly.length; i++) {
+        const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+        const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+        const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / L2));
+        if (Math.hypot(p.x - (ax + dx * t), p.y - (ay + dy * t)) < 1e-3) return false;
+    }
+    return pointInPolygon(p, poly);
+}
+
+/** A point well inside the polygon (its centroid when that is, else a point
+ *  just inside one of its edges) — for telling a room inside another. */
+function interiorPoint(poly) {
+    const c = polygonCentroid(poly);
+    if (pointStrictlyInPolygon(c, poly)) return c;
+    for (let i = 0; i < poly.length; i++) {
+        const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+        const L = Math.hypot(bx - ax, by - ay) || 1;
+        for (const s of [1, -1]) {
+            const p = { x: (ax + bx) / 2 - s * (by - ay) / L * 0.05,
+                        y: (ay + by) / 2 + s * (bx - ax) / L * 0.05 };
+            if (pointStrictlyInPolygon(p, poly)) return p;
+        }
+    }
+    return c;
+}
+
+function polygonArea(poly) {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+        const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+        a += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(a) / 2;
+}
+
+/** Why a room edge from a to b can't be drawn, or null when it can. */
+function roomEdgeProblem(lvl, a, b, excludeRoomId = null) {
+    for (const w of lvl.walls || []) {
+        if (segmentCrossing(a, b, ...wallEnds(w))) return 'That edge cuts through a wall.';
+    }
+    for (const r of lvl.rooms || []) {
+        const poly = r.polygon || [];
+        if (r.id === excludeRoomId || poly.length < 3) continue;
+        const name = escapeHtml(r.name || 'another room');
+        for (let i = 0; i < poly.length; i++) {
+            const [cx, cy] = poly[i], [dx, dy] = poly[(i + 1) % poly.length];
+            if (segmentCrossing(a, b, { x: cx, y: cy }, { x: dx, y: dy })) {
+                return `That edge crosses into ${name}.`;
+            }
+        }
+        for (const t of [0.25, 0.5, 0.75]) {
+            if (pointStrictlyInPolygon({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, poly)) {
+                return `That edge runs through ${name}.`;
+            }
+        }
+    }
+    return null;
+}
+
+/** Why `pts` can't be a room, or null when it can. */
+function roomPolygonProblem(lvl, pts, excludeRoomId = null) {
+    if (pts.length < 3) return 'A room needs at least three corners.';
+    const poly = pts.map(p => [p.x, p.y]);
+    if (polygonArea(poly) < 0.05) return 'Those corners enclose no floor.';
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+        const a = pts[i], b = pts[(i + 1) % n];
+        const problem = roomEdgeProblem(lvl, a, b, excludeRoomId);
+        if (problem) return problem;
+        for (let j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue;   // the closing edge meets the first
+            if (segmentCrossing(a, b, pts[j], pts[(j + 1) % n])) return 'The outline crosses itself.';
+        }
+    }
+    for (const r of lvl.rooms || []) {
+        const other = r.polygon || [];
+        if (r.id === excludeRoomId || other.length < 3) continue;
+        const name = escapeHtml(r.name || 'another room');
+        if (other.some(([x, y]) => pointStrictlyInPolygon({ x, y }, poly))
+            || pointStrictlyInPolygon(interiorPoint(other), poly)) {
+            return `It would take in ${name}.`;
+        }
+        if (pointStrictlyInPolygon(interiorPoint(poly), other)) return `It sits inside ${name}.`;
+    }
+    return null;
 }
 
 // properties pane
@@ -3577,7 +4052,7 @@ function renderLevelProps(lvl) {
       <div class="text-muted small">
         <div><strong>Pan/zoom:</strong> Shift+drag (or middle-mouse) to pan, wheel to zoom.</div>
         <div class="mt-1"><strong>Walls:</strong> click to start a chain, click again to add each vertex. Press <kbd>Enter</kbd> or right-click or double-click to finish, <kbd>Esc</kbd> to cancel, <kbd>Backspace</kbd> to undo last vertex. Click on the first vertex to close back into it.</div>
-        <div class="mt-1"><strong>Rooms:</strong> click to drop polygon vertices; close by clicking the first one (need 3+).</div>
+        <div class="mt-1"><strong>Rooms:</strong> click the marked wall corners in turn — edges follow the walls between them — and click the first corner again to close. Rooms can't overlap or cut through a wall; draw an internal wall where an open-plan room splits.</div>
         <div class="mt-1"><strong>Precision:</strong> set the Snap and Angle steps in the sidebar; hold <kbd>Alt</kbd> to disable snapping entirely, or <kbd>Ctrl</kbd> while drawing walls to lock the bearing to the Angle step. Endpoint merging follows the zoom — zoom in to place points close together without them joining.</div>
         <div class="mt-1"><strong>Radiator/Sensor:</strong> place anywhere; pick the room from the panel. <strong>Contact:</strong> place near a window/door (or anywhere) and pick the opening from the panel.</div>
       </div>`;
@@ -3593,6 +4068,10 @@ function renderWallProps(w) {
             `<option value="${t}" ${w.type === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select></div>
       <div class="small text-muted mb-2">Length: ${Math.hypot(w.x2-w.x1, w.y2-w.y1).toFixed(2)} m</div>
+      <button class="btn btn-sm btn-outline-secondary w-100 mb-1" data-action="join-wall-ends">
+        <i class="fas fa-link me-1"></i>Join wall ends</button>
+      <div class="form-text small text-muted mb-2">Closes the small gaps where walls on this level were
+        meant to meet, so rooms have real corners to snap to.</div>
       <button class="btn btn-sm btn-outline-danger w-100" data-action="delete-wall"><i class="fas fa-trash me-1"></i>Delete wall</button>`;
 }
 
@@ -3721,6 +4200,11 @@ function renderRoomProps(r) {
           ${['insulated','uninsulated','flat_roof','unknown']
             .map(ct => `<option value="${ct}" ${r.ceiling_type === ct ? 'selected' : ''}>${ct}</option>`).join('')}
         </select></div>
+      ${(currentLevel()?.walls || []).length ? `
+      <button class="btn btn-sm btn-outline-secondary w-100 mb-1" data-action="rooms-snap-to-walls">
+        <i class="fas fa-vector-square me-1"></i>Snap rooms to walls</button>
+      <div class="form-text small text-muted mb-2">Joins up the walls, then moves every room on this
+        level onto its wall corners, so its windows and outside walls are counted.</div>` : ''}
       <button class="btn btn-sm btn-outline-danger w-100" data-action="delete-room"><i class="fas fa-trash me-1"></i>Delete room</button>`;
 }
 
@@ -4047,6 +4531,27 @@ function bindPropsHandlers() {
     root.querySelector('[data-action="delete-wall"]')?.addEventListener('click', () => deleteSelected('walls'));
     root.querySelector('[data-action="delete-opening"]')?.addEventListener('click', () => deleteSelected('openings'));
     root.querySelector('[data-action="delete-room"]')?.addEventListener('click', () => deleteSelected('rooms'));
+    root.querySelector('[data-action="rooms-snap-to-walls"]')?.addEventListener('click', () => {
+        const lvl = currentLevel();
+        const { joined, snapped, problems } = snapLevelToWalls(lvl);
+        const also = joined ? ` ${joined} wall end${joined === 1 ? '' : 's'} joined up first.` : '';
+        const failed = [...problems].map(([id, why]) =>
+            `${escapeHtml(lvl.rooms.find(r => r.id === id)?.name || id)}: ${escapeHtml(why)}`);
+        if (failed.length) {
+            toast('warn', `${snapped} of ${lvl.rooms.length} rooms snapped`,
+                  `Left as drawn — ${failed.join(' ')}${also}`);
+        } else {
+            toast('success', 'Rooms snapped', `All ${snapped} rooms now sit on their walls — save to keep it.${also}`);
+        }
+        renderScene(); renderOverlay(); renderProps();
+    });
+    root.querySelector('[data-action="join-wall-ends"]')?.addEventListener('click', () => {
+        const joined = joinWallEnds(currentLevel());
+        if (joined) toast('success', 'Walls joined',
+                          `${joined} wall end${joined === 1 ? '' : 's'} moved onto the wall${joined === 1 ? ' it meets' : 's they meet'} — save to keep it.`);
+        else toast('info', 'Nothing to join', 'Every wall end already meets another wall.');
+        renderScene(); renderOverlay(); renderProps();
+    });
     root.querySelector('[data-action="delete-radiator"]')?.addEventListener('click', () => deleteSelected('radiators'));
     root.querySelector('[data-action="delete-sensor"]')?.addEventListener('click', () => deleteSelected('sensors'));
     root.querySelector('[data-action="delete-contact"]')?.addEventListener('click', () => deleteSelected('contacts'));
@@ -5152,8 +5657,11 @@ function escapeHtml(s) {
         ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+// The shared toasts take (message, { title }) and know 'warning', not 'warn'.
+// Both parts are rendered as HTML, so anything user-named must be escaped.
 function toast(level, title, body) {
-    if (window.toast?.[level]) window.toast[level](title, body);
-    else if (window.showToast) window.showToast(level, title, body);
+    const kind = { warn: 'warning', danger: 'error' }[level] || level;
+    const fn = window.toast?.[kind] || window.toast?.info;
+    if (fn) fn(body || title, body ? { title } : {});
     else log.log(`[${level}] ${title}: ${body}`);
 }

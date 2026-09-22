@@ -106,6 +106,28 @@ def run() -> Checker:
     c.check("the plan survived the round trip",
             name(client.get("/api/floor-plan").json()["plan"]) == "New Lounge")
 
+    c.section("a save can't add overlapping rooms")
+    clash = sample_plan("New Lounge")
+    clash["levels"][0]["rooms"].append({"id": "den", "name": "Den",
+                                        "polygon": [[3, 0], [8, 0], [8, 4], [3, 4]]})
+    res = client.post("/api/floor-plan", json=clash)
+    body = res.json()
+    c.check("it is refused, naming the rooms and the overlap",
+            res.status_code == 422 and not body["success"]
+            and body["error"].startswith("New Lounge and Den overlap by 8.0 m²"), body)
+    c.check("and the saved plan is untouched",
+            len(client.get("/api/floor-plan").json()["plan"]["levels"][0]["rooms"]) == 1)
+    clash["levels"][0]["rooms"][1]["polygon"] = [[5, 0], [8, 0], [8, 4], [5, 4]]
+    c.check("next door instead, it saves",
+            client.post("/api/floor-plan", json=clash).json().get("success"))
+    # An overlap from before the rule: written straight to the store.
+    legacy_clash = clean_floor_plan(clash)
+    legacy_clash["levels"][0]["rooms"][1]["polygon"] = [[3, 0], [8, 0], [8, 4], [3, 4]]
+    store.save_plan(legacy_clash)
+    legacy_clash["levels"][0]["rooms"][1]["name"] = "Study"
+    c.check("an old plan that already overlaps can still be edited",
+            client.post("/api/floor-plan", json=legacy_clash).json().get("success"))
+
     c.section("preview, images and delete answer on both addresses")
     c.check("preview", client.get("/api/floor-plan/preview").json().get("success")
             and client.get("/api/heating/floor-plan/preview").json().get("success"))

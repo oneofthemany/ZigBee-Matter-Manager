@@ -222,6 +222,7 @@ numpy==2.4.6
     #   kokoro-onnx
     #   onnxruntime
     #   pandas
+    #   shapely
 onnxruntime==1.27.0
     # via kokoro-onnx
 orjson==3.10.13
@@ -333,6 +334,8 @@ rpds-py==2026.5.1
     #   referencing
 segments==2.4.0
     # via phonemizer-fork
+shapely==2.1.2
+    # via -r requirements.txt
 six==1.17.0
     # via
     #   ecdsa

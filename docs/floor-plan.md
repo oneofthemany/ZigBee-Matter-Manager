@@ -154,7 +154,7 @@ emits classes only and takes every colour from CSS variables, is in
 | --- | --- |
 | Select | pick, and drag handles — a wall endpoint, a radiator along its wall, a device marker |
 | Wall | chain mode: each click drops a vertex, click the first again (or Enter, Esc, right-click, double-click) to finish; Backspace removes the last one |
-| Room | a polygon, closed by clicking its first point |
+| Room | corner to corner on the walls, closed by clicking its first corner — [below](#rooms-sit-on-the-walls) |
 | Window / Door | drag along a host wall; the opening is stored as an offset and width along that wall, never as free coordinates |
 | Radiator / Sensor / Contact | heating view only; a contact near an opening binds to it automatically |
 | Calibrate | two clicks and a real distance — [below](#calibrating-a-background-image) |
@@ -170,6 +170,52 @@ Hold **Alt** to suspend all snapping for one click.
 Separately from the grid, a new vertex merges with an existing endpoint within
 ~14 px *on screen* (`snapRadiusM`). Because that radius is screen-space, zooming
 in shrinks it in metres — which is what makes a deliberate small gap drawable.
+
+A wall end dropped beside another wall's side lands *on* it (`snapOntoWall`),
+and finishing a wall chain joins any end left within 30 cm of the wall it meets
+(`joinWallEnds`, skipped while Alt is held). Either way the junction becomes a
+real corner that rooms can use.
+
+### Rooms sit on the walls
+
+The backend counts a window, and an outside wall, for a room only when that
+wall lies along one of the room's edges, to within 5 cm
+(`find_walls_for_room`, `opening_borders_room`). So a room traced by eye
+inside the wall thickness loses its daylight and most of its heat loss. The
+Room tool rules that out instead of loosening the match:
+
+- **Corners only.** A room corner can only go on a wall end or where two
+  walls cross (`roomCorners`). The candidates are drawn while the tool is
+  active, the one a click would take is ringed, and a click anywhere else is
+  refused. On a level with no walls, a corner goes on the grid or on another
+  room's corner.
+- **Edges follow the walls.** Between two clicked corners, the edge runs along
+  the walls when they join them without a long detour (`roomLegs`), so a jog
+  in the walls is picked up without being clicked. Where no wall links them,
+  the edge goes straight — though an open-plan split still needs corners, so
+  draw an internal wall along it first.
+- **No overlap.** An edge that cuts a wall or enters another room is refused
+  (the rubber band turns red first), and so is closing a room that overlaps,
+  swallows or sits inside another, or crosses itself (`roomPolygonProblem`).
+  Neighbours share an edge exactly.
+- **Walls are joined first.** Picking the Room tool runs `joinWallEnds` on the
+  level, so the near misses left by older drawings become corners.
+
+For rooms drawn before this, **Snap rooms to walls** (room panel) joins the
+walls, then moves every room's corners onto the nearest wall corner within
+1.5 m and runs its edges along the walls. It repeats while that still fits
+more rooms in, because one room may only fit once its neighbour has moved.
+Rooms it can't place are left as drawn, and it says why. **Join wall ends**
+(wall panel) does the wall half on its own.
+
+**The save holds the same rule.** `POST /api/floor-plan` refuses (422, with
+`room_problems` and a sentence naming the rooms) a plan in which two rooms on
+one level overlap by more than 0.01 m² or a room's outline crosses itself
+(`room_geometry_problems`, using shapely), so no other client can store one
+either. Only a problem the saved plan didn't already have is refused
+(`new_room_geometry_problems`): a plan drawn before the rule can still be
+edited, and has to be fixed only if an edit makes it worse. On an image built
+without shapely, the check logs a warning and lets the save through.
 
 ### Background images
 

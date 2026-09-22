@@ -113,6 +113,22 @@ def run() -> Checker:
     c.check("so only the lounge gets its daylight",
             [g["room_id"] for g in daylight_geometry(two)] == ["lounge"])
 
+    # Rooms traced by hand sit inside the wall's thickness, not on its line.
+    inset = clean_floor_plan({"levels": [{"id": "g", "rooms": [
+        {"id": "lounge", "name": "Lounge", "polygon": [[0.2, 0.3], [4.8, 0.2], [4.8, 3.8], [0.2, 3.8]]},
+        {"id": "kitchen", "name": "Kitchen", "polygon": [[5.2, 0.2], [8.8, 0.3], [8.8, 3.8], [5.2, 3.8]]}],
+        "walls": [{"id": "ws", "x1": 0, "y1": 0, "x2": 9, "y2": 0, "type": "external"},
+                  {"id": "wi", "x1": 5, "y1": 0, "x2": 5, "y2": 4, "type": "internal"}],
+        "openings": [{"id": "win1", "wall_id": "ws", "kind": "window",
+                      "offset_m": 1, "width_m": 1.4, "height_m": 1.2},
+                     {"id": "win2", "wall_id": "ws", "kind": "window", "room_id": "kitchen",
+                      "offset_m": 2, "width_m": 1.4, "height_m": 1.2}]}]})
+    # win2 is drawn over the lounge but was given to the kitchen.
+    c.check("a room traced inside its walls still gets the window behind it, "
+            "and the room picked for a window wins over where it is drawn",
+            [(g["room_id"], len(g["windows"])) for g in daylight_geometry(inset)]
+            == [("lounge", 1), ("kitchen", 1)], daylight_geometry(inset))
+
     c.section("which walls face outside")
     from modules.floor_plan import infer_wall_type, rooms_each_side
     # What people actually draw: one outline, rooms inside it, nothing typed.
@@ -145,6 +161,43 @@ def run() -> Checker:
     c.check("so both rooms get their own window's daylight",
             [(g["room_id"], len(g["windows"])) for g in daylight_geometry(house)]
             == [("lounge", 1), ("kitchen", 1)], daylight_geometry(house))
+
+    c.section("rooms don't overlap")
+    from modules.floor_plan import (room_geometry_problems, new_room_geometry_problems,
+                                    describe_room_problems)
+    def rooms(*polys):
+        return {"levels": [{"id": "g", "rooms": [
+            {"id": f"r{i}", "name": f"Room {i}", "polygon": p} for i, p in enumerate(polys)]}]}
+    left, right = [[0, 0], [5, 0], [5, 4], [0, 4]], [[5, 0], [9, 0], [9, 4], [5, 4]]
+    c.check("neighbours sharing a wall are fine", room_geometry_problems(rooms(left, right)) == [])
+    # Snapped corners come out of line intersections, a hair off each other.
+    c.check("and so is the float noise where they meet",
+            room_geometry_problems(rooms(left, [[4.9999999, 0], [9, 0], [9, 4], [5.0000001, 4]])) == [])
+    over = room_geometry_problems(rooms(left, [[4, 0], [9, 0], [9, 4], [4, 4]]))
+    c.check("rooms that overlap are found, with by how much",
+            [(p["kind"], p["room_ids"], p["area_m2"]) for p in over] == [("overlap", ["r0", "r1"], 4.0)], over)
+    inside = room_geometry_problems(rooms(left, [[1, 1], [2, 1], [2, 2], [1, 2]]))
+    c.check("so is a room drawn inside another", [p["kind"] for p in inside] == ["overlap"], inside)
+    ell = [[0, 0], [6, 0], [6, 2], [2, 2], [2, 6], [0, 6]]
+    c.check("an L-shaped room and the room in its crook are fine",
+            room_geometry_problems(rooms(ell, [[2, 2], [6, 2], [6, 6], [2, 6]])) == [])
+    bow = room_geometry_problems(rooms([[0, 0], [4, 4], [4, 0], [0, 6]]))
+    c.check("an outline that crosses itself is found", [p["kind"] for p in bow] == ["self_intersection"], bow)
+    other_level = {"levels": [{"id": "g", "rooms": [{"id": "a", "polygon": left}]},
+                              {"id": "f1", "rooms": [{"id": "b", "polygon": left}]}]}
+    c.check("rooms on different floors never clash", room_geometry_problems(other_level) == [])
+
+    c.section("a save may keep an old overlap, but not add one")
+    old = rooms(left, [[4, 0], [9, 0], [9, 4], [4, 4]])
+    c.check("an overlap the saved plan already had is let through",
+            new_room_geometry_problems(old, copy.deepcopy(old)) == [])
+    worse = rooms(left, [[4, 0], [9, 0], [9, 4], [4, 4]], [[1, 1], [2, 1], [2, 2], [1, 2]])
+    fresh = new_room_geometry_problems(old, worse)
+    c.check("a new one is not", [p["room_ids"] for p in fresh] == [["r0", "r2"]], fresh)
+    c.check("nor is anything on a first save", len(new_room_geometry_problems(None, old)) == 1)
+    c.check("and the refusal names the rooms",
+            describe_room_problems(fresh).startswith("Room 0 and Room 2 overlap by 1.0 m²."),
+            describe_room_problems(fresh))
 
     c.section("which part a save changes")
     def after(fn):

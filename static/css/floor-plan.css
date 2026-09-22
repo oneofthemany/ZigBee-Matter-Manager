@@ -425,6 +425,23 @@
     stroke: var(--fp-room-stroke);
 }
 .fp-preview-vertex { fill: var(--fp-room-stroke); }
+.fp-preview-room.fp-preview-invalid { stroke: var(--fp-contour); }
+
+/* Room tool: the wall corners a room corner may go on */
+.fp-room-corner {
+    fill: var(--fp-room-fill);
+    stroke: var(--fp-room-stroke);
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+.fp-room-corner-hover {
+    fill: none;
+    stroke: var(--fp-selection);
+    stroke-width: 2.5px;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
 
 /* Endpoint drag handle on a selected wall (Drop A) */
 .fp-wall-handle {

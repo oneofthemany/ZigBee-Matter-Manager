@@ -26,6 +26,8 @@ greeclimate
 blueair_api~=1.56
 midea-local
 numpy
+# Room-overlap validation on floor-plan saves (docs/floor-plan.md § Rooms sit on the walls).
+shapely~=2.1
 sounddevice
 markdown-it-py
 kokoro-onnx==0.4.7

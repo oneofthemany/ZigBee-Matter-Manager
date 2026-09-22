@@ -30,6 +30,8 @@ from modules.floor_plan import (
     changed_parts,
     clean_floor_plan,
     daylight_geometry,
+    describe_room_problems,
+    new_room_geometry_problems,
     project_floor_plan_to_circuits,
 )
 from modules.location import home_coords
@@ -159,7 +161,8 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
 
         # Cleaned both sides, so a plan saved before a schema change does not
         # read as changed where only the cleaner's defaults differ.
-        parts = changed_parts(clean_floor_plan(floor_plan_store.load_plan()), cleaned)
+        saved = clean_floor_plan(floor_plan_store.load_plan())
+        parts = changed_parts(saved, cleaned)
         missing = sorted({PART_SCOPES[p] for p in parts
                           if not scope_matches(PART_SCOPES[p], granted)})
         if missing:
@@ -169,6 +172,15 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
                 "success": False, "missing_scopes": missing,
                 "error": "You can't change " + " or ".join(what[m] for m in missing)
                          + f" (needs {', '.join(missing)})."})
+
+        # Rooms may not overlap or cross themselves — the editor's rule, held
+        # here too for every other client. Overlaps the saved plan already
+        # had are let through so an old plan can still be edited.
+        problems = new_room_geometry_problems(saved, cleaned)
+        if problems:
+            return JSONResponse(status_code=422, content={
+                "success": False, "room_problems": problems,
+                "error": describe_room_problems(problems)})
 
         cfg = _load_config()
         heating = cfg.setdefault("heating", {})
