@@ -1094,6 +1094,28 @@ offered on whatever channel the user is on. `_KIND_RANK` gates channels off the
 tag shape directly — a release no longer needs comparing against current to
 know its significance.
 
+### Which release is newer
+
+The tag shape says **which channels see** a release; the GitHub publish time
+says **which came after**. A monthly tag has no day, so by tag alone `09.2026`
+sorts at the start of September — before `22.03.09.2026` — although it is cut
+from later code and published later. Ordering by tag left a published monthly
+permanently unoffered to every host already on that month's dailies.
+
+So `pick_latest_release` takes the most recently published qualifying release,
+and `is_newer` compares publish times whenever both are known. The installed
+version's publish time is read from the release list on each check and kept in
+`version.json` (`current_published`), so ordering still works after its release
+is pruned from GitHub. Tag order (`compare_versions`) is only the fallback: an
+installed version GitHub never listed, or a build target typed in by hand.
+
+Consequences for publishing:
+
+- Publish in the order you want hosts to move. Deleting and re-creating an old
+  release gives it a new publish time and makes it "latest".
+- The release list is read 100 at a time (the API maximum). Pruning old
+  releases keeps a monthly or daily from falling off that page.
+
 ## Rust component build markers
 
 Native wheels are baked into the image at build time. `build.sh` / `upgrade.sh`

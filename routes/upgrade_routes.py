@@ -40,13 +40,7 @@ def register_upgrade_routes(app: FastAPI):
                 "live_edit_count": live_edit_count,
                 "current_version": state.get("current_version"),
                 "latest_available": state.get("latest_available"),
-                "update_available": bool(
-                    state.get("latest_available")
-                    and um.compare_versions(
-                        state.get("latest_available"),
-                        state.get("current_version") or "0.0.0",
-                        ) > 0
-                ),
+                "update_available": um.update_pending(state),
                 "previous_version": state.get("previous_version"),
                 "previous_image_tag": state.get("previous_image_tag"),
                 "notes": state.get("latest_release_notes"),

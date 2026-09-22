@@ -162,14 +162,36 @@ _KIND_RANK = {"legacy": 3, "patch": 1, "minor": 2, "major": 3}
 _CHANNEL_MIN_RANK = {"patch": 1, "minor": 2, "major": 3}
 
 
-def meets_channel_threshold(current: str, latest: str, channel: str) -> bool:
+def is_newer(latest: str, current: str,
+             latest_published: Optional[str] = None,
+             current_published: Optional[str] = None) -> bool:
+    """
+    True if `latest` is a later release than `current`.
+
+    Publish time decides when both are known. A monthly "09.2026" has no day,
+    so its tag sorts at the start of September — before "22.03.09.2026" — yet
+    it is cut from later code and published later. The tag shape says which
+    channels see a release; only the publish order says which came after.
+    Tag order is the fallback, for a current version GitHub no longer lists
+    or a target typed in by hand. GitHub's ISO-8601 UTC stamps sort as text.
+    """
+    if normalise_version(latest) == normalise_version(current):
+        return False
+    if latest_published and current_published:
+        return latest_published > current_published
+    return compare_versions(latest, current) > 0
+
+
+def meets_channel_threshold(current: str, latest: str, channel: str,
+                            latest_published: Optional[str] = None,
+                            current_published: Optional[str] = None) -> bool:
     """
     True if `latest` is both newer than `current` and significant enough
     for `channel`. "prerelease" (bleeding edge) only needs to be newer —
-    its gating happens earlier, in fetch_latest_release, by including
+    its gating happens earlier, in pick_latest_release, by including
     GitHub Pre-release-flagged releases.
     """
-    if compare_versions(latest, current) <= 0:
+    if not is_newer(latest, current, latest_published, current_published):
         return False
     if channel == "prerelease":
         return True
@@ -200,6 +222,8 @@ DEFAULT_STATE = {
     "previous_version": None,
     "previous_image_tag": None,
     "latest_available": None,
+    "latest_published_at": None,
+    "current_published": None,
     "latest_release_notes": None,
     "latest_release_url": None,
     "last_check": None,
@@ -580,23 +604,12 @@ def watcher_installed() -> bool:
 
 
 # GITHUB POLLING
-async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
-    """
-    Fetch GitHub releases and return the highest-versioned one that
-    qualifies for `channel`.
-
-    The GitHub API's list order is created_at-based (effectively the target
-    commit's date), NOT publish time or version order, so we never trust it:
-    all qualifying releases are collected and the max by version (then by
-    published_at) wins.
-
-    Non-prerelease channels (major/minor/patch) skip drafts and Pre-release
-    builds, then skip any release whose tag shape doesn't meet the channel's
-    rank (e.g. a "minor" channel skips same-day "patch" releases and only
-    considers minor-or-bigger tags). "prerelease" (testing) skips only
-    drafts and also considers Pre-release-flagged builds.
-    """
-    url = f"{GITHUB_API_BASE}/repos/{repo}/releases?per_page=30"
+async def fetch_releases(repo: str) -> Optional[List[Dict[str, Any]]]:
+    """GitHub's release list for `repo`, or None if it could not be fetched."""
+    # 100 is the API maximum. At 30, a run of same-day patches pushed the
+    # month's daily and monthly releases off the page for the channels that
+    # skip patches, and the current version's publish time with them.
+    url = f"{GITHUB_API_BASE}/repos/{repo}/releases?per_page=100"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "zigbee-matter-manager-upgrade",
@@ -615,12 +628,28 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
         logger.warning(f"GitHub API fetch failed: {e}")
         return None
 
-    if not isinstance(data, list):
-        return None
+    return data if isinstance(data, list) else None
 
+
+def pick_latest_release(releases: List[Dict[str, Any]],
+                        channel: str = "patch") -> Optional[Dict[str, Any]]:
+    """
+    The most recently published release that qualifies for `channel`.
+
+    The GitHub API's list order is created_at-based (effectively the target
+    commit's date), NOT publish time, so we never trust it. Latest means last
+    published — see is_newer for why tag order can't answer that once monthly
+    tags exist — with tag order breaking a tie.
+
+    Non-prerelease channels (major/minor/patch) skip drafts and Pre-release
+    builds, then skip any release whose tag shape doesn't meet the channel's
+    rank (e.g. a "minor" channel skips same-day "patch" releases and only
+    considers minor-or-bigger tags). "prerelease" (testing) skips only
+    drafts and also considers Pre-release-flagged builds.
+    """
     best = None
     best_key = None
-    for r in data:
+    for r in releases:
         if r.get("draft"):
             continue
         is_prerelease = bool(r.get("prerelease"))
@@ -636,7 +665,7 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
             if rank < _CHANNEL_MIN_RANK.get(channel, 1):
                 continue
 
-        key = (_sort_key(parsed), r.get("published_at") or "")
+        key = (r.get("published_at") or "", _sort_key(parsed))
         if best_key is None or key > best_key:
             best_key = key
             best = {
@@ -650,6 +679,39 @@ async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Di
             }
 
     return best
+
+
+def published_at_of(releases: List[Dict[str, Any]], version: str) -> Optional[str]:
+    """When `version`'s release was published, or None if it isn't listed."""
+    want = normalise_version(version)
+    for r in releases:
+        if not r.get("draft") and normalise_version(r.get("tag_name") or "") == want:
+            return r.get("published_at")
+    return None
+
+
+async def fetch_latest_release(repo: str, channel: str = "patch") -> Optional[Dict[str, Any]]:
+    """Fetch GitHub releases and return the latest that qualifies for `channel`."""
+    releases = await fetch_releases(repo)
+    return pick_latest_release(releases, channel) if releases else None
+
+
+def _current_published(state: Dict[str, Any]) -> Optional[str]:
+    """The installed version's publish time, if recorded for that version."""
+    rec = state.get("current_published") or {}
+    current = state.get("current_version") or ""
+    if rec.get("version") and normalise_version(rec["version"]) == normalise_version(current):
+        return rec.get("at")
+    return None
+
+
+def update_pending(state: Dict[str, Any]) -> bool:
+    """True if the last check found a release newer than what is installed."""
+    latest = state.get("latest_available")
+    if not latest:
+        return False
+    return is_newer(latest, state.get("current_version") or "0.0.0",
+                    state.get("latest_published_at"), _current_published(state))
 
 
 async def check_for_updates(force: bool = False) -> Dict[str, Any]:
@@ -675,20 +737,28 @@ async def check_for_updates(force: bool = False) -> Dict[str, Any]:
             except Exception:
                 pass
 
-    release = await fetch_latest_release(repo, channel)
-    if not release:
+    releases = await fetch_releases(repo)
+    if releases is None:
         update_state(last_check=_now_iso())
         return _build_update_result(load_state(), error="GitHub API unreachable")
 
-    latest = release["version"]
+    release = pick_latest_release(releases, channel)
     current = state.get("current_version") or "0.0.0"
-    is_newer = meets_channel_threshold(current, latest, channel)
+    # Remembered so a later check still orders correctly once this version's
+    # release is pruned from GitHub.
+    current_published = published_at_of(releases, current) or _current_published(state)
+
+    newer = bool(release) and meets_channel_threshold(
+        current, release["version"], channel,
+        release.get("published_at"), current_published)
 
     save_state({
         **state,
-        "latest_available": latest if is_newer else None,
-        "latest_release_notes": release.get("notes") if is_newer else None,
-        "latest_release_url": release.get("url") if is_newer else None,
+        "latest_available": release["version"] if newer else None,
+        "latest_published_at": release.get("published_at") if newer else None,
+        "latest_release_notes": release.get("notes") if newer else None,
+        "latest_release_url": release.get("url") if newer else None,
+        "current_published": {"version": current, "at": current_published},
         "last_check": _now_iso(),
     })
 
@@ -698,7 +768,7 @@ async def check_for_updates(force: bool = False) -> Dict[str, Any]:
 def _build_update_result(state: Dict[str, Any], error: Optional[str] = None) -> Dict[str, Any]:
     current = state.get("current_version") or "unknown"
     latest = state.get("latest_available")
-    update_available = bool(latest) and compare_versions(latest, current) > 0
+    update_available = update_pending(state)
 
     return {
         "update_available": update_available,
@@ -735,7 +805,13 @@ def request_build(target_version: str) -> Tuple[bool, str]:
         return False, f"Invalid version: {target_version}"
 
     current = state.get("current_version") or "0.0.0"
-    if compare_versions(tv, current) <= 0:
+    # The checked release carries a publish time, so a monthly tag is judged
+    # by when it shipped; a hand-typed target only has its tag to go on.
+    if tv == normalise_version(state.get("latest_available") or ""):
+        newer = update_pending(state)
+    else:
+        newer = compare_versions(tv, current) > 0
+    if not newer:
         return False, f"Target version {tv} is not newer than current {current}"
 
     # Clear any lingering "failed" state from a previous attempt — the user
