@@ -45,7 +45,7 @@ MEDIA_DEFAULTS = {
         "sync": {"enabled": False, "http_port": 8010, "app_id": "",
                  "mic_device": ""},
     },
-    "wiim": {"enabled": True, "devices": []},
+    "wiim": {"enabled": True, "discovery": True, "devices": []},
     # Sonos is opt-in (unlike cast/wiim): it needs the soco package and its
     # SSDP discovery sweeps the LAN on startup.
     "sonos": {"enabled": False, "discovery": True, "devices": []},
@@ -345,6 +345,8 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     wiim_cfg = media_cfg.setdefault("wiim", {})
                     if "enabled" in wiim_in:
                         wiim_cfg["enabled"] = bool(wiim_in["enabled"])
+                    if "discovery" in wiim_in:
+                        wiim_cfg["discovery"] = bool(wiim_in["discovery"])
                     if "devices" in wiim_in:
                         # Normalise to a clean list of non-empty IP strings.
                         wiim_cfg["devices"] = [

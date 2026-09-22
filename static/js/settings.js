@@ -583,11 +583,6 @@ const API_PROVIDERS = [
                     app_id: document.getElementById('cfg_media_cast_appid')?.value?.trim() || 'CC1AD845',
                     lyrics_app_id: document.getElementById('cfg_media_cast_lyrics_appid')?.value?.trim() || '',
                 },
-                wiim: {
-                    enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? true,
-                    devices: (document.getElementById('cfg_media_wiim_devices')?.value || '')
-                        .split('\n').map(s => s.trim()).filter(Boolean),
-                },
                 tts: {
                     base_url: document.getElementById('cfg_media_tts_base')?.value?.trim()
                         || 'https://translate.google.com/translate_tts',
@@ -595,9 +590,25 @@ const API_PROVIDERS = [
                 },
             },
         }),
-        disablePatch: { media: { cast: { enabled: false }, wiim: { enabled: false } } },
-        isConfigured: c => !!c.media?.enabled
-            && (c.media.cast?.enabled !== false || c.media.wiim?.enabled !== false),
+        disablePatch: { media: { cast: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled && c.media.cast?.enabled !== false,
+    },
+    {
+        id: 'wiim', label: 'WiiM', icon: 'fa-compact-disc', mediaEngine: true,
+        render: c => renderWiimSection(c),
+        onShow: () => loadWiimPlayers(),
+        collect: () => ({
+            media: {
+                wiim: {
+                    enabled: document.getElementById('cfg_media_wiim_enabled')?.checked ?? false,
+                    discovery: document.getElementById('cfg_media_wiim_discovery')?.checked ?? true,
+                    devices: (document.getElementById('cfg_media_wiim_devices')?.value || '')
+                        .split('\n').map(s => s.trim()).filter(Boolean),
+                },
+            },
+        }),
+        disablePatch: { media: { wiim: { enabled: false } } },
+        isConfigured: c => !!c.media?.enabled && c.media.wiim?.enabled !== false,
     },
     {
         id: 'sonos', label: 'Sonos', icon: 'fa-house-signal', mediaEngine: true,
@@ -771,22 +782,44 @@ function _deepMerge(target, src) {
 
 function _initialEnabledApis(config) {
     const saved = config.ui?.enabled_apis;
-    if (Array.isArray(saved)) return saved.filter(id => _apiProvider(id));
+    if (Array.isArray(saved)) {
+        const ids = saved.filter(id => _apiProvider(id));
+        // WiiM used to be a block inside Casting. A list saved then has no
+        // 'wiim', so an enabled WiiM would lose its settings along with the
+        // move — give it its own tab, beside Casting, until removed.
+        if (ids.includes('casting') && !ids.includes('wiim')
+                && _apiProvider('wiim').isConfigured(config))
+            ids.splice(ids.indexOf('casting') + 1, 0, 'wiim');
+        return ids;
+    }
     return API_PROVIDERS.filter(p => p.isConfigured(config) !== false).map(p => p.id);
 }
 
+// Each tab carries a ⋮ menu rather than a bare ×: removing an integration
+// switches it off, which is too much for a glyph that sits a few pixels from
+// the tab you meant to click. The menu is fixed-positioned so the rail's
+// horizontal scroll on mobile does not clip it.
 function _apiTabHtml(p, active) {
+    const id = w_escape(p.id), label = w_escape(p.label);
     return `
-      <li class="nav-item d-flex align-items-center" data-api-tab="${w_escape(p.id)}">
+      <li class="nav-item d-flex align-items-center zmm-api-tab" data-api-tab="${id}">
         <button class="nav-link ${active ? 'active' : ''}" data-bs-toggle="tab"
-                data-bs-target="#apiPane_${w_escape(p.id)}" type="button">
-          <i class="${p.iconStyle || 'fas'} ${w_escape(p.icon)} me-1"></i> <span class="tab-label">${w_escape(p.label)}</span>
+                data-bs-target="#apiPane_${id}" type="button">
+          <i class="${p.iconStyle || 'fas'} ${w_escape(p.icon)} me-1"></i> <span class="tab-label">${label}</span>
         </button>
-        <button type="button" class="btn btn-link btn-sm text-muted px-1 py-0"
-                title="Remove ${w_escape(p.label)}" aria-label="Remove ${w_escape(p.label)}"
-                onclick="window.apiRemove('${w_escape(p.id)}')">
-          <i class="fas fa-times fa-xs"></i>
-        </button>
+        <div class="dropdown zmm-api-tab-menu">
+          <button type="button" class="btn btn-link btn-sm text-muted px-1 py-0"
+                  data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}'
+                  aria-expanded="false" title="${label} options" aria-label="${label} options">
+            <i class="fas fa-ellipsis-vertical"></i>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><h6 class="dropdown-header">${label}</h6></li>
+            <li><button type="button" class="dropdown-item text-danger"
+                        onclick="window.apiRemove('${id}')">
+              <i class="fas fa-trash-alt me-2"></i>Remove ${label}</button></li>
+          </ul>
+        </div>
       </li>`;
 }
 
@@ -959,11 +992,12 @@ function collectApiValues() {
     const present = API_PROVIDERS.filter(p => document.getElementById(`apiPane_${p.id}`));
     present.forEach(p => _deepMerge(out, p.collect()));
 
-    // Without the Casting pane nothing sends media.enabled, but Tidal and
-    // Radio Browser still need the media engine running.
+    // Without the Casting pane nothing sends media.enabled, but Tidal, Radio
+    // Browser and the speaker ecosystems still need the media engine running.
     const m = out.media;
     if (m && !('enabled' in m) && (m.tidal?.enabled || m.radio_browser?.enabled
-                                   || m.sonos?.enabled || m.airplay?.enabled)) {
+                                   || m.sonos?.enabled || m.airplay?.enabled
+                                   || m.wiim?.enabled)) {
         m.enabled = true;
     }
     return out;
@@ -1391,13 +1425,11 @@ window.testFuelFinder = async function () {
 function renderCastingSection(config) {
     const m = config.media || {};
     const cast = m.cast || {};
-    const wiim = m.wiim || {};
     const tts = m.tts || {};
-    const devices = (wiim.devices || []).join('\n');
     return `
     <p class="text-muted small mb-3">
-      Multi-room audio for Google Cast (Nest/Home) and WiiM players.
-      Self-contained — no Home Assistant required. Changes take effect after a service restart.
+      The media engine, and Google Cast (Nest/Home) speakers. Self-contained — no Home Assistant
+      required. WiiM, Sonos and AirPlay have their own tabs. Changes take effect after a service restart.
     </p>
     <div class="row g-3 mb-3">
       <div class="col-md-2">
@@ -1443,22 +1475,6 @@ function renderCastingSection(config) {
           toggle in the Media tab.
           <br><strong>No registration?</strong> Use the <em>Lyrics</em> button in the Media tab — it opens a
           full-screen page you Chrome-Cast-tab to the Hub for free (leave this blank).</small>
-      </div>
-    </div>
-
-    <div class="row g-3 mb-3">
-      <div class="col-md-3">
-        <label class="form-label small fw-semibold">WiiM</label>
-        <div class="form-check form-switch mt-1">
-          <input class="form-check-input" type="checkbox" id="cfg_media_wiim_enabled" ${wiim.enabled !== false ? 'checked' : ''}>
-          <label class="form-check-label small text-muted">Enable</label>
-        </div>
-      </div>
-      <div class="col-md-9">
-        <label class="form-label small fw-semibold">WiiM Device IPs</label>
-        <textarea class="form-control" id="cfg_media_wiim_devices" rows="3"
-                  placeholder="One IP per line, e.g.&#10;192.168.1.50&#10;192.168.1.51">${w_escape(devices)}</textarea>
-        <small class="text-muted">Manual list for now; mDNS auto-discovery comes later.</small>
       </div>
     </div>
 
@@ -1744,6 +1760,84 @@ window.airplayPair = async function (playerId, name) {
     }
     loadAirPlayDevices();
 };
+
+// WIIM SECTION — lives in the External APIs tab
+
+function renderWiimSection(config) {
+    const w = (config.media || {}).wiim || {};
+    const devices = (w.devices || []).join('\n');
+    return `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <span class="fw-semibold"><i class="fas fa-compact-disc me-1"></i> WiiM</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg_media_wiim_enabled" ${w.enabled !== false ? 'checked' : ''}>
+        <label class="form-check-label small text-muted">Enable</label>
+      </div>
+    </div>
+    <p class="text-muted small mb-3">
+      Controls WiiM (and other LinkPlay) speakers directly over their own API — playback, volume,
+      EQ and native multiroom, plus a device panel in the Media tab for inputs, presets, output and
+      sleep timer. OpenZone reads their input either way, so a WiiM switched to HDMI-ARC is never
+      cast over. Changes take effect after a service restart.
+    </p>
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold">Auto-discovery</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg_media_wiim_discovery" ${w.discovery !== false ? 'checked' : ''}>
+          <label class="form-check-label small text-muted">Find WiiMs among Cast speakers</label>
+        </div>
+      </div>
+      <div class="col-md-9">
+        <label class="form-label small fw-semibold">Speaker IPs (optional)</label>
+        <textarea class="form-control" id="cfg_media_wiim_devices" rows="3"
+                  placeholder="One IP per line, e.g.&#10;192.168.1.50">${w_escape(devices)}</textarea>
+        <small class="text-muted">Only needed for a WiiM with Google Cast turned off, or on another subnet.</small>
+      </div>
+    </div>
+    <div class="fw-semibold small mb-1">Speakers found</div>
+    <div id="wiimPlayersList" class="small text-muted"></div>
+    `;
+}
+
+async function loadWiimPlayers() {
+    const el = document.getElementById('wiimPlayersList');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Loading…';
+    try {
+        const res = await fetch('/api/media/players').then(r => r.json());
+        if (!res.success) {
+            el.textContent = 'The media engine isn’t running — enable it under Casting, save and restart.';
+            return;
+        }
+        const wiims = (res.players || []).filter(p => p.provider === 'wiim');
+        if (!wiims.length) {
+            el.textContent = 'None yet. After enabling, save and restart; WiiMs appear within a minute of the Cast speakers.';
+            return;
+        }
+        el.innerHTML = `<ul class="list-unstyled mb-0">${wiims.map(p => `
+          <li class="py-1" data-wiim="${w_escape(p.player_id)}">
+            <span class="badge ${p.available ? 'bg-success' : 'bg-secondary'} me-1">${p.available ? 'online' : 'offline'}</span>
+            <span class="text-body">${w_escape(p.name)}</span>
+            <span class="text-muted ms-1">${w_escape(p.player_id.split(':')[1] || '')}</span>
+            <span class="text-muted ms-1 wiim-detail"></span>
+          </li>`).join('')}</ul>`;
+        // Model and current input come from each box's own panel — a few ms each.
+        for (const p of wiims.filter(p => p.available)) {
+            fetch('/api/media/device?player_id=' + encodeURIComponent(p.player_id))
+                .then(r => r.json()).then(d => {
+                    const li = el.querySelector(`[data-wiim="${CSS.escape(p.player_id)}"] .wiim-detail`);
+                    const pn = d && d.panel;
+                    if (!li || !pn) return;
+                    const inp = pn.input || {};
+                    const label = (inp.options || []).find(o => o.id === inp.current)?.label || inp.owner || '';
+                    li.textContent = [pn.device?.model, label && 'on ' + label].filter(Boolean).join(' · ');
+                }).catch(() => {});
+        }
+    } catch (e) {
+        el.textContent = 'Could not load speakers: ' + e.message;
+    }
+}
 
 // SONOS SECTION — lives in the External APIs tab
 

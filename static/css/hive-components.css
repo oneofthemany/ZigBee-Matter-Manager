@@ -662,3 +662,18 @@ body {
     -webkit-mask: var(--openzone-mark) center / contain no-repeat;
     mask: var(--openzone-mark) center / contain no-repeat;
 }
+
+/* API TAB MENU — the ⋮ beside each integration tab in Settings → APIs. Quiet
+   until the tab is hovered, focused or active, so the rail reads as tabs
+   rather than a row of buttons; always shown where there is no hover. */
+.zmm-api-tab-menu .btn {
+    line-height: 1;
+    transition: opacity .15s;
+}
+@media (hover: hover) {
+    .zmm-api-tab-menu .btn { opacity: 0; }
+    .zmm-api-tab:hover .zmm-api-tab-menu .btn,
+    .zmm-api-tab:focus-within .zmm-api-tab-menu .btn,
+    .zmm-api-tab-menu .btn[aria-expanded="true"],
+    .zmm-api-tab .nav-link.active + .zmm-api-tab-menu .btn { opacity: 1; }
+}
