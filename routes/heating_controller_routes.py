@@ -1,7 +1,7 @@
 """
 Heating Controller API — tick state and forcing, dry-run toggle, circuits config,
 device and sensor candidate lists, and per-TRV settings, calibration and
-config re-apply. See docs/heating.md.
+config re-apply. See docs/heating-controller.md.
 """
 import logging
 import os

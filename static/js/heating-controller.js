@@ -3,7 +3,7 @@
  *
  * Two surfaces: a live status panel via renderControllerPanel(), and a settings
  * modal via openControllerSettings(). Backed by /api/heating/controller/*.
- * See docs/heating.md.
+ * See docs/heating-controller.md.
  */
 const log = zmmLog('heating-controller');
 

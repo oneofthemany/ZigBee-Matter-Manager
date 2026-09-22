@@ -682,7 +682,7 @@ class ZigbeeService(
     # third-party coordinator the SLT neither auto-binds nor auto-configures
     # reporting, so both are done here. bind_devices() is unusable: it binds
     # output->input, but the source here is the cluster server, in SLT inputs.
-    # See docs/heating.md.
+    # See docs/heating-controller.md.
 
     # Hive endpoint conventions (verified from device descriptors)
     _HIVE_SLT_THERMOSTAT_EP = 9     # SLT6 puts thermostat & temp on EP9

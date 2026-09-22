@@ -5,7 +5,7 @@ HeatingAdvisor.
 Circuits hold rooms, rooms hold TRVs and an optional external sensor. Each tick
 classifies every room COLD/ONTARGET/HOT with hysteresis, decides whether each
 circuit calls for boiler heat, and writes TRV setpoints. Decision flow, external
-sensor modes, per-TRV config and the config.yaml schema: docs/heating.md.
+sensor modes, per-TRV config and the config.yaml schema: docs/heating-controller.md.
 """
 import asyncio
 import logging
@@ -64,7 +64,7 @@ DEFAULT_EXT_TEMP_PUSH_INTERVAL_SEC = 300
 EXT_TEMP_PUSH_MIN_DELTA = 0.3
 
 # After this many consecutive failed writes the push interval doubles per
-# further failure, capped at the max. See docs/heating.md.
+# further failure, capped at the max. See docs/heating-controller.md.
 EXT_PUSH_FAIL_STREAK_THRESHOLD = 3
 EXT_PUSH_BACKOFF_MAX_SEC = 3600.0
 
