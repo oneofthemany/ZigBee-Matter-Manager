@@ -975,11 +975,21 @@ class AutomationEngine:
                 ma = step.get("media_action")
                 if ma not in ("play_radio", "play_tidal", "control", "volume",
                               "announce", "volume_fade", "volume_adjust",
-                              "play_zone", "zone_lock"):
+                              "play_zone", "zone_lock", "device"):
                     return f"{label}[{i+1}]: invalid media_action"
                 is_zone = str(step.get("player_id", "")).startswith("zone:")
                 if ma == "play_zone" and not is_zone:
                     return f"{label}[{i+1}]: play_zone needs an OpenZone zone"
+                if ma == "device":
+                    # The speaker's own controls (WiiM): the provider checks
+                    # the value against what the box has when it runs.
+                    if is_zone:
+                        return f"{label}[{i+1}]: device controls need a speaker, not a zone"
+                    if step.get("device_action") not in ("input", "preset", "sleep",
+                                                         "output", "loop"):
+                        return f"{label}[{i+1}]: device needs input, preset, sleep, output or loop"
+                    if step.get("device_value") in (None, ""):
+                        return f"{label}[{i+1}]: device needs a value"
                 if ma == "zone_lock":
                     # A lock is a property of one speaker, not of a zone.
                     if is_zone:
@@ -3088,6 +3098,10 @@ class AutomationEngine:
                     ok = res.get("success", False)
                     detail = res.get("error", "") or (
                         "locked" if res.get("lock") else "unlocked")
+            elif action == "device":
+                da, dv = step.get("device_action"), step.get("device_value")
+                await svc.controller.device_action(player_id, da, dv)
+                detail = f"{da} {dv}"
             elif gid:
                 ok, detail = await self._media_zone(svc, gid, action, step)
             elif action == "play_radio":

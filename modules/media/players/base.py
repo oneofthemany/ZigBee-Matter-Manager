@@ -135,6 +135,19 @@ class PlayerProvider(ABC):
         """Apply an EQ change. Default raises like the grouping stubs do."""
         raise NotImplementedError(f"{self.provider} does not support set_eq")
 
+    # Device panel (optional, per-ecosystem)
+    #: advertised to the UI, which offers the panel button only where true
+    has_device_panel = False
+
+    async def device_panel(self, player_id: str) -> Optional[dict]:
+        """The device's own settings and state beyond playback — inputs,
+        presets, outputs, sleep timer, identity — or None when the ecosystem
+        exposes none. Sections are independent and may be absent."""
+        return None
+
+    async def device_action(self, player_id: str, action: str, value=None) -> None:
+        raise NotImplementedError(f"{self.provider} has no device controls")
+
     # Native grouping (per-ecosystem; cross-ecosystem is out of scope)
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:
         """

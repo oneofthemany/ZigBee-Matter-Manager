@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
+from modules.media import linkplay as lp
 from modules.media.models import MediaItem, PlayerState, PlaybackState
 from modules.media.players.base import PlayerProvider
 
@@ -48,6 +49,8 @@ class WiiMPlayerProvider(PlayerProvider):
     label = "WiiM"
     #: LinkPlay multiroom — the master syncs its slaves in firmware.
     groups_natively = True
+    #: inputs, presets, output, sleep timer — see device_panel
+    has_device_panel = True
 
     def __init__(self, device_ips: List[str], enabled: bool = True):
         self.enabled = enabled
@@ -294,6 +297,153 @@ class WiiMPlayerProvider(PlayerProvider):
             cmd = "EQOn" if enabled else "EQOff"
             if await self._command(ip, cmd) is None:
                 raise RuntimeError(f"{cmd} failed on {ip}")
+
+    # Device panel (HTTP API v1.2 §2.1, §2.3, §2.5, §2.7–2.10)
+    def _ip(self, player_id: str) -> str:
+        ip = player_id.split(":", 1)[-1]
+        if ip not in self._ips:
+            raise ValueError(f"Unknown WiiM {player_id}")
+        return ip
+
+    async def device_panel(self, player_id: str) -> Optional[dict]:
+        """Everything the box will say about itself, in one round of reads.
+        A read the firmware refuses leaves its section out rather than
+        failing the panel — older units lack the output and preset calls."""
+        ip = self._ip(player_id)
+        ex, st, meta, presets, out, sleep = await asyncio.gather(
+            self._command_json(ip, "getStatusEx"),
+            self._command_json(ip, "getPlayerStatus"),
+            self._command_json(ip, "getMetaInfo"),
+            self._command_json(ip, "getPresetInfo"),
+            self._command_json(ip, "getNewAudioOutputHardwareMode"),
+            self._command(ip, "getShutdown"),
+        )
+        if not ex and not st:
+            raise RuntimeError(f"WiiM {ip} is not answering")
+        ex, st = ex or {}, st or {}
+        panel: dict = {"provider": self.provider, "player_id": player_id}
+        eth = (ex.get("eth0") or ex.get("eth2") or "").strip()
+        wired = bool(eth) and eth != "0.0.0.0"
+        ssid = _decode_hex(ex.get("essid", ""))
+        network = ("Ethernet" if wired else
+                   f"Wi-Fi{' ' + ssid if ssid else ''} (RSSI {ex.get('RSSI', '?')} dBm)")
+        panel["device"] = {
+            "name": ex.get("DeviceName") or self._names.get(ip, ip),
+            "model": (ex.get("project") or "").replace("_", " "),
+            "firmware": ex.get("firmware", ""),
+            "release": ex.get("Release", ""),
+            "ip": ip,
+            "mac": ex.get("MAC", ""),
+            "network": network,
+            "internet": str(ex.get("internet", "")) == "1",
+            "update": str(ex.get("VersionUpdate", "0")) == "1",
+            "new_version": ex.get("NewVer", "") if str(ex.get("NewVer", "0")) != "0" else "",
+        }
+        try:
+            mode = int(st.get("mode"))
+        except (TypeError, ValueError):
+            mode = None
+        panel["input"] = {
+            "mode": mode,
+            "current": lp.input_id(mode),
+            "owner": lp.mode_owner(mode) or "",
+            "options": lp.supported_inputs(ex.get("plm_support")),
+        }
+        try:
+            loop = int(st.get("loop"))
+        except (TypeError, ValueError):
+            loop = None
+        try:
+            pos, dur = int(st.get("curpos", 0)), int(st.get("totlen", 0))
+        except (TypeError, ValueError):
+            pos = dur = 0
+        panel["playback"] = {
+            "status": str(st.get("status", "")),
+            "loop": loop,
+            "loop_options": [{"id": k, "label": v} for k, v in lp.LOOP_MODES.items()],
+            "position_ms": pos, "duration_ms": dur,
+            "can_seek": dur > 0,
+        }
+        md = (meta or {}).get("metaData") or {}
+        md = {k.strip(): v for k, v in md.items()}      # the PDF's keys carry spaces
+        clean = lambda v: "" if str(v).lower() in ("", "unknow", "unknown") else str(v)
+        panel["audio"] = {
+            "title": clean(md.get("title", "")),
+            "artist": clean(md.get("artist", "")),
+            "album": clean(md.get("album", "")),
+            "artwork_url": clean(md.get("albumArtURI", "")),
+            "sample_rate": clean(md.get("sampleRate", "")),
+            "bit_depth": clean(md.get("bitDepth", "")),
+            "bit_rate": clean(md.get("bitRate", "")),
+        }
+        if presets is not None:
+            try:
+                slots = int(ex.get("preset_key") or 12)
+            except (TypeError, ValueError):
+                slots = 12
+            panel["presets"] = {
+                "slots": slots,
+                "items": [{"number": int(p.get("number", 0)),
+                           "name": p.get("name", ""),
+                           "source": p.get("source", ""),
+                           "artwork_url": p.get("picurl", "")}
+                          for p in presets.get("preset_list") or []
+                          if str(p.get("number", "")).isdigit()],
+            }
+        if out and str(out.get("hardware", "")).isdigit():
+            panel["output"] = {
+                "current": int(out["hardware"]),
+                "options": [{"id": k, "label": v} for k, v in lp.OUTPUTS.items()],
+                "bt_source": str(out.get("source", "0")) == "1",
+            }
+        try:
+            panel["sleep"] = {"seconds": max(0, int(str(sleep).strip()))}
+        except (TypeError, ValueError):
+            pass
+        return panel
+
+    async def device_action(self, player_id: str, action: str, value=None) -> None:
+        """One panel action. Values are checked against what the box offers,
+        so nothing but documented commands reaches it."""
+        ip = self._ip(player_id)
+        if action == "input":
+            ex = await self._command_json(ip, "getStatusEx") or {}
+            allowed = {i["id"] for i in lp.supported_inputs(ex.get("plm_support"))}
+            if value not in allowed:
+                raise ValueError(f"{value!r} is not an input this WiiM has")
+            cmd = f"setPlayerCmd:switchmode:{value}"
+        elif action == "preset":
+            n = int(value)
+            if not 1 <= n <= 12:
+                raise ValueError("Preset must be 1–12")
+            cmd = f"MCUKeyShortClick:{n}"
+        elif action == "loop":
+            n = int(value)
+            if n not in lp.LOOP_MODES:
+                raise ValueError("Unknown loop mode")
+            cmd = f"setPlayerCmd:loopmode:{n}"
+        elif action == "seek":
+            cmd = f"setPlayerCmd:seek:{max(0, int(float(value)))}"
+        elif action == "output":
+            n = int(value)
+            if n not in lp.OUTPUTS:
+                raise ValueError("Unknown output")
+            cmd = f"setAudioOutputHardwareMode:{n}"
+        elif action == "sleep":
+            n = int(value)
+            if n != -1 and not 1 <= n <= 24 * 3600:
+                raise ValueError("Sleep timer must be 1 s–24 h, or -1 to cancel")
+            cmd = f"setShutdown:{n}"
+        elif action == "toggle":
+            cmd = "setPlayerCmd:onepause"
+        elif action == "reboot":
+            cmd = "reboot"
+        else:
+            raise ValueError(f"Unknown WiiM action '{action}'")
+        reply = await self._command(ip, cmd)
+        if reply is None or reply.strip().strip('"').lower() in ("failed", "fail"):
+            raise RuntimeError(f"WiiM refused {action}"
+                               f"{f' {value}' if value is not None else ''}")
 
     # Native multiroom (LinkPlay — semi-official, not in WiiM HTTP PDF)
     async def join_group(self, master_id: str, member_ids: List[str]) -> None:

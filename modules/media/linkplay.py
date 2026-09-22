@@ -13,6 +13,10 @@ TV's audio off the speaker. OpenZone asks here before any LOAD (open-zone.md
 
 Mode values: WiiM HTTP API v1.2 §2.2 (``getPlayerStatus`` ``mode``), plus
 values observed on hardware the PDF predates (HDMI-ARC = 49 on a WiiM Ultra).
+Inputs a box has, and the ``switchmode`` word for each, are not in the PDF:
+they follow python-linkplay (the library Home Assistant uses), which reads
+them from ``getStatusEx`` ``plm_support`` — on a WiiM Ultra that decodes to
+line-in, Bluetooth, optical, HDMI and phono, which is its back panel.
 """
 from __future__ import annotations
 
@@ -32,8 +36,12 @@ logger = logging.getLogger("modules.media.linkplay")
 _PROTOCOL_MODES = {
     1: "AirPlay",
     2: "DLNA",
+    11: "USB drive",
+    16: "TF card",
+    21: "USB drive",
     31: "Spotify Connect",
     32: "TIDAL Connect",
+    36: "Qobuz Connect",
     99: "a multiroom group",
 }
 # Named inputs inside the input band. The band, not this table, is the rule:
@@ -44,11 +52,20 @@ _INPUT_NAMES = {
     41: "Bluetooth",
     42: "external storage",
     43: "Optical-In",
+    44: "RCA",
     45: "Coaxial-In",
+    46: "FM",
     47: "Line-In 2",
+    48: "XLR",
     49: "HDMI-ARC",
     50: "Mirror",
     51: "USB-DAC",
+    52: "TF card",
+    53: "external Bluetooth",
+    54: "Phono",
+    56: "Optical-In 2",
+    57: "Coaxial-In 2",
+    58: "ARC",
     60: "voice mail",
 }
 INPUT_BAND = range(40, 70)
@@ -75,6 +92,59 @@ def mode_owner(mode: Optional[int]) -> Optional[str]:
     if mode in INPUT_BAND:
         return _INPUT_NAMES.get(mode, f"input {mode}")
     return None
+
+
+# The inputs a box can be switched to: (plm_support bit, switchmode word,
+# playing mode it then reports, label). The words are case-sensitive.
+INPUTS = (
+    (2, "line-in", 40, "Line-in"),
+    (4, "bluetooth", 41, "Bluetooth"),
+    (8, "udisk", 21, "USB drive"),
+    (16, "optical", 43, "Optical"),
+    (32, "RCA", 44, "RCA"),
+    (64, "co-axial", 45, "Coaxial"),
+    (128, "FM", 46, "FM"),
+    (256, "line-in2", 47, "Line-in 2"),
+    (512, "XLR", 48, "XLR"),
+    (1024, "HDMI", 49, "HDMI-ARC"),
+    (2048, "cd", 50, "CD"),
+    (8192, "TFcard", 16, "TF card"),
+    (32768, "PCUSB", 51, "USB-DAC"),
+    (65536, "phono", 54, "Phono"),
+    (262144, "optical2", 56, "Optical 2"),
+    (524288, "co-axial2", 57, "Coaxial 2"),
+    (4194304, "ARC", 58, "ARC"),
+)
+NETWORK_INPUT = ("wifi", "Network (Wi-Fi / Cast)")
+# Output interface (HTTP API v1.2 §2.10).
+OUTPUTS = {1: "Optical (S/PDIF)", 2: "Line out (AUX)", 3: "Coaxial"}
+# setPlayerCmd:loopmode values the API documents (§2.3.13).
+LOOP_MODES = {0: "In order", -1: "Repeat all", 1: "Repeat one",
+              2: "Shuffle + repeat"}
+
+
+def supported_inputs(plm_support) -> list:
+    """``[{"id", "label", "mode"}]`` for the inputs a box reports, network
+    first. An unreadable mask offers only the inputs every WiiM has."""
+    try:
+        mask = int(str(plm_support), 0)
+    except (TypeError, ValueError):
+        mask = 2 | 4                      # line-in + Bluetooth
+    out = [{"id": NETWORK_INPUT[0], "label": NETWORK_INPUT[1], "mode": 10}]
+    out += [{"id": word, "label": label, "mode": mode}
+            for bit, word, mode, label in INPUTS if mask & bit]
+    return out
+
+
+def input_id(mode: Optional[int], cast_mode: Optional[int] = None) -> str:
+    """The switchmode word for the input a box is on — "wifi" for anything
+    that is not a physical input, "" when unknown."""
+    if mode is None:
+        return ""
+    for _bit, word, m, _label in INPUTS:
+        if m == mode:
+            return word
+    return "" if is_input(mode) and mode != cast_mode else NETWORK_INPUT[0]
 
 
 def is_input(mode: Optional[int]) -> bool:

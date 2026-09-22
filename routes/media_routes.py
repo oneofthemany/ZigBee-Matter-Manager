@@ -6,7 +6,7 @@ lifespan owns the service instance and routes resolve it lazily.
 """
 import logging
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import quote, urljoin
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -88,6 +88,13 @@ class GroupBody(BaseModel):
 
 class AirPlayPinBody(BaseModel):
     pin: str
+
+
+class DeviceActionBody(BaseModel):
+    player_id: str
+    action: str                  # input | preset | loop | seek | output |
+    #                              sleep | toggle | reboot (provider-checked)
+    value: Any = None
 
 
 class EqBody(BaseModel):
@@ -191,7 +198,8 @@ def register_media_routes(app: FastAPI, get_media_service):
         providers = {
             key: {"label": getattr(p, "label", key.title()),
                   "zone_transport": bool(getattr(p, "zone_transport", False)),
-                  "groups_natively": bool(getattr(p, "groups_natively", False))}
+                  "groups_natively": bool(getattr(p, "groups_natively", False)),
+                  "device_panel": bool(getattr(p, "has_device_panel", False))}
             for key, p in (svc.controller._players or {}).items()}
         return {"success": True, "providers": providers,
                 "players": [p.to_dict() for p in players]}
@@ -425,6 +433,46 @@ def register_media_routes(app: FastAPI, get_media_service):
             return {"success": True, "eq": info}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ── Device panel (the speaker's own settings: inputs, presets, output,
+    #    sleep timer, identity). WiiM today; None for ecosystems without one.
+    def _zone_policy(svc, player_id: str):
+        sync = getattr(svc, "cast_sync", None)
+        if sync is None:
+            return None
+        try:
+            key = sync._policy_key(player_id)
+            return {"player_id": key, **sync.policy(key)}
+        except Exception:
+            return None
+
+    @app.get("/api/media/device")
+    async def device_panel(player_id: str):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            panel = await svc.controller.device_panel(player_id)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if panel is None:
+            return {"success": True, "supported": False}
+        # The zone lock lives with OpenZone but belongs on this panel: it is
+        # the one control the speaker cannot be asked about itself.
+        return {"success": True, "supported": True, "panel": panel,
+                "zone": _zone_policy(svc, player_id)}
+
+    @app.post("/api/media/device")
+    async def device_action(body: DeviceActionBody):
+        svc = _svc()
+        if not svc:
+            return {"success": False, "error": "Media service not enabled"}
+        try:
+            await svc.controller.device_action(body.player_id, body.action,
+                                               body.value)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True}
 
     @app.get("/api/media/eq/status")
     async def eq_status():

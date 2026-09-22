@@ -645,6 +645,15 @@ class MediaController:
         await self._dispatch(player_id, "set_eq", enabled, preset)
         return await self.eq_info(player_id)
 
+    async def device_panel(self, player_id: str) -> Optional[dict]:
+        provider = self._provider_for(player_id)
+        if not provider:
+            raise ValueError(f"No provider for player {player_id}")
+        return await provider.device_panel(player_id)
+
+    async def device_action(self, player_id: str, action: str, value=None) -> None:
+        await self._dispatch(player_id, "device_action", action, value)
+
     async def _replay_current(self, player_id: str) -> bool:
         """Re-issue the current queue item so it loads via the new path.
         The track restarts from the top — acceptable for the rare on/off

@@ -60,7 +60,7 @@ media:
                               # ~0.35s guard; ask for more and each seam just
                               # falls back to a splice. 1.2 is a good start.
   wiim:
-    enabled: false
+    enabled: true             # WiiM players + device panel (Media → Players)
     devices: []               # manual IPs, e.g. ["192.168.1.50"] — optional:
                               # WiiM/LinkPlay boxes are found among the Cast
                               # hosts either way, so a zone always knows when

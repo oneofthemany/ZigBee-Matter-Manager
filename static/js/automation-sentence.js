@@ -294,6 +294,15 @@ export function createHumanizer(ctx = {}) {
         if (a === 'announce') return `announce on ${who}: “${String(s.text || '').slice(0, 40)}”`;
         if (a === 'control') return `${s.control_action || 'control'} ${who}`;
         if (a === 'play_zone') return `play ${who}`;
+        if (a === 'device') {
+            const v = s.device_value;
+            if (s.device_action === 'input') return `switch ${who} to ${v === 'wifi' ? 'the network input' : v}`;
+            if (s.device_action === 'preset') return `play preset ${v} on ${who}`;
+            if (s.device_action === 'sleep') return v > 0 ? `set ${who} to sleep in ${Math.round(v / 60)} min` : `cancel ${who}'s sleep timer`;
+            if (s.device_action === 'output') return `set ${who} output to ${({1: 'optical', 2: 'line out', 3: 'coaxial'})[v] || v}`;
+            if (s.device_action === 'loop') return `set ${who} repeat mode`;
+            return `control ${who}`;
+        }
         if (a === 'zone_lock') {
             const la = s.lock_action || 'toggle';
             const verb = la === 'lock' ? 'lock' : la === 'unlock' ? 'unlock' : 'toggle the lock on';

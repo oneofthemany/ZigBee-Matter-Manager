@@ -742,8 +742,27 @@ LinkPlay-platform commands that are **not** in that PDF — community-documented
 and semi-official — so they are isolated and degrade gracefully if a device
 rejects them.
 
-Discovery is currently a manual list of device IPs from config; mDNS discovery
-(LinkPlay advertises `_linkplay._tcp` / UPnP) is a later enhancement.
+Discovery needs no IPs: `modules/media/linkplay.py` probes every Cast host once
+for `getStatusEx` (every WiiM is also a Cast target), and anything that answers
+as LinkPlay is added as a WiiM player (`wiim.discovery`, default on). Hosts that
+are not LinkPlay are retried hourly. `wiim.devices` still seeds manual IPs.
+
+**Device panel** (Media → Players → the wrench on a WiiM card;
+`GET/POST /api/media/device`). Everything read live from the box in one round:
+identity, firmware and network; the input it is on and the inputs it *has* —
+decoded from `getStatusEx` `plm_support` as python-linkplay does, so a WiiM
+Ultra offers network, line-in, Bluetooth, optical, HDMI-ARC and phono and
+nothing else; presets (`getPresetInfo`, played with `MCUKeyShortClick`); repeat
+mode and seek; stream format (`getMetaInfo`); output interface
+(`get/setAudioOutputHardwareMode`); sleep timer (`get/setShutdown` — note
+`getShutdown` answers a bare number, not JSON); reboot behind a second tap; and
+the speaker's OpenZone lock, which is the one control the box cannot be asked
+about itself (see open-zone.md §7.1). A read the firmware refuses drops its
+section rather than the panel. Every action is checked against what the box
+offers before it is sent, so only documented commands reach it. The `switchmode`
+words beyond the PDF's five (`HDMI`, `co-axial`, `phono`, `PCUSB`, …) are
+python-linkplay's and are case-sensitive. The same actions are an automation
+step (`media_action: device`, `device_action` input/preset/sleep/output/loop).
 
 Newer WiiM firmware serves the API over HTTPS on port 443 with a self-signed
 cert and may disable plain HTTP, so each device is probed once and the working

@@ -28,7 +28,7 @@ PY_MODULES = ["test_tidal_accounts", "test_tidal_owner",
               "test_zone_reload_probe", "test_zone_model_trim",
               "test_zone_trim_graph", "test_zone_align",
               "test_zone_now_playing", "test_zone_probe_sanity", "test_zone_slew_settle", "test_zone_capabilities",
-              "test_zone_yield", "test_zone_lock", "test_zone_input",
+              "test_zone_yield", "test_zone_lock", "test_zone_input", "test_wiim_panel",
               "test_queue_overlay"]
 
 

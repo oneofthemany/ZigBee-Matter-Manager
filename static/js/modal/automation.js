@@ -67,7 +67,7 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First',repeat:'Repeat',snapshot:'Snapshot',restore:'Restore'};
 
 // Media action picker options (label, value).
-const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade'],['zone_lock','Zone Lock (keep out of zones)']];
+const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade'],['zone_lock','Zone Lock (keep out of zones)'],['device','Device (input, preset, sleep…)']];
 const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
 
 // A zone plays one server-built timeline rather than driving a device's own
@@ -78,6 +78,12 @@ const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['
 // server-side queue and are heard once the delay line drains (open-zone.md §4.1b).
 const ZONE_CONTROLS = MEDIA_CONTROLS;
 const isZoneId = pid => String(pid||'').startsWith('zone:');
+const hasDevicePanel = pid => String(pid||'').startsWith('wiim:');
+// The speaker's own controls a rule can drive; values are checked by the box.
+const DEVICE_ACTIONS = [['input','Switch input'],['preset','Play preset'],['sleep','Sleep timer'],['output','Audio output'],['loop','Repeat mode']];
+const DEVICE_OUTPUTS = [[1,'Optical (S/PDIF)'],[2,'Line out (AUX)'],[3,'Coaxial']];
+const DEVICE_LOOPS = [[0,'In order'],[-1,'Repeat all'],[1,'Repeat one'],[2,'Shuffle + repeat']];
+let _devInputs = {};   // player_id -> [{id,label}] read from /api/media/device
 const zoneOf = pid => cachedZones.find(z => 'zone:'+z.id === pid) || null;
 const TIDAL_KINDS = [['playlist','Playlist'],['album','Album'],['artist','Artist'],['mix','Mix'],['track','Track']];
 
@@ -1149,8 +1155,9 @@ function _mediaStepBody(step, sid) {
  *  so Tidal's Radio∞ mode is quietly absent from its sub-form instead. */
 function _mediaActionsFor(pid) {
     // A lock belongs to one speaker; a zone is not something to lock out of itself.
-    return isZoneId(pid) ? MEDIA_ACTIONS.filter(([v])=>v!=='zone_lock')
-                         : MEDIA_ACTIONS.filter(([v])=>v!=='play_zone');
+    // Device controls exist only where the speaker has a panel (WiiM today).
+    if (isZoneId(pid)) return MEDIA_ACTIONS.filter(([v])=>v!=='zone_lock'&&v!=='device');
+    return MEDIA_ACTIONS.filter(([v])=>v!=='play_zone'&&(v!=='device'||hasDevicePanel(pid)));
 }
 
 /** What the zone would do if played now — the saved source and window are the
@@ -1203,6 +1210,7 @@ function _mediaSubHtml(step, sid) {
     const zone = isZoneId(step.player_id);
     if (a === 'play_zone')
         return '';                       // the zone's own config is the input
+    if (a === 'device') return _deviceSubHtml(step, sid);
     if (a === 'zone_lock') {
         const la = step.lock_action || 'toggle';
         const mins = step.lock_minutes || '';
@@ -1257,6 +1265,46 @@ function _mediaSubHtml(step, sid) {
         <select class="form-select s-mtarget" data-sid="${sid}">${_mediaSavedOpt(step)}</select>${modeSel}</div>`;
 }
 
+function _deviceSubHtml(step, sid) {
+    const da = step.device_action || 'input';
+    const v = step.device_value;
+    const opt = (list) => list.map(([k,l])=>`<option value="${k}" ${String(v)===String(k)?'selected':''}>${l}</option>`).join('');
+    let val;
+    if (da === 'input') {
+        const ins = _devInputs[step.player_id];
+        if (!ins) _aDevInputs(sid, step.player_id);
+        val = `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${
+            ins ? opt(ins.map(i=>[i.id,i.label])) : (v ? `<option value="${v}" selected>${v}</option>` : '<option value="">Loading…</option>')}</select>`;
+    } else if (da === 'output') val = `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${opt(DEVICE_OUTPUTS)}</select>`;
+    else if (da === 'loop') val = `<select class="form-select form-select-sm s-mdevval" data-sid="${sid}" style="width:auto">${opt(DEVICE_LOOPS)}</select>`;
+    else if (da === 'preset') val = `<input type="number" class="form-control form-control-sm s-mdevval" data-sid="${sid}" min="1" max="12" value="${v ?? 1}" style="width:75px">`;
+    else val = `<input type="number" class="form-control form-control-sm s-mdevval" data-sid="${sid}" min="0" value="${v != null && v > 0 ? Math.round(v/60) : 30}" style="width:80px"><span class="small">min (0 = cancel)</span>`;
+    return `<div class="d-flex gap-1 align-items-center flex-wrap">
+        <select class="form-select form-select-sm s-mdevact" data-sid="${sid}" style="width:auto" onchange="window._aDevAct(${sid},this)">${
+            DEVICE_ACTIONS.map(([k,l])=>`<option value="${k}" ${da===k?'selected':''}>${l}</option>`).join('')}</select>${val}</div>`;
+}
+
+// The inputs a WiiM has come from the box itself, so the rule can only name
+// one it can be switched to.
+async function _aDevInputs(sid, pid) {
+    if (!pid) return;
+    try {
+        const j = await (await fetch('/api/media/device?player_id=' + encodeURIComponent(pid))).json();
+        _devInputs[pid] = (j.panel && j.panel.input && j.panel.input.options) || [];
+    } catch (e) { _devInputs[pid] = []; }
+    const s = _findStepById(sid);
+    const box = document.getElementById(`media-sub-${sid}`);
+    if (s && box && s.media_action === 'device') { _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree); box.innerHTML = _mediaSubHtml(s, sid); }
+}
+
+window._aDevAct = (sid, sel) => {
+    _syncTreeFromDOM(thenTree); _syncTreeFromDOM(elseTree);
+    const s = _findStepById(sid); if (!s) return;
+    s.device_action = sel.value; s.device_value = null;
+    const box = document.getElementById(`media-sub-${sid}`);
+    if (box) box.innerHTML = _mediaSubHtml(s, sid);
+};
+
 function _mediaSavedOpt(step) {
     const id = step.tidal_id || step.station_uuid;
     if (!id) return '<option value="">— pick —</option>';
@@ -1266,6 +1314,7 @@ function _mediaSavedOpt(step) {
 
 function _mediaDesc(s) {
     if (s.media_action==='play_zone') return 'Play zone';
+    if (s.media_action==='device') return `${(DEVICE_ACTIONS.find(([k])=>k===s.device_action)||[,'Device'])[1]}: ${s.device_action==='sleep'?(s.device_value>0?Math.round(s.device_value/60)+' min':'off'):s.device_value}`;
     if (s.media_action==='zone_lock') return `${(s.lock_action||'toggle').toUpperCase()} zone lock${s.lock_minutes?` ${s.lock_minutes}m`:''}`;
     if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
     if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
@@ -1311,6 +1360,7 @@ window._aMPlayer = (sid, sel) => {
     const zone = isZoneId(s.player_id);
     if (!zone && s.media_action === 'play_zone') s.media_action = 'play_tidal';
     if (zone && s.media_action === 'zone_lock') s.media_action = 'play_zone';
+    if (s.media_action === 'device' && !hasDevicePanel(s.player_id)) s.media_action = zone ? 'play_zone' : 'play_tidal';
     if (zone) s.tidal_mode = 'play';       // no Radio∞ on a shared timeline
     const body = document.getElementById(`step-body-${sid}`);
     if (body) body.innerHTML = _mediaStepBody(s, sid);
@@ -2091,6 +2141,13 @@ function _syncTreeFromDOM(steps) {
                 s.tidal_mode=document.querySelector(`.s-mmode[data-sid="${sid}"]`)?.value||'play';
             }
             else if(s.media_action==='control'){ s.control_action=document.querySelector(`.s-mctrl[data-sid="${sid}"]`)?.value||'stop'; }
+            else if(s.media_action==='device'){
+                s.device_action=document.querySelector(`.s-mdevact[data-sid="${sid}"]`)?.value||'input';
+                const raw=document.querySelector(`.s-mdevval[data-sid="${sid}"]`)?.value??'';
+                if(s.device_action==='input') s.device_value=raw||null;
+                else if(s.device_action==='sleep'){const m=parseFloat(raw);s.device_value=isNaN(m)||m<=0?-1:Math.round(m*60);}
+                else {const n=parseInt(raw);s.device_value=isNaN(n)?null:n;}
+            }
             else if(s.media_action==='zone_lock'){
                 s.lock_action=document.querySelector(`.s-mlock[data-sid="${sid}"]`)?.value||'toggle';
                 const m=parseFloat(document.querySelector(`.s-mlockmin[data-sid="${sid}"]`)?.value);
@@ -2159,6 +2216,7 @@ function _cleanTree(steps) {
             else if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
             else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
             else if(s.media_action==='control'){d.control_action=s.control_action;}
+            else if(s.media_action==='device'){d.device_action=s.device_action;d.device_value=s.device_value;}
             else if(s.media_action==='zone_lock'){d.lock_action=s.lock_action||'toggle';if(s.lock_minutes)d.lock_minutes=s.lock_minutes;}
             else if(s.media_action==='volume'){d.volume=s.volume;}
             else if(s.media_action==='volume_adjust'){d.delta=s.delta;}
@@ -2184,6 +2242,7 @@ function _cleanTree(steps) {
             if(d.media_action==='play_radio')return !!d.station_uuid;
             if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
             if(d.media_action==='control')return !!d.control_action;
+            if(d.media_action==='device')return hasDevicePanel(d.player_id)&&!!d.device_action&&d.device_value!=null&&d.device_value!=='';
             if(d.media_action==='zone_lock')return !isZoneId(d.player_id)&&!!d.lock_action;
             if(d.media_action==='volume')return d.volume!=null;
             if(d.media_action==='volume_adjust')return typeof d.delta==='number'&&d.delta!==0;

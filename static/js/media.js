@@ -46,6 +46,9 @@ let _ctlOpen = new Set();    // player_ids with their controls expanded (touch o
 let _syncTrimOpen = new Set(); // player_ids with their trim slider expanded (touch only)
 let _eqDev = {};             // player_id -> cached /api/media/eq result (wiim/cast)
 let _eqSend = {};            // player_id -> {timer, gains} debounced slider POSTs
+let _devOpen = new Set();    // player_ids with their device panel expanded
+let _devData = {};           // player_id -> cached /api/media/device result
+let _devRebootArm = {};      // player_id -> ms the reboot button was armed at
 
 function _fmtTime(ms) {
     if (!isFinite(ms) || ms < 0) ms = 0;
@@ -183,6 +186,11 @@ export function initMedia() {
     window.mediaPlayTidalOn = playTidalOn;
     // Equaliser
     window.mediaEqToggle = eqToggle;
+    // Device panel (WiiM: inputs, presets, output, sleep, zone lock)
+    window.mediaDevToggle = devToggle;
+    window.mediaDevAction = devAction;
+    window.mediaDevZone = devZone;
+    window.mediaDevReboot = devReboot;
     window.mediaEqEnable = eqEnable;
     window.mediaEqPreset = eqPreset;
     window.mediaEqBand = eqBand;
@@ -382,8 +390,8 @@ function renderPlayers() {
     // real "nothing discovered" case — still usable, just local-only.
     const noRemote = !_remote.length
         ? `<div class="text-muted small text-center pb-2">
-             No speakers found — playing on this device still works. Add WiiM device IPs
-             under Settings → APIs, and make sure Cast devices are on the same subnet.</div>`
+             No speakers found — playing on this device still works. Cast speakers and
+             WiiMs are found automatically when they are on the same subnet.</div>`
         : '';
     const filters = _playerFilters();
     // An ecosystem that left takes its filter with it rather than leaving the
@@ -484,6 +492,12 @@ function renderPlayers() {
                     onclick="window.mediaEqToggle('${pid}')" title="Equaliser">
               <i class="fas fa-sliders"></i>
             </button>
+            ${DEVICE_PANEL_PROVIDERS[p.provider]
+                ? `<button class="btn btn-sm ${_devOpen.has(p.player_id) ? 'btn-primary' : 'btn-outline-secondary'}" ${disabled}
+                           onclick="window.mediaDevToggle('${pid}')" title="Inputs, presets & device settings"
+                           aria-expanded="${_devOpen.has(p.player_id)}" aria-controls="devp-${pidE}">
+                     <i class="fas fa-screwdriver-wrench"></i></button>`
+                : ''}
             <div class="d-flex align-items-center gap-1 flex-grow-1 zmm-vol">
               <button class="btn btn-sm btn-outline-secondary zmm-vol-step" ${disabled}
                       onclick="window.mediaVolStep('${pid}', -5)" title="Volume down 5%">
@@ -504,11 +518,13 @@ function renderPlayers() {
                 : ''}
           </div>
           <div id="eqp-${pidE}" onclick="event.stopPropagation()"></div>
+          <div id="devp-${pidE}" onclick="event.stopPropagation()"></div>
           ${q && p.provider !== 'local' ? queueControls(p, q) : ''}
           </div>
         </div>`;
     }).join('');
     for (const pid of _eqOpen) renderEqPanel(pid);
+    for (const pid of _devOpen) renderDevPanel(pid);
     if (!_eqOpen.has(LOCAL_ID)) unmountScope('eqspec-local');
     updateSearchTarget();
 }
@@ -539,6 +555,185 @@ function queueControls(p, q) {
         </button>
       </div>
       ${upNext ? `<div class="small mt-1">${upNext}</div>` : ''}`;
+}
+
+// Device panel — the speaker's own settings beyond playback, read live from
+// it (/api/media/device): which input it is on and the ones it has, presets,
+// repeat mode, output interface, sleep timer, identity. The zone lock sits
+// here too: it is the one control the speaker cannot be asked about itself,
+// and switching this WiiM to HDMI-ARC for a game is exactly when it matters.
+function devToggle(pid) {
+    if (_devOpen.has(pid)) _devOpen.delete(pid);
+    else { delete _devData[pid]; _devOpen.add(pid); }
+    renderPlayers();
+}
+
+async function devFetch(pid) {
+    const d = await apiGet('/api/media/device?player_id=' + encodeURIComponent(pid));
+    _devData[pid] = d && d.success ? d : { error: (d && d.error) || 'Device not answering' };
+    if (_devOpen.has(pid)) renderDevPanel(pid);
+}
+
+const _SLEEP_OPTS = [[0, 'Off'], [900, '15 min'], [1800, '30 min'], [3600, '1 hour'],
+                     [5400, '90 min'], [7200, '2 hours']];
+
+function _devSection(title, body) {
+    return `<div class="mt-2"><div class="small text-muted text-uppercase fw-semibold mb-1"
+        style="font-size:.68rem;letter-spacing:.04em">${title}</div>${body}</div>`;
+}
+
+function renderDevPanel(pid) {
+    const el = document.getElementById('devp-' + pid);
+    if (!el) return;
+    const d = _devData[pid];
+    if (!d) {
+        el.innerHTML = '<div class="small text-muted mt-2 pt-2 border-top">Reading the device…</div>';
+        devFetch(pid);
+        return;
+    }
+    if (d.error) {
+        el.innerHTML = `<div class="small text-danger mt-2 pt-2 border-top">${esc(d.error)}</div>`;
+        return;
+    }
+    const p = d.panel || {};
+    const pidJ = esc(JSON.stringify(pid));
+    const act = (action, value) =>
+        `window.mediaDevAction(${pidJ}, '${action}', ${esc(JSON.stringify(value))})`;
+    const dev = p.device || {};
+    const head = `<div class="small text-muted">
+        ${esc(dev.model || '')}${dev.firmware ? ' · ' + esc(dev.firmware) : ''}
+        · ${esc(dev.network || '')}${dev.internet === false ? ' · <span class="text-warning">no internet</span>' : ''}
+        ${dev.update ? ` · <span class="badge bg-info text-dark">update ${esc(dev.new_version || 'available')}</span>` : ''}</div>`;
+
+    const inp = p.input || {};
+    const inputs = (inp.options || []).map(o => `
+        <button type="button" class="btn btn-sm ${o.id === inp.current ? 'btn-primary' : 'btn-outline-secondary'}"
+                aria-pressed="${o.id === inp.current}" onclick="${act('input', o.id)}">${esc(o.label)}</button>`).join('');
+    const inputNote = inp.owner
+        ? `<div class="small text-muted mt-1">On ${esc(inp.owner)} — zones leave it alone until it is back on the network input.</div>` : '';
+
+    const z = d.zone;
+    let zone = '';
+    if (z) {
+        const lock = z.lock;
+        const until = lock && lock.until
+            ? ' until ' + new Date(lock.until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+        const zp = esc(JSON.stringify(z.player_id));
+        const modes = [['auto', 'Step aside, rejoin when free'], ['sticky', 'Stay out until unlocked'], ['reclaim', 'Always take it back']];
+        zone = _devSection('OpenZone', `
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            ${lock
+                ? `<span class="badge bg-danger" title="${esc([lock.reason, lock.by && 'set by ' + lock.by].filter(Boolean).join(' — '))}">Locked${esc(until)}</span>
+                   <button class="btn btn-sm btn-outline-success" onclick='window.mediaDevZone(${pidJ}, ${zp}, {lock:"unlock"})'>
+                     <i class="fas fa-lock-open me-1"></i>Unlock — give back</button>`
+                : `<button class="btn btn-sm btn-outline-danger" onclick='window.mediaDevZone(${pidJ}, ${zp}, {lock:"lock"})'>
+                     <i class="fas fa-lock me-1"></i>Lock out of zones</button>
+                   <button class="btn btn-sm btn-outline-secondary" onclick='window.mediaDevZone(${pidJ}, ${zp}, {lock:"lock", minutes:120})'>2 h</button>`}
+            <select class="form-select form-select-sm" style="width:auto" aria-label="When its input changes"
+                    onchange='window.mediaDevZone(${pidJ}, ${zp}, {mode:this.value})'>
+              ${modes.map(([v, l]) => `<option value="${v}" ${z.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+          </div>`);
+    }
+
+    const pr = p.presets;
+    const presets = !pr ? '' : _devSection('Presets', (pr.items || []).length
+        ? `<div class="d-flex flex-wrap gap-1">${pr.items.map(it => `
+            <button type="button" class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+                    onclick="${act('preset', it.number)}" title="${esc(it.source || '')}">
+              ${it.artwork_url ? `<img src="${esc(it.artwork_url)}" alt="" style="width:20px;height:20px;border-radius:3px;object-fit:cover">` : ''}
+              <span class="text-muted">${it.number}</span> ${esc(it.name)}</button>`).join('')}</div>`
+        : '<div class="small text-muted">No presets saved yet — set them in the WiiM Home app.</div>');
+
+    const pb = p.playback || {};
+    const au = p.audio || {};
+    const fmt = [au.sample_rate && `${(Number(au.sample_rate) / 1000).toFixed(1).replace(/\.0$/, '')} kHz`,
+                 au.bit_depth && `${au.bit_depth}-bit`].filter(Boolean).join(' · ');
+    const loopKnown = (pb.loop_options || []).some(o => o.id === pb.loop);
+    const playback = _devSection('Playback', `
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <select class="form-select form-select-sm" style="width:auto" aria-label="Repeat mode"
+                onchange="window.mediaDevAction(${pidJ}, 'loop', Number(this.value))">
+          ${loopKnown ? '' : '<option selected disabled>Repeat…</option>'}
+          ${(pb.loop_options || []).map(o => `<option value="${o.id}" ${o.id === pb.loop ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select>
+        ${fmt ? `<span class="small text-muted">${esc(fmt)}</span>` : ''}
+      </div>
+      ${pb.can_seek ? `<div class="d-flex align-items-center gap-2 mt-1">
+            <input type="range" class="form-range flex-grow-1" min="0" max="${Math.floor(pb.duration_ms / 1000)}"
+                   value="${Math.floor(pb.position_ms / 1000)}" aria-label="Seek"
+                   oninput="this.nextElementSibling.firstChild.textContent = Math.floor(this.value / 60) + ':' + String(this.value % 60).padStart(2, '0')"
+                   onchange="window.mediaDevAction(${pidJ}, 'seek', Number(this.value))">
+            <small class="text-muted" style="font-variant-numeric:tabular-nums;white-space:nowrap"><span>${_fmtTime(pb.position_ms)}</span> / ${_fmtTime(pb.duration_ms)}</small>
+          </div>` : ''}`);
+
+    const out = p.output;
+    const output = !out ? '' : _devSection('Output', `
+      <select class="form-select form-select-sm" style="width:auto" aria-label="Output interface"
+              onchange="window.mediaDevAction(${pidJ}, 'output', Number(this.value))">
+        ${out.options.map(o => `<option value="${o.id}" ${o.id === out.current ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+      </select>`);
+
+    const sl = p.sleep;
+    const sleep = !sl ? '' : _devSection('Sleep timer', `
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <select class="form-select form-select-sm" style="width:auto" aria-label="Sleep timer"
+                onchange="window.mediaDevAction(${pidJ}, 'sleep', Number(this.value) || -1)">
+          ${sl.seconds ? '<option selected disabled>Running</option>' : ''}
+          ${_SLEEP_OPTS.map(([v, l]) => `<option value="${v}" ${(!sl.seconds && !v) ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+        ${sl.seconds ? `<span class="small text-muted">off in ${Math.ceil(sl.seconds / 60)} min</span>` : ''}
+      </div>`);
+
+    const armed = Date.now() - (_devRebootArm[pid] || 0) < 4000;
+    el.innerHTML = `
+      <div class="mt-2 pt-2 border-top">
+        <div class="d-flex align-items-start gap-2">
+          <div class="flex-grow-1" style="min-width:0">${head}</div>
+          <button class="btn btn-sm btn-link p-0 text-muted" title="Re-read the device"
+                  aria-label="Re-read the device" onclick="window.mediaDevToggle(${pidJ});window.mediaDevToggle(${pidJ})">
+            <i class="fas fa-rotate"></i></button>
+        </div>
+        ${_devSection('Input', `<div class="d-flex flex-wrap gap-1" role="group" aria-label="Input">${inputs}</div>${inputNote}`)}
+        ${zone}${presets}${playback}${output}${sleep}
+        <div class="mt-2 text-end">
+          <button class="btn btn-sm ${armed ? 'btn-danger' : 'btn-outline-danger'}" onclick="window.mediaDevReboot(${pidJ})">
+            <i class="fas fa-power-off me-1"></i>${armed ? 'Tap again to reboot' : 'Reboot'}</button>
+        </div>
+      </div>`;
+}
+
+const _DEV_DONE = { input: 'Input switched', preset: 'Preset playing', loop: 'Repeat mode set',
+                    seek: 'Seeked', output: 'Output changed', sleep: 'Sleep timer set',
+                    reboot: 'Rebooting — back in about a minute' };
+
+async function devAction(pid, action, value) {
+    const r = await apiPost('/api/media/device', { player_id: pid, action, value });
+    if (!r || !r.success) { toast((r && r.error) || 'The device refused that', 'error'); }
+    else toast(action === 'sleep' && value === -1 ? 'Sleep timer off' : (_DEV_DONE[action] || 'Done'), 'success');
+    // An input switch takes the box a moment; read it back once it has settled.
+    setTimeout(() => { delete _devData[pid]; if (_devOpen.has(pid)) renderDevPanel(pid); },
+               action === 'input' || action === 'preset' ? 1500 : 400);
+}
+
+async function devZone(pid, zonePid, body) {
+    const r = await apiPost('/api/media/sync/policy', { player_id: zonePid, ...body });
+    if (!r || !r.success) { toast((r && r.error) || 'Could not change the zone lock', 'error'); return; }
+    toast(r.lock ? 'Locked out of zones' : body.lock === 'unlock'
+        ? 'Unlocked — handed back to the zone' : 'Zone policy saved', 'success');
+    delete _devData[pid];
+    renderDevPanel(pid);
+}
+
+function devReboot(pid) {
+    if (Date.now() - (_devRebootArm[pid] || 0) < 4000) {
+        delete _devRebootArm[pid];
+        devAction(pid, 'reboot');
+        return;
+    }
+    _devRebootArm[pid] = Date.now();
+    renderDevPanel(pid);
+    setTimeout(() => { if (_devOpen.has(pid)) renderDevPanel(pid); }, 4100);
 }
 
 // Equaliser panel — three flavours behind one button:
@@ -1993,6 +2188,8 @@ function _renderGroupProviderPills(ids) {
 // lookup of the same shape the hardcoded list had, so callers are unchanged;
 // empty until the first players fetch lands.
 let NATIVE_GROUP_PROVIDERS = {};
+// Ecosystems whose speakers have a device panel (WiiM), same source.
+let DEVICE_PANEL_PROVIDERS = {};
 
 function _readProviderCaps(data) {
     const caps = data?.providers || {};
@@ -2000,6 +2197,8 @@ function _readProviderCaps(data) {
         Object.entries(caps)
             .filter(([, c]) => c.groups_natively)
             .map(([id, c]) => [id, c.label || id]));
+    DEVICE_PANEL_PROVIDERS = Object.fromEntries(
+        Object.entries(caps).filter(([, c]) => c.device_panel).map(([id]) => [id, true]));
 }
 
 function renderNativeBuilder(provider) {
