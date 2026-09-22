@@ -609,9 +609,14 @@ function rootHtml() {
                     <div id="fpMapControls" class="d-none">
                       <label class="form-label small mb-0" for="fpMapOpacity">Opacity</label>
                       <input type="range" id="fpMapOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.6">
-                      <button class="btn btn-sm btn-outline-secondary w-100" id="fpMapAnchor">
-                        <i class="fas fa-location-crosshairs me-1"></i>Mark where the home pin is</button>
-                      <div class="form-text small">Turn the compass until the map's buildings line up with your walls.</div>
+                      <button class="btn btn-sm btn-outline-secondary w-100" id="fpMapMove">
+                        <i class="fas fa-up-down-left-right me-1"></i>Move the map</button>
+                      <div class="form-text small">Drag the map until your house sits under the plan (arrow keys
+                        nudge it, Shift for bigger steps), then turn the compass until the buildings line up
+                        with your walls. Zoom out to find it if it's further away.</div>
+                      <div id="fpMapWhere" class="form-text small mt-1"></div>
+                      <button class="btn btn-sm btn-outline-primary w-100 mt-1 d-none" id="fpMapSetHome">
+                        <i class="fas fa-house-flag me-1"></i>Set as the home location</button>
                     </div>
                     <div id="fpMapMissing" class="form-text small d-none">Set the home location in Settings to use the map.</div>
                 </section>
@@ -789,6 +794,8 @@ function bindModalEvents() {
             _state.plan.north_offset_deg = ((v % 360) + 360) % 360;
             renderCompass();
             renderProps();
+            // The map turns with the compass; that's how it's lined up.
+            if (_state.showMap) { renderOverlay(); syncMapControls(); }
         }
     });
 
@@ -877,6 +884,16 @@ function bindModalEvents() {
         } else if (e.key === 'Escape') {
             if (_state.drawBuffer) { e.preventDefault(); cancelDrawing(); }
             else if (_state.calibration) { e.preventDefault(); _state.calibration = null; renderOverlay(); }
+        } else if (_state.tool === 'map' && e.key.startsWith('Arrow') && pinMapGeo()) {
+            // Nudge the map a snap step (ten with Shift), as the image nudges.
+            e.preventDefault();
+            const step = (_state.snapStep || 0.1) * (e.shiftKey ? 10 : 1);
+            const g = _state.plan.map;
+            if (e.key === 'ArrowLeft')  g.anchor_x_m = round3(g.anchor_x_m - step);
+            if (e.key === 'ArrowRight') g.anchor_x_m = round3(g.anchor_x_m + step);
+            if (e.key === 'ArrowDown')  g.anchor_y_m = round3(g.anchor_y_m - step);
+            if (e.key === 'ArrowUp')    g.anchor_y_m = round3(g.anchor_y_m + step);
+            renderOverlay(); syncMapControls();
         } else if (_state.tool === 'bg' && e.key.startsWith('Arrow')) {
             // Nudge the image by one snap step (ten with Shift) so it can be
             // lined up on a wall more finely than a drag allows.
@@ -1030,7 +1047,7 @@ function renderToolbar() {
         select: 'default', wall: 'crosshair', room: 'crosshair',
         window: 'crosshair', door: 'crosshair', radiator: 'crosshair',
         sensor: 'crosshair', contact: 'crosshair', calibrate: 'crosshair',
-        place: 'copy', 'map-anchor': 'crosshair', bg: 'move',
+        place: 'copy', map: 'move', bg: 'move',
     };
     document.getElementById('fpCanvas').style.cursor = cursors[_state.tool] || 'default';
 }
@@ -1061,6 +1078,7 @@ function renderCompass() {
         _state.plan.north_offset_deg = Math.round(a);
         document.getElementById('fpCompassNeedle').setAttribute('transform', `rotate(${a})`);
         document.getElementById('fpNorthDeg').value = Math.round(a);
+        if (_state.showMap) { renderOverlay(); syncMapControls(); }
     };
     svg.addEventListener('mousedown', e => { dragging = true; update(e.clientX, e.clientY); });
     window.addEventListener('mousemove', e => { if (dragging) update(e.clientX, e.clientY); });
@@ -1674,6 +1692,9 @@ function renderOverlay() {
         `translate(${_state.pan.x}, ${_state.pan.y}) scale(${m2px}, ${m2px})`);
     let html = '';
 
+    // The home location sits on top of the plan, not under it with the map.
+    if (_state.showMap) html += homePinParts();
+
     // Background-adjust frame: drag the image to move it, a corner to resize.
     if (_state.tool === 'bg' && _state.showBackground
         && currentLevel()?.background?.present) {
@@ -2048,6 +2069,7 @@ let _radDrag = null;
 // Background-image drag state, set by the Adjust image tool: `move` slides the
 // image, `scale` resizes it about the corner opposite the one being dragged.
 let _bgDrag = null;
+let _mapDrag = null;       // { grab, ax, ay } while the map is dragged under the plan
 
 /** Grab a corner grip: pin the opposite corner and remember the start size. */
 function startBgResize(el) {
@@ -2159,11 +2181,11 @@ function onCanvasMouseDown(e) {
         _bgDrag = { mode: 'move', grab: raw, ox: bg.origin_x_m, oy: bg.origin_y_m };
     } else if (_state.tool === 'place' && _state.placing) {
         placeDevice(_state.placing, clientToSvgModel(e));
-    } else if (_state.tool === 'map-anchor') {
-        _state.plan.map = { opacity: 0.6, ...(_state.plan.map || {}),
-                            anchor_x_m: round3(m.x), anchor_y_m: round3(m.y) };
-        setTool('select');
-        renderScene();
+    } else if (_state.tool === 'map') {
+        // Unsnapped: the map is being lined up with the walls by eye.
+        const g = pinMapGeo();
+        if (!g) return;
+        _mapDrag = { grab: clientToSvgModel(e), ax: g.anchor_x_m, ay: g.anchor_y_m };
     } else if (_state.tool === 'select') {
         // A tap arrives here, not on the element; find what is under it.
         const hit = document.elementFromPoint?.(e.clientX, e.clientY)
@@ -2219,6 +2241,13 @@ function onCanvasMouseMove(e) {
             r.offset_m = Math.round(offset * 1000) / 1000;
             renderScene(); renderProps();
         }
+        return;
+    }
+    if (_mapDrag) {
+        const p = clientToSvgModel(e);
+        _state.plan.map.anchor_x_m = round3(_mapDrag.ax + (p.x - _mapDrag.grab.x));
+        _state.plan.map.anchor_y_m = round3(_mapDrag.ay + (p.y - _mapDrag.grab.y));
+        renderOverlay(); syncMapControls();
         return;
     }
     if (_bgDrag) {
@@ -2301,6 +2330,7 @@ function onCanvasMouseUp(e) {
     if (_wallDrag) { _wallDrag = null; renderScene(); renderProps(); return; }
     if (_radDrag)  { _radDrag = null;  renderScene(); renderProps(); return; }
     if (_devDrag)  { _devDrag = null;  renderScene(); renderProps(); return; }
+    if (_mapDrag)  { _mapDrag = null;  renderOverlay(); syncMapControls(); return; }
     if (_bgDrag)   { _bgDrag = null;   renderScene(); renderOverlay();
                      syncBackgroundControls(); return; }
     if (!_state.drawBuffer) return;
@@ -2357,6 +2387,10 @@ function onCanvasTouchStart(e) {
             _devDrag = hit.dataset.kind === 'device' ? { ieee: hit.dataset.id } : { sensorId: hit.dataset.id };
             _touch = { mode: 'drag' };
             return;
+        }
+        if (_state.tool === 'map') {
+            onCanvasMouseDown({ clientX: t.clientX, clientY: t.clientY, button: 0, shiftKey: false });
+            if (_mapDrag) { _touch = { mode: 'drag' }; return; }
         }
         if (_state.tool === 'bg') {
             const grip = document.elementFromPoint?.(t.clientX, t.clientY)
@@ -2437,6 +2471,7 @@ function onCanvasTouchEnd(e) {
     if (_touch.mode === 'drag') {
         _devDrag = null;
         _bgDrag = null;
+        _mapDrag = null;
         _touch = null;
         renderScene(); renderOverlay(); renderProps(); syncBackgroundControls();
         return;
@@ -4885,7 +4920,9 @@ function addLevel() {
 
 function zoomBy(factor, cx, cy) {
     const oldZ = _state.zoom;
-    const newZ = Math.max(10, Math.min(400, oldZ * factor));
+    // Out to street scale while the map is shown, to find the house on it.
+    const minZ = _state.showMap && mapGeo() ? 1 : 10;
+    const newZ = Math.max(minZ, Math.min(400, oldZ * factor));
     if (cx != null && cy != null) {
         const wrap = document.getElementById('fpCanvasWrap').getBoundingClientRect();
         const px = cx - wrap.left, py = cy - wrap.top;
@@ -5183,62 +5220,239 @@ function bindDeviceLayerEvents() {
     });
     document.getElementById('fpToggleMap').addEventListener('change', e => {
         _state.showMap = e.target.checked;
-        syncMapControls(); renderScene();
+        syncMapControls(); renderOverlay();
     });
     document.getElementById('fpMapOpacity').addEventListener('input', e => {
         _state.plan.map = { anchor_x_m: 0, anchor_y_m: 0, ...(_state.plan.map || {}),
                             opacity: parseFloat(e.target.value) };
         renderScene();
     });
-    document.getElementById('fpMapAnchor').addEventListener('click', () => {
-        setTool('map-anchor');
+    document.getElementById('fpMapSetHome').addEventListener('click', setHomeFromPlan);
+    document.getElementById('fpMapMove').addEventListener('click', () => {
+        if (_state.tool === 'map') { setTool('select'); syncMapControls(); return; }
+        setTool('map');
+        syncMapControls();
         closeMobileDrawers();
-        toast('info', 'Home pin', 'Click the spot on the plan where the map pin for your address sits.');
+        toast('info', 'Move the map', 'Drag the map until your house sits under the plan. '
+              + 'Zoom out to find it; arrow keys nudge it.');
     });
+}
+
+/** The point the map is lined up by: the plan's own (kept when the map
+ *  was moved), else the home's coordinates from settings. */
+function mapGeo() {
+    const m = _state?.plan?.map;
+    if (m && m.lat != null && m.lon != null) return { lat: m.lat, lon: m.lon };
+    return _home;
+}
+
+/** Fix the map's point to the plan before it is moved, so the alignment
+ *  survives a later change to the weather or location settings. */
+function pinMapGeo() {
+    const g = mapGeo();
+    if (!g) return null;
+    _state.plan.map = { anchor_x_m: 0, anchor_y_m: 0, opacity: 0.6, ...(_state.plan.map || {}),
+                        lat: g.lat, lon: g.lon };
+    return _state.plan.map;
 }
 
 function syncMapControls() {
     if (!_state) return;
-    const on = !!_state.showMap && !!_home;
+    const g = mapGeo();
+    const on = !!_state.showMap && !!g;
     document.getElementById('fpToggleMap').checked = !!_state.showMap;
-    document.getElementById('fpToggleMap').disabled = !_home;
+    document.getElementById('fpToggleMap').disabled = !g;
     document.getElementById('fpMapControls').classList.toggle('d-none', !on);
-    document.getElementById('fpMapMissing').classList.toggle('d-none', !!_home);
+    document.getElementById('fpMapMissing').classList.toggle('d-none', !!g);
     document.getElementById('fpMapOpacity').value = String(_state.plan.map?.opacity ?? 0.6);
+    const move = document.getElementById('fpMapMove');
+    move.classList.toggle('active', _state.tool === 'map');
+    move.innerHTML = _state.tool === 'map'
+        ? '<i class="fas fa-check me-1"></i>Done moving the map'
+        : '<i class="fas fa-up-down-left-right me-1"></i>Move the map';
+    // Where the plan now sits on the earth, now that it's lined up.
+    const where = document.getElementById('fpMapWhere');
+    const mid = on ? planMiddle() : null;
+    const ll = mid && modelToLatLon(mid);
+    const off = ll && _home ? Math.hypot(...geoOffsetM(_home, ll)) : null;
+    where.innerHTML = ll
+        ? `The plan's middle is at <span class="user-select-all">${ll.lat.toFixed(6)}, ${ll.lon.toFixed(6)}</span>`
+          + (!_home ? ' — no home location is set yet.'
+             : off > 5 ? `, ${Math.round(off)} m from the home location (the <strong>Home</strong> pin).`
+             : ' — the home location.')
+        : '';
+    // Offered once the map is lined up and the house isn't where Settings says.
+    document.getElementById('fpMapSetHome').classList.toggle('d-none', !ll || (off != null && off <= 5));
 }
 
-const MAP_ZOOM = 19;
-const MAP_RADIUS_TILES = 2;   // a 5×5 block: ~150 m across at UK latitudes
+let _mapTileZ = null;              // tile zoom last drawn at
+const MAP_MIN_TILE_ZOOM = 12;
+const MAP_MAX_TILE_ZOOM = 19;     // the tile proxy's limit (modules/map_tiles.py)
+const MAP_MAX_TILES = 150;        // per draw: a big screen zoomed right out
+const EARTH_M = 40075016.686;     // equator, metres
+
+/** The Web-Mercator frame of the map at tile zoom z: where its point sits,
+ *  in tiles, and how many metres one tile covers there. */
+function mapFrame(z) {
+    const { lat, lon } = mapGeo();
+    const n = 2 ** z, latRad = lat * Math.PI / 180;
+    return { n, fx: (lon + 180) / 360 * n,
+             fy: (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n,
+             tileM: EARTH_M * Math.cos(latRad) / n };
+}
+
+/** SVG point → where it falls on the unturned map (turned back about the
+ *  map's anchor by the compass), still in SVG units. */
+function unturnAboutAnchor(p, anchor) {
+    const a = -(_state.plan.north_offset_deg || 0) * Math.PI / 180;
+    const dx = p.x - anchor.x, dy = p.y - anchor.y;
+    return { x: anchor.x + dx * Math.cos(a) - dy * Math.sin(a),
+             y: anchor.y + dx * Math.sin(a) + dy * Math.cos(a) };
+}
+
+function mapAnchorSvg() {
+    return modelToSvg({ x: _state.plan.map?.anchor_x_m || 0, y: _state.plan.map?.anchor_y_m || 0 });
+}
+
+/** A plan point's latitude and longitude, through the lined-up map. */
+function modelToLatLon(p) {
+    if (!mapGeo()) return null;
+    const f = mapFrame(MAP_MAX_TILE_ZOOM), anchor = mapAnchorSvg();
+    const q = unturnAboutAnchor(modelToSvg(p), anchor);
+    const tx = f.fx + (q.x - anchor.x) / f.tileM, ty = f.fy + (q.y - anchor.y) / f.tileM;
+    const lon = tx / f.n * 360 - 180;
+    const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / f.n))) * 180 / Math.PI;
+    return { lat, lon };
+}
+
+/** (east, north) metres from a to b — near enough over a few kilometres. */
+function geoOffsetM(a, b) {
+    const k = EARTH_M / 360;
+    return [(b.lon - a.lon) * k * Math.cos(a.lat * Math.PI / 180), (b.lat - a.lat) * k];
+}
+
+function planMiddle() {
+    const pts = (currentLevel()?.rooms || []).flatMap(r => r.polygon || [])
+        .concat((currentLevel()?.walls || []).flatMap(w => [[w.x1, w.y1], [w.x2, w.y2]]));
+    if (!pts.length) return null;
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+}
+
+/** A latitude/longitude's point on the plan, through the lined-up map. */
+function latLonToModel(ll) {
+    if (!mapGeo()) return null;
+    const f = mapFrame(MAP_MAX_TILE_ZOOM), anchor = mapAnchorSvg();
+    const latRad = ll.lat * Math.PI / 180;
+    const tx = (ll.lon + 180) / 360 * f.n;
+    const ty = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * f.n;
+    const flat = { x: anchor.x + (tx - f.fx) * f.tileM, y: anchor.y + (ty - f.fy) * f.tileM };
+    // Turn with the map, about its anchor.
+    const a = (_state.plan.north_offset_deg || 0) * Math.PI / 180;
+    const dx = flat.x - anchor.x, dy = flat.y - anchor.y;
+    return { x: anchor.x + dx * Math.cos(a) - dy * Math.sin(a),
+             y: -(anchor.y + dx * Math.sin(a) + dy * Math.cos(a)) };
+}
 
 /**
- * OSM tiles around the home pin, in plan metres, north turned to the compass.
- * The pin sits at ``plan.map.anchor_*``; true north is ``north_offset_deg``
- * clockwise from plan-up, so the tile block is rotated by that much.
+ * Make the plan's middle the home location — the one position weather, sun,
+ * daylight, presence and journeys all read (docs/location.md). The map was
+ * lined up by its own point, so it stays put; only the Home pin moves.
+ */
+async function setHomeFromPlan() {
+    const mid = planMiddle();
+    const ll = mid && modelToLatLon(mid);
+    if (!ll) return;
+    pinMapGeo();   // keep the map where it is, whatever the home becomes
+    const btn = document.getElementById('fpMapSetHome');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/location/home', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: +ll.lat.toFixed(7), lon: +ll.lon.toFixed(7) }),
+        });
+        const r = await res.json().catch(() => null);
+        if (!res.ok || !r?.success) throw new Error(r?.error || r?.detail || `The hub said ${res.status}.`);
+        _home = r.home;
+        toast('success', 'Home location set',
+              `${r.home.lat.toFixed(6)}, ${r.home.lon.toFixed(6)} — the weather, sun and daylight, presence and `
+              + 'journeys use it from now on. Save the plan to keep the map where it is.');
+        // Daylight and the sun path read it too.
+        if (_state.showDaylight || _state.showSun) { await loadDaylight(); syncDaylightControls(); }
+    } catch (e) {
+        toast('warn', "Couldn't set the home location", escapeHtml(e.message));
+    } finally {
+        btn.disabled = false;
+    }
+    syncMapControls(); renderOverlay();
+}
+
+/**
+ * OSM tiles under the plan, in plan metres, north turned to the compass.
+ * The map's point (``mapGeo``) sits at ``plan.map.anchor_*``; true north is
+ * ``north_offset_deg`` clockwise from plan-up, so the tiles are turned by
+ * that much about it. The tile zoom follows the editor's, so a tile is about
+ * 256 px on screen whether zoomed in on a wall or out over the street, and
+ * only the tiles the view covers are drawn.
  */
 function renderMapParts() {
-    if (!_home) return [];
-    const { lat, lon } = _home;
-    const n = 2 ** MAP_ZOOM;
-    const latRad = lat * Math.PI / 180;
-    const fx = (lon + 180) / 360 * n;
-    const fy = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
-    const tileM = 40075016.686 * Math.cos(latRad) / n;      // metres per tile edge
-    const anchor = modelToSvg({ x: _state.plan.map?.anchor_x_m || 0, y: _state.plan.map?.anchor_y_m || 0 });
+    if (!mapGeo()) return [];
+    const zNeed = Math.log2(EARTH_M * Math.cos(mapGeo().lat * Math.PI / 180) * _state.zoom / 256);
+    // Keep the tile zoom until the view has clearly moved past it, so a
+    // wheel zoom doesn't fetch every level it passes through on the way.
+    let z = _mapTileZ ?? Math.round(zNeed);
+    if (Math.abs(zNeed - z) > 0.8) z = Math.round(zNeed);
+    z = Math.max(MAP_MIN_TILE_ZOOM, Math.min(MAP_MAX_TILE_ZOOM, z));
+    _mapTileZ = z;
+    const f = mapFrame(z);
+    const anchor = mapAnchorSvg();
     const opacity = _state.plan.map?.opacity ?? 0.6;
-    const tx0 = Math.floor(fx), ty0 = Math.floor(fy);
+    // The view's corners, on the unturned map, in tiles.
+    const wrap = document.getElementById('fpCanvasWrap')?.getBoundingClientRect();
+    const w = wrap?.width || 1200, h = wrap?.height || 800;
+    const corners = [[0, 0], [w, 0], [0, h], [w, h]].map(([px, py]) => unturnAboutAnchor(
+        { x: (px - _state.pan.x) / _state.zoom, y: (py - _state.pan.y) / _state.zoom }, anchor))
+        .map(q => ({ tx: f.fx + (q.x - anchor.x) / f.tileM, ty: f.fy + (q.y - anchor.y) / f.tileM }));
+    let x0 = Math.floor(Math.min(...corners.map(c => c.tx))), x1 = Math.floor(Math.max(...corners.map(c => c.tx)));
+    let y0 = Math.floor(Math.min(...corners.map(c => c.ty))), y1 = Math.floor(Math.max(...corners.map(c => c.ty)));
+    x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(f.n - 1, x1); y1 = Math.min(f.n - 1, y1);
+    // Never a flood of requests: past the cap, keep the middle of the view.
+    while ((x1 - x0 + 1) * (y1 - y0 + 1) > MAP_MAX_TILES) {
+        if (x1 - x0 >= y1 - y0) { x0++; x1--; } else { y0++; y1--; }
+    }
     const tiles = [];
-    for (let dy = -MAP_RADIUS_TILES; dy <= MAP_RADIUS_TILES; dy++) {
-        for (let dx = -MAP_RADIUS_TILES; dx <= MAP_RADIUS_TILES; dx++) {
-            const tx = tx0 + dx, ty = ty0 + dy;
-            const x = anchor.x + (tx - fx) * tileM, y = anchor.y + (ty - fy) * tileM;
-            tiles.push(`<image href="/api/map/tiles/${MAP_ZOOM}/${tx}/${ty}.png" x="${x}" y="${y}"
-                               width="${tileM}" height="${tileM}" preserveAspectRatio="none"/>`);
+    for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+            // A hair oversized, so turned tiles don't show seams between them.
+            const x = anchor.x + (tx - f.fx) * f.tileM, y = anchor.y + (ty - f.fy) * f.tileM;
+            tiles.push(`<image href="/api/map/tiles/${z}/${tx}/${ty}.png" x="${x}" y="${y}"
+                               width="${f.tileM * 1.002}" height="${f.tileM * 1.002}" preserveAspectRatio="none"/>`);
         }
     }
     const rot = _state.plan.north_offset_deg || 0;
     return [`<g class="fp-map" opacity="${opacity}" pointer-events="none"
-               transform="rotate(${rot} ${anchor.x} ${anchor.y})">${tiles.join('')}
-               <circle class="fp-map-pin" cx="${anchor.x}" cy="${anchor.y}" r="0.2"/></g>`];
+               transform="rotate(${rot} ${anchor.x} ${anchor.y})">${tiles.join('')}</g>`];
+}
+
+/**
+ * The home location, as a pin you can find at any zoom: a marker a fixed
+ * size on screen, outlined so it reads on any tile, labelled, at wherever
+ * the home's coordinates fall on the lined-up map. Not faded with the map.
+ */
+function homePinParts() {
+    if (!_home) return '';
+    const at = latLonToModel(_home);
+    if (!at) return '';
+    const p = modelToSvg(at);
+    const k = 1 / _state.zoom;                    // one screen pixel, in SVG units
+    const s = 34 * k;                             // pin height on screen
+    return `<g class="fp-home-pin" pointer-events="none"
+               transform="translate(${p.x} ${p.y}) scale(${s / 34})">
+        <circle class="fp-home-pin-halo" r="14"/>
+        <path class="fp-home-pin-body" d="M0 0 C -4 -9 -12 -14 -12 -22 A 12 12 0 1 1 12 -22 C 12 -14 4 -9 0 0 Z"/>
+        <path class="fp-home-pin-house" d="M0 -30 L -7 -23.5 L -5 -23.5 L -5 -16 L 5 -16 L 5 -23.5 L 7 -23.5 Z"/>
+        <text class="fp-home-pin-label" y="-38" text-anchor="middle" font-size="12">Home</text>
+      </g>`;
 }
 
 // signal coverage — docs/signal-coverage.md

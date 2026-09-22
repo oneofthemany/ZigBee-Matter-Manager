@@ -784,14 +784,25 @@ def _clean_placed_device(raw: Any) -> Optional[dict]:
 
 
 def _clean_map(raw: Any) -> Optional[dict]:
-    """Where the home's coordinates sit on the plan, for the map backdrop."""
+    """Where a point on the map sits on the plan, for the map backdrop.
+
+    ``lat``/``lon`` is the point the map was lined up by (the home's
+    coordinates when it was moved), kept with the plan so that a later change
+    to the weather or location settings doesn't shift a map that was lined
+    up by hand. Absent on plans lined up before it was kept: those use the
+    home's coordinates, as they always did.
+    """
     if not isinstance(raw, dict):
         return None
-    return {
+    out = {
         "anchor_x_m": round(_as_float(raw.get("anchor_x_m"), 0.0) or 0.0, 3),
         "anchor_y_m": round(_as_float(raw.get("anchor_y_m"), 0.0) or 0.0, 3),
         "opacity": round(_clamp(_as_float(raw.get("opacity"), 0.6) or 0.6, 0.05, 1.0), 2),
     }
+    lat, lon = _as_float(raw.get("lat")), _as_float(raw.get("lon"))
+    if lat is not None and lon is not None and -85 <= lat <= 85 and -180 <= lon <= 180:
+        out["lat"], out["lon"] = round(lat, 7), round(lon, 7)
+    return out
 
 
 def _clean_plan_circuit(raw: Any, existing_ids: set) -> Optional[dict]:

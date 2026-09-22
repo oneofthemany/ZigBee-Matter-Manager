@@ -526,9 +526,10 @@ what the UK sources are, and a per-location query, which is what an API with a
 radius cap and a rate limit forces.
 
 `location:` is deliberately not inside `fuel:`. The hub has one place, and a
-second latitude in a second block is how two settings start disagreeing;
-`weather.latitude` / `weather.longitude` stay as the fallback so an install that
-predates the block keeps working unedited.
+second latitude in a second block is how two settings start disagreeing. The
+home's position lives in `location:` and nowhere else; an older
+`weather.latitude/longitude` is moved there on first boot
+([location.md](location.md)).
 
 ### Regions available
 

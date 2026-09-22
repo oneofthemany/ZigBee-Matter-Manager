@@ -11,7 +11,7 @@ sensor*.
 
 | Input | Where from | Needed? |
 |---|---|---|
-| Home location | `weather.latitude/longitude`, else `location:` (`location.home_coords`) | For the sun. Without one, only a measured irradiance can answer |
+| Home location | `location:` — the home's one position ([location.md](location.md)) | For the sun. Without one, only a measured irradiance can answer |
 | Sun elevation | `sun_position()`, computed locally every refresh | Derived from location |
 | Global horizontal irradiance | Open-Meteo `shortwave_radiation`, current | Optional |
 | Cloud cover | Open-Meteo `cloud_cover`, current | Optional |

@@ -517,7 +517,18 @@
     stroke-dasharray: 0.06 0.05;
 }
 [data-theme="dark"] .fp-daylight-iso { stroke: rgba(255, 255, 255, 0.35); }
-.fp-map-pin { fill: var(--fp-device-heating); stroke: var(--fp-device-stroke); stroke-width: 0.04; }
+/* The home location on the map: big enough to find at any zoom, outlined
+   so it reads on any tile. Sized in screen pixels by the renderer. */
+.fp-home-pin-halo  { fill: var(--fp-selection); opacity: 0.35; }
+.fp-home-pin-body  { fill: var(--fp-compass-needle); stroke: #ffffff; stroke-width: 2; }
+.fp-home-pin-house { fill: #ffffff; }
+.fp-home-pin-label {
+    fill: var(--fp-compass-needle);
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: #ffffff;
+    stroke-width: 3px;
+}
 
 /* inline in Topology: fill the tab's container, no modal chrome */
 .fp-inline-host { height: 75vh; min-height: 480px; position: relative; }

@@ -162,6 +162,17 @@ def run() -> Checker:
             [(g["room_id"], len(g["windows"])) for g in daylight_geometry(house)]
             == [("lounge", 1), ("kitchen", 1)], daylight_geometry(house))
 
+    c.section("the map keeps the point it was lined up by")
+    from modules.floor_plan import _clean_map
+    c.check("a map lined up by hand keeps its coordinates",
+            _clean_map({"anchor_x_m": 72.59, "anchor_y_m": -35.295, "lat": 51.380509, "lon": -0.790318})
+            == {"anchor_x_m": 72.59, "anchor_y_m": -35.295, "opacity": 0.6, "lat": 51.380509, "lon": -0.790318})
+    c.check("a plan from before has none, and uses the home's",
+            "lat" not in _clean_map({"anchor_x_m": 1, "anchor_y_m": 2}))
+    c.check("nonsense coordinates are dropped",
+            "lat" not in _clean_map({"lat": 95, "lon": 0}) and "lat" not in _clean_map({"lat": "x", "lon": 1})
+            and "lat" not in _clean_map({"lat": 51.3}))
+
     c.section("rooms don't overlap")
     from modules.floor_plan import (room_geometry_problems, new_room_geometry_problems,
                                     describe_room_problems)

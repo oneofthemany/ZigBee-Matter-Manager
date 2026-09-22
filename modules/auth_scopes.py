@@ -37,6 +37,7 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     ("/api/upgrade",           {"GET": "system:read", "*": "admin"}),
     ("/api/backup",            {"GET": "system:read", "*": "system:write"}),
     ("/api/config",            {"GET": "system:read", "*": "system:write"}),
+    ("/api/location",          {"GET": "system:read", "*": "system:write"}),
     ("/api/system",            {"GET": "system:read", "*": "system:write"}),
     ("/api/debug",             {"GET": "system:read", "*": "system:write"}),
     ("/api/resilience",        {"GET": "system:read", "*": "system:write"}),

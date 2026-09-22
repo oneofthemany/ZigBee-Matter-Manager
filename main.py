@@ -279,15 +279,36 @@ try:
 except Exception as _e:
     logging.getLogger("main").warning(f"Signal inspector emitter wiring failed: {_e}")
 
+# The home's position has one place, `location:` (modules/location.py): load
+# it before anything reads it, moving an older copy there on the first boot.
+from modules import location as home_location
+
+
+def _presence_homes():
+    """Presence users' old per-user homes, a last resort for the first boot."""
+    try:
+        with open("./data/presence_users.yaml") as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    users = raw.get("users", raw) if isinstance(raw, dict) else raw
+    users = users.values() if isinstance(users, dict) else users
+    return [(u.get("home_lat"), u.get("home_lon")) for u in users or [] if isinstance(u, dict)]
+
+
+home_location.init(CONFIG, _presence_homes())
+
 weather_service = WeatherService(
     config=CONFIG.get("weather", {}),
     mqtt_service=mqtt_service,
 )
+home_location.on_change(weather_service.home_moved)
 
-# Share the weather service's location so sun conditions track exactly the
-# coordinates driving external temp / cloud cover.
+# Sun conditions read the same home as everything else; a moved home drops
+# their cached day.
 from modules.sun_times import set_location_provider
-set_location_provider(lambda: (weather_service.latitude, weather_service.longitude))
+set_location_provider(lambda: home_location.home() or (None, None))
+home_location.on_change(lambda _new: set_location_provider(lambda: home_location.home() or (None, None)))
 
 media_service = MediaService(
     config=CONFIG.get("media", {}),
@@ -832,11 +853,7 @@ async def lifespan(app: FastAPI):
         from modules.location import home_coords
 
         def _home_coords():
-            # The weather service's coordinates first, as sun conditions use.
-            if weather_service.latitude not in (None, "") and \
-                    weather_service.longitude not in (None, ""):
-                return weather_service.latitude, weather_service.longitude
-            return home_coords(CONFIG)
+            return home_location.home() or home_coords(CONFIG)
 
         virtual_provider = VirtualDeviceProvider(
             weather_getter=lambda: weather_service,

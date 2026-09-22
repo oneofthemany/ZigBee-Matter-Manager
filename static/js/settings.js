@@ -988,15 +988,18 @@ function renderWeatherSection(config) {
         </div>
       </div>
       <div class="col-md-3">
-        <label class="form-label small fw-semibold">Latitude</label>
-        <input type="number" step="0.0001" class="form-control" id="cfg_weather_lat"
+        <label class="form-label small fw-semibold" for="cfg_weather_lat">Home latitude</label>
+        <input type="number" step="any" class="form-control" id="cfg_weather_lat"
                value="${w.latitude ?? ''}" placeholder="51.5074">
       </div>
       <div class="col-md-3">
-        <label class="form-label small fw-semibold">Longitude</label>
-        <input type="number" step="0.0001" class="form-control" id="cfg_weather_lon"
+        <label class="form-label small fw-semibold" for="cfg_weather_lon">Home longitude</label>
+        <input type="number" step="any" class="form-control" id="cfg_weather_lon"
                value="${w.longitude ?? ''}" placeholder="-0.1278">
       </div>
+      <div class="col-12 form-text small mt-0">The home's one position — the weather, sun and daylight,
+        the floor plan's map, presence and journeys all use it. Lining up the floor plan's map can set it
+        exactly.</div>
       <div class="col-md-2">
         <label class="form-label small fw-semibold">Poll Interval (min)</label>
         <input type="number" class="form-control" id="cfg_weather_interval"

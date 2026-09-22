@@ -359,11 +359,13 @@ which the rest of this module deliberately does not. See [journeys](journeys.md)
 
 ## Named places
 
-"Home" is a property of each presence user — people can live in different
-places, and a lodger's home is not yours. A **place** is the opposite: "the
-shops", "the school", "work" mean the same coordinates for everyone in the
+"Home" is the hub's one position ([location.md](location.md)), the same for
+every presence user and for the weather, sun and floor plan. Users used to
+carry their own, and the copies drifted apart. A **place** works the same way:
+"the shops", "the school", "work" mean the same coordinates for everyone in the
 household, so `modules/places.py` keeps them in one shared registry rather than
-duplicating them per person.
+duplicating them per person. Someone whose home is elsewhere is given that as
+a place.
 
 **Resolution is server-side.** The phone registers a geofence per place, but only
 so the OS wakes it on a crossing; the fix it then posts is resolved against this

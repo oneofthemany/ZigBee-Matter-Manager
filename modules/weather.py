@@ -37,8 +37,10 @@ class WeatherService:
 
     def __init__(self, config: dict, mqtt_service=None):
         self.enabled = config.get("enabled", False)
-        self.latitude = config.get("latitude")
-        self.longitude = config.get("longitude")
+        # Only a fallback from before the home had one place (modules/location.py);
+        # the latitude/longitude properties read the home's.
+        self._config_lat = config.get("latitude")
+        self._config_lon = config.get("longitude")
         self.poll_interval = config.get("poll_interval_minutes", 30) * 60
         self.mqtt_publish = config.get("mqtt_publish", False)
         self.mqtt = mqtt_service
@@ -48,6 +50,32 @@ class WeatherService:
         self._last_fetch: float = 0.0
         self._task: Optional[asyncio.Task] = None
 
+
+    @property
+    def latitude(self):
+        from modules import location
+        h = location.home()
+        return h[0] if h else self._config_lat
+
+    @property
+    def longitude(self):
+        from modules import location
+        h = location.home()
+        return h[1] if h else self._config_lon
+
+    def home_moved(self, _new=None) -> None:
+        """The home moved: fetch for the new place now, starting the poll
+        loop if it never could for want of a place."""
+        if not self.enabled or not self.latitude or not self.longitude:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._task is None or self._task.done():
+            loop.call_soon(self.start)
+        else:
+            loop.call_soon(lambda: asyncio.ensure_future(self._fetch()))
 
     def get_current(self) -> Optional[Dict[str, Any]]:
         return self._current

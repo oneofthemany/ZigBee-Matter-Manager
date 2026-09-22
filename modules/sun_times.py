@@ -37,13 +37,11 @@ def set_location_provider(provider: Optional[Callable[[], Optional[Tuple[Any, An
 def _latlon_from_config() -> Tuple[Optional[float], Optional[float]]:
     try:
         import yaml
+        from modules.location import home_coords
         with open("./config/config.yaml") as f:
             cfg = yaml.safe_load(f) or {}
-        w = cfg.get("weather", {}) or {}
-        lat, lon = w.get("latitude"), w.get("longitude")
-        if lat is None or lon is None:
-            return None, None
-        return float(lat), float(lon)
+        got = home_coords(cfg)
+        return got if got else (None, None)
     except Exception:
         return None, None
 

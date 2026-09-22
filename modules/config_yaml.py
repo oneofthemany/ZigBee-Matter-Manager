@@ -100,6 +100,44 @@ def update_block(path: Path, name: str, values: Mapping[str, Any],
     tmp.replace(path)
 
 
+def remove_keys(path: Path, name: str, keys) -> list:
+    """
+    Delete `keys` from the top-level `name:` block, at the block's own depth,
+    leaving every other line — comments included — as it was. Returns the
+    keys that were there and are now gone.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    bounds = _block_bounds(lines, name)
+    if bounds is None:
+        return []
+    start, end = bounds
+    indent = _block_indent(lines, start, end)
+    removed = []
+    for key in keys:
+        pattern = re.compile(_KEY_RE.format(key=re.escape(key)))
+        for i in range(start + 1, end):
+            m = pattern.match(lines[i].rstrip("\n"))
+            if m and m.group("indent") == indent:
+                del lines[i]
+                end -= 1
+                removed.append(key)
+                break
+    # A block left with nothing in it would read back as null, not an empty
+    # map, and code that does `config.get(name, {})` would get None.
+    if removed and not any(l.strip() and not l.lstrip().startswith("#")
+                           for l in lines[start + 1:end]):
+        lines[start] = re.sub(r":\s*(#.*)?$", lambda m: ": {}" + (" " + m.group(1) if m.group(1) else ""),
+                              lines[start].rstrip("\n")) + "\n"
+    if removed:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        tmp.replace(path)
+    return removed
+
+
 def _block_indent(lines, start, end) -> str:
     """The block's own indent, taken from its first key rather than assumed."""
     for i in range(start + 1, end):

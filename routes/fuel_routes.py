@@ -27,23 +27,9 @@ def register_fuel_routes(app: FastAPI):
 
     def _home_fallback() -> Optional[dict]:
         """
-        First configured home among presence users, else the hub's own location.
-
-        Presence comes first because it is the more specific answer: it is where
-        a person lives, whereas `location:` is where the hub is, and the two are
-        the same house only most of the time.
+        The home's one position (modules/location.py) — the same one presence,
+        weather and the floor plan use.
         """
-        try:
-            from modules.presence_users import get_presence_manager
-            pmgr = get_presence_manager()
-            if pmgr:
-                for dev in pmgr.devices.values():
-                    cfg = dev.cfg
-                    if cfg.enabled and cfg.home_lat is not None and cfg.home_lon is not None:
-                        return {"lat": cfg.home_lat, "lon": cfg.home_lon}
-        except Exception as e:                            # noqa: BLE001
-            logger.debug(f"home fallback failed: {e}")
-
         try:
             from modules import location
             coords = location.home_coords(_config())

@@ -29,6 +29,8 @@ logger = logging.getLogger("modules.presence_routes")
 class UserUpsert(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=32)
     display_name: str = Field(..., min_length=1, max_length=64)
+    # Accepted from older clients and ignored: the home is the hub's now
+    # (modules/location.py), set in Settings or from the floor plan's map.
     home_lat: Optional[float] = None
     home_lon: Optional[float] = None
     radius_m: float = 100.0

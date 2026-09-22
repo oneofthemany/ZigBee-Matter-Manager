@@ -218,11 +218,19 @@
                         existing ? 'readonly' : '',
                         'Lowercase, alphanumeric/underscore. Stable identifier.') +
                   field('display_name', 'Display Name', u.display_name, 'col-md-6') +
-                  field('home_lat', 'Home Latitude', u.home_lat, 'col-md-5', '', '', 'number', 'any') +
-                  field('home_lon', 'Home Longitude', u.home_lon, 'col-md-5', '', '', 'number', 'any') +
-                  '<div class="col-md-2 d-flex align-items-end">' +
+                  // Home is the hub's one position, shared with the weather, the
+                  // floor plan and journeys — not a per-user setting.
+                  '<div class="col-md-8">' +
+                    '<label class="form-label small fw-bold">Home</label>' +
+                    '<div class="form-control-plaintext small" id="presence-home-shown">' +
+                      (u.home_lat != null ? u.home_lat.toFixed(6) + ', ' + u.home_lon.toFixed(6)
+                                         : '<em>not set</em>') + '</div>' +
+                    '<div class="form-text small">The same home for everyone, and for the weather, sun and floor ' +
+                      'plan. Change it in Settings → Weather, or by lining up the floor plan\'s map.</div>' +
+                  '</div>' +
+                  '<div class="col-md-4 d-flex align-items-end">' +
                     '<button class="btn btn-outline-primary btn-sm w-100" id="presence-use-current">' +
-                      '<i class="bi bi-crosshair"></i> Use my location</button>' +
+                      '<i class="bi bi-crosshair"></i> Set the home to where I am</button>' +
                   '</div>' +
                   field('radius_m', 'Geofence radius (m)', u.radius_m, 'col-md-4', '', '', 'number') +
                   field('hysteresis_m', 'Leave-hysteresis (m)', u.hysteresis_m, 'col-md-4', '', '', 'number') +
@@ -275,13 +283,20 @@
         document.getElementById('presence-use-current').onclick = async function () {
             try {
                 var pos = await window.zmmPresence.getCurrentPosition();
-                document.getElementById('field-home_lat').value = pos.lat.toFixed(6);
-                document.getElementById('field-home_lon').value = pos.lon.toFixed(6);
+                var res = await fetch('/api/location/home', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat: +pos.lat.toFixed(7), lon: +pos.lon.toFixed(7) })
+                });
+                var r = await res.json().catch(function () { return null; });
+                if (!res.ok || !r || !r.success) throw new Error((r && (r.error || r.detail)) || ('The hub said ' + res.status));
+                document.getElementById('presence-home-shown').textContent =
+                    r.home.lat.toFixed(6) + ', ' + r.home.lon.toFixed(6);
                 if (window.toast) {
-                    window.toast.success('Captured location (±' + Math.round(pos.accuracy) + ' m)');
+                    window.toast.success('Home set to where you are (±' + Math.round(pos.accuracy) + ' m) — ' +
+                                         'for everyone, the weather and the floor plan.');
                 }
             } catch (e) {
-                if (window.toast) window.toast.error('Could not get location: ' + (e.message || e));
+                if (window.toast) window.toast.error('Could not set the home: ' + escape(e.message || String(e)));
             }
         };
 
@@ -289,8 +304,6 @@
             var body = {
                 user_id: val('user_id') || u.user_id,
                 display_name: val('display_name'),
-                home_lat: numOrNull('home_lat'),
-                home_lon: numOrNull('home_lon'),
                 radius_m: parseFloat(val('radius_m')) || 100,
                 hysteresis_m: parseFloat(val('hysteresis_m')) || 30,
                 stale_after_s: u.stale_after_s,

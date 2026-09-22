@@ -120,8 +120,6 @@ class UserConfig:
     # See PRESENCE_MODES. The phone fetches the resolved parameters, so changing
     # this retunes the device without reinstalling it.
     presence_mode: str = DEFAULT_PRESENCE_MODE
-    home_lat: Optional[float] = None
-    home_lon: Optional[float] = None
     radius_m: float = DEFAULT_RADIUS_M
     hysteresis_m: float = DEFAULT_HYSTERESIS_M
     stale_after_s: float = DEFAULT_STALE_AFTER_S
@@ -130,6 +128,22 @@ class UserConfig:
     # Opt-in: persists movement history, which the rest of this module
     # deliberately does not.
     journeys_enabled: bool = False
+
+    # Home is the hub's, not the user's: one position every feature reads
+    # (modules/location.py). Users used to carry their own copy, and the copies
+    # drifted apart and from the weather's; old ones in presence_users.yaml
+    # are ignored and dropped on the next save.
+    @property
+    def home_lat(self) -> Optional[float]:
+        from modules import location
+        h = location.home()
+        return h[0] if h else None
+
+    @property
+    def home_lon(self) -> Optional[float]:
+        from modules import location
+        h = location.home()
+        return h[1] if h else None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -152,8 +166,6 @@ class UserConfig:
             display_name=str(d.get("display_name") or d["user_id"]),
             account=account,
             presence_mode=mode,
-            home_lat=d.get("home_lat"),
-            home_lon=d.get("home_lon"),
             radius_m=float(d.get("radius_m", DEFAULT_RADIUS_M)),
             hysteresis_m=float(d.get("hysteresis_m", DEFAULT_HYSTERESIS_M)),
             # Derived from the mode, never stored independently: a shorter value
@@ -496,6 +508,9 @@ class PresenceUserManager:
         return [
             {
                 **d.cfg.to_dict(),
+                # The hub's home, for the badge map and the settings table.
+                "home_lat": d.cfg.home_lat,
+                "home_lon": d.cfg.home_lon,
                 "ieee": d.ieee,
                 "state": dict(d.state),
                 "last_seen": d.last_seen,
@@ -583,7 +598,8 @@ class PresenceUserManager:
             return {"success": False, "error": "User disabled"}
 
         if dev.cfg.home_lat is None or dev.cfg.home_lon is None:
-            return {"success": False, "error": "User has no home location set"}
+            return {"success": False,
+                    "error": "The home location isn't set (Settings → Weather, or line up the floor plan's map)"}
 
         # A fix can be unusable as a POSITION and still be proof of CONTACT,
         # and the two guards below must not conflate them. Both used to return

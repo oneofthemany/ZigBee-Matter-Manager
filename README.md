@@ -826,8 +826,8 @@ mqtt:
 location:
   country: ""       # ISO-3166 alpha-2; blank means Settings offers a suggestion
   subdivision: ""   # e.g. NSW — only for countries with per-state schemes
-  latitude:         # blank falls back to weather.latitude / weather.longitude
-  longitude:
+  latitude:         # the home's one position — weather, sun, floor plan, presence,
+  longitude:        #   journeys all read it (docs/location.md)
 
 matter:
   enabled: false

@@ -7,6 +7,7 @@ import logging
 import os
 import yaml
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from models import ConfigUpdateRequest
 from modules.network_init import (
     generate_pan_id, generate_extended_pan_id,
@@ -123,8 +124,36 @@ def _strip_auto_providers(providers):
     return [p for p in providers if not _is_auto_local_provider(p)]
 
 
+def _home_fields() -> dict:
+    from modules import location
+    h = location.home()
+    return {"latitude": h[0] if h else None, "longitude": h[1] if h else None}
+
+
 def register_config_routes(app: FastAPI, get_zigbee_service):
     """Register configuration management routes."""
+
+    @app.get("/api/location/home")
+    async def get_home():
+        """The home's one position: weather, sun, floor plan, presence all use it."""
+        from modules import location
+        h = location.home()
+        return {"success": True, "home": {"lat": h[0], "lon": h[1]} if h else None}
+
+    @app.post("/api/location/home")
+    async def set_home(body: dict):
+        """Move the home (``{lat, lon}``). Written to `location:`; the weather
+        refetches and sun times recompute at once. docs/location.md."""
+        from modules import location
+        try:
+            lat, lon = location.set_home(body.get("lat"), body.get("lon"))
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+        except OSError as e:
+            return JSONResponse(status_code=500, content={"success": False,
+                                                          "error": f"Could not write config.yaml: {e}"})
+        logger.info(f"Home location set to {lat}, {lon}")
+        return {"success": True, "home": {"lat": lat, "lon": lon}}
 
     @app.get("/api/config/structured")
     async def get_structured_config():
@@ -184,7 +213,10 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                     # always reaches the frontend with its full shape — the
                     # Settings → APIs tab must never depend on config.yaml
                     # already containing (or enabling) a section.
-                    "weather": _with_defaults(cfg.get("weather"), WEATHER_DEFAULTS),
+                    # The coordinates shown with the weather are the home's one
+                    # position (modules/location.py), not a weather-only copy.
+                    "weather": {**_with_defaults(cfg.get("weather"), WEATHER_DEFAULTS),
+                                **_home_fields()},
                     "media": _with_defaults(cfg.get("media"), MEDIA_DEFAULTS),
                     "security": _with_defaults(cfg.get("security"), SECURITY_DEFAULTS),
                     "octopus": {
@@ -219,6 +251,7 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
     @app.post("/api/config/structured")
     async def save_structured_config(data: dict):
         """Save structured config back to YAML."""
+        new_home = None
         try:
             with open("./config/config.yaml", "r") as f:
                 cfg = yaml.safe_load(f) or {}
@@ -249,10 +282,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
                 weather_cfg = cfg.setdefault("weather", {})
                 if "enabled" in w:
                     weather_cfg["enabled"] = bool(w["enabled"])
-                if w.get("latitude") is not None:
-                    weather_cfg["latitude"] = float(w["latitude"])
-                if w.get("longitude") is not None:
-                    weather_cfg["longitude"] = float(w["longitude"])
+                # The coordinates are the home's, written to location: once the
+                # rest of the file is saved (below) — never a weather copy.
+                if w.get("latitude") is not None and w.get("longitude") is not None:
+                    new_home = (w["latitude"], w["longitude"])
+                weather_cfg.pop("latitude", None)
+                weather_cfg.pop("longitude", None)
                 if w.get("poll_interval_minutes"):
                     weather_cfg["poll_interval_minutes"] = int(w["poll_interval_minutes"])
                 if "mqtt_publish" in w:
@@ -477,6 +512,12 @@ def register_config_routes(app: FastAPI, get_zigbee_service):
 
             with open("./config/config.yaml", "w") as f:
                 yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+            if new_home is not None:
+                from modules import location
+                try:
+                    location.set_home(*new_home)
+                except ValueError as e:
+                    return {"success": False, "error": f"Home location: {e}"}
 
             logger.info("Structured config saved via API")
             return {"success": True}

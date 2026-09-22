@@ -67,7 +67,7 @@ A plan is levels; a level is what was drawn on it.
 | `levels[].devices[]` | everything else placed by position alone |
 | `levels[].background` | the image's calibration — see [Background images](#background-images) |
 | `plan.circuits[]` | heating circuits and their receivers |
-| `plan.map` | the OpenStreetMap backdrop's anchor and opacity |
+| `plan.map` | the OpenStreetMap backdrop: the point it's lined up by (`lat`, `lon`), where that sits on the plan, and opacity |
 | `plan.north_offset_deg` | the compass |
 
 Radiators have two modes: wall-mounted (`wall_id` + `offset_m`, clamped to wall
@@ -324,10 +324,36 @@ sensor* or *Attach to the nearest window or door*, which hand the device to heat
 
 ### The map backdrop
 
-The map backdrop draws OpenStreetMap tiles (`/api/map/tiles`, zoom 19) around the
-home location, rotated by `north_offset_deg`. *Mark where the home pin is* sets
-`plan.map.anchor_x_m/anchor_y_m`, the point on the plan where the address pin
-sits. Turn the compass until the map's buildings line up with the walls.
+The map backdrop draws OpenStreetMap tiles (`/api/map/tiles`) under the plan,
+turned by `north_offset_deg`. It's placed by one point: a latitude/longitude
+that sits at `plan.map.anchor_x_m/anchor_y_m` on the plan.
+
+**Which coordinates.** The point is the plan's own `plan.map.lat/lon` if it
+has one, else the home location ([location.md](location.md)). Those are
+usually a postcode or a pin dropped roughly, not the house, so the map needs
+lining up by hand.
+
+**Lining it up.** *Move the map* (Orient panel) turns the canvas into a handle
+for the map: drag it until the house sits under the plan, with the arrow keys
+to nudge it (a snap step, or ten with Shift). Then turn the compass until the
+buildings line up with the walls. The first move copies the point into
+`plan.map.lat/lon`, so a later change to the weather or location settings
+can't shift a map that was lined up by hand. The panel shows the coordinates
+the plan's middle now sits at, and how far that is from the home location.
+
+**The home pin.** The home location ([location.md](location.md)) is drawn as a
+labelled *Home* pin. It stays the same size on screen at any zoom and sits on
+top of the plan, at wherever the home's coordinates fall on the lined-up map. If
+it isn't on the house, *Set as the home location* makes the plan's middle the
+home, for the weather, sun, presence and journeys alike. The map was lined up by
+its own point, so it stays where it is; only the pin moves.
+
+**Zoom.** With the map shown, the editor zooms out to 1 px/m (street scale, to
+find the house) instead of stopping at 10. The tile zoom follows the editor's
+zoom, so a tile is roughly 256 px on screen, between tile zooms 12 and 19. It
+only switches once the view is clearly past the current tile zoom, so a wheel
+zoom doesn't fetch every level on the way. Only the tiles covering the view
+are drawn, at most 150.
 
 ### Overlays
 
