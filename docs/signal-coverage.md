@@ -6,7 +6,7 @@ links to scale, learns what this house's walls and floors cost the signal,
 predicts the signal everywhere, and says where a repeater would help.
 
 Both layers live in the Topology tab's floor-plan view: **Topology → Floor
-plan → View**. They are hidden in Heating's view of the same plan, which shows
+plan → Layers**. They are hidden in Heating's view of the same plan, which shows
 only heating's devices.
 
 | Part | Where |
@@ -19,7 +19,7 @@ only heating's devices.
 
 ## The mesh on the plan
 
-In the home view, View → *Mesh links* draws the Zigbee mesh over the plan, from
+In the home view, Layers → *Mesh links* draws the Zigbee mesh over the plan, from
 `GET /api/floor-plan/mesh` (`system:read`, like `/api/network`).
 
 `modules/mesh_plan.py` merges the neighbour tables into **one link per pair**. A
@@ -41,7 +41,7 @@ toggle counts the devices on the mesh that aren't placed yet.
 
 ## Signal coverage
 
-View → *Signal heatmap* colours each level by the signal a device would get
+Layers → *Signal heatmap* colours each level by the signal a device would get
 there, marks the devices that are struggling, and suggests where a repeater
 would help. `modules/radio_model.py` is the model; `GET /api/floor-plan/coverage`
 (`system:read`) runs it off the event loop against the saved plan.

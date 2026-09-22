@@ -240,7 +240,7 @@ top-left in model space sits at `(origin_x_m, origin_y_m + height_m)`.
 
 Every route that moves, scales or rotates the image goes through four shared
 helpers — `bgGeom()` / `bgPoint()` / `bgFrac()` / `bgResizeAnchored()` — so the
-rendered `<image>`, the drag handles, the sidebar's number boxes and Calibrate
+rendered `<image>`, the drag handles, the Image panel's number boxes and Calibrate
 cannot disagree about where the image is. Covered by
 `tests/floor_plan/js/test_bg_placement.js`.
 
@@ -271,7 +271,7 @@ calibration was lost — the **Adjust image** tool moves it: drag the image to
 slide it, drag a corner to resize it about the opposite corner (the aspect ratio
 is fixed, so a corner drag projects the cursor onto the diagonal it started on),
 and arrow keys nudge by one snap step, ten with Shift. The same placement is
-typeable in the sidebar — width in metres, left X, bottom Y, rotation — and
+typeable in the Image panel — width in metres, left X, bottom Y, rotation — and
 **Fit image to walls** scales and centres the image over whatever is already
 drawn, sized to contain it, which is the one-click way back from a badly scaled
 image.

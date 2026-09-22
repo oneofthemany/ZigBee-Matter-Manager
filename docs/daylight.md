@@ -162,7 +162,7 @@ marked as estimated, and a real lux sensor in the same room is always preferred
 over it. It also declares `daylight_estimate`, which means it is never offered
 as a device that can go offline.
 
-**The editor's Daylight layer** (floor plan → View → *Daylight in each room*)
+**The editor's Daylight layer** (floor plan → Layers → *Daylight in each room*)
 colours each room by the same estimate for any time today, via
 `GET /api/floor-plan/daylight?step_minutes=30`. The current weather is used near
 now, the hourly cloud forecast further away, and a clear sky where neither is
@@ -237,7 +237,7 @@ coloured by its mix of beam, sky and reflected light, and its brightness is
 log₁₀ lux, from 10 lx (shade) to 50 klx (full sun). Dashed iso-lux lines
 mark 100, 300, 1 000, 3 000 and 10 000 lx where they fall inside the room.
 
-The **Sun path** option (floor plan → View) draws the same field for each room
+The **Sun path** option (floor plan → Layers) draws the same field for each room
 as it is now, under the sun's arc, with the hours of sun on each room's windows
 today. With the Daylight layer also on, the Daylight layer's slider time is the
 one drawn. A room without an estimate falls back to a plain amber tint.

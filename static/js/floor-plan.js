@@ -237,6 +237,35 @@ function applyViewChrome() {
     });
     const title = _root?.querySelector('#fpTitle');
     if (title) title.textContent = _view === 'heating' ? 'Floor plan — heating' : 'Floor plan';
+    // The open panel may belong to the other view (Devices / Circuits).
+    showPanel(savedPanel());
+}
+
+// sidebar panels — one open at a time beside the icon rail, or none
+
+const PANEL_STORE_KEY = 'fp.sidebarPanel';
+
+/** The panel last left open ('' = collapsed to the rail); Draw by default. */
+function savedPanel() {
+    try {
+        const v = localStorage.getItem(PANEL_STORE_KEY);
+        return v === null ? 'draw' : v;
+    } catch { return 'draw'; }
+}
+
+/** Open panel ``key`` (falsy collapses to the rail) and remember it. */
+function showPanel(key) {
+    if (!_root) return;
+    const btn = k => _root.querySelector(`.fp-rail-btn[data-fp-panel="${k}"]`);
+    if (key && (!btn(key) || btn(key).classList.contains('d-none'))) key = 'draw';
+    _root.querySelectorAll('.fp-rail-btn').forEach(b => {
+        const on = b.dataset.fpPanel === key;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-expanded', String(on));
+    });
+    _root.querySelectorAll('[data-fp-panel-body]').forEach(p => { p.hidden = p.dataset.fpPanelBody !== key; });
+    _root.classList.toggle('fp-panel-collapsed', !key);
+    try { localStorage.setItem(PANEL_STORE_KEY, key || ''); } catch { /* per-viewer nicety only */ }
 }
 
 /**
@@ -330,203 +359,249 @@ function rootHtml() {
             </div>
           </div>
           <div class="modal-body p-0 d-flex" style="overflow:hidden">
-            <!-- Left: tools + levels -->
-            <div id="fpSidebar" class="border-end" style="width:240px;min-width:240px;overflow:auto;padding:12px">
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">Levels</div>
-                <div id="fpLevelList" class="list-group list-group-flush small"></div>
-                <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="fpAddLevel"><i class="fas fa-plus me-1"></i>Add level</button>
-              </div>
-              <div class="mb-3" id="fpPaletteSection" data-fp-view="home">
-                <div class="small text-muted text-uppercase mb-1">Devices to place</div>
-                <input type="search" id="fpPaletteSearch" class="form-control form-control-sm mb-1"
-                       placeholder="Find a device" aria-label="Find a device">
-                <div class="form-text small mb-1">Drag one onto its room, or tap it and then tap the plan.</div>
-                <div id="fpPalette" class="small"></div>
-              </div>
-              <div class="mb-3" id="fpCircuitSection" data-fp-view="heating">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                  <div class="small text-muted text-uppercase">Circuits</div>
-                  <button class="btn btn-sm btn-outline-success py-0 px-1" id="fpAddCircuit" title="Add circuit"><i class="fas fa-plus"></i></button>
-                </div>
-                <div id="fpCircuitList" class="mb-1"></div>
-              </div>
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">Tools</div>
-                <div class="btn-group-vertical w-100" role="group" id="fpToolbar">
-                  <button class="btn btn-sm btn-outline-primary" data-tool="select"><i class="fas fa-mouse-pointer me-1"></i>Select</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="wall"><i class="fas fa-grip-lines-vertical me-1"></i>Wall</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="room"><i class="fas fa-vector-square me-1"></i>Room</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="window"><i class="fas fa-window-maximize me-1"></i>Window</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="door"><i class="fas fa-door-open me-1"></i>Door</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="radiator" data-fp-view="heating"><i class="fas fa-fire me-1"></i>Radiator</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="sensor" data-fp-view="heating"><i class="fas fa-thermometer-half me-1"></i>Sensor</button>
-                  <button class="btn btn-sm btn-outline-primary" data-tool="contact" data-fp-view="heating"><i class="fas fa-link me-1"></i>Contact</button>
-                  <button class="btn btn-sm btn-outline-warning" data-tool="calibrate"><i class="fas fa-ruler me-1"></i>Calibrate</button>
-                  <button class="btn btn-sm btn-outline-warning" data-tool="bg"><i class="fas fa-image me-1"></i>Adjust image</button>
-                </div>
-                <div class="d-flex align-items-center gap-2 mt-2">
-                  <label class="small text-muted mb-0" for="fpSnapStep">Snap</label>
-                  <select class="form-select form-select-sm py-0" id="fpSnapStep" style="font-size:0.78rem">
-                    <option value="0">Off</option>
-                    <option value="0.01">1 cm</option>
-                    <option value="0.05">5 cm</option>
-                    <option value="0.1" selected>10 cm</option>
-                    <option value="0.25">25 cm</option>
-                    <option value="0.5">50 cm</option>
-                  </select>
-                </div>
-                <div class="d-flex align-items-center gap-2 mt-1">
-                  <label class="small text-muted mb-0" for="fpAngleStep">Angle</label>
-                  <select class="form-select form-select-sm py-0" id="fpAngleStep" style="font-size:0.78rem">
-                    <option value="1" selected>1°</option>
-                    <option value="2">2°</option>
-                    <option value="5">5°</option>
-                    <option value="15">15°</option>
-                    <option value="45">45°</option>
-                  </select>
-                </div>
-                <div class="form-text small mt-1">Hold <kbd>Alt</kbd>: snap off · <kbd>Ctrl</kbd>: angle lock</div>
-              </div>
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">Background image</div>
-                <input type="file" id="fpImageFile" class="form-control form-control-sm mb-2"
-                       accept=".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf">
-                <div class="d-flex gap-1 mb-2">
-                  <button class="btn btn-sm btn-outline-danger flex-fill" id="fpRemoveImage" disabled><i class="fas fa-trash me-1"></i>Remove</button>
-                </div>
-                <label class="form-label small mb-0">Opacity</label>
-                <input type="range" id="fpImageOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.5">
-                <div class="form-check form-switch small mt-1">
-                  <input class="form-check-input" type="checkbox" id="fpToggleBackground" checked>
-                  <label class="form-check-label" for="fpToggleBackground">Show image</label>
-                </div>
-                <div id="fpBgAdjust" class="mt-2 d-none">
-                  <button class="btn btn-sm btn-outline-warning w-100 mb-2" id="fpBgFit"
-                          title="Scale and centre the image over the walls already drawn">
-                    <i class="fas fa-expand me-1"></i>Fit image to walls</button>
-                  <div class="row g-1">
-                    <div class="col-6">
-                      <label class="form-label small mb-0" for="fpBgWidth">Width (m)</label>
-                      <input type="number" step="0.05" min="0.05" class="form-control form-control-sm py-0" id="fpBgWidth">
+            <!-- Left: an icon rail; each button opens its panel beside it
+                 (click it again to hide the panel and give the canvas room). -->
+            <div id="fpSidebar" class="border-end fp-sidebar">
+              <nav class="fp-rail" aria-label="Floor plan panels">
+                <button type="button" class="fp-rail-btn" data-fp-panel="draw" title="Draw"
+                        aria-controls="fpPanel-draw" aria-expanded="false">
+                  <i class="fas fa-pen-ruler"></i><span>Draw</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="levels" title="Levels"
+                        aria-controls="fpPanel-levels" aria-expanded="false">
+                  <i class="fas fa-layer-group"></i><span>Levels</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="devices" data-fp-view="home" title="Devices"
+                        aria-controls="fpPanel-devices" aria-expanded="false">
+                  <i class="fas fa-microchip"></i><span>Devices</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="circuits" data-fp-view="heating" title="Circuits"
+                        aria-controls="fpPanel-circuits" aria-expanded="false">
+                  <i class="fas fa-diagram-project"></i><span>Circuits</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="layers" title="Layers"
+                        aria-controls="fpPanel-layers" aria-expanded="false">
+                  <i class="fas fa-eye"></i><span>Layers</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="image" title="Image"
+                        aria-controls="fpPanel-image" aria-expanded="false">
+                  <i class="fas fa-image"></i><span>Image</span></button>
+                <button type="button" class="fp-rail-btn" data-fp-panel="orient" title="Orient"
+                        aria-controls="fpPanel-orient" aria-expanded="false">
+                  <i class="fas fa-compass"></i><span>Orient</span></button>
+              </nav>
+              <div class="fp-panels">
+                <section class="fp-panel" id="fpPanel-draw" data-fp-panel-body="draw" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Draw</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <div class="btn-group-vertical w-100" role="group" id="fpToolbar">
+                      <button class="btn btn-sm btn-outline-primary" data-tool="select"><i class="fas fa-mouse-pointer me-1"></i>Select</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="wall"><i class="fas fa-grip-lines-vertical me-1"></i>Wall</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="room"><i class="fas fa-vector-square me-1"></i>Room</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="window"><i class="fas fa-window-maximize me-1"></i>Window</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="door"><i class="fas fa-door-open me-1"></i>Door</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="radiator" data-fp-view="heating"><i class="fas fa-fire me-1"></i>Radiator</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="sensor" data-fp-view="heating"><i class="fas fa-thermometer-half me-1"></i>Sensor</button>
+                      <button class="btn btn-sm btn-outline-primary" data-tool="contact" data-fp-view="heating"><i class="fas fa-link me-1"></i>Contact</button>
+                      <button class="btn btn-sm btn-outline-warning" data-tool="calibrate"><i class="fas fa-ruler me-1"></i>Calibrate</button>
+                      <button class="btn btn-sm btn-outline-warning" data-tool="bg"><i class="fas fa-image me-1"></i>Adjust image</button>
                     </div>
-                    <div class="col-6">
-                      <label class="form-label small mb-0" for="fpBgRot">Rotation (&deg;)</label>
-                      <input type="number" step="0.5" class="form-control form-control-sm py-0" id="fpBgRot">
+                    <div class="d-flex align-items-center gap-2 mt-2">
+                      <label class="small text-muted mb-0" for="fpSnapStep">Snap</label>
+                      <select class="form-select form-select-sm py-0" id="fpSnapStep" style="font-size:0.78rem">
+                        <option value="0">Off</option>
+                        <option value="0.01">1 cm</option>
+                        <option value="0.05">5 cm</option>
+                        <option value="0.1" selected>10 cm</option>
+                        <option value="0.25">25 cm</option>
+                        <option value="0.5">50 cm</option>
+                      </select>
                     </div>
-                    <div class="col-6">
-                      <label class="form-label small mb-0" for="fpBgX">Left X (m)</label>
-                      <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgX">
+                    <div class="d-flex align-items-center gap-2 mt-1">
+                      <label class="small text-muted mb-0" for="fpAngleStep">Angle</label>
+                      <select class="form-select form-select-sm py-0" id="fpAngleStep" style="font-size:0.78rem">
+                        <option value="1" selected>1°</option>
+                        <option value="2">2°</option>
+                        <option value="5">5°</option>
+                        <option value="15">15°</option>
+                        <option value="45">45°</option>
+                      </select>
                     </div>
-                    <div class="col-6">
-                      <label class="form-label small mb-0" for="fpBgY">Bottom Y (m)</label>
-                      <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgY">
+                    <div class="form-text small mt-1">Hold <kbd>Alt</kbd>: snap off · <kbd>Ctrl</kbd>: angle lock</div>
+                </section>
+                <section class="fp-panel" id="fpPanel-levels" data-fp-panel-body="levels" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Levels</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <div id="fpLevelList" class="list-group list-group-flush small"></div>
+                    <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="fpAddLevel"><i class="fas fa-plus me-1"></i>Add level</button>
+                </section>
+                <section class="fp-panel" id="fpPanel-devices" data-fp-panel-body="devices" data-fp-view="home" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Devices to place</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <input type="search" id="fpPaletteSearch" class="form-control form-control-sm mb-1"
+                           placeholder="Find a device" aria-label="Find a device">
+                    <div class="form-text small mb-1">Drag one onto its room, or tap it and then tap the plan.</div>
+                    <div id="fpPalette" class="small"></div>
+                </section>
+                <section class="fp-panel" id="fpPanel-circuits" data-fp-panel-body="circuits" data-fp-view="heating" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Circuits</h6>
+                    <button class="btn btn-sm btn-outline-success py-0 px-1" id="fpAddCircuit" title="Add circuit"><i class="fas fa-plus"></i></button>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <div id="fpCircuitList" class="mb-1"></div>
+                </section>
+                <section class="fp-panel" id="fpPanel-layers" data-fp-panel-body="layers" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Layers</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <div class="form-check form-switch small">
+                      <input class="form-check-input" type="checkbox" id="fpToggleGrid" checked>
+                      <label class="form-check-label" for="fpToggleGrid">Grid</label>
                     </div>
-                  </div>
-                  <div class="form-text small mt-1">Scale <span id="fpBgPpm">&mdash;</span> px/m. Pick
-                    <strong>Adjust image</strong> in Tools to drag the image, or its corners to resize;
-                    arrow keys nudge.</div>
-                </div>
-              </div>
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">View</div>
-                <div class="form-check form-switch small">
-                  <input class="form-check-input" type="checkbox" id="fpToggleGrid" checked>
-                  <label class="form-check-label" for="fpToggleGrid">Grid</label>
-                </div>
-                <div class="form-check form-switch small">
-                  <input class="form-check-input" type="checkbox" id="fpToggleSun">
-                  <label class="form-check-label" for="fpToggleSun">Sun path (today)</label>
-                </div>
-                <div class="form-check form-switch small">
-                  <input class="form-check-input" type="checkbox" id="fpToggleDaylight">
-                  <label class="form-check-label" for="fpToggleDaylight">Daylight in each room</label>
-                </div>
-                <div data-fp-view="home">
-                  <div class="form-check form-switch small">
-                    <input class="form-check-input" type="checkbox" id="fpToggleMesh">
-                    <label class="form-check-label" for="fpToggleMesh">Mesh links</label>
-                  </div>
-                  <div class="form-check form-switch small">
-                    <input class="form-check-input" type="checkbox" id="fpToggleCoverage">
-                    <label class="form-check-label" for="fpToggleCoverage">Signal heatmap</label>
-                  </div>
-                  <div id="fpCoverageControls" class="ms-3 mb-1 small d-none">
-                    <div id="fpCoverageModel" class="text-muted"></div>
-                    <div id="fpCoverageAdvice" class="mt-1"></div>
-                  </div>
-                  <div id="fpMeshControls" class="ms-3 mb-1 small d-none">
-                    <div><span class="fp-link-key fp-link-good"></span>LQI 200+
-                      <span class="fp-link-key fp-link-ok ms-2"></span>150+</div>
-                    <div><span class="fp-link-key fp-link-weak"></span>100+
-                      <span class="fp-link-key fp-link-bad ms-2"></span>below 100</div>
-                    <div class="form-text small" id="fpMeshNote"></div>
-                  </div>
-                </div>
-                <div id="fpDaylightControls" class="ms-3 mb-1 d-none">
-                  <input type="range" id="fpDaylightTime" class="form-range" min="0" max="48" step="1"
-                         aria-label="Time of day">
-                  <div class="small d-none" id="fpDaylightReadout"><span id="fpDaylightClock"></span>
-                    · outside <span id="fpDaylightOutdoor"></span></div>
-                  <div class="form-text small" id="fpDaylightNote">Estimated from the saved plan's windows
-                    and today's weather.</div>
-                </div>
-                <div data-fp-view="heating">
-                <div class="form-check form-switch small">
-                  <input class="form-check-input" type="checkbox" id="fpToggleThermal">
-                  <label class="form-check-label" for="fpToggleThermal">Thermal overlay</label>
-                </div>
-                <div class="ms-3 mb-1">
-                  <select class="form-select form-select-sm py-0" id="fpThermalMode" style="font-size:0.78rem" disabled>
-                    <option value="rad" selected>Radiators only</option>
-                    <option value="rad+sun">Radiators + solar</option>
-                    <option value="sun">Solar gain only</option>
-                  </select>
-                </div>
-                <div class="form-check form-switch small ms-3">
-                  <input class="form-check-input" type="checkbox" id="fpToggleContours" disabled>
-                  <label class="form-check-label text-muted" for="fpToggleContours">Contour lines</label>
-                </div>
-                <div class="form-check form-switch small ms-3">
-                  <input class="form-check-input" type="checkbox" id="fpToggleColdZones" disabled>
-                  <label class="form-check-label text-muted" for="fpToggleColdZones">Cold zones</label>
-                </div>
-                <div id="fpColdZoneControls" style="display:none" class="ms-4 mb-1">
-                  <label class="small text-muted d-block mb-1">Building heat loss</label>
-                  <select class="form-select form-select-sm py-0" id="fpHeatFlux" style="font-size:0.78rem">
-                    <option value="30">Well insulated — 30 W/m²</option>
-                    <option value="50" selected>Average — 50 W/m²</option>
-                    <option value="80">Poorly insulated — 80 W/m²</option>
-                  </select>
-                </div>
-                </div>
-                <div class="d-flex gap-1 mt-2">
-                  <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomOut">−</button>
-                  <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomFit">Fit</button>
-                  <button class="btn btn-sm btn-outline-secondary flex-fill" id="fpZoomIn">+</button>
-                </div>
-              </div>
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">Compass (North)</div>
-                <div id="fpCompass" class="position-relative" style="width:120px;height:120px;margin:0 auto"></div>
-                <div class="small text-center mt-1">
-                  <input type="number" id="fpNorthDeg" class="form-control form-control-sm text-center" step="1" style="display:inline-block;width:80px"> °
-                </div>
-              </div>
-              <div class="mb-3">
-                <div class="small text-muted text-uppercase mb-1">Map</div>
-                <div class="form-check form-switch small">
-                  <input class="form-check-input" type="checkbox" id="fpToggleMap">
-                  <label class="form-check-label" for="fpToggleMap">Show map under the plan</label>
-                </div>
-                <div id="fpMapControls" class="d-none">
-                  <label class="form-label small mb-0" for="fpMapOpacity">Opacity</label>
-                  <input type="range" id="fpMapOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.6">
-                  <button class="btn btn-sm btn-outline-secondary w-100" id="fpMapAnchor">
-                    <i class="fas fa-location-crosshairs me-1"></i>Mark where the home pin is</button>
-                  <div class="form-text small">Turn the compass until the map's buildings line up with your walls.</div>
-                </div>
-                <div id="fpMapMissing" class="form-text small d-none">Set the home location in Settings to use the map.</div>
+                    <div class="form-check form-switch small">
+                      <input class="form-check-input" type="checkbox" id="fpToggleSun">
+                      <label class="form-check-label" for="fpToggleSun">Sun path (today)</label>
+                    </div>
+                    <div class="form-check form-switch small">
+                      <input class="form-check-input" type="checkbox" id="fpToggleDaylight">
+                      <label class="form-check-label" for="fpToggleDaylight">Daylight in each room</label>
+                    </div>
+                    <div data-fp-view="home">
+                      <div class="form-check form-switch small">
+                        <input class="form-check-input" type="checkbox" id="fpToggleMesh">
+                        <label class="form-check-label" for="fpToggleMesh">Mesh links</label>
+                      </div>
+                      <div class="form-check form-switch small">
+                        <input class="form-check-input" type="checkbox" id="fpToggleCoverage">
+                        <label class="form-check-label" for="fpToggleCoverage">Signal heatmap</label>
+                      </div>
+                      <div id="fpCoverageControls" class="ms-3 mb-1 small d-none">
+                        <div id="fpCoverageModel" class="text-muted"></div>
+                        <div id="fpCoverageAdvice" class="mt-1"></div>
+                      </div>
+                      <div id="fpMeshControls" class="ms-3 mb-1 small d-none">
+                        <div><span class="fp-link-key fp-link-good"></span>LQI 200+
+                          <span class="fp-link-key fp-link-ok ms-2"></span>150+</div>
+                        <div><span class="fp-link-key fp-link-weak"></span>100+
+                          <span class="fp-link-key fp-link-bad ms-2"></span>below 100</div>
+                        <div class="form-text small" id="fpMeshNote"></div>
+                      </div>
+                    </div>
+                    <div id="fpDaylightControls" class="ms-3 mb-1 d-none">
+                      <input type="range" id="fpDaylightTime" class="form-range" min="0" max="48" step="1"
+                             aria-label="Time of day">
+                      <div class="small d-none" id="fpDaylightReadout"><span id="fpDaylightClock"></span>
+                        · outside <span id="fpDaylightOutdoor"></span></div>
+                      <div class="form-text small" id="fpDaylightNote">Estimated from the saved plan's windows
+                        and today's weather.</div>
+                    </div>
+                    <div data-fp-view="heating">
+                    <div class="form-check form-switch small">
+                      <input class="form-check-input" type="checkbox" id="fpToggleThermal">
+                      <label class="form-check-label" for="fpToggleThermal">Thermal overlay</label>
+                    </div>
+                    <div class="ms-3 mb-1">
+                      <select class="form-select form-select-sm py-0" id="fpThermalMode" style="font-size:0.78rem" disabled>
+                        <option value="rad" selected>Radiators only</option>
+                        <option value="rad+sun">Radiators + solar</option>
+                        <option value="sun">Solar gain only</option>
+                      </select>
+                    </div>
+                    <div class="form-check form-switch small ms-3">
+                      <input class="form-check-input" type="checkbox" id="fpToggleContours" disabled>
+                      <label class="form-check-label text-muted" for="fpToggleContours">Contour lines</label>
+                    </div>
+                    <div class="form-check form-switch small ms-3">
+                      <input class="form-check-input" type="checkbox" id="fpToggleColdZones" disabled>
+                      <label class="form-check-label text-muted" for="fpToggleColdZones">Cold zones</label>
+                    </div>
+                    <div id="fpColdZoneControls" style="display:none" class="ms-4 mb-1">
+                      <label class="small text-muted d-block mb-1">Building heat loss</label>
+                      <select class="form-select form-select-sm py-0" id="fpHeatFlux" style="font-size:0.78rem">
+                        <option value="30">Well insulated — 30 W/m²</option>
+                        <option value="50" selected>Average — 50 W/m²</option>
+                        <option value="80">Poorly insulated — 80 W/m²</option>
+                      </select>
+                    </div>
+                    </div>
+                </section>
+                <section class="fp-panel" id="fpPanel-image" data-fp-panel-body="image" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Background image</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <input type="file" id="fpImageFile" class="form-control form-control-sm mb-2"
+                           accept=".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf">
+                    <div class="d-flex gap-1 mb-2">
+                      <button class="btn btn-sm btn-outline-danger flex-fill" id="fpRemoveImage" disabled><i class="fas fa-trash me-1"></i>Remove</button>
+                    </div>
+                    <label class="form-label small mb-0">Opacity</label>
+                    <input type="range" id="fpImageOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.5">
+                    <div class="form-check form-switch small mt-1">
+                      <input class="form-check-input" type="checkbox" id="fpToggleBackground" checked>
+                      <label class="form-check-label" for="fpToggleBackground">Show image</label>
+                    </div>
+                    <div id="fpBgAdjust" class="mt-2 d-none">
+                      <button class="btn btn-sm btn-outline-warning w-100 mb-2" id="fpBgFit"
+                              title="Scale and centre the image over the walls already drawn">
+                        <i class="fas fa-expand me-1"></i>Fit image to walls</button>
+                      <div class="row g-1">
+                        <div class="col-6">
+                          <label class="form-label small mb-0" for="fpBgWidth">Width (m)</label>
+                          <input type="number" step="0.05" min="0.05" class="form-control form-control-sm py-0" id="fpBgWidth">
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label small mb-0" for="fpBgRot">Rotation (&deg;)</label>
+                          <input type="number" step="0.5" class="form-control form-control-sm py-0" id="fpBgRot">
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label small mb-0" for="fpBgX">Left X (m)</label>
+                          <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgX">
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label small mb-0" for="fpBgY">Bottom Y (m)</label>
+                          <input type="number" step="0.05" class="form-control form-control-sm py-0" id="fpBgY">
+                        </div>
+                      </div>
+                      <div class="form-text small mt-1">Scale <span id="fpBgPpm">&mdash;</span> px/m. Pick
+                        <strong>Adjust image</strong> in Draw to drag the image, or its corners to resize;
+                        arrow keys nudge.</div>
+                    </div>
+                </section>
+                <section class="fp-panel" id="fpPanel-orient" data-fp-panel-body="orient" hidden>
+                  <header class="fp-panel-head">
+                    <h6>Orientation</h6>
+                    <button type="button" class="fp-panel-close" data-fp-panel-close title="Hide panel"
+                            aria-label="Hide panel"><i class="fas fa-angles-left"></i></button>
+                  </header>
+                    <div class="fp-panel-sub">Compass (North)</div>
+                    <div id="fpCompass" class="position-relative" style="width:120px;height:120px;margin:0 auto"></div>
+                    <div class="small text-center mt-1">
+                      <input type="number" id="fpNorthDeg" class="form-control form-control-sm text-center" step="1" style="display:inline-block;width:80px"> °
+                    </div>
+                    <div class="fp-panel-sub mt-3">Map</div>
+                    <div class="form-check form-switch small">
+                      <input class="form-check-input" type="checkbox" id="fpToggleMap">
+                      <label class="form-check-label" for="fpToggleMap">Show map under the plan</label>
+                    </div>
+                    <div id="fpMapControls" class="d-none">
+                      <label class="form-label small mb-0" for="fpMapOpacity">Opacity</label>
+                      <input type="range" id="fpMapOpacity" class="form-range" min="0.05" max="1" step="0.05" value="0.6">
+                      <button class="btn btn-sm btn-outline-secondary w-100" id="fpMapAnchor">
+                        <i class="fas fa-location-crosshairs me-1"></i>Mark where the home pin is</button>
+                      <div class="form-text small">Turn the compass until the map's buildings line up with your walls.</div>
+                    </div>
+                    <div id="fpMapMissing" class="form-text small d-none">Set the home location in Settings to use the map.</div>
+                </section>
               </div>
             </div>
 
@@ -554,6 +629,11 @@ function rootHtml() {
                 <g id="fpScene"></g>
                 <g id="fpOverlay"></g>
               </svg>
+              <div id="fpZoomCtl" role="group" aria-label="Zoom">
+                <button type="button" id="fpZoomIn" title="Zoom in" aria-label="Zoom in"><i class="fas fa-plus"></i></button>
+                <button type="button" id="fpZoomFit" title="Fit the plan" aria-label="Fit the plan"><i class="fas fa-expand"></i></button>
+                <button type="button" id="fpZoomOut" title="Zoom out" aria-label="Zoom out"><i class="fas fa-minus"></i></button>
+              </div>
               <div id="fpScaleBar"><span id="fpScaleBarRule"></span><span id="fpScaleBarLabel"></span></div>
               <div id="fpLegend" style="display:none"></div>
             </div>
@@ -595,9 +675,16 @@ function bindModalEvents() {
     document.getElementById('fpSwitchMode')?.addEventListener('click', switchToManual);
     document.getElementById('fpAddLevel').addEventListener('click', addLevel);
     document.getElementById('fpAddCircuit').addEventListener('click', addCircuit);
+    _root.querySelectorAll('.fp-rail-btn').forEach(b => {
+        // A second click on the open panel's button hides it.
+        b.addEventListener('click', () => showPanel(b.classList.contains('active') ? '' : b.dataset.fpPanel));
+    });
+    _root.querySelectorAll('[data-fp-panel-close]').forEach(b => b.addEventListener('click', () => showPanel('')));
     document.querySelectorAll('#fpToolbar [data-tool]').forEach(b => {
         b.addEventListener('click', () => {
             setTool(b.dataset.tool);
+            // The image's position and size boxes live in the Image panel.
+            if (b.dataset.tool === 'bg') showPanel('image');
             // On a phone the tools drawer covers the canvas — picking a tool
             // means "I'm about to draw", so get out of the way automatically.
             closeMobileDrawers();
@@ -4194,7 +4281,7 @@ function renderLevelProps(lvl) {
         <div><strong>Pan/zoom:</strong> Shift+drag (or middle-mouse) to pan, wheel to zoom.</div>
         <div class="mt-1"><strong>Walls:</strong> click to start a chain, click again to add each vertex. Press <kbd>Enter</kbd> or right-click or double-click to finish, <kbd>Esc</kbd> to cancel, <kbd>Backspace</kbd> to undo last vertex. Click on the first vertex to close back into it.</div>
         <div class="mt-1"><strong>Rooms:</strong> click the marked wall corners in turn — edges follow the walls between them — and click the first corner again to close. Rooms can't overlap or cut through a wall; draw an internal wall where an open-plan room splits.</div>
-        <div class="mt-1"><strong>Precision:</strong> set the Snap and Angle steps in the sidebar; hold <kbd>Alt</kbd> to disable snapping entirely, or <kbd>Ctrl</kbd> while drawing walls to lock the bearing to the Angle step. Endpoint merging follows the zoom — zoom in to place points close together without them joining.</div>
+        <div class="mt-1"><strong>Precision:</strong> set the Snap and Angle steps in the Draw panel; hold <kbd>Alt</kbd> to disable snapping entirely, or <kbd>Ctrl</kbd> while drawing walls to lock the bearing to the Angle step. Endpoint merging follows the zoom — zoom in to place points close together without them joining.</div>
         <div class="mt-1"><strong>Radiator/Sensor:</strong> place anywhere; pick the room from the panel. <strong>Contact:</strong> place near a window/door (or anywhere) and pick the opening from the panel.</div>
       </div>`;
 }
@@ -4273,7 +4360,7 @@ function renderRoomProps(r) {
     const circuitSection = planCircuits.length > 0
         ? `<div class="mb-2"><label class="form-label small">Circuit</label>
              <select class="form-select form-select-sm" data-prop="room.circuit_id">${circuitOpts}</select></div>`
-        : `<div class="mb-2 small text-muted fst-italic"><i class="fas fa-info-circle me-1"></i>Add a circuit in the sidebar to assign this room.</div>`;
+        : `<div class="mb-2 small text-muted fst-italic"><i class="fas fa-info-circle me-1"></i>Add a circuit in the Circuits panel to assign this room.</div>`;
     const oohAction = r.out_of_hours_action || 'setback';
     const etMode = r.external_temp_mode || 'advisory';
     return `

@@ -218,8 +218,12 @@ The editor's SVG emits CSS classes only; every stroke and fill colour is
 inherited from CSS variables, so a `[data-theme="dark"]` switch on `<html>`
 repaints instantly without re-rendering the SVG.
 
-The desktop editor is a fixed three-column layout: a 240 px tools/levels rail, a
-flexible canvas, and a 300 px properties rail. On a phone those two rails alone
+The desktop editor is a three-column layout: a sidebar, a flexible canvas, and a
+300 px properties rail. The sidebar is a 64 px icon rail (Draw, Levels,
+Devices or Circuits, Layers, Image, Orient) with one 248 px panel open beside it
+at a time. Clicking the open panel's button again hides the panel and gives the
+canvas the room. The open panel is remembered per browser (`fp.sidebarPanel` in
+localStorage), and zoom floats on the canvas (`#fpZoomCtl`). On a phone those two rails alone
 (540 px) are wider than the viewport, leaving the canvas zero room. Below 768 px
 the rails become off-canvas drawers that slide *over* the canvas instead of
 squeezing it, toggled by the header buttons in `floor-plan.js`
