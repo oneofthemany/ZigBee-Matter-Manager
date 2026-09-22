@@ -294,6 +294,11 @@ export function createHumanizer(ctx = {}) {
         if (a === 'announce') return `announce on ${who}: “${String(s.text || '').slice(0, 40)}”`;
         if (a === 'control') return `${s.control_action || 'control'} ${who}`;
         if (a === 'play_zone') return `play ${who}`;
+        if (a === 'zone_lock') {
+            const la = s.lock_action || 'toggle';
+            const verb = la === 'lock' ? 'lock' : la === 'unlock' ? 'unlock' : 'toggle the lock on';
+            return `${verb} ${who} ${la === 'unlock' ? 'back into zones' : 'out of zones'}${la !== 'unlock' && s.lock_minutes ? ` for ${s.lock_minutes} min` : ''}`;
+        }
         if (a === 'play_radio') return `play ${s.label || 'radio'} on ${who}`;
         if (a === 'play_tidal') return `play ${s.label || s.tidal_kind || 'Tidal'} on ${who}`;
         return `media: ${a}`;

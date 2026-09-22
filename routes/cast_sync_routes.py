@@ -85,6 +85,15 @@ class SyncGroupConfigBody(BaseModel):
     crossfade_s: Optional[float] = None
 
 
+class SyncPolicyBody(BaseModel):
+    """A device's zone policy. Any player id of the device will do — a WiiM
+    card's ``wiim:<ip>`` is matched to its Cast id."""
+    player_id: str
+    mode: Optional[str] = None   # auto | sticky | reclaim; None = unchanged
+    lock: Optional[str] = None   # lock | unlock | toggle; None = unchanged
+    minutes: float = 0           # bounds a lock; 0 = until lifted
+
+
 def register_cast_sync_routes(app: FastAPI, get_media):
     def _sync():
         svc = get_media()
@@ -174,6 +183,26 @@ def register_cast_sync_routes(app: FastAPI, get_media):
         if sync is None:
             return {"success": False, "error": "OpenZone is disabled"}
         return sync.align_cancel()
+
+    @app.get("/api/media/sync/policies")
+    async def sync_policies():
+        sync = _sync()
+        if sync is None:
+            return {"success": True, "policies": {}}
+        return {"success": True, "policies": sync.policies()}
+
+    @app.post("/api/media/sync/policy")
+    async def sync_policy(body: SyncPolicyBody,
+                          principal: Principal = Depends(require_authenticated)):
+        """Lock a speaker out of zones, or set how it yields (open-zone.md
+        §7.1). A lock takes effect on a running session at once."""
+        sync = _sync()
+        if sync is None:
+            return {"success": False, "error": "OpenZone is disabled"}
+        return await sync.set_policy(
+            body.player_id, mode=body.mode, lock=body.lock,
+            minutes=max(0.0, float(body.minutes or 0)),
+            by=getattr(getattr(principal, "user", None), "username", "") or "")
 
     @app.get("/api/media/sync/groups")
     async def sync_groups():

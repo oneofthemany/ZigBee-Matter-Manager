@@ -61,7 +61,12 @@ media:
                               # falls back to a splice. 1.2 is a good start.
   wiim:
     enabled: false
-    devices: []               # manual IPs, e.g. ["192.168.1.50"]; mDNS discovery later
+    devices: []               # manual IPs, e.g. ["192.168.1.50"] — optional:
+                              # WiiM/LinkPlay boxes are found among the Cast
+                              # hosts either way, so a zone always knows when
+                              # one is on HDMI-ARC/optical/BT and leaves it be
+    discovery: true           # also add discovered boxes as WiiM players
+    state_file: ./data/linkplay_state.json   # learned per-box Cast mode
   radio_browser:
     enabled: true
   tts:                        # text-to-speech for automation announcements

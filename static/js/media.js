@@ -130,6 +130,7 @@ export function initMedia() {
     window.mediaSyncCalibrate = syncCalibrate;
     window.mediaSyncTrim = syncSetTrim;
     window.mediaSyncNudge = syncNudgeTrim;
+    window.mediaSyncPolicy = syncSetPolicy;
     window.mediaSyncTrimToggle = syncTrimToggle;
     window.mediaSyncAlign = syncAlignOpen;
     window.mediaSyncAlignStart = syncAlignStart;
@@ -2074,8 +2075,12 @@ function _syncStatLine(st) {
     // faults with three different fixes, so they are counted apart.
     const parks = s.parks > 0 ? ` · dropped ${s.parks}×` : '';
     const quiet = s.silent_s > 10 ? ` · quiet ${s.silent_s}s` : '';
+    // A WiiM/LinkPlay member's input, read off the box each few seconds: the
+    // mode is what to quote when a speaker yields and should not have.
+    const inp = st.input
+        ? ` · input ${st.input.owner || 'network'} (mode ${st.input.mode})` : '';
     return `offset ${s.offset_ms} ms${rtt}${drift} · late ${s.late}`
-        + ` · resyncs ${s.resyncs}${reloads}${gaps}${parks}${quiet}`;
+        + ` · resyncs ${s.resyncs}${reloads}${gaps}${parks}${quiet}${inp}`;
 }
 
 // Deviation meter: a centered bar on the same ±500 ms scale as the trim
@@ -2115,7 +2120,15 @@ function _syncMeterPaint(pid, st) {
 // off the network rather than slow to start — and it reads differently to the
 // listener: the zone is deliberately playing on without it, and it will rejoin
 // by itself. Showing it as "launching…" indefinitely hid exactly that.
+// "Yielded" is present but in use by something else — another Cast app, or a
+// WiiM switched to HDMI-ARC / optical / Bluetooth — and is left alone rather
+// than re-cast over until it has been free for a while.
 function _syncPill(d) {
+    if (d && d.yielded)
+        return '<span class="badge bg-info text-dark ms-1" title="In use by '
+            + esc(d.yielded) + ' — the zone is leaving it alone and will'
+            + ' let it back in once it is free">yielded · '
+            + esc(d.yielded) + '</span>';
     if (d && d.parked)
         return '<span class="badge bg-warning text-dark ms-1"'
             + ' title="Off the network — the zone is playing without it and'
@@ -2141,6 +2154,7 @@ function _syncMemberRow(m, groupActive) {
             <span class="text-muted" id="synctrimlbl-${pidE}">${m.trim_ms} ms</span>
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" title="1 ms later"
                     onclick="window.mediaSyncNudge('${pidE}', 1)">+</button>
+            ${_syncLockMenu(m)}
             <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step"
                     title="Align by ear against another speaker"
                     aria-label="Align ${esc(m.name)} by ear"
@@ -2168,6 +2182,69 @@ function _syncMemberRow(m, groupActive) {
         </div>
         <div class="small text-muted" id="syncstat-${pidE}">${_syncStatLine(st)}</div>
       </div>`;
+}
+
+// A speaker's zone policy (open-zone.md §7.1). The lock is the user saying
+// "leave this one alone" — gaming on a WiiM's HDMI-ARC while the zone plays
+// on elsewhere — and the mode is what happens when its input changes by
+// itself. Stored per device on the server, so rules and buttons share it.
+const _SYNC_MODES = [
+    ['auto', 'Step aside, rejoin when free'],
+    ['sticky', 'Step aside, stay out until unlocked'],
+    ['reclaim', 'Always take it back'],
+];
+
+function _syncPolicy(pid) {
+    return ((_syncStatus || {}).policies || {})[pid] || { mode: 'auto', lock: null };
+}
+
+function _syncLockTitle(p) {
+    if (p.lock) {
+        const until = p.lock.until
+            ? ' until ' + new Date(p.lock.until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '';
+        return `Locked out of zones${until}${p.lock.reason ? ' — ' + p.lock.reason : ''}`;
+    }
+    return 'Zone lock: ' + (_SYNC_MODES.find(([v]) => v === p.mode) || _SYNC_MODES[0])[1];
+}
+
+function _syncLockMenu(m) {
+    const pidE = esc(m.player_id);
+    const p = _syncPolicy(m.player_id);
+    const icon = p.lock ? 'fa-lock text-danger'
+        : p.mode === 'sticky' ? 'fa-thumbtack'
+        : p.mode === 'reclaim' ? 'fa-hand' : 'fa-lock-open';
+    const item = (body, label, on = false) =>
+        `<li><button class="dropdown-item small${on ? ' active' : ''}" type="button"
+             onclick='window.mediaSyncPolicy("${pidE}", ${JSON.stringify(body)})'>${label}</button></li>`;
+    const locks = p.lock
+        ? item({ lock: 'unlock' }, '<i class="fas fa-lock-open me-1"></i>Unlock — give back to the zone')
+        : item({ lock: 'lock' }, '<i class="fas fa-lock me-1"></i>Lock until I unlock')
+          + item({ lock: 'lock', minutes: 60 }, 'Lock for 1 hour')
+          + item({ lock: 'lock', minutes: 120 }, 'Lock for 2 hours')
+          + item({ lock: 'lock', minutes: 240 }, 'Lock for 4 hours');
+    return `<div class="dropdown d-inline-block">
+        <button class="btn btn-outline-secondary btn-sm py-0 px-1 zmm-trim-step" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                title="${esc(_syncLockTitle(p))}" aria-label="Zone lock for ${esc(m.name)}">
+          <i class="fas ${icon}"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><h6 class="dropdown-header">${esc(_syncLockTitle(p))}</h6></li>
+          ${locks}
+          <li><hr class="dropdown-divider"></li>
+          <li><h6 class="dropdown-header">When its input or app changes</h6></li>
+          ${_SYNC_MODES.map(([v, l]) => item({ mode: v }, l, p.mode === v)).join('')}
+        </ul>
+      </div>`;
+}
+
+async function syncSetPolicy(pid, body) {
+    const r = await apiPost('/api/media/sync/policy', { player_id: pid, ...body });
+    if (!r || !r.success) { toast((r && r.error) || 'Could not change the zone lock', 'error'); return; }
+    toast(r.lock ? 'Locked out of zones' : body.lock === 'unlock'
+        ? 'Unlocked — handed back to the zone' : 'Zone policy saved', 'success');
+    renderSyncPane();
 }
 
 // Below lg a member row's trim slider is folded away until asked for. It is

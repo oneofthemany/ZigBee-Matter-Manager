@@ -130,6 +130,12 @@ class CastPlayerProvider(PlayerProvider):
             return ""
         return (getattr(info, "host", "") or "").strip()
 
+    def device_hosts(self) -> List[str]:
+        """Every address a discovered speaker (not a group) is answering on."""
+        return sorted({(getattr(i, "host", "") or "").strip()
+                       for i in list(self._infos.values())
+                       if not _is_group(i)} - {""})
+
     def model_key(self, player_id: str) -> str:
         """A stable identity for "devices that behave like this one".
 

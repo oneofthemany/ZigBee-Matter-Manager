@@ -64,6 +64,17 @@ class WiiMPlayerProvider(PlayerProvider):
         self._eq_presets: Dict[str, Optional[List[str]]] = {}
         self._eq_current: Dict[str, str] = {}
 
+    def add_device(self, ip: str, ident: Optional[dict] = None) -> None:
+        """Adopt a discovered device (LinkPlayDirectory.on_found)."""
+        if ip in self._ips:
+            return
+        self._ips.append(ip)
+        if ident:
+            if ident.get("name"):
+                self._names[ip] = ident["name"]
+            if ident.get("project"):
+                self._models[ip] = ident["project"]
+
     # HTTP plumbing
     async def _command(self, ip: str, command: str) -> Optional[str]:
         """Issue one httpapi command. Returns raw text body, or None on failure."""

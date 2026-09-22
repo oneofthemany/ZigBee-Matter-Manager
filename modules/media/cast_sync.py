@@ -119,6 +119,40 @@ STREAM_INTERRUPT_RELOAD_MIN_S = 10.0
 # How often a parked device is probed for its return. Frequent enough to catch
 # a multi-minute outage ending, and cheap: resolution is one mDNS lookup (§7.1).
 STREAM_PARK_RETRY_S = 30.0
+# Yielded: present, but something else owns the speaker — another Cast app,
+# or a physical input on a LinkPlay box (open-zone.md §7.1). Re-checked this
+# often, and let back in only once free for the whole settle window: an input
+# flaps as a TV wakes or sleeps, and a Cast app can end one track early.
+STREAM_YIELD_PROBE_S = 5.0
+STREAM_YIELD_FREE_CAST_S = 6.0
+STREAM_YIELD_FREE_INPUT_S = 20.0
+# While a zone plays, a LinkPlay member's input is read this often: Cast may go
+# on reporting PLAYING from a box that has switched to HDMI-ARC, and without
+# this the silence sweep is the only thing that notices (tens of seconds of
+# the zone "playing" a speaker that is carrying the TV). Two readings in a row
+# before acting, so one glitched reply does not drop a speaker.
+STREAM_INPUT_POLL_S = 2.5
+STREAM_INPUT_STRIKES = 2
+# A lag reading this recent means Cast's PLAYING is live, not a stale status —
+# the only condition under which a box's mode is learned as Cast's own.
+STREAM_INPUT_FRESH_S = 6.0
+# A lock is the user saying so, not a sensor reading: lifting it lets the
+# device straight back in at the next probe.
+STREAM_YIELD_FREE_LOCK_S = 0.0
+# Per-device zone policy (open-zone.md §7.1). ``auto`` yields to whatever else
+# is using a device and rejoins once it is free; ``sticky`` turns another input
+# into a lock, so only a person lets it back; ``reclaim`` never yields — the
+# zone takes the device back, as it did before yielding existed. A lock is
+# orthogonal to all three and outranks them.
+POLICY_MODES = ("auto", "sticky", "reclaim")
+# Lifting a lock is handing the speaker back: the next LOAD goes ahead even
+# over another input (so a TV left on HDMI does not keep it), once, within
+# this long — a session started hours later must not take it from a game.
+HANDBACK_S = 600.0
+# The Cast home screen: nothing owns the device.
+BACKDROP_APP_ID = "E8C28D3C"
+# Every URL a zone serves its devices, whatever the session.
+STREAM_PATH = "/sync/stream/"
 
 # --- Pre-roll latency probe (open-zone.md §7.3) ----------------------------
 # Every device is LOADed onto a silent lead as the source opens and its
@@ -312,6 +346,22 @@ class _Stream:
         self.park_probe_at: float = 0.0    # next resolution attempt
         self.park_probing: bool = False    # one probe in flight at a time
         self.parks: int = 0
+        # A park is either absence or yielding (_yield_stream): "" for the
+        # former, else "cast" or "input" for what took the device, with the
+        # owner named in ``yield_reason`` and the start of its current free
+        # run in ``free_since``.
+        self.yield_kind: str = ""
+        self.yield_reason: str = ""
+        self.free_since: Optional[float] = None
+        self.yields: int = 0
+        # Input polling of a LinkPlay member (_sweep_inputs). ``input_mode``
+        # is None for a device that is not LinkPlay or has not answered.
+        self.input_check_at: float = 0.0
+        self.input_checking: bool = False
+        self.input_strikes: int = 0
+        self.input_mode: Optional[int] = None
+        self.input_owner: str = ""
+        self.input_learn_mode: Optional[int] = None   # last live candidate
         self.state: str = ""
         self.interrupted_since: Optional[float] = None
         self.interrupt_held: float = 0.0
@@ -358,6 +408,18 @@ class _Stream:
         self.resampler = None
 
 
+def _lock_label(lock: dict) -> str:
+    """How a lock reads where a yield's owner would: "locked", "locked until
+    21:30", "locked — HDMI-ARC"."""
+    out = "locked"
+    until = (lock or {}).get("until")
+    if until:
+        out += f" until {datetime.fromtimestamp(float(until)).strftime('%H:%M')}"
+    if (lock or {}).get("reason"):
+        out += f" — {lock['reason']}"
+    return out
+
+
 class _ConnWatch:
     """Control-socket status listener for one Cast device."""
 
@@ -398,6 +460,15 @@ class OpenZone:
         # whichever ecosystem owns the device rather than only of Cast. Unset
         # falls back to the Cast provider (_model_key).
         self._provider_resolver = None
+        # async (host) -> owner name | None: what, other than a network
+        # stream, holds this box's input (LinkPlay HDMI-ARC, optical, BT…).
+        # Unset means every device is judged on its Cast state alone.
+        self._input_resolver = None
+        # async (host) -> {"mode", "owner", "input", "stale"} | None, and
+        # (host, mode) -> bool: the per-poll reading and the record of the
+        # mode a box reports while a zone plays on it (_check_input).
+        self._input_reader = None
+        self._input_learner = None
         self.http_port = int(cfg.get("http_port", 8010))
         self.app_id = (cfg.get("app_id") or "").strip()
         self._trims_file = cfg.get("trims_file", "./data/cast_sync_trims.json")
@@ -413,6 +484,9 @@ class OpenZone:
         self._graph = TrimGraph(
             lambda: self._read_json(self._graph_file),
             lambda d: self._write_json(self._graph_file, d))
+        self._policy_file = cfg.get("policy_file",
+                                    "./data/zone_device_policy.json")
+        self._policies: Dict[str, dict] = self._read_json(self._policy_file)
         self._groups_file = cfg.get("groups_file", "./data/cast_sync_groups.json")
         self._groups: Dict[str, dict] = self._read_json(self._groups_file)
         self._active_group: str = ""               # gid of the running session
@@ -578,6 +652,19 @@ class OpenZone:
                     "error": "This zone's source cannot be skipped"}
         logger.info(f"Zone queue moved {previous + 1} → {index + 1} of {n}")
         return {"success": True, "index": index}
+
+    def set_input_resolver(self, fn) -> None:
+        """Supply ``async (host) -> owner | None`` naming what holds a device's
+        input when it is not the network — the one thing a Cast receiver
+        cannot report about itself (_foreign_owner)."""
+        self._input_resolver = fn
+
+    def set_input_reader(self, reader, learner=None) -> None:
+        """Supply the per-poll input reading for a running session
+        (_sweep_inputs), and optionally a learner told which mode a box
+        reports while the zone is audibly playing on it."""
+        self._input_reader = reader
+        self._input_learner = learner
 
     def set_provider_resolver(self, resolver) -> None:
         """Supply ``(player_id) -> PlayerProvider`` so model identity, and the
@@ -1194,7 +1281,11 @@ class OpenZone:
                                           float(m.get("drift_ppm", 0.0))))
                     st.rate_prior = st.rate_ppm
                     self._streams[sid] = st
-                    task = asyncio.create_task(self._launch_stream(pid, sid))
+                    # Starting a zone is a deliberate takeover of other Cast
+                    # apps, as casting to one speaker is — but not of a box
+                    # someone has switched to another input (_foreign_owner).
+                    task = asyncio.create_task(
+                        self._launch_stream(pid, sid, gate="input"))
                 else:
                     task = asyncio.create_task(self._launch(pid, sid))
                 self._launch_tasks.append(task)
@@ -1343,7 +1434,14 @@ class OpenZone:
                 "name": info["name"],
                 "connected": (r is not None) or (s is not None and s.connected
                                                  and s.parked_since is None),
-                "parked": bool(s is not None and s.parked_since is not None),
+                "parked": bool(s is not None and s.parked_since is not None
+                               and not s.yield_kind),
+                "yielded": (s.yield_reason if s is not None
+                            and s.parked_since is not None
+                            and s.yield_kind else ""),
+                "input": ({"mode": s.input_mode, "owner": s.input_owner}
+                          if s is not None and s.input_mode is not None
+                          else None),
                 "trim_ms": (s.trim_ms if s is not None
                             else self.trim_ms(info["player_id"])),
                 "stats": (r.stats if r else (s.stats if s else {})),
@@ -1373,6 +1471,7 @@ class OpenZone:
                 "min_s": _src.XFADE_MIN_S,
             },
             "devices": devices,
+            "policies": self.policies(),
         }
 
     async def set_trim(self, player_id: str, trim_ms: int) -> dict:
@@ -1754,8 +1853,8 @@ class OpenZone:
         return {"success": True}
 
     def _player_name(self, player_id: str) -> str:
-        uuid_str = player_id.split(":", 1)[1]
-        info = self.cast._infos.get(uuid_str)
+        uuid_str = player_id.split(":", 1)[-1]
+        info = (getattr(self.cast, "_infos", None) or {}).get(uuid_str)
         return getattr(info, "friendly_name", player_id) if info else player_id
 
     async def _launch(self, player_id: str, sid: str):
@@ -1804,9 +1903,16 @@ class OpenZone:
         except Exception:
             return socket.gethostbyname(socket.gethostname())
 
-    async def _launch_stream(self, player_id: str, sid: str):
+    async def _launch_stream(self, player_id: str, sid: str,
+                             gate: str = "full"):
         """Point the built-in default media receiver at this device's live
-        WAV stream. One retry, mirroring the provider's cold-start hardening."""
+        WAV stream. One retry, mirroring the provider's cold-start hardening.
+
+        Every LOAD a zone issues comes through here, so this is where a device
+        someone else is using is left alone (_foreign_owner). ``gate`` is
+        "full" for recovery, "input" for session start (a deliberate takeover
+        of other Cast apps, not of a physical input), "none" when the caller
+        has just checked."""
         uuid_str = player_id.split(":", 1)[1]
         cast = await self.cast._get_cast(uuid_str)
         if not cast:
@@ -1822,6 +1928,13 @@ class OpenZone:
                 logger.warning(f"Sync stream launch: {player_id} unreachable")
             return
         self._watch_connection(cast, uuid_str, self._streams.get(sid))
+        st = self._streams.get(sid)
+        if st is not None and gate != "none":
+            owner = await self._foreign_owner(st, cast_apps=(gate == "full"))
+            if owner is not None:
+                self._yield_stream(st, *owner)
+                return
+        self._consume_handback(player_id)
         host = getattr(getattr(cast, "cast_info", None), "host", None) or \
             getattr(getattr(cast, "socket_client", None), "host", "")
         url = (f"http://{self._local_ip_for(host)}:{self.http_port}"
@@ -2002,6 +2115,7 @@ class OpenZone:
                     if st is not None:
                         st.last_lag_at = time.monotonic()
                 self._sweep_parked()
+                self._sweep_inputs()
                 self._sweep_interrupted()
                 self._sweep_silent()
                 if not lags:
@@ -2453,6 +2567,13 @@ class OpenZone:
             status = mc.status
             state = getattr(status, "player_state", "") or ""
             st.state = state
+            owner = (None if self.policy(st.player_id)["mode"] == "reclaim"
+                     else self._cast_owner(cast))
+            if owner is not None:
+                # Someone else's app or media, not an interruption of ours:
+                # the interruption rung would re-LOAD over it.
+                self._yield_stream(st, "cast", owner)
+                return None
             if state != "PLAYING":
                 if st.interrupted_since is None:
                     st.interrupted_since = time.monotonic()
@@ -2914,7 +3035,8 @@ class OpenZone:
         # is escalated rather than left in the zone unwatched.
         st.last_lag_at = time.monotonic()
 
-    def _park_stream(self, st: _Stream, reason: str) -> None:
+    def _park_stream(self, st: _Stream, reason: str,
+                     quiet: bool = False) -> None:
         """Take an absent device out of the group until it answers again
         (open-zone.md §7.1).
 
@@ -2935,9 +3057,15 @@ class OpenZone:
         now = time.monotonic()
         if st.parked_since is not None:
             st.park_probe_at = now + STREAM_PARK_RETRY_S
+            # Resolution failing now outranks why it was yielded: it is
+            # absent, so it is probed as absent until it answers.
+            st.yield_kind = ""
+            st.yield_reason = ""
             return
         st.parked_since = now
         st.parks += 1
+        st.yield_kind = ""
+        st.yield_reason = ""
         st.park_probe_at = now + STREAM_PARK_RETRY_S
         st.acquired = False
         st.err_hist = []
@@ -2954,10 +3082,279 @@ class OpenZone:
         # that was not on the network never answered that question.
         st.reloads_since_align = 0
         st.stats = {**st.stats, "parked": True, "parks": st.parks}
+        if quiet:
+            return
         logger.warning(
             f"Sync stream parking {st.name} — {reason}. Out of the group "
             f"until it answers; the zone is not re-aligned for a device that "
             f"is not on the network (park #{st.parks})")
+
+    # Per-device policy and locks
+    def _policy_key(self, player_id: str) -> str:
+        """The zone-member id a policy is stored under.
+
+        A zone streams to ``cast:<uuid>``, but a lock is set on whatever the
+        user is looking at — a WiiM card is ``wiim:<ip>`` — so any other id is
+        matched to the Cast device answering on the same address. The uuid is
+        stable where the address follows the DHCP lease."""
+        pid = (player_id or "").strip()
+        if not pid or pid.startswith("cast:"):
+            return pid
+        host = self._device_key(pid)
+        infos = getattr(self.cast, "_infos", None) or {}
+        for uuid_str, info in list(infos.items()):
+            if host and (getattr(info, "host", "") or "").strip() == host \
+                    and not getattr(info, "is_group", False):
+                return f"cast:{uuid_str}"
+        return pid
+
+    def policy(self, player_id: str) -> dict:
+        """``{"mode", "lock"}`` for a device; ``lock`` is None or
+        ``{"until": epoch|None, "reason", "by", "at"}``. An expired lock is
+        cleared here, so every reader sees the same answer."""
+        key = self._policy_key(player_id)
+        rec = self._policies.get(key) or {}
+        lock = rec.get("lock")
+        if lock and lock.get("until") and time.time() >= float(lock["until"]):
+            rec = {**rec, "lock": None}
+            self._store_policy(key, rec)
+            logger.info(f"Zone lock on {self._player_name(key)} expired")
+            lock = None
+        mode = rec.get("mode") if rec.get("mode") in POLICY_MODES else "auto"
+        handback = (not lock and float(rec.get("handback_until") or 0)
+                    > time.time())
+        return {"mode": mode, "lock": lock or None, "handback": handback}
+
+    def policies(self) -> dict:
+        return {pid: {**self.policy(pid), "name": self._player_name(pid)}
+                for pid in list(self._policies)}
+
+    def _store_policy(self, key: str, rec: dict) -> None:
+        if float(rec.get("handback_until") or 0) <= time.time():
+            rec.pop("handback_until", None)
+        if (rec.get("mode", "auto") == "auto" and not rec.get("lock")
+                and not rec.get("handback_until")):
+            self._policies.pop(key, None)       # the default is not stored
+        else:
+            self._policies[key] = rec
+        self._write_json(self._policy_file, self._policies)
+
+    def _set_lock(self, player_id: str, locked: bool, minutes: float = 0,
+                  reason: str = "", by: str = "") -> Optional[dict]:
+        key = self._policy_key(player_id)
+        rec = dict(self._policies.get(key) or {})
+        if locked:
+            now = time.time()
+            rec.pop("handback_until", None)
+            rec["lock"] = {
+                "until": now + float(minutes) * 60 if minutes else None,
+                "reason": reason, "by": by, "at": now,
+            }
+            logger.info(f"Zone lock on {self._player_name(key)}"
+                        f"{f' for {minutes:g} min' if minutes else ''}"
+                        f"{f' — {reason}' if reason else ''}"
+                        f"{f' (by {by})' if by else ''}")
+        else:
+            if rec.get("lock"):
+                logger.info(f"Zone lock on {self._player_name(key)} lifted"
+                            f"{f' (by {by})' if by else ''} — handed back "
+                            f"to the zone")
+                rec["handback_until"] = time.time() + HANDBACK_S
+            rec["lock"] = None
+        self._store_policy(key, rec)
+        return rec.get("lock")
+
+    async def set_policy(self, player_id: str, mode: Optional[str] = None,
+                         lock: Optional[str] = None, minutes: float = 0,
+                         by: str = "") -> dict:
+        """Change a device's zone policy and apply it to a running session.
+
+        ``lock`` is "lock", "unlock" or "toggle"; ``minutes`` bounds a lock
+        (0 = until lifted). Takes effect at once: locking a device the zone
+        is playing on stops the zone's stream there, so the speaker is free
+        for its input; lifting one lets it back in at the next probe."""
+        key = self._policy_key(player_id)
+        if not key:
+            return {"success": False, "error": "player_id required"}
+        if mode is not None:
+            if mode not in POLICY_MODES:
+                return {"success": False, "error": f"unknown mode '{mode}'"}
+            rec = dict(self._policies.get(key) or {})
+            rec["mode"] = mode
+            self._store_policy(key, rec)
+        if lock is not None:
+            if lock not in ("lock", "unlock", "toggle"):
+                return {"success": False, "error": f"unknown lock action '{lock}'"}
+            want = (not self.policy(key)["lock"]) if lock == "toggle" \
+                else lock == "lock"
+            self._set_lock(key, want, minutes=minutes, by=by)
+        await self._apply_policy(key)
+        return {"success": True, "player_id": key, **self.policy(key)}
+
+    async def _apply_policy(self, key: str) -> None:
+        pol = self.policy(key)
+        for st in list(self._streams.values()):
+            if st.player_id != key:
+                continue
+            if pol["lock"]:
+                if st.parked_since is not None and st.yield_kind == "lock":
+                    continue
+                playing_ours = st.parked_since is None
+                self._yield_stream(st, "lock", _lock_label(pol["lock"]))
+                if playing_ours:
+                    await self._release_device(st)
+            elif st.parked_since is not None and st.yield_kind:
+                st.free_since = None
+                st.park_probe_at = 0.0          # re-judge it at the next poll
+
+    def _consume_handback(self, player_id: str) -> None:
+        """A handback buys one LOAD: spent as it is issued."""
+        key = self._policy_key(player_id)
+        rec = self._policies.get(key)
+        if rec and rec.get("handback_until"):
+            rec = {**rec, "handback_until": 0}
+            self._store_policy(key, rec)
+
+    async def _release_device(self, st: _Stream) -> None:
+        """Stop the zone's stream on a device it has just given up, so the
+        speaker is idle for whatever the user switches it to — only while
+        what it is playing is still ours."""
+        casts = getattr(self.cast, "_casts", None) or {}
+        cast = casts.get(st.player_id.split(":", 1)[1])
+        if cast is None or self._cast_owner(cast) is not None:
+            return
+        try:
+            await asyncio.to_thread(cast.quit_app)
+        except Exception as e:
+            logger.debug(f"Sync release of {st.name} failed: {e}")
+
+    def _cast_owner(self, cast) -> Optional[str]:
+        """The Cast app or media that holds this device instead of the zone,
+        or None. Read off cached receiver/media status: no network.
+
+        Foreign is another app in the foreground, or the default receiver
+        playing media that is not a zone stream (an announcement, a phone
+        casting a track). Nothing running, the home screen, or the default
+        receiver idle on someone else's finished media are all free.
+        """
+        try:
+            cs = getattr(cast, "status", None)
+            app = getattr(cs, "app_id", None) or ""
+            if app and app not in (self.app_id or DEFAULT_APP_ID,
+                                   BACKDROP_APP_ID):
+                return getattr(cs, "display_name", "") or f"Cast app {app}"
+            if not app or app == BACKDROP_APP_ID:
+                return None
+            ms = cast.media_controller.status
+            cid = getattr(ms, "content_id", "") or ""
+            state = getattr(ms, "player_state", "") or ""
+            if (cid and STREAM_PATH not in cid
+                    and state in ("PLAYING", "BUFFERING", "PAUSED")):
+                return (f"another cast ({getattr(ms, 'title', '') or cid})")
+        except Exception as e:
+            logger.debug(f"Sync cast owner read failed: {e}")
+        return None
+
+    async def _foreign_owner(self, st: _Stream, cast=None,
+                             cast_apps: bool = True,
+                             input_owner=None) -> Optional[tuple]:
+        """``(kind, owner)`` when someone else is using this device, else None.
+
+        Two sensors, because Cast sees only half of it. Another Cast app shows
+        in the receiver status ("cast"). A LinkPlay box switched to HDMI-ARC,
+        optical, Bluetooth… just looks like a receiver that stopped playing,
+        and a LOAD switches it back to the network input — so its input is
+        read from the box itself ("input"), and that answer wins.
+        ``input_owner`` passes a reading the caller has just taken.
+        """
+        pol = self.policy(st.player_id)
+        if pol["lock"]:
+            return "lock", _lock_label(pol["lock"])
+        if pol["mode"] == "reclaim":
+            return None           # the zone wins: every LOAD goes ahead
+        resolve = self._input_resolver
+        if resolve is not None or input_owner is not None:
+            host = self._device_key(st.player_id)
+            if host or input_owner is not None:
+                owner = input_owner
+                if owner is None:
+                    try:
+                        owner = await resolve(host)
+                    except Exception as e:
+                        logger.debug(f"Sync input check failed for {st.name}: {e}")
+                        owner = None
+                if owner and pol["handback"]:
+                    logger.info(f"Sync stream {st.name} handed back to the "
+                                f"zone — taking it from {owner}")
+                    owner = None
+                if owner:
+                    if pol["mode"] == "sticky":
+                        # Switching input is the lock: going back to the
+                        # network input on its own (a TV sleeping) must not
+                        # hand the speaker back mid-game.
+                        lock = self._set_lock(st.player_id, True,
+                                              reason=owner, by="sticky")
+                        return "lock", _lock_label(lock)
+                    return "input", owner
+        if not cast_apps:
+            return None
+        if cast is None:
+            casts = getattr(self.cast, "_casts", None) or {}
+            cast = casts.get(st.player_id.split(":", 1)[1])
+        owner = self._cast_owner(cast) if cast is not None else None
+        return ("cast", owner) if owner else None
+
+    def _yield_stream(self, st: _Stream, kind: str, owner: str) -> None:
+        """Step a device out of the zone because someone else is using it
+        (open-zone.md §7.1).
+
+        A park in every respect the ladder cares about — out of measurement,
+        the target, acquisition and re-align — but probed for the owner
+        leaving rather than for the device answering, and let back in only
+        after a settled free run (_yield_over). Nothing is LOADed meanwhile.
+        """
+        if st.parked_since is not None and st.yield_kind:
+            if (kind, owner) != (st.yield_kind, st.yield_reason):
+                logger.info(f"Sync stream {st.name} now held by {owner}")
+            st.yield_kind, st.yield_reason = kind, owner
+            st.free_since = None
+            return
+        was_parked = st.parked_since is not None
+        self._park_stream(st, owner, quiet=True)
+        logger.warning(
+            f"Sync stream yielding {st.name} to {owner} — out of the group "
+            f"and not re-LOADed while it is in use; rejoins "
+            f"{'when unlocked' if kind == 'lock' else 'once free'} "
+            f"(yield #{st.yields + 1})")
+        st.yield_kind, st.yield_reason = kind, owner
+        st.free_since = None
+        st.yields += 1
+        if not was_parked:
+            st.parks -= 1        # a yield is not an absence
+        st.park_probe_at = time.monotonic() + STREAM_YIELD_PROBE_S
+        st.stats = {**st.stats, "parked": False, "parks": st.parks,
+                    "yielded": owner, "yields": st.yields}
+
+    async def _yield_over(self, st: _Stream, cast) -> bool:
+        """Whether a yielded device has been free for its whole settle window.
+        Longer after an input than after a Cast app: inputs flap as a TV
+        wakes or sleeps."""
+        owner = await self._foreign_owner(st, cast)
+        now = time.monotonic()
+        if owner is not None:
+            if owner != (st.yield_kind, st.yield_reason):
+                self._yield_stream(st, *owner)
+            st.free_since = None
+            return False
+        if st.free_since is None:
+            st.free_since = now
+        if st.yield_kind == "lock" or self.policy(st.player_id)["mode"] == "reclaim":
+            settle = STREAM_YIELD_FREE_LOCK_S     # a person decided
+        elif st.yield_kind == "input":
+            settle = STREAM_YIELD_FREE_INPUT_S
+        else:
+            settle = STREAM_YIELD_FREE_CAST_S
+        return now - st.free_since >= settle
 
     async def _rejoin_stream(self, st: _Stream) -> None:
         """Probe a parked device and put it back if it answers.
@@ -2978,14 +3375,27 @@ class OpenZone:
                 logger.debug(f"Sync rejoin probe failed for {st.name}: {e}")
                 cast = None
             if not cast:
+                if st.yield_kind:
+                    self._park_stream(st, "the cast provider cannot resolve it")
                 st.park_probe_at = time.monotonic() + STREAM_PARK_RETRY_S
+                return
+            if st.yield_kind and not await self._yield_over(st, cast):
                 return
             away = time.monotonic() - (st.parked_since or time.monotonic())
             st.parked_since = None
-            st.stats = {**st.stats, "parked": False}
-            logger.info(
-                f"Sync stream {st.name} answered again after {away:.0f}s away "
-                f"— rejoining against the group's existing target")
+            st.stats = {**st.stats, "parked": False, "yielded": ""}
+            if st.yield_kind:
+                logger.info(
+                    f"Sync stream {st.name} free again after {away:.0f}s "
+                    f"yielded to {st.yield_reason} — rejoining against the "
+                    f"group's existing target")
+            else:
+                logger.info(
+                    f"Sync stream {st.name} answered again after {away:.0f}s "
+                    f"away — rejoining against the group's existing target")
+            st.yield_kind = ""
+            st.yield_reason = ""
+            st.free_since = None
             # If it drops again between this probe and the LOAD, _launch_stream
             # parks it once more and the backoff simply resumes.
             st.reloads_since_align = 0     # back from absent, not failing
@@ -3008,8 +3418,78 @@ class OpenZone:
             if now < st.park_probe_at:
                 continue
             st.park_probing = True
-            st.park_probe_at = now + STREAM_PARK_RETRY_S
+            st.park_probe_at = now + (STREAM_YIELD_PROBE_S if st.yield_kind
+                                      else STREAM_PARK_RETRY_S)
             asyncio.create_task(self._rejoin_stream(st))
+
+    def _sweep_inputs(self) -> None:
+        """Read each present member's input, off the poll (open-zone.md §7.1).
+
+        Cast cannot see a LinkPlay box leave for HDMI-ARC and may go on
+        reporting PLAYING from it; this is what notices within seconds rather
+        than when the silence sweep escalates. One read in flight per device.
+        """
+        if self._input_reader is None or self._realigning or self._preroll:
+            return
+        now = time.monotonic()
+        for st in list(self._streams.values()):
+            if (st.parked_since is not None or st.pos is None or st.probing
+                    or st.input_checking or now < st.input_check_at):
+                continue
+            st.input_checking = True
+            st.input_check_at = now + STREAM_INPUT_POLL_S
+            asyncio.create_task(self._check_input(st))
+
+    async def _check_input(self, st: _Stream) -> None:
+        try:
+            host = self._device_key(st.player_id)
+            if not host:
+                return
+            try:
+                got = await self._input_reader(host)
+            except Exception as e:
+                logger.debug(f"Sync input read failed for {st.name}: {e}")
+                return
+            if got is None:                     # not LinkPlay
+                st.input_mode, st.input_owner, st.input_strikes = None, "", 0
+                return
+            mode, owner = got.get("mode"), got.get("owner") or ""
+            st.input_mode, st.input_owner = mode, owner
+            if (self._streams.get(st.sid) is not st
+                    or st.parked_since is not None):
+                return
+            live = (st.state == "PLAYING" and st.last_lag_at is not None
+                    and time.monotonic() - st.last_lag_at < STREAM_INPUT_FRESH_S)
+            candidate = (live and not got.get("stale")
+                         and not got.get("input"))
+            if candidate and st.input_learn_mode == mode \
+                    and self._input_learner is not None:
+                # The zone is audibly playing here, and has been across two
+                # readings of the same mode, so that mode is Cast's own — not
+                # an AirPlay takeover read before Cast's status caught up.
+                # Learned rather than listed: the API document does not say
+                # which mode Cast is.
+                try:
+                    if self._input_learner(host, mode):
+                        owner = ""
+                        st.input_owner = ""
+                except Exception as e:
+                    logger.debug(f"Sync input learn failed for {st.name}: {e}")
+            st.input_learn_mode = mode if candidate else None
+            if not owner:
+                st.input_strikes = 0
+                return
+            st.input_strikes += 1
+            if st.input_strikes < STREAM_INPUT_STRIKES:
+                return
+            st.input_strikes = 0
+            verdict = await self._foreign_owner(st, cast_apps=False,
+                                                input_owner=owner)
+            if verdict is not None and self._streams.get(st.sid) is st \
+                    and st.parked_since is None:
+                self._yield_stream(st, *verdict)
+        finally:
+            st.input_checking = False
 
     def _sweep_interrupted(self) -> None:
         """Reload any receiver taken out of playback (open-zone.md §7.1).
@@ -3243,7 +3723,8 @@ class OpenZone:
                 self._preroll_task.cancel()
             self._preroll_task = asyncio.create_task(self._preroll_probe())
             await asyncio.gather(
-                *(self._launch_stream(st.player_id, st.sid) for st in streams),
+                *(self._launch_stream(st.player_id, st.sid, gate="full")
+                  for st in streams),
                 return_exceptions=True)
         except Exception as e:
             logger.warning(f"Sync group re-align failed: {e}")
@@ -3259,6 +3740,15 @@ class OpenZone:
         it, and no move of the reader can close a gap that large on a live
         source (open-zone.md §A.2). Only the device's own buffer can be
         dropped, which is what a fresh LOAD does."""
+        if not self.running or self._streams.get(st.sid) is not st:
+            return
+        # Before any counter moves: a device someone else is using is not a
+        # device the ladder failed to reach, and re-LOADing it takes it back
+        # from them (a WiiM on HDMI-ARC flips to the network input).
+        owner = await self._foreign_owner(st)
+        if owner is not None:
+            self._yield_stream(st, *owner)
+            return
         if not self.running or self._streams.get(st.sid) is not st:
             return
         st.reloads += 1
@@ -3327,7 +3817,7 @@ class OpenZone:
             if st.probe_task is not None:
                 st.probe_task.cancel()
             st.probe_task = asyncio.create_task(self._probe_reload(st))
-        await self._launch_stream(st.player_id, st.sid)
+        await self._launch_stream(st.player_id, st.sid, gate="none")
 
     async def _pcm_stream(self, st: _Stream):
         """Async generator: endless WAV cut from the shared timeline for one

@@ -67,7 +67,7 @@ const SICON = {command:'fa-bolt',delay:'fa-clock',wait_for:'fa-hourglass-half',c
 const SLBL = {command:'Command',delay:'Delay',wait_for:'Wait For',condition:'Gate',if_then_else:'If / Then / Else',parallel:'Parallel',media:'Media',request:'Message',offer:'Ask First',repeat:'Repeat',snapshot:'Snapshot',restore:'Restore'};
 
 // Media action picker options (label, value).
-const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade']];
+const MEDIA_ACTIONS = [['play_zone','Play Zone (saved source)'],['play_tidal','Play Tidal'],['play_radio','Play Radio'],['announce','Announce (TTS)'],['control','Control'],['volume','Volume'],['volume_adjust','Volume Up/Down'],['volume_fade','Volume Fade'],['zone_lock','Zone Lock (keep out of zones)']];
 const MEDIA_CONTROLS = [['pause','Pause'],['resume','Resume'],['stop','Stop'],['next','Next'],['prev','Previous']];
 
 // A zone plays one server-built timeline rather than driving a device's own
@@ -1148,7 +1148,9 @@ function _mediaStepBody(step, sid) {
 /** Play Zone is offered only for a zone; a zone has no infinite-radio queue,
  *  so Tidal's Radio∞ mode is quietly absent from its sub-form instead. */
 function _mediaActionsFor(pid) {
-    return isZoneId(pid) ? MEDIA_ACTIONS : MEDIA_ACTIONS.filter(([v])=>v!=='play_zone');
+    // A lock belongs to one speaker; a zone is not something to lock out of itself.
+    return isZoneId(pid) ? MEDIA_ACTIONS.filter(([v])=>v!=='zone_lock')
+                         : MEDIA_ACTIONS.filter(([v])=>v!=='play_zone');
 }
 
 /** What the zone would do if played now — the saved source and window are the
@@ -1201,6 +1203,14 @@ function _mediaSubHtml(step, sid) {
     const zone = isZoneId(step.player_id);
     if (a === 'play_zone')
         return '';                       // the zone's own config is the input
+    if (a === 'zone_lock') {
+        const la = step.lock_action || 'toggle';
+        const mins = step.lock_minutes || '';
+        return `<div class="d-flex gap-1 align-items-center flex-wrap">
+            <select class="form-select form-select-sm s-mlock" data-sid="${sid}" style="width:auto">${[['toggle','Toggle'],['lock','Lock'],['unlock','Unlock (give back)']].map(([v,l])=>`<option value="${v}" ${la===v?'selected':''}>${l}</option>`).join('')}</select>
+            <span class="small">for</span><input type="number" class="form-control form-control-sm s-mlockmin" data-sid="${sid}" value="${mins}" min="0" placeholder="∞" style="width:75px"><span class="small">min</span>
+            <span class="small text-muted w-100">Locked speakers are left out of every zone — e.g. a WiiM on HDMI-ARC for gaming. Unlock hands it back even over its input.</span></div>`;
+    }
     if (a === 'control')
         return `<select class="form-select form-select-sm s-mctrl" data-sid="${sid}" style="max-width:170px">${(zone?ZONE_CONTROLS:MEDIA_CONTROLS).map(([v,l])=>`<option value="${v}" ${step.control_action===v?'selected':''}>${l}</option>`).join('')}</select>`;
     if (a === 'volume') {
@@ -1256,6 +1266,7 @@ function _mediaSavedOpt(step) {
 
 function _mediaDesc(s) {
     if (s.media_action==='play_zone') return 'Play zone';
+    if (s.media_action==='zone_lock') return `${(s.lock_action||'toggle').toUpperCase()} zone lock${s.lock_minutes?` ${s.lock_minutes}m`:''}`;
     if (s.media_action==='control') return (s.control_action||'control').toUpperCase();
     if (s.media_action==='volume') return `VOL ${s.volume!=null?Math.round(s.volume*100):''}%`;
     if (s.media_action==='volume_adjust') return `VOL ${(s.delta||0)>=0?'+':'-'}${Math.abs(Math.round((s.delta||0)*100))}%`;
@@ -1299,6 +1310,7 @@ window._aMPlayer = (sid, sel) => {
     s.player_id = sel.value;
     const zone = isZoneId(s.player_id);
     if (!zone && s.media_action === 'play_zone') s.media_action = 'play_tidal';
+    if (zone && s.media_action === 'zone_lock') s.media_action = 'play_zone';
     if (zone) s.tidal_mode = 'play';       // no Radio∞ on a shared timeline
     const body = document.getElementById(`step-body-${sid}`);
     if (body) body.innerHTML = _mediaStepBody(s, sid);
@@ -2079,6 +2091,11 @@ function _syncTreeFromDOM(steps) {
                 s.tidal_mode=document.querySelector(`.s-mmode[data-sid="${sid}"]`)?.value||'play';
             }
             else if(s.media_action==='control'){ s.control_action=document.querySelector(`.s-mctrl[data-sid="${sid}"]`)?.value||'stop'; }
+            else if(s.media_action==='zone_lock'){
+                s.lock_action=document.querySelector(`.s-mlock[data-sid="${sid}"]`)?.value||'toggle';
+                const m=parseFloat(document.querySelector(`.s-mlockmin[data-sid="${sid}"]`)?.value);
+                s.lock_minutes=isNaN(m)||m<0?0:m;
+            }
             else if(s.media_action==='volume'){ const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value); s.volume=isNaN(v)?0.3:Math.max(0,Math.min(1,v/100)); }
             else if(s.media_action==='volume_adjust'){
                 const v=parseInt(document.querySelector(`.s-mvol[data-sid="${sid}"]`)?.value);
@@ -2142,6 +2159,7 @@ function _cleanTree(steps) {
             else if(s.media_action==='play_radio'){d.station_uuid=s.station_uuid;if(s.label)d.label=s.label;}
             else if(s.media_action==='play_tidal'){d.tidal_kind=s.tidal_kind;d.tidal_id=s.tidal_id;d.tidal_mode=s.tidal_mode||'play';if(s.label)d.label=s.label;}
             else if(s.media_action==='control'){d.control_action=s.control_action;}
+            else if(s.media_action==='zone_lock'){d.lock_action=s.lock_action||'toggle';if(s.lock_minutes)d.lock_minutes=s.lock_minutes;}
             else if(s.media_action==='volume'){d.volume=s.volume;}
             else if(s.media_action==='volume_adjust'){d.delta=s.delta;}
             else if(s.media_action==='announce'){d.text=s.text;if(s.volume!=null)d.volume=s.volume;}
@@ -2166,6 +2184,7 @@ function _cleanTree(steps) {
             if(d.media_action==='play_radio')return !!d.station_uuid;
             if(d.media_action==='play_tidal')return !!(d.tidal_kind&&d.tidal_id);
             if(d.media_action==='control')return !!d.control_action;
+            if(d.media_action==='zone_lock')return !isZoneId(d.player_id)&&!!d.lock_action;
             if(d.media_action==='volume')return d.volume!=null;
             if(d.media_action==='volume_adjust')return typeof d.delta==='number'&&d.delta!==0;
             if(d.media_action==='announce')return !!(d.text&&d.text.trim());

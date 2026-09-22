@@ -105,13 +105,22 @@ class MediaService:
 
         # Player providers
         wiim_cfg = config.get("wiim", {}) or {}
+        self.wiim = None
         if wiim_cfg.get("enabled", True):
-            self.controller.add_player_provider(
-                WiiMPlayerProvider(
-                    device_ips=wiim_cfg.get("devices", []) or [],
-                    enabled=True,
-                )
+            self.wiim = WiiMPlayerProvider(
+                device_ips=wiim_cfg.get("devices", []) or [],
+                enabled=True,
             )
+            self.controller.add_player_provider(self.wiim)
+        # LinkPlay boxes found among the Cast hosts. Always on, whether or not
+        # WiiM is a player provider: a zone needs to know when a WiiM is on
+        # HDMI-ARC (or any other input) so it does not re-cast over it.
+        from modules.media.linkplay import LinkPlayDirectory
+        self.linkplay = LinkPlayDirectory(
+            seed_ips=wiim_cfg.get("devices", []) or [],
+            state_file=wiim_cfg.get("state_file", "./data/linkplay_state.json"))
+        if self.wiim is not None and wiim_cfg.get("discovery", True):
+            self.linkplay.on_found(self.wiim.add_device)
 
         sonos_cfg = config.get("sonos", {}) or {}
         if sonos_cfg.get("enabled", False):
@@ -178,6 +187,11 @@ class MediaService:
                 # is, so model-keyed trims cover more than Cast.
                 self.cast_sync.set_provider_resolver(
                     self.controller._provider_for)
+                # Lets a zone see a WiiM's input, which Cast cannot report,
+                # and leave it alone while something else holds it.
+                self.cast_sync.set_input_resolver(self.linkplay.owner_for_host)
+                self.cast_sync.set_input_reader(self.linkplay.read_host,
+                                                self.linkplay.learn_cast_mode)
                 # Lets a sync group carry the same server-side EQ a single
                 # Cast player gets, keyed "syncgroup:<gid>".
                 self.cast_sync.set_eq_engine(self.eq_stream)
@@ -553,6 +567,11 @@ class MediaService:
         if self.cast_sync is not None:
             self.cast_sync.stop()
         self.device_http.stop()
+        task = getattr(self, "_linkplay_task", None)
+        if task is not None:
+            task.cancel()
+            self._linkplay_task = None
+        asyncio.ensure_future(self.linkplay.close())
         if self._task:
             self._task.cancel()
             self._task = None
@@ -574,7 +593,20 @@ class MediaService:
             except Exception as e:
                 logger.warning(f"Session restore failed: {e}")
             asyncio.create_task(self._adopt_casts())
+        self._linkplay_task = asyncio.create_task(self._linkplay_discovery())
         await self._poll_loop()
+
+    async def _linkplay_discovery(self):
+        """Probe each Cast host once for the LinkPlay httpapi, and again as
+        new ones appear. A host that is not LinkPlay is retried only hourly."""
+        await asyncio.sleep(5)      # let mDNS discovery find the devices first
+        while True:
+            try:
+                hosts = self.cast.device_hosts() if self.cast is not None else []
+                await self.linkplay.discover(hosts)
+            except Exception as e:
+                logger.debug(f"LinkPlay discovery pass failed: {e}")
+            await asyncio.sleep(60)
 
     async def _adopt_casts(self):
         await asyncio.sleep(4)      # let mDNS discovery find the devices first

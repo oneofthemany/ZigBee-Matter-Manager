@@ -975,11 +975,20 @@ class AutomationEngine:
                 ma = step.get("media_action")
                 if ma not in ("play_radio", "play_tidal", "control", "volume",
                               "announce", "volume_fade", "volume_adjust",
-                              "play_zone"):
+                              "play_zone", "zone_lock"):
                     return f"{label}[{i+1}]: invalid media_action"
                 is_zone = str(step.get("player_id", "")).startswith("zone:")
                 if ma == "play_zone" and not is_zone:
                     return f"{label}[{i+1}]: play_zone needs an OpenZone zone"
+                if ma == "zone_lock":
+                    # A lock is a property of one speaker, not of a zone.
+                    if is_zone:
+                        return f"{label}[{i+1}]: zone_lock needs a speaker, not a zone"
+                    if step.get("lock_action") not in ("lock", "unlock", "toggle"):
+                        return f"{label}[{i+1}]: zone_lock needs lock, unlock or toggle"
+                    mins = step.get("lock_minutes", 0)
+                    if not isinstance(mins, (int, float)) or mins < 0:
+                        return f"{label}[{i+1}]: zone_lock minutes must be ≥ 0"
                 if ma == "volume_adjust" and not isinstance(step.get("delta"), (int, float)):
                     return f"{label}[{i+1}]: volume_adjust needs a numeric delta"
                 if ma == "play_radio" and not step.get("station_uuid"):
@@ -3067,7 +3076,19 @@ class AutomationEngine:
         try:
             ok, detail = True, ""
             gid = svc.zone_id(player_id)
-            if gid:
+            if action == "zone_lock":
+                zone = getattr(svc, "cast_sync", None)
+                if zone is None:
+                    ok, detail = False, "OpenZone is disabled"
+                else:
+                    res = await zone.set_policy(
+                        player_id, lock=step.get("lock_action", "toggle"),
+                        minutes=float(step.get("lock_minutes") or 0),
+                        by=f"rule {rule_id}")
+                    ok = res.get("success", False)
+                    detail = res.get("error", "") or (
+                        "locked" if res.get("lock") else "unlocked")
+            elif gid:
                 ok, detail = await self._media_zone(svc, gid, action, step)
             elif action == "play_radio":
                 # Favourited stations play from their pinned snapshot (no

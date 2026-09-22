@@ -76,7 +76,7 @@ def _lag_if_seated_now(z: OpenZone, st: _Stream, latency_s: float) -> float:
 def _patch_device(z: OpenZone, launched: list) -> None:
     """Stub the LOAD and the media-time sensor for every stream."""
 
-    async def launch(player_id, sid):
+    async def launch(player_id, sid, gate="full"):
         launched.append(sid)
         st = z._streams[sid]
         st.opened_at = time.monotonic()      # the fetch the generator opens
@@ -338,7 +338,7 @@ def _timeout_before_fetch_still_seats(c: Checker, tmp: str) -> None:
         st.start_pos = -12345               # the pre-reload seat
         st.pos = -12345.0
 
-        async def never_fetch(player_id, sid):
+        async def never_fetch(player_id, sid, gate="full"):
             pass                             # LOAD lands nowhere
         z._launch_stream = never_fetch
 
