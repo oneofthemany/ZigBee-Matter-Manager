@@ -108,6 +108,17 @@ def run() -> Checker:
     c.check("an oversized body is dropped, not parsed",
             client.post(CSP_REPORT_PATH,
                         content=b"x" * 9000).status_code == 204)
+    # A body on a 204 is what uvicorn refuses to send: it raises mid-send and
+    # kills the HTTP/1.1 connection, taking the browser's queued requests
+    # (a <script> tag, an API call) with it. Every path must answer empty.
+    c.check("the ack carries no body", r.content == b"", r.content)
+    c.check("nor does the junk path",
+            client.post(CSP_REPORT_PATH, content=b"not json").content == b"")
+    c.check("nor the oversized path",
+            client.post(CSP_REPORT_PATH, content=b"x" * 9000).content == b"")
+    c.check("and no content-length is declared",
+            "content-length" not in {k.lower() for k in r.headers},
+            dict(r.headers))
 
     c.section("the constant and the decorator agree")
     # The route is a literal so the scanner sees it; this pins the pair.

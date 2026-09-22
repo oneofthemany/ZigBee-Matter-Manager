@@ -18,7 +18,7 @@ import time
 from typing import Optional, Tuple
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 logger = logging.getLogger("modules.security_headers")
 
@@ -107,6 +107,14 @@ def register_csp_report_route(app, limiter: Optional[_ReportLimiter] = None):
     """Mount the violation sink. Anonymous: see CSP_REPORT_PATH."""
     lim = limiter or _ReportLimiter()
 
+    # 204 carries no body: uvicorn caps a 204 at zero bytes, so returning
+    # even `{"ok": true}` raises "Response content longer than Content-Length"
+    # mid-send and tears down the HTTP/1.1 connection — taking whatever the
+    # browser had queued on it (a <script> tag, an API call) down with it.
+    # A fresh instance per call: the headers middleware mutates what it gets.
+    def _ack() -> Response:
+        return Response(status_code=204)
+
     # Literal, not CSP_REPORT_PATH: harness.py finds routes by reading
     # decorators and cannot see a constant. A test pins the two together.
     @app.post("/api/csp/report")
@@ -114,9 +122,9 @@ def register_csp_report_route(app, limiter: Optional[_ReportLimiter] = None):
         # Cap the body: this endpoint is unauthenticated by necessity.
         raw = await request.body()
         if len(raw) > 8192:
-            return JSONResponse({"ok": True}, status_code=204)
+            return _ack()
         if not lim.allow():
-            return JSONResponse({"ok": True}, status_code=204)
+            return _ack()
         try:
             report = (json.loads(raw) or {}).get("csp-report", {})
             logger.warning(
@@ -127,6 +135,6 @@ def register_csp_report_route(app, limiter: Optional[_ReportLimiter] = None):
             )
         except (ValueError, AttributeError):
             logger.debug("[csp] unparseable report (%d bytes)", len(raw))
-        return JSONResponse({"ok": True}, status_code=204)
+        return _ack()
 
     return csp_report
