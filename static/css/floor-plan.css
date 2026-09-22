@@ -529,13 +529,14 @@
 .fp-sun-endpoint   { fill: var(--fp-sun-stroke); }
 .fp-sun-marker     { fill: var(--fp-sun-stroke); stroke: var(--fp-canvas-bg); }
 .fp-sun-marker-ring { stroke: var(--fp-sun-stroke); }
-.fp-sun-label      { fill: var(--fp-sun-stroke); font-family: inherit; }
+.fp-sun-label      { fill: var(--fp-sun-stroke); font-family: inherit;
+                     paint-order: stroke; stroke: var(--fp-canvas-bg); stroke-width: 0.08; }
 .fp-sun-tick       { stroke: var(--fp-sun-stroke); }
 .fp-sun-hour {
     fill: var(--fp-sun-stroke);
     paint-order: stroke;
     stroke: var(--fp-canvas-bg);
-    stroke-width: 0.04;
+    stroke-width: 0.08;
 }
 .fp-north-mark     { fill: var(--fp-compass-needle); }
 .fp-solar-badge {
@@ -569,6 +570,10 @@
 [data-theme="dark"] .fp-solar-measured { color: #4ade80; }
 .fp-sun-beam {
     animation: fpBeamBreathe 3.4s ease-in-out infinite alternate;
+}
+.fp-sun-shafts { pointer-events: none; }
+.fp-sun-shaft {
+    animation: fpBeamBreathe 2.8s ease-in-out infinite alternate;
 }
 .fp-sun-particle {
     fill: #fcd34d;
@@ -716,6 +721,7 @@
     .fp-thermo-ring,
     .fp-overheat-badge,
     .fp-sun-beam,
+    .fp-sun-shaft,
     .fp-sun-particle,
     .fp-sun-pulse {
         animation: none;

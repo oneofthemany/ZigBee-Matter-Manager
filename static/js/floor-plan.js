@@ -1758,8 +1758,12 @@ function renderOverlay() {
                     html += `<line class="fp-sun-tick" x1="${p.x - rx * 0.09}" y1="${p.y - ry * 0.09}"
                                    x2="${p.x + rx * 0.09}" y2="${p.y + ry * 0.09}" stroke-width="0.035"/>`;
                     if (dte.getHours() % 3 === 0) {
-                        html += `<text class="fp-sun-hour" x="${p.x + rx * 0.38}" y="${p.y + ry * 0.38 + 0.06}"
-                                       font-size="0.17" text-anchor="middle">${String(dte.getHours()).padStart(2, '0')}</text>`;
+                        // Hour, then where the sun is at that hour
+                        const lx = p.x + rx * 1.05, ly = p.y + ry * 1.05;
+                        html += `<text class="fp-sun-hour" x="${lx}" y="${ly}" font-size="0.52"
+                                       text-anchor="middle" font-weight="600">${String(dte.getHours()).padStart(2, '0')}:00</text>`;
+                        html += `<text class="fp-sun-hour" x="${lx}" y="${ly + 0.42}" font-size="0.32"
+                                       text-anchor="middle">az ${Math.round(daytime[i].az)}° · el ${Math.round(daytime[i].el)}°</text>`;
                     }
                 }
 
@@ -1771,8 +1775,13 @@ function renderOverlay() {
                 // Rise / set time labels
                 const fmtT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
                 const srL = fmtT(sd.sunrise), ssL = fmtT(sd.sunset);
-                if (srL) html += `<text class="fp-sun-label" x="${srPt.x}" y="${srPt.y - 0.30}" font-size="0.24" text-anchor="middle">${srL}</text>`;
-                if (ssL) html += `<text class="fp-sun-label" x="${ssPt.x}" y="${ssPt.y - 0.30}" font-size="0.24" text-anchor="middle">${ssL}</text>`;
+                const riseSetLabel = (pt, time, dp) => time ? `
+                    <text class="fp-sun-label" x="${pt.x}" y="${pt.y - 0.95}" font-size="0.64"
+                          text-anchor="middle" font-weight="600">${time}</text>
+                    <text class="fp-sun-label" x="${pt.x}" y="${pt.y - 0.50}" font-size="0.34"
+                          text-anchor="middle">az ${Math.round(dp.az)}°</text>` : '';
+                html += riseSetLabel(srPt, srL, daytime[0]);
+                html += riseSetLabel(ssPt, ssL, daytime[daytime.length - 1]);
 
                 // Current-time marker — closest data point to local clock
                 const nowMs = Date.now();
@@ -1783,13 +1792,15 @@ function renderOverlay() {
                 }
                 if (closest) {
                     const sp = sunPtToSvg(closest);
-                    // Light beam — a tapered cone of sunlight widening from the
-                    // sun toward the house, fading out along its length.
+                    // Light beam — sunlight is effectively parallel, so the
+                    // shaft opens out to the full width of the building rather
+                    // than converging on its centre, fading as it arrives.
                     const bdx = originSvg.x - sp.x, bdy = originSvg.y - sp.y;
                     const blen = Math.hypot(bdx, bdy) || 1;
                     const bx = bdx / blen, by = bdy / blen;   // unit vector sun → house
                     const pxv = -by, pyv = bx;                // perpendicular
-                    const wSun = 0.16, wHouse = Math.min(1.6, blen * 0.22);
+                    const reach = planReach(lvl, origin);
+                    const wSun = 0.45, wHouse = Math.max(1.6, reach * 1.05);
                     const beamPts = [
                         `${sp.x + pxv * wSun},${sp.y + pyv * wSun}`,
                         `${sp.x - pxv * wSun},${sp.y - pyv * wSun}`,
@@ -1799,8 +1810,9 @@ function renderOverlay() {
                     html += `<defs>
                       <linearGradient id="fpSunBeamGrad" gradientUnits="userSpaceOnUse"
                                       x1="${sp.x}" y1="${sp.y}" x2="${originSvg.x}" y2="${originSvg.y}">
-                        <stop offset="0%"   stop-color="rgba(251,191,36,0.50)"/>
-                        <stop offset="45%"  stop-color="rgba(251,191,36,0.16)"/>
+                        <stop offset="0%"   stop-color="rgba(251,191,36,0.45)"/>
+                        <stop offset="40%"  stop-color="rgba(251,191,36,0.18)"/>
+                        <stop offset="75%"  stop-color="rgba(251,191,36,0.07)"/>
                         <stop offset="100%" stop-color="rgba(251,191,36,0)"/>
                       </linearGradient>
                     </defs>`;
@@ -1813,24 +1825,29 @@ function renderOverlay() {
                     // mid-flight instead of all bunched at the sun.
                     const angDeg = Math.atan2(bdy, bdx) * 180 / Math.PI;
                     let motes = '';
-                    for (let i = 0; i < 14; i++) {
-                        const dur = (2.4 + Math.random() * 2.4).toFixed(2);
+                    for (let i = 0; i < 30; i++) {
+                        const dur = (2.6 + Math.random() * 2.6).toFixed(2);
                         const delay = (-Math.random() * 5).toFixed(2);
-                        const r = (0.03 + Math.random() * 0.05).toFixed(3);
+                        const r = (0.03 + Math.random() * 0.06).toFixed(3);
                         const dist = (blen * (0.72 + Math.random() * 0.33)).toFixed(2);
-                        const drift = ((Math.random() - 0.5) * wHouse * 1.5).toFixed(3);
+                        const drift = ((Math.random() - 0.5) * wHouse * 1.8).toFixed(3);
                         motes += `<circle class="fp-sun-particle" r="${r}"
                             style="--fp-d:${dist}px; --fp-cy:${drift}px;
                                    animation-duration:${dur}s; animation-delay:${delay}s;"/>`;
                     }
                     html += `<g transform="translate(${sp.x} ${sp.y}) rotate(${angDeg.toFixed(2)})">${motes}</g>`;
+                    // Where that light lands: shafts through each sun-facing
+                    // window, with motes drifting into the room.
+                    html += sunShaftParts(lvl, closest);
                     // Glowing pulsing sun
                     html += `<circle cx="${sp.x}" cy="${sp.y}" r="0.42"
                                      fill="rgba(251,191,36,0.35)" filter="url(#fpSunGlow)"/>`;
                     html += `<circle class="fp-sun-pulse" cx="${sp.x}" cy="${sp.y}" r="0.34"/>`;
                     html += `<circle cx="${sp.x}" cy="${sp.y}" r="0.20" fill="url(#fpSunBall)"/>`;
-                    html += `<text class="fp-sun-hour" x="${sp.x}" y="${sp.y + 0.55}" font-size="0.16"
-                                   text-anchor="middle">${Math.round(closest.el)}° elev</text>`;
+                    html += `<text class="fp-sun-hour" x="${sp.x}" y="${sp.y + 0.98}" font-size="0.48"
+                                   text-anchor="middle" font-weight="600">${fmtT(closest.ts)}</text>`;
+                    html += `<text class="fp-sun-hour" x="${sp.x}" y="${sp.y + 1.40}" font-size="0.36"
+                                   text-anchor="middle">az ${Math.round(closest.az)}° · el ${Math.round(closest.el)}°</text>`;
                 }
 
                 // North marker just outside the arc, honouring the compass offset
@@ -2921,6 +2938,75 @@ function roomSunlitNow(room, lvl) {
         if (sx * nx + sy * ny > 0.15) return true;
     }
     return false;
+}
+
+/**
+ * Light shafts for the sun at `pt`: every window whose exterior faces the sun
+ * throws a parallelogram of light into its room, as deep as the window head
+ * lets it reach at this elevation, clipped to the room and carrying motes.
+ */
+function sunShaftParts(lvl, pt) {
+    if (!pt || pt.el <= 0) return '';
+    const planAz = ((pt.az + _state.plan.north_offset_deg) % 360 + 360) % 360;
+    const sx = Math.sin(planAz * Math.PI / 180), sy = Math.cos(planAz * Math.PI / 180);
+    const lx = -sx, ly = -sy;                          // light travel, model space
+    const tanEl = Math.tan(Math.max(4, pt.el) * Math.PI / 180);
+    const lSvg = modelToSvg({ x: lx, y: ly });
+    const angDeg = Math.atan2(lSvg.y, lSvg.x) * 180 / Math.PI;
+    let defs = '', body = '';
+    for (const room of lvl.rooms || []) {
+        if (!room.polygon || room.polygon.length < 3) continue;
+        const centroid = polygonCentroid(room.polygon);
+        let shafts = '';
+        for (const { opening, mid } of openingsOnRoomBoundary(room, lvl)) {
+            if (opening.kind !== 'window') continue;
+            const wall = (lvl.walls || []).find(w => w.id === opening.wall_id);
+            if (!wall) continue;
+            const wlen = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) || 1;
+            const ux = (wall.x2 - wall.x1) / wlen, uy = (wall.y2 - wall.y1) / wlen;
+            let nx = -uy, ny = ux;                     // exterior normal
+            if ((centroid.x - mid.x) * nx + (centroid.y - mid.y) * ny > 0) { nx = -nx; ny = -ny; }
+            const facing = sx * nx + sy * ny;
+            if (facing <= 0.15) continue;
+            // Head height ≈ sill (0.9 m) + window height; floor patch depth.
+            const head = 0.9 + (opening.height_m || 1.2);
+            const depth = Math.min(12, head / tanEl);
+            const half = (opening.width_m || 1) / 2;
+            const a = { x: mid.x - ux * half, y: mid.y - uy * half };
+            const b = { x: mid.x + ux * half, y: mid.y + uy * half };
+            const pts = [a, b, { x: b.x + lx * depth, y: b.y + ly * depth },
+                               { x: a.x + lx * depth, y: a.y + ly * depth }].map(modelToSvg);
+            const m0 = modelToSvg(mid), m1 = modelToSvg({ x: mid.x + lx * depth, y: mid.y + ly * depth });
+            const gid = `fpShaftGrad-${opening.id}`;
+            defs += `<linearGradient id="${gid}" gradientUnits="userSpaceOnUse"
+                         x1="${m0.x}" y1="${m0.y}" x2="${m1.x}" y2="${m1.y}">
+                       <stop offset="0%"   stop-color="rgba(251,191,36,${(0.30 + 0.2 * facing).toFixed(2)})"/>
+                       <stop offset="100%" stop-color="rgba(251,191,36,0.03)"/>
+                     </linearGradient>`;
+            shafts += `<polygon class="fp-sun-shaft" points="${pts.map(p => `${p.x},${p.y}`).join(' ')}"
+                                fill="url(#${gid})"/>`;
+            // Motes start spread along the glazing and fall along the light.
+            const n = Math.max(4, Math.min(14, Math.round(half * 2 * 6)));
+            for (let i = 0; i < n; i++) {
+                const t = Math.random();
+                const s0 = modelToSvg({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+                const dur = (2.2 + Math.random() * 2.4).toFixed(2);
+                const delay = (-Math.random() * 4.5).toFixed(2);
+                const r = (0.025 + Math.random() * 0.04).toFixed(3);
+                const dist = (depth * (0.55 + Math.random() * 0.45)).toFixed(2);
+                const drift = ((Math.random() - 0.5) * 0.25).toFixed(3);
+                shafts += `<g transform="translate(${s0.x} ${s0.y}) rotate(${angDeg.toFixed(2)})">
+                    <circle class="fp-sun-particle" r="${r}"
+                        style="--fp-d:${dist}px; --fp-cy:${drift}px;
+                               animation-duration:${dur}s; animation-delay:${delay}s;"/></g>`;
+            }
+        }
+        if (!shafts) continue;
+        const cid = `fpShaftClip-${room.id}`;
+        defs += `<clipPath id="${cid}"><path d="${polygonToPath(room.polygon)}"/></clipPath>`;
+        body += `<g class="fp-sun-shafts" clip-path="url(#${cid})">${shafts}</g>`;
+    }
+    return body ? `<defs>${defs}</defs>${body}` : '';
 }
 
 // A per-room scalar heat-coverage field on a coarse grid. One field drives the
