@@ -173,6 +173,13 @@ def run() -> Checker:
     # Snapped corners come out of line intersections, a hair off each other.
     c.check("and so is the float noise where they meet",
             room_geometry_problems(rooms(left, [[4.9999999, 0], [9, 0], [9, 4], [5.0000001, 4]])) == [])
+    long_a = [[0, 0], [30, 0], [30, 4], [0, 4]]
+    long_b = [[0, 3.9993], [30, 4.0007], [30, 8], [0, 8]]      # a rounded mm off along 30 m
+    c.check("and a long shared edge a rounded millimetre off",
+            room_geometry_problems(rooms(long_a, long_b)) == [], room_geometry_problems(rooms(long_a, long_b)))
+    c.check("but a 2 cm strip along it is an overlap",
+            [p["kind"] for p in room_geometry_problems(rooms(long_a, [[0, 3.98], [30, 3.98], [30, 8], [0, 8]]))]
+            == ["overlap"])
     over = room_geometry_problems(rooms(left, [[4, 0], [9, 0], [9, 4], [4, 4]]))
     c.check("rooms that overlap are found, with by how much",
             [(p["kind"], p["room_ids"], p["area_m2"]) for p in over] == [("overlap", ["r0", "r1"], 4.0)], over)

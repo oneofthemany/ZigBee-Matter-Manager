@@ -415,6 +415,11 @@ def infer_wall_type(level: dict, wall: dict, explicit: Optional[str]) -> str:
 
 #: Overlap below this is float noise between two rooms sharing an edge, m².
 ROOM_OVERLAP_TOLERANCE_M2 = 0.01
+#: An overlap no thicker than this is a shared edge, however long: corners are
+#: stored to the millimetre, so an edge both rooms share can sit a fraction
+#: of a millimetre apart along its whole length. Matches the editor's
+#: GEOM_TOL_M.
+ROOM_OVERLAP_MIN_WIDTH_M = 0.01
 
 
 def room_geometry_problems(plan: Optional[dict]) -> Optional[List[Dict[str, Any]]]:
@@ -450,8 +455,10 @@ def room_geometry_problems(plan: Optional[dict]) -> Optional[List[Dict[str, Any]
             for ib, nb, pb in shapes[i + 1:]:
                 if not pa.intersects(pb):
                     continue
-                area = pa.intersection(pb).area
-                if area > ROOM_OVERLAP_TOLERANCE_M2:
+                shared = pa.intersection(pb)
+                area = shared.area
+                if (area > ROOM_OVERLAP_TOLERANCE_M2
+                        and not shared.buffer(-ROOM_OVERLAP_MIN_WIDTH_M / 2).is_empty):
                     out.append({"level_id": level.get("id"), "kind": "overlap",
                                 "room_ids": sorted([ia, ib]), "names": [na, nb],
                                 "area_m2": round(area, 2)})

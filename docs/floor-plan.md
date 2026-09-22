@@ -198,6 +198,15 @@ Room tool rules that out instead of loosening the match:
   (the rubber band turns red first), and so is closing a room that overlaps,
   swallows or sits inside another, or crosses itself (`roomPolygonProblem`).
   Neighbours share an edge exactly.
+- **Corners on the way are picked up.** Any corner within 5 cm of an edge,
+  between its ends — a wall meeting it, a neighbour's corner — becomes a
+  corner of the room (`withCornersOnTheWay`). A long edge then bends
+  through the junctions it passes instead of skimming a hair past them.
+- **Millimetres don't count.** The server stores corners to the millimetre,
+  so a corner that was exactly on a slanted wall comes back a fraction of a
+  millimetre off it. Every on-the-line and crossing test allows 1 cm
+  (`GEOM_TOL_M`): an edge must end clearly on both sides of a wall to cross
+  it, and the save's overlap check ignores any overlap thinner than that.
 - **Walls are joined first.** Picking the Room tool runs `joinWallEnds` on the
   level, so the near misses left by older drawings become corners.
 

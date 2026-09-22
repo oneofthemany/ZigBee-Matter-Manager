@@ -2668,18 +2668,48 @@ function addRoomCorner(p, lvl) {
  * else straight across — an open-plan split. `problem` says why neither
  * will do.
  */
-function roomLegs(lvl, a, b) {
-    const path = wallPath(wallGraph(lvl), a, b);
+function roomLegs(lvl, a, b, graph = wallGraph(lvl)) {
+    const path = wallPath(graph, a, b);
     const straight = Math.hypot(b.x - a.x, b.y - a.y);
-    if (path && path.length <= straight * 1.5 + 0.3) {
-        const pts = path.points;
-        for (let i = 1; i < pts.length; i++) {
-            const problem = roomEdgeProblem(lvl, pts[i - 1], pts[i]);
-            if (problem) return { via: [], problem };
-        }
-        return { via: pts.slice(1, -1), problem: null };
+    const route = path && path.length <= straight * 1.5 + 0.3 ? path.points : [a, b];
+    const pts = withCornersOnTheWay(lvl, route);
+    for (let i = 1; i < pts.length; i++) {
+        const problem = roomEdgeProblem(lvl, pts[i - 1], pts[i]);
+        if (problem) return { via: [], problem };
     }
-    return { via: [], problem: roomEdgeProblem(lvl, a, b) };
+    return { via: pts.slice(1, -1), problem: null };
+}
+
+//: A corner this close to a room edge, between its ends, becomes a corner of
+//: the room: the backend's own wall match allows 5 cm.
+const CORNER_PICKUP_M = 0.05;
+
+/**
+ * The route with every corner lying on (within CORNER_PICKUP_M of) one of
+ * its legs put in, in order. A long edge that passes a junction — a wall
+ * meeting it, a neighbouring room's corner — then bends through that corner
+ * rather than skimming past it a hair to one side, which reads as cutting
+ * the wall or the room there, and neighbours end up sharing corners.
+ */
+function withCornersOnTheWay(lvl, route) {
+    const corners = planCorners(lvl);
+    const out = [route[0]];
+    for (let i = 1; i < route.length; i++) {
+        const a = route[i - 1], b = route[i];
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        if (L > GEOM_TOL_M) {
+            const ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+            corners
+                .map(c => ({ c, t: (c.x - a.x) * ux + (c.y - a.y) * uy,
+                             off: Math.abs((c.x - a.x) * uy - (c.y - a.y) * ux) }))
+                .filter(o => o.t > GEOM_TOL_M && o.t < L - GEOM_TOL_M && o.off < CORNER_PICKUP_M
+                             && !samePoint(o.c, a) && !samePoint(o.c, b))
+                .sort((p, q) => p.t - q.t)
+                .forEach(o => { if (!samePoint(o.c, out[out.length - 1])) out.push(o.c); });
+        }
+        if (!samePoint(b, out[out.length - 1])) out.push(b);
+    }
+    return out;
 }
 
 //: How far a wall end may be off the wall it was meant to meet and still be
@@ -2705,7 +2735,7 @@ function joinWallEnds(lvl, reach = WALL_JOIN_REACH_M) {
     const walls = lvl.walls || [];
     const onWall = (p, w) => {
         const pr = projectPointOntoSegment(p, w);
-        return Math.hypot(p.x - pr.point.x, p.y - pr.point.y) < CORNER_EPS_M;
+        return Math.hypot(p.x - pr.point.x, p.y - pr.point.y) < GEOM_TOL_M;
     };
     const setEnd = (w, which, p) => {
         if (which === 1) {
@@ -2777,7 +2807,7 @@ function wallGraph(lvl) {
         nodes.forEach((n, i) => {
             const t = ((n.x - a.x) * (b.x - a.x) + (n.y - a.y) * (b.y - a.y)) / L;
             const off = Math.abs((n.x - a.x) * (b.y - a.y) - (n.y - a.y) * (b.x - a.x)) / L;
-            if (off < 1e-4 && t > -1e-4 && t < L + 1e-4) along.push([t, i]);
+            if (off < GEOM_TOL_M && t > -GEOM_TOL_M && t < L + GEOM_TOL_M) along.push([t, i]);
         });
         along.sort((p, q) => p[0] - q[0]);
         for (let k = 1; k < along.length; k++) {
@@ -2833,11 +2863,10 @@ function snapRoomToWalls(room, lvl) {
     const outline = [];
     for (let i = 0; i < moved.length; i++) {
         const a = moved[i], b = moved[(i + 1) % moved.length];
-        const path = wallPath(graph, a, b);
-        const straight = Math.hypot(b.x - a.x, b.y - a.y);
-        // Following the walls may go round a jog, not round another room.
-        const follow = path && path.length <= straight * 1.5 + 0.3;
-        outline.push(...(follow ? path.points.slice(0, -1) : [a]));
+        // Along the walls round a jog (not round another room), through any
+        // corner on the way.
+        const legs = roomLegs(lvl, a, b, graph);
+        outline.push(a, ...(legs.problem ? [] : legs.via));
     }
     const pts = outline.filter((p, i) => !outline.slice(0, i).some(q => samePoint(p, q)));
     const problem = roomPolygonProblem(lvl, pts, room.id);
@@ -3865,23 +3894,35 @@ function pointInPolygon(p, poly) {
 // for a room only when its wall is one of the room's edges), and no two
 // rooms overlap.
 
-const CORNER_EPS_M = 1e-6;
+//: Two corners this close are one corner.
+const CORNER_EPS_M = 1e-3;
+//: How far off a line a point may be and still count as on it. The server
+//: keeps coordinates to the millimetre, so a corner that was exactly on a
+//: slanted wall comes back a fraction of a millimetre off it; exact geometry
+//: then reads a room edge along that wall as cutting through it.
+const GEOM_TOL_M = 0.01;
 
 function samePoint(a, b) {
     return Math.abs(a.x - b.x) < CORNER_EPS_M && Math.abs(a.y - b.y) < CORNER_EPS_M;
 }
 
-/** Where segments a–b and c–d cross each other's middles, or null. Touching
- *  at an end, or running along each other, is not a crossing. */
+/** Signed distance of p from the line through a and b (left is positive). */
+function sideOf(p, a, b) {
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / L;
+}
+
+/** Where segments a–b and c–d cross each other's middles, or null. Each
+ *  must have its ends clearly (> GEOM_TOL_M) on opposite sides of the
+ *  other: touching at an end, a T-junction, or running along each other
+ *  within the tolerance is not a crossing. */
 function segmentCrossing(a, b, c, d) {
-    const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
-    const den = rx * sy - ry * sx;
-    if (Math.abs(den) < 1e-12) return null;
-    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den;
-    const u = ((c.x - a.x) * ry - (c.y - a.y) * rx) / den;
-    const e = 1e-6;
-    return (t > e && t < 1 - e && u > e && u < 1 - e)
-        ? { x: a.x + rx * t, y: a.y + ry * t } : null;
+    const opposite = (u, v) => (u > GEOM_TOL_M && v < -GEOM_TOL_M) || (u < -GEOM_TOL_M && v > GEOM_TOL_M);
+    const ca = sideOf(c, a, b), da = sideOf(d, a, b);
+    const ac = sideOf(a, c, d), bc = sideOf(b, c, d);
+    if (!opposite(ca, da) || !opposite(ac, bc)) return null;
+    const t = ac / (ac - bc);
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
 function wallEnds(w) { return [{ x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }]; }
@@ -3924,7 +3965,7 @@ function pointStrictlyInPolygon(p, poly) {
         const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
         const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
         const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / L2));
-        if (Math.hypot(p.x - (ax + dx * t), p.y - (ay + dy * t)) < 1e-3) return false;
+        if (Math.hypot(p.x - (ax + dx * t), p.y - (ay + dy * t)) < GEOM_TOL_M) return false;
     }
     return pointInPolygon(p, poly);
 }

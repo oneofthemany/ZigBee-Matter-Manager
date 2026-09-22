@@ -17,12 +17,12 @@ function slice(startMark, endMark) {
 }
 
 const names = ['projectPointOntoSegment', 'lineIntersection', 'joinWallEnds', 'wallGraph', 'wallPath',
-               'roomLegs', 'snapLevelToWalls', 'escapeHtml', 'polygonCentroid', 'pointInPolygon', 'samePoint', 'segmentCrossing', 'wallEnds',
+               'roomLegs', 'snapLevelToWalls', 'escapeHtml', 'polygonCentroid', 'pointInPolygon', 'samePoint', 'sideOf', 'segmentCrossing', 'withCornersOnTheWay', 'wallEnds',
                'planCorners', 'nearestPoint', 'pointStrictlyInPolygon', 'interiorPoint',
                'polygonArea', 'roomEdgeProblem', 'roomPolygonProblem', 'snapRoomToWalls'];
 const fns = names.map(n => slice(`function ${n}(`, '\n}')).join('\n');
 const m = { exports: {} };
-new Function('module', 'const CORNER_EPS_M = 1e-6, WALL_JOIN_REACH_M = 0.3, ROOM_SNAP_REACH_M = 1.5;\n' + fns
+new Function('module', 'const CORNER_EPS_M = 1e-3, GEOM_TOL_M = 0.01, CORNER_PICKUP_M = 0.05, WALL_JOIN_REACH_M = 0.3, ROOM_SNAP_REACH_M = 1.5;\n' + fns
              + `\nmodule.exports = { ${names.join(', ')} };`)(m);
 const { planCorners, roomEdgeProblem, roomPolygonProblem, snapRoomToWalls, joinWallEnds,
         roomLegs, snapLevelToWalls } = m.exports;
@@ -124,6 +124,38 @@ check('clicking past a jog picks up its corner', leg.problem === null
 const bare = { walls: [], rooms: [] };                   // nothing drawn but rooms
 const across = roomLegs(bare, P(0, 0), P(4, 0));
 check('with no walls to follow, the edge goes straight', across.via.length === 0 && across.problem === null);
+
+section('corners the server rounded to the millimetre');
+// A slanted party wall with two walls meeting it, their junctions stored to
+// the mm — so a fraction of a millimetre off the slanted line.
+const slant = { walls: [{ id: 'p', x1: 6.7, y1: 8.8, x2: 6.5, y2: 26.2 },
+                        { id: 'a', x1: 6.602, y1: 17.3, x2: 9.4, y2: 17.3 },
+                        { id: 'b', x1: 6.566, y1: 20.5, x2: 8.8, y2: 20.5 }], rooms: [] };
+const j1 = P(6.602, 17.3), j2 = P(6.566, 20.5);
+check('an edge along the wall between them does not cut it', roomEdgeProblem(slant, j1, j2) === null,
+      roomEdgeProblem(slant, j1, j2));
+check('they still count as joined, so picking the Room tool moves nothing',
+      joinWallEnds(JSON.parse(JSON.stringify(slant))) === 0);
+check('and the walls still link them, so the edge can follow the wall',
+      roomLegs(slant, j1, j2).problem === null);
+check('a real crossing is still a crossing',
+      /wall/.test(roomEdgeProblem(slant, P(5, 18), P(8, 18)) || ''));
+
+section('corners on the way are picked up');
+// One long wall with a T-junction half way; a room edge clicked end to end.
+const tee = { walls: [{ id: 'l', x1: 0, y1: 0, x2: 10, y2: 0 }, { id: 't', x1: 5, y1: 0, x2: 5, y2: 3 }],
+              rooms: [] };
+const run = roomLegs(tee, P(0, 0), P(10, 0));
+check('an end-to-end edge bends through the junction it passes',
+      run.problem === null && run.via.length === 1 && run.via[0].x === 5 && run.via[0].y === 0, run);
+// A neighbour's corner 3 cm off the straight line between two corners.
+const beside = { walls: [], rooms: [{ id: 'n', name: 'Next door', polygon: [[4, 0.03], [6, 0.03], [6, -3], [4, -3]] }] };
+const skim = roomLegs(beside, P(0, 0), P(10, 0));
+check("and through a neighbour's corners within 5 cm, instead of skimming into it",
+      skim.problem === null && skim.via.map(p => p.x).join() === '4,6', skim);
+check('a corner further off is left alone',
+      roomLegs({ walls: [], rooms: [{ id: 'f', polygon: [[4, 0.2], [6, 0.2], [6, 3], [4, 3]] }] },
+               P(0, 0), P(10, 0)).via.length === 0);
 
 section('mending a whole traced level');
 const whole = level();
