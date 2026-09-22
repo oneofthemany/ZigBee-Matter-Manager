@@ -80,7 +80,7 @@ html, body {
        status pills left, action buttons pushed right */
     .navbar .d-flex.align-items-center.gap-3 {
         flex-wrap: wrap;
-        row-gap:0.4rem !important;
+        row-gap: 0.4rem !important;
     }
 
     .navbar .col-auto.ms-auto {
