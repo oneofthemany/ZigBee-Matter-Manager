@@ -394,6 +394,16 @@
 
 .fp-daylight-none  { fill: rgba(15, 23, 42, 0.35); }
 .fp-daylight-label { fill: var(--fp-text); font-weight: 600; }
+.fp-daylight-range { font-weight: 400; opacity: 0.8; }
+.fp-sun-hours { fill: rgba(120, 80, 0, 0.88); }
+[data-theme="dark"] .fp-sun-hours { fill: #fcd34d; }
+.fp-daylight-iso {
+    fill: none;
+    stroke: rgba(15, 23, 42, 0.35);
+    stroke-width: 0.012;
+    stroke-dasharray: 0.06 0.05;
+}
+[data-theme="dark"] .fp-daylight-iso { stroke: rgba(255, 255, 255, 0.35); }
 .fp-map-pin { fill: var(--fp-device-heating); stroke: var(--fp-device-stroke); stroke-width: 0.04; }
 
 /* inline in Topology: fill the tab's container, no modal chrome */

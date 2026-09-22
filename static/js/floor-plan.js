@@ -43,6 +43,7 @@ let _needsFit = false;
 
 function resetState(plan) {
     _fieldCache = new Map();
+    _daylightCache = new Map();
     _state = {
         plan: plan || newEmptyPlan(),
         currentLevelId: null,
@@ -633,7 +634,10 @@ function bindModalEvents() {
     });
     document.getElementById('fpToggleSun').addEventListener('change', async e => {
         _state.showSun = e.target.checked;
-        if (_state.showSun) { await loadSunData(); await loadSolarImpact(); }
+        if (_state.showSun) {
+            await loadSunData(); await loadSolarImpact();
+            if (!_state.daylight) await loadDaylight();   // the light field under the sun path
+        }
         renderScene(); renderOverlay(); renderProps();
         // The arc is wider than the house, so make room for it (and give it
         // back when it goes away).
@@ -1317,27 +1321,37 @@ function renderScene() {
 
     if (_state.showDaylight && _state.daylight) parts.push(...renderDaylightParts(lvl));
 
-    // Solar gain overlay — amber fill on rooms that receive direct sunlight via windows today.
+    // Sun path: each room's light field as it is now (docs/daylight.md §8),
+    // and how long the sun is on its windows today. The Daylight layer draws
+    // the field itself when it is on, at its own slider time.
     if (_state.showSun && _state.sunData) {
         const solarGain = computeSolarGain(lvl, _state.sunData, _state.plan.north_offset_deg);
-        if (solarGain.size > 0) {
-            const maxMin = Math.max(...solarGain.values());
-            for (const room of lvl.rooms) {
-                const minutes = solarGain.get(room.id);
-                if (!minutes) continue;
-                const intensity = Math.min(1, minutes / maxMin);
-                const fillOpacity = (0.12 + 0.22 * intensity).toFixed(2);
-                const hours = (minutes / 60).toFixed(1);
-                const roomPath = polygonToPath(room.polygon);
-                const c = polygonCentroid(room.polygon);
-                const sc = modelToSvg(c);
-                // Offset label below name/circuit lines already in the room
-                const labelY = sc.y + (circuitColourMap[room.circuit_id] ? 0.55 : 0.38);
-                parts.push(`<path d="${roomPath}" fill="rgba(251,191,36,${fillOpacity})" pointer-events="none"/>`);
-                parts.push(`<text x="${sc.x}" y="${labelY}" font-size="0.16" text-anchor="middle"
-                                  fill="rgba(120,80,0,0.88)" pointer-events="none">${hours}h sun</text>`);
+        const d = _state.daylight;
+        const now = d ? daylightNowIndex(d) : -1;
+        const byRoom = new Map((d?.rooms || []).filter(r => r.level_id === lvl.id).map(r => [r.room_id, r]));
+        const maxMin = solarGain.size ? Math.max(...solarGain.values()) : 1;
+        const defs = [];
+        for (const room of lvl.rooms) {
+            const minutes = solarGain.get(room.id);
+            const est = byRoom.get(room.id);
+            let drawn = !!_state.showDaylight;
+            if (!drawn && est && d.sky?.[now]) {
+                const lf = roomLightFieldParts(room, lvl, d.sky[now], est.lux[now] || 0);
+                if (lf) { defs.push(...lf.defs); parts.push(...lf.parts); drawn = true; }
             }
+            if (!minutes) continue;
+            const sc = modelToSvg(polygonCentroid(room.polygon));
+            if (!drawn) {
+                // No estimate for this room (unsaved window, no location): the plain tint.
+                const fillOpacity = (0.12 + 0.22 * Math.min(1, minutes / maxMin)).toFixed(2);
+                parts.push(`<path d="${polygonToPath(room.polygon)}" fill="rgba(251,191,36,${fillOpacity})" pointer-events="none"/>`);
+            }
+            // Offset label below name/circuit lines already in the room
+            const labelY = sc.y + (circuitColourMap[room.circuit_id] ? 0.55 : 0.38);
+            parts.push(`<text class="fp-sun-hours" x="${sc.x}" y="${labelY}" font-size="0.16" text-anchor="middle"
+                              pointer-events="none">${(minutes / 60).toFixed(1)}h sun</text>`);
         }
+        if (defs.length) parts.push(`<defs>${defs.join('')}</defs>`);
     }
 
     // Cold zones — everywhere the shared heat-coverage field falls below the
@@ -5309,10 +5323,7 @@ async function loadDaylight() {
         if (!res.ok) throw new Error(r?.detail || `The hub said ${res.status}.`);
         if (!r?.success) throw new Error(r?.error || 'No estimate');
         _state.daylight = r;
-        // Start at the step nearest now.
-        const i = r.times.reduce((best, t, k) =>
-            Math.abs(t - r.now) < Math.abs(r.times[best] - r.now) ? k : best, 0);
-        _state.daylightIndex = i;
+        _state.daylightIndex = daylightNowIndex(r);   // start at the step nearest now
     } catch (e) {
         _state.daylight = null;
         _state.daylightError = e.message;
@@ -5364,7 +5375,8 @@ function daylightFill(lux) {
 function renderDaylightParts(lvl) {
     const d = _state.daylight, i = _state.daylightIndex;
     const byRoom = new Map(d.rooms.filter(r => r.level_id === lvl.id).map(r => [r.room_id, r]));
-    const parts = [];
+    const sky = d.sky?.[i] || null;
+    const parts = [], defs = [];
     for (const room of lvl.rooms) {
         const est = byRoom.get(room.id);
         const c = modelToSvg(polygonCentroid(room.polygon));
@@ -5375,11 +5387,369 @@ function renderDaylightParts(lvl) {
             continue;
         }
         const lux = est.lux[i] || 0;
-        parts.push(`<path d="${polygonToPath(room.polygon)}" fill="${daylightFill(lux)}" pointer-events="none"/>
-          <text class="fp-daylight-label" x="${c.x}" y="${c.y - 0.3}" font-size="0.16"
-                text-anchor="middle" pointer-events="none">${est.sun[i] ? '☀ ' : ''}${formatLux(lux)}</text>`);
+        // Light across the room: bright by the glass and in the sun patch,
+        // falling away with distance and behind walls. docs/daylight.md §8.
+        const lf = sky ? roomLightFieldParts(room, lvl, sky, lux) : null;
+        if (!lf) {
+            parts.push(`<path d="${polygonToPath(room.polygon)}" fill="${daylightFill(lux)}" pointer-events="none"/>
+              <text class="fp-daylight-label" x="${c.x}" y="${c.y - 0.3}" font-size="0.16"
+                    text-anchor="middle" pointer-events="none">${est.sun[i] ? '☀ ' : ''}${formatLux(lux)}</text>`);
+            continue;
+        }
+        defs.push(...lf.defs);
+        parts.push(...lf.parts);
+        parts.push(`<text class="fp-daylight-label" x="${c.x}" y="${c.y - 0.3}" font-size="0.16"
+                text-anchor="middle" pointer-events="none">${est.sun[i] ? '☀ ' : ''}${formatLux(lux)} avg</text>
+          <text class="fp-daylight-label fp-daylight-range" x="${c.x}" y="${c.y - 0.1}" font-size="0.12"
+                text-anchor="middle" pointer-events="none">${formatLux(lf.f.max)} → ${formatLux(lf.f.min)}</text>`);
     }
-    return parts;
+    return defs.length ? [`<defs>${defs.join('')}</defs>`, ...parts] : parts;
+}
+
+/** The daylight estimate's time step nearest now. */
+function daylightNowIndex(d) {
+    return d.times.reduce((best, t, k) =>
+        Math.abs(t - d.now) < Math.abs(d.times[best] - d.now) ? k : best, 0);
+}
+
+/**
+ * A room's light field (image + iso-lux lines, clipped to the room) for one
+ * sky, or null when the room has no outside window to draw it from.
+ */
+function roomLightFieldParts(room, lvl, sky, avgLux) {
+    const geo = roomDaylightGeometry(room, lvl);
+    if (!geo || !geo.windows.length) return null;
+    const f = roomDaylightField(geo, sky, avgLux, _state.plan.north_offset_deg || 0);
+    const uid = room.id.replace(/[^a-z0-9]/gi, '_');
+    const parts = [`<image href="${daylightFieldImage(f)}"
+                        x="${f.x0}" y="${-(f.y0 + f.ny * f.h)}"
+                        width="${f.nx * f.h}" height="${f.ny * f.h}"
+                        clip-path="url(#dl_${uid})" preserveAspectRatio="none"
+                        pointer-events="none"/>`];
+    for (const lx of DL_ISO_LUX) {
+        if (lx <= f.min || lx >= f.max) continue;
+        const path = fieldContourPath(f, Math.log10(lx));
+        if (path) parts.push(`<path class="fp-daylight-iso" d="${path}" clip-path="url(#dl_${uid})"
+                                    pointer-events="none"/>`);
+    }
+    return { f, parts, defs: [`<clipPath id="dl_${uid}"><path d="${polygonToPath(room.polygon)}"/></clipPath>`] };
+}
+
+// daylight across a room — docs/daylight.md §8
+//
+// Illuminance on the working plane, cell by cell:
+//   E(P) = E_sun(P) + E_sky(P) + E_irc
+// E_sun: the beam through the glazing, where the ray from P toward the sun
+//   leaves through the window aperture unblocked by other walls.
+// E_sky: the window, cut into patches, each seen from P with the sky's
+//   luminance in that direction (CIE clear sky, whose cos²γ term is Rayleigh
+//   scattering, blended to CIE overcast by cloud) × cosθ_P cosθ_W dA / r².
+// E_irc: the inter-reflected light, uniform — split-flux on the server's
+//   average: E_avg = Φ / (A(1−ρ²)) and IRC = Φρ / (A(1−ρ)) give ρ(1+ρ)·E_avg.
+
+const DL_WORK_PLANE_M = 0.85;          // desk height, where a lux sensor sits
+const DL_SILL_M = 0.9;                 // window sill when the plan has none
+const DL_OBSTRUCTION_DEG = 20;         // 90° − the server's 70° sky angle
+const DL_OBSTRUCTION_REFLECTANCE = 0.2;
+const DL_SURFACE_REFLECTANCE = 0.5;    // as the server's SURFACE_REFLECTANCE
+const DL_GLAZING_T = { single: 0.85, double: 0.75, triple: 0.65 };
+const DL_PATCHES_U = 5, DL_PATCHES_V = 4;
+const DL_WAVELENGTHS_UM = [0.610, 0.550, 0.465];   // R, G, B
+const DL_AEROSOL_WHITE = 0.45;         // share of skylight not from Rayleigh
+const DL_ISO_LUX = [100, 300, 1000, 3000, 10000];
+let _daylightCache = new Map();        // room.id → { key, geo }
+
+/** Rayleigh optical depth of the whole atmosphere at λ (µm), ∝ λ⁻⁴ (Hansen & Travis). */
+function rayleighDepth(um) {
+    const l2 = 1 / (um * um);
+    return 0.008569 * l2 * l2 * (1 + 0.0113 * l2 + 0.00013 * l2 * l2);
+}
+
+/** Relative optical air mass at a solar elevation (Kasten & Young 1989). */
+function airMass(elDeg) {
+    const e = Math.max(0, elDeg);
+    return 1 / (Math.sin(e * Math.PI / 180) + 0.50572 * Math.pow(e + 6.07995, -1.6364));
+}
+
+/**
+ * RGB tints, max channel 1: the beam after Rayleigh extinction exp(−τ_λ m)
+ * (warmer as the sun drops) and the skylight it scattered, 1 − exp(−τ_λ m)
+ * (blue). Cloud scatters all colours alike, so it greys both.
+ */
+function daylightTints(elDeg, cloud) {
+    const m = airMass(elDeg), c = Math.max(0, Math.min(1, cloud || 0));
+    const norm = v => { const mx = Math.max(...v); return v.map(x => x / mx); };
+    const grey = (v, k) => v.map(x => x + (1 - x) * k);
+    const tau = DL_WAVELENGTHS_UM.map(rayleighDepth);
+    const sun = norm(tau.map(t => Math.exp(-t * m)));
+    const sky = grey(norm(tau.map(t => 1 - Math.exp(-t * m))), DL_AEROSOL_WHITE);
+    return { sun: grey(sun, c), sky: grey(sky, c) };
+}
+
+/**
+ * Relative sky luminance at altitude `alt` (rad), `cosG` = cos of the angle
+ * to the sun. CIE clear sky: the 0.45·cos²γ term is the Rayleigh phase
+ * function, 10·e^(−3γ) the aerosol glow round the sun, and the gradation
+ * 1 − e^(−0.32/sin α) brightens toward the horizon. CIE overcast is brighter
+ * at the zenith, (1 + 2 sin α)/3.
+ */
+function skyLuminanceClear(alt, cosG) {
+    const g = Math.acos(Math.max(-1, Math.min(1, cosG)));
+    return (0.91 + 10 * Math.exp(-3 * g) + 0.45 * cosG * cosG)
+         * (1 - Math.exp(-0.32 / Math.max(0.01, Math.sin(alt))));
+}
+function skyLuminanceOvercast(alt) { return (1 + 2 * Math.sin(alt)) / 3; }
+
+/**
+ * The sky at one time, as a luminance function whose horizontal illuminance
+ * over the whole hemisphere is `diffuse` lux. `sunPlanAz` is in plan degrees.
+ */
+function daylightSky(sky, northOffsetDeg) {
+    const el = sky.elevation * Math.PI / 180;
+    const sunAz = ((sky.azimuth + northOffsetDeg) % 360 + 360) % 360 * Math.PI / 180;
+    const c = Math.max(0, Math.min(1, sky.cloud ?? 0));
+    const cosG = (alt, az) => Math.sin(alt) * Math.sin(el) + Math.cos(alt) * Math.cos(el) * Math.cos(az - sunAz);
+    // Horizontal illuminance of each model: ∫∫ L sinα cosα dα dφ.
+    let nClear = 0, nOver = 0;
+    const NA = 18, NP = 36, dA = (Math.PI / 2) / NA, dP = (2 * Math.PI) / NP;
+    for (let a = 0; a < NA; a++) {
+        const alt = (a + 0.5) * dA, w = Math.sin(alt) * Math.cos(alt) * dA * dP;
+        nOver += skyLuminanceOvercast(alt) * w * NP;
+        for (let p = 0; p < NP; p++) nClear += skyLuminanceClear(alt, cosG(alt, (p + 0.5) * dP)) * w;
+    }
+    const diffuse = Math.max(0, sky.diffuse || 0);
+    return {
+        el, sunAz, beamN: Math.max(0, sky.beam_n || 0), diffuse,
+        luminance: (alt, az) => diffuse * ((1 - c) * skyLuminanceClear(alt, cosG(alt, az)) / nClear
+                                          + c * skyLuminanceOvercast(alt) / nOver),
+        obstruction: DL_OBSTRUCTION_REFLECTANCE * diffuse / Math.PI,
+        tints: daylightTints(sky.elevation, c),
+    };
+}
+
+/** Does P→Q cross any wall other than `hostId`? Walls cast the shadows. */
+function daylightBlocked(px, py, qx, qy, walls, hostId) {
+    const rx = qx - px, ry = qy - py;
+    for (const w of walls) {
+        if (w.id === hostId) continue;
+        const sx = w.x2 - w.x1, sy = w.y2 - w.y1;
+        const den = rx * sy - ry * sx;
+        if (Math.abs(den) < 1e-12) continue;
+        const ax = w.x1 - px, ay = w.y1 - py;
+        const t = (ax * sy - ay * sx) / den, u = (ax * ry - ay * rx) / den;
+        if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6) return true;
+    }
+    return false;
+}
+
+/**
+ * Everything about a room's daylight that does not change with the time:
+ * its outside windows, the grid, and for every cell the window patches it
+ * can see (view factor g, altitude and plan bearing of the ray). Cached on
+ * the geometry, so the time slider only re-weights.
+ */
+function roomDaylightGeometry(room, lvl) {
+    if (!room.polygon || room.polygon.length < 3) return null;
+    const allWalls = lvl.walls || [];
+    const others = (lvl.rooms || []).filter(r => r.id !== room.id && r.polygon?.length >= 3);
+    const centroid = polygonCentroid(room.polygon);
+    const bops = (lvl.openings || []).filter(o => o.kind === 'window' && (o.room_id
+        ? o.room_id === room.id
+        : openingsOnRoomBoundary(room, { ...lvl, openings: [o] }).length > 0));
+    const key = JSON.stringify([room.polygon, others.map(r => r.polygon),
+        allWalls.map(w => [w.id, w.x1, w.y1, w.x2, w.y2, w.type]),
+        bops.map(o => [o.id, o.wall_id, o.offset_m, o.width_m, o.height_m, o.sill_height_m, o.glazing])]);
+    const hit = _daylightCache.get(room.id);
+    if (hit && hit.key === key) return hit.geo;   // geo.byTime keeps each time step's field
+
+    const windows = [];
+    for (const o of bops) {
+        const wall = allWalls.find(w => w.id === o.wall_id);
+        if (!wall || wall.type === 'internal' || wall.type === 'party') continue;
+        const len = Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1);
+        if (len < 1e-6 || !(o.width_m > 0)) continue;
+        const ux = (wall.x2 - wall.x1) / len, uy = (wall.y2 - wall.y1) / len;
+        const ax = wall.x1 + ux * (o.offset_m || 0), ay = wall.y1 + uy * (o.offset_m || 0);
+        const mx = ax + ux * o.width_m / 2, my = ay + uy * o.width_m / 2;
+        let nx = -uy, ny = ux;                                  // outward
+        if ((centroid.x - mx) * nx + (centroid.y - my) * ny > 0) { nx = -nx; ny = -ny; }
+        // Only glass with the outdoors behind it lets daylight in.
+        const probe = { x: mx + nx * 0.4, y: my + ny * 0.4 };
+        if (others.some(r => pointInPolygon(probe, r.polygon))) continue;
+        const sill = Number.isFinite(o.sill_height_m) ? o.sill_height_m : DL_SILL_M;
+        windows.push({ id: o.id, hostId: wall.id, ax, ay, ux, uy, nx, ny, width: o.width_m,
+                       sill, head: sill + (o.height_m || 1.2),
+                       T: DL_GLAZING_T[o.glazing] ?? DL_GLAZING_T.double });
+    }
+
+    const xs = room.polygon.map(p => p[0]), ys = room.polygon.map(p => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const h = Math.max(0.08, Math.min(0.25, Math.max(maxX - minX, maxY - minY) / 60));
+    const nxC = Math.max(2, Math.ceil((maxX - minX) / h) + 2);
+    const nyC = Math.max(2, Math.ceil((maxY - minY) / h) + 2);
+    const x0 = minX - h, y0 = minY - h;
+    // Walls near enough to shade this room.
+    const pad = 0.5;
+    const walls = allWalls.filter(w => Math.max(w.x1, w.x2) >= minX - pad && Math.min(w.x1, w.x2) <= maxX + pad
+                                     && Math.max(w.y1, w.y2) >= minY - pad && Math.min(w.y1, w.y2) <= maxY + pad);
+
+    const inside = new Uint8Array(nxC * nyC);
+    const start = new Int32Array(nxC * nyC + 1);
+    const samples = [];                                       // g, alt, planAz, T
+    for (let j = 0; j < nyC; j++) {
+        for (let i = 0; i < nxC; i++) {
+            const k = j * nxC + i;
+            start[k] = samples.length / 4;
+            const px = x0 + (i + 0.5) * h, py = y0 + (j + 0.5) * h;
+            if (!pointInPolygon({ x: px, y: py }, room.polygon)) continue;
+            inside[k] = 1;
+            for (const w of windows) {
+                const dA = (w.width / DL_PATCHES_U) * ((w.head - w.sill) / DL_PATCHES_V);
+                for (let a = 0; a < DL_PATCHES_U; a++) {
+                    const s = (a + 0.5) / DL_PATCHES_U * w.width;
+                    const qx = w.ax + w.ux * s, qy = w.ay + w.uy * s;
+                    const dx = qx - px, dy = qy - py;
+                    const perp = dx * w.nx + dy * w.ny;
+                    if (perp <= 1e-3) continue;
+                    if (daylightBlocked(px, py, qx, qy, walls, w.hostId)) continue;
+                    const horiz = Math.hypot(dx, dy);
+                    const planAz = Math.atan2(dx, dy);
+                    for (let b = 0; b < DL_PATCHES_V; b++) {
+                        const dz = w.sill + (b + 0.5) / DL_PATCHES_V * (w.head - w.sill) - DL_WORK_PLANE_M;
+                        if (dz <= 0) continue;                // below the desk: not seen from above
+                        const r2 = horiz * horiz + dz * dz, r = Math.sqrt(r2);
+                        samples.push((dz / r) * (perp / r) * dA / r2, Math.atan2(dz, horiz), planAz, w.T);
+                    }
+                }
+            }
+        }
+    }
+    start[nxC * nyC] = samples.length / 4;
+    const geo = { windows, walls, nx: nxC, ny: nyC, x0, y0, h, inside, start,
+                  samples: Float32Array.from(samples), byTime: new Map() };
+    _daylightCache.set(room.id, { key, geo });
+    return geo;
+}
+
+/**
+ * The room's illuminance field at one time step, as log10(lux) in `data`
+ * (the shape fieldContourPath expects), with the sun / sky / reflected
+ * shares of each cell for colouring. `avgLux` is the server's room average.
+ * Cached on `geo` per time step.
+ */
+function roomDaylightField(geo, sky, avgLux, northOffsetDeg) {
+    const ck = JSON.stringify([sky, avgLux, northOffsetDeg]);
+    if (geo.byTime.has(ck)) return geo.byTime.get(ck);
+
+    const S = daylightSky(sky, northOffsetDeg);
+    const { nx, ny, x0, y0, h, inside, start, samples, windows, walls } = geo;
+    const n = nx * ny;
+    const sun = new Float32Array(n), skyL = new Float32Array(n), data = new Float32Array(n);
+    const rho = DL_SURFACE_REFLECTANCE;
+    const irc = Math.max(1, avgLux * rho * (1 + rho));
+    const shx = Math.sin(S.sunAz), shy = Math.cos(S.sunAz);  // toward the sun, plan
+    const tanEl = Math.tan(S.el), sinEl = Math.sin(S.el), cosEl = Math.cos(S.el);
+    const obstructionAlt = DL_OBSTRUCTION_DEG * Math.PI / 180;
+    let min = Infinity, max = 0, sunSum = 0, skySum = 0;
+    for (let k = 0; k < n; k++) {
+        if (!inside[k]) continue;
+        const px = x0 + (k % nx + 0.5) * h, py = y0 + (Math.floor(k / nx) + 0.5) * h;
+        let es = 0;
+        if (S.beamN > 0) {
+            for (const w of windows) {
+                const facing = shx * w.nx + shy * w.ny;
+                if (facing <= 0.02) continue;
+                const dist = (w.ax - px) * w.nx + (w.ay - py) * w.ny;
+                if (dist <= 0) continue;
+                const t = dist / facing;
+                const cx = px + shx * t, cy = py + shy * t;
+                const u = (cx - w.ax) * w.ux + (cy - w.ay) * w.uy;
+                const z = DL_WORK_PLANE_M + t * tanEl;
+                if (u < 0 || u > w.width || z < w.sill || z > w.head) continue;
+                if (daylightBlocked(px, py, cx, cy, walls, w.hostId)) continue;
+                // Glass reflects more at grazing angles (ASHRAE incidence modifier).
+                const cosI = cosEl * facing;
+                const iam = Math.max(0, 1 - 0.1 * (1 / Math.max(cosI, 0.05) - 1));
+                es += S.beamN * sinEl * w.T * iam;
+            }
+        }
+        let ek = 0;
+        for (let s = start[k]; s < start[k + 1]; s++) {
+            const o = s * 4, alt = samples[o + 1];
+            const L = alt < obstructionAlt ? S.obstruction : S.luminance(alt, samples[o + 2]);
+            ek += samples[o] * samples[o + 3] * L;
+        }
+        sun[k] = es; skyL[k] = ek;
+        const e = es + ek + irc;
+        data[k] = Math.log10(e);
+        min = Math.min(min, e); max = Math.max(max, e);
+        sunSum += es; skySum += ek;
+    }
+    // Outside the room, carry the nearest inside value so iso-lines don't
+    // trace the room's own edge.
+    let frontier = [];
+    for (let k = 0; k < n; k++) if (inside[k]) frontier.push(k);
+    const done = Uint8Array.from(inside);
+    while (frontier.length) {
+        const next = [];
+        for (const k of frontier) {
+            const i = k % nx, j = Math.floor(k / nx);
+            for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                const ii = i + di, jj = j + dj;
+                if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+                const kk = jj * nx + ii;
+                if (done[kk]) continue;
+                done[kk] = 1; data[kk] = data[k]; next.push(kk);
+            }
+        }
+        frontier = next;
+    }
+    // Reflected light takes the colour of what came in, softened by the walls.
+    const tot = sunSum + skySum || 1;
+    const ircTint = [0, 1, 2].map(c => 0.5 + 0.5 * (S.tints.sun[c] * sunSum + S.tints.sky[c] * skySum) / tot);
+    const f = { nx, ny, x0, y0, h, data, inside, sun, sky: skyL, irc, ircTint, tints: S.tints,
+                min: Number.isFinite(min) ? min : irc, max, urls: {} };
+    geo.byTime.set(ck, f);
+    return f;
+}
+
+/**
+ * Rasterise a daylight field. Brightness is log lux, from shade (navy) to
+ * lit; hue is the mix of beam (warm, Rayleigh-reddened) and sky (blue).
+ */
+function daylightFieldImage(f) {
+    if (f.urls.img) return f.urls.img;
+    const { nx, ny, data, inside, sun, sky, irc, ircTint, tints } = f;
+    const cnv = document.createElement('canvas');
+    cnv.width = nx; cnv.height = ny;
+    const ctx = cnv.getContext('2d');
+    const img = ctx.createImageData(nx, ny);
+    const shade = [30, 41, 90];
+    for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+            const k = j * nx + i;
+            if (!inside[k]) continue;
+            const e = sun[k] + sky[k] + irc;
+            const ws = sun[k] / e, wk = sky[k] / e, wr = irc / e;
+            const t = Math.max(0, Math.min(1, (data[k] - 1) / 3.7));   // 10 lx → 0, 50 klx → 1
+            const px = (((ny - 1 - j) * nx) + i) * 4;
+            for (let c = 0; c < 3; c++) {
+                const tint = ws * tints.sun[c] + wk * tints.sky[c] + wr * ircTint[c];
+                const lit = 255 * (0.2 + 0.8 * Math.max(0, 1 - (1 - tint) * 1.5));
+                img.data[px + c] = Math.round(shade[c] + (lit - shade[c]) * t);
+            }
+            img.data[px + 3] = Math.round((0.42 + 0.2 * ws) * 255);
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    const up = document.createElement('canvas');
+    up.width = nx * 6; up.height = ny * 6;
+    const uctx = up.getContext('2d');
+    uctx.imageSmoothingEnabled = true;
+    uctx.imageSmoothingQuality = 'high';
+    uctx.drawImage(cnv, 0, 0, up.width, up.height);
+    f.urls.img = up.toDataURL('image/png');
+    return f.urls.img;
 }
 
 // save
@@ -5445,7 +5815,7 @@ async function save() {
                 ? keep : _state.plan.levels[0]?.id;
             _state.selection = null;
             // The estimate reads the saved plan, which has just changed.
-            if (_state.showDaylight) { await loadDaylight(); syncDaylightControls(); }
+            if (_state.showDaylight || _state.showSun) { await loadDaylight(); syncDaylightControls(); }
             renderScene(); renderProps(); renderPalette();
         }
     } catch (e) {

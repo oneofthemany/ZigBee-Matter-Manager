@@ -22,7 +22,7 @@ if str(HERE) not in sys.path:
 
 MODULES = ["test_store", "test_model", "test_mesh", "test_radio", "test_routes", "test_scopes"]
 # The editor's own geometry maths, sliced out of the shipped .js and run.
-JS_TESTS = ["test_calibrate.js", "test_bg_placement.js"]
+JS_TESTS = ["test_calibrate.js", "test_bg_placement.js", "test_daylight_field.js"]
 
 
 def run_node() -> tuple[list[str], list[str]]:

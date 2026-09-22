@@ -11,6 +11,7 @@ threshold does not flicker between bands.
 
 from __future__ import annotations
 
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -158,6 +159,18 @@ def run() -> Checker:
             and later["cloud"] == 0.0, later)
     c.check("with no location only a measurement can answer",
             dl.sky(t, None, cur)["elevation"] is None and dl.sky(t, None, {}) is None)
+
+    c.section("the sky's parts, for spreading light across a room")
+    clear = dl.sky_parts(dl.sky(t, LONDON, {}, hourly_cloud=0.0))
+    c.check("a clear noon is mostly beam", clear["beam_n"] > clear["diffuse"], clear)
+    grey = dl.sky_parts(dl.sky(t, LONDON, {}, hourly_cloud=1.0))
+    c.check("overcast is all sky", grey["beam_n"] < grey["diffuse"] / 10, grey)
+    total = dl.sky(t, LONDON, {}, hourly_cloud=0.0)["lux"]
+    c.check("beam and sky add back up to the horizontal total",
+            abs(clear["diffuse"] + clear["beam_n"] * math.sin(math.radians(clear["elevation"]))
+                - total) < total * 0.002, clear)
+    night = datetime(2026, 12, 21, 22, tzinfo=timezone.utc).timestamp()
+    c.check("nothing at night", dl.sky_parts(dl.sky(night, LONDON, {})) is None)
 
     c.section("rounding keeps the reading quiet")
     c.check("two significant figures", dl.round_lux(12345) == 12000 and dl.round_lux(456) == 460)

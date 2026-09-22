@@ -193,6 +193,21 @@ def split_outdoor(lux: float, elevation_deg: float,
     return diffuse, beam_h / math.sin(math.radians(elevation_deg))
 
 
+def sky_parts(sk: Optional[dict]) -> Optional[dict]:
+    """What the editor needs to spread daylight across a room at one time.
+
+    ``sk`` is one :func:`sky` result. Returns the sun position, the diffuse
+    horizontal and beam normal lux (:func:`split_outdoor`) and the cloud
+    fraction, or None at night or with no sun. docs/daylight.md §8.
+    """
+    if not sk or sk.get("elevation") is None or sk["elevation"] <= 0:
+        return None
+    diffuse, beam_n = split_outdoor(sk["lux"], sk["elevation"], sk.get("cloud"))
+    return {"azimuth": round(sk["azimuth"], 1), "elevation": round(sk["elevation"], 2),
+            "diffuse": round(diffuse), "beam_n": round(beam_n),
+            "cloud": None if sk.get("cloud") is None else round(sk["cloud"], 2)}
+
+
 def room_lux(room: dict, outdoor: float, sun_azimuth_deg: float,
              sun_elevation_deg: float, cloud_fraction: Optional[float]
              ) -> Tuple[float, bool]:

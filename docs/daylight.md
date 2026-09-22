@@ -167,4 +167,84 @@ colours each room by the same estimate for any time today, via
 `GET /api/floor-plan/daylight?step_minutes=30`. The current weather is used near
 now, the hourly cloud forecast further away, and a clear sky where neither is
 available. It reads the saved plan, so a window you've just drawn counts once
-you save.
+you save. How the light is spread across each room is §8.
+
+## 8. Across a room
+
+The Daylight layer draws how the light varies across each room, not one colour
+for the whole room. The number on the room is still the §7 average, the one
+the room's daylight device publishes. Under it is the brightest and dimmest
+point of the field. The field is computed in the editor
+(`roomDaylightGeometry` / `roomDaylightField` in `static/js/floor-plan.js`),
+from the plan being edited and, for each time step, the `sky` entry of
+`GET /api/floor-plan/daylight`: sun azimuth and elevation, diffuse horizontal
+and beam normal lux, and cloud (`daylight.sky_parts`).
+
+Illuminance is taken on the working plane, 0.85 m up, where a desk or a lux
+sensor sits. On a grid of about 0.1–0.25 m:
+
+    E(P) = E_sun(P) + E_sky(P) + E_irc
+
+**Direct sun.** From P, follow the ray toward the sun back to the window's
+wall. If it crosses the wall within the window's width, between sill and head
+(sill 0.9 m unless the plan has `sill_height_m`), and no other wall is in the
+way, P is in the sun patch:
+
+    E_sun = E_beam_normal · sin(elevation) · T · IAM
+    IAM = 1 − 0.1 · (1/cos i − 1)    (ASHRAE: glass reflects more at grazing angles)
+
+So the patch moves with the sun and lengthens as it drops, and a wall between
+P and the window shades it.
+
+**Sky.** Each window is cut into 5 × 4 patches. Each patch that P can see
+(not behind another wall, and above the working plane) adds
+
+    T · L(α, φ) · cosθ_P · cosθ_W · dA / r²
+
+where `L` is the sky's luminance in that direction. This gives the fall-off
+away from the window, the darker areas off to its sides, and complete shadow
+behind a wall. Rays less than 20° above the horizon (90° minus the §7 sky
+angle) meet neighbours and trees, which reflect 20% of the diffuse light.
+
+`L` is the CIE clear sky blended toward the CIE overcast sky by cloud fraction:
+
+    clear:    (0.91 + 10·e^(−3γ) + 0.45·cos²γ) · (1 − e^(−0.32 / sin α))
+    overcast: (1 + 2·sin α) / 3
+
+Here γ is the angle from the sun. The `0.45·cos²γ` term is **Rayleigh
+scattering's** phase function, `(1 + cos²γ)`, so the clear sky is dimmest 90°
+from the sun and brightens again opposite it. The `10·e^(−3γ)` term is aerosol
+glow around the sun. Each model is scaled so that the whole hemisphere gives
+exactly the diffuse horizontal lux the server estimated. The model only
+redistributes that light by direction; it never adds any.
+
+**Inter-reflected light** is spread evenly over the room. By the split-flux
+method, `IRC = Φ·ρ / (A(1−ρ))`, and the §7 average is `Φ / (A(1−ρ²))`, so
+`IRC = ρ(1+ρ) · E_avg`, which is 0.75 × the average at ρ = 0.5. It sets the floor
+of the field: the darkest corner of a room never drops below it.
+
+**Colour.** Rayleigh optical depth goes as λ⁻⁴ (Hansen & Travis:
+`τ = 0.008569 λ⁻⁴ (1 + 0.0113 λ⁻² + 0.00013 λ⁻⁴)`, λ in µm), taken at
+610, 550 and 465 nm with the Kasten–Young air mass:
+
+- the beam is what survives, `exp(−τ_λ m)`: near white at midday, amber to
+  orange as the sun drops
+- skylight is what was scattered, `1 − exp(−τ_λ m)`: blue, whitened 45% for
+  aerosol and multiple scattering
+
+Cloud scatters every colour about equally, so it greys both. Each cell is
+coloured by its mix of beam, sky and reflected light, and its brightness is
+log₁₀ lux, from 10 lx (shade) to 50 klx (full sun). Dashed iso-lux lines
+mark 100, 300, 1 000, 3 000 and 10 000 lx where they fall inside the room.
+
+The **Sun path** option (floor plan → View) draws the same field for each room
+as it is now, under the sun's arc, with the hours of sun on each room's windows
+today. With the Daylight layer also on, the Daylight layer's slider time is the
+one drawn. A room without an estimate falls back to a plain amber tint.
+
+**Limits.** The model works on the plan only. Wall thickness, window reveals,
+overhangs, furniture and the neighbours' actual heights are not modelled. The
+reflected light is uniform, so a dark-floored room is drawn as evenly lit as a
+white one. The sun is a point, so the edges of the patch are sharp. A room
+shows the field only once the saved plan gives it an average (§7). A room
+whose window you have just drawn shows it after you save.

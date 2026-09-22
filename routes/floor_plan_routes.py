@@ -283,6 +283,7 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
                         "level_id": room["level_id"], "lux": lux, "sun": sun})
         return {"success": True, "times": [int(t) for t in times], "now": int(now),
                 "outdoor": [daylight.round_lux(sk["lux"]) if sk else 0 for sk in skies],
+                "sky": [daylight.sky_parts(sk) for sk in skies],
                 "rooms": out}
 
     @app.get("/api/floor-plan/mesh")
