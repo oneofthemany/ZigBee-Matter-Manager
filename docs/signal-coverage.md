@@ -75,6 +75,20 @@ uses the editor's thermal-field format and rasteriser. The field is computed
 past the walls so the weak-signal contour follows the signal rather than the
 rooms, and the image is clipped to the rooms.
 
+It is computed a source at a time over the whole grid with numpy
+(`predict_from`, `_walls_between_many`), by exactly the rule the one-pair path
+uses (`features`/`_crosses`, still used for links and repeater spots); a test
+holds the two to the same value in every cell. A few thousand cells against
+twenty routers and thirty walls takes tens of milliseconds.
+
+**One device's coverage.** *Show* picks the coordinator, a router, or any
+other placed device, and the map becomes that one device's signal instead of
+the best from every router (`GET /api/floor-plan/coverage?source=<ieee>`). For
+a device that doesn't relay, it shows where it would reach, which is where a
+router would have to be to hear it. The learning behind it is reused for two
+minutes (and only for the same plan), so switching between devices doesn't
+re-learn the house.
+
 **Weak devices** are placed, online, non-coordinator devices whose best measured
 link is below LQI 100 (the graph's red band) or whose signal is below −85 dBm.
 
@@ -84,6 +98,39 @@ dBm or better and stand 1.5 m clear of anything already relaying. A weak device
 counts as lifted if the spot brings it to −80 dBm and gains it at least 6 dB.
 The best spot is taken, added to the sources, and the search repeats, up to
 three. Each suggestion names its room, what it would lift and by how much.
+
+## Snapshots
+
+Every whole-mesh estimate is kept (`modules/coverage_store.py`): the fields,
+the learned model, weak devices, suggestions, each placed device's signal
+(`device_signal`, measured where a link reports it, otherwise predicted), and a
+summary: floor area inside rooms, the share of it at or above −85 dBm, and the
+median. That's one JSON file per snapshot in `data/coverage/`, named by UTC
+time. The newest 50 are kept, and the directory is in backups. An estimate
+that matches the newest snapshot in plan, model, fields and every device's
+signal to the dB only moves that snapshot's `checked_at`, so the history
+holds changes, not repeats.
+
+Turning the heatmap on shows the newest snapshot straight away
+(`/coverage/latest`), labelled with its age and whether the plan has changed
+since, while a fresh estimate is worked out. When that arrives it replaces the
+snapshot and says whether anything changed. With no snapshot yet, a spinner
+shows until the first estimate lands. Saving the plan refreshes it.
+
+**Compare with** picks an earlier snapshot (`/coverage/history`,
+`/coverage/snapshots/<id>`). The panel gives:
+
+- the change in usable floor, median signal and struggling devices
+- which devices are newly struggling or have recovered
+- the devices whose signal moved by 3 dB or more, marked where predicted
+- devices added, or offline or removed, since
+- what the model learned about the walls in between.
+
+The map shows the per-cell difference: green gained, red lost, clear within
+1 dB, full colour at ±15 dB. That needs the two grids to line up. If the
+plan's outline changed between them it doesn't, and the panel says so and
+keeps the device comparison. Only the whole-mesh view is kept, so comparing is
+off while one device is shown.
 
 **Limits.** The model is one number per wall class, so a mirror, a foil-backed
 wall or a fridge is invisible to it. Predicted figures are estimates, labelled

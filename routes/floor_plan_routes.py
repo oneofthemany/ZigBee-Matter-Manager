@@ -21,11 +21,11 @@ import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 
-from modules import floor_plan_store
+from modules import coverage_store, floor_plan_store
+from modules import radio_model
 from modules.auth import scope_matches
 from modules import daylight
 from modules.mesh_plan import merge_links
-from modules.radio_model import analyse
 from modules.floor_plan import (
     changed_parts,
     clean_floor_plan,
@@ -302,12 +302,47 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
             return {"success": False, "error": "The Zigbee network isn't available."}
         return {"success": True, **merge_links(mesh)}
 
+    # The learned model behind the last estimate, so picking one device's
+    # coverage doesn't re-learn the house. Fresh for LEARN_TTL_S, and only
+    # for the plan it was learned on.
+    learned_cache: Dict[str, Any] = {}
+    LEARN_TTL_S = 120.0
+
+    def _learned(plan: dict, mesh: dict, fresh: bool) -> Dict[str, Any]:
+        key = coverage_store.plan_hash(plan)
+        hit = learned_cache.get("value")
+        if (not fresh and hit is not None and learned_cache.get("key") == key
+                and time.monotonic() - learned_cache.get("at", 0) < LEARN_TTL_S):
+            return hit
+        value = radio_model.learn(plan, mesh)
+        learned_cache.update(key=key, at=time.monotonic(), value=value)
+        return value
+
+    def _estimate(plan: dict, mesh: dict, step: float, source: Optional[str]) -> Dict[str, Any]:
+        """Off the loop. The whole mesh is learned afresh and kept as a
+        snapshot; one device's view reuses the recent learning."""
+        learned = _learned(plan, mesh, fresh=source is None)
+        levels = radio_model.fields(learned, step, source)
+        out = {**radio_model.public(learned), "source": source, "levels": levels,
+               "plan_hash": coverage_store.plan_hash(plan)}
+        if source is None:
+            out["summary"] = radio_model.field_summary(levels, radio_model.WEAK_DBM)
+            try:
+                out["snapshot"] = coverage_store.save(out, plan)
+            except OSError as e:
+                logger.warning(f"Could not keep the coverage snapshot: {e}")
+                out["snapshot"] = None
+        return out
+
     @app.get("/api/floor-plan/coverage")
-    async def coverage(step: float = 0.5, _=Depends(_require("system:read"))):
+    async def coverage(step: float = 0.5, source: Optional[str] = None,
+                       _=Depends(_require("system:read"))):
         """Learned attenuation, predicted RSSI per level, and repeater advice.
 
-        Off the loop: it is a grid search over every wall, and this shares its
-        loop with the audio engine. Model: docs/signal-coverage.md.
+        ``source`` (a placed device's ieee) shows that one device's coverage
+        instead of the best from every router. The whole-mesh estimate is kept
+        as a snapshot (``/coverage/latest``, ``/coverage/history``). Off the
+        loop: it shares its loop with the audio engine. docs/signal-coverage.md.
         """
         try:
             mesh = get_mesh() if get_mesh else None
@@ -320,8 +355,32 @@ def register_floor_plan_routes(app: FastAPI, get_controller=None, get_weather=No
         if not plan:
             return {"success": False, "error": "Draw the floor plan first."}
         step = max(0.25, min(2.0, float(step)))
-        result = await asyncio.to_thread(analyse, plan, mesh, step)
+        source = source.lower() if source else None
+        try:
+            result = await asyncio.to_thread(_estimate, plan, mesh, step, source)
+        except KeyError:
+            return JSONResponse(status_code=404, content={
+                "success": False, "error": "That device isn't placed on the plan."})
         return {"success": True, **result}
+
+    @app.get("/api/floor-plan/coverage/latest")
+    async def coverage_latest(_=Depends(_require("system:read"))):
+        """The last saved whole-mesh estimate, to show while a new one is made."""
+        snap = await asyncio.to_thread(coverage_store.latest)
+        return {"success": True, "snapshot": snap,
+                "plan_hash": coverage_store.plan_hash(floor_plan_store.load_plan())}
+
+    @app.get("/api/floor-plan/coverage/history")
+    async def coverage_history(_=Depends(_require("system:read"))):
+        """Saved estimates, newest first, with their headline figures."""
+        return {"success": True, "snapshots": await asyncio.to_thread(coverage_store.history)}
+
+    @app.get("/api/floor-plan/coverage/snapshots/{snap_id}")
+    async def coverage_snapshot(snap_id: str, _=Depends(_require("system:read"))):
+        snap = await asyncio.to_thread(coverage_store.get, snap_id)
+        if snap is None:
+            return JSONResponse(status_code=404, content={"success": False, "error": "No such snapshot."})
+        return {"success": True, "snapshot": snap}
 
     @app.get("/api/floor-plan/preview")
     @app.get("/api/heating/floor-plan/preview", **ALIAS)

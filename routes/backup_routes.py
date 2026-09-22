@@ -70,6 +70,7 @@ BACKUP_DIRS = [
     # single file, so a restore now hands back every household member's login.
     "data/media/tidal",
     "data/floor_plans",   # heating floor-plan background images
+    "data/coverage",      # saved signal heatmaps, for before/after comparison
     "data/matter",        # Matter fabric / commissioning storage
     "data/certs",         # TLS pair — preserves browser trust across restores
 ]

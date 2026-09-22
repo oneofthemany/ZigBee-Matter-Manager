@@ -550,6 +550,22 @@
 .fp-preview-vertex { fill: var(--fp-room-stroke); }
 .fp-preview-room.fp-preview-invalid { stroke: var(--fp-contour); }
 
+/* Signal heatmap: the device one view is from, and the compare legend */
+.fp-coverage-source {
+    fill: none;
+    stroke: var(--fp-selection);
+    stroke-width: 2.5px;
+    vector-effect: non-scaling-stroke;
+}
+.fp-delta-key {
+    display: inline-block;
+    width: 0.9rem;
+    height: 0.6rem;
+    border-radius: 2px;
+}
+.fp-delta-worse  { background: rgba(220, 38, 38, 0.6); }
+.fp-delta-better { background: rgba(22, 163, 74, 0.6); }
+
 /* Room tool: the wall corners a room corner may go on */
 .fp-room-corner {
     fill: var(--fp-room-fill);

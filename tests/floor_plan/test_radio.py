@@ -110,6 +110,23 @@ def run() -> Checker:
     c.check("a wall costs what the model says it does",
             abs((at(5.7, 1.2) - at(6.2, 1.2)) - TRUE["int"]) < 1.5, (at(5.7, 1.2), at(6.2, 1.2)))
     c.check("no routers, no field", rm.coverage_field(geo, TRUE, [], "ground") is None)
+    # The grid is worked out a source at a time with numpy; the links and the
+    # repeater search still use the one-pair path. They must agree to the cell.
+    upstairs = {"ieee": "u", **g("first", 9.3, 5.1)}
+    two = rm.coverage_field(geo, TRUE, [router, upstairs], "ground", step=0.5)
+    worst = 0.0
+    for k, v in enumerate(two["data"]):
+        cx = two["x0"] + (k % two["nx"] + 0.5) * two["h"]
+        cy = two["y0"] + (k // two["nx"] + 0.5) * two["h"]
+        at = {"level_id": "ground", "x": cx, "y": cy}
+        scalar = max(rm.predict(TRUE, rm.features(geo, s, at)) for s in (router, upstairs))
+        worst = max(worst, abs(v - scalar))
+    c.check("every cell matches the one-pair model, across floors too", worst < 0.051, worst)
+    c.check("and the room mask matches too", all(
+        two["inside"][k] == int(any(rm._in_poly(two["x0"] + (k % two["nx"] + 0.5) * two["h"],
+                                                two["y0"] + (k // two["nx"] + 0.5) * two["h"],
+                                                r["polygon"]) for r in geo["ground"]["rooms"]))
+        for k in range(len(two["inside"]))))
 
     c.section("where a repeater would help")
     # A softer house than TRUE: one that a single repeater can actually rescue.

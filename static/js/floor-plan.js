@@ -73,7 +73,12 @@ function resetState(plan) {
         showMesh: false,
         mesh: null,                // /api/floor-plan/mesh, fetched when shown
         showCoverage: false,
-        coverage: null,            // /api/floor-plan/coverage, fetched when shown
+        coverage: null,            // /api/floor-plan/coverage (or its last snapshot while that runs)
+        coverageMeta: null,        // which snapshot is shown, and whether a fresh one is on its way
+        coverageHistory: [],       // /api/floor-plan/coverage/history, for the Compare picker
+        coverageSource: '',        // one device's coverage instead of the best ('' = best)
+        coverageView: null,        // that device's fields
+        coverageCompare: null,     // buildComparison() against a chosen snapshot
         daylight: null,            // /api/floor-plan/daylight, fetched when shown
         daylightIndex: 0,
         placing: null,             // ieee armed from the palette, placed on next tap
@@ -484,6 +489,14 @@ function rootHtml() {
                         <label class="form-check-label" for="fpToggleCoverage">Signal heatmap</label>
                       </div>
                       <div id="fpCoverageControls" class="ms-3 mb-1 small d-none">
+                        <div id="fpCoverageStatus" class="mb-1" role="status" aria-live="polite"></div>
+                        <div id="fpCoveragePickers" class="d-none">
+                          <label class="form-label small mb-0" for="fpCoverageSource">Show</label>
+                          <select id="fpCoverageSource" class="form-select form-select-sm mb-1"></select>
+                          <label class="form-label small mb-0" for="fpCoverageCompare">Compare with</label>
+                          <select id="fpCoverageCompare" class="form-select form-select-sm mb-1"></select>
+                          <div id="fpCoverageCompareResult"></div>
+                        </div>
                         <div id="fpCoverageModel" class="text-muted"></div>
                         <div id="fpCoverageAdvice" class="mt-1"></div>
                       </div>
@@ -3368,6 +3381,12 @@ function fieldToImage(f, mode, intensity) {
                 const t = Math.max(0, Math.min(1, (v + 100) / 45));
                 [r, g, b] = rssiRgb(t);
                 a = 0.45;
+            } else if (mode === 'delta') {
+                // dB gained (green) or lost (red) since a snapshot; within
+                // 1 dB is no change worth a colour, and ±15 dB is full.
+                const t = Math.max(-1, Math.min(1, v / 15));
+                [r, g, b] = t >= 0 ? [22, 163, 74] : [220, 38, 38];
+                a = Math.abs(v) < 1 ? 0 : Math.min(0.6, 0.12 + Math.abs(t) * 0.5);
             } else if (mode === 'heat') {
                 const t = Math.max(0, Math.min(1.35, v));
                 a = Math.max(0, Math.min(0.60, (t - 0.05) * 0.55)) * (0.55 + 0.45 * intensity);
@@ -5140,11 +5159,14 @@ function bindDeviceLayerEvents() {
         e.preventDefault();
         placeDevice(ieee, clientToSvgModel(e));
     });
-    document.getElementById('fpToggleCoverage').addEventListener('change', async e => {
+    document.getElementById('fpToggleCoverage').addEventListener('change', e => {
         _state.showCoverage = e.target.checked;
-        if (_state.showCoverage) await loadCoverage();
+        if (_state.showCoverage) loadCoverage();
+        else _coverageToken++;                      // drop any answer still on its way
         syncCoverageControls(); renderScene();
     });
+    document.getElementById('fpCoverageSource').addEventListener('change', e => showCoverageSource(e.target.value));
+    document.getElementById('fpCoverageCompare').addEventListener('change', e => compareCoverageWith(e.target.value));
     document.getElementById('fpToggleMesh').addEventListener('change', async e => {
         _state.showMesh = e.target.checked;
         if (_state.showMesh) await loadMesh();
@@ -5221,24 +5243,198 @@ function renderMapParts() {
 
 // signal coverage — docs/signal-coverage.md
 
+// The last estimate shows at once, from the hub's snapshots, while a fresh
+// one is worked out; each fresh one is kept as a snapshot, and any two can be
+// compared. One device's own coverage can be shown instead of the best from
+// every router. docs/signal-coverage.md § Snapshots.
+
+let _coverageToken = 0;   // bumped to drop answers that arrive after the user moved on
+
+async function getJson(url) {
+    const res = await fetch(url);
+    const r = await res.json().catch(() => null);
+    if (!res.ok || !r?.success) throw new Error(r?.error || r?.detail || `The hub said ${res.status}.`);
+    return r;
+}
+
 async function loadCoverage() {
-    const status = document.getElementById('fpCoverageModel');
-    status.textContent = 'Working out the signal…';
+    const token = ++_coverageToken;
+    _state.coverageMeta = { ..._state.coverageMeta, refreshing: true, error: null };
+    syncCoverageControls();
+    // 1. What was last worked out, straight away.
+    if (!_state.coverage) {
+        _state.coverageMeta.lookingUp = true;
+        syncCoverageControls();
+        try {
+            const r = await getJson('/api/floor-plan/coverage/latest');
+            if (token !== _coverageToken) return;
+            if (r.snapshot) {
+                _state.coverage = r.snapshot;
+                _state.coverageMeta = { id: r.snapshot.id, taken_at: r.snapshot.taken_at,
+                                        checked_at: r.snapshot.checked_at, stale: true, refreshing: true,
+                                        planChanged: r.snapshot.plan_hash !== r.plan_hash };
+                syncCoverageControls(); renderScene();
+            }
+        } catch (e) {
+            log.warn('No saved heatmap', e);
+        }
+        if (token !== _coverageToken) return;
+        _state.coverageMeta.lookingUp = false;
+        syncCoverageControls();
+    }
+    // 2. A fresh estimate, which the hub keeps as the next snapshot.
     try {
-        const r = await fetch('/api/floor-plan/coverage').then(r => r.json());
-        if (!r?.success) throw new Error(r?.error || r?.detail || 'No coverage estimate');
+        const r = await getJson('/api/floor-plan/coverage');
+        if (token !== _coverageToken) return;
+        const before = _state.coverageMeta;
         _state.coverage = r;
+        _state.coverageMeta = { id: r.snapshot?.id, taken_at: r.snapshot?.taken_at ?? Date.now() / 1000,
+                                checked_at: r.snapshot?.checked_at, stale: false, refreshing: false,
+                                changed: !!(r.snapshot?.new && before?.id && before.id !== r.snapshot.id),
+                                previousId: before?.id && before.id !== r.snapshot?.id ? before.id : null };
+        // A single device's view is redrawn from the new learning.
+        if (_state.coverageSource) showCoverageSource(_state.coverageSource);
     } catch (e) {
-        _state.coverage = null;
-        toast('warn', 'Signal heatmap', e.message);
+        if (token !== _coverageToken) return;
+        _state.coverageMeta = { ..._state.coverageMeta, refreshing: false, error: e.message };
+        if (!_state.coverage) toast('warn', 'Signal heatmap', escapeHtml(e.message));
+    }
+    await loadCoverageHistory(token);
+    if (token !== _coverageToken) return;
+    // Keep a chosen comparison; the diff is against whatever is shown now.
+    if (_state.coverageCompare) _state.coverageCompare = buildComparison(_state.coverageCompare.then);
+    syncCoverageControls(); renderScene();
+}
+
+async function loadCoverageHistory(token) {
+    try {
+        const r = await getJson('/api/floor-plan/coverage/history');
+        if (token === _coverageToken) _state.coverageHistory = r.snapshots || [];
+    } catch (e) {
+        log.warn('No heatmap history', e);
     }
 }
 
+async function showCoverageSource(ieee) {
+    _state.coverageSource = ieee || '';
+    if (!ieee) { _state.coverageView = null; syncCoverageControls(); renderScene(); return; }
+    const token = _coverageToken;
+    _state.coverageMeta = { ..._state.coverageMeta, sourceLoading: true };
+    syncCoverageControls();
+    try {
+        const r = await getJson(`/api/floor-plan/coverage?source=${encodeURIComponent(ieee)}`);
+        if (token !== _coverageToken || _state.coverageSource !== ieee) return;
+        _state.coverageView = { source: ieee, levels: r.levels };
+    } catch (e) {
+        toast('warn', 'Device coverage', escapeHtml(e.message));
+        _state.coverageSource = ''; _state.coverageView = null;
+    }
+    _state.coverageMeta = { ..._state.coverageMeta, sourceLoading: false };
+    syncCoverageControls(); renderScene();
+}
+
+async function compareCoverageWith(id) {
+    if (!id) { _state.coverageCompare = null; syncCoverageControls(); renderScene(); return; }
+    try {
+        const r = await getJson(`/api/floor-plan/coverage/snapshots/${encodeURIComponent(id)}`);
+        _state.coverageCompare = buildComparison(r.snapshot);
+    } catch (e) {
+        toast('warn', 'Compare', escapeHtml(e.message));
+        _state.coverageCompare = null;
+    }
+    syncCoverageControls(); renderScene();
+}
+
+/** What changed from snapshot `then` to what is shown now: a per-cell dB
+ *  difference where the two grids line up, the headline figures, each
+ *  device's signal, and what the model learned about the walls. */
+function buildComparison(then) {
+    const now = _state.coverage;
+    const fields = {};
+    let aligned = true;
+    for (const entry of now.levels || []) {
+        const old = (then.levels || []).find(l => l.level_id === entry.level_id);
+        const a = entry.field, b = old?.field;
+        if (!b || a.nx !== b.nx || a.ny !== b.ny || a.h !== b.h || a.x0 !== b.x0 || a.y0 !== b.y0) {
+            aligned = false; continue;
+        }
+        fields[entry.level_id] = { ...a, data: a.data.map((v, k) => v - b.data[k]), urls: {} };
+    }
+    const was = new Map((then.device_signal || []).map(d => [d.ieee, d]));
+    const devices = (now.device_signal || []).map(d => ({ now: d, then: was.get(d.ieee) }));
+    const gone = (then.device_signal || []).filter(d => !devices.some(x => x.now.ieee === d.ieee));
+    return { then, fields, aligned, devices, gone, planChanged: now.plan_hash && then.plan_hash
+             ? now.plan_hash !== then.plan_hash : null };
+}
+
+function when(ts) {
+    const d = new Date(ts * 1000);
+    const mins = Math.round((Date.now() - d) / 60000);
+    const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago`
+        : mins < 48 * 60 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} days ago`;
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const at = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `${sameDay ? at : `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${at}`} (${ago})`;
+}
+
+function signed(v, unit = '') {
+    const r = Math.round(v * 10) / 10;
+    return `${r > 0 ? '+' : r < 0 ? '−' : '±'}${Math.abs(r)}${unit}`;
+}
+
 function syncCoverageControls() {
-    const on = !!_state.showCoverage && !!_state.coverage;
-    document.getElementById('fpCoverageControls').classList.toggle('d-none', !on);
-    if (!on) return;
-    const { model, calibration, weak, suggestions, thresholds } = _state.coverage;
+    const box = document.getElementById('fpCoverageControls');
+    box.classList.toggle('d-none', !_state.showCoverage);
+    if (!_state.showCoverage) return;
+    const cov = _state.coverage, meta = _state.coverageMeta || {};
+    const spin = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>';
+    const status = document.getElementById('fpCoverageStatus');
+    if (!cov) {
+        status.innerHTML = meta.refreshing
+            ? `${spin}${meta.lookingUp ? 'Loading the last heatmap…' : 'Working out the signal across the house…'}`
+            : `<span class="text-warning-emphasis">${escapeHtml(meta.error || 'No estimate yet.')}</span>`;
+    } else if (meta.stale) {
+        status.innerHTML = `<div><i class="fas fa-clock-rotate-left me-1"></i>Showing the heatmap from ${when(meta.taken_at)}.</div>`
+            + (meta.planChanged ? '<div class="text-muted">The plan has changed since.</div>' : '')
+            + (meta.refreshing ? `<div>${spin}Checking for changes…</div>`
+               : `<div class="text-warning-emphasis">Couldn't refresh: ${escapeHtml(meta.error || 'unknown error')}</div>`);
+    } else {
+        status.innerHTML = `<i class="fas fa-circle-check text-success me-1"></i>Up to date`
+            + (meta.changed ? ' — it has changed since the last one.'
+               : meta.checked_at && meta.taken_at && meta.checked_at - meta.taken_at > 60
+                 ? ` — no change since ${when(meta.taken_at)}.` : '.')
+            + (meta.sourceLoading ? `<div>${spin}Working out that device's coverage…</div>` : '');
+    }
+    document.getElementById('fpCoveragePickers').classList.toggle('d-none', !cov);
+    if (!cov) {
+        document.getElementById('fpCoverageModel').innerHTML = '';
+        document.getElementById('fpCoverageAdvice').innerHTML = '';
+        return;
+    }
+
+    // Show: the best from every router, or one device's own coverage.
+    const devices = cov.devices || [];
+    const group = (label, list) => list.length ? `<optgroup label="${label}">${list.map(d =>
+        `<option value="${escapeHtml(d.ieee)}" ${d.ieee === _state.coverageSource ? 'selected' : ''}>${
+            escapeHtml(d.name)}${d.online ? '' : ' (offline)'}</option>`).join('')}</optgroup>` : '';
+    document.getElementById('fpCoverageSource').innerHTML =
+        `<option value="">Best signal from every router</option>`
+        + group('Coordinator', devices.filter(d => d.role === 'Coordinator'))
+        + group('Routers', devices.filter(d => d.role === 'Router'))
+        + group('Other devices — where each would reach', devices.filter(d => d.role !== 'Coordinator' && d.role !== 'Router'));
+
+    // Compare: only the whole-mesh view is kept, so only it compares.
+    const cmpSel = document.getElementById('fpCoverageCompare');
+    const past = (_state.coverageHistory || []).filter(h => h.id !== meta.id);
+    cmpSel.disabled = !!_state.coverageSource || !past.length;
+    cmpSel.innerHTML = `<option value="">${past.length ? 'Nothing' : 'No earlier snapshots yet'}</option>`
+        + past.map(h => `<option value="${escapeHtml(h.id)}" ${h.id === _state.coverageCompare?.then.id ? 'selected' : ''}>${
+            new Date(h.taken_at * 1000).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${
+            h.summary?.usable_pct != null ? ` · ${h.summary.usable_pct}% usable` : ''} · ${h.weak} struggling</option>`).join('');
+    document.getElementById('fpCoverageCompareResult').innerHTML =
+        _state.coverageCompare && !_state.coverageSource ? comparisonHtml(_state.coverageCompare) : '';
+
+    const { model, calibration, weak, suggestions, thresholds } = cov;
     const learned = model.samples
         ? `Learned from ${model.samples} link readings (±${model.rmse_db} dB):`
         : 'No links to learn from yet — textbook values:';
@@ -5268,29 +5464,86 @@ function syncCoverageControls() {
             : '<div class="text-success">Every placed device has a usable signal.</div>');
 }
 
+function comparisonHtml(cmp) {
+    const now = _state.coverage, then = cmp.then;
+    const a = then.summary || {}, b = now.summary || {};
+    const row = (label, x, y, unit, better = 1) => {
+        if (x == null || y == null) return '';
+        const d = y - x, cls = Math.abs(d) < 0.05 ? 'text-muted' : (d * better > 0 ? 'text-success' : 'text-danger');
+        return `<div>${label}: ${x}${unit} → ${y}${unit} <span class="${cls}">(${signed(d, unit)})</span></div>`;
+    };
+    const names = list => list.map(d => escapeHtml(d.name)).join(', ');
+    const newlyWeak = cmp.devices.filter(d => d.now.weak && d.then && !d.then.weak).map(d => d.now);
+    const recovered = cmp.devices.filter(d => !d.now.weak && d.then?.weak).map(d => d.now);
+    const moved = cmp.devices.filter(d => d.then && Math.abs(d.now.dbm - d.then.dbm) >= 3)
+        .sort((p, q) => Math.abs(q.now.dbm - q.then.dbm) - Math.abs(p.now.dbm - p.then.dbm)).slice(0, 6);
+    const added = cmp.devices.filter(d => !d.then).map(d => d.now);
+    const m0 = then.model || {}, m1 = now.model || {};
+    const wall = (label, k) => m0[k] !== m1[k] ? `${label} ${m0[k]} → ${m1[k]} dB` : null;
+    const walls = [wall('inside wall', 'int'), wall('outside/party wall', 'ext'), wall('floor', 'floor')].filter(Boolean);
+    return `<div class="border rounded p-2 mb-2">
+        <div class="fw-semibold mb-1">Since ${escapeHtml(when(then.taken_at))}</div>
+        ${row('Usable floor', a.usable_pct, b.usable_pct, '%')}
+        ${row('Median signal', a.median_dbm, b.median_dbm, ' dBm')}
+        ${row('Struggling devices', (then.weak || []).length, (now.weak || []).length, '', -1)}
+        ${newlyWeak.length ? `<div class="text-danger">Now struggling: ${names(newlyWeak)}</div>` : ''}
+        ${recovered.length ? `<div class="text-success">Recovered: ${names(recovered)}</div>` : ''}
+        ${moved.length ? `<div class="mt-1">Biggest changes:</div><ul class="mb-1 ps-3">${moved.map(d =>
+            `<li>${escapeHtml(d.now.name)}: ${d.then.dbm} → ${d.now.dbm} dBm
+               <span class="${d.now.dbm > d.then.dbm ? 'text-success' : 'text-danger'}">(${signed(d.now.dbm - d.then.dbm)})</span>${
+               d.now.measured ? '' : ' <span class="text-muted">predicted</span>'}</li>`).join('')}</ul>`
+          : '<div class="text-muted">No device moved by 3 dB or more.</div>'}
+        ${added.length ? `<div class="text-muted">New since: ${names(added)}</div>` : ''}
+        ${cmp.gone.length ? `<div class="text-muted">Offline or removed since: ${names(cmp.gone)}</div>` : ''}
+        ${walls.length ? `<div class="mt-1 text-muted">Learned: ${walls.join(' · ')}
+            (${m0.samples ?? 0} → ${m1.samples ?? 0} readings)</div>` : ''}
+        ${cmp.planChanged ? `<div class="mt-1 text-warning-emphasis">The plan changed between them${
+            cmp.aligned ? '.' : ', so the map can\'t be compared cell by cell.'}</div>` : ''}
+        ${Object.keys(cmp.fields).length ? `<div class="mt-1 d-flex align-items-center gap-1">
+            <span class="fp-delta-key fp-delta-worse"></span>worse
+            <span class="fp-delta-key fp-delta-better ms-2"></span>better
+            <span class="text-muted ms-1">(map shows the difference)</span></div>` : ''}
+      </div>`;
+}
+
 function coverageField(lvl) {
-    const entry = (_state.coverage.levels || []).find(l => l.level_id === lvl.id);
+    const cmp = !_state.coverageSource && _state.coverageCompare;
+    if (cmp && cmp.fields[lvl.id]) return { f: cmp.fields[lvl.id], mode: 'delta' };
+    const levels = (_state.coverageSource && _state.coverageView?.source === _state.coverageSource)
+        ? _state.coverageView.levels : _state.coverage.levels;
+    const entry = (levels || []).find(l => l.level_id === lvl.id);
     if (!entry) return null;
     // fieldToImage caches its PNGs on the field object, so keep the one we build.
     if (!entry._f) entry._f = { ...entry.field, urls: {} };
-    return entry._f;
+    return { f: entry._f, mode: 'rssi' };
 }
 
 function renderCoverageParts(lvl) {
-    const f = coverageField(lvl);
-    if (!f) return [];
+    const got = coverageField(lvl);
+    if (!got) return [];
+    const { f, mode } = got;
     // Clipped to the rooms: the field is computed past the walls so the weak
     // contour follows the signal, but only inside the house is worth showing.
     const clip = `cov_${lvl.id.replace(/[^a-z0-9]/gi, '_')}`;
     const out = [`<defs><clipPath id="${clip}">${
         lvl.rooms.map(r => `<path d="${polygonToPath(r.polygon)}"/>`).join('')}</clipPath></defs>`,
-        `<image href="${fieldToImage(f, 'rssi', 1)}"
+        `<image href="${fieldToImage(f, mode, 1)}"
                     x="${f.x0}" y="${-(f.y0 + f.ny * f.h)}"
                     width="${f.nx * f.h}" height="${f.ny * f.h}"
                     clip-path="url(#${clip})" preserveAspectRatio="none" pointer-events="none"/>`];
-    const weakLine = fieldContourPath(f, _state.coverage.thresholds.weak_dbm);
-    if (weakLine) out.push(`<path class="fp-weak-edge" d="${weakLine}"
-                                  clip-path="url(#${clip})" pointer-events="none"/>`);
+    if (mode === 'rssi') {
+        const weakLine = fieldContourPath(f, _state.coverage.thresholds.weak_dbm);
+        if (weakLine) out.push(`<path class="fp-weak-edge" d="${weakLine}"
+                                      clip-path="url(#${clip})" pointer-events="none"/>`);
+    }
+    // One device's view: ring the device it is from.
+    const src = _state.coverageSource && (_state.coverage.devices || []).find(d => d.ieee === _state.coverageSource);
+    if (src && src.level_id === lvl.id) {
+        const p = modelToSvg(src);
+        out.push(`<circle class="fp-coverage-source" cx="${p.x}" cy="${p.y}" r="0.38" pointer-events="none"/>
+          <text class="fp-repeater-label" x="${p.x}" y="${p.y - 0.5}" font-size="0.16"
+                text-anchor="middle" pointer-events="none">${escapeHtml(src.name)}</text>`);
+    }
     for (const w of _state.coverage.weak) {
         if (w.level_id !== lvl.id) continue;
         const p = modelToSvg(w);
@@ -5298,6 +5551,7 @@ function renderCoverageParts(lvl) {
           <text class="fp-weak-label" x="${p.x}" y="${p.y - 0.42}" font-size="0.14"
                 text-anchor="middle" pointer-events="none">${w.dbm} dBm${w.lqi != null ? ` · LQI ${w.lqi}` : ''}</text>`);
     }
+    if (_state.coverageSource || mode === 'delta') return out;
     (_state.coverage.suggestions || []).forEach((s, i) => {
         if (s.level_id !== lvl.id) return;
         const p = modelToSvg(s);
@@ -5903,6 +6157,8 @@ async function save() {
             _state.selection = null;
             // The estimate reads the saved plan, which has just changed.
             if (_state.showDaylight || _state.showSun) { await loadDaylight(); syncDaylightControls(); }
+            // The heatmap is worked out from the saved plan too.
+            if (_state.showCoverage) loadCoverage();
             renderScene(); renderProps(); renderPalette();
         }
     } catch (e) {

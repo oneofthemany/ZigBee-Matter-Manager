@@ -128,6 +128,51 @@ def run() -> Checker:
     c.check("an old plan that already overlaps can still be edited",
             client.post("/api/floor-plan", json=legacy_clash).json().get("success"))
 
+    c.section("the signal heatmap is kept, and one device can be shown")
+    from modules import coverage_store
+    coverage_store.reset(os.path.join(d, "data", "coverage"))
+    placed = sample_plan("New Lounge")
+    placed["levels"][0]["devices"] = [{"ieee": "00:c0", "x": 1, "y": 1}, {"ieee": "00:r1", "x": 4, "y": 3},
+                                      {"ieee": "00:s1", "x": 2.5, "y": 3.5}]
+    store.save_plan(clean_floor_plan(placed))
+    mesh = {"nodes": [{"id": "00:c0", "friendly_name": "Coordinator", "role": "Coordinator", "online": True},
+                      {"id": "00:r1", "friendly_name": "Lamp", "role": "Router", "online": True,
+                       "lqi": 200, "rssi": -55},
+                      {"id": "00:s1", "friendly_name": "Sensor", "role": "EndDevice", "online": True,
+                       "lqi": 180, "rssi": -60}],
+            "links": [{"source": "00:c0", "target": "00:r1", "lqi": 200},
+                      {"source": "00:r1", "target": "00:s1", "lqi": 150}]}
+    meshed = FastAPI()
+    meshed.middleware("http")(as_admin)
+    fpr.register_floor_plan_routes(meshed, lambda: ctrl, None, lambda: mesh)
+    mc = TestClient(meshed)
+    c.check("nothing saved before the first estimate",
+            mc.get("/api/floor-plan/coverage/latest").json()["snapshot"] is None)
+    first = mc.get("/api/floor-plan/coverage").json()
+    c.check("an estimate is kept as a snapshot, with its headline figures",
+            first["success"] and first["snapshot"]["new"] and first["summary"]["usable_pct"] is not None
+            and {d["ieee"] for d in first["device_signal"]} == {"00:r1", "00:s1"}, first.get("snapshot"))
+    latest = mc.get("/api/floor-plan/coverage/latest").json()["snapshot"]
+    c.check("and served as the latest, fields and all",
+            latest["id"] == first["snapshot"]["id"] and latest["levels"][0]["field"]["data"]
+            == first["levels"][0]["field"]["data"])
+    c.check("the same again isn't a second one",
+            not mc.get("/api/floor-plan/coverage").json()["snapshot"]["new"]
+            and len(mc.get("/api/floor-plan/coverage/history").json()["snapshots"]) == 1)
+    one = mc.get("/api/floor-plan/coverage", params={"source": "00:C0"}).json()
+    c.check("one device's coverage — the coordinator's — is its own field, not kept",
+            one["success"] and one["source"] == "00:c0" and "snapshot" not in one
+            and one["levels"][0]["field"]["data"] != first["levels"][0]["field"]["data"], one.get("source"))
+    c.check("the picker lists every placed device, coordinator first",
+            [x["ieee"] for x in one["devices"]] == ["00:c0", "00:r1", "00:s1"]
+            and one["coordinator"] == "00:c0", one["devices"])
+    c.check("a device not on the plan is a 404",
+            mc.get("/api/floor-plan/coverage", params={"source": "00:zz"}).status_code == 404)
+    c.check("a snapshot by id", mc.get(f"/api/floor-plan/coverage/snapshots/{latest['id']}").json()
+            ["snapshot"]["id"] == latest["id"])
+    c.check("and a made-up one is a 404",
+            mc.get("/api/floor-plan/coverage/snapshots/nonsense").status_code == 404)
+
     c.section("preview, images and delete answer on both addresses")
     c.check("preview", client.get("/api/floor-plan/preview").json().get("success")
             and client.get("/api/heating/floor-plan/preview").json().get("success"))

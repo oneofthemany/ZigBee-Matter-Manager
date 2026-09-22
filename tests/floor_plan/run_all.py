@@ -20,9 +20,11 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-MODULES = ["test_store", "test_model", "test_mesh", "test_radio", "test_routes", "test_scopes"]
+MODULES = ["test_store", "test_model", "test_mesh", "test_radio", "test_coverage_store",
+           "test_routes", "test_scopes"]
 # The editor's own geometry maths, sliced out of the shipped .js and run.
-JS_TESTS = ["test_calibrate.js", "test_bg_placement.js", "test_daylight_field.js"]
+JS_TESTS = ["test_calibrate.js", "test_bg_placement.js", "test_daylight_field.js",
+            "test_room_corners.js"]
 
 
 def run_node() -> tuple[list[str], list[str]]:
