@@ -19,6 +19,11 @@ from collections import deque
 from dataclasses import dataclass, asdict
 import traceback
 
+try:
+    from modules.zcl_decode import decode_value
+except ImportError:  # imported as top-level `zigbee_debug` (handlers/base.py)
+    from zcl_decode import decode_value
+
 # LOGGING CONFIGURATION
 
 os.makedirs("./logs", exist_ok=True)
@@ -200,21 +205,28 @@ class ZigbeeDebugger:
             src_ep: int,
             dst_ep: int,
             message: bytes,
-            direction: str = "RX"
+            direction: str = "RX",
+            record_flow: bool = True,
     ) -> Optional[ZigbeePacket]:
-        """Capture and analyse a raw Zigbee message."""
+        """Capture and analyse a raw Zigbee message.
+
+        For TX, sender_ieee/sender_nwk are the destination. record_flow=False
+        for the raw TX tap: outbound flow is already counted where commands
+        are sent (Device.send_command).
+        """
         # Always-on flow accounting, even with full debug capture off: counting is
         # microseconds per packet, decoding is not. Leaves the 1000-deep ring alone.
-        try:
-            from modules.packet_flow import get_flow_analyzer
-            get_flow_analyzer().record(
-                str(sender_ieee) if sender_ieee else None,
-                cluster,
-                direction,
-            )
-        except Exception:
-            # Flow accounting must NEVER break packet handling.
-            pass
+        if record_flow:
+            try:
+                from modules.packet_flow import get_flow_analyzer
+                get_flow_analyzer().record(
+                    str(sender_ieee) if sender_ieee else None,
+                    cluster,
+                    direction,
+                )
+            except Exception:
+                # Flow accounting must NEVER break packet handling.
+                pass
 
         if not self.enabled:
             return None
@@ -233,7 +245,7 @@ class ZigbeeDebugger:
         cluster_name = CLUSTER_NAMES.get(cluster, f"0x{cluster:04X}")
 
         # Decode message
-        decoded = self._decode_message(cluster, message)
+        decoded = self._decode_message(cluster, message, profile)
 
         # Check for motion specific indicators in decoding
         is_motion = False
@@ -292,8 +304,16 @@ class ZigbeeDebugger:
 
         return packet
 
-    def _decode_message(self, cluster: int, message: bytes) -> Dict[str, Any]:
-        """Decode ZCL message content."""
+    def _decode_message(self, cluster: int, message: bytes, profile: int = 0x0104) -> Dict[str, Any]:
+        """Decode ZCL message content (ZDO frames get a TSN + command name only)."""
+        if profile == 0x0000 and message:
+            try:
+                from zigpy.zdo.types import ZDOCmd
+                name = ZDOCmd(cluster).name
+            except Exception:
+                name = f"ZDO 0x{cluster:04X}"
+            return {"zdo": True, "tsn": message[0], "command_name": name,
+                    "payload": message[1:].hex()}
         if not message or len(message) < 3:
             return {"raw": message.hex() if message else ""}
 
@@ -351,10 +371,10 @@ class ZigbeeDebugger:
                     # Global ZCL command
                     decoded["command_name"] = ZCL_GLOBAL_COMMANDS.get(cmd_id, f"Global Cmd 0x{cmd_id:02X}")
 
-                    # Decode Report Attributes (0x0A)
-                    if cmd_id == 0x0A and len(message) > offset:
+                    # Decode Report Attributes (0x0A) / Read Attributes Response (0x01)
+                    if cmd_id in (0x0A, 0x01) and len(message) > offset:
                         decoded["attributes"] = self._decode_attribute_report(
-                            cluster, message[offset:]
+                            cluster, message[offset:], with_status=(cmd_id == 0x01)
                         )
 
             # Remaining payload
@@ -440,8 +460,10 @@ class ZigbeeDebugger:
                 break
         return out
 
-    def _decode_attribute_report(self, cluster: int, data: bytes) -> List[Dict]:
-        """Decode attribute report payload."""
+    def _decode_attribute_report(self, cluster: int, data: bytes,
+                                 with_status: bool = False) -> List[Dict]:
+        """Decode attribute report payload; with_status for Read Attributes Response
+        records (attr id, status, [type, value])."""
         attributes = []
         offset = 0
 
@@ -453,14 +475,25 @@ class ZigbeeDebugger:
                 if offset >= len(data):
                     break
 
-                data_type = data[offset]
-                offset += 1
-
                 # Get attribute name
                 if cluster == 0x0406:  # Occupancy
                     attr_name = OCCUPANCY_ATTRS.get(attr_id, f"0x{attr_id:04X}")
                 else:
                     attr_name = f"0x{attr_id:04X}"
+
+                status = None
+                if with_status:
+                    status = data[offset]
+                    offset += 1
+                    if status != 0:
+                        attributes.append({"id": f"0x{attr_id:04X}", "name": attr_name,
+                                           "status": f"0x{status:02X}"})
+                        continue
+                    if offset >= len(data):
+                        break
+
+                data_type = data[offset]
+                offset += 1
 
                 # Decode value based on type
                 value, consumed = self._decode_zcl_value(data_type, data[offset:])
@@ -499,6 +532,8 @@ class ZigbeeDebugger:
                     "type": f"0x{data_type:02X}",
                     "value": value,
                 }
+                if status is not None:
+                    entry["status"] = "0x00"
                 if xiaomi_parsed is not None:
                     entry["xiaomi_parsed"] = xiaomi_parsed
                 attributes.append(entry)
@@ -509,45 +544,12 @@ class ZigbeeDebugger:
         return attributes
 
     def _decode_zcl_value(self, data_type: int, data: bytes) -> tuple:
-        """Decode a ZCL typed value."""
+        """Decode a ZCL typed value → (value, bytes consumed)."""
         if not data:
             return None, 0
 
-        # Boolean
         if data_type == 0x10:
             return bool(data[0]), 1
-
-        # Uint8
-        if data_type == 0x20:
-            return data[0], 1
-
-        # Uint16
-        if data_type == 0x21:
-            return int.from_bytes(data[:2], 'little'), 2
-
-        # Uint32
-        if data_type == 0x23:
-            return int.from_bytes(data[:4], 'little'), 4
-
-        # Int8
-        if data_type == 0x28:
-            return int.from_bytes(data[:1], 'little', signed=True), 1
-
-        # Int16
-        if data_type == 0x29:
-            return int.from_bytes(data[:2], 'little', signed=True), 2
-
-        # Bitmap8
-        if data_type == 0x18:
-            return data[0], 1
-
-        # Bitmap16
-        if data_type == 0x19:
-            return int.from_bytes(data[:2], 'little'), 2
-
-        # Enum8
-        if data_type == 0x30:
-            return data[0], 1
 
         # Octet string (0x41) and Character string (0x42)
         if data_type in (0x41, 0x42):
@@ -565,8 +567,14 @@ class ZigbeeDebugger:
                 pass
             return payload.hex(), consumed
 
-        # Default: return hex
-        return data[:4].hex(), min(4, len(data))
+        # Every other sized type via the shared decoder (modules/zcl_decode.py)
+        try:
+            value, consumed = decode_value(data_type, bytes(data), 0)
+            return value, consumed
+        except Exception:
+            # Unsized/unknown type: swallow the rest rather than mis-align
+            # every following record in the frame.
+            return data.hex(), len(data)
 
     def _log_packet(self, packet: ZigbeePacket):
         """Log packet with appropriate level based on importance."""
@@ -597,7 +605,8 @@ class ZigbeeDebugger:
 
         if "attributes" in packet.decoded:
             for attr in packet.decoded["attributes"]:
-                msg += f" | {attr['name']}={attr['value']}"
+                val = attr.get('value', f"status {attr['status']}" if 'status' in attr else attr.get('decode_error'))
+                msg += f" | {attr.get('name', '?')}={val}"
 
         if "zone_status" in packet.decoded:
             motion = "MOTION" if packet.decoded.get("alarm1_motion") else "clear"

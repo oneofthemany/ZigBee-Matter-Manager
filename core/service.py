@@ -434,6 +434,7 @@ class ZigbeeService(
 
                 # Register as listener
                 self.app.add_listener(self)
+                self._install_tx_tap()
 
                 # Restore devices from zigpy's database
                 for ieee, device in self.app.devices.items():
@@ -865,6 +866,61 @@ class ZigbeeService(
     def group_added(self, *args, **kwargs): pass
     def group_removed(self, *args, **kwargs): pass
 
+    # RAW TX TAP — every outgoing packet, raw bytes, to the packet debugger
+    # and any running probe (the RX side is handle_message below)
+
+    def _install_tx_tap(self):
+        app = self.app
+        if app is None or getattr(app, "_zmm_tx_tap", False):
+            return
+        orig = app.send_packet
+
+        async def send_packet(packet):
+            try:
+                self._on_tx_packet(packet)
+            except Exception as e:
+                logger.debug(f"TX tap error: {e}")
+            return await orig(packet)
+
+        app.send_packet = send_packet   # instance attr shadows the class method
+        app._zmm_tx_tap = True
+
+    def _on_tx_packet(self, packet):
+        debugger = get_debugger()
+        dbg_on = bool(debugger and debugger.enabled)
+        if not dbg_on and not getattr(self, "_probe_taps", None):
+            return
+        dst = packet.dst
+        mode = getattr(dst, "addr_mode", None)
+        addr = getattr(dst, "address", None)
+        nwk = None
+        if mode == zigpy.types.AddrMode.NWK:
+            nwk = int(addr)
+            try:
+                ieee = str(self.app.get_device(nwk=addr).ieee)
+            except KeyError:
+                ieee = f"nwk:0x{nwk:04X}"
+        elif mode == zigpy.types.AddrMode.IEEE:
+            ieee = str(addr)
+        elif mode == zigpy.types.AddrMode.Group:
+            ieee = f"group:0x{int(addr):04X}"
+        else:
+            ieee = "broadcast"
+        message = packet.data.serialize()
+        profile, cluster = int(packet.profile_id), int(packet.cluster_id)
+        src_ep, dst_ep = int(packet.src_ep or 0), int(packet.dst_ep or 0)
+
+        tap = getattr(self, "_probe_taps", {}).get(ieee)
+        if tap is not None:
+            tap(profile, cluster, src_ep, dst_ep, message, direction="TX")
+
+        if dbg_on:
+            debugger.capture_packet(
+                sender_ieee=ieee, sender_nwk=nwk, profile=profile, cluster=cluster,
+                src_ep=src_ep, dst_ep=dst_ep, message=message,
+                direction="TX", record_flow=False,
+            )
+
     # RAW MESSAGE HANDLER (zigpy listener)
 
     def handle_message(
@@ -878,6 +934,11 @@ class ZigbeeService(
     ):
         """Raw message interceptor - called for EVERY Zigbee message."""
         ieee = str(sender.ieee)
+
+        # 0. FULL-PROBE TAP (modules/device_probe.py) — raw frames while a probe runs
+        tap = getattr(self, "_probe_taps", {}).get(ieee)
+        if tap is not None:
+            tap(profile, cluster, src_ep, dst_ep, message)
 
         # 1. DEBUGGER + FLOW ANALYZER
         try:
@@ -1346,6 +1407,53 @@ class ZigbeeService(
             "is_initialized": zdev.is_initialized,
             "report": report,
         }
+
+    async def probe_device(self, ieee: str, listen_s: int = 60) -> dict:
+        """
+        Start a full read-only probe (modules/device_probe.py) in the
+        background. Progress streams to the log; the JSON report is saved
+        under data/probes/.
+        """
+        from modules.device_probe import DeviceProbe
+
+        if ieee not in self.devices:
+            return {"success": False, "error": "Device not found"}
+        if not hasattr(self, "_probe_taps"):
+            self._probe_taps = {}
+        if ieee in self._probe_taps:
+            return {"success": False, "error": "A probe is already running for this device"}
+
+        name = getattr(self, 'friendly_names', {}).get(ieee, ieee)
+
+        def emit(level, msg):
+            self._emit_sync("log", {"level": level, "message": f"[{name}] Probe: {msg}",
+                                    "ieee": ieee, "device_name": name, "category": "probe"})
+
+        probe = DeviceProbe(self, ieee, listen_s=listen_s, emit=emit)
+        self._probe_taps[ieee] = probe.tap
+
+        # Mirror the probe into Packet Debug; restore its prior state after.
+        debugger = get_debugger()
+        dbg_was_enabled = bool(debugger and debugger.enabled)
+        if debugger:
+            debugger.enabled = True
+            if debugger.filter_ieee and debugger.filter_ieee != ieee:
+                emit("WARNING", f"Packet Debug is filtered to {debugger.filter_ieee} — "
+                                f"probe frames won't appear there (the probe log still has them)")
+
+        async def _run():
+            try:
+                await probe.run()
+            except Exception as e:
+                logger.exception(f"[{ieee}] probe crashed: {e}")
+                emit("ERROR", f"crashed: {e!r}")
+            finally:
+                self._probe_taps.pop(ieee, None)
+                if debugger and not dbg_was_enabled:
+                    debugger.enabled = False
+
+        asyncio.create_task(_run())
+        return {"success": True, "message": f"Probe started (listen window {probe.listen_s}s)"}
 
     async def interview_device(self, ieee):
         if ieee in self.devices:

@@ -9,7 +9,7 @@ from models import (
     DeviceRequest, RenameRequest, ConfigureRequest, CommandRequest,
     AttributeReadRequest, BindRequest, PermitJoinRequest,
     BanRequest, UnbanRequest, TouchlinkRequest, DiscoverAttributesRequest,
-    RetryInterviewRequest,
+    RetryInterviewRequest, ProbeRequest,
 )
 from modules.zone_device_config import configure_zone_device_reporting, remove_aggressive_reporting
 
@@ -184,6 +184,15 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 ),
             }
         return await get_zigbee_service().retry_interview_device(request.ieee)
+
+    @app.post("/api/device/probe")
+    async def probe_device(request: ProbeRequest):
+        """
+        Full read-only probe: every endpoint/cluster/attribute the device
+        reports, raw frames included, plus a listen window for reports.
+        Runs in the background; progress streams to the log.
+        """
+        return await get_zigbee_service().probe_device(request.ieee, request.listen_s)
 
     @app.get("/api/device/{ieee}/interview_status")
     async def get_interview_status(ieee: str):

@@ -93,6 +93,11 @@ class DiscoverAttributesRequest(BaseModel):
 
 
 
+class ProbeRequest(BaseModel):
+    ieee: str
+    listen_s: int = 60
+
+
 class RetryInterviewRequest(BaseModel):
     ieee: str
     confirm_awake: bool = False

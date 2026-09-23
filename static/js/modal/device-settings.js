@@ -426,6 +426,11 @@ function _buttonRow(snap) {
                     data-action="retry-interview" ${retryDisabled}>
                 <i class="fas fa-fingerprint"></i> Re-Interview
             </button>
+            <button type="button" class="btn btn-outline-primary"
+                    onclick="window._settingsProbe('${ieee}')"
+                    title="Read-only: walk every endpoint, cluster and attribute, then listen for reports">
+                <i class="fas fa-microscope"></i> Full Probe
+            </button>
             <button type="button" class="btn btn-outline-danger"
                     data-action="delete-repair" ${repairDisabled}>
                 <i class="fas fa-trash-restore"></i> Delete &amp; Re-pair
@@ -584,6 +589,36 @@ window._settingsReconfigure = async function(ieee, aggressive) {
         }
     } catch (e) {
         _setActionResult(ieee, _actionError(label, e.message));
+    }
+};
+
+// Full probe — read-only walk of every EP/cluster/attribute + listen window
+
+window._settingsProbe = async function(ieee) {
+    if (!await window.zbmConfirm({
+        title: 'Full device probe',
+        message: 'Walks every endpoint, cluster and attribute and logs the raw frames. Read-only.',
+        detail:
+            '• Takes a minute or two, then listens 60s for reports\n' +
+            '• During the listen window, switch outlets / change the load\n' +
+            '• Results stream to the log and are saved to data/probes/',
+        confirmText: 'Start probe'
+    })) return;
+    try {
+        const res = await fetch('/api/device/probe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ieee, listen_s: 60 }),
+        });
+        const data = await res.json();
+        addLogEntry({
+            timestamp: getTimestamp(),
+            level: data.success ? 'INFO' : 'WARNING',
+            message: data.success ? data.message : `Probe: ${data.error}`,
+        });
+    } catch (e) {
+        log.error('probe failed', e);
+        window.toast.error('Probe failed: ' + e.message);
     }
 };
 
