@@ -27,6 +27,7 @@ let _eqMode = false;      // current element is CORS-tagged and EQ-routed
 let _srcStage = 'direct'; // current source: direct | proxy | plain | hls
 let _directUrl = null;    // the playing track's un-proxied URL
 let _noCorsHosts = new Set(); // hosts that refused CORS this session
+let _next = null;         // { index, promise } — next Tidal track's URL, resolved early
 let _onChange = () => {};
 let _onError = () => {};
 
@@ -135,6 +136,12 @@ function audio() {
             _sessionState();
             _onChange();
         }));
+    // Resolve the next track before this one ends: a backgrounded page (phone
+    // locked) may only start a new source synchronously inside 'ended' — an
+    // await on the network there leaves the queue stuck after track one.
+    a.addEventListener('timeupdate', () => {
+        if (isFinite(a.duration) && a.duration - a.currentTime < 60) _prefetch(_index + 1);
+    });
     a.addEventListener('error', () => {
         const err = a.error;
         // hls.js owns the buffer and reports through its own ERROR event;
@@ -265,8 +272,27 @@ function _sessionState() {
 export async function playItems(items) {
     _queue = Array.isArray(items) ? items.filter(Boolean) : [];
     _index = 0;
+    _next = null;
     if (!_queue.length) { _onError('Nothing to play'); return; }
     await _load(0, true);
+}
+
+function _resolve(item) {
+    return fetch(`/api/media/local/track_url?source_id=${encodeURIComponent(item.source_id)}`)
+        .then(x => x.json())
+        .then(r => {
+            if (!r.success || !r.url) throw new Error(r.error || 'no URL');
+            return r.url;
+        });
+}
+
+function _prefetch(i) {
+    const item = _queue[i];
+    if (!item || item.url || !item.source_id || (_next && _next.index === i)) return;
+    const promise = _resolve(item);
+    promise.catch(() => { /* _load re-resolves */ });
+    _next = { index: i, promise, url: null };
+    promise.then(u => { if (_next && _next.promise === promise) _next.url = u; }, () => {});
 }
 
 async function _load(i, autoplay) {
@@ -274,15 +300,16 @@ async function _load(i, autoplay) {
     _index = i;
     const item = _queue[i];
     let url = item.url || '';
+    const early = _next && _next.index === i ? _next : null;
+    _next = null;
+    // Already resolved → no await, so src + play() stay inside the 'ended' event.
+    if (!url && early && early.url) url = early.url;
     // Tidal hands back no URL at search time (signed + short-lived) — resolve now.
     if (!url && item.source_id) {
         _loading = true;
         _onChange();
         try {
-            const r = await fetch(`/api/media/local/track_url?source_id=${encodeURIComponent(item.source_id)}`)
-                .then(x => x.json());
-            if (!r.success || !r.url) throw new Error(r.error || 'no URL');
-            url = r.url;
+            url = await (early ? early.promise.catch(() => _resolve(item)) : _resolve(item));
         } catch (e) {
             _loading = false;
             _onError(`Could not resolve "${item.title || 'track'}": ${e.message}`);
@@ -349,6 +376,7 @@ export function stop() {
     a.load();                     // drop the buffer so radio stops fetching
     _queue = [];
     _index = 0;
+    _next = null;
     _directUrl = null;
     if (navigator.mediaSession) {
         navigator.mediaSession.metadata = null;   // clears the lock screen
