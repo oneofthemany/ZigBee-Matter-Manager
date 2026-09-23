@@ -224,6 +224,21 @@ logging.getLogger('handlers.base').setLevel(logging.INFO)
 logging.getLogger('core').setLevel(logging.INFO)
 logging.getLogger('device').setLevel(logging.INFO)
 
+
+class _HttpxSuccessFilter(logging.Filter):
+    """Drop httpx's per-request INFO line for 2xx responses (e.g. the WiiM
+    getPlayerStatus poll every few seconds); non-2xx still gets logged."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # httpx: 'HTTP Request: %s %s "%s %d %s"' -> args[3] is the status code
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 4 and isinstance(args[3], int):
+            return not 200 <= args[3] < 300
+        return True
+
+
+logging.getLogger('httpx').addFilter(_HttpxSuccessFilter())
+
 logger = logging.getLogger('main')
 
 
