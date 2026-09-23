@@ -1179,12 +1179,14 @@ class ZigbeeService(
 
     async def retry_interview_device(self, ieee: str) -> dict:
         """
-        Run a re-interview with progress streaming via interview_status.
+        Diagnostic re-interview with progress streaming via interview_status.
 
-        Each ZDO step start/end emits an interview_status_update through
-        the WebSocket. Step failures are caught per-step rather than
-        aborting — Active_EP can still succeed if Node_Desc fails on a
-        particular wake.
+        Asks the device afresh for its Node Descriptor, Active Endpoints and
+        each endpoint's Simple Descriptor, then diffs the live answers against
+        the stored zigpy model. Metering / Electrical Measurement clusters get
+        a ZCL attribute discovery plus an uncached read of their scaling and
+        headline values, so mis-aligned endpoints or missing multipliers are
+        visible in the log. Read-only: the stored model is not changed.
         """
         if ieee not in self.devices:
             return {"success": False, "error": "Device not found"}
@@ -1192,71 +1194,157 @@ class ZigbeeService(
         wrapper = self.devices[ieee]
         zdev = wrapper.zigpy_dev
         tracker = self.interview_status
+        name = getattr(self, 'friendly_names', {}).get(ieee, ieee)
 
         STEP_TIMEOUT = 10.0
         steps_succeeded = 0
         steps_failed = 0
+        report = {"endpoints": {}, "diff": [], "power": {}}
 
-        # Step 1: Node Descriptor
-        tracker.record_step(ieee, "node_descriptor")
-        try:
-            await asyncio.wait_for(zdev.zdo.Node_Desc_req(), timeout=STEP_TIMEOUT)
-            steps_succeeded += 1
-            logger.info(f"[{ieee}] retry_interview: Node Descriptor ok")
-        except asyncio.TimeoutError:
-            steps_failed += 1
-            logger.warning(f"[{ieee}] retry_interview: Node Descriptor timed out")
-        except Exception as e:
-            steps_failed += 1
-            logger.warning(f"[{ieee}] retry_interview: Node Descriptor failed: {e}")
-        tracker.emit_for(ieee)
+        def _log(level, msg):
+            getattr(logger, level.lower())(f"[{ieee}] re-interview: {msg}")
+            self._emit_sync("log", {"level": level, "message": f"[{name}] Re-interview: {msg}",
+                                    "ieee": ieee, "device_name": name, "category": "interview"})
 
-        # Step 2: Active Endpoints
-        tracker.record_step(ieee, "active_endpoints")
-        try:
-            await asyncio.wait_for(zdev.zdo.Active_EP_req(), timeout=STEP_TIMEOUT)
-            steps_succeeded += 1
-            logger.info(f"[{ieee}] retry_interview: Active Endpoints ok")
-        except asyncio.TimeoutError:
-            steps_failed += 1
-            logger.warning(f"[{ieee}] retry_interview: Active Endpoints timed out")
-        except Exception as e:
-            steps_failed += 1
-            logger.warning(f"[{ieee}] retry_interview: Active Endpoints failed: {e}")
-        tracker.emit_for(ieee)
+        def _hex(ids):
+            return "[" + ", ".join(f"0x{c:04X}" for c in sorted(ids)) + "]"
 
-        # Step 3: Simple Descriptor for each non-ZDO endpoint
-        for ep_id in list(zdev.endpoints.keys()):
-            if ep_id == 0:
-                continue
-            tracker.record_step(ieee, f"simple_descriptor_ep_{ep_id}")
+        async def _zdo(step, label, coro):
+            nonlocal steps_succeeded, steps_failed
+            tracker.record_step(ieee, step)
             try:
-                await asyncio.wait_for(zdev.zdo.Simple_Desc_req(ep_id), timeout=STEP_TIMEOUT)
+                status, _, payload = await asyncio.wait_for(coro, timeout=STEP_TIMEOUT)
+                if status != 0:
+                    raise RuntimeError(f"status {status!r}")
                 steps_succeeded += 1
-                logger.info(f"[{ieee}] retry_interview: Simple Desc EP{ep_id} ok")
+                return payload
             except asyncio.TimeoutError:
                 steps_failed += 1
-                logger.warning(f"[{ieee}] retry_interview: Simple Desc EP{ep_id} timed out")
+                _log("WARNING", f"{label} timed out")
             except Exception as e:
                 steps_failed += 1
-                logger.warning(f"[{ieee}] retry_interview: Simple Desc EP{ep_id} failed: {e}")
-            tracker.emit_for(ieee)
+                _log("WARNING", f"{label} failed: {e}")
+            finally:
+                tracker.emit_for(ieee)
+            return None
 
-        # Build handlers based on whatever we did get
-        try:
-            wrapper._identify_handlers()
-        except Exception as e:
-            logger.warning(f"[{ieee}] retry_interview: handler build failed: {e}")
+        _log("INFO", f"starting (nwk=0x{zdev.nwk:04X}, model={zdev.model!r}, "
+                     f"manufacturer={zdev.manufacturer!r}, quirk={type(zdev).__name__})")
 
-        # Final state
+        # Step 1: Node Descriptor
+        node_desc = await _zdo("node_descriptor", "Node Descriptor",
+                               zdev.zdo.Node_Desc_req(zdev.nwk))
+        if node_desc is not None:
+            _log("INFO", f"Node Descriptor: {node_desc}")
+
+        # Step 2: Active Endpoints — diff against the stored model
+        stored_eps = {ep for ep in zdev.endpoints if ep != 0}
+        live_eps = await _zdo("active_endpoints", "Active Endpoints",
+                              zdev.zdo.Active_EP_req(zdev.nwk))
+        if live_eps is not None:
+            live_eps = {int(ep) for ep in live_eps if ep != 0}
+            _log("INFO", f"Active Endpoints: device={sorted(live_eps)} stored={sorted(stored_eps)}")
+            for ep in sorted(live_eps - stored_eps):
+                report["diff"].append(f"EP{ep} reported by device but missing from stored model")
+            for ep in sorted(stored_eps - live_eps):
+                report["diff"].append(f"EP{ep} in stored model but not reported by device")
+            probe_eps = sorted(live_eps | stored_eps)
+        else:
+            probe_eps = sorted(stored_eps)
+
+        # Step 3: Simple Descriptor per endpoint — diff clusters
+        for ep_id in probe_eps:
+            sd = await _zdo(f"simple_descriptor_ep_{ep_id}", f"Simple Desc EP{ep_id}",
+                            zdev.zdo.Simple_Desc_req(zdev.nwk, ep_id))
+            if sd is None:
+                continue
+            live_in, live_out = set(sd.input_clusters), set(sd.output_clusters)
+            report["endpoints"][ep_id] = {
+                "profile": f"0x{sd.profile:04X}", "device_type": f"0x{sd.device_type:04X}",
+                "in": _hex(live_in), "out": _hex(live_out),
+            }
+            _log("INFO", f"EP{ep_id} profile=0x{sd.profile:04X} device_type=0x{sd.device_type:04X} "
+                         f"in={_hex(live_in)} out={_hex(live_out)}")
+            ep = zdev.endpoints.get(ep_id)
+            if ep is None:
+                continue
+            st_in, st_out = set(ep.in_clusters), set(ep.out_clusters)
+            if ep.profile_id is not None and ep.profile_id != sd.profile:
+                report["diff"].append(f"EP{ep_id} profile stored=0x{ep.profile_id:04X} live=0x{sd.profile:04X}")
+            for label, a, b in (("in", live_in - st_in, st_in - live_in),
+                                ("out", live_out - st_out, st_out - live_out)):
+                if a:
+                    report["diff"].append(f"EP{ep_id} {label} clusters on device, not stored: {_hex(a)}")
+                if b:
+                    report["diff"].append(f"EP{ep_id} {label} clusters stored (quirk?), not on device: {_hex(b)}")
+
+        for line in report["diff"]:
+            _log("WARNING", f"MISMATCH {line}")
+        if not report["diff"] and live_eps is not None:
+            _log("INFO", "stored endpoints/clusters match what the device reports")
+
+        # Step 4: power clusters — discover supported attributes and read
+        # scaling + headline values uncached, per endpoint
+        POWER_READS = {
+            0x0702: [0x0000, 0x0300, 0x0301, 0x0302, 0x0400],
+            0x0B04: [0x0505, 0x0508, 0x050B, 0x0510, 0x0300,
+                     0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605],
+        }
+        for ep_id in sorted(stored_eps):
+            ep = zdev.endpoints[ep_id]
+            for cid, attr_ids in POWER_READS.items():
+                cluster = ep.in_clusters.get(cid)
+                if cluster is None:
+                    continue
+                key = f"EP{ep_id}:0x{cid:04X}"
+                tracker.record_step(ieee, f"power_ep_{ep_id}_0x{cid:04x}")
+                entry = report["power"].setdefault(key, {"supported": None, "values": {}, "unsupported": []})
+
+                try:
+                    supported, start = [], 0
+                    for _ in range(8):
+                        rsp = await asyncio.wait_for(
+                            cluster.discover_attributes(start, 32), timeout=STEP_TIMEOUT)
+                        recs = list(getattr(rsp, "attribute_info", None) or [])
+                        supported += [r.attrid for r in recs]
+                        if getattr(rsp, "discovery_complete", True) or not recs:
+                            break
+                        start = recs[-1].attrid + 1
+                    entry["supported"] = _hex(supported)
+                    _log("INFO", f"{key} ({cluster.name}) supports {entry['supported']}")
+                except Exception as e:
+                    _log("WARNING", f"{key} attribute discovery failed: {e!r}")
+
+                for i in range(0, len(attr_ids), 4):
+                    chunk = attr_ids[i:i + 4]
+                    try:
+                        ok, fail = await asyncio.wait_for(
+                            cluster.read_attributes(chunk, allow_cache=False), timeout=STEP_TIMEOUT)
+                    except Exception as e:
+                        _log("WARNING", f"{key} read {_hex(chunk)} failed: {e!r}")
+                        continue
+                    for aid, val in ok.items():
+                        aid = aid if isinstance(aid, int) else cluster.find_attribute(aid).id
+                        attr = cluster.attributes.get(aid)
+                        entry["values"][f"0x{aid:04X} {attr.name if attr else ''}".strip()] = repr(val)
+                    entry["unsupported"] += [f"0x{a:04X}" if isinstance(a, int) else str(a) for a in fail]
+                vals = ", ".join(f"{k}={v}" for k, v in entry["values"].items()) or "none"
+                _log("INFO", f"{key} raw values: {vals}")
+                if entry["unsupported"]:
+                    _log("INFO", f"{key} unsupported: {', '.join(entry['unsupported'])}")
+                tracker.emit_for(ieee)
+
         tracker.record_step(ieee, None)
         tracker.emit_for(ieee)
+        _log("INFO", f"done: {steps_succeeded} ZDO steps ok, {steps_failed} failed, "
+                     f"{len(report['diff'])} mismatch(es)")
 
         return {
             "success": steps_failed == 0,
             "steps_succeeded": steps_succeeded,
             "steps_failed": steps_failed,
             "is_initialized": zdev.is_initialized,
+            "report": report,
         }
 
     async def interview_device(self, ieee):

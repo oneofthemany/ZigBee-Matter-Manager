@@ -275,7 +275,9 @@ class InterviewStatusTracker:
         missing = self._gather_missing(zdev)
 
         # Action flags
-        can_retry = state in (STATE_INTERVIEWING, STATE_STALLED, STATE_FAILED)
+        # Re-interview is read-only diagnostics, so it's always offered —
+        # also useful on fully interviewed devices to verify endpoint mapping.
+        can_retry = True
         can_repair = state == STATE_FAILED
 
         return InterviewSnapshot(

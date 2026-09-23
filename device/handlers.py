@@ -179,11 +179,12 @@ class DeviceHandlerManagerMixin:
     async def interview(self):
         logger.info(f"[{self.ieee}] Re-interviewing...")
         try:
-            await self.zigpy_dev.zdo.Node_Desc_req()
-            await self.zigpy_dev.zdo.Active_EP_req()
+            nwk = self.zigpy_dev.nwk
+            await self.zigpy_dev.zdo.Node_Desc_req(nwk)
+            await self.zigpy_dev.zdo.Active_EP_req(nwk)
             for ep_id in self.zigpy_dev.endpoints:
                 if ep_id == 0: continue
-                await self.zigpy_dev.zdo.Simple_Desc_req(ep_id)
+                await self.zigpy_dev.zdo.Simple_Desc_req(nwk, ep_id)
             self._identify_handlers()
             logger.info(f"[{self.ieee}] Interview complete")
         except Exception as e:

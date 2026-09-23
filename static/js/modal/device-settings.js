@@ -611,7 +611,8 @@ export async function startRetryInterview(ieee) {
             timestamp: getTimestamp(),
             level: data.success ? 'INFO' : 'WARNING',
             message: data.success
-                ? `Re-Interview complete: ${data.steps_succeeded} succeeded, ${data.steps_failed} failed`
+                ? `Re-Interview complete: ${data.steps_succeeded} succeeded, ${data.steps_failed} failed, `
+                  + `${data.report?.diff?.length ?? 0} endpoint/cluster mismatch(es) — details in log`
                 : `Re-Interview: ${data.error || 'one or more steps failed'}`,
         });
     } catch (e) {
