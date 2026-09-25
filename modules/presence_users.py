@@ -146,7 +146,18 @@ class UserConfig:
         return h[1] if h else None
 
     def to_dict(self) -> Dict[str, Any]:
+        """The stored shape — presence_users.yaml. Deliberately no home: that
+        copy is the one that drifted (see the home_lat property)."""
         return asdict(self)
+
+    def api_dict(self) -> Dict[str, Any]:
+        """What the API returns: the stored fields plus the hub's home.
+
+        The phone reads home_lat/home_lon from here to arm its geofence, and
+        they are properties, which asdict() does not see. Every API caller
+        goes through this, so none can drop them again.
+        """
+        return {**self.to_dict(), "home_lat": self.home_lat, "home_lon": self.home_lon}
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "UserConfig":
@@ -507,10 +518,7 @@ class PresenceUserManager:
     def list_users(self) -> List[Dict[str, Any]]:
         return [
             {
-                **d.cfg.to_dict(),
-                # The hub's home, for the badge map and the settings table.
-                "home_lat": d.cfg.home_lat,
-                "home_lon": d.cfg.home_lon,
+                **d.cfg.api_dict(),
                 "ieee": d.ieee,
                 "state": dict(d.state),
                 "last_seen": d.last_seen,

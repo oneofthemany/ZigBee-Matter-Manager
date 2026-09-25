@@ -37,3 +37,5 @@ zmm_eq/target/
 /AGENTS.md
 /CLAUDE.md
 /tests/floor_plan/logs/zigbee_debug.log
+/data/presence_state.json
+/tests/logs/zigbee_debug.log

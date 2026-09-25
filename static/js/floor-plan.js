@@ -617,6 +617,8 @@ function rootHtml() {
                       <div id="fpMapWhere" class="form-text small mt-1"></div>
                       <button class="btn btn-sm btn-outline-primary w-100 mt-1 d-none" id="fpMapSetHome">
                         <i class="fas fa-house-flag me-1"></i>Set as the home location</button>
+                      <button class="btn btn-sm btn-outline-secondary w-100 mt-1 d-none" id="fpMapRecentre">
+                        <i class="fas fa-crosshairs me-1"></i>Put the map back on the home</button>
                     </div>
                     <div id="fpMapMissing" class="form-text small d-none">Set the home location in Settings to use the map.</div>
                 </section>
@@ -5228,6 +5230,13 @@ function bindDeviceLayerEvents() {
         renderScene();
     });
     document.getElementById('fpMapSetHome').addEventListener('click', setHomeFromPlan);
+    document.getElementById('fpMapRecentre').addEventListener('click', () => {
+        // Forget the point the map was lined up by, so it follows the home again.
+        if (_state.plan.map) { delete _state.plan.map.lat; delete _state.plan.map.lon; }
+        syncMapControls(); renderScene(); renderOverlay();
+        toast('info', 'Map moved to the home',
+              'It is drawn around the home location again. Line it up and save.');
+    });
     document.getElementById('fpMapMove').addEventListener('click', () => {
         if (_state.tool === 'map') { setTool('select'); syncMapControls(); return; }
         setTool('map');
@@ -5283,6 +5292,14 @@ function syncMapControls() {
         : '';
     // Offered once the map is lined up and the house isn't where Settings says.
     document.getElementById('fpMapSetHome').classList.toggle('d-none', !ll || (off != null && off <= 5));
+    // The other way out of the same disagreement: the home is right and the
+    // map is still drawn around wherever it was lined up by, which may be a
+    // stale set of coordinates. Only offered when those two differ.
+    const pinned = _state.plan.map?.lat != null && _state.plan.map?.lon != null;
+    const drift = pinned && _home
+        ? Math.hypot(...geoOffsetM(_home, { lat: _state.plan.map.lat, lon: _state.plan.map.lon }))
+        : 0;
+    document.getElementById('fpMapRecentre').classList.toggle('d-none', !(pinned && drift > 5));
 }
 
 let _mapTileZ = null;              // tile zoom last drawn at

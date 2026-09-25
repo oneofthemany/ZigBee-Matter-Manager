@@ -244,7 +244,9 @@ def register_presence_routes(app: FastAPI, presence_manager_getter: Callable):
         from modules.presence_users import mode_params
         from modules.journeys import DRIVE_FIX_INTERVAL_S
         return {
-            **dev.cfg.to_dict(),
+            # api_dict, not to_dict: the phone needs the hub's home to arm its
+            # geofence, and the stored shape does not carry it.
+            **dev.cfg.api_dict(),
             "ieee": dev.ieee,
             "state": dict(dev.state),
             "last_seen": dev.last_seen,
