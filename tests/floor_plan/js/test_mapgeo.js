@@ -109,5 +109,22 @@ section("the map's own point wins over the home once it is pinned");
   check('which is the few hundred metres it was out by', away > 250 && away < 400, away);
 }
 
+section('anything that moves the map redraws the scene');
+{
+  // The tiles are drawn by renderScene; the Home pin by renderOverlay. Three
+  // handlers redrew only the overlay, so showing or moving the map did nothing
+  // visible until the next zoom happened to redraw the scene.
+  const body = (startMark) => slice(startMark, '});');
+  const cases = [
+    ["the show/hide toggle", slice("document.getElementById('fpToggleMap').addEventListener", '});')],
+    ["dragging it", slice('if (_mapDrag) {', '\n    }')],
+    ["nudging it with an arrow key", slice("} else if (_state.tool === 'map' && e.key.startsWith('Arrow')", '\n        }')],
+    ["the opacity slider", slice("document.getElementById('fpMapOpacity').addEventListener", '});')],
+  ];
+  for (const [what, code] of cases) {
+    check(what + ' redraws the scene', /renderScene\(\)/.test(code), code.slice(0, 160));
+  }
+}
+
 console.log('\n' + (fails.length ? `  ${fails.length} FAILED` : '  all passed'));
 process.exit(fails.length ? 1 : 0);

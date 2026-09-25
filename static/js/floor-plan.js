@@ -895,7 +895,7 @@ function bindModalEvents() {
             if (e.key === 'ArrowRight') g.anchor_x_m = round3(g.anchor_x_m + step);
             if (e.key === 'ArrowDown')  g.anchor_y_m = round3(g.anchor_y_m - step);
             if (e.key === 'ArrowUp')    g.anchor_y_m = round3(g.anchor_y_m + step);
-            renderOverlay(); syncMapControls();
+            renderScene(); renderOverlay(); syncMapControls();
         } else if (_state.tool === 'bg' && e.key.startsWith('Arrow')) {
             // Nudge the image by one snap step (ten with Shift) so it can be
             // lined up on a wall more finely than a drag allows.
@@ -2249,7 +2249,9 @@ function onCanvasMouseMove(e) {
         const p = clientToSvgModel(e);
         _state.plan.map.anchor_x_m = round3(_mapDrag.ax + (p.x - _mapDrag.grab.x));
         _state.plan.map.anchor_y_m = round3(_mapDrag.ay + (p.y - _mapDrag.grab.y));
-        renderOverlay(); syncMapControls();
+        // The tiles are in the scene, the Home pin in the overlay: redraw both,
+        // or the map only appears to move at the next zoom.
+        renderScene(); renderOverlay(); syncMapControls();
         return;
     }
     if (_bgDrag) {
@@ -5222,7 +5224,8 @@ function bindDeviceLayerEvents() {
     });
     document.getElementById('fpToggleMap').addEventListener('change', e => {
         _state.showMap = e.target.checked;
-        syncMapControls(); renderOverlay();
+        // The tiles are part of the scene, so the scene is what has to redraw.
+        syncMapControls(); renderScene(); renderOverlay();
     });
     document.getElementById('fpMapOpacity').addEventListener('input', e => {
         _state.plan.map = { anchor_x_m: 0, anchor_y_m: 0, ...(_state.plan.map || {}),
