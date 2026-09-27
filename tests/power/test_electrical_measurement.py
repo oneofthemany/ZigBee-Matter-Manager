@@ -152,6 +152,27 @@ def run() -> Checker:
     c.check("and published", len(h.get_discovery_configs()) == 3)
     h.attribute_updated(h.ATTR_RMS_VOLTAGE, 2400)
     c.check("and recorded", dev.state.get("voltage_1") == 2400.0, dev.state)
+
+    c.section("a meter without voltage or current (Aqara aeu002) gets neither")
+    # zigpy records UNSUPPORTED_ATTRIBUTE answers; the fake answers as it would.
+    missing = {"rms_voltage", "rms_current", 0x0505, 0x0508}
+    h, cl, dev = _handler("lumi.plug.aeu002", ep=3)
+    cl.is_attribute_unsupported = lambda a: a in missing
+    asyncio.run(h.configure())
+    reads = [s[1] for s in cl.sent if s[0] == "read"]
+    c.check("the measurements are read before reporting is set up",
+            reads and "rms_voltage" in reads[0], cl.sent)
+    configured = [name for s in cl.sent if s[0] == "configure_reporting" for name in s[1]]
+    c.check("reporting is configured for active power only",
+            configured == ["active_power"], cl.sent)
+    c.check("only active power is polled",
+            h.get_pollable_attributes() == {h.ATTR_ACTIVE_POWER: "power_3"},
+            h.get_pollable_attributes())
+    ids = [d["object_id"] for d in h.get_discovery_configs()]
+    c.check("HA gets a power sensor only", ids == ["power_3"], ids)
+    retired = sorted(d["object_id"] for d in h.get_retired_discovery_configs())
+    c.check("the old voltage and current sensors are retracted",
+            retired == ["current_3", "voltage_3"], retired)
     return c
 
 

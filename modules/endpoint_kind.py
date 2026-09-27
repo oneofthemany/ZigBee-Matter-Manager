@@ -42,8 +42,9 @@ DIMMABLE_LIGHT_TYPES = {
 
 
 class EndpointKind(NamedTuple):
-    kind: str       # LIGHT | SWITCH
+    kind: str               # LIGHT | SWITCH
     reason: str
+    source: str = "rule"    # user | zmm | profile | rule
 
 
 def _as_int(v) -> Optional[int]:
@@ -87,28 +88,45 @@ def classify(in_clusters: Iterable[int], profile_id=None, device_type=None,
     return EndpointKind(SWITCH, "on/off only")
 
 
-def classify_endpoint(endpoint, override: Optional[str] = None) -> Optional[EndpointKind]:
+def classify_endpoint(endpoint, override: Optional[str] = None,
+                      trust_device_type: bool = True) -> Optional[EndpointKind]:
     """classify() for a zigpy Endpoint."""
     return classify(getattr(endpoint, "in_clusters", None) or {},
                     getattr(endpoint, "profile_id", None),
-                    getattr(endpoint, "device_type", None),
+                    getattr(endpoint, "device_type", None) if trust_device_type else None,
                     override)
 
 
 def profile_override(device, ep_id: int) -> Optional[str]:
     """`endpoints[ep].kind` from the device's profile, if one pins it."""
-    try:
-        from modules.device_profiles import get_profile_store
-        z = getattr(device, "zigpy_dev", None)
-        profile = get_profile_store().get_profile_for_device(
-            ieee=str(getattr(device, "ieee", "")),
-            model=str(getattr(z, "model", "") or ""),
-            manufacturer=str(getattr(z, "manufacturer", "") or ""))
-    except Exception:
-        return None
+    from modules.device_profiles import profile_for_device
+    profile = profile_for_device(device)
     kind = ((profile or {}).get("endpoints") or {}).get(str(ep_id), {}).get("kind")
     return kind if kind in (LIGHT, SWITCH) else None
 
 
 def classify_device_endpoint(device, endpoint) -> Optional[EndpointKind]:
-    return classify_endpoint(endpoint, profile_override(device, endpoint.endpoint_id))
+    """classify() with the device's overrides: a user correction, then a ZMM
+    entry or user profile, then the rules."""
+    from modules.device_facts import user_facts
+    from modules.device_profiles import profile_for_device
+
+    ep_id = endpoint.endpoint_id
+    ieee = str(getattr(device, "ieee", "") or "")
+    user = user_facts(ieee).get((ep_id, "kind")) if ieee else None
+    if user in (LIGHT, SWITCH):
+        kind = classify_endpoint(endpoint, user)
+        return kind._replace(reason="set by user", source="user") if kind else None
+
+    profile = profile_for_device(device)
+    pinned = ((profile or {}).get("endpoints") or {}).get(str(ep_id), {}).get("kind")
+    if pinned in (LIGHT, SWITCH):
+        kind = classify_endpoint(endpoint, pinned)
+        if not kind:
+            return None
+        zmm = (profile.get("meta") or {}).get("source") == "zmm"
+        return kind._replace(reason=f"{'ZMM entry' if zmm else 'profile'} {profile['id']}",
+                             source="zmm" if zmm else "profile")
+    # An entry can mark a model's declared device type as wrong (aeu002: 0x0000 on every EP).
+    trust = ((profile or {}).get("zmm") or {}).get("corrections", {}).get("device_type") != "ignore"
+    return classify_endpoint(endpoint, trust_device_type=trust)

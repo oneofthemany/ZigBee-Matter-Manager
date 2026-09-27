@@ -28,6 +28,54 @@ logger = logging.getLogger("handlers.base")
 HANDLER_REGISTRY: Dict[int, type] = {}
 
 
+# Extended discovery's access bitmap (ZCL 2.5.19)
+ACL_READ, ACL_WRITE, ACL_REPORT = 0x01, 0x02, 0x04
+
+
+async def discover_attribute_info(cluster, manufacturer: Optional[int] = None,
+                                  timeout: float = 6.0) -> Optional[Dict[int, Dict]]:
+    """{attr_id: {"type": datatype, "acl": bitmap or None}} the device lists,
+    paged to completion. Extended discovery first, for the access flags; plain
+    discovery when the device lacks it. None when it answers neither form:
+    unknown, not empty."""
+    for extended in (True, False):
+        found: Dict[int, Dict] = {}
+        start = 0
+        for _ in range(16):
+            try:
+                async with asyncio.timeout(timeout):
+                    if extended:
+                        rsp = await cluster.discover_attributes_extended(
+                            start, 16, manufacturer=manufacturer)
+                    else:
+                        rsp = await cluster.discover_attributes(
+                            start, 16, manufacturer=manufacturer)
+            except Exception as e:
+                logger.debug(f"{'Extended' if extended else 'Plain'} discovery on "
+                             f"0x{cluster.cluster_id:04X} failed: {e}")
+                break
+            recs = getattr(rsp, "extended_attr_info" if extended else "attribute_info", None)
+            if not recs:
+                break
+            for r in recs:
+                acl = getattr(r, "acl", None) if extended else None
+                found[int(r.attrid)] = {"type": int(r.datatype),
+                                        "acl": None if acl is None else int(acl)}
+            if getattr(rsp, "discovery_complete", True):
+                break
+            start = int(recs[-1].attrid) + 1
+        if found:
+            return found
+    return None
+
+
+async def discover_attribute_ids(cluster, manufacturer: Optional[int] = None,
+                                 timeout: float = 6.0) -> Optional[set]:
+    """Attribute ids the device lists for this cluster; None when unknown."""
+    info = await discover_attribute_info(cluster, manufacturer, timeout)
+    return set(info) if info else None
+
+
 def register_handler(cluster_id: int):
     """Decorator to register a cluster handler for a specific cluster ID."""
     def decorator(cls):
@@ -315,10 +363,11 @@ class ClusterHandler:
             logger.info(f"[{self.device.ieee}] ✅ Bound {cluster_name}, result: {result}")
 
             # Configure reporting if defined — batched so sleepy devices complete in one wake
-            if self.REPORT_CONFIG:
+            report_config = [r for r in self.REPORT_CONFIG if self.attribute_supported(r[0])]
+            if report_config:
                 records = {
                     attr_name: (min_int, max_int, change)
-                    for attr_name, min_int, max_int, change in self.REPORT_CONFIG
+                    for attr_name, min_int, max_int, change in report_config
                 }
 
                 try:
@@ -334,12 +383,19 @@ class ClusterHandler:
                         f"[{self.device.ieee}] configure_reporting_multiple unavailable — "
                         f"falling back to sequential reporting config"
                     )
-                    for attr_name, min_int, max_int, change in self.REPORT_CONFIG:
+                    for attr_name, min_int, max_int, change in report_config:
                         try:
                             async with asyncio.timeout(4.0):
-                                await self.cluster.configure_reporting(
+                                rsp = await self.cluster.configure_reporting(
                                     attr_name, min_int, max_int, change
                                 )
+                            status = next((getattr(r, "status", None) for r in rsp or []), 0)
+                            if status not in (0, None):
+                                logger.info(
+                                    f"[{self.device.ieee}] Reporting for {attr_name} refused: "
+                                    f"{status!r}"
+                                )
+                                continue
                             logger.info(
                                 f"[{self.device.ieee}] ✅ Configured reporting for {attr_name}: "
                                 f"min={min_int}s, max={max_int}s, change={change}"
@@ -365,6 +421,26 @@ class ClusterHandler:
             return False
 
 
+    def ep_label(self) -> Optional[str]:
+        """The user's or the ZMM entry's name for this endpoint, if any."""
+        try:
+            from modules.device_identity import endpoint_label
+            return endpoint_label(self.device, self.endpoint.endpoint_id)
+        except Exception:
+            return None
+
+    def entity_name(self, what: str) -> str:
+        """'Power USB' for a labelled EP, else 'Power 3'."""
+        return f"{what} {self.ep_label() or self.endpoint.endpoint_id}"
+
+    def attribute_supported(self, attr) -> bool:
+        """False only once zigpy has recorded the device answering
+        UNSUPPORTED_ATTRIBUTE for it (persisted across restarts)."""
+        try:
+            return not self.cluster.is_attribute_unsupported(attr)
+        except Exception:   # unknown to zigpy's schema, or an older zigpy
+            return True
+
     async def poll(self) -> Dict[str, Any]:
         """
         Poll the cluster for current attribute values.
@@ -377,7 +453,8 @@ class ClusterHandler:
         logger.info(f"[{self.device.ieee}] Polling {cluster_name}...")
 
         results = {}
-        pollable = self.get_pollable_attributes()
+        pollable = {a: n for a, n in self.get_pollable_attributes().items()
+                    if self.attribute_supported(a)}
         if not pollable:
             return results
 

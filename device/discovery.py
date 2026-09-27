@@ -56,7 +56,13 @@ class DeviceDiscoveryProviderMixin:
         return {}
 
     def get_device_config_schema(self) -> List[Dict]:
-        schema = []
+        # ZMM entry settings first: a curated definition wins a name clash.
+        try:
+            from modules import zmm_settings
+            schema = zmm_settings.options(self)
+        except Exception as e:
+            logger.debug(f"[{self.ieee}] ZMM settings unavailable: {e}")
+            schema = []
         seen = set()
         for h in self.handlers.values():
             if h in seen: continue

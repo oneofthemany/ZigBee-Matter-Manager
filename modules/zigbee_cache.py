@@ -144,6 +144,45 @@ def _init_schema():
         context="create idx_attr_hist_lookup"
     )
 
+    # Evidence for device recognition (docs/plans/zmm-quirks.md §4). One row
+    # per (endpoint, subject, source); endpoint 0 holds whole-device facts.
+    # Timestamps are UTC, written by the caller, never DEFAULT now().
+    _safe_execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_facts (
+            ieee          VARCHAR NOT NULL,
+            endpoint_id   INTEGER NOT NULL,
+            subject       VARCHAR NOT NULL,
+            source        VARCHAR NOT NULL,
+            value         VARCHAR,
+            first_seen    TIMESTAMP NOT NULL,
+            last_seen     TIMESTAMP NOT NULL,
+            PRIMARY KEY (ieee, endpoint_id, subject, source)
+        )
+        """,
+        context="create device_facts"
+    )
+
+    # What was concluded from the facts, and why; previous_value keeps the
+    # last different conclusion so a change shows as old -> new.
+    _safe_execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_decisions (
+            ieee           VARCHAR NOT NULL,
+            endpoint_id    INTEGER NOT NULL,
+            subject        VARCHAR NOT NULL,
+            value          VARCHAR,
+            source         VARCHAR NOT NULL,
+            reason         VARCHAR,
+            decided_at     TIMESTAMP NOT NULL,
+            previous_value VARCHAR,
+            changed_at     TIMESTAMP,
+            PRIMARY KEY (ieee, endpoint_id, subject)
+        )
+        """,
+        context="create device_decisions"
+    )
+
     _INITIALISED = True
     logger.info("Zigbee cache schema initialised")
 
@@ -462,10 +501,85 @@ def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
 
 # MAINTENANCE + DEBUG
 
+# FACTS
+
+def record_facts(ieee, rows: List[tuple], seen_at) -> int:
+    """Upsert (endpoint_id, subject, source, value) rows in one statement.
+    A re-seen fact keeps first_seen and moves last_seen; seen_at is naive UTC."""
+    if not rows:
+        return 0
+    _init_schema()
+    try:
+        _get_db().executemany(
+            """
+            INSERT INTO device_facts
+                (ieee, endpoint_id, subject, source, value, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (ieee, endpoint_id, subject, source) DO UPDATE SET
+                value = excluded.value,
+                last_seen = excluded.last_seen
+            """,
+            [[str(ieee), int(ep), subj, src, val, seen_at, seen_at]
+             for ep, subj, src, val in rows])
+    except Exception as e:
+        logger.error(f"zigbee_cache facts upsert failed for {ieee}: {e}")
+        return 0
+    return len(rows)
+
+
+def get_facts(ieee) -> List[Dict[str, Any]]:
+    _init_schema()
+    cur = _safe_execute(
+        "SELECT endpoint_id, subject, source, value, first_seen, last_seen "
+        "FROM device_facts WHERE ieee = ? ORDER BY endpoint_id, subject, source",
+        [str(ieee)], context="read device_facts")
+    cols = ("endpoint_id", "subject", "source", "value", "first_seen", "last_seen")
+    return [dict(zip(cols, r)) for r in (cur.fetchall() if cur else [])]
+
+
+def delete_fact(ieee, endpoint_id: int, subject: str, source: str) -> None:
+    _init_schema()
+    _safe_execute(
+        "DELETE FROM device_facts WHERE ieee = ? AND endpoint_id = ? AND subject = ? AND source = ?",
+        [str(ieee), int(endpoint_id), subject, source], context="delete fact")
+
+
+# DECISIONS
+
+def upsert_decision(ieee, endpoint_id: int, subject: str, value: str, source: str,
+                    reason: str, decided_at, previous_value: Optional[str],
+                    changed_at) -> None:
+    _init_schema()
+    _safe_execute(
+        """
+        INSERT INTO device_decisions (ieee, endpoint_id, subject, value, source, reason,
+                                      decided_at, previous_value, changed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (ieee, endpoint_id, subject) DO UPDATE SET
+            value = excluded.value, source = excluded.source, reason = excluded.reason,
+            decided_at = excluded.decided_at, previous_value = excluded.previous_value,
+            changed_at = excluded.changed_at
+        """,
+        [str(ieee), int(endpoint_id), subject, value, source, reason, decided_at,
+         previous_value, changed_at], context=f"upsert decision {subject}")
+
+
+def get_decisions(ieee) -> List[Dict[str, Any]]:
+    _init_schema()
+    cur = _safe_execute(
+        "SELECT endpoint_id, subject, value, source, reason, decided_at, previous_value, "
+        "changed_at FROM device_decisions WHERE ieee = ? ORDER BY endpoint_id, subject",
+        [str(ieee)], context="read device_decisions")
+    cols = ("endpoint_id", "subject", "value", "source", "reason", "decided_at",
+            "previous_value", "changed_at")
+    return [dict(zip(cols, r)) for r in (cur.fetchall() if cur else [])]
+
+
 def purge_device(ieee) -> None:
     _init_schema()
     for table in ("device_endpoints", "device_clusters",
-                  "device_attributes", "attribute_history"):
+                  "device_attributes", "attribute_history", "device_facts",
+                  "device_decisions"):
         _safe_execute(f"DELETE FROM {table} WHERE ieee = ?",
                       [str(ieee)], context=f"purge {table}")
 

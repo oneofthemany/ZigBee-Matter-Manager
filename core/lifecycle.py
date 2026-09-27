@@ -264,6 +264,16 @@ class DeviceLifecycleMixin:
             except Exception as e:
                 logger.warning(f"[{ieee}] Topology cache failed: {e}")
 
+            from modules.device_facts import record_declared
+            record_declared(ieee, zdev.zigpy_dev)
+
+            # Background: its frames queue behind other devices' (one at a time).
+            from modules.probe_lite import probe_lite
+            task = asyncio.create_task(probe_lite(zdev, force=True))
+            self._bg_tasks = getattr(self, "_bg_tasks", set())
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+
         except Exception as e:
             logger.warning(f"[{ieee}] Device configuration failed: {e}")
             self._emit_sync("join_progress", {"ieee": ieee, "stage": "error", "error": str(e)})

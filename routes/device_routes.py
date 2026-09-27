@@ -9,7 +9,7 @@ from models import (
     DeviceRequest, RenameRequest, ConfigureRequest, CommandRequest,
     AttributeReadRequest, BindRequest, PermitJoinRequest,
     BanRequest, UnbanRequest, TouchlinkRequest, DiscoverAttributesRequest,
-    RetryInterviewRequest, ProbeRequest,
+    RetryInterviewRequest, ProbeRequest, IdentityUpdate, DraftSave,
 )
 from modules.zone_device_config import configure_zone_device_reporting, remove_aggressive_reporting
 
@@ -273,6 +273,56 @@ def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
                 "error": str(e),
                 "traceback": traceback.format_exc(),
             }
+
+    @app.get("/api/device/{ieee}/identity")
+    async def device_identity(ieee: str):
+        """Per-endpoint decisions with their source and reason (zmm-quirks.md §8)."""
+        from modules.device_identity import identity
+        svc = get_zigbee_service()
+        if ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        return identity(svc.devices[ieee])
+
+    @app.post("/api/device/{ieee}/identity")
+    async def update_device_identity(ieee: str, request: IdentityUpdate):
+        """Confirm, correct or reset one decision, then re-announce the device."""
+        from modules.device_identity import apply_user_fact, identity
+        svc = get_zigbee_service()
+        if ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        dev = svc.devices[ieee]
+        err = apply_user_fact(dev, request.endpoint_id, request.subject, request.value)
+        if err:
+            return {"success": False, "error": err}
+        await svc.announce_device(ieee)
+        return identity(dev)
+
+    @app.get("/api/device/{ieee}/identity/draft")
+    async def draft_zmm_entry(ieee: str):
+        """A ZMM entry drafted from this device's evidence, plus setting candidates."""
+        from modules.quirk_draft import draft_entry
+        svc = get_zigbee_service()
+        if ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        return {"success": True, **draft_entry(svc.devices[ieee])}
+
+    @app.post("/api/device/{ieee}/identity/draft")
+    async def save_zmm_draft(ieee: str, request: DraftSave):
+        """Save a (reviewed) draft as the user's profile for this model."""
+        from modules.device_identity import identity
+        from modules.device_profiles import get_profile_store
+        svc = get_zigbee_service()
+        if ieee not in svc.devices:
+            return {"success": False, "error": "Device not found"}
+        saved = get_profile_store().upsert_profile(request.entry)
+        dev = svc.devices[ieee]
+        for h in set(dev.handlers.values()):
+            if hasattr(h, "_kind"):
+                h._kind = None
+        if hasattr(dev, "capabilities"):
+            dev.capabilities._detect_capabilities()
+        await svc.announce_device(ieee)
+        return {**identity(dev), "saved_profile": saved["id"]}
 
     @app.get("/api/device/{ieee}/cached_attributes")
     async def cached_attributes(ieee: str, ep: int, cluster: int):

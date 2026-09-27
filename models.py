@@ -86,6 +86,17 @@ class MatterRemoveRequest(BaseModel):
     node_id: int
 
 
+class IdentityUpdate(BaseModel):
+    """Confirm or correct one decision; value None resets it to the evidence."""
+    endpoint_id: int
+    subject: str
+    value: Optional[Any] = None
+
+
+class DraftSave(BaseModel):
+    entry: dict
+
+
 class DiscoverAttributesRequest(BaseModel):
     ieee: str
     endpoint_id: int

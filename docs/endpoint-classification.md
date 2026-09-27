@@ -21,7 +21,9 @@ An elimination: each rule fires only on positive evidence, and an EP that
 offers none of it falls through to switch.
 
 1. No On/Off input cluster → not classified (controller, sensor, cover).
-2. Profile override `endpoints[ep].kind` → as given.
+2. Override, strongest first: the user's correction (Identity tab), then a
+   ZMM entry's or profile's `endpoints[ep].kind`. An entry's
+   `zmm.corrections.device_type: ignore` drops the declared type from rule 4.
 3. Colour Control (0x0300) → light. No outlet carries it.
 4. Outlet device type → switch: HA Mains Power Outlet (0x0009), Smart Plug
    (0x0051), On/Off Plug-in Unit (0x010A), On/Off Output (0x0002); ZLL On/Off

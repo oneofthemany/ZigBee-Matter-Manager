@@ -437,20 +437,19 @@ class DeviceCapabilities:
             self._capabilities.discard('motion_sensor')
             self._capabilities.discard('occupancy_sensing')
 
-        # PHILIPS HUE / SIGNIFY
-        if "philips" in manufacturer or "signify" in manufacturer:
-            if "sml" in model and self.ON_OFF in self._cluster_ids:
-                self._capabilities.add('motion_sensor')
-                # The SML's EP1 carries OnOff/Level/Color as OUTPUT (controller)
-                # clusters — a scene controller, not a light. Left in, they render a
-                # bogus "Switch (EP1)" card and pollute the sensor's state.
-                for cap in ('switch', 'light', 'on_off', 'level_control', 'color_control'):
-                    self._capabilities.discard(cap)
-                # Apply EP1 controller quirk
-                if 1 in self._configurable_endpoints:
-                    self._configurable_endpoints[1]['configurable_clusters'].clear()
-                    self._configurable_endpoints[1]['role'] = 'controller'
-                    LOGGER.info(f"[{self.device.ieee}] Philips SML quirk: EP1=controller (skip config)")
+        # Controller endpoints: an entry (or profile) that marks an EP
+        # `role: controller` says its On/Off/Level/Color are a remote's outputs,
+        # not a load. The model-name quirk below only covers what no entry does.
+        from modules.device_profiles import profile_for_device
+        entry = profile_for_device(self.device)
+        controllers = sorted(int(e) for e, v in ((entry or {}).get("endpoints") or {}).items()
+                             if (v or {}).get("role") == "controller")
+        if controllers:
+            self._apply_controller_endpoints(controllers, f"entry {entry['id']}")
+        elif ("philips" in manufacturer or "signify" in manufacturer) \
+                and "sml" in model and self.ON_OFF in self._cluster_ids:
+            self._capabilities.add('motion_sensor')
+            self._apply_controller_endpoints([1], "Philips SML model quirk")
 
         # TUYA / SMART LIFE
         if self.TUYA_MANUFACTURER in self._cluster_ids:
@@ -463,7 +462,9 @@ class DeviceCapabilities:
                     'switch' in self._capabilities
             )
 
-            if '_tze' in manufacturer or 'ts0601' in model:
+            if entry is not None:
+                pass    # the entry's capabilities describe it; no guessing from the model
+            elif '_tze' in manufacturer or 'ts0601' in model:
                 if is_functional_device:
                     LOGGER.debug(f"Tuya device {model} identified as functional device, skipping presence quirk.")
                 else:
@@ -484,6 +485,21 @@ class DeviceCapabilities:
                 self._capabilities.add('multi_switch')
                 LOGGER.info(f"[{self.device.ieee}] Multi-switch device detected: EPs {actuator_endpoints}")
 
+
+    def _apply_controller_endpoints(self, eps, why: str) -> None:
+        """Mark EPs as controllers (skip their config). Drop the actuator
+        capabilities unless another EP takes those commands as inputs."""
+        for ep in eps:
+            if ep in self._configurable_endpoints:
+                self._configurable_endpoints[ep]['configurable_clusters'].clear()
+                self._configurable_endpoints[ep]['role'] = 'controller'
+        actuating = {self.ON_OFF, self.LEVEL_CONTROL, self.COLOR_CONTROL}
+        other_actuator = any(info['input_clusters'] & actuating
+                             for ep, info in self._configurable_endpoints.items() if ep not in eps)
+        if not other_actuator:
+            for cap in ('switch', 'light', 'on_off', 'level_control', 'color_control'):
+                self._capabilities.discard(cap)
+        LOGGER.info(f"[{self.device.ieee}] EP{', EP'.join(map(str, eps))} = controller ({why})")
 
     def is_endpoint_configurable(self, endpoint_id: int) -> bool:
         """Check if an endpoint has any configurable clusters."""

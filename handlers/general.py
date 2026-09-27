@@ -8,6 +8,7 @@ from zigpy.zcl.foundation import Status
 import time
 
 from .base import ClusterHandler, register_handler
+from modules import device_decisions
 from modules.endpoint_kind import LIGHT, LOAD_CLUSTERS, classify_device_endpoint
 
 logger = logging.getLogger("handlers.general")
@@ -71,8 +72,11 @@ class OnOffHandler(ClusterHandler):
         if refresh or getattr(self, "_kind", None) is None:
             self._kind = classify_device_endpoint(self.device, self.endpoint)
             if self._kind:
-                logger.info(f"[{self.device.ieee}] EP{self.endpoint.endpoint_id} is "
+                ep = self.endpoint.endpoint_id
+                logger.info(f"[{self.device.ieee}] EP{ep} is "
                             f"{self._kind.kind.upper()} ({self._kind.reason})")
+                device_decisions.record(str(self.device.ieee), ep, "kind", self._kind.kind,
+                                        self._kind.source, self._kind.reason)
         return self._kind
 
     def get_component_type(self) -> Optional[str]:
@@ -426,7 +430,7 @@ class OnOffHandler(ClusterHandler):
         # LIGHTS: JSON SCHEMA
         if is_light:
             config = {
-                "name": None,
+                "name": self.ep_label(),
                 "schema": "json",
             }
             color_modes = []
@@ -471,7 +475,7 @@ class OnOffHandler(ClusterHandler):
         # SWITCHES: TEMPLATE SCHEMA
         else:
             config = {
-                "name": f"Switch {ep}",
+                "name": self.ep_label() or f"Switch {ep}",
                 "payload_on": "ON",
                 "payload_off": "OFF",
                 "value_template": f"{{{{ value_json.state_{ep} }}}}",

@@ -1,0 +1,15 @@
+{
+  "id": "SML001",
+  "protocol": "zigbee",
+  "match": { "model": "SML001", "manufacturer": "Philips" },
+  "device_type": "motion_sensor",
+  "capabilities": ["motion_sensor", "battery", "illuminance_sensor", "temperature_sensor"],
+  "endpoints": {
+    "1": { "role": "controller", "label": "Scene controller" },
+    "2": { "label": "Sensor" }
+  },
+  "zmm": {
+    "evidence": { "verified_fw": ["6.1.1.27575", "67.115.5"] }
+  },
+  "meta": { "author": "zmm", "source": "zmm" }
+}

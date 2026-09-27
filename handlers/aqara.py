@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import asyncio
 import zigpy.types as t
 
-from .base import ClusterHandler, register_handler
+from .base import ClusterHandler, discover_attribute_ids, register_handler
 
 # ZCL data-type IDs for raw writes that bypass cluster schema lookup
 _ZCL_DATATYPE_ID = {
@@ -128,6 +128,11 @@ XIAOMI_ATTR_MAP = {
     0x6F: ("startup_on_off", lambda v: v),  # power-on behaviour
 }
 
+# Tags naming a mode or on/off state. The tag layout differs per model: where a
+# model puts a float in one of these slots it means something else, and is
+# dropped rather than stored under the wrong name.
+XIAOMI_ENUM_TAGS = frozenset({0x64, 0x65, 0x6E, 0x6F, 0x9B, 0x0152})
+
 
 # MULTISTATE INPUT CLUSTER (0x0012)
 # Used by: Aqara Buttons, Cube, Vibration Sensor
@@ -210,7 +215,7 @@ class MultistateInputHandler(ClusterHandler):
             "component": "sensor",
             "object_id": f"action_{ep}",
             "config": {
-                "name": f"Action {ep}",
+                "name": self.entity_name("Action"),
                 "icon": "mdi:gesture-tap-button",
                 "value_template": f"{{{{ value_json.action_{ep} }}}}"
             }
@@ -499,7 +504,10 @@ class AqaraManufacturerCluster(ClusterHandler):
                     parsed = parse_xiaomi_struct(value)
 
                     for sub_id, sub_value in parsed.items():
-                        if sub_id in XIAOMI_ATTR_MAP:
+                        if sub_id in XIAOMI_ENUM_TAGS and not isinstance(sub_value, int):
+                            logger.debug(f"[{self.device.ieee}] Xiaomi tag 0x{sub_id:02X} = "
+                                         f"{sub_value!r}: not a {XIAOMI_ATTR_MAP[sub_id][0]} here")
+                        elif sub_id in XIAOMI_ATTR_MAP:
                             attr_name, converter = XIAOMI_ATTR_MAP[sub_id]
                             try:
                                 converted_value = converter(sub_value)
@@ -546,6 +554,7 @@ class AqaraManufacturerCluster(ClusterHandler):
           - 0x027D (schedule)       = 0  (disabled)
         """
         logger.info(f"[{self.device.ieee}] Configuring Aqara manufacturer cluster 0xFCC0")
+        await self._learn_supported()
 
         if hasattr(self.device, 'hvac'):
             # Best-effort: a sleeping device times out and retries next configure
@@ -595,6 +604,33 @@ class AqaraManufacturerCluster(ClusterHandler):
         except Exception:
             return False
 
+    async def _learn_supported(self):
+        """Learn once per run which attributes this EP lists. Aqara EPs each
+        carry their own set, and zigpy's generic 0xFCC0 knows none of them.
+        Sleepy or silent devices stay unknown and keep the old behaviour."""
+        if getattr(self, "_supported_known", False) or self._is_sleepy_end_device():
+            return
+        self._supported_known = True
+        self._supported = await discover_attribute_ids(
+            self.cluster, manufacturer=self.MANUFACTURER_CODE)
+        if self._supported:
+            logger.info(f"[{self.device.ieee}] EP{self.endpoint.endpoint_id} 0xFCC0 lists "
+                        f"{len(self._supported)} attributes")
+
+    def supports(self, attr_id) -> bool:
+        """False only for an attribute this EP's discovery did not list."""
+        supported = getattr(self, "_supported", None)
+        return supported is None or attr_id in supported
+
+    async def _read_raw(self, attr_ids: List[int]) -> Dict[int, Any]:
+        """Read by id, so attributes absent from zigpy's schema still read."""
+        rsp = await self._zcl_with_mfg(self.cluster.read_attributes_raw, attr_ids)
+        values = {}
+        for rec in getattr(rsp, "status_records", None) or []:
+            if int(rec.status) == 0 and rec.value is not None:
+                values[int(rec.attrid)] = rec.value.value
+        return values
+
     async def _zcl_with_mfg(self, func, *args):
         """
         Call a cluster ZCL method with the 0x115F manufacturer code across
@@ -623,6 +659,7 @@ class AqaraManufacturerCluster(ClusterHandler):
             )
             return {}
 
+        await self._learn_supported()
         attrs_to_read = [self.ATTR_POWER_OUTAGE_MEM]
 
         # Add thermostat-specific attributes if we have a thermostat cluster
@@ -658,25 +695,22 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_INDICATOR_LIGHT,
             ])
 
+        attrs_to_read = [a for a in attrs_to_read if self.supports(a)]
+        if not attrs_to_read:
+            return {}
         try:
             logger.debug(
                 f"[{self.device.ieee}] Reading Aqara attrs: "
                 f"{[hex(a) for a in attrs_to_read]}"
             )
-            result = await self._zcl_with_mfg(
-                self.cluster.read_attributes, attrs_to_read
-            )
-            if result and result[0]:
+            values = await self._read_raw(attrs_to_read)
+            if values:
                 logger.info(
                     f"[{self.device.ieee}] Aqara poll success: "
-                    f"{len(result[0])} attrs"
+                    f"{len(values)} attrs"
                 )
-                for attrid, value in result[0].items():
-                    self.attribute_updated(attrid, value)
-            if result and result[1]:
-                logger.debug(
-                    f"[{self.device.ieee}] Aqara poll failures: {result[1]}"
-                )
+            for attrid, value in values.items():
+                self.attribute_updated(attrid, value)
         except Exception as e:
             logger.warning(
                 f"[{self.device.ieee}] Aqara manufacturer cluster poll failed: {e}"
@@ -689,6 +723,10 @@ class AqaraManufacturerCluster(ClusterHandler):
         bypass cluster-schema lookup (which otherwise raises KeyError for Aqara
         proprietary attrs on the bare 0xFCC0 cluster).
         """
+        if not self.supports(attr_id):
+            logger.info(f"[{self.device.ieee}] 0x{attr_id:04X} is not listed on "
+                        f"EP{self.endpoint.endpoint_id}; not writing")
+            return False
         from zigpy import types as t
         from zigpy.zcl import foundation
 
@@ -793,15 +831,13 @@ class AqaraManufacturerCluster(ClusterHandler):
 
     async def read_attribute(self, attr_id: int) -> Any:
         """Read a single attribute with manufacturer code."""
+        if not self.supports(attr_id):
+            return None
         try:
-            result = await self._zcl_with_mfg(
-                self.cluster.read_attributes, [attr_id]
-            )
-            if result and result[0]:
-                value = result[0].get(attr_id)
-                if value is not None:
-                    self.attribute_updated(attr_id, value)
-                    return value
+            value = (await self._read_raw([attr_id])).get(attr_id)
+            if value is not None:
+                self.attribute_updated(attr_id, value)
+                return value
         except Exception as e:
             logger.warning(f"[{self.device.ieee}] Aqara read 0x{attr_id:04x} failed: {e}")
         return None
@@ -871,7 +907,7 @@ class AqaraManufacturerCluster(ClusterHandler):
                 self.ATTR_INDICATOR_LIGHT: "indicator_light",
             })
 
-        return base_attrs
+        return {a: n for a, n in base_attrs.items() if self.supports(a)}
 
 
     async def set_window_detection(self, enabled: bool):
@@ -1269,7 +1305,8 @@ class AqaraManufacturerCluster(ClusterHandler):
             "manufacturer_code": self.MANUFACTURER_CODE
         })
 
-        return options
+        return [o for o in options
+                if o.get("attribute_id") is None or self.supports(o["attribute_id"])]
 
 
     async def discover_attributes(self):

@@ -126,6 +126,12 @@ class DeviceProbe:
         self.log("INFO", f"FULL PROBE done — {len(self.frames) - n_tx} RX / {n_tx} TX frames captured, "
                          f"{len(self.report['errors'])} errors; saved {path}")
         self.report["saved_to"] = path
+        try:
+            from modules.device_facts import facts_from_probe, record
+            n = record(self.ieee, facts_from_probe(self.report))
+            self.log("INFO", f"Recorded {n} facts from the probe")
+        except Exception as e:
+            self.log("WARNING", f"Probe facts not recorded: {e}")
         return self.report
 
     async def _probe_endpoint(self, ep_id: int, mfr_code: Optional[int]):

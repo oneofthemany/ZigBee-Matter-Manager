@@ -90,6 +90,36 @@ field. Bundled profiles shipped with the app live under
 `data/community_profiles/` and are read-only. User profiles override bundled
 ones with the same id.
 
+## ZMM entries
+
+A profile carrying the `zmm` block is a ZMM quirk entry
+(`docs/plans/zmm-quirks.md` §6). Shipped entries live in `zmm_quirks/` beside
+the code and load as the `zmm` tier: they override community profiles, and a
+user's own profile overrides them. Anything saved through the API is a user
+profile, whatever its `meta.source` says. A `zmm` entry that names its
+manufacturer never matches through the model-only fallback.
+
+Additions to the schema:
+
+```jsonc
+"endpoints": {
+  "3": { "kind": "switch",          // light | switch
+         "label": "USB",            // names the EP's HA entities
+         "metering": "none",        // self | device_total | none
+         "actions": "multistate",   // the EP's Multistate Input carries presses
+         "role": "controller" }     // outputs are a remote's, not a load
+},
+"zmm": {
+  "corrections":  { "device_type": "ignore" },   // the model misdeclares it
+  "measurements": { "active_power": {"cluster": "0x0B04", "attr": "0x050B", "divisor": 10},
+                    "rms_voltage": null },       // null: absent, never configure
+  "settings":     [ { "id": "button_leds", "label": "Button LEDs", "type": "bool",
+                      "ep": 1 /* or "each" */, "cluster": "0xFCC0", "attr": "0x0203",
+                      "mfr": "0x115F", "values": {"0": "Off", "1": "On"} } ],
+  "evidence":     { "probes": ["<probe file>"], "verified_fw": ["<sw_version>"] }
+}
+```
+
 ## Lookup precedence
 
 Highest first:

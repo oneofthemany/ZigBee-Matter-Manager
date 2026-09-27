@@ -933,6 +933,14 @@ class TuyaDeviceTypeDetector:
             logger.debug(f"[{device.ieee}] Detected as LIGHT (has Color Control cluster 0x0300)")
             return 'light'
 
+        # An entry or profile saying what this model is beats model strings.
+        from modules.device_profiles import profile_for_device
+        entry = profile_for_device(device)
+        if entry and entry.get("device_type") in ENTRY_TYPE_TO_TUYA:
+            kind = ENTRY_TYPE_TO_TUYA[entry["device_type"]]
+            logger.debug(f"[{device.ieee}] Detected as {kind.upper()} (entry {entry['id']})")
+            return kind
+
         # SIGNAL 2: Model string patterns
         for pattern in COVER_MODELS:
             if pattern in model:
@@ -971,6 +979,16 @@ class TuyaDeviceTypeDetector:
         logger.warning(f"[{device.ieee}] Could not determine device type, defaulting to 'unknown'")
         logger.debug(f"[{device.ieee}] Clusters: {[f'0x{cid:04X}' for cid in cluster_ids]}")
         return 'unknown'
+
+
+# Device-profile device_type -> the datapoint family TuyaDPFilter uses
+ENTRY_TYPE_TO_TUYA = {
+    "blind": "cover", "light": "light", "dimmer": "light", "color_light": "light",
+    "switch": "switch", "plug": "switch", "thermostat": "thermostat", "trv": "thermostat",
+    "motion_sensor": "sensor", "contact_sensor": "sensor", "temperature_sensor": "sensor",
+    "humidity_sensor": "sensor", "leak_sensor": "sensor", "smoke_sensor": "sensor",
+    "vibration_sensor": "sensor",
+}
 
 
 class TuyaDPFilter:

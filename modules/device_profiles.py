@@ -23,6 +23,10 @@ logger = logging.getLogger("modules.device_profiles")
 DATA_DIR             = os.environ.get("ZMM_DATA_DIR", "./data")
 USER_PROFILES_DIR    = os.path.join(DATA_DIR, "device_profiles")
 BUNDLED_PROFILES_DIR = os.path.join(DATA_DIR, "community_profiles")
+# ZMM quirk entries ship in the image, beside the code: data/ is a host mount
+# and would hide anything the image put there.
+ZMM_QUIRKS_DIR       = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "zmm_quirks")
 IEEE_OVERRIDES_FILE  = os.path.join(DATA_DIR, "ieee_overrides.json")
 
 # Legacy files — read once at startup for migration
@@ -196,6 +200,12 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
             "group":    str(ep_val.get("group") or ""),
             "clusters": clusters_out,
         }
+        if ep_val.get("kind") in ("light", "switch"):   # endpoint-classification.md
+            eps_out[str(ep_id)]["kind"] = ep_val["kind"]
+        if ep_val.get("metering") in METERING_SCOPES:   # plans/zmm-quirks.md §6
+            eps_out[str(ep_id)]["metering"] = ep_val["metering"]
+        if ep_val.get("actions") == "multistate":
+            eps_out[str(ep_id)]["actions"] = "multistate"
     out["endpoints"] = eps_out
 
     # actions
@@ -280,6 +290,10 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
             ca_out[str(k)] = {"name": str(v["name"])}
     out["command_actions"] = ca_out
 
+    zmm = _normalise_zmm(p.get("zmm"))
+    if zmm:
+        out["zmm"] = zmm
+
     # ieee_overrides — legacy per-device mappings carried inside the profile
     # are unusual but supported for migration paths. Most live in the separate
     # ieee_overrides.json file.
@@ -292,6 +306,73 @@ def normalise_profile(p: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": int(meta.get("created_at") or _now()),
         "updated_at": _now(),
     }
+    return out
+
+
+METERING_SCOPES = ("self", "device_total", "none")
+SETTING_TYPES = {"bool": 0x10, "uint8": 0x20, "uint16": 0x21, "uint32": 0x23, "int8": 0x28,
+                 "int16": 0x29, "enum8": 0x30}
+
+
+def _normalise_zmm(z: Any) -> Dict[str, Any]:
+    """The ZMM entry block (docs/plans/zmm-quirks.md §6). Facts only; anything
+    malformed is dropped, never guessed."""
+    if not isinstance(z, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    corrections = {str(k): str(v) for k, v in (z.get("corrections") or {}).items()
+                   if k == "device_type" and v == "ignore"}
+    if corrections:
+        out["corrections"] = corrections
+
+    measurements: Dict[str, Any] = {}
+    for name, m in (z.get("measurements") or {}).items():
+        if m is None:
+            measurements[str(name)] = None          # known absent: never configure
+            continue
+        if not isinstance(m, dict):
+            continue
+        cl, at = _to_int(m.get("cluster")), _to_int(m.get("attr"))
+        if cl is None or at is None:
+            continue
+        entry = {"cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}"}
+        if _to_int(m.get("ep")) is not None:
+            entry["ep"] = _to_int(m.get("ep"))
+        for k in ("multiplier", "divisor"):
+            v = _to_int(m.get(k))
+            if v:
+                entry[k] = v
+        measurements[str(name)] = entry
+    if measurements:
+        out["measurements"] = measurements
+
+    settings: List[Dict[str, Any]] = []
+    for st in (z.get("settings") or []):
+        if not isinstance(st, dict):
+            continue
+        sid, typ = str(st.get("id") or ""), str(st.get("type") or "")
+        cl, at, mfr = _to_int(st.get("cluster")), _to_int(st.get("attr")), _to_int(st.get("mfr"))
+        ep = st.get("ep")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", sid) or typ not in SETTING_TYPES \
+                or cl is None or at is None or not (ep == "each" or _to_int(ep) is not None):
+            continue
+        values = {str(k): str(v) for k, v in (st.get("values") or {}).items()
+                  if _to_int(k) is not None}
+        settings.append({
+            "id": sid, "label": str(st.get("label") or sid), "type": typ,
+            "ep": "each" if ep == "each" else _to_int(ep),
+            "cluster": f"0x{cl:04X}", "attr": f"0x{at:04X}",
+            "mfr": f"0x{mfr:04X}" if mfr else None,
+            "values": values, "description": str(st.get("description") or ""),
+        })
+    if settings:
+        out["settings"] = settings
+
+    ev = z.get("evidence") or {}
+    evidence = {k: [str(x) for x in ev.get(k) or [] if x] for k in ("probes", "verified_fw")
+                if isinstance(ev.get(k), list)}
+    if any(evidence.values()):
+        out["evidence"] = evidence
     return out
 
 
@@ -321,9 +402,11 @@ class ProfileStore:
             user_dir: str = USER_PROFILES_DIR,
             bundled_dir: str = BUNDLED_PROFILES_DIR,
             ieee_overrides_file: str = IEEE_OVERRIDES_FILE,
+            zmm_dir: str = ZMM_QUIRKS_DIR,
     ):
         self._user_dir = user_dir
         self._bundled_dir = bundled_dir
+        self._zmm_dir = zmm_dir
         self._ieee_file = ieee_overrides_file
         self._lock = threading.RLock()
 
@@ -345,10 +428,12 @@ class ProfileStore:
         with self._lock:
             self._profiles_user    = self._load_dir(self._user_dir,    "user")
             self._profiles_bundled = self._load_dir(self._bundled_dir, "bundled")
+            # Curated ZMM entries win over community ones; a user's own still wins.
+            self._profiles_bundled.update(self._load_dir(self._zmm_dir, "zmm"))
             self._load_ieee_overrides()
         logger.info(
             f"ProfileStore loaded: {len(self._profiles_user)} user, "
-            f"{len(self._profiles_bundled)} bundled, "
+            f"{len(self._profiles_bundled)} bundled (incl. ZMM entries), "
             f"{len(self._ieee_pins)} IEEE pins, "
             f"{len(self._ieee_mappings)} IEEE mappings"
         )
@@ -562,10 +647,13 @@ class ProfileStore:
                         if (vendor_id is not None and m["vendor_id"] == vendor_id
                                 and product_id and m["product_id"] == product_id):
                             return dict(p)
-                # 4. Model-only fuzzy fallback (Zigbee)
+                # 4. Model-only fuzzy fallback (Zigbee). Never for a ZMM entry
+                # that names its maker: generic models (Tuya TS0601) are shared
+                # by unrelated devices, and an entry decides what a device is.
                 if protocol == "zigbee" and model:
                     for p in table.values():
-                        if p["protocol"] == "zigbee" and p["match"]["model"] == model:
+                        if p["protocol"] == "zigbee" and p["match"]["model"] == model \
+                                and not (p["meta"].get("source") == "zmm" and p["match"]["manufacturer"]):
                             return dict(p)
         return None
 
@@ -579,8 +667,8 @@ class ProfileStore:
                     or (str(norm["match"].get("product_id") or "") if norm["protocol"] == "matter" else "")
                     or "profile")
             norm["id"] = _safe_id(base)
-        # User profiles can never be sourced as "bundled"
-        if norm["meta"]["source"] == "bundled":
+        # Saved profiles are the user's: only the shipped dirs are bundled or zmm
+        if norm["meta"]["source"] in ("bundled", "zmm"):
             norm["meta"]["source"] = "user"
         with self._lock:
             self._profiles_user[norm["id"]] = norm
@@ -723,6 +811,26 @@ class ProfileStore:
 # Singleton accessor
 
 _store: Optional[ProfileStore] = None
+
+
+def profile_for_device(device) -> Optional[Dict[str, Any]]:
+    """The profile that describes this exact device, or None: pinned to it, or
+    matching its model and (when the profile names one) its manufacturer.
+    Stricter than the store's fuzzy lookup, because decisions follow it."""
+    try:
+        store = get_profile_store()
+        ieee = str(getattr(device, "ieee", "") or "")
+        z = getattr(device, "zigpy_dev", None)
+        manufacturer = str(getattr(z, "manufacturer", "") or "")
+        p = store.get_profile_for_device(ieee=ieee, model=str(getattr(z, "model", "") or ""),
+                                         manufacturer=manufacturer)
+    except Exception:
+        return None
+    if not p:
+        return None
+    pinned = getattr(store, "get_ieee_pin", lambda _: None)(ieee) == p.get("id")
+    maker = (p.get("match") or {}).get("manufacturer")
+    return p if pinned or not maker or maker == manufacturer else None
 
 
 def get_profile_store() -> ProfileStore:

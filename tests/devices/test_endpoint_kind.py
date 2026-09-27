@@ -138,7 +138,14 @@ def run() -> Checker:
             retired == [{"component": "light", "object_id": "light_3"}], retired)
 
     c.section("a profile override reaches every consumer")
-    device_profiles._store = _Store({"endpoints": {"3": {"kind": "light"}}})
+    normalised = device_profiles.normalise_profile(
+        {"id": "p", "match": {"model": "lumi.plug.aeu002"},
+         "endpoints": {"3": {"kind": "light"}, "2": {"kind": "bulb"}}})
+    c.check("the override survives profile normalisation",
+            normalised["endpoints"]["3"].get("kind") == LIGHT, normalised["endpoints"])
+    c.check("an invalid kind is dropped", "kind" not in normalised["endpoints"]["2"],
+            normalised["endpoints"])
+    device_profiles._store = _Store(normalised)
     dev, eps = _build(OUTLET)
     h3 = _onoff(dev, eps[2])
     c.check("HA gets a light on EP3",

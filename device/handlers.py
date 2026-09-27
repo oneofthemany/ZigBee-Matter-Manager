@@ -137,6 +137,11 @@ class DeviceHandlerManagerMixin:
         logger.info(f"[{self.ieee}] Configuring device...")
         if config and config.get('updates'):
             updates = config['updates']
+            try:
+                from modules import zmm_settings
+                await zmm_settings.apply(self, updates)
+            except Exception as e:
+                logger.warning(f"[{self.ieee}] ZMM settings failed: {e}")
             for handler in self.handlers.values():
                 if hasattr(handler, 'apply_configuration'):
                     try: await handler.apply_configuration(updates)
