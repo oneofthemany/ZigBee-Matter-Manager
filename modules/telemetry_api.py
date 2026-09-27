@@ -92,6 +92,17 @@ async def packet_history(ieee: Optional[str] = None, hours: int = 1):
 
 # DEVICE STATE HISTORY
 
+def _with_utc_ts(query, **kwargs):
+    """Run a device_states query (in a worker) and send its timestamps as UTC."""
+    from modules.telemetry_db import session_zone, to_utc_iso
+    rows = query(**kwargs)
+    zone = session_zone()
+    for row in rows:
+        if row.get("ts"):
+            row["ts"] = to_utc_iso(row["ts"], zone)
+    return rows
+
+
 @router.get("/device/{ieee}")
 async def device_state_history(ieee: str, attribute: str = "state", hours: int = 24):
     """Get state change history for a specific device attribute."""
@@ -99,10 +110,7 @@ async def device_state_history(ieee: str, attribute: str = "state", hours: int =
     try:
         from modules.telemetry_db import query_device_state_history
         data = await asyncio.to_thread(
-            query_device_state_history, ieee=ieee, attribute=attribute, hours=hours)
-        for row in data:
-            if row.get("ts"):
-                row["ts"] = str(row["ts"])
+            _with_utc_ts, query_device_state_history, ieee=ieee, attribute=attribute, hours=hours)
         return {"success": True, "ieee": ieee, "attribute": attribute, "data": data}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -129,13 +137,10 @@ async def device_history_bucketed(ieee: str, attribute: str,
     try:
         from modules.telemetry_db import query_device_state_bucketed
         data = await asyncio.to_thread(
-            query_device_state_bucketed,
+            _with_utc_ts, query_device_state_bucketed,
             ieee=ieee, attribute=attribute,
             hours=hours, bucket_minutes=bucket,
         )
-        for row in data:
-            if row.get("ts"):
-                row["ts"] = str(row["ts"])
         return {
             "success": True, "ieee": ieee, "attribute": attribute,
             "hours": hours, "bucket_minutes": bucket, "data": data,

@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("modules.telemetry_db")
@@ -1271,6 +1272,26 @@ def query_packet_stats(ieee: Optional[str] = None, hours: int = 1) -> List[Dict]
     return [dict(zip(cols, row)) for row in result]
 
 
+def session_zone():
+    """DuckDB's session timezone. device_states.ts is written by DEFAULT now()
+    as wall time in it, and it follows the TZ environment, so it differs
+    between hosts (UTC in the container, local on a desktop)."""
+    try:
+        name = _rcursor().execute("SELECT current_setting('TimeZone')").fetchone()[0]
+        return ZoneInfo(name)
+    except Exception:
+        return timezone.utc
+
+
+def to_utc_iso(ts: datetime, zone) -> str:
+    """A session-wall-time ts as ISO-8601 UTC with 'Z': a browser parses a
+    zone-less string as its own local time."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=zone)
+    utc = ts.astimezone(timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+
+
 def query_device_state_history(ieee: str, attribute: str, hours: int = 24) -> List[Dict]:
     """Get state change history for a specific device attribute."""
     db = _rcursor()
@@ -1364,7 +1385,10 @@ def query_device_state_bucketed(ieee: str, attribute: str,
     cols = ["ts", "avg", "min", "max", "samples", "last_str"]
     rows = [dict(zip(cols, row)) for row in result]
 
-    window_start = datetime.now() - timedelta(hours=hours)
+    # The synthetic rows must be on the stored rows' clock: DuckDB's session
+    # wall time, not Python's (they differ by the UTC offset in the container).
+    now = db.execute("SELECT now()::TIMESTAMP").fetchone()[0]
+    window_start = now - timedelta(hours=hours)
 
     # Anchor at window start with the last value recorded before it.
     if not rows or rows[0]["ts"] > window_start:
@@ -1387,7 +1411,7 @@ def query_device_state_bucketed(ieee: str, attribute: str,
     if rows:
         last = rows[-1]
         rows.append({
-            "ts": datetime.now(),
+            "ts": now,
             "avg": last["avg"], "min": last["avg"], "max": last["avg"],
             "samples": 0, "last_str": last["last_str"],
         })
