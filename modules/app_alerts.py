@@ -171,6 +171,19 @@ class AlertCenter:
                     return True
         return False
 
+    def resolve(self, dedupe_key: str) -> int:
+        """Dismiss the open alerts raised under dedupe_key, once the problem
+        has cleared itself. Returns how many."""
+        with self._lock:
+            n = 0
+            for a in self._alerts:
+                if a.get("dedupe_key") == dedupe_key and not a.get("dismissed"):
+                    a["dismissed"] = True
+                    n += 1
+            if n:
+                self._save()
+        return n
+
     def clear_all(self) -> int:
         with self._lock:
             n = sum(1 for a in self._alerts if not a.get("dismissed"))
@@ -235,3 +248,8 @@ def raise_alert(severity: str, source: str, title: str, message: str,
     return get_alert_center().raise_alert(
         severity, source, title, message, dedupe_key=dedupe_key, data=data
     )
+
+
+def resolve_alert(dedupe_key: str) -> int:
+    """Convenience module-level wrapper."""
+    return get_alert_center().resolve(dedupe_key)

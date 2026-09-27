@@ -108,9 +108,9 @@ def run() -> Checker:
     h.attribute_updated(h.ATTR_ACTIVE_POWER, 45)
     c.check("a single meter publishes power", dev.state.get("power") == 45.0,
             dev.state)
-    h.attribute_updated(h.ATTR_RMS_VOLTAGE, 2400)
+    h.attribute_updated(h.ATTR_RMS_VOLTAGE, 240)
     h.attribute_updated(h.ATTR_RMS_CURRENT, 250)
-    c.check("and voltage", dev.state.get("voltage") == 2400.0, dev.state)
+    c.check("and voltage", dev.state.get("voltage") == 240.0, dev.state)
     c.check("and current", dev.state.get("current") == 0.25, dev.state)
 
     left, cl_l, dev_m = _handler("DoubleSocket50AU", ep=1)
@@ -150,8 +150,8 @@ def run() -> Checker:
     c.check("voltage and current are still polled",
             len(h.get_pollable_attributes()) == 3, h.get_pollable_attributes())
     c.check("and published", len(h.get_discovery_configs()) == 3)
-    h.attribute_updated(h.ATTR_RMS_VOLTAGE, 2400)
-    c.check("and recorded", dev.state.get("voltage_1") == 2400.0, dev.state)
+    h.attribute_updated(h.ATTR_RMS_VOLTAGE, 240)
+    c.check("and recorded", dev.state.get("voltage_1") == 240.0, dev.state)
 
     c.section("a meter without voltage or current (Aqara aeu002) gets neither")
     # zigpy records UNSUPPORTED_ATTRIBUTE answers; the fake answers as it would.

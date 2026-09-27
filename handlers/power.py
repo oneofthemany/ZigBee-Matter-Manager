@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .base import ClusterHandler, register_handler
+from modules import measurement_sanity
 
 logger = logging.getLogger("handlers.power")
 
@@ -159,23 +160,37 @@ class ElectricalMeasurementHandler(ClusterHandler):
 
         if attrid == self.ATTR_ACTIVE_POWER:
             val = round(float(value) * self._power_multiplier / self._power_divisor, 1)
-            updates[f"power_{ep_id}"] = val
-            # Unsuffixed alias: Frames and the device list read "power", not
-            # "power_1" (modules/frames.py:83). Summed, so a double socket
-            # reads as the whole device; a single meter is unchanged.
-            updates["power"] = self._total_power(ep_id, val)
+            held = self._held_back("active_power", val, f"power_{ep_id}")
+            if held is not None:
+                updates.update(held)
+                if held:
+                    updates["power"] = self._total_power(ep_id, 0.0)
+            else:
+                updates[f"power_{ep_id}"] = val
+                # Unsuffixed alias: Frames and the device list read "power", not
+                # "power_1" (modules/frames.py:83). Summed, so a double socket
+                # reads as the whole device; a single meter is unchanged.
+                updates["power"] = self._total_power(ep_id, val)
 
         elif attrid == self.ATTR_RMS_VOLTAGE:
             val = round(float(value) * self._voltage_multiplier / self._voltage_divisor, 1)
-            updates[f"voltage_{ep_id}"] = val
-            if ep_id == 1:
-                updates["voltage"] = val      # not additive: mains is shared
+            held = self._held_back("rms_voltage", val, f"voltage_{ep_id}")
+            if held is not None:
+                updates.update(held)
+            else:
+                updates[f"voltage_{ep_id}"] = val
+                if ep_id == 1:
+                    updates["voltage"] = val      # not additive: mains is shared
 
         elif attrid == self.ATTR_RMS_CURRENT:
             val = round(float(value) * self._current_multiplier / self._current_divisor, 3)
-            updates[f"current_{ep_id}"] = val
-            if ep_id == 1:
-                updates["current"] = val
+            held = self._held_back("rms_current", val, f"current_{ep_id}")
+            if held is not None:
+                updates.update(held)
+            else:
+                updates[f"current_{ep_id}"] = val
+                if ep_id == 1:
+                    updates["current"] = val
 
         elif attrid == self.ATTR_AC_POWER_MULTIPLIER:   self._power_multiplier   = value or 1
         elif attrid == self.ATTR_AC_POWER_DIVISOR:      self._power_divisor      = value or 1
@@ -249,11 +264,30 @@ class ElectricalMeasurementHandler(ClusterHandler):
                  self.ATTR_RMS_CURRENT:  f"current_{ep}"}
         return {a: names[a] for a in self._measured()}
 
+    def _held_back(self, measurement: str, val: float, key: str) -> Optional[Dict[str, Any]]:
+        """None for a plausible reading. For an impossible one, the updates to
+        make instead: blank the shown value once per episode, then nothing."""
+        verdict, reason = measurement_sanity.judge(self, measurement, val)
+        if verdict == "ok":
+            measurement_sanity.sane(self, measurement)
+            return None
+        if verdict == "unscaled":
+            return {key: None} if measurement_sanity.unscaled(self, measurement, reason) else {}
+        return {key: None} if measurement_sanity.fault(self, measurement, val, reason) else {}
+
     async def poll(self) -> Dict[str, Any]:
         # Polled values bypass attribute_updated, so alias here too.
         results = await super().poll()
         ep = self.endpoint.endpoint_id
-        if f"power_{ep}" in results:
+        for measurement, key in (("active_power", f"power_{ep}"), ("rms_voltage", f"voltage_{ep}"),
+                                 ("rms_current", f"current_{ep}")):
+            if key in results:
+                held = self._held_back(measurement, results[key], key)
+                if held is not None:
+                    results.pop(key)
+                    results.pop(f"{key}_raw", None)
+                    results.update(held)
+        if results.get(f"power_{ep}") is not None:
             results["power"] = self._total_power(ep, results[f"power_{ep}"])
         if ep == 1:
             for name in ("voltage", "current"):

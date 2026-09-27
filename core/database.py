@@ -71,10 +71,12 @@ class DatabaseMixin:
         try:
             from modules.zigbee_cache import purge_device
             purge_device(ieee)
-            from modules import device_decisions, device_facts, device_observer
+            from modules import (device_decisions, device_facts, device_observer,
+                                 measurement_sanity)
             device_facts.forget(ieee)
             device_decisions.forget(ieee)
             device_observer.forget(ieee)
+            measurement_sanity.forget(ieee)
         except Exception as e:
             logger.warning(f"[{ieee}] Cache purge failed: {e}")
 

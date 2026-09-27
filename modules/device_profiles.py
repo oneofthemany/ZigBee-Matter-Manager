@@ -342,6 +342,9 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
             v = _to_int(m.get(k))
             if v:
                 entry[k] = v
+        for k in ("min", "max"):         # physical limits: measurement_sanity
+            if isinstance(m.get(k), (int, float)) and not isinstance(m.get(k), bool):
+                entry[k] = float(m[k])
         measurements[str(name)] = entry
     if measurements:
         out["measurements"] = measurements
