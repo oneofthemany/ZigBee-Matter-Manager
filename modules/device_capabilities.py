@@ -19,6 +19,8 @@ from zigpy.zcl.clusters.security import IasZone
 from zigpy.zcl.clusters.smartenergy import Metering
 from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
 
+from modules.endpoint_kind import LIGHT, classify_device_endpoint
+
 LOGGER = logging.getLogger(__name__)
 
 class DeviceCapabilities:
@@ -358,18 +360,29 @@ class DeviceCapabilities:
             self._capabilities.add('fan_control')
             self._capabilities.add('hvac')
 
-        # Lighting
+        # Lighting: light vs switch per On/Off EP, from the same classifier as
+        # HA discovery and the Control tab (modules/endpoint_kind.py).
         if self.COLOR_CONTROL in self._cluster_ids:
             self._capabilities.add('color_control')
-            self._capabilities.add('light')
         if self.LEVEL_CONTROL in self._cluster_ids:
             self._capabilities.add('level_control')
-            if 'cover' not in self._capabilities:
-                self._capabilities.add('light')
-
         if self.ON_OFF in self._cluster_ids:
             self._capabilities.add('on_off')
-            if not ('light' in self._capabilities or 'cover' in self._capabilities):
+
+        kinds = set()
+        for ep_id, ep in self.zigpy_dev.endpoints.items():
+            if ep_id == 0:
+                continue
+            kind = classify_device_endpoint(self.device, ep)
+            if kind:
+                kinds.add(kind.kind)
+            elif {self.COLOR_CONTROL, self.LEVEL_CONTROL} & set(getattr(ep, 'in_clusters', None) or {}) \
+                    and self.WINDOW_COVERING not in (getattr(ep, 'in_clusters', None) or {}):
+                kinds.add(LIGHT)   # dimmable EP without On/Off
+        if 'cover' not in self._capabilities:
+            if LIGHT in kinds:
+                self._capabilities.add('light')
+            elif kinds:
                 self._capabilities.add('switch')
 
         # Sensors

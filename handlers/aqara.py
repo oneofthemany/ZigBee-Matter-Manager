@@ -165,20 +165,28 @@ class MultistateInputHandler(ClusterHandler):
             # Lookup action name
             action_name = self.ACTION_MAP.get(value, f"action_{value}")
 
-            logger.info(f"[{self.device.ieee}] Aqara Button Action: {action_name} (val={value})")
+            ep = self.endpoint.endpoint_id
+            logger.info(f"[{self.device.ieee}] EP{ep} Aqara Button Action: {action_name} (val={value})")
 
-            # Update state with the last action
-            # We use 'action' state which is standard for buttons in HA
+            # Per-EP keys keep gangs apart; the bare keys stay as "last press
+            # on any gang" for single-button devices and existing automations.
             self.device.update_state({
+                f"action_{ep}": action_name,
+                f"multistate_value_{ep}": value,
                 "action": action_name,
-                "multistate_value": value
-            })
+                "multistate_value": value,
+            }, endpoint_id=ep)
 
-            # Emit an event so we can trigger automations
             self.device.emit_event("button_press", {
                 "action": action_name,
-                "value": value
+                "value": value,
+                "endpoint": ep,
             })
+
+    def _multi_gang(self) -> bool:
+        eps = getattr(getattr(self.device, "zigpy_dev", None), "endpoints", {}) or {}
+        return sum(1 for e_id, e in eps.items()
+                   if e_id and self.CLUSTER_ID in (getattr(e, "in_clusters", None) or {})) > 1
 
     def get_attr_name(self, attrid: int) -> str:
         if attrid == self.ATTR_PRESENT_VALUE:
@@ -186,9 +194,9 @@ class MultistateInputHandler(ClusterHandler):
         return super().get_attr_name(attrid)
 
     def get_discovery_configs(self) -> list:
-        """Generate HA discovery for the button action."""
-        return [
-            {
+        """One Action sensor per gang; a lone button keeps the bare id."""
+        if not self._multi_gang():
+            return [{
                 "component": "sensor",
                 "object_id": "action",
                 "config": {
@@ -196,8 +204,21 @@ class MultistateInputHandler(ClusterHandler):
                     "icon": "mdi:gesture-tap-button",
                     "value_template": "{{ value_json.action }}"
                 }
+            }]
+        ep = self.endpoint.endpoint_id
+        return [{
+            "component": "sensor",
+            "object_id": f"action_{ep}",
+            "config": {
+                "name": f"Action {ep}",
+                "icon": "mdi:gesture-tap-button",
+                "value_template": f"{{{{ value_json.action_{ep} }}}}"
             }
-        ]
+        }]
+
+    def get_retired_discovery_configs(self) -> list:
+        # Every gang used to publish the one shared "action" entity.
+        return [{"component": "sensor", "object_id": "action"}] if self._multi_gang() else []
 
 
 # ANALOG INPUT CLUSTER (0x000C)

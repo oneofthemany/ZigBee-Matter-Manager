@@ -151,6 +151,14 @@ class DeviceDiscoveryProviderMixin:
             topic = f"{self.service.mqtt.base_topic}/{safe_name}"
             asyncio.create_task(self.service.mqtt.publish(topic, json.dumps(payload)))
 
+    def get_retired_discovery_configs(self) -> List[Dict]:
+        """Entities an earlier classification may have published, to retract."""
+        retired = []
+        for handler in set(self.handlers.values()):
+            if hasattr(handler, 'get_retired_discovery_configs'):
+                retired.extend(handler.get_retired_discovery_configs() or [])
+        return retired
+
     def get_device_discovery_configs(self) -> List[Dict]:
         configs = []
         seen_handlers = set()

@@ -1184,6 +1184,11 @@ class ZigbeeService(
             }
 
             await self.mqtt.publish_discovery(device_info, configs)
+            live = {(c['component'], c['object_id']) for c in configs}
+            retired = [r for r in zdev.get_retired_discovery_configs()
+                       if (r['component'], r['object_id']) not in live]
+            if retired:
+                await self.mqtt.remove_discovery(ieee, retired)
             logger.info(f"[{ieee}] Published HA discovery")
 
             # Publish initial state from cache

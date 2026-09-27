@@ -1218,7 +1218,7 @@ export function renderControlTab(device) {
                 }
 
                 // Show multistate/electrical for switches at end of card body
-                if (!isLight && (hasMultiState || hasElectrical)) {
+                if (hasMultiState || hasElectrical) {
                     html += `<div class="mt-3 pt-3 border-top">`;
 
                     if (hasElectrical) {
@@ -1236,9 +1236,11 @@ export function renderControlTab(device) {
 
                     if (hasMultiState) {
                         // Show multistate/action values if present
+                        // Bare keys are "any gang" aliases; only a single-EP device shows them.
+                        const multiEp = device.capabilities.length > 1;
                         const multiStateKeys = Object.keys(s).filter(k =>
                             (k.startsWith('multistate_') || k.includes('action') || k.includes('operation')) &&
-                            (k.includes(`_${epId}`) || (epId === 1 && !k.match(/_\d+$/)))
+                            (k.endsWith(`_${epId}`) || (!multiEp && !k.match(/_\d+$/)))
                         );
                         if (multiStateKeys.length > 0) {
                             html += `<div class="small text-muted mb-2 mt-2"><i class="fas fa-info-circle"></i> Actions/State</div>`;

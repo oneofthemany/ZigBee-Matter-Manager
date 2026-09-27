@@ -28,6 +28,7 @@ the contents of `endpoints[*].clusters` change.
   "endpoints": {
     "1": {
       "role": "primary",                    // primary | controller | sensor | ...
+      "kind":  null,                        // On/Off EPs: "light" | "switch" pins classification (endpoint-classification.md)
       "label": "Sensor",
       "group": "",                          // used for button grouping
       "clusters": {

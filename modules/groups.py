@@ -13,6 +13,8 @@ from typing import Dict, List, Set, Optional, Any, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 import zigpy.types as t
+
+from modules.endpoint_kind import LIGHT, classify_device_endpoint
 import asyncio
 import os
 
@@ -283,46 +285,35 @@ class GroupManager:
         return {cid for cid, presence in clusters.items() if presence.is_sensor_only}
 
     def get_device_type(self, device) -> Optional[str]:
-        """
-        Determine device type from discovery configs or capabilities.
-        Enhanced: Only considers INPUT clusters for type determination.
-        """
-        # 1. Try discovery configs first
-        if hasattr(device, 'get_discovery_configs'):
-            configs = device.get_discovery_configs()
-            for config in configs:
-                component = config.get('component')
-                if component in ['light', 'switch', 'cover', 'lock']:
-                    return component
-
-        # 2. Smart detection based on CONTROLLABLE capabilities only
-        caps = self.get_device_capabilities(device)
-
-        # Must be an actuator to be a controllable device type
+        """Group type of an actuator: cover, lock, or light/switch as
+        modules/endpoint_kind.py classifies its On/Off EPs."""
         if not self._is_actuator(device):
             return None  # Sensors/remotes don't get a controllable type
 
+        caps = self.get_device_capabilities(device)
+        if DeviceCapability.POSITION in caps:
+            return "cover"
+        if DeviceCapability.LOCK in caps:
+            return "lock"
+
+        kinds = set()
+        zdev = getattr(device, 'zigpy_dev', None)
+        for ep_id, ep in (getattr(zdev, 'endpoints', None) or {}).items():
+            if ep_id == 0:
+                continue
+            kind = classify_device_endpoint(device, ep)
+            if kind:
+                kinds.add(kind.kind)
+        if LIGHT in kinds:
+            return "light"
+        if kinds:
+            return "switch"
+
+        # Dimmable without On/Off: Level or Color alone still drives a lamp.
         if DeviceCapability.BRIGHTNESS in caps or \
                 DeviceCapability.COLOR_XY in caps or \
                 DeviceCapability.COLOR_TEMP in caps:
             return "light"
-
-        # Covers
-        if DeviceCapability.POSITION in caps:
-            return "cover"
-
-        # Locks
-        if DeviceCapability.LOCK in caps:
-            return "lock"
-
-        # On/Off devices could be switches or simple lights
-        if DeviceCapability.ON_OFF in caps:
-            # Check model name for hints
-            model = getattr(device, 'model', '').lower() if hasattr(device, 'model') else ''
-            if any(x in model for x in ['light', 'bulb', 'lamp', 'spot', 'led']):
-                return "light"
-            return "switch" # Default to switch if unknown
-
         return None
 
     def get_device_capabilities(self, device) -> Set[str]:

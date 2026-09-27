@@ -8,6 +8,7 @@ from zigpy.zcl.foundation import Status
 import time
 
 from .base import ClusterHandler, register_handler
+from modules.endpoint_kind import LIGHT, LOAD_CLUSTERS, classify_device_endpoint
 
 logger = logging.getLogger("handlers.general")
 
@@ -65,23 +66,33 @@ class OnOffHandler(ClusterHandler):
             self._update_state(not current)
 
 
+    def endpoint_kind(self, refresh: bool = False):
+        """This EP's classification, cached: it is read on every state update."""
+        if refresh or getattr(self, "_kind", None) is None:
+            self._kind = classify_device_endpoint(self.device, self.endpoint)
+            if self._kind:
+                logger.info(f"[{self.device.ieee}] EP{self.endpoint.endpoint_id} is "
+                            f"{self._kind.kind.upper()} ({self._kind.reason})")
+        return self._kind
+
+    def get_component_type(self) -> Optional[str]:
+        kind = self.endpoint_kind()
+        return kind.kind if kind else None
+
+    def get_retired_discovery_configs(self) -> List[Dict]:
+        """The entity this EP would have under the other kind, so a
+        reclassification retracts it from HA instead of leaving a ghost."""
+        kind = self.endpoint_kind()
+        if not kind:
+            return []
+        ep = self.endpoint.endpoint_id
+        if kind.kind == LIGHT:
+            return [{"component": "switch", "object_id": f"switch_{ep}"}]
+        return [{"component": "light", "object_id": f"light_{ep}" if ep > 1 else "light"}]
+
     def _is_light_endpoint(self) -> bool:
-        """Check if this endpoint is a light (not a controller)."""
-        ep = self.endpoint
-
-        # Must have OnOff in INPUTS to be controllable
-        if 0x0006 not in ep.in_clusters:
-            return False
-
-        has_level = 0x0008 in ep.in_clusters  # Not out_clusters!
-        has_color = 0x0300 in ep.in_clusters
-        has_lightlink = 0x1000 in ep.in_clusters
-        has_opple = 0xFCC0 in ep.in_clusters
-        has_electrical = 0x0B04 in ep.in_clusters
-
-        has_lighting_cluster = (has_level or has_color or has_lightlink or has_opple)
-
-        return has_lighting_cluster and not has_electrical
+        kind = self.endpoint_kind()
+        return bool(kind) and kind.kind == LIGHT
 
 
     def _handle_on_with_timed_off(self, args):
@@ -250,6 +261,12 @@ class OnOffHandler(ClusterHandler):
 
         ep = self.endpoint
 
+        # A contact sensor runs on a battery, and never carries a load cluster.
+        node_desc = getattr(self.device.zigpy_dev, 'node_desc', None)
+        if (node_desc is not None and getattr(node_desc, 'is_mains_powered', False)) \
+                or set(ep.in_clusters) & LOAD_CLUSTERS:
+            return False
+
         # Count non-ZDO endpoints
         functional_endpoints = [e for e_id, e in self.device.zigpy_dev.endpoints.items() if e_id != 0]
 
@@ -396,27 +413,12 @@ class OnOffHandler(ClusterHandler):
             logger.debug(f"[{self.device.ieee}] EP{ep} has no OnOff in INPUT - skipping")
             return []
 
-        # STEP 3: Detect capabilities (INPUT clusters only)
-        has_lightlink = 0x1000 in self.endpoint.in_clusters
-        has_opple = 0xFCC0 in self.endpoint.in_clusters
+        # STEP 3: Light vs Switch — modules/endpoint_kind.py decides for every consumer
         has_color = 0x0300 in self.endpoint.in_clusters
         has_level = 0x0008 in self.endpoint.in_clusters
         has_electrical = 0x0B04 in self.endpoint.in_clusters
-        has_multi_state = 0x0012 in self.endpoint.in_clusters
         has_sonoff = 0xFC11 in self.endpoint.in_clusters
-
-        # Sonoff devices are never contact sensors
-        if has_sonoff:
-            is_contact_sensor = False  # Already handled above - kept for clarity
-
-        # STEP 4: Light vs Switch detection
-        if (has_electrical and has_level or has_multi_state or has_sonoff) and not (has_color or has_lightlink):
-            is_light = False
-            logger.info(f"[{self.device.ieee}] EP{ep} Force SWITCH: Electrical/Multistate/Sonoff present")
-        else:
-            is_light = has_lightlink or has_opple or has_color or has_level
-            logger.info(f"[{self.device.ieee}] EP{ep} OnOff detected as: {'LIGHT' if is_light else 'SWITCH'} "
-                        f"(lightlink={has_lightlink}, opple={has_opple}, color={has_color}, level={has_level})")
+        is_light = self._is_light_endpoint() if self.endpoint_kind(refresh=True) else False
 
         component = "light" if is_light else "switch"
         configs = []
