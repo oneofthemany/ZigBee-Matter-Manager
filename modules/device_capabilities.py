@@ -289,6 +289,9 @@ class DeviceCapabilities:
         self._cluster_ids.clear()
         self._configurable_endpoints.clear()
 
+        if getattr(self.device, 'is_coordinator', False):
+            return
+
         manufacturer = str(self.zigpy_dev.manufacturer or "").lower()
         model = str(self.zigpy_dev.model or "").lower()
 

@@ -6,7 +6,10 @@ This version uses mixins to keep the core class clean while retaining the identi
 """
 import time
 import logging
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from zigpy.quirks import BaseCustomDevice
 
 from device.state import DeviceStateManagerMixin
 from device.handlers import DeviceHandlerManagerMixin
@@ -17,6 +20,17 @@ from modules.device_capabilities import DeviceCapabilities
 from modules.error_handler import CommandWrapper
 
 logger = logging.getLogger("device")
+
+
+def quirk_name_of(zigpy_dev) -> Optional[str]:
+    """The quirk zigpy applied, or None. Read live: zigpy swaps in the quirked
+    device object only after the interview, so a value taken at join is stale."""
+    if not isinstance(zigpy_dev, BaseCustomDevice):
+        return None
+    meta = getattr(zigpy_dev, "quirk_metadata", None)
+    if meta is not None:   # v2 quirks share one class; the source file identifies them
+        return f"{Path(str(meta.quirk_file)).stem}:{meta.quirk_file_line}"
+    return type(zigpy_dev).__name__
 
 
 class ZigManDevice(
@@ -90,7 +104,6 @@ class ZigManDevice(
         # Initialize to 0 so devices appear Offline until they communicate
         self.last_seen = 0
 
-        self.quirk_name = "None"
         self._available = True
 
         # Track sources of attributes to detect duplicates
@@ -101,17 +114,6 @@ class ZigManDevice(
 
         # Command wrapper for resilient operations
         self._cmd_wrapper = None
-
-        # Check if quirk is applied. Older zigpy exposed `quirk_class`;
-        # newer zigpy replaces the device object with an instance of the
-        # quirk class itself, so detect by the class's defining module.
-        if hasattr(zigpy_dev, 'quirk_class'):
-            self.quirk_name = zigpy_dev.quirk_class.__name__
-        else:
-            dev_cls = type(zigpy_dev)
-            dev_mod = dev_cls.__module__
-            if dev_mod.startswith('zhaquirks') or 'quirks' in dev_mod:
-                self.quirk_name = dev_cls.__name__
 
         # Identify and attach handlers (from DeviceHandlerManagerMixin)
         self._identify_handlers()
@@ -142,9 +144,20 @@ class ZigManDevice(
                     f"Model: {self.model}, Manufacturer: {self.manufacturer}, "
                     f"Quirk: {self.quirk_name}")
 
+    @property
+    def quirk_name(self) -> str:
+        return quirk_name_of(self.zigpy_dev) or "None"
+
+    @property
+    def is_coordinator(self) -> bool:
+        try:
+            return self.service.app.state.node_info.ieee == self.zigpy_dev.ieee
+        except AttributeError:   # app not started yet
+            return False
+
     def get_role(self) -> str:
         d = self.zigpy_dev
-        if self.service.app.state.node_info.ieee == d.ieee:
+        if self.is_coordinator:
             return "Coordinator"
         if "_TZE" in str(d.manufacturer):
             return "Router"

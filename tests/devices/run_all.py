@@ -17,7 +17,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-PY_MODULES = ["test_endpoint_kind", "test_quirk_corpus"]
+PY_MODULES = ["test_endpoint_kind", "test_quirk_corpus", "test_coordinator_quirk"]
 
 
 def main() -> int:

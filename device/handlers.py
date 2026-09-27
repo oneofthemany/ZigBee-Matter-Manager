@@ -75,6 +75,10 @@ class DeviceHandlerManagerMixin:
     def _identify_handlers(self):
         """Scan device endpoints and attach appropriate cluster handlers."""
         self._detach_handlers()
+        # The coordinator's clusters are the radio's own (IAS CIE, OTA server),
+        # not a device to control or report on.
+        if self.is_coordinator:
+            return
 
         binding_prefs = self.get_binding_preferences()
         preferred_endpoints = {}

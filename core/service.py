@@ -40,6 +40,10 @@ import zigpy.zdo.types as zdo_types
 from zigpy.zcl.clusters.security import IasZone
 
 from device import ZigManDevice
+from device.core import quirk_name_of
+
+COORDINATOR_STATE_KEYS = {"manufacturer", "model", "power_source", "last_seen",
+                          "lqi", "rssi", "available"}
 from modules.json_helpers import prepare_for_json, sanitise_device_state
 from modules.packet_stats import packet_stats
 from modules.zones import ZoneManager
@@ -1168,6 +1172,19 @@ class ZigbeeService(
         try:
             zdev = self.devices[ieee]
 
+            if zdev.is_coordinator:
+                # Once per run: it was announced like a device, and its cluster
+                # handlers left IAS/on-off keys in its state.
+                if not getattr(self, '_coordinator_purged', False):
+                    self._coordinator_purged = True
+                    meta = {k: v for k, v in zdev.state.items() if k in COORDINATOR_STATE_KEYS}
+                    zdev.state.clear()
+                    zdev.state.update(meta)
+                    self.state_cache[ieee] = dict(meta)
+                    self._cache_dirty = True
+                    await self.mqtt.purge_discovery(ieee)
+                return
+
             # Restore cached state
             if ieee in self.state_cache:
                 zdev.state.update(self.state_cache[ieee])
@@ -1786,7 +1803,7 @@ class ZigbeeService(
             "nwk": f"0x{zigpy_dev.nwk:04X}" if zigpy_dev.nwk else None,
             "manufacturer": str(zigpy_dev.manufacturer or ""),
             "model": str(zigpy_dev.model or ""),
-            "quirk": str(type(zigpy_dev).__module__) if type(zigpy_dev).__module__ != 'zigpy.device' else None,
+            "quirk": quirk_name_of(zigpy_dev),
             "is_initialized": zigpy_dev.is_initialized,
             "lqi": getattr(zigpy_dev, 'lqi', None),
             "rssi": getattr(zigpy_dev, 'rssi', None),
@@ -2120,7 +2137,7 @@ class ZigbeeService(
                     "last_seen_ts": zdev.last_seen,
                     "state": zdev.state,
                     "type": zdev.get_role(),
-                    "quirk": getattr(d, 'quirk_class', type(None)).__name__,
+                    "quirk": quirk_name_of(d),
                     "capabilities": endpoints,
                     "capability_list": caps,
                     "settings": self.device_settings.get(ieee, {}),

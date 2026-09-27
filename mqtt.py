@@ -69,6 +69,7 @@ class MQTTService:
 
         # Topic subscriptions
         self._subscribed_topics: set = set()
+        self._discovery_collector: Optional[set] = None   # set only during purge_discovery
 
         # Bridge/Gateway LWT (Last Will and Testament) topic
         self.bridge_status_topic = f"{self.base_topic}/bridge/state"
@@ -234,6 +235,11 @@ class MQTTService:
                 try:
                     topic = str(message.topic)
                     payload = message.payload.decode('utf-8') if message.payload else ""
+
+                    if self._discovery_collector is not None and topic.endswith('/config'):
+                        if payload:
+                            self._discovery_collector.add(topic)
+                        continue
 
                     # IGNORE RETAINED MESSAGES ON COMMAND TOPICS
                     if message.retain and topic.endswith('/set'):
@@ -624,6 +630,27 @@ class MQTTService:
                 await self.client.publish(topic, "", retain=True, qos=1)
             except Exception as e:
                 logger.error(f"Failed to remove discovery: {e}")
+
+    async def purge_discovery(self, ieee: str, wait: float = 2.0) -> int:
+        """Retract every retained HA discovery config under this device's node,
+        whatever published it. Returns how many were cleared."""
+        if not self.ha_discovery or not self._connected or not self.client:
+            return 0
+        pattern = f"homeassistant/+/{ieee.replace(':', '')}/+/config"
+        self._discovery_collector = found = set()
+        try:
+            await self.client.subscribe(pattern, qos=1)
+            await asyncio.sleep(wait)   # the broker replays retained topics on subscribe
+        finally:
+            with suppress(Exception):
+                await self.client.unsubscribe(pattern)
+            self._discovery_collector = None
+        for topic in found:
+            with suppress(Exception):
+                await self.client.publish(topic, "", retain=True, qos=1)
+        if found:
+            logger.info(f"[{ieee}] Retracted {len(found)} HA discovery configs")
+        return len(found)
 
     def get_status(self) -> Dict[str, Any]:
         """Get MQTT connection status."""
