@@ -135,25 +135,9 @@ def utc_now() -> datetime:
 
 
 def record(ieee: str, facts: Iterable[Fact]) -> int:
-    """Upsert facts. An observed report keeps `nonzero` once it has been true:
-    an idle reading or a quiet listen window must not erase that an EP once
-    carried a real value."""
-    from modules.zigbee_cache import get_facts, record_facts
-    facts = list(facts)
-    if any(f.source == "observed" for f in facts):
-        stored = {(r["endpoint_id"], r["subject"]): r["value"] for r in get_facts(ieee)
-                  if r["source"] == "observed"}
-        merged = []
-        for f in facts:
-            if f.source == "observed" and (f.endpoint_id, f.subject) in stored:
-                try:
-                    old, new = json.loads(stored[(f.endpoint_id, f.subject)]), json.loads(f.value)
-                    if old.get("nonzero") and not new.get("nonzero"):
-                        f = f._replace(value=_j({**new, "nonzero": True}))
-                except (ValueError, AttributeError):
-                    pass
-            merged.append(f)
-        facts = merged
+    """Queue facts for the writer (zigbee_cache.submit): only changed values are
+    written, and an observed `nonzero` never reverts to false."""
+    from modules.zigbee_cache import record_facts
     rows = [(f.endpoint_id, f.subject, f.source, f.value) for f in facts]
     return record_facts(ieee, rows, utc_now())
 

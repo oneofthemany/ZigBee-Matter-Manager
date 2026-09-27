@@ -7,10 +7,12 @@ so a route 500 points at the failing line, numeric conversion handles
 bool/int/float/Decimal/zigpy types, and None is never stringified — missing
 attributes return NULL.
 """
+import asyncio
 import logging
 import os
 import time
 import traceback
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("modules.zigbee_cache")
@@ -503,28 +505,100 @@ def get_attribute_history(ieee, endpoint_id, cluster_id, attribute_id,
 
 # FACTS
 
+# Facts and decisions are written from hot paths (every received frame, every
+# announce, every start). An upsert on this file can take seconds, which on the
+# event loop starved the radio into the watchdog's exit 70, so these writes are
+# queued and run in order on one worker thread with its own cursor. Outside a
+# running loop (tests, scripts) they run at once.
+_writes: deque = deque()
+_writer: Optional[asyncio.Task] = None
+_writer_cursor = None
+_writer_cursor_db = None
+WRITE_BATCH = 200
+
+
+def submit(fn, *args) -> None:
+    """Run fn(cursor, *args) off the event loop, after earlier submissions."""
+    global _writer, _writer_cursor, _writer_cursor_db
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _run(_get_db(), fn, args)
+        return
+    if _writer_cursor is None or _writer_cursor_db is not _db:
+        # Made here, on the loop thread, so the connection is only ever
+        # touched by one thread at a time; the worker uses just this cursor.
+        _writer_cursor, _writer_cursor_db = _get_db().cursor(), _db
+    _writes.append((fn, args))
+    if _writer is None or _writer.done():
+        _writer = loop.create_task(_drain_writes())
+
+
+async def _drain_writes() -> None:
+    while _writes:
+        batch = [_writes.popleft() for _ in range(min(len(_writes), WRITE_BATCH))]
+        await asyncio.to_thread(_run_batch, _writer_cursor, batch)
+
+
+def _run_batch(cur, batch) -> None:
+    for fn, args in batch:
+        _run(cur, fn, args)
+
+
+def _run(cur, fn, args) -> None:
+    try:
+        fn(cur, *args)
+    except Exception as e:
+        logger.error(f"zigbee_cache {fn.__name__} failed: {e}")
+
+
+async def drain() -> None:
+    """Wait until every queued write has landed."""
+    while _writer is not None and not _writer.done():
+        await _writer
+
+
 def record_facts(ieee, rows: List[tuple], seen_at) -> int:
-    """Upsert (endpoint_id, subject, source, value) rows in one statement.
-    A re-seen fact keeps first_seen and moves last_seen; seen_at is naive UTC."""
+    """Queue (endpoint_id, subject, source, value) rows. Returns how many."""
     if not rows:
         return 0
     _init_schema()
-    try:
-        _get_db().executemany(
-            """
-            INSERT INTO device_facts
-                (ieee, endpoint_id, subject, source, value, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (ieee, endpoint_id, subject, source) DO UPDATE SET
-                value = excluded.value,
-                last_seen = excluded.last_seen
-            """,
-            [[str(ieee), int(ep), subj, src, val, seen_at, seen_at]
-             for ep, subj, src, val in rows])
-    except Exception as e:
-        logger.error(f"zigbee_cache facts upsert failed for {ieee}: {e}")
-        return 0
+    submit(_upsert_facts, str(ieee), list(rows), seen_at)
     return len(rows)
+
+
+def _upsert_facts(cur, ieee: str, rows: List[tuple], seen_at) -> int:
+    """Write the rows that differ from what is stored, in batched statements.
+    An observed report keeps `nonzero` once it has been true: an idle reading
+    or a quiet listen window must not erase that an EP once carried a value.
+    last_seen is when the value was last written."""
+    import json
+    stored = {(ep, subj, src): val for ep, subj, src, val in cur.execute(
+        "SELECT endpoint_id, subject, source, value FROM device_facts WHERE ieee = ?",
+        [ieee]).fetchall()}
+    changed = []
+    for ep, subj, src, val in rows:
+        old = stored.get((int(ep), subj, src))
+        if src == "observed" and old is not None:
+            try:
+                o, n = json.loads(old), json.loads(val)
+                if o.get("nonzero") and not n.get("nonzero"):
+                    val = json.dumps({**n, "nonzero": True}, default=str, sort_keys=True)
+            except (ValueError, AttributeError):
+                pass
+        if old != val:
+            changed.append((int(ep), subj, src, val))
+    for i in range(0, len(changed), WRITE_BATCH):
+        chunk = changed[i:i + WRITE_BATCH]
+        params: List[Any] = []
+        for ep, subj, src, val in chunk:
+            params += [ieee, ep, subj, src, val, seen_at, seen_at]
+        cur.execute(
+            "INSERT INTO device_facts (ieee, endpoint_id, subject, source, value, first_seen, last_seen) "
+            "VALUES " + ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(chunk)) + " "
+            "ON CONFLICT (ieee, endpoint_id, subject, source) DO UPDATE SET "
+            "value = excluded.value, last_seen = excluded.last_seen", params)
+    return len(changed)
 
 
 def get_facts(ieee) -> List[Dict[str, Any]]:
@@ -539,9 +613,12 @@ def get_facts(ieee) -> List[Dict[str, Any]]:
 
 def delete_fact(ieee, endpoint_id: int, subject: str, source: str) -> None:
     _init_schema()
-    _safe_execute(
-        "DELETE FROM device_facts WHERE ieee = ? AND endpoint_id = ? AND subject = ? AND source = ?",
-        [str(ieee), int(endpoint_id), subject, source], context="delete fact")
+    submit(_delete_fact, str(ieee), int(endpoint_id), subject, source)
+
+
+def _delete_fact(cur, ieee: str, endpoint_id: int, subject: str, source: str) -> None:
+    cur.execute("DELETE FROM device_facts WHERE ieee = ? AND endpoint_id = ? AND subject = ? "
+                "AND source = ?", [ieee, endpoint_id, subject, source])
 
 
 # DECISIONS
@@ -550,7 +627,12 @@ def upsert_decision(ieee, endpoint_id: int, subject: str, value: str, source: st
                     reason: str, decided_at, previous_value: Optional[str],
                     changed_at) -> None:
     _init_schema()
-    _safe_execute(
+    submit(_upsert_decision, str(ieee), int(endpoint_id), subject, value, source, reason,
+           decided_at, previous_value, changed_at)
+
+
+def _upsert_decision(cur, *row) -> None:
+    cur.execute(
         """
         INSERT INTO device_decisions (ieee, endpoint_id, subject, value, source, reason,
                                       decided_at, previous_value, changed_at)
@@ -559,9 +641,7 @@ def upsert_decision(ieee, endpoint_id: int, subject: str, value: str, source: st
             value = excluded.value, source = excluded.source, reason = excluded.reason,
             decided_at = excluded.decided_at, previous_value = excluded.previous_value,
             changed_at = excluded.changed_at
-        """,
-        [str(ieee), int(endpoint_id), subject, value, source, reason, decided_at,
-         previous_value, changed_at], context=f"upsert decision {subject}")
+        """, list(row))
 
 
 def get_decisions(ieee) -> List[Dict[str, Any]]:
