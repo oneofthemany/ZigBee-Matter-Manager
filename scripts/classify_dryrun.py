@@ -2,23 +2,50 @@
 """
 Dry run of modules/endpoint_kind.py over a real network. Read-only.
 
-Feed it the JSON from GET /api/devices of the *running* app (live endpoints,
-after quirks), saved from a logged-in browser tab:
+Runs inside the app container, reading live endpoints (after quirks) from the
+running app's /api/devices. Needs an API token (Settings -> tokens):
 
-    python3 scripts/classify_dryrun.py devices.json
+    podman exec -e ZMM_TOKEN=<token> zigbee-matter-manager \
+        python3 scripts/classify_dryrun.py
 
-Prints every On/Off endpoint with the HA component the old rule gave and the
-one the classifier gives now, changes first. Profile overrides are not
-applied: the file carries none.
+Against an image that predates the classifier, copy both files in first and
+run the copy (it loads endpoint_kind.py from beside itself):
+
+    podman cp modules/endpoint_kind.py zigbee-matter-manager:/tmp/
+    podman cp scripts/classify_dryrun.py zigbee-matter-manager:/tmp/
+    podman exec -e ZMM_TOKEN=<token> zigbee-matter-manager python3 /tmp/classify_dryrun.py
+
+A saved /api/devices JSON can be passed as the only argument instead.
+Profile overrides are not applied: the API does not carry them.
 """
 from __future__ import annotations
 
 import json
+import os
+import ssl
 import sys
+import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from modules.endpoint_kind import classify  # noqa: E402
+HERE = Path(__file__).resolve().parent
+try:
+    sys.path.insert(0, str(HERE.parent))
+    from modules.endpoint_kind import classify
+except ImportError:
+    sys.path.insert(0, str(HERE))
+    from endpoint_kind import classify
+
+DEFAULT_URL = "https://127.0.0.1:8000/api/devices"
+
+
+def _fetch(url: str, token: str):
+    # The app's certificate is self-signed; this only ever talks to localhost.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+        return json.load(r)
 
 
 def _int(v):
@@ -37,12 +64,20 @@ def old_rule(ids: set) -> str:
     return "light" if (link or 0xFCC0 in ids or color or level) else "switch"
 
 
-def main(path: str) -> int:
-    devices = json.loads(Path(path).read_text())
+def main(argv) -> int:
+    if len(argv) > 1:
+        devices = json.loads(Path(argv[1]).read_text())
+    else:
+        token = os.environ.get("ZMM_TOKEN")
+        if not token:
+            sys.exit("Set ZMM_TOKEN to an API token, or pass a saved /api/devices JSON.")
+        devices = _fetch(os.environ.get("ZMM_URL", DEFAULT_URL), token)
     rows = []
     for d in devices:
         for ep in d.get("capabilities") or []:
-            ids = {c["id"] for c in ep.get("inputs") or []}
+            if not isinstance(ep, dict) or "inputs" not in ep:
+                continue    # Matter / Wi-Fi entries carry no Zigbee endpoints
+            ids = {c["id"] for c in ep["inputs"] or []}
             kind = classify(ids, _int(ep.get("profile_id")), _int(ep.get("device_type")))
             if not kind:
                 continue
@@ -67,6 +102,6 @@ def main(path: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) > 2:
         sys.exit(__doc__)
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv))
