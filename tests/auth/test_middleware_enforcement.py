@@ -46,10 +46,11 @@ def _build(tmp: Path):
     # Undecorated: the middleware is the only gate, which is the point.
     for path in ("/api/editor/save", "/api/system/restart", "/api/backup/restore",
                  "/api/config/save", "/api/heating/zones", "/api/media/play",
-                 "/api/security/locks/front/unlock", "/api/brand_new_thing/go"):
+                 "/api/security/locks/front/unlock", "/api/brand_new_thing/go",
+                 "/api/fuel/refresh"):
         app.post(path)(lambda: {"ran": True})
     for path in ("/api/devices", "/api/heating/zones", "/api/media/players",
-                 "/api/system/status-ish", "/api/auth/tokens"):
+                 "/api/system/status-ish", "/api/auth/tokens", "/api/fuel/nearby"):
         app.get(path)(lambda: {"ran": True})
 
     app.add_middleware(AuthMiddleware, auth_manager=auth, enforce=True)
@@ -82,6 +83,18 @@ def run() -> Checker:
             c.check(f"phone token refused POST {path}",
                     post("phone", path).status_code == 403,
                     post("phone", path).status_code)
+
+        c.section("the car screen can look up fuel prices")
+        # Public price data, read with the phone's own presence-scoped token:
+        # it holds no system:read, and requiring one here was a 403 in the car.
+        c.check("a phone token may read fuel prices",
+                get("phone", "/api/fuel/nearby").status_code == 200,
+                get("phone", "/api/fuel/nearby").status_code)
+        c.check("so may a viewer", get("guest", "/api/fuel/nearby").status_code == 200)
+        c.check("but a phone cannot make the hub refetch them",
+                post("phone", "/api/fuel/refresh").status_code == 403)
+        c.check("nor can a viewer", post("guest", "/api/fuel/refresh").status_code == 403)
+        c.check("an admin can", post("boss", "/api/fuel/refresh").status_code == 200)
 
         c.section("an unmapped route is closed by default")
         c.check("resident refused an unmapped POST",

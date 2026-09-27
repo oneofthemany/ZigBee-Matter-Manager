@@ -128,7 +128,11 @@ PATH_SCOPES: List[Tuple[str, Dict[str, str]]] = [
     # Ambient read-only data.
     ("/api/sun",               {"GET": "system:read", "*": "system:write"}),
     ("/api/weather",           {"GET": "system:read", "*": "system:write"}),
-    ("/api/fuel",              {"GET": "system:read", "*": "admin"}),
+    # Fuel prices are public open data, and the phone's car screen reads them
+    # with a presence-scoped token that has no system:read. Every read route
+    # carries require_authenticated and every write require_scope("admin"),
+    # so the gate is on the routes; writes stay admin here as well.
+    ("/api/fuel",              {"GET": AUTHENTICATED, "*": "admin"}),
     ("/api/map",               {"GET": "system:read", "*": "admin"}),
     ("/api/geocode",           {"GET": "system:read", "*": "admin"}),
 ]
