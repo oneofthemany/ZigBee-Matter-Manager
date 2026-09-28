@@ -4,13 +4,13 @@
   "applies_when": { "in_clusters_any": ["0x0B04"], "kind": "switch" },
   "steps": [
     {
-      "id": "load_test",
+      "id": "switch_test",
       "for_each": "switch_endpoint",
-      "instruction": "Unplug everything else. Plug a known load (a kettle, a heater, a lamp) into {label}, switch it on, and enter its rating.",
+      "instruction": "Unplug everything else. Plug a known load (a kettle, a heater, a lamp) into {label} and enter its rating. Press Start, switch {label} on with its own button, wait until its reading appears below (about 15 s), then switch it off and wait until the reading falls again. Press Done.",
       "inputs": [ { "name": "rating_w", "label": "Its rating (W)", "type": "number", "min": 1 } ],
-      "window_s": 30,
+      "window_s": 90,
       "infer": [
-        { "op": "which_endpoints_moved", "yields": "endpoints.*.metering" },
+        { "op": "power_follows_switch", "yields": "endpoints.*.metering" },
         { "op": "scale_from_known", "yields": "zmm.measurements.active_power" },
         { "op": "correlate_blob_tags", "yields": "zmm.struct_tags" }
       ]

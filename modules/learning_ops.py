@@ -121,6 +121,66 @@ def which_endpoints_moved(records, baseline, step, ctx) -> List[Dict[str, Any]]:
                                       f"steadier load")]
 
 
+# Below this a switched-off socket counts as drawing nothing (standby, noise).
+STOPPED_W = 1.0
+
+
+def _watts(ctx, ep: int, raw: float) -> float:
+    mult, div = (ctx.get("power_scale") or {}).get(ep, (1, 1))
+    return raw * mult / div
+
+
+def power_follows_switch(records, baseline, step, ctx) -> List[Dict[str, Any]]:
+    """With a load on the step's EP switched on then off, its reading must rise
+    and fall with it, and no other EP's may: an EP that also shows the load
+    would record it twice in history, and an automation waiting for that EP's
+    power to stop would wait on another socket's load. Metering proposals come
+    from which_endpoints_moved; this adds what the switching showed."""
+    target = step.get("ep")
+    label = step.get("label") or f"EP{target}"
+    notes: List[Dict[str, Any]] = []
+    switched = sorted((r for r in records if _in(r, ON_OFF) and r["ep"] == target),
+                      key=lambda r: r["t"])
+    on_at = next((r["t"] for r in switched if bool(r["value"])), None)
+    off_at = next((r["t"] for r in switched if on_at is not None and r["t"] > on_at
+                   and not bool(r["value"])), None)
+    moves = _power_moves(records, baseline)
+    top = max(moves.values(), default=0.0)
+
+    if on_at is None:
+        notes.append(proposal("", None, "low", f"{label} was not switched on during the step: "
+                                               "judged from the readings alone"))
+    else:
+        peak = max((_num(r["value"]) or 0 for r in records if _in(r, POWER) and r["ep"] == target
+                    and r["t"] >= on_at and (off_at is None or r["t"] <= off_at)), default=0.0)
+        if peak <= 0:
+            notes.append(proposal("", None, "low", f"{label} switched on but its own reading never "
+                                                   "rose: is the load plugged into it?"))
+        else:
+            notes.append(proposal("", None, "high", f"{label} rose to {_watts(ctx, target, peak):g} W "
+                                                     "while switched on"))
+        if off_at is not None:
+            stopped = next((r["t"] for r in sorted(records, key=lambda r: r["t"])
+                            if _in(r, POWER) and r["ep"] == target and r["t"] >= off_at
+                            and _watts(ctx, target, _num(r["value"]) or 0) <= STOPPED_W), None)
+            notes.append(proposal("", None, "high" if stopped else "low",
+                                  f"{label} fell to 0 W {stopped - off_at:.0f} s after switch-off"
+                                  if stopped else f"{label} still showed power when the step "
+                                                  "ended: automations waiting for it to stop would wait"))
+        else:
+            notes.append(proposal("", None, "low", f"{label} was not switched off again: "
+                                                   "whether its reading falls to 0 W is unchecked"))
+    crosstalk = sorted(ep for ep, m in moves.items()
+                       if ep != target and top > 0 and m >= MOVED_SHARE * top)
+    if crosstalk:
+        shown = ", ".join(f"EP{ep}" for ep in crosstalk)
+        notes.append(proposal("", None, "high",
+                              f"{shown} also showed the load on {label}: left as is, history "
+                              f"records it on {len(crosstalk) + 1} EPs and an automation waiting "
+                              f"for {shown}'s power to stop waits on {label}'s load"))
+    return which_endpoints_moved(records, baseline, step, ctx) + notes
+
+
 def scale_from_known(records, baseline, step, ctx) -> List[Dict[str, Any]]:
     """The power of ten that turns the raw reading into the known load."""
     known = _num((step.get("inputs") or {}).get("rating_w"))
@@ -225,4 +285,5 @@ OPS: Dict[str, Callable] = {
     "attribute_that_toggled": attribute_that_toggled,
     "correlate_blob_tags": correlate_blob_tags,
     "confirmed_write": confirmed_write,
+    "power_follows_switch": power_follows_switch,
 }

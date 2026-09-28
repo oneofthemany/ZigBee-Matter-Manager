@@ -85,16 +85,24 @@ def _context(device, step: Dict[str, Any]) -> Dict[str, Any]:
     switched = ep is not None and 0x0006 in (
         getattr(device.zigpy_dev.endpoints.get(ep), "in_clusters", None) or {})
     return {"writable": writable, "energy_kwh": device.state.get("energy"),
-            "max_power_w": SWITCHED_OUTLET_MAX_W if switched else None}
+            "max_power_w": SWITCHED_OUTLET_MAX_W if switched else None,
+            "power_scale": _power_scale(device)}
+
+
+def _power_scale(device) -> Dict[int, Tuple[int, int]]:
+    """Each EP's active-power (multiplier, divisor), as its handler resolved it."""
+    return {k[0]: (getattr(h, "_power_multiplier", 1) or 1, getattr(h, "_power_divisor", 1) or 1)
+            for k, h in (device.handlers or {}).items()
+            if isinstance(k, tuple) and k[1] == 0x0B04}
 
 
 def _sample_targets(device, step: Dict[str, Any], ctx) -> List[Tuple[int, int, int, Optional[int]]]:
     ops = {i["op"] for i in step["infer"]}
     targets = []
     eps = {e: ep for e, ep in (device.zigpy_dev.endpoints or {}).items() if e and ep is not None}
-    if ops & {"which_endpoints_moved", "scale_from_known"}:
+    if ops & {"which_endpoints_moved", "scale_from_known", "power_follows_switch"}:
         targets += [(e, 0x0B04, 0x050B, None) for e, ep in eps.items() if 0x0B04 in (ep.in_clusters or {})]
-    if "which_endpoint_changed" in ops:
+    if ops & {"which_endpoint_changed", "power_follows_switch"}:
         targets += [(e, 0x0006, 0x0000, None) for e, ep in eps.items() if 0x0006 in (ep.in_clusters or {})]
     if "attribute_that_toggled" in ops:
         targets += [k for k in ctx["writable"] if k[0] in eps]
@@ -162,7 +170,41 @@ def state(device) -> Dict[str, Any]:
                  "old": t["old"], "new": t["new"],
                  "expires_in": max(0, round(t["t0"] + TRY_TIMEOUT - time.time()))}
     return {"success": True, "active": True, "running": s.active["key"] if s.active else None,
-            "trial": trial, "steps": steps}
+            "trial": trial, "steps": steps, "live": _live(device, s)}
+
+
+def _live(device, s: "Session") -> List[Dict[str, Any]]:
+    """While a step runs: each EP's latest on/off and power, and whether its
+    power has moved since the step began, so the user sees where a load shows."""
+    if not s.active:
+        return []
+    from modules.device_identity import endpoint_label
+    from modules.learning_ops import MOVED_SHARE
+    t0 = s.active["t0"]
+    latest: Dict[Tuple[int, Tuple[int, int]], Any] = {}
+    before: Dict[int, float] = {}
+    for f in list(s.active["baseline"]) + [f for f in s.frames if f["t"] < t0]:
+        if (f["cluster"], f["attr"]) == (0x0B04, 0x050B) and isinstance(f["value"], (int, float)):
+            before[f["ep"]] = float(f["value"])
+    for f in list(s.active["baseline"]) + list(s.frames):
+        latest[(f["ep"], (f["cluster"], f["attr"]))] = f["value"]
+    moves = {}
+    for f in s.frames:
+        if f["t"] >= t0 and (f["cluster"], f["attr"]) == (0x0B04, 0x050B) \
+                and isinstance(f["value"], (int, float)):
+            moves[f["ep"]] = max(moves.get(f["ep"], 0.0), abs(f["value"] - before.get(f["ep"], 0.0)))
+    top = max(moves.values(), default=0.0)
+    scale = s.active["ctx"].get("power_scale") or {}
+    out = []
+    for ep_id in sorted(e for e in (device.zigpy_dev.endpoints or {}) if e):
+        raw = latest.get((ep_id, (0x0B04, 0x050B)))
+        mult, div = scale.get(ep_id, (1, 1))
+        on = latest.get((ep_id, (0x0006, 0x0000)))
+        out.append({"ep": ep_id, "label": endpoint_label(device, ep_id) or f"EP{ep_id}",
+                    "on": None if on is None else bool(on),
+                    "power_w": None if not isinstance(raw, (int, float)) else round(raw * mult / div, 1),
+                    "moved": top > 0 and moves.get(ep_id, 0.0) >= MOVED_SHARE * top})
+    return out
 
 
 def _session_step(device, key: str):
@@ -184,7 +226,7 @@ def _clean_inputs(st: Dict[str, Any], inputs: Dict[str, Any]):
             try:
                 v = float(v)
             except (TypeError, ValueError):
-                return None, f"{spec['label']} must be a number"
+                return None, f"{spec['label']} must be a number (got {v!r})"
             if spec.get("min") is not None and v < spec["min"]:
                 return None, f"{spec['label']} must be at least {spec['min']}"
         elif spec["type"] == "select" and spec["options"] and v not in spec["options"]:
@@ -201,6 +243,8 @@ async def begin(device, key: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": err}
     if st.get("mode") == "try_write":
         return {"success": False, "error": "this step flips settings one at a time: use Try"}
+    if not inputs and (s.results.get(key) or {}).get("inputs"):
+        inputs = s.results[key]["inputs"]        # Redo: the same inputs as last time
     clean, err = _clean_inputs(st, inputs)
     if err:
         return {"success": False, "error": err}

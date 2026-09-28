@@ -75,7 +75,8 @@ function stepHtml(step, running, trial) {
     } else if (step.status === 'running') {
         body += `<div class="d-flex align-items-center gap-2">
             <span class="small" data-learn-countdown="${esc(step.key)}">${esc(step.window_s)}s</span>
-            <button class="btn btn-primary btn-sm" data-learn-finish="${esc(step.key)}">Done</button></div>`;
+            <button class="btn btn-primary btn-sm" data-learn-finish="${esc(step.key)}">Done</button></div>
+            <div data-learn-live class="mt-2"></div>`;
     } else if (step.status === 'done') {
         body += proposalsHtml(step) + `<div class="mt-2 d-flex gap-2">
             <button class="btn btn-success btn-sm" data-learn-decide="${esc(step.key)}">Accept selected</button>
@@ -91,6 +92,26 @@ function stepHtml(step, running, trial) {
             <span class="fw-bold small">${esc(step.title)}</span><span class="small text-muted">${esc(step.label)}</span>
             <span class="ms-auto">${status}</span></div>
         <div class="card-body py-2">${body}</div></div>`;
+}
+
+function liveHtml(live, step) {
+    if (!live?.length) return '';
+    const rows = live.map(r => {
+        const own = step && step.label === r.label;
+        const warn = r.moved && !own;
+        return `<tr class="${warn ? 'table-warning' : (r.moved ? 'table-success' : '')}">
+            <td>${esc(r.label)}${own ? ' <span class="badge bg-primary">testing</span>' : ''}</td>
+            <td>${r.on == null ? '—' : (r.on ? 'On' : 'Off')}</td>
+            <td class="text-end">${r.power_w == null ? '—' : `${esc(r.power_w)} W`}</td>
+            <td class="small">${warn ? 'also showing this load' : (r.moved ? 'moved' : '')}</td></tr>`;
+    }).join('');
+    return `<table class="table table-sm small mb-0"><thead><tr><th>Endpoint</th><th>Switch</th>
+        <th class="text-end">Power now</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function updateLive(root, st) {
+    const box = root.querySelector('[data-learn-live]');
+    if (box) box.innerHTML = liveHtml(st.live, st.steps.find(x => x.key === st.running));
 }
 
 function renderState(root, ieee, st) {
@@ -111,6 +132,7 @@ function renderState(root, ieee, st) {
             <button class="btn btn-primary btn-sm" data-learn-review>Review &amp; save</button>
             <button class="btn btn-outline-secondary btn-sm" data-learn-end>End</button></div>
            <div data-learn-review-box></div>`;
+    updateLive(root, st);
     startCountdown(root, ieee, st);
 }
 
@@ -134,6 +156,10 @@ function startCountdown(root, ieee, st) {
     let left = step.window_s;
     timers.set(ieee, setInterval(() => {
         left -= 1;
+        if (left % 2 === 0) {                      // live readings, without re-rendering the step
+            api(ieee, '/learn').then(fresh => { if (fresh.running === step.key) updateLive(root, fresh); })
+                .catch(() => {});
+        }
         const el = root.querySelector(`[data-learn-countdown="${CSS.escape(step.key)}"]`);
         if (el) el.textContent = `${Math.max(left, 0)}s`;
         if (left <= 0) {

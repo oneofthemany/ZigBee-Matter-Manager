@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from harness import Checker
 
-from modules.learning_ops import (attribute_that_toggled, correlate_blob_tags, press_signature,
-                                  scale_from_known, which_endpoint_changed, which_endpoints_moved)
+from modules.learning_ops import (attribute_that_toggled, correlate_blob_tags, power_follows_switch,
+                                  press_signature, scale_from_known, which_endpoint_changed,
+                                  which_endpoints_moved)
 
 AEU002_F7 = ("032800052101000921000b0a2100000d23060000006410006510016610006820006920006a20006b20"
              "0095394c37093d9839000000009739f56a6a43")
@@ -54,6 +55,37 @@ def run() -> Checker:
     p = which_endpoints_moved(power((1, 20000), (2, 9000)), base, step(1), {})
     c.check("EPs moved by different amounts: asks for a repeat", not paths(p)
             and p[0]["confidence"] == "low", p)
+
+    c.section("a load switched on and off with the socket's button")
+    def at(t, ep, cluster, attr, value):
+        return {"t": t, "ep": ep, "cluster": cluster, "attr": attr, "mfr": None, "value": value}
+    ctx = {"power_scale": {1: (1, 10), 2: (1, 10), 3: (1, 10)}}
+    onoff = [at(1, 1, 0x0006, 0, 1), at(40, 1, 0x0006, 0, 0)]
+    clean = onoff + [at(12, 1, 0x0B04, 0x050B, 19850), at(48, 1, 0x0B04, 0x050B, 0)]
+    p = power_follows_switch(clean, base, step(1), ctx)
+    ev = " | ".join(x["evidence"] for x in p)
+    c.check("the socket's own reading rose and fell: it meters itself",
+            paths(p) == {"endpoints.1.metering": "self"}, p)
+    c.check("in watts, with how long it took to stop",
+            "rose to 1985 W" in ev and "fell to 0 W 8 s after switch-off" in ev, ev)
+    c.check("and no other EP is flagged", "also showed" not in ev, ev)
+
+    talk = clean + [at(13, 2, 0x0B04, 0x050B, 19850), at(49, 2, 0x0B04, 0x050B, 0)]
+    p = power_follows_switch(talk, base, step(1), ctx)
+    ev = " | ".join(x["evidence"] for x in p)
+    c.check("another EP showing the same load is flagged, with what it would do",
+            "EP2 also showed the load on Socket 1" in ev and "history records it on 2 EPs" in ev
+            and "automation waiting" in ev, ev)
+    c.check("and the fix is proposed", paths(p) == {"endpoints.1.metering": "device_total",
+                                                    "endpoints.2.metering": "none"}, p)
+
+    p = power_follows_switch([at(12, 1, 0x0B04, 0x050B, 19850)], base, step(1), ctx)
+    c.check("a socket not switched during the step: judged from the readings, and said so",
+            any("was not switched on" in x["evidence"] for x in p))
+    stuck = onoff + [at(12, 1, 0x0B04, 0x050B, 19850), at(48, 1, 0x0B04, 0x050B, 19800)]
+    p = power_follows_switch(stuck, base, step(1), ctx)
+    c.check("a reading that never falls after switch-off is flagged for automations",
+            any("still showed power" in x["evidence"] for x in p))
 
     c.section("scaling from a known load")
     p = scale_from_known(power((1, 20000)), base, step(1, rating_w=2000), {"max_power_w": 4000})

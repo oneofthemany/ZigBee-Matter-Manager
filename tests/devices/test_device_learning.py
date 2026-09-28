@@ -19,6 +19,7 @@ from harness import Checker
 import modules.device_profiles as device_profiles
 import modules.zigbee_cache as zigbee_cache
 from handlers.general import OnOffHandler
+from handlers.power import ElectricalMeasurementHandler
 from modules import device_decisions, device_facts, device_learning
 from modules.device_profiles import ProfileStore
 from modules.learning_recipes import validate
@@ -55,6 +56,7 @@ def _outlet():
     dev = NS(ieee=IEEE, zigpy_dev=zdev, state={"sw_version": "0.0.0_0025"}, handlers={})
     for ep_id, ep in eps.items():
         dev.handlers[(ep_id, 0x0006)] = OnOffHandler(dev, ep.in_clusters[0x0006])
+        dev.handlers[(ep_id, 0x0B04)] = ElectricalMeasurementHandler(dev, ep.in_clusters[0x0B04])
     return dev, values
 
 
@@ -90,8 +92,8 @@ def run() -> Checker:
         keys = [s["key"] for s in st["steps"]]
         c.check("the outlet gets a load test per socket and USB, a press per button, and a setting",
                 keys == ["buttons.press.1", "buttons.press.2", "manufacturer_setting.change_setting",
-                         "manufacturer_setting.try_setting", "metered_outlet.load_test.1", "metered_outlet.load_test.2",
-                         "metered_outlet.load_test.3"], keys)
+                         "manufacturer_setting.try_setting", "metered_outlet.switch_test.1",
+                         "metered_outlet.switch_test.2", "metered_outlet.switch_test.3"], keys)
         relay = NS(ieee="aa:01", zigpy_dev=NS(endpoints={0: None, 1: NS(
             endpoint_id=1, profile_id=0x0104, device_type=0x0100, out_clusters={},
             in_clusters={0x0006: _Cluster(0x0006, None, {0x0000: 0})})}, model="relay",
@@ -102,30 +104,53 @@ def run() -> Checker:
                 relay_keys == ["light.which_is_the_lamp"]
                 and not any(k.startswith("light.") for k in keys), relay_keys)
         c.check("steps name the EP the way the user knows it",
-                "Socket 1" in _step(st, "metered_outlet.load_test.1")["instruction"])
+                "Socket 1" in _step(st, "metered_outlet.switch_test.1")["instruction"])
 
-        c.section("a load test")
-        key = "metered_outlet.load_test.1"
+        c.section("a switch test")
+        key = "metered_outlet.switch_test.1"
         bad = asyncio.run(device_learning.begin(dev, key, {"rating_w": "a lot"}))
-        c.check("a rating that is not a number is refused", not bad["success"])
+        c.check("a rating that is not a number is refused, saying what arrived",
+                not bad["success"] and "'a lot'" in bad["error"], bad)
         st = asyncio.run(device_learning.begin(dev, key, {"rating_w": 2000}))
         c.check("the step runs", st["running"] == key)
-        device_learning.capture(IEEE, 0x0104, 0x0B04, 1, _report(0x050B, 0x21, (20000).to_bytes(2, "little")))
-        device_learning.capture(IEEE, 0x0104, 0x0B04, 2, _report(0x050B, 0x21, (20010).to_bytes(2, "little")))
-        values[(3, 0x0B04)][0x050B] = 19990          # EP3 does not report: the read at the end sees it
+        onoff = lambda ep, on: device_learning.capture(IEEE, 0x0104, 0x0006, ep,
+                                                       _report(0x0000, 0x10, bytes([on])))
+        watts = lambda ep, raw: device_learning.capture(IEEE, 0x0104, 0x0B04, ep,
+                                                        _report(0x050B, 0x21, raw.to_bytes(2, "little")))
+        onoff(1, 1)
+        watts(1, 20000)
+        watts(2, 20010)                                # EP2 shows socket 1's load too
+        live = {r["ep"]: r for r in device_learning.state(dev)["live"]}
+        c.check("while it runs, the load shows live on the socket under test",
+                live[1]["on"] is True and live[1]["power_w"] == 2000.0 and live[1]["moved"], live)
+        c.check("and on any other EP that shows it", live[2]["moved"] and not live[3]["moved"], live)
+        onoff(1, 0)
+        watts(1, 0)
+        watts(2, 0)
+        values[(3, 0x0B04)][0x050B] = 19990            # EP3 does not report: the read at the end sees it
         device_learning.capture("00:00:00:00:00:00:00:99", 0x0104, 0x0B04, 1,
                                 _report(0x050B, 0x21, (5).to_bytes(2, "little")))
         st = asyncio.run(device_learning.finish(dev, key))
-        props = {p["path"]: p for p in _step(st, key)["proposals"] if p["path"]}
-        c.check("one load moving every EP alike: whole device on EP1, the rest repeat it",
+        found = _step(st, key)["proposals"]
+        props = {p["path"]: p for p in found if p["path"]}
+        notes = " | ".join(p["evidence"] for p in found if not p["path"])
+        c.check("every EP showed the load alike: whole device on EP1, the rest repeat it",
                 props["endpoints.1.metering"]["value"] == "device_total"
                 and props["endpoints.3.metering"]["value"] == "none", props)
+        c.check("the cross-talk is spelled out", "EP2, EP3 also showed the load on Socket 1" in notes, notes)
+        c.check("and so is whether the reading stopped", "fell to 0 W" in notes, notes)
         c.check("and the kettle gives the scaling",
                 props["zmm.measurements.active_power"]["value"]["divisor"] == 10, props)
         order = [p["path"] for p in _step(st, key)["proposals"]]
         st = device_learning.decide(dev, key, [i for i, p in enumerate(order) if p])
         c.check("accepting records learned facts",
                 sum(1 for f in zigbee_cache.get_facts(IEEE) if f["source"] == "learned") == 4)
+        asyncio.run(device_learning.begin(dev, "metered_outlet.switch_test.2", {"rating_w": 1500}))
+        asyncio.run(device_learning.finish(dev, "metered_outlet.switch_test.2"))
+        redo = asyncio.run(device_learning.begin(dev, "metered_outlet.switch_test.2", {}))
+        c.check("Redo reuses the step's inputs instead of failing",
+                redo["success"] and redo["running"] == "metered_outlet.switch_test.2", redo)
+        asyncio.run(device_learning.finish(dev, "metered_outlet.switch_test.2"))
         c.check("nothing applies to the device until saved",
                 device_profiles._store.get_profile_for_device(model="lumi.plug.aeu002",
                                                               manufacturer="Aqara")["meta"]["source"] == "zmm")
