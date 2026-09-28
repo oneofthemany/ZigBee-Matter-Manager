@@ -1,0 +1,19 @@
+{
+  "id": "metered_outlet",
+  "title": "Power metering",
+  "applies_when": { "in_clusters_any": ["0x0B04"], "kind": "switch" },
+  "steps": [
+    {
+      "id": "load_test",
+      "for_each": "switch_endpoint",
+      "instruction": "Unplug everything else. Plug a known load (a kettle, a heater, a lamp) into {label}, switch it on, and enter its rating.",
+      "inputs": [ { "name": "rating_w", "label": "Its rating (W)", "type": "number", "min": 1 } ],
+      "window_s": 30,
+      "infer": [
+        { "op": "which_endpoints_moved", "yields": "endpoints.*.metering" },
+        { "op": "scale_from_known", "yields": "zmm.measurements.active_power" },
+        { "op": "correlate_blob_tags", "yields": "zmm.struct_tags" }
+      ]
+    }
+  ]
+}

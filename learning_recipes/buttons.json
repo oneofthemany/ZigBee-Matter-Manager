@@ -1,0 +1,19 @@
+{
+  "id": "buttons",
+  "title": "Buttons",
+  "applies_when": { "in_clusters_any": ["0x0012"] },
+  "steps": [
+    {
+      "id": "press",
+      "for_each": "endpoint_with:0x0012",
+      "instruction": "Choose a kind of press, then press {label}'s button that way once.",
+      "inputs": [ { "name": "press_type", "label": "Kind of press", "type": "select",
+                    "options": ["single", "double", "triple", "hold", "release"] } ],
+      "window_s": 20,
+      "infer": [
+        { "op": "press_signature", "yields": ["endpoints.*.actions", "zmm.press_names"] },
+        { "op": "which_endpoint_changed", "yields": "endpoints.*.kind" }
+      ]
+    }
+  ]
+}

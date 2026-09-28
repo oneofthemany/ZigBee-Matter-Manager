@@ -39,3 +39,6 @@ zmm_eq/target/
 /tests/floor_plan/logs/zigbee_debug.log
 /data/presence_state.json
 /tests/logs/zigbee_debug.log
+/tests/devices/logs/zigbee_debug.log
+/docs/plans/device-learning.md
+/docs/plans/zmm-quirks.md

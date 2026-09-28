@@ -16,7 +16,9 @@ logger = logging.getLogger("modules.device_facts")
 
 # Strongest first. Rank is per subject where it matters: a declared cluster is
 # solid, a declared device type is the weakest fact we hold.
-SOURCES = ("user", "zmm", "observed", "answered", "declared_quirk", "declared_device")
+# `learned`: a result the user demonstrated on this device (device learning),
+# below only an explicit correction.
+SOURCES = ("user", "learned", "zmm", "observed", "answered", "declared_quirk", "declared_device")
 RANK = {s: i for i, s in enumerate(SOURCES)}
 
 DEVICE = 0      # endpoint_id for whole-device facts

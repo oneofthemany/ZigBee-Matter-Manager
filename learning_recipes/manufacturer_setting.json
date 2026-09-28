@@ -1,0 +1,78 @@
+{
+  "id": "manufacturer_setting",
+  "title": "Device settings",
+  "applies_when": {
+    "in_clusters_any": [
+      "0xFCC0"
+    ]
+  },
+  "steps": [
+    {
+      "id": "change_setting",
+      "instruction": "Name one setting, then change it on the device itself (its manual says how, e.g. holding a button to turn the LED off). Change only that one.",
+      "inputs": [
+        {
+          "name": "setting_id",
+          "label": "Short name (e.g. button_leds)",
+          "type": "text"
+        },
+        {
+          "name": "label",
+          "label": "Label",
+          "type": "text"
+        },
+        {
+          "name": "from_label",
+          "label": "What it was (e.g. On)",
+          "type": "text"
+        },
+        {
+          "name": "to_label",
+          "label": "What it is now (e.g. Off)",
+          "type": "text"
+        }
+      ],
+      "window_s": 60,
+      "infer": [
+        {
+          "op": "attribute_that_toggled",
+          "yields": "zmm.settings"
+        }
+      ]
+    },
+    {
+      "id": "try_setting",
+      "mode": "try_write",
+      "instruction": "For a setting the device will not show you how to change: name it, then let ZMM flip one candidate at a time while you watch the device. Each is put back as soon as you answer, or after 60 s.",
+      "inputs": [
+        {
+          "name": "setting_id",
+          "label": "Short name (e.g. button_leds)",
+          "type": "text"
+        },
+        {
+          "name": "label",
+          "label": "Label",
+          "type": "text"
+        },
+        {
+          "name": "from_label",
+          "label": "What it is now (e.g. On)",
+          "type": "text"
+        },
+        {
+          "name": "to_label",
+          "label": "What the flip should show (e.g. Off)",
+          "type": "text"
+        }
+      ],
+      "window_s": 60,
+      "infer": [
+        {
+          "op": "confirmed_write",
+          "yields": "zmm.settings"
+        }
+      ]
+    }
+  ]
+}

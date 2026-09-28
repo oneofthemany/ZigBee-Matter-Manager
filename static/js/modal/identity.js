@@ -3,6 +3,8 @@
  * why, with confirm / correct / reset (docs/plans/zmm-quirks.md §8).
  * Event delegation only: the strict CSP target forbids inline handlers.
  */
+import { renderLearningPanel, initLearningPanel } from './learning.js';
+
 const log = zmmLog('modal-identity');
 
 const SOURCE_BADGE = {
@@ -97,7 +99,8 @@ function render(root, data) {
         <div class="mt-2">
             <button class="btn btn-outline-secondary btn-sm" data-identity-draft>Draft ZMM entry</button>
             <div data-identity-draft-panel></div>
-        </div>`;
+        </div>
+        ${renderLearningPanel()}`;
 }
 
 function renderDraft(root, data) {
@@ -137,6 +140,7 @@ async function sendTo(root, url, body) {
         }
         render(root, data);
         loadImplausible(root, root.dataset.identityIeee);
+        initLearningPanel(root, root.dataset.identityIeee);
     } catch (e) {
         log.error('identity update failed', e);
         if (err) err.innerHTML = `<div class="alert alert-danger small py-1 mt-2">Request failed: ${escapeHtml(e.message)}</div>`;
@@ -217,6 +221,7 @@ export async function initIdentityTab(ieee) {
         const res = await fetch(`/api/device/${encodeURIComponent(ieee)}/identity`);
         render(root, await res.json());
         loadImplausible(root, ieee);
+        initLearningPanel(root, ieee);
     } catch (e) {
         log.error('identity load failed', e);
         root.innerHTML = `<div class="alert alert-danger small">Request failed: ${escapeHtml(e.message)}</div>`;

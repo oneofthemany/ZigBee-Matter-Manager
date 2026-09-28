@@ -1,0 +1,27 @@
+{
+  "id": "light",
+  "title": "Lights",
+  "applies_when": {
+    "in_clusters_any": [
+      "0x0006"
+    ],
+    "not_in_clusters_any": [
+      "0x0B04",
+      "0x0702"
+    ]
+  },
+  "steps": [
+    {
+      "id": "which_is_the_lamp",
+      "instruction": "Switch the lamp this device controls on or off with its own wall switch or remote (not from ZMM).",
+      "expect_kind": "light",
+      "window_s": 30,
+      "infer": [
+        {
+          "op": "which_endpoint_changed",
+          "yields": "endpoints.*.kind"
+        }
+      ]
+    }
+  ]
+}

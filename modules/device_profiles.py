@@ -386,6 +386,11 @@ def _normalise_zmm(z: Any) -> Dict[str, Any]:
     if tags:
         out["struct_tags"] = tags
 
+    presses = {str(_to_int(k)): str(v) for k, v in (z.get("press_names") or {}).items()
+               if _to_int(k) is not None and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", str(v))}
+    if presses:
+        out["press_names"] = presses          # button value -> action name, per model
+
     ev = z.get("evidence") or {}
     evidence = {k: [str(x) for x in ev.get(k) or [] if x] for k in ("probes", "verified_fw")
                 if isinstance(ev.get(k), list)}
@@ -512,6 +517,55 @@ class ProfileStore:
             os.replace(tmp, path)
         except Exception as e:
             logger.error(f"Failed to save profile {pid}: {e}")
+
+    # History: every overwrite or delete of a user profile keeps the version it
+    # replaced, so a learned or imported entry can be rolled back.
+
+    def _history_dir(self, profile_id: str) -> str:
+        return os.path.join(self._user_dir, ".history", _safe_id(profile_id))
+
+    def _archive(self, profile_id: str) -> None:
+        old = self._profiles_user.get(profile_id)
+        if old is None:
+            return
+        d = self._history_dir(profile_id)
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, f"{int(time.time() * 1000)}.json"), "w") as f:
+                json.dump(old, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to archive profile {profile_id}: {e}")
+
+    def history(self, profile_id: str) -> List[Dict[str, Any]]:
+        """Archived versions of a user profile, newest first."""
+        d = self._history_dir(profile_id)
+        if not os.path.isdir(d):
+            return []
+        stamps = sorted((int(n[:-5]) for n in os.listdir(d) if n.endswith(".json") and n[:-5].isdigit()),
+                        reverse=True)
+        return [{"version": ts, "saved_at": ts / 1000} for ts in stamps]
+
+    def rollback(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        """Restore the version before the current one, or with none archived,
+        drop the user profile so the shipped entry applies again."""
+        with self._lock:
+            versions = self.history(profile_id)
+            if not versions:
+                if profile_id in self._profiles_user:
+                    del self._profiles_user[profile_id]
+                    path = os.path.join(self._user_dir, f"{profile_id}.json")
+                    if os.path.exists(path):
+                        os.remove(path)
+                return None
+            path = os.path.join(self._history_dir(profile_id), f"{versions[0]['version']}.json")
+            with open(path) as f:
+                restored = normalise_profile(json.load(f))
+            restored["meta"]["source"] = "user"
+            self._profiles_user[restored["id"]] = restored
+            self._save_profile(restored)
+            os.remove(path)
+        logger.info(f"Profile rolled back: {profile_id}")
+        return restored
 
     # Legacy migration
 
@@ -689,6 +743,7 @@ class ProfileStore:
         if norm["meta"]["source"] in ("bundled", "zmm"):
             norm["meta"]["source"] = "user"
         with self._lock:
+            self._archive(norm["id"])
             self._profiles_user[norm["id"]] = norm
             self._save_profile(norm)
         logger.info(f"Profile saved: {norm['id']} ({norm['protocol']})")
@@ -698,6 +753,7 @@ class ProfileStore:
         with self._lock:
             if profile_id not in self._profiles_user:
                 return False
+            self._archive(profile_id)
             del self._profiles_user[profile_id]
             path = os.path.join(self._user_dir, f"{profile_id}.json")
             if os.path.exists(path):

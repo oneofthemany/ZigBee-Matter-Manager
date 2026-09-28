@@ -170,7 +170,8 @@ class MultistateInputHandler(ClusterHandler):
             if hasattr(value, 'value'): value = value.value
 
             # Lookup action name
-            action_name = self.ACTION_MAP.get(value, f"action_{value}")
+            action_name = self._press_names().get(str(value)) \
+                or self.ACTION_MAP.get(value, f"action_{value}")
 
             ep = self.endpoint.endpoint_id
             logger.info(f"[{self.device.ieee}] EP{ep} Aqara Button Action: {action_name} (val={value})")
@@ -189,6 +190,11 @@ class MultistateInputHandler(ClusterHandler):
                 "value": value,
                 "endpoint": ep,
             })
+
+    def _press_names(self) -> Dict[str, str]:
+        """The model's own press names (ZMM entry or learned profile), if any."""
+        from modules.device_profiles import profile_for_device
+        return ((profile_for_device(self.device) or {}).get("zmm") or {}).get("press_names") or {}
 
     def _multi_gang(self) -> bool:
         eps = getattr(getattr(self.device, "zigpy_dev", None), "endpoints", {}) or {}

@@ -41,7 +41,7 @@ from zigpy.zcl.clusters.security import IasZone
 
 from device import ZigManDevice
 from device.core import quirk_name_of
-from modules import device_observer
+from modules import device_learning, device_observer
 
 # Clusters-modal discovery: reads per request, and the total read time before
 # the rest is reported unread.
@@ -967,6 +967,12 @@ class ZigbeeService(
             device_observer.observe(ieee, profile, cluster, src_ep, message)
         except Exception as e:
             logger.debug(f"[{ieee}] observe failed: {e}")
+
+        # 0c. Raw frames for a device being learned (modules/device_learning.py)
+        try:
+            device_learning.capture(ieee, profile, cluster, src_ep, message)
+        except Exception as e:
+            logger.debug(f"[{ieee}] learning capture failed: {e}")
 
         # 1. DEBUGGER + FLOW ANALYZER
         try:

@@ -18,6 +18,8 @@ logger = logging.getLogger("routes.device")
 
 def register_device_routes(app: FastAPI, get_zigbee_service, get_matter_bridge):
     """Register device management routes."""
+    from routes.learning_routes import register_learning_routes
+    register_learning_routes(app, get_zigbee_service)
 
     @app.get("/api/devices")
     async def get_devices():
